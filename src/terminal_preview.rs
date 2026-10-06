@@ -27,6 +27,7 @@ struct Capability {
 struct Target {
     key: String,
     area: Rect,
+    cell: (u16, u16),
 }
 struct Ready {
     target: Target,
@@ -120,6 +121,7 @@ impl NativePreview {
         let target = Target {
             key: key.to_owned(),
             area,
+            cell: capability.cell,
         };
         if self.requested.as_ref() != Some(&target) {
             self.hide();
@@ -479,6 +481,41 @@ mod tests {
         assert!(!preview.pending());
         preview.prepare("bad", 1, 1, &[1, 2, 3], Rect::new(0, 0, 1, 1));
         assert!(!preview.pending());
+    }
+    #[test]
+    fn old_cell_geometry_completion_is_discarded() {
+        let mut preview = NativePreview::new(Some(Capability {
+            graphics: Graphics::Kitty,
+            cell: (10, 20),
+        }));
+        // Disable observations so this simulates a delayed completion after a font change.
+        preview.graphics_hint = None;
+        let area = Rect::new(0, 0, 4, 4);
+        let old = Target {
+            key: "same".into(),
+            area,
+            cell: (8, 16),
+        };
+        let (tx, rx) = mpsc::sync_channel(1);
+        preview.requested = Some(old.clone());
+        preview.worker = Some(rx);
+        tx.send(Finished {
+            target: old,
+            result: encode(
+                Capability {
+                    graphics: Graphics::Kitty,
+                    cell: (8, 16),
+                },
+                16,
+                16,
+                vec![255; 16 * 16 * 4],
+                area,
+            ),
+        })
+        .unwrap();
+        preview.prepare("same", 16, 16, &vec![255; 16 * 16 * 4], area);
+        assert!(preview.ready.is_none());
+        assert_eq!(preview.requested.as_ref().unwrap().cell, (10, 20));
     }
     #[test]
     fn stale_worker_completion_never_renders_new_selection() {

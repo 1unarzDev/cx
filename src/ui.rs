@@ -3768,7 +3768,11 @@ fn render_with_native(
             frame.render_widget(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_type(ratatui::widgets::BorderType::Rounded)
+                    .border_type(if ascii() {
+                        ratatui::widgets::BorderType::Plain
+                    } else {
+                        ratatui::widgets::BorderType::Rounded
+                    })
                     .border_style(tint(Color::Red))
                     .title(Line::from(Span::styled(
                         format!(" {title} "),

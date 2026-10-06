@@ -1,6 +1,6 @@
 # cx status
 
-Implementation is in progress, not release ready. Local project has no GitHub remote; public publication is not authorized. Integrated baseline 81fce86; bounded workers use isolated branches under worktrees. Sharing completion worker is still active; its code is not integrated.
+Implementation is in progress, not release ready. Local project has no GitHub remote; public publication is not authorized. Integrated baseline 81fce86; bounded workers use isolated branches under worktrees. Sharing worker returned df75d04 with scoped controller/panel/fixtures; it is not integrated. NM DHCP/DNS, secure privileged packaging, endpoint verification and physical hardware acceptance remain unresolved.
 
 Working inventory: innovation Arch/tmux 3.7c/Codex 0.160.1/Claude 2.1.290; tranquility Arch with system Codex 0.160.1 but Fish version probe returns Codex 0.160.1, npm installed, user-owned signature-verified tmux added; server Ubuntu 24.04/tmux 3.4, no AI runtimes. Existing rideshare_planning untouched. All six directed inter-device SSH edges were previously verified; innovation self-alias trust fails and is not modified. Linger is enabled on both Arch accounts (rechecked 2026-10-06). These observations are local deployment facts, not product defaults.
 
@@ -15,7 +15,7 @@ Current user direction (validated first live milestone):
 - Keep sidebar for now but use its empty space better. Slimmed it, added keyboard-accessible device actions and selected execution/workspace context.
 - Visuals need more intention, aligned rows and restrained colors/status indicators. Integrated pass uses fixed table columns, project separation, ANSI accents and explicit indicators with default terminal background.
 
-Pending: HIGH VALUE — physical check of viewer colors/default-background transparency in a new tranquility Shell (asked after installing and verifying post-init ordering). Prior prompt/return behavior is confirmed; do not re-ask.
+Pending user decisions: none. User confirms the new tranquility Shell preserves viewer colors and default-background transparency. Prior prompt/return behavior is confirmed; do not re-ask.
 
 - Bottom hints now use a two-row, three-column grid with a shared six-column key slot and transparent background. Enter/Ctrl+P and Search/Help align; 80/120-column real PTY captures verified in local-evidence/ui-{80,120}.png. Local installed binary updated; reopen viewers to load it.
 
@@ -33,6 +33,6 @@ Pending: HIGH VALUE — physical check of viewer colors/default-background trans
 - Launch profiles are checked on the execution host using its actual selected login/interactive shell and bounded, output-discarding --version calls. Innovation offers Shell/Claude/Codex; tranquility Shell/Codex (Claude launcher exists but fails); server Shell only. Authentication and model-route health are separate from runtime availability. No agent installed on server.
 - New-session picker and folder Start here actions share capability filtering; unknown/stale data hides agents, checks refresh/coalesce, creation rechecks before starting. Expiry cannot substitute Shell for a selected agent.
 - Explicit Focus indicator and active heading marker; actions header omits Tab; Search label simplified. Default incoming conflicts rename the copy. Actual detached UI copy preserves existing destination, verifies content and reports completion.
-- Viewer colors: new Fish sessions reset their pane palette/defaults after normal shell config with fixed --init-command; no ongoing config edits. Temporary owned guard removed from both Arch Fish configs, with private backups. Default tmux window colors use terminal defaults; explicit application RGB/backgrounds and missing font glyphs remain application/viewer limitations. Physical palette appearance still awaits feedback.
+- Viewer colors: new Fish sessions reset their pane palette/defaults after normal shell config with fixed --init-command; no ongoing config edits. Temporary owned guard removed from both Arch Fish configs, with private backups. Default tmux window colors use terminal defaults; explicit application RGB/backgrounds and missing font glyphs remain application/viewer limitations. User physically confirmed the new tranquility Shell’s viewer colors and default background look right.
 - Independent review fixes: bounded terminfo, optional-theme config mutation removed, stable selected job across reordered progress, stale Network loading released, refresh/dismiss invalidate old browser/preview responses, provider expiry guarded and probe job control disabled. Durable retry across viewer restart and failed transfer-worker launch status remain known gaps; sharing/auth/enrollment/installer/outer-tmux/release acceptance remains incomplete.
 - Deployment: latest optimized local build installed atomically on innovation, tranquility and verybeautifulserver with serialized maintenance locks. Public bootstrap/release and chezmoi integration are still not deployed.

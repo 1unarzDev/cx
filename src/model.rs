@@ -22,6 +22,10 @@ pub struct Session {
     pub boot_id: String,
     pub external: bool,
     pub socket: Option<String>,
+    #[serde(default)]
+    pub launcher: Option<String>,
+    #[serde(default)]
+    pub process: Option<ProcessIdentity>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateSession {
@@ -34,6 +38,9 @@ pub struct CreateSession {
 #[serde(tag = "op", content = "args", rename_all = "snake_case")]
 pub enum Operation {
     Info,
+    SetLaunchShell {
+        shell: String,
+    },
     Sessions,
     Create(CreateSession),
     List {
@@ -85,6 +92,20 @@ pub enum Operation {
         path: String,
         target: String,
         conflict: String,
+        key: String,
+    },
+    ListPage {
+        path: String,
+        offset: u64,
+        limit: u32,
+    },
+    SetPermissions {
+        path: String,
+        mode: u32,
+        expected_identity: Option<String>,
+    },
+    TransferReachability {
+        destination: Device,
     },
     Transfer(TransferSpec),
     TransferJobs,
@@ -115,4 +136,11 @@ pub struct TransferSpec {
     pub destination_path: String,
     pub conflict: String,
     pub key: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProcessIdentity {
+    pub pid: u32,
+    pub start_ticks: String,
+    pub native_id: Option<String>,
 }

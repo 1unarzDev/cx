@@ -49,6 +49,11 @@ pub(crate) fn encode_path(path: &Path) -> String {
     }
 }
 pub(crate) fn decode_path(path: &str) -> Result<PathBuf> {
+    if path == "~" {
+        return Ok(PathBuf::from(
+            std::env::var_os("HOME").context("HOME unavailable")?,
+        ));
+    }
     if path.len() > 16384 {
         bail!("path is too long");
     }

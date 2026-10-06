@@ -74,53 +74,114 @@ pub fn ssh(target: &str, interactive: bool) -> Result<Command> {
     c.arg(target);
     Ok(c)
 }
-pub fn request(d: &Device, op: Operation) -> Result<serde_json::Value> {
-    if d.target.is_none() {
-        return crate::dispatch(op);
+struct Connection {
+    child: std::process::Child,
+    input: std::process::ChildStdin,
+    replies: std::sync::mpsc::Receiver<Result<Response>>,
+}
+impl Drop for Connection {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
-    let id = format!("{}-{}", std::process::id(), now());
+}
+impl Connection {
+    fn open(target: &str) -> Result<Self> {
+        let mut c = ssh(target, false)?;
+        c.arg("exec ~/.local/bin/cx helper")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = c.spawn()?;
+        let input = child.stdin.take().context("helper input")?;
+        let out = child.stdout.take().context("helper output")?;
+        let (tx, replies) = std::sync::mpsc::sync_channel(4);
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(out);
+            loop {
+                let result = read_frame::<Response>(&mut reader);
+                let failed = result.is_err();
+                if tx.send(result).is_err() || failed {
+                    break;
+                }
+            }
+        });
+        Ok(Self {
+            child,
+            input,
+            replies,
+        })
+    }
+}
+static CONNECTIONS: std::sync::LazyLock<
+    std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<Option<Connection>>>>,
+    >,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// One framed metadata channel per endpoint, separate from native PTY traffic.
+pub fn request(d: &Device, op: Operation) -> Result<serde_json::Value> {
+    let Some(target) = &d.target else {
+        return crate::dispatch(op);
+    };
+    if !valid_target(target) {
+        bail!("invalid SSH target")
+    }
+    let entry = {
+        let mut all = CONNECTIONS
+            .lock()
+            .map_err(|_| anyhow!("transport lock unavailable"))?;
+        all.entry(target.clone())
+            .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(None)))
+            .clone()
+    };
+    let mut slot = entry
+        .lock()
+        .map_err(|_| anyhow!("connection lock unavailable"))?;
+    if slot
+        .as_mut()
+        .is_some_and(|c| !matches!(c.child.try_wait(), Ok(None)))
+    {
+        *slot = None;
+    }
+    if slot.is_none() {
+        *slot = Some(Connection::open(target)?);
+    }
+    let id = format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
     let req = Request {
         version: 1,
         id: id.clone(),
         op,
     };
-    let mut c = ssh(d.target.as_deref().unwrap(), false)?;
-    c.arg("exec ~/.local/bin/cx helper")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let mut child = c.spawn()?;
-    frame(
-        child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| anyhow!("helper input unavailable"))?,
-        &req,
-    )?;
-    drop(child.stdin.take());
-    let out = child.stdout.take().unwrap();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let result = read_frame::<Response>(&mut BufReader::new(out));
-        let _ = tx.send(result);
-    });
-    let result = rx.recv_timeout(std::time::Duration::from_secs(15));
-    let response = match result {
-        Ok(r) => r,
+    let conn = slot.as_mut().unwrap();
+    if let Err(error) = frame(&mut conn.input, &req) {
+        *slot = None;
+        return Err(error).context("helper disconnected; reconcile mutations before retry");
+    }
+    let response = match conn
+        .replies
+        .recv_timeout(std::time::Duration::from_secs(15))
+    {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            *slot = None;
+            return Err(e).context("helper disconnected; work may still be running");
+        }
         Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("host did not respond within 15 seconds")
+            *slot = None;
+            bail!("host did not respond within 15 seconds; work may still be running")
         }
     };
-    let _ = child.kill();
-    let _ = child.wait();
-    let response = response?;
     if response.version != 1 || response.id != id {
+        *slot = None;
         bail!("incompatible or mismatched helper response")
-    };
+    }
     if let Some(e) = response.error {
-        bail!("{}", e)
+        bail!("{e}")
     }
     response
         .result

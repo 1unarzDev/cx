@@ -1,4 +1,4 @@
-use crate::model::{CreateSession, Device, Session};
+use crate::model::{CreateSession, Device, ProcessIdentity, Session};
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::{
@@ -15,8 +15,7 @@ use std::{
 };
 
 fn state() -> Result<PathBuf> {
-    let root = PathBuf::from(std::env::var_os("HOME").context("HOME unavailable")?)
-        .join(".local/state/cx");
+    let root = crate::store::ensure()?;
     fs::create_dir_all(&root)?;
     // Refuse foreign ownership and symlinks before changing permissions.
     use std::os::unix::fs::MetadataExt;
@@ -27,7 +26,7 @@ fn state() -> Result<PathBuf> {
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
     Ok(root)
 }
-fn socket() -> Result<PathBuf> {
+pub fn socket() -> Result<PathBuf> {
     Ok(state()?.join("managed.sock"))
 }
 fn tmux_executable() -> PathBuf {
@@ -40,6 +39,9 @@ fn tmux_executable() -> PathBuf {
 }
 fn tmux(managed: bool) -> Result<Command> {
     let mut c = Command::new(tmux_executable());
+    // SSH often omits locale variables. cx itself requires a Unicode terminal;
+    // keep tmux from replacing Unicode merely because the remote locale is C.
+    c.arg("-u");
     if managed {
         c.arg("-S").arg(socket()?);
     }
@@ -104,6 +106,71 @@ fn ids(managed: bool) -> Result<Vec<String>> {
         .map(str::to_owned)
         .collect())
 }
+fn process_identity(pane: u32, provider: &str) -> Option<ProcessIdentity> {
+    let mut queue = std::collections::VecDeque::from([(pane, 0)]);
+    let mut visited = 0;
+    while let Some((pid, depth)) = queue.pop_front() {
+        visited += 1;
+        if visited > 24 {
+            return None;
+        }
+        let comm = fs::read_to_string(format!("/proc/{pid}/comm"))
+            .ok()
+            .unwrap_or_default();
+        if provider == "shell" || comm.trim() == provider {
+            let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            let start_ticks = stat
+                .rsplit_once(')')?
+                .1
+                .split_whitespace()
+                .nth(19)?
+                .to_owned();
+            // Retain only allowlisted identity values; never serialize other environment data.
+            use std::io::Read;
+            let native_id = fs::File::open(format!("/proc/{pid}/environ"))
+                .ok()
+                .and_then(|f| {
+                    let mut bytes = Vec::new();
+                    f.take(65536).read_to_end(&mut bytes).ok()?;
+                    bytes.split(|b| *b == 0).find_map(|entry| {
+                        let at = entry.iter().position(|b| *b == b'=')?;
+                        let (k, v) = entry.split_at(at);
+                        if ![
+                            b"CODEX_SESSION_ID".as_slice(),
+                            b"CODEX_THREAD_ID".as_slice(),
+                            b"CLAUDE_SESSION_ID".as_slice(),
+                        ]
+                        .contains(&k)
+                        {
+                            return None;
+                        }
+                        let id = std::str::from_utf8(&v[1..]).ok()?;
+                        if id.len() > 256
+                            || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                        {
+                            return None;
+                        }
+                        Some(id.into())
+                    })
+                });
+            return Some(ProcessIdentity {
+                pid,
+                start_ticks,
+                native_id,
+            });
+        }
+        if depth < 3 {
+            if let Ok(children) = fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")) {
+                for child in children.split_whitespace().take(8) {
+                    if let Ok(pid) = child.parse::<u32>() {
+                        queue.push_back((pid, depth + 1));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
 fn inspect(managed: bool, id: &str) -> Result<Session> {
     let (host, account, boot_id) = identity();
     let name = field(managed, id, "#{session_name}")?;
@@ -135,13 +202,24 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
         id: if managed { name.clone() } else { id.into() },
         name: prior.as_ref().map(|s| s.name.clone()).unwrap_or(name),
         directory: field(managed, id, "#{pane_current_path}")?,
-        provider: prior.map(|s| s.provider).unwrap_or_else(|| "shell".into()),
+        provider: prior
+            .as_ref()
+            .map(|s| s.provider.clone())
+            .unwrap_or_else(|| "shell".into()),
         host,
         account,
         pid,
         started,
         boot_id,
         external: !managed,
+        process: process_identity(
+            pid,
+            prior
+                .as_ref()
+                .map(|s| s.provider.as_str())
+                .unwrap_or("shell"),
+        ),
+        launcher: prior.as_ref().and_then(|s| s.launcher.clone()),
         socket: if managed {
             Some(socket()?.to_string_lossy().into_owned())
         } else {
@@ -161,9 +239,41 @@ pub fn list() -> Result<Vec<Session>> {
     result.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(result)
 }
+pub fn set_launch_shell(name: &str) -> Result<serde_json::Value> {
+    if !["fish", "bash", "zsh", "sh"].contains(&name) {
+        bail!("choose Fish, Bash, Zsh or sh");
+    }
+    let path = ["/usr/bin", "/bin", "/usr/local/bin"]
+        .into_iter()
+        .map(|p| PathBuf::from(p).join(name))
+        .find(|p| p.is_file())
+        .context("selected shell not installed on execution host")?;
+    let root = state()?;
+    let temp = root.join("launcher.tmp");
+    let mut f = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&temp)?;
+    f.write_all(&serde_json::to_vec(&path.to_string_lossy())?)?;
+    f.sync_all()?;
+    fs::rename(temp, root.join("launcher.json"))?;
+    Ok(serde_json::json!({"launcher":path,"applies_to":"new sessions only"}))
+}
+pub fn configure_managed() -> Result<()> {
+    let conf = state()?.join("tmux.conf");
+    fs::write(&conf, include_str!("../assets/tmux.conf"))?;
+    fs::set_permissions(&conf, fs::Permissions::from_mode(0o600))?;
+    let mut c = tmux(true)?;
+    c.arg("source-file").arg(conf);
+    output(c)?;
+    Ok(())
+}
 fn ensure_server() -> Result<()> {
     if !ids(true)?.is_empty() {
-        return Ok(());
+        return configure_managed();
     }
     let root = state()?;
     let conf = root.join("tmux.conf");
@@ -186,6 +296,7 @@ fn ensure_server() -> Result<()> {
                 "--property=Restart=no",
             ])
             .arg(tmux_executable())
+            .arg("-u")
             .arg("-D")
             .arg("-S")
             .arg(&sock)
@@ -221,8 +332,8 @@ pub fn create(request: &CreateSession) -> Result<Session> {
     if !["shell", "claude", "codex"].contains(&request.provider.as_str()) {
         bail!("unsupported launch profile");
     }
-    let directory =
-        fs::canonicalize(&request.directory).context("execution directory unavailable")?;
+    let directory = fs::canonicalize(crate::files::decode_path(&request.directory)?)
+        .context("execution directory unavailable")?;
     if !directory.is_dir() {
         bail!("execution location is not a directory");
     }
@@ -247,7 +358,10 @@ pub fn create(request: &CreateSession) -> Result<Session> {
         bail!("original session has ended; use a new creation key to start replacement work");
     }
     ensure_server()?;
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    let shell = fs::read(state()?.join("launcher.json"))
+        .ok()
+        .and_then(|v| serde_json::from_slice::<String>(&v).ok())
+        .unwrap_or_else(|| std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()));
     let basename = std::path::Path::new(&shell)
         .file_name()
         .and_then(|v| v.to_str())
@@ -268,6 +382,8 @@ pub fn create(request: &CreateSession) -> Result<Session> {
         boot_id,
         external: false,
         socket: Some(socket()?.to_string_lossy().into_owned()),
+        launcher: Some(shell.clone()),
+        process: None,
     };
     // Persist intent before starting: an interrupted helper response must never lose the launcher identity.
     let mut intent = fs::OpenOptions::new()
@@ -333,6 +449,9 @@ pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
         || !session.id[3..].bytes().all(|b| b.is_ascii_hexdigit())
     {
         bail!("invalid managed session identity");
+    }
+    if !session.external && device.target.is_none() {
+        configure_managed()?;
     }
     let mut args = vec![
         "attach-session".to_string(),

@@ -13,6 +13,12 @@ pub fn state_dir() -> PathBuf {
 pub fn ensure() -> Result<PathBuf> {
     let p = state_dir();
     fs::create_dir_all(&p)?;
+    use std::os::unix::fs::MetadataExt;
+    let m = fs::symlink_metadata(&p)?;
+    anyhow::ensure!(
+        m.is_dir() && m.uid() == unsafe { libc::geteuid() },
+        "unsafe cx state directory"
+    );
     fs::set_permissions(&p, fs::Permissions::from_mode(0o700))?;
     Ok(p)
 }

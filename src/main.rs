@@ -2,7 +2,9 @@ mod files;
 mod model;
 mod network;
 mod sessions;
+mod sharing;
 mod store;
+mod transfers;
 mod transport;
 mod ui;
 use anyhow::{bail, Context, Result};
@@ -24,6 +26,11 @@ enum Cmd {
         target: String,
     },
     Devices,
+    LaunchShell {
+        shell: String,
+        #[arg(long)]
+        device: Option<String>,
+    },
     Sessions {
         #[arg(long)]
         device: Option<String>,
@@ -56,6 +63,26 @@ enum Cmd {
         #[arg(long)]
         device: Option<String>,
     },
+    Copy {
+        source: String,
+        destination: String,
+        #[arg(long)]
+        source_device: Option<String>,
+        #[arg(long)]
+        destination_device: Option<String>,
+        #[arg(long, default_value = "skip")]
+        conflict: String,
+        #[arg(long)]
+        key: Option<String>,
+    },
+    Jobs,
+    Cancel {
+        key: String,
+    },
+    #[command(hide = true)]
+    TransferWorker {
+        spec: String,
+    },
     #[command(hide = true)]
     Helper,
     #[command(hide = true)]
@@ -87,40 +114,70 @@ fn info() -> Result<serde_json::Value> {
         }
     }
     Ok(
-        serde_json::json!({"host":d.host,"account":d.account,"machine_id":machine.trim(),"capabilities":caps,"protocol":1,"version":env!("CARGO_PKG_VERSION")}),
+        serde_json::json!({"host":d.host,"account":d.account,"machine_id":machine.trim(),"capabilities":caps,"protocol":1,"persistent_channel":true,"version":env!("CARGO_PKG_VERSION")}),
     )
 }
 pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
     match op {
         Operation::Info => info(),
+        Operation::SetLaunchShell { shell } => sessions::set_launch_shell(&shell),
+        Operation::TransferReachability { destination } => {
+            transport::request(&destination, Operation::Info)
+        }
+        Operation::Transfer(spec) => transfers::start(&spec),
+        Operation::TransferJobs => transfers::jobs(),
+        Operation::TransferCancel { key } => transfers::cancel(&key),
         Operation::Sessions => Ok(serde_json::to_value(sessions::list()?)?),
         Operation::Create(ref c) => Ok(serde_json::to_value(sessions::create(c)?)?),
         Operation::Network => network::observe(),
+        Operation::Copy {
+            source,
+            destination,
+            conflict,
+            key,
+        } => transfers::start(&TransferSpec {
+            source: store::local_device(),
+            source_path: source,
+            destination: store::local_device(),
+            destination_path: destination,
+            conflict,
+            key,
+        }),
+        Operation::Jobs => transfers::jobs(),
+        Operation::Cancel { key } => transfers::cancel(&key),
         ref o => files::handle(o),
     }
 }
 fn helper() -> Result<()> {
-    let req: Request = transport::read_frame(&mut BufReader::new(std::io::stdin().lock()))?;
-    let result = if req.version != 1 {
-        Err(anyhow::anyhow!("unsupported helper protocol"))
-    } else {
-        dispatch(req.op)
-    };
-    let response = match result {
-        Ok(v) => Response {
-            version: 1,
-            id: req.id,
-            result: Some(v),
-            error: None,
-        },
-        Err(e) => Response {
-            version: 1,
-            id: req.id,
-            result: None,
-            error: Some(format!("{e:#}")),
-        },
-    };
-    transport::frame(&mut std::io::stdout().lock(), &response)
+    use std::io::BufRead;
+    let mut input = BufReader::new(std::io::stdin().lock());
+    let mut output = std::io::stdout().lock();
+    loop {
+        if input.fill_buf()?.is_empty() {
+            return Ok(());
+        }
+        let req: Request = transport::read_frame(&mut input)?;
+        let result = if req.version != 1 {
+            Err(anyhow::anyhow!("unsupported helper protocol"))
+        } else {
+            dispatch(req.op)
+        };
+        let response = match result {
+            Ok(v) => Response {
+                version: 1,
+                id: req.id,
+                result: Some(v),
+                error: None,
+            },
+            Err(e) => Response {
+                version: 1,
+                id: req.id,
+                result: None,
+                error: Some(format!("{e:#}")),
+            },
+        };
+        transport::frame(&mut output, &response)?;
+    }
 }
 fn device(name: Option<String>) -> Result<Device> {
     let ds = store::devices()?;
@@ -156,7 +213,7 @@ fn add(target: &str) -> Result<()> {
     let binary = std::env::current_exe()?;
     let bytes = std::fs::read(binary)?;
     let mut c = transport::ssh(target, true)?;
-    c.arg("umask 077; mkdir -p ~/.local/bin ~/.local/state/cx; (flock -n 9 || exit 75; cat > ~/.local/bin/cx.installing && chmod 700 ~/.local/bin/cx.installing && mv ~/.local/bin/cx.installing ~/.local/bin/cx) 9> ~/.local/state/cx/maintenance.lock").stdin(Stdio::piped());
+    c.arg("sh -c 'set -eu; umask 077; mkdir -p ~/.local/bin ~/.local/state/cx; exec 9> ~/.local/state/cx/maintenance.lock; flock -n 9 || exit 75; tmp=$(mktemp ~/.local/bin/.cx-install.XXXXXX); trap \"rm -f \\\"$tmp\\\"\" EXIT HUP INT TERM; cat > \"$tmp\"; chmod 700 \"$tmp\"; \"$tmp\" --version >/dev/null; mv \"$tmp\" ~/.local/bin/cx'").stdin(Stdio::piped());
     let mut child = c.spawn()?;
     child
         .stdin
@@ -205,6 +262,44 @@ fn run() -> Result<()> {
     match Cli::parse().command {
         None => ui::run(),
         Some(Cmd::Helper) => helper(),
+        Some(Cmd::Copy {
+            source,
+            destination,
+            source_device,
+            destination_device,
+            conflict,
+            key,
+        }) => {
+            let spec = TransferSpec {
+                source: device(source_device)?,
+                source_path: source,
+                destination: device(destination_device)?,
+                destination_path: destination,
+                conflict,
+                key: key
+                    .unwrap_or_else(|| format!("copy-{}-{}", std::process::id(), transport::now())),
+            };
+            println!("{}", transfers::start(&spec)?);
+            Ok(())
+        }
+        Some(Cmd::Jobs) => {
+            println!("{}", transfers::jobs()?);
+            Ok(())
+        }
+        Some(Cmd::Cancel { key }) => {
+            println!("{}", transfers::cancel(&key)?);
+            Ok(())
+        }
+        Some(Cmd::TransferWorker { spec }) => {
+            use std::io::Read;
+            use std::os::unix::fs::OpenOptionsExt;
+            let f = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(spec)?;
+            let s: TransferSpec = serde_json::from_reader(f.take(1024 * 1024))?;
+            transfers::worker(&s)
+        }
         Some(Cmd::NativeAttach { external, args }) => {
             if args.first().map(String::as_str) != Some("attach-session") {
                 bail!("invalid native operation")
@@ -216,8 +311,10 @@ fn run() -> Result<()> {
             } else {
                 std::path::PathBuf::from("tmux")
             });
+            c.arg("-u");
             if !external {
-                c.arg("-S").arg(store::state_dir().join("managed.sock"));
+                sessions::configure_managed()?;
+                c.arg("-S").arg(sessions::socket()?);
             }
             let status = c.args(args).status()?;
             if !status.success() {
@@ -226,6 +323,13 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Add { target }) => add(&target),
+        Some(Cmd::LaunchShell { shell, device: d }) => {
+            println!(
+                "{}",
+                transport::request(&device(d)?, Operation::SetLaunchShell { shell })?
+            );
+            Ok(())
+        }
         Some(Cmd::Devices) => {
             println!("{}", serde_json::to_string_pretty(&store::devices()?)?);
             Ok(())

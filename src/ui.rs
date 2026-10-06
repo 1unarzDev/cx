@@ -12,9 +12,12 @@ use crossterm::{
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{
+        Block, BorderType, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, TableState,
+        Wrap,
+    },
     Frame, Terminal,
 };
 use serde_json::Value;
@@ -35,6 +38,7 @@ enum View {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Focus {
     Devices,
+    Actions,
     Workspace,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -104,6 +108,7 @@ enum Action {
     Files,
     Home,
     Shell,
+    DeviceShell,
     Claude,
     Codex,
     Observe,
@@ -123,6 +128,7 @@ const ACTIONS: &[(Action, &str)] = &[
         "Files · selected session directory / device home",
     ),
     (Action::Home, "Files · device home"),
+    (Action::DeviceShell, "Shell on selected device"),
     (Action::Shell, "Start here · shell"),
     (Action::Claude, "Start here · Claude"),
     (Action::Codex, "Start here · Codex"),
@@ -143,11 +149,13 @@ struct App {
     view: View,
     work: Vec<Cached>,
     selected: usize,
+    side_selected: usize,
     search: String,
     input: Option<Input>,
     text: String,
     palette_selected: usize,
     help: bool,
+    help_scroll: u16,
     notice: String,
     browser: Option<Browser>,
     browser_cache: HashMap<(usize, String), Browser>,
@@ -180,11 +188,13 @@ impl App {
             view: View::Work,
             work,
             selected: 0,
+            side_selected: 0,
             search: String::new(),
             input: None,
             text: String::new(),
             palette_selected: 0,
             help: false,
+            help_scroll: 0,
             notice: "Ctrl+P actions · ? help".into(),
             browser: None,
             browser_cache: HashMap::new(),
@@ -230,29 +240,34 @@ impl App {
         }
     }
     fn session_rows(&self) -> Vec<(usize, &Session)> {
-        let query = self.search.to_lowercase();
         let mut rows: Vec<_> = self
             .work
             .iter()
             .enumerate()
             .filter(|(i, _)| self.device == 0 || self.device == i + 1)
             .flat_map(|(i, c)| c.sessions.iter().map(move |s| (i, s)))
-            .filter(|(_, s)| {
-                query.is_empty()
-                    || format!("{} {} {} {}", s.name, s.directory, s.host, s.provider)
-                        .to_lowercase()
-                        .contains(&query)
+            .filter_map(|(i, s)| {
+                fuzzy_score(
+                    &self.search,
+                    &format!(
+                        "{} {} {} {} {}",
+                        s.name, s.directory, s.host, s.account, s.provider
+                    ),
+                )
+                .map(|score| (score, i, s))
             })
             .collect();
-        rows.sort_by(|(a, x), (b, y)| {
-            (x.directory.as_str(), *a, x.name.as_str(), x.id.as_str()).cmp(&(
-                y.directory.as_str(),
-                *b,
-                y.name.as_str(),
-                y.id.as_str(),
-            ))
+        rows.sort_by(|(a, i, x), (b, j, y)| {
+            b.cmp(a).then_with(|| {
+                (x.directory.as_str(), *i, x.name.as_str(), x.id.as_str()).cmp(&(
+                    y.directory.as_str(),
+                    *j,
+                    y.name.as_str(),
+                    y.id.as_str(),
+                ))
+            })
         });
-        rows
+        rows.into_iter().map(|(_, i, s)| (i, s)).collect()
     }
     fn selected_session(&self) -> Option<(usize, Session)> {
         self.session_rows()
@@ -260,16 +275,28 @@ impl App {
             .map(|(i, s)| (*i, (*s).clone()))
     }
     fn visible_entries(&self) -> Vec<Entry> {
-        self.browser
-            .as_ref()
-            .map(|b| {
-                b.entries
-                    .iter()
-                    .filter(|e| e.name.to_lowercase().contains(&b.search.to_lowercase()))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
+        let Some(b) = &self.browser else {
+            return vec![];
+        };
+        let mut rows: Vec<_> = b
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| fuzzy_score(&b.search, &e.name).map(|score| (score, i, e.clone())))
+            .collect();
+        rows.sort_by(|(a, i, _), (b, j, _)| b.cmp(a).then_with(|| i.cmp(j)));
+        rows.into_iter().map(|(_, _, e)| e).collect()
+    }
+    fn live_search(&mut self) {
+        if self.view == View::Files {
+            if let Some(b) = &mut self.browser {
+                b.search = self.text.clone();
+                b.selected = 0;
+            }
+        } else {
+            self.search = self.text.clone();
+            self.selected = 0;
+        }
     }
     fn palette(&self) -> Vec<(Action, &'static str)> {
         ACTIONS
@@ -364,7 +391,21 @@ impl App {
                 if let Some((d, s)) = selected {
                     self.open_browser(d, s.directory);
                 } else if let Some(d) = self.actual_device() {
-                    self.open_browser(d, ".".into());
+                    self.open_browser(d, "~".into());
+                }
+            }
+            Action::DeviceShell => {
+                if let Some(d) = self.actual_device() {
+                    let key = unique_key();
+                    self.creating = self.send(
+                        d,
+                        Operation::Create(CreateSession {
+                            key: key.clone(),
+                            directory: "~".into(),
+                            provider: "shell".into(),
+                            name: format!("shell-{key}"),
+                        }),
+                    );
                 }
             }
             Action::Observe => {
@@ -422,20 +463,21 @@ impl App {
             }
             Action::Paste => {
                 if let (Some((source, entry)), Some(b)) = (&self.clipboard, &self.browser) {
-                    if *source != b.device {
-                        self.notice = "Cross-device copy: use cx copy until the transfer backend is integrated".into();
-                    } else {
+                    if let Some(local) = self.devices.iter().position(|d| d.target.is_none()) {
                         self.send(
-                            b.device,
-                            Operation::Copy {
-                                source: entry.path.clone(),
-                                destination: b.path.clone(),
+                            local,
+                            Operation::Transfer(crate::model::TransferSpec {
+                                source: self.devices[*source].clone(),
+                                source_path: entry.path.clone(),
+                                destination: self.devices[b.device].clone(),
+                                destination_path: b.path.clone(),
                                 conflict: "skip".into(),
                                 key: unique_key(),
-                            },
+                            }),
                         );
                         self.notice = format!(
-                            "Copy on {} · existing destinations skipped",
+                            "Copy {} → {} · skip existing",
+                            identity(&self.devices[*source]),
                             identity(&self.devices[b.device])
                         );
                     }
@@ -448,6 +490,10 @@ impl App {
         }
     }
     fn apply(&mut self, reply: Reply) {
+        let listing_offset = match &reply.op {
+            Operation::ListPage { offset, .. } => *offset,
+            _ => 0,
+        };
         let is_sessions = matches!(reply.op, Operation::Sessions);
         if is_sessions {
             self.work[reply.device].loading = false;
@@ -515,8 +561,16 @@ impl App {
                     self.notice = "Creation response invalid · refresh before retrying".into()
                 }
             },
-            Operation::Jobs => {
+            Operation::Jobs | Operation::TransferJobs => {
                 self.jobs.insert(reply.device, value);
+            }
+            Operation::Transfer(_) => {
+                self.notice = format!(
+                    "Transfer {} · {}",
+                    safe_label(value["status"].as_str().unwrap_or("queued")),
+                    safe_label(value["route"].as_str().unwrap_or("worker host"))
+                );
+                self.send(reply.device, Operation::TransferJobs);
             }
             Operation::Copy { .. } => {
                 self.notice = format!(
@@ -533,7 +587,9 @@ impl App {
                 self.network.insert(reply.device, value);
                 self.network_loading = false;
             }
-            Operation::List { .. } if reply.generation == self.generation => {
+            Operation::List { .. } | Operation::ListPage { .. }
+                if reply.generation == self.generation =>
+            {
                 if let Some(b) = self.browser.as_mut().filter(|b| b.device == reply.device) {
                     b.path = value
                         .get("path")
@@ -549,7 +605,7 @@ impl App {
                         .get("parent")
                         .and_then(Value::as_str)
                         .map(str::to_owned);
-                    b.entries = value
+                    let entries: Vec<Entry> = value
                         .get("entries")
                         .and_then(Value::as_array)
                         .map(|entries| {
@@ -566,15 +622,37 @@ impl App {
                                 .collect()
                         })
                         .unwrap_or_default();
+                    if listing_offset == 0 {
+                        b.entries = entries;
+                    } else {
+                        b.entries.extend(entries);
+                    }
+                    b.entries.sort_by(|a, b| {
+                        (a.kind != "directory", a.name.as_str())
+                            .cmp(&(b.kind != "directory", b.name.as_str()))
+                    });
                     b.selected = b.selected.min(b.entries.len().saturating_sub(1));
                     b.loading = false;
-                    if value
-                        .get("truncated")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)
-                    {
-                        self.notice =
-                            "Directory listing bounded · use search or a narrower directory".into();
+                }
+                if let Some(offset) = value["next_offset"].as_u64() {
+                    if let Some(b) = &self.browser {
+                        if b.entries.len() < 10000 {
+                            self.send(
+                                b.device,
+                                Operation::ListPage {
+                                    path: b.path.clone(),
+                                    offset,
+                                    limit: 1000,
+                                },
+                            );
+                            if let Some(b) = &mut self.browser {
+                                b.loading = true;
+                            }
+                            self.notice =
+                                "Loading more directory entries · fuzzy search stays live".into();
+                        } else {
+                            self.notice="10,000 entries loaded · remaining entries require a narrower directory".into();
+                        }
                     }
                 }
             }
@@ -598,7 +676,23 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            self.quit = true;
+            return;
+        }
         if self.help {
+            match key.code {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.help_scroll = self.help_scroll.saturating_add(1).min(40)
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.help_scroll = self.help_scroll.saturating_sub(1)
+                }
+                KeyCode::PageDown => self.help_scroll = self.help_scroll.saturating_add(8).min(40),
+                KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(8),
+                KeyCode::Home => self.help_scroll = 0,
+                _ => {}
+            }
             if matches!(key.code, KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('?')) {
                 self.help = false;
             }
@@ -606,6 +700,7 @@ impl App {
         }
         // Input fields own every printable key, including navigation shortcuts.
         if let Some(mode) = self.input {
+            let before_text = self.text.clone();
             match key.code {
                 KeyCode::Esc => {
                     self.input = None;
@@ -620,8 +715,18 @@ impl App {
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
-                    self.text.push(c);
+                    if self.text.chars().count() < 256 {
+                        self.text.push(c);
+                    }
                     self.palette_selected = 0;
+                }
+                KeyCode::Down if mode == Input::Search => self.move_selection(1),
+                KeyCode::Up if mode == Input::Search => self.move_selection(-1),
+                KeyCode::Tab | KeyCode::BackTab if mode == Input::Search => {
+                    self.input = None;
+                    self.cycle_focus(
+                        key.code == KeyCode::BackTab || key.modifiers.contains(KeyModifiers::SHIFT),
+                    );
                 }
                 KeyCode::Down if mode == Input::Palette => {
                     let n = self.palette().len();
@@ -639,16 +744,9 @@ impl App {
                         }
                     }
                     Input::Search => {
-                        if self.view == View::Files {
-                            if let Some(b) = &mut self.browser {
-                                b.search = self.text.clone();
-                                b.selected = 0;
-                            }
-                        } else {
-                            self.search = self.text.clone();
-                            self.selected = 0;
-                        }
                         self.input = None;
+                        self.focus = Focus::Workspace;
+                        self.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
                     }
                     Input::Add => {
                         if transport::valid_target(&self.text) {
@@ -677,6 +775,12 @@ impl App {
                 },
                 _ => {}
             }
+            if mode == Input::Search
+                && self.input == Some(Input::Search)
+                && self.text != before_text
+            {
+                self.live_search();
+            }
             return;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -695,6 +799,7 @@ impl App {
             KeyCode::Char('?') | KeyCode::F(1) => self.help = true,
             KeyCode::Char('/') => {
                 self.input = Some(Input::Search);
+                self.focus = Focus::Workspace;
                 self.text = if self.view == View::Files {
                     self.browser
                         .as_ref()
@@ -705,11 +810,9 @@ impl App {
                 };
             }
             KeyCode::Tab | KeyCode::BackTab => {
-                self.focus = if self.focus == Focus::Devices {
-                    Focus::Workspace
-                } else {
-                    Focus::Devices
-                }
+                self.cycle_focus(
+                    key.code == KeyCode::BackTab || key.modifiers.contains(KeyModifiers::SHIFT),
+                );
             }
             KeyCode::Left | KeyCode::Char('h') => {
                 if self.view == View::Files && self.focus == Focus::Workspace {
@@ -718,11 +821,28 @@ impl App {
                     self.focus = Focus::Devices;
                 }
             }
-            KeyCode::Right | KeyCode::Char('l') => self.focus = Focus::Workspace,
+            KeyCode::Right | KeyCode::Char('l') => {
+                if self.view == View::Files && self.focus == Focus::Workspace {
+                    if let Some(b) = &self.browser {
+                        if let Some(e) = self.visible_entries().get(b.selected).cloned() {
+                            if e.kind == "directory" {
+                                self.open_browser(b.device, e.path);
+                            }
+                        }
+                    }
+                } else {
+                    self.focus = Focus::Workspace;
+                }
+            }
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Enter => {
-                if self.focus == Focus::Devices {
+                if self.focus == Focus::Actions {
+                    let actions = sidebar_actions(self);
+                    if let Some((action, _)) = actions.get(self.side_selected) {
+                        self.execute(*action)
+                    };
+                } else if self.focus == Focus::Devices {
                     self.focus = Focus::Workspace;
                     self.refresh();
                 } else {
@@ -737,7 +857,12 @@ impl App {
                 if self.view == View::Files {
                     if let Some(b) = &mut self.browser {
                         if b.preview.take().is_none() {
-                            self.view = View::Work;
+                            if !b.search.is_empty() {
+                                b.search.clear();
+                                b.selected = 0;
+                            } else {
+                                self.view = View::Work;
+                            }
                         }
                     }
                 } else if !self.search.is_empty() {
@@ -748,6 +873,13 @@ impl App {
             }
             _ => {}
         }
+    }
+    fn cycle_focus(&mut self, reverse: bool) {
+        self.focus = match (self.focus, reverse) {
+            (Focus::Workspace, false) | (Focus::Actions, true) => Focus::Devices,
+            (Focus::Devices, false) | (Focus::Workspace, true) => Focus::Actions,
+            (Focus::Actions, false) | (Focus::Devices, true) => Focus::Workspace,
+        };
     }
     fn parent_directory(&mut self) {
         if let Some(b) = &self.browser {
@@ -765,12 +897,14 @@ impl App {
                 }
             }
         }
-        if self.focus == Focus::Devices {
+        if self.focus == Focus::Actions {
+            self.side_selected = shift(self.side_selected, delta, sidebar_actions(self).len());
+        } else if self.focus == Focus::Devices {
             self.device = shift(self.device, delta, self.devices.len() + 1);
             self.selected = 0;
             if self.view == View::Files {
                 if let Some(d) = self.actual_device() {
-                    self.open_browser(d, ".".into());
+                    self.open_browser(d, "~".into());
                 }
             } else {
                 self.refresh();
@@ -784,6 +918,39 @@ impl App {
             self.selected = shift(self.selected, delta, self.session_rows().len());
         }
     }
+}
+/// Subsequence matcher with word-start and contiguous bonuses; empty queries retain order.
+fn fuzzy_score(query: &str, text: &str) -> Option<i64> {
+    let hay: Vec<char> = text.to_lowercase().chars().collect();
+    let needle: Vec<char> = query
+        .to_lowercase()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    if needle.is_empty() {
+        return Some(0);
+    }
+    let mut at = 0;
+    let mut prior = None;
+    let mut score = 0;
+    for c in needle {
+        let pos = (at..hay.len()).find(|&i| hay[i] == c)?;
+        score += 10;
+        if pos == 0 || !hay[pos - 1].is_alphanumeric() {
+            score += 12;
+        }
+        if prior == Some(pos.saturating_sub(1)) {
+            score += 16;
+        }
+        score -= if let Some(p) = prior {
+            (pos - p - 1) as i64
+        } else {
+            pos.min(30) as i64
+        };
+        prior = Some(pos);
+        at = pos + 1;
+    }
+    Some(score)
 }
 fn shift(index: usize, delta: isize, length: usize) -> usize {
     index
@@ -816,6 +983,18 @@ fn unique_key() -> String {
             .as_nanos()
     )
 }
+fn fit_label(text: &str, width: usize) -> String {
+    let safe = safe_label(text);
+    if Span::raw(&safe).width() <= width {
+        return safe;
+    }
+    let mut out = safe
+        .chars()
+        .take(width.saturating_sub(1))
+        .collect::<String>();
+    out.push(if ascii() { '~' } else { '…' });
+    out
+}
 fn safe_text(text: &str) -> String {
     text.chars()
         .map(|c| {
@@ -843,7 +1022,15 @@ fn safe_label(text: &str) -> String {
 }
 fn block(title: String, focused: bool) -> Block<'static> {
     Block::default()
-        .title(title)
+        .title(Line::from(Span::styled(
+            format!(" {title} "),
+            accent().add_modifier(Modifier::BOLD),
+        )))
+        .border_type(if ascii() {
+            BorderType::Plain
+        } else {
+            BorderType::Rounded
+        })
         .borders(Borders::ALL)
         .border_style(if focused {
             Style::default().add_modifier(Modifier::BOLD)
@@ -852,8 +1039,34 @@ fn block(title: String, focused: bool) -> Block<'static> {
         })
 }
 fn selected_style() -> Style {
-    Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+    accent().add_modifier(Modifier::REVERSED | Modifier::BOLD)
 }
+fn accent() -> Style {
+    if std::env::var_os("NO_COLOR").is_some() {
+        Style::default()
+    } else {
+        Style::default().fg(Color::Cyan)
+    }
+}
+fn muted() -> Style {
+    Style::default().add_modifier(Modifier::DIM)
+}
+fn ascii() -> bool {
+    std::env::var_os("CX_ASCII").is_some() || std::env::var("TERM").is_ok_and(|v| v == "dumb")
+}
+fn sidebar_actions(app: &App) -> Vec<(Action, &'static str)> {
+    let mut a = vec![
+        (Action::Files, "Files"),
+        (Action::DeviceShell, "Shell"),
+        (Action::Network, "Network"),
+        (Action::Add, "Add device"),
+    ];
+    if app.selected_session().is_some() {
+        a.insert(2, (Action::Observe, "Observe"));
+    }
+    a
+}
+
 fn render(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
     if area.width < 36 || area.height < 10 {
@@ -864,12 +1077,21 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         );
         return;
     }
+    let query = if app.view == View::Files {
+        app.browser
+            .as_ref()
+            .map(|b| b.search.as_str())
+            .unwrap_or("")
+    } else {
+        app.search.as_str()
+    };
+    let show_search = app.input == Some(Input::Search) || !query.is_empty();
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2),
             Constraint::Min(5),
-            Constraint::Length(2),
+            Constraint::Length(if show_search { 6 } else { 4 }),
         ])
         .split(area);
     let label = match app.view {
@@ -883,13 +1105,28 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         .find(|d| d.target.is_none())
         .map(identity)
         .unwrap_or_else(|| "local viewer".into());
+    let top = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(20),
+            Constraint::Length(viewer.len().min(40) as u16 + 8),
+        ])
+        .split(vertical[0]);
     frame.render_widget(
-        Paragraph::new(format!(
-            "cx   {label}                         viewer {viewer}"
-        )),
-        vertical[0],
+        Paragraph::new(Line::from(vec![
+            Span::styled(" cx ", accent().add_modifier(Modifier::BOLD)),
+            Span::raw("  "),
+            Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
+        ])),
+        top[0],
     );
-    let sidebar_width = if area.width < 70 { 17 } else { 24 };
+    frame.render_widget(
+        Paragraph::new(format!("viewing {viewer}"))
+            .style(muted())
+            .alignment(ratatui::layout::Alignment::Right),
+        top[1],
+    );
+    let sidebar_width = if area.width < 70 { 17 } else { 21 };
     let content = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(sidebar_width), Constraint::Min(15)])
@@ -908,19 +1145,124 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         } else {
             "ready"
         };
-        device_items.push(ListItem::new(vec![
-            Line::from(format!("{}  {count}", safe_label(&d.name))),
-            Line::from(format!("  {status}")),
-        ]));
+        let indicator = match status {
+            "ready" => {
+                if ascii() {
+                    "+"
+                } else {
+                    "●"
+                }
+            }
+            "checking" => {
+                if ascii() {
+                    "~"
+                } else {
+                    "◌"
+                }
+            }
+            "unavailable" => {
+                if ascii() {
+                    "x"
+                } else {
+                    "○"
+                }
+            }
+            _ => "?",
+        };
+        let dot_style = if std::env::var_os("NO_COLOR").is_some() {
+            Style::default()
+        } else {
+            Style::default().fg(match status {
+                "ready" => Color::Green,
+                "checking" => Color::Cyan,
+                "unavailable" => Color::Yellow,
+                _ => Color::DarkGray,
+            })
+        };
+        device_items.push(ListItem::new(Line::from(vec![
+            Span::styled(format!("{indicator} "), dot_style),
+            Span::raw(format!("{:<12} {count:>2}", fit_label(&d.name, 12))),
+        ])));
     }
+    let sidebar = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length((app.devices.len() as u16 + 3).min(content[0].height / 2)),
+            Constraint::Length(8),
+            Constraint::Min(0),
+        ])
+        .split(content[0]);
     let mut state = ratatui::widgets::ListState::default().with_selected(Some(app.device));
     frame.render_stateful_widget(
         List::new(device_items)
             .block(block("Devices".into(), app.focus == Focus::Devices))
-            .highlight_style(selected_style()),
-        content[0],
+            .highlight_style(if app.focus == Focus::Devices {
+                selected_style()
+            } else {
+                accent().add_modifier(Modifier::BOLD)
+            })
+            .highlight_symbol(if ascii() { "> " } else { "› " }),
+        sidebar[0],
         &mut state,
     );
+    let actions = sidebar_actions(app);
+    let items = actions
+        .iter()
+        .map(|(_, label)| ListItem::new(format!("  {label}")))
+        .collect::<Vec<_>>();
+    let mut state =
+        ratatui::widgets::ListState::default().with_selected(if app.focus == Focus::Actions {
+            Some(app.side_selected.min(actions.len().saturating_sub(1)))
+        } else {
+            None
+        });
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(block("Actions · Tab".into(), app.focus == Focus::Actions))
+            .highlight_style(selected_style()),
+        sidebar[1],
+        &mut state,
+    );
+    let details = if let Some((i, s)) = app.selected_session() {
+        format!(
+            "{}\n{}\n\n{}\n\n{}",
+            safe_label(&s.name),
+            safe_label(&s.provider),
+            identity(&app.devices[i]),
+            safe_label(&s.directory)
+        )
+    } else if let Some(b) = &app.browser {
+        format!(
+            "{}\n\n{}",
+            identity(&app.devices[b.device]),
+            safe_label(&b.display_path)
+        )
+    } else if let Some(i) = app.actual_device() {
+        format!(
+            "{}\n{}\n\n{} sessions",
+            safe_label(&app.devices[i].name),
+            identity(&app.devices[i]),
+            app.work[i].sessions.len()
+        )
+    } else {
+        "Select work to see\nits execution context".into()
+    };
+    if sidebar[2].height > 3 {
+        frame.render_widget(
+            Paragraph::new(details)
+                .style(muted())
+                .wrap(Wrap { trim: false })
+                .block(
+                    Block::default()
+                        .title(Line::from(Span::styled(
+                            " Selected ",
+                            accent().add_modifier(Modifier::BOLD),
+                        )))
+                        .borders(Borders::TOP),
+                ),
+            sidebar[2],
+        );
+    }
     match app.view {
         View::Work => {
             let rows = app.session_rows();
@@ -947,38 +1289,83 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                     content[1],
                 );
             } else {
-                let items: Vec<_> = rows
-                    .iter()
-                    .map(|(i, s)| {
-                        ListItem::new(vec![
-                            Line::from(vec![
-                                Span::raw(format!(
-                                    "{}  {}",
-                                    safe_label(&s.provider),
-                                    safe_label(&s.name)
-                                )),
-                                Span::raw(if s.external { " · external" } else { "" }),
-                            ]),
-                            Line::from(format!(
-                                "  {} · {}",
-                                identity(&app.devices[*i]),
-                                safe_label(&s.directory)
-                            )),
-                        ])
-                    })
-                    .collect();
-                let mut state = ratatui::widgets::ListState::default()
-                    .with_selected(Some(app.selected.min(rows.len() - 1)));
-                frame.render_stateful_widget(
-                    List::new(items)
-                        .block(block(
-                            format!("Work · {} top-level sessions", rows.len()),
-                            app.focus == Focus::Workspace,
-                        ))
-                        .highlight_style(selected_style()),
-                    content[1],
-                    &mut state,
-                );
+                let mut display_rows = Vec::new();
+                let mut selected_row = 0;
+                let mut last_project = None;
+                for (index, (i, s)) in rows.iter().enumerate() {
+                    if last_project != Some(s.directory.as_str()) {
+                        display_rows.push(
+                            Row::new([
+                                Cell::from(""),
+                                Cell::from(safe_label(&s.directory)),
+                                Cell::from(""),
+                                Cell::from(""),
+                            ])
+                            .style(muted())
+                            .height(2),
+                        );
+                        last_project = Some(s.directory.as_str());
+                    }
+                    if index == app.selected {
+                        selected_row = display_rows.len();
+                    }
+                    let fresh = app.work[*i].fetched > 0
+                        && transport::now().saturating_sub(app.work[*i].fetched) <= 60
+                        && app.work[*i].error.is_none();
+                    let badge = format!("[{}]", safe_label(&s.provider));
+                    display_rows.push(Row::new([
+                        Cell::from(badge).style(if std::env::var_os("NO_COLOR").is_some() {
+                            Style::default()
+                        } else {
+                            Style::default().fg(match s.provider.as_str() {
+                                "claude" => Color::Yellow,
+                                "codex" => Color::Cyan,
+                                _ => Color::Gray,
+                            })
+                        }),
+                        Cell::from(safe_label(&s.name)),
+                        Cell::from(identity(&app.devices[*i])),
+                        Cell::from(if !fresh {
+                            "? cached"
+                        } else if s.external {
+                            if ascii() {
+                                "+ ext"
+                            } else {
+                                "● ext"
+                            }
+                        } else {
+                            if ascii() {
+                                "+ live"
+                            } else {
+                                "● live"
+                            }
+                        })
+                        .style(if !fresh { muted() } else { accent() }),
+                    ]));
+                }
+                let mut state = TableState::default().with_selected(Some(selected_row));
+                let table = Table::new(
+                    display_rows,
+                    [
+                        Constraint::Length(9),
+                        Constraint::Min(10),
+                        Constraint::Length(if content[1].width > 65 { 24 } else { 18 }),
+                        Constraint::Length(8),
+                    ],
+                )
+                .header(
+                    Row::new(["AGENT", "SESSION", "EXECUTION", "STATE"])
+                        .style(muted())
+                        .bottom_margin(1),
+                )
+                .column_spacing(2)
+                .block(block(
+                    format!("Work · {} sessions", rows.len()),
+                    app.focus == Focus::Workspace,
+                ))
+                .row_highlight_style(selected_style())
+                .highlight_symbol(if ascii() { "> " } else { "› " });
+                frame.render_stateful_widget(table, content[1], &mut state);
             }
         }
         View::Files => {
@@ -1052,22 +1439,218 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             );
         }
     }
-    let jobs_count: usize = app
+    let footer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(if show_search {
+            vec![
+                Constraint::Length(3),
+                Constraint::Length(1),
+                Constraint::Length(2),
+            ]
+        } else {
+            vec![
+                Constraint::Length(1),
+                Constraint::Length(2),
+                Constraint::Length(1),
+            ]
+        })
+        .split(vertical[2]);
+    let status_row = if show_search { 1 } else { 0 };
+    let key_row = if show_search { 2 } else { 1 };
+    let mut unique_jobs = std::collections::BTreeMap::new();
+    for j in app
         .jobs
         .values()
-        .filter_map(|v| v.get("jobs").and_then(Value::as_array))
-        .map(Vec::len)
-        .sum();
-    let footer = if jobs_count > 0 {
-        format!("Transfers {jobs_count} · {}\nEnter open · Esc back · / search · Tab focus · Ctrl+P actions",safe_text(&app.notice))
+        .filter_map(|v| v["jobs"].as_array())
+        .flatten()
+    {
+        unique_jobs.insert(
+            (
+                j["key"].as_str().unwrap_or(""),
+                j["source_host"].as_str().unwrap_or(""),
+                j["destination_host"].as_str().unwrap_or(""),
+            ),
+            j,
+        );
+    }
+    let jobs = unique_jobs.values().copied().collect::<Vec<_>>();
+    let active = jobs
+        .iter()
+        .filter(|j| {
+            matches!(
+                j["status"].as_str(),
+                Some("running" | "queued" | "submitting")
+            )
+        })
+        .count();
+    let failed = jobs.iter().filter(|j| j["status"] == "failed").count();
+    let ready = app
+        .work
+        .iter()
+        .filter(|w| {
+            w.fetched > 0 && transport::now().saturating_sub(w.fetched) < 60 && w.error.is_none()
+        })
+        .count();
+    let errors = app.work.iter().filter(|w| w.error.is_some()).count();
+    let shown = if app.view == View::Files {
+        app.visible_entries().len()
     } else {
-        format!(
-            "{}\nEnter open · Esc back · / search · Tab focus · Ctrl+P actions",
-            safe_text(&app.notice)
-        )
+        app.session_rows().len()
     };
-    frame.render_widget(Paragraph::new(footer), vertical[2]);
-    if let Some(input) = app.input {
+    let total = if app.view == View::Files {
+        app.browser.as_ref().map(|b| b.entries.len()).unwrap_or(0)
+    } else {
+        app.work
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| app.device == 0 || app.device == i + 1)
+            .map(|(_, w)| w.sessions.len())
+            .sum()
+    };
+    let status_sections = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(30),
+            Constraint::Percentage(30),
+            Constraint::Percentage(40),
+        ])
+        .split(footer[status_row]);
+    let healthy = if std::env::var_os("NO_COLOR").is_some() {
+        Style::default()
+    } else {
+        Style::default().fg(Color::Green)
+    };
+    let warning = if std::env::var_os("NO_COLOR").is_some() {
+        Style::default()
+    } else {
+        Style::default().fg(Color::Yellow)
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            if errors > 0 {
+                format!(" ◆ {errors} unavailable  ")
+            } else {
+                format!(
+                    " {} {ready}/{} devices  ",
+                    if ascii() { "+" } else { "●" },
+                    app.devices.len()
+                )
+            },
+            if errors > 0 { warning } else { healthy },
+        )])),
+        status_sections[0],
+    );
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{shown} / {total} {}",
+            if app.view == View::Files {
+                "entries"
+            } else {
+                "sessions"
+            }
+        ))
+        .style(muted())
+        .alignment(ratatui::layout::Alignment::Center),
+        status_sections[1],
+    );
+    let transfer = if active > 0 {
+        format!("↔ {active} copying")
+    } else if failed > 0 {
+        format!("× {failed} failed copies")
+    } else if !jobs.is_empty() {
+        format!("● {} copied", jobs.len())
+    } else {
+        "↔ transfers idle".into()
+    };
+    frame.render_widget(
+        Paragraph::new(transfer)
+            .style(if failed > 0 { warning } else { accent() })
+            .alignment(ratatui::layout::Alignment::Right),
+        status_sections[2],
+    );
+    if show_search {
+        let editing = app.input == Some(Input::Search);
+        let text = if editing { app.text.as_str() } else { query };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(" /  ", accent().add_modifier(Modifier::BOLD)),
+                Span::raw(safe_label(text)),
+            ]))
+            .block(block(
+                if editing {
+                    "Fuzzy search · live"
+                } else {
+                    "Fuzzy search · / edit · Esc clear"
+                }
+                .into(),
+                editing,
+            )),
+            footer[0],
+        );
+        if editing {
+            let width = Span::raw(safe_label(text)).width() as u16;
+            frame.set_cursor_position((
+                footer[0].x + 5 + width.min(footer[0].width.saturating_sub(7)),
+                footer[0].y + 1,
+            ));
+        }
+    } else {
+        frame.render_widget(
+            Paragraph::new(safe_text(&app.notice)).style(muted()),
+            footer[2],
+        );
+    }
+    let mut hints = if app.input == Some(Input::Search) {
+        vec![
+            ("↑↓", "Select"),
+            ("Enter", "Open"),
+            ("Esc", "Done"),
+            ("Tab", "Focus"),
+        ]
+    } else {
+        vec![
+            (
+                "Enter",
+                if app.focus == Focus::Actions {
+                    "Run"
+                } else {
+                    "Open"
+                },
+            ),
+            ("/", "Search"),
+            ("Tab", "Focus"),
+            ("Ctrl P", "Actions"),
+            ("?", "Help"),
+            ("Ctrl C", "Quit"),
+        ]
+    };
+    let columns = if footer[key_row].width >= 60 { 3 } else { 2 };
+    if columns == 2 && app.input != Some(Input::Search) {
+        hints.retain(|(_, label)| !matches!(*label, "Search" | "Focus"));
+    }
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(footer[key_row]);
+    for (i, (key, label)) in hints.into_iter().enumerate() {
+        let cells = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(vec![Constraint::Ratio(1, columns as u32); columns])
+            .split(rows[i / columns]);
+        let key_style = if std::env::var_os("NO_COLOR").is_some() {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            accent().add_modifier(Modifier::BOLD)
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(format!("  {key:<6}  "), key_style),
+                Span::raw(label),
+            ])),
+            cells[i % columns],
+        );
+    }
+    if let Some(input) = app.input.filter(|i| *i != Input::Search) {
         let rect = popup(area, 76, if input == Input::Palette { 16 } else { 5 });
         frame.render_widget(Clear, rect);
         if input == Input::Palette {
@@ -1116,7 +1699,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
     if app.help {
         let rect = popup(area, 76, 20);
         frame.render_widget(Clear, rect);
-        let mut help = String::from("Arrows / h j k l  navigate\nEnter  enter directory / preview file / take control\nEscape  back     Tab  focus     /  search\nCtrl+P  actions  Ctrl+C  quit\n\nNative terminal: cx keys are suspended.\nManaged sessions: Ctrl+] Space returns; Ctrl+] twice sends Ctrl+].\nExternal sessions keep their own tmux bindings.\n\nAvailable actions\n");
+        let mut help = String::from("Arrows / h j k l  navigate\nEnter  enter directory / preview file / take control\nFiles: Left/h parent · Right/l enter directory\nEscape  back     Tab / Shift+Tab  focus     /  search\nCtrl+P  actions  Ctrl+C  quit\n\nNative terminal: cx keys are suspended.\nManaged sessions: Ctrl+] Space returns; Ctrl+] twice sends Ctrl+].\nExternal sessions keep their own tmux bindings.\n\nAvailable actions\n");
         for (_, label) in ACTIONS.iter().filter(|(a, _)| app.action_enabled(*a)) {
             help.push_str(label);
             help.push('\n');
@@ -1124,7 +1707,8 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         frame.render_widget(
             Paragraph::new(help)
                 .wrap(Wrap { trim: false })
-                .block(block("Help · Escape closes".into(), true)),
+                .scroll((app.help_scroll, 0))
+                .block(block("Help · ↑↓ scroll · Escape closes".into(), true)),
             rect,
         );
     }
@@ -1285,6 +1869,14 @@ impl Drop for Screen {
 }
 
 pub fn run() -> Result<()> {
+    let stopping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    for sig in [
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGHUP,
+        signal_hook::consts::SIGINT,
+    ] {
+        signal_hook::flag::register(sig, stopping.clone())?;
+    }
     let devices = store::devices()?;
     anyhow::ensure!(!devices.is_empty(), "No local device available");
     let (tx, rx) = mpsc::sync_channel::<Task>(32);
@@ -1309,10 +1901,14 @@ pub fn run() -> Result<()> {
     let mut app = App::new(devices, tx);
     load_cache(&mut app);
     app.refresh_work();
+    for d in 0..app.devices.len() {
+        app.send(d, Operation::TransferJobs);
+    }
     let mut screen = Screen::new().context("open terminal workspace")?;
     let mut dirty = true;
     let mut last_refresh = Instant::now();
-    while !app.quit {
+    let mut last_jobs = Instant::now();
+    while !app.quit && !stopping.load(std::sync::atomic::Ordering::Relaxed) {
         let mut cache_changed = false;
         while let Ok(reply) = result_rx.try_recv() {
             cache_changed |= matches!(reply.op, Operation::Sessions) && reply.result.is_ok();
@@ -1387,13 +1983,34 @@ pub fn run() -> Result<()> {
             }
             dirty = true;
         }
+        if last_jobs.elapsed() >= Duration::from_secs(2) {
+            let active = app
+                .jobs
+                .values()
+                .filter_map(|v| v["jobs"].as_array())
+                .flatten()
+                .any(|j| {
+                    matches!(
+                        j["status"].as_str(),
+                        Some("queued" | "running" | "submitting")
+                    )
+                });
+            if active {
+                if let Some(local) = app.devices.iter().position(|d| d.target.is_none()) {
+                    app.send(local, Operation::TransferJobs);
+                }
+            }
+            last_jobs = Instant::now();
+        }
         // Bounded fleet refresh; idle does not continuously redraw.
         if last_refresh.elapsed() >= Duration::from_secs(30) {
             if app.view == View::Work {
                 app.refresh_work();
             }
-            if let Some(b) = &app.browser {
-                app.send(b.device, Operation::Jobs);
+            if app.browser.is_some() {
+                if let Some(local) = app.devices.iter().position(|d| d.target.is_none()) {
+                    app.send(local, Operation::TransferJobs);
+                }
             }
             last_refresh = Instant::now();
         }
@@ -1419,6 +2036,112 @@ mod tests {
             }],
             tx,
         )
+    }
+    #[test]
+    fn reverse_tab_cycles_focus_and_leaves_search() {
+        let mut a = app();
+        a.focus = Focus::Workspace;
+        a.key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert!(a.focus == Focus::Actions);
+        a.key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert!(a.focus == Focus::Devices);
+        a.key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert!(a.focus == Focus::Workspace);
+        a.input = Some(Input::Search);
+        a.text = "abc".into();
+        a.key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert!(a.input.is_none());
+        assert!(a.focus == Focus::Actions);
+    }
+    #[test]
+    fn horizontal_folder_keys_enter_and_leave_without_previewing_files() {
+        for (forward, backward) in [
+            (KeyCode::Right, KeyCode::Left),
+            (KeyCode::Char('l'), KeyCode::Char('h')),
+        ] {
+            let mut a = app();
+            a.view = View::Files;
+            a.focus = Focus::Workspace;
+            a.browser = Some(Browser::new(0, "/fixture".into()));
+            a.browser.as_mut().unwrap().entries = vec![Entry {
+                name: "child".into(),
+                path: "/fixture/child".into(),
+                kind: "directory".into(),
+                size: 0,
+            }];
+            a.key(KeyEvent::new(forward, KeyModifiers::NONE));
+            assert_eq!(a.browser.as_ref().unwrap().path, "/fixture/child");
+            a.browser.as_mut().unwrap().parent = Some("/fixture".into());
+            a.key(KeyEvent::new(backward, KeyModifiers::NONE));
+            assert_eq!(a.browser.as_ref().unwrap().path, "/fixture");
+            a.browser.as_mut().unwrap().entries[0].kind = "file".into();
+            let generation = a.generation;
+            a.key(KeyEvent::new(forward, KeyModifiers::NONE));
+            assert_eq!(a.generation, generation);
+            assert!(a.browser.as_ref().unwrap().preview.is_none());
+        }
+    }
+    #[test]
+    fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
+        let mut a = app();
+        a.view = View::Files;
+        a.browser = Some(Browser::new(0, "/fixture".into()));
+        a.browser.as_mut().unwrap().entries = vec![
+            Entry {
+                name: "recording-first.bin".into(),
+                path: "/fixture/a".into(),
+                kind: "file".into(),
+                size: 0,
+            },
+            Entry {
+                name: "recording-second.bin".into(),
+                path: "/fixture/b".into(),
+                kind: "file".into(),
+                size: 0,
+            },
+            Entry {
+                name: "other".into(),
+                path: "/fixture/c".into(),
+                kind: "file".into(),
+                size: 0,
+            },
+        ];
+        a.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        for c in "rcb".chars() {
+            a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(a.visible_entries().len(), 2);
+        assert_eq!(a.browser.as_ref().unwrap().search, "rcb");
+        a.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(a.browser.as_ref().unwrap().selected, 1);
+        let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        t.draw(|f| render(f, &a)).unwrap();
+        let bottom = t
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .skip(80 * 18)
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(bottom.contains("Fuzzy search"));
+        assert!(bottom.contains("rcb"));
+    }
+    #[test]
+    fn ctrl_c_exits_from_every_modal() {
+        for input in [
+            None,
+            Some(Input::Search),
+            Some(Input::Palette),
+            Some(Input::Add),
+            Some(Input::Mkdir),
+        ] {
+            let mut a = app();
+            a.input = input;
+            a.help = true;
+            a.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+            assert!(a.quit);
+        }
     }
     #[test]
     fn printable_navigation_is_text_in_inputs() {

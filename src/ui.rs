@@ -1094,6 +1094,10 @@ impl App {
             if self.device > 0 && self.device != d + 1 {
                 continue;
             }
+            let observed = candidate["_snapshot"].as_u64().unwrap_or(0);
+            if observed == 0 || transport::now().saturating_sub(observed) > 90 {
+                continue;
+            }
             if !self.network_candidates().iter().any(|c| {
                 c["_device"] == d
                     && c["address"] == candidate["address"]
@@ -5722,7 +5726,7 @@ fn render_network(frame: &mut Frame<'_>, app: &App, area: Rect) {
         let interfaces = v["interfaces"].as_array().or_else(|| v["interfaces"]["data"].as_array())
             .map(|rows| rows.iter().take(8).map(|i| format!("{} {}", safe_label(i["ifname"].as_str().or_else(|| i["name"].as_str()).unwrap_or("?")), safe_label(i["operstate"].as_str().or_else(|| i["state"].as_str()).unwrap_or("unknown")))).collect::<Vec<_>>().join(" · ")).unwrap_or_else(|| "unknown".into());
         let routes = v["routes"].as_array().or_else(|| v["routes"]["data"].as_array()).map(|r| format!("{} observed", r.len())).unwrap_or_else(|| "unknown".into());
-        format!("{} · Internet {internet} · {freshness}\nInterfaces: {interfaces}\nRoutes: {routes} · DNS / HTTPS unknown\nSharing: {}\nNeighbors from existing cache · passive observation", d.map(|d| identity(&app.devices[d])).unwrap_or_else(|| "unknown".into()), safe_label(v["sharing"]["state"].as_str().unwrap_or("unknown")))
+        format!("{} · Internet {internet} · {freshness}\nInterfaces: {interfaces}\nRoutes: {routes} · DNS / HTTPS unknown\nSharing: {}\nCached neighbors · automatic SSH-port checks", d.map(|d| identity(&app.devices[d])).unwrap_or_else(|| "unknown".into()), safe_label(v["sharing"]["state"].as_str().unwrap_or("unknown")))
     }).unwrap_or_else(|| if app.network_loading { "Reading network evidence…".into() } else { "No network observation · select device and refresh".into() });
     frame.render_widget(
         Paragraph::new(summary).wrap(Wrap { trim: false }),
@@ -7297,6 +7301,17 @@ mod tests {
         a.apply(Reply {device:0, generation:a.generation, op:Operation::NetworkCandidates, result:Ok(serde_json::json!({"observed_at":transport::now(),"candidates":[{"address":"example.test","interface":"eth0"},{"address":"192.0.2.2"},{"address":"192.0.2.3","interface":"bad iface"}]})), preview:None});
         assert!(rx.try_recv().is_err());
         assert!(a.neighbor_probes.is_empty());
+    }
+    #[test]
+    fn queued_neighbor_check_does_not_outlive_snapshot() {
+        let (mut a, rx) = queued_app();
+        a.view = View::Network;
+        a.network.insert(0, serde_json::json!({"candidates_observed_at":transport::now().saturating_sub(91),"candidates":[{"address":"192.0.2.1","interface":"eth0"}]}));
+        let candidate = a.network_candidates()[0].clone();
+        a.neighbor_queue.push_back((0, candidate));
+        a.pump_neighbor_checks();
+        assert!(rx.try_recv().is_err());
+        assert!(a.neighbor_queue.is_empty());
     }
     #[test]
     fn network_connect_account_input_owns_keys_and_scope() {

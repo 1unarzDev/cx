@@ -6,6 +6,16 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.16
+
+### Features
+- Automatically check SSH ports for current LAN neighbors in the background, with bounded concurrency and 90-second evidence reuse. No scans or authentication prompts run during observation.
+- Open account entry directly when selecting a LAN neighbor, preserving its address and gateway for enrollment.
+
+### Fixes
+- Remove the manual Check SSH action and avoid per-neighbor checking notifications.
+- Preserve port evidence across network refreshes and discard queued checks when their scope changes.
+
 ## v0.1.15
 
 ### Features

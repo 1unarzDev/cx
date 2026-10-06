@@ -617,3 +617,20 @@ fn main() {
         std::process::exit(1)
     }
 }
+
+#[cfg(test)]
+mod enrollment_tests {
+    use super::*;
+    #[test]
+    fn exited_installer_cannot_leave_writer_or_reader_blocked() {
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "sleep 30 & exit 0"])
+            .stdin(Stdio::piped());
+        let started = std::time::Instant::now();
+        // Exceeds a pipe buffer; an inherited descendant never consumes it.
+        let result = enrollment_command(command, Some(vec![0u8; 1024 * 1024]));
+        assert!(result.is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    }
+}

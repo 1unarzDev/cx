@@ -92,6 +92,7 @@ pub fn configure(command: &mut Command) -> Result<bool> {
             return Ok(false);
         };
         command
+            .env("LC_ALL", "C")
             .env("SSH_ASKPASS", std::env::current_exe()?)
             .env("SSH_ASKPASS_REQUIRE", "force")
             .env("DISPLAY", "cx-askpass")

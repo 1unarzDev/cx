@@ -95,9 +95,9 @@ with tempfile.TemporaryDirectory(prefix="cx-independent-review-") as temporary:
     for _ in range(20):
         (state / "ui-sessions.json").write_text(json.dumps({"local": sessions}))
         terminal = Terminal(env)
-        output = terminal.read(2, first=True, marker=b"Work")
+        output = terminal.read(2, first=True, marker=b"Sessions")
         first.append((time.monotonic()-terminal.started)*1000)
-        assert b"Work" in output, "first screen absent"
+        assert b"Sessions" in output, "first screen absent"
         assert terminal.close()["termios_restored"], "Ctrl+C left raw terminal"
     report["cached_first_screen_ms"] = summary(first)
     sizes = []

@@ -11,19 +11,19 @@ CX_STATE=${XDG_STATE_HOME:-"$HOME/.local/state"}/cx
 case "$CX_PREFIX:$CX_STATE" in /*:/*) ;; *) fail 'installation and state paths must be absolute';; esac
 # Install required tools only after an explicit controlling-terminal confirmation.
 CX_MISSING=
-for CX_TOOL in curl openssl ssh tmux flock tar stat timeout install mktemp head sed grep; do
+for CX_TOOL in curl openssl ssh tmux pdftoppm flock tar stat timeout install mktemp head sed grep; do
     command -v "$CX_TOOL" >/dev/null 2>&1 || CX_MISSING="$CX_MISSING $CX_TOOL"
 done
 if [ -n "$CX_MISSING" ]; then
     [ "${CX_INSTALL_DEPS:-ask}" != never ] || fail "missing tools:$CX_MISSING; install them with your package manager"
     if command -v apt-get >/dev/null 2>&1; then
-        set -- apt-get install -y curl openssl openssh-client tmux ca-certificates util-linux tar coreutils
+        set -- apt-get install -y curl openssl openssh-client tmux ca-certificates util-linux tar coreutils poppler-utils
     elif command -v dnf >/dev/null 2>&1; then
-        set -- dnf install -y openssl openssh-clients tmux ca-certificates util-linux tar coreutils
+        set -- dnf install -y openssl openssh-clients tmux ca-certificates util-linux tar coreutils poppler-utils
     elif command -v yum >/dev/null 2>&1; then
-        set -- yum install -y openssl openssh-clients tmux ca-certificates util-linux tar coreutils
+        set -- yum install -y openssl openssh-clients tmux ca-certificates util-linux tar coreutils poppler-utils
     elif command -v pacman >/dev/null 2>&1; then
-        set -- pacman -S --needed curl openssl openssh tmux ca-certificates util-linux tar coreutils
+        set -- pacman -S --needed curl openssl openssh tmux ca-certificates util-linux tar coreutils poppler
     else fail "missing tools:$CX_MISSING; no supported package manager"; fi
     case "$1" in dnf|yum) command -v curl >/dev/null 2>&1 || set -- "$@" curl;; esac
     command -v sudo >/dev/null 2>&1 || fail "missing tools:$CX_MISSING; install as administrator then retry"
@@ -33,7 +33,7 @@ if [ -n "$CX_MISSING" ]; then
     case "$CX_REPLY" in y|Y|yes|YES)
         if [ "$1" = apt-get ]; then sudo apt-get update; fi
         sudo "$@";; *) fail 'dependency installation declined';; esac
-    for CX_TOOL in curl openssl ssh tmux flock tar stat timeout install mktemp head sed grep; do
+    for CX_TOOL in curl openssl ssh tmux pdftoppm flock tar stat timeout install mktemp head sed grep; do
         command -v "$CX_TOOL" >/dev/null 2>&1 || fail "required tool still unavailable: $CX_TOOL"
     done
 fi

@@ -101,7 +101,7 @@ else:dest.write_bytes(pathlib.Path(os.environ['CX_FIXTURE_SIGNATURE' if url.ends
         while b'[y/N]' not in output:
             output+=os.read(master,4096)
         os.write(master,b'y\n');proc.wait(timeout=5);os.close(master)
-        assert proc.returncode!=0 and manager in logfile.read_text() and package in logfile.read_text()
+        assert proc.returncode!=0 and manager in logfile.read_text() and package in logfile.read_text() and ('poppler' if manager == 'pacman' else 'poppler-utils') in logfile.read_text()
         outcomes.append('explicit piped tty dependency consent '+manager)
     (fake/'id').write_text('#!/bin/sh\necho 0\n');(fake/'id').chmod(0o700);result=run();assert result.returncode!=0 and 'ordinary user' in result.stderr;outcomes.append('root refusal')
     print(json.dumps({'result':'PASS','scenarios':outcomes,'signature':'REAL synthetic RSA4096 SHA256; temporary script substitutes pinned public key','public_release':'not tested by this fixture'}))

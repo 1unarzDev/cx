@@ -17,13 +17,13 @@ for CX_IMAGE in ubuntu:22.04 ubuntu:24.04 rockylinux:8 rockylinux:9 archlinux:la
         "$CX_IMAGE" sh -eu -c '
         if command -v apt-get >/dev/null; then
             apt-get update -qq
-            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 openssl curl openssh-client tmux util-linux passwd
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 openssl curl openssh-client tmux poppler-utils util-linux passwd
         elif command -v dnf >/dev/null; then
-            set -- python3 openssl openssh-clients tmux util-linux shadow-utils
+            set -- python3 openssl openssh-clients tmux poppler-utils util-linux shadow-utils
             command -v curl >/dev/null 2>&1 || set -- "$@" curl
             dnf install -y "$@"
         else
-            pacman -Syu --noconfirm --needed python openssl curl openssh tmux util-linux shadow
+            pacman -Syu --noconfirm --needed python openssl curl openssh tmux poppler util-linux shadow
         fi
         useradd -m -u 10001 cx-test
         # Root installer refusal is tested separately from ordinary-user installation.

@@ -6,6 +6,15 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.11
+
+### Features
+- Copy remote application yanks and managed terminal selections into the viewing terminal's clipboard through OSC 52, without forwarding display sockets.
+- Select scrollback with Space and arrows, then Enter/y to copy, or drag to select and copy. The managed status strip identifies copy controls.
+
+### Fixes
+- Preserve tmux's built-in terminal overrides and keep clipboard configuration idempotent on repeated attachment.
+
 ## v0.1.10
 
 ### Features

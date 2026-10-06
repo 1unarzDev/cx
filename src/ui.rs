@@ -3375,13 +3375,15 @@ fn render_with_native(
                 )
             })
             .unwrap_or_else(|| "No observed neighbors".into())
-
     } else if let Some(b) = app.browser.as_ref().filter(|_| app.view == View::Files) {
         let mut lines = vec![
             format!("Host {}", identity(&app.devices[b.device])),
             format!("Folder {}", safe_label(&b.display_path)),
             format!("{} marked · t send", b.marked.len()),
         ];
+        if let Some(entry) = app.visible_entries().get(b.selected) {
+            lines.insert(2, format!("File {}", safe_label(&entry.name)));
+        }
         if let Some(other) = &app.other_browser {
             let (destination, label) = if app.destination_active {
                 (b, "To")
@@ -7827,6 +7829,28 @@ mod tests {
         let (mut a, _rx) = queued_app();
         press(&mut a, 'a');
         assert!(a.input.is_none());
+    }
+    #[test]
+    fn selected_file_context_follows_focused_pane_and_keeps_destination() {
+        let (mut a, _rx) = file_app();
+        a.other_browser = Some(Browser::new(1, "/output".into()));
+        for (switch, host) in [(false, "tester"), (true, "peace")] {
+            if switch {
+                a.switch_pane();
+            }
+            let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+            terminal.draw(|f| render(f, &a)).unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(120)
+                .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains(&format!("Host {host}@")), "{text}");
+            assert!(text.contains("To peace@"), "{text}");
+        }
     }
     #[test]
     fn workspace_polish_capture_matrix() {

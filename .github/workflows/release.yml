@@ -23,10 +23,11 @@ jobs:
       - run: cargo fmt --check && cargo test --locked && cargo build --locked
       - run: python3 tests/native_command_pty.py target/debug/cx
       - run: CX_TEST_SHELL=/bin/sh python3 tests/native_command_pty.py target/debug/cx
-      - run: sudo apt-get update && sudo apt-get install -y shellcheck fish zsh tmux poppler-utils python3-pyte
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck fish zsh tmux poppler-utils python3-pyte openssh-server
       - run: python3 tests/mouse_scrollback_pty.py target/debug/cx
       - run: python3 tests/clipboard_pty.py target/debug/cx
       - run: python3 tests/metadata_reconnect_cli.py target/debug/cx
+      - run: python3 tests/jump_routes_cli.py target/debug/cx
       - run: python3 tests/stop_shell_live.py target/debug/cx
       - run: python3 tests/preview_helper_live.py target/debug/cx
       - run: python3 tests/source_preview_pty.py target/debug/cx

@@ -2,7 +2,7 @@
 """Actual OpenSSH gateway authentication must remain noninteractive.
 Uses a disposable loopback sshd and synthetic keys; no trust files are changed.
 """
-import json, os, pathlib, socket, subprocess, sys, tempfile, time
+import json, os, pathlib, socket, subprocess, sys, tempfile, time, shutil
 binary = str(pathlib.Path(sys.argv[1]).resolve())
 with tempfile.TemporaryDirectory(prefix='cx-jump-') as tmp:
     root = pathlib.Path(tmp); root.chmod(0o700)
@@ -12,7 +12,8 @@ with tempfile.TemporaryDirectory(prefix='cx-jump-') as tmp:
     config=root/'sshd.conf'
     config.write_text(f'Port {port}\nListenAddress 127.0.0.1\nHostKey {root}/host\nPidFile {root}/pid\nUsePAM no\nPasswordAuthentication yes\nPubkeyAuthentication no\n')
     log=open(root/'sshd.log','wb')
-    daemon=subprocess.Popen(['/usr/bin/sshd','-D','-e','-f',str(config)],stdout=log,stderr=log)
+    sshd=shutil.which('sshd') or '/usr/sbin/sshd'
+    daemon=subprocess.Popen([sshd,'-D','-e','-f',str(config)],stdout=log,stderr=log)
     try:
         for _ in range(50):
             if daemon.poll() is not None: raise RuntimeError((root/'sshd.log').read_text())

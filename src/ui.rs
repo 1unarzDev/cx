@@ -5467,6 +5467,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             &mut native_preview,
         );
         if was_encoding && !native_preview.pending() {
+            // The fitted native image may occupy fewer cells than the fallback.
+            // Reset the terminal cache so old half-block rows cannot survive.
+            screen.terminal.clear()?;
             dirty = true;
         }
         if native_preview.cleanup(&mut io::stdout())? {

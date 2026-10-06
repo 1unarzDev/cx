@@ -5,6 +5,7 @@ mod sessions;
 mod sharing;
 mod store;
 mod syntax_preview;
+mod terminal_preview;
 mod transfers;
 mod transport;
 mod ui;

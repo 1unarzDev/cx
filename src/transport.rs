@@ -71,6 +71,10 @@ pub fn ssh(target: &str, interactive: bool) -> Result<Command> {
     if !interactive {
         c.args(["-o", "BatchMode=yes"]);
     }
+    let hops = crate::store::route(target)?;
+    if !hops.is_empty() {
+        c.args(["-J", &hops.join(",")]);
+    }
     c.arg(target);
     Ok(c)
 }

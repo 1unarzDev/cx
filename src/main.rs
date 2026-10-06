@@ -43,6 +43,11 @@ enum Cmd {
     },
     Add {
         target: String,
+        #[arg(
+            long,
+            help = "Connect through an enrolled device using OpenSSH ProxyJump"
+        )]
+        via: Option<String>,
     },
     Devices,
     LaunchShell {
@@ -228,10 +233,27 @@ fn device(name: Option<String>) -> Result<Device> {
     }
 }
 fn add(target: &str) -> Result<()> {
+    add_via(target, None)
+}
+fn add_via(target: &str, via: Option<&Device>) -> Result<()> {
     if !transport::valid_target(target) {
         bail!("invalid SSH target")
     };
     let _maintenance = update::maintenance_lock()?;
+    let previous = store::route(target)?;
+    let next = if let Some(via) = via {
+        store::route_via(target, via)?
+    } else {
+        previous.clone()
+    };
+    store::set_route(target, &next)?;
+    let result = enroll_target(target);
+    if result.is_err() {
+        store::set_route(target, &previous)?;
+    }
+    result
+}
+fn enroll_target(target: &str) -> Result<()> {
     let mut c = transport::ssh(target, true)?;
     c.arg("uname -sm; id -un");
     let out = c.output()?;
@@ -422,7 +444,10 @@ fn run() -> Result<()> {
             };
             Ok(())
         }
-        Some(Cmd::Add { target }) => add(&target),
+        Some(Cmd::Add { target, via }) => {
+            let gateway = via.map(|name| device(Some(name))).transpose()?;
+            add_via(&target, gateway.as_ref())
+        }
         Some(Cmd::LaunchShell { shell, device: d }) => {
             println!(
                 "{}",

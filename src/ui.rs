@@ -74,6 +74,39 @@ struct Clipboard {
     #[serde(default)]
     source_label: String,
 }
+#[derive(Clone)]
+struct RichPreview {
+    kind: String,
+    title: String,
+    raster: Option<(usize, usize, Vec<u8>)>,
+}
+impl RichPreview {
+    fn from_value(value: &Value) -> Self {
+        use base64::Engine;
+        let raster = (|| {
+            let image = value.get("image")?;
+            let w = usize::try_from(image["width"].as_u64()?).ok()?;
+            let h = usize::try_from(image["height"].as_u64()?).ok()?;
+            if w == 0 || h == 0 || w > 160 || h > 100 {
+                return None;
+            }
+            let encoded = image["rgba"].as_str()?;
+            if encoded.len() > 86_000 {
+                return None;
+            }
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .ok()?;
+            (bytes.len() == w * h * 4).then_some((w, h, bytes))
+        })();
+        Self {
+            kind: value["kind"].as_str().unwrap_or("text").to_owned(),
+            title: safe_label(value["title"].as_str().unwrap_or("Preview")),
+            raster,
+        }
+    }
+}
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Browser {
     device: usize,
@@ -97,6 +130,8 @@ struct Browser {
     loading: bool,
     #[serde(skip)]
     preview: Option<String>,
+    #[serde(skip)]
+    preview_rich: Option<RichPreview>,
     preview_scroll: u16,
     #[serde(default)]
     restore_selection: Option<String>,
@@ -118,6 +153,7 @@ impl Browser {
             visual_base: BTreeSet::new(),
             loading: false,
             preview: None,
+            preview_rich: None,
             preview_scroll: 0,
             restore_selection: None,
         }
@@ -647,7 +683,9 @@ impl App {
             .is_some_and(|b| b.show_hidden);
         self.finish_visual();
         self.generation += 1;
-        if let Some(old) = self.browser.take() {
+        if let Some(mut old) = self.browser.take() {
+            old.preview = None;
+            old.preview_rich = None;
             self.file_locations.insert(old.device, old.path.clone());
             if self.browser_cache.len() >= 8 {
                 if let Some(key) = self.browser_cache.keys().next().cloned() {
@@ -698,6 +736,7 @@ impl App {
             }
             b.loading = true;
             b.preview = None;
+            b.preview_rich = None;
             let device = b.device;
             let path = b.path.clone();
             if !self.send(device, Operation::List { path }) {
@@ -1279,6 +1318,21 @@ impl App {
                         self.notice = "Deleting confirmed items permanently…".into();
                     }
                 }
+                Dialog::StopShell(d, session) => {
+                    self.dialog = None;
+                    if self.dialog_selected == 1 {
+                        self.send(
+                            d,
+                            Operation::StopSession {
+                                id: session.id,
+                                pid: session.pid,
+                                started: session.started,
+                                boot_id: session.boot_id,
+                            },
+                        );
+                        self.notice = "Stopping confirmed shell…".into();
+                    }
+                }
                 Dialog::PendingExit(_) => {
                     if self.dialog_selected == 1 {
                         self.quit = true;
@@ -1734,8 +1788,16 @@ impl App {
                     }
                 }
             }
-            Operation::Preview { .. } if reply.generation == self.generation => {
+            Operation::Preview { .. }
+                if reply.generation == self.generation
+                    && self
+                        .browser
+                        .as_ref()
+                        .is_some_and(|b| b.device == reply.device) =>
+            {
                 if let Some(b) = &mut self.browser {
+                    b.preview_scroll = 0;
+                    b.preview_rich = Some(RichPreview::from_value(&value));
                     b.preview = Some(safe_text(
                         value
                             .get("text")
@@ -1743,6 +1805,10 @@ impl App {
                             .unwrap_or("Preview unavailable"),
                     ));
                 }
+            }
+            Operation::StopSession { .. } => {
+                self.notice = format!("Shell stopped · {}", identity(&self.devices[reply.device]));
+                self.work[reply.device].loading = self.send(reply.device, Operation::Sessions);
             }
             Operation::Mkdir { .. } if reply.generation == self.generation => {
                 self.refresh_browser()
@@ -2208,6 +2274,7 @@ impl App {
             KeyCode::Esc => {
                 if self.view == View::Files {
                     if let Some(b) = &mut self.browser {
+                        b.preview_rich = None;
                         if b.preview.take().is_none() {
                             if b.visual_anchor.take().is_some() {
                                 b.visual_base.clear();
@@ -3553,11 +3620,16 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 format!("{}\n{}\n{}\n\nRunning commands in this shell will end.", identity(&app.devices[*d]), safe_label(&session.name), safe_label(&session.directory)),
             ),
             Dialog::Delete(d, entries) => (
-                "Delete permanently?".into(),
+                format!("Delete {} {}?", entries.len(), if entries.len() == 1 { "item" } else { "items" }),
                 vec!["Cancel · keep files".into(), "Delete permanently".into()],
                 format!("No undo. {} folders include all contents.\nHost: {}\n{}",
                     entries.iter().filter(|e| e.kind == "directory").count(), identity(&app.devices[*d]),
                     entries.iter().map(|e| format!("{} {}", if ascii() { "-" } else { "•" }, safe_label(&e.name))).collect::<Vec<_>>().join("\n")),
+            ),
+            Dialog::StopShell(d, session) => (
+                "Stop shell?".into(),
+                vec!["Cancel".into(), "Stop".into()],
+                format!("Running shell commands will end.\n{}\n{}\n{}", identity(&app.devices[*d]), safe_label(&session.name), safe_label(&session.directory)),
             ),
             Dialog::PendingExit(count) => (
                 "File actions are still being submitted".into(),
@@ -3662,7 +3734,18 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 };
                 frame.render_widget(
                     Paragraph::new(Line::from(vec![
-                        Span::styled(if selected { "› " } else { "  " }, style),
+                        Span::styled(
+                            if selected {
+                                if ascii() {
+                                    "> "
+                                } else {
+                                    "› "
+                                }
+                            } else {
+                                "  "
+                            },
+                            style,
+                        ),
                         Span::styled(
                             format!(" {} ", if i == 0 { "n" } else { "y" }),
                             if i == 1 {
@@ -3847,6 +3930,16 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             ]);
         }
         help.push(Line::default());
+        if app.view == View::Work
+            && app
+                .selected_session()
+                .is_some_and(|(_, s)| !s.external && s.provider == "shell")
+        {
+            help.push(key_row(
+                "d",
+                "Stop selected cx-managed shell · confirmation",
+            ));
+        }
         help.push(Line::raw("Native terminals own their input."));
         help.push(key_row("Ctrl+]", "Return from a managed session"));
         help.push(Line::raw("External sessions keep their tmux bindings."));
@@ -3905,6 +3998,168 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         );
     }
 }
+fn preview_inline(text: &str) -> Vec<Span<'static>> {
+    // A deliberately small prose renderer: no HTML execution, links or image fetches.
+    let mut spans = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let found = rest.char_indices().find(|(_, c)| *c == '`' || *c == '*');
+        let Some((at, marker)) = found else {
+            spans.push(Span::raw(rest.to_owned()));
+            break;
+        };
+        if at > 0 {
+            spans.push(Span::raw(rest[..at].to_owned()));
+        }
+        let token = if marker == '*' && rest[at..].starts_with("**") {
+            "**"
+        } else if marker == '*' {
+            "*"
+        } else {
+            "`"
+        };
+        let after = &rest[at + token.len()..];
+        if let Some(end) = after.find(token) {
+            let style = match token {
+                "`" => tint(Color::Yellow),
+                "**" => Style::default().add_modifier(Modifier::BOLD),
+                _ => Style::default().add_modifier(Modifier::ITALIC),
+            };
+            spans.push(Span::styled(after[..end].to_owned(), style));
+            rest = &after[end + token.len()..];
+        } else {
+            spans.push(Span::raw(rest[at..].to_owned()));
+            break;
+        }
+    }
+    spans
+}
+fn preview_lines(text: &str, kind: &str) -> Vec<Line<'static>> {
+    let safe = safe_text(text);
+    let mut fenced = false;
+    safe.lines()
+        .map(|line| {
+            if kind == "markdown" {
+                if line.trim_start().starts_with("```") {
+                    fenced = !fenced;
+                    return Line::from(Span::styled(line.to_owned(), muted()));
+                }
+                if fenced {
+                    return Line::from(Span::styled(line.to_owned(), tint(Color::Yellow)));
+                }
+                let hashes = line.chars().take_while(|c| *c == '#').count();
+                if (1..=6).contains(&hashes) && line.as_bytes().get(hashes) == Some(&b' ') {
+                    return Line::from(Span::styled(
+                        line[hashes + 1..].to_owned(),
+                        accent().add_modifier(Modifier::BOLD),
+                    ));
+                }
+                if line.trim_start().starts_with("- ") || line.trim_start().starts_with("* ") {
+                    let prefix = line.len() - line.trim_start().len();
+                    let mut spans = vec![Span::styled(
+                        format!("{}{} ", " ".repeat(prefix), if ascii() { "-" } else { "•" }),
+                        accent(),
+                    )];
+                    spans.extend(preview_inline(&line.trim_start()[2..]));
+                    return Line::from(spans);
+                }
+                return Line::from(preview_inline(line));
+            }
+            if kind == "code" {
+                let trimmed = line.trim_start();
+                let style = if trimmed.starts_with("//") || trimmed.starts_with('#') {
+                    muted()
+                } else if [
+                    "fn ",
+                    "pub ",
+                    "let ",
+                    "use ",
+                    "def ",
+                    "class ",
+                    "import ",
+                    "const ",
+                    "function ",
+                ]
+                .iter()
+                .any(|word| trimmed.starts_with(word))
+                {
+                    accent()
+                } else {
+                    Style::default()
+                };
+                return Line::from(Span::styled(line.to_owned(), style));
+            }
+            Line::raw(line.to_owned())
+        })
+        .collect()
+}
+fn raster_lines(w: usize, h: usize, bytes: &[u8], area: Rect) -> Vec<Line<'static>> {
+    let available_w = usize::from(area.width);
+    let available_h = usize::from(area.height) * 2;
+    if available_w == 0 || available_h == 0 {
+        return vec![];
+    }
+    let scale = (available_w as f64 / w as f64)
+        .min(available_h as f64 / h as f64)
+        .min(1.0);
+    let width = ((w as f64 * scale).floor() as usize).max(1);
+    let height = ((h as f64 * scale).floor() as usize).max(1);
+    let pixel = |x: usize, y: usize| -> Option<Color> {
+        if y >= height {
+            return None;
+        }
+        let at = ((y * h / height) * w + x * w / width) * 4;
+        (bytes[at + 3] >= 128).then_some(Color::Rgb(bytes[at], bytes[at + 1], bytes[at + 2]))
+    };
+    (0..height.div_ceil(2))
+        .map(|row| {
+            Line::from(
+                (0..width)
+                    .map(|x| match (pixel(x, row * 2), pixel(x, row * 2 + 1)) {
+                        (Some(top), Some(bottom)) => {
+                            Span::styled("▀", Style::default().fg(top).bg(bottom))
+                        }
+                        (Some(top), None) => Span::styled("▀", Style::default().fg(top)),
+                        (None, Some(bottom)) => Span::styled("▄", Style::default().fg(bottom)),
+                        (None, None) => Span::raw(" "),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect()
+}
+fn render_preview(frame: &mut Frame, area: Rect, browser: &Browser, text: &str, focused: bool) {
+    let rich = browser.preview_rich.as_ref();
+    let title = rich
+        .map(|p| p.title.as_str())
+        .filter(|t| !t.is_empty())
+        .unwrap_or("Preview");
+    let border = block(
+        format!(
+            "{} · Escape back",
+            fit_label(title, usize::from(area.width.saturating_sub(22)))
+        ),
+        focused,
+    );
+    let inner = border.inner(area);
+    frame.render_widget(border, area);
+    if !ascii() && std::env::var_os("NO_COLOR").is_none() {
+        if let Some((w, h, bytes)) = rich.and_then(|p| p.raster.as_ref()) {
+            frame.render_widget(Paragraph::new(raster_lines(*w, *h, bytes, inner)), inner);
+            return;
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(preview_lines(
+            text,
+            rich.map(|p| p.kind.as_str()).unwrap_or("text"),
+        ))
+        .wrap(Wrap { trim: false })
+        .scroll((browser.preview_scroll, 0)),
+        inner,
+    );
+}
+
 fn browser_entries(b: &Browser) -> Vec<Entry> {
     let mut rows = b
         .entries
@@ -4014,13 +4269,7 @@ fn render_browser(
         parts[0],
     );
     if let Some(preview) = &b.preview {
-        frame.render_widget(
-            Paragraph::new(preview.as_str())
-                .wrap(Wrap { trim: false })
-                .scroll((b.preview_scroll, 0))
-                .block(block("Preview · Escape back".into(), focused)),
-            parts[1],
-        );
+        render_preview(frame, parts[1], b, preview, focused);
     } else {
         let rows = browser_entries(b);
         if rows.is_empty() {
@@ -6181,5 +6430,168 @@ mod tests {
     #[test]
     fn labels_cannot_spoof_rows_or_direction() {
         assert_eq!(safe_label("name\n\t\u{202e}abc"), "name���abc");
+    }
+    #[test]
+    fn rich_preview_rejects_bad_images_and_keeps_transparent_pixels_default() {
+        use base64::Engine;
+        let valid = serde_json::json!({"kind":"image","title":"PNG 2x2", "image":{"width":2,"height":2,"rgba":base64::engine::general_purpose::STANDARD.encode([255u8,0,0,255,0,0,0,0,0,255,0,255,0,0,255,255])}});
+        let rich = RichPreview::from_value(&valid);
+        let (w, h, bytes) = rich.raster.unwrap();
+        let lines = raster_lines(w, h, &bytes, Rect::new(0, 0, 2, 1));
+        assert_eq!(lines[0].spans[0].style.fg, Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(lines[0].spans[0].style.bg, Some(Color::Rgb(0, 255, 0)));
+        assert_eq!(lines[0].spans[1].content, "▄");
+        assert_eq!(lines[0].spans[1].style.bg, None);
+        for image in [
+            serde_json::json!({"width":0,"height":1,"rgba":""}),
+            serde_json::json!({"width":161,"height":1,"rgba":""}),
+            serde_json::json!({"width":1,"height":1,"rgba":"bad"}),
+            serde_json::json!({"width":1,"height":1,"rgba":"AA=="}),
+        ] {
+            assert!(RichPreview::from_value(&serde_json::json!({"image":image}))
+                .raster
+                .is_none());
+        }
+        assert!(raster_lines(w, h, &bytes, Rect::new(0, 0, 0, 0)).is_empty());
+    }
+    #[test]
+    fn markdown_preview_styles_without_controls_or_active_content() {
+        let lines=preview_lines("# Heading\n- **strong** and `code`\n```rust\nfn main() {}\n```\n<img src='https://example.test'>\n\x1b[31m", "markdown");
+        assert!(lines[0].spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD));
+        assert!(lines[1]
+            .spans
+            .iter()
+            .any(|s| s.content == "strong" && s.style.add_modifier.contains(Modifier::BOLD)));
+        let rendered = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(!rendered.contains('\x1b'));
+        assert!(rendered.contains("https://example.test"));
+    }
+    #[test]
+    fn preview_reply_is_scoped_and_content_is_not_serialized() {
+        let (mut a, _rx) = file_app();
+        let reply = || serde_json::json!({"text":"# Safe","kind":"markdown","title":"Heading"});
+        a.apply(Reply {
+            device: 1,
+            op: Operation::Preview {
+                path: "/remote".into(),
+            },
+            generation: a.generation,
+            result: Ok(reply()),
+        });
+        assert!(a.browser.as_ref().unwrap().preview.is_none());
+        a.apply(Reply {
+            device: 0,
+            op: Operation::Preview {
+                path: "/files/a".into(),
+            },
+            generation: a.generation,
+            result: Ok(reply()),
+        });
+        assert!(a.browser.as_ref().unwrap().preview_rich.is_some());
+        let encoded = serde_json::to_string(a.browser.as_ref().unwrap()).unwrap();
+        assert!(!encoded.contains("Heading") && !encoded.contains("# Safe"));
+        a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(a.browser.as_ref().unwrap().preview_rich.is_none());
+        a.apply(Reply {
+            device: 0,
+            op: Operation::Preview {
+                path: "/files/a".into(),
+            },
+            generation: a.generation - 1,
+            result: Ok(reply()),
+        });
+        assert!(a.browser.as_ref().unwrap().preview.is_none());
+    }
+    fn disposable_shell() -> Session {
+        serde_json::from_value(serde_json::json!({"id":"cx-disposable", "name":"Disposable shell", "directory":"/tmp/cx-disposable", "provider":"shell", "host":"workstation", "account":"tester", "pid":1234,"started":"100", "boot_id":"test-boot", "external":false,"socket":"cx"})).unwrap()
+    }
+    #[test]
+    fn stop_shell_confirmation_protects_agents_and_captures_runtime_identity() {
+        let (mut a, rx) = queued_app();
+        a.work[0].sessions = vec![disposable_shell()];
+        a.providers
+            .insert(0, (vec!["stop-session-v1".into()], transport::now()));
+        press(&mut a, 'd');
+        assert!(matches!(a.dialog, Some(Dialog::StopShell(..))) && a.dialog_selected == 0);
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(rx.try_recv().is_err());
+        press(&mut a, 'd');
+        a.work[0].sessions[0].pid = 9999;
+        press(&mut a, 'y');
+        assert!(
+            matches!(rx.try_recv().unwrap().op,Operation::StopSession{id,pid:1234,started,boot_id} if id=="cx-disposable" && started=="100" && boot_id=="test-boot")
+        );
+        assert!(a.pending_attach.is_none());
+        a.work[0].sessions[0].provider = "codex".into();
+        press(&mut a, 'd');
+        assert!(a.dialog.is_none());
+        a.work[0].sessions[0].provider = "shell".into();
+        a.work[0].sessions[0].external = true;
+        press(&mut a, 'd');
+        assert!(a.dialog.is_none());
+    }
+    #[test]
+    fn preview_and_confirmation_capture_sizes() {
+        use base64::Engine;
+        for (width, height) in [(120, 40), (80, 24), (48, 24)] {
+            let (mut a, _rx) = file_app();
+            a.browser.as_mut().unwrap().preview =
+                Some("# Recording\n- **Robot** capture\n```rust\nfn main() {}\n```".into());
+            a.browser.as_mut().unwrap().preview_rich = Some(RichPreview::from_value(
+                &serde_json::json!({"kind":"markdown","title":"README.md"}),
+            ));
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let write = |terminal: &Terminal<TestBackend>, name: &str| {
+                if let Some(directory) = std::env::var_os("CX_PREVIEW_CAPTURE_DIR") {
+                    let directory = std::path::PathBuf::from(directory);
+                    std::fs::create_dir_all(&directory).unwrap();
+                    let buffer = terminal.backend().buffer();
+                    let text = buffer
+                        .content
+                        .chunks(usize::from(width))
+                        .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    std::fs::write(directory.join(format!("{width}x{height}-{name}.txt")), text)
+                        .unwrap();
+                    let cells=buffer.content.iter().map(|cell|serde_json::json!({"text":cell.symbol(),"fg":format!("{:?}",cell.fg),"bg":format!("{:?}",cell.bg),"modifier":format!("{:?}",cell.modifier)})).collect::<Vec<_>>();
+                    std::fs::write(directory.join(format!("{width}x{height}-{name}.json")),serde_json::to_vec(&serde_json::json!({"width":width,"height":height,"cells":cells,"backend":"Ratatui TestBackend fixture; not physical emulator"})).unwrap()).unwrap();
+                }
+            };
+            terminal.draw(|f| render(f, &a)).unwrap();
+            write(&terminal, "markdown");
+            let rgba = (0..32 * 20)
+                .flat_map(|i| {
+                    [
+                        if i % 32 < 16 { 255 } else { 0 },
+                        if i / 32 < 10 { 180 } else { 0 },
+                        180,
+                        if i % 5 == 0 { 0 } else { 255 },
+                    ]
+                })
+                .collect::<Vec<u8>>();
+            a.browser.as_mut().unwrap().preview_rich = Some(RichPreview::from_value(
+                &serde_json::json!({"kind":"image","title":"PNG 32x20","image":{"width":32,"height":20,"rgba":base64::engine::general_purpose::STANDARD.encode(rgba)}}),
+            ));
+            terminal.draw(|f| render(f, &a)).unwrap();
+            write(&terminal, "image");
+            a.browser.as_mut().unwrap().preview = None;
+            a.dialog = Some(Dialog::Delete(
+                0,
+                vec![a.browser.as_ref().unwrap().entries[0].clone()],
+            ));
+            terminal.draw(|f| render(f, &a)).unwrap();
+            write(&terminal, "delete");
+            a.dialog = Some(Dialog::StopShell(0, disposable_shell()));
+            terminal.draw(|f| render(f, &a)).unwrap();
+            write(&terminal, "stop-shell");
+        }
     }
 }

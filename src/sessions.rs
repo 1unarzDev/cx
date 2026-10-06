@@ -485,28 +485,20 @@ fn managed_config() -> String {
         "set -g default-terminal 'tmux-256color'",
         &format!("set -g default-terminal '{terminal}'"),
     );
-    let version = Command::new(tmux_executable()).arg("-V").output();
-    let supports_terminal_color = version
-        .ok()
-        .filter(|o| o.status.success())
-        .is_some_and(|o| {
-            let value = String::from_utf8_lossy(&o.stdout);
-            let Some((major, minor)) = value
-                .trim()
-                .strip_prefix("tmux ")
-                .and_then(|v| v.split_once('.'))
-            else {
-                return false;
-            };
-            let major = major.parse::<u32>().unwrap_or(0);
-            let minor = minor
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect::<String>()
-                .parse::<u32>()
-                .unwrap_or(0);
-            major > 3 || (major == 3 && minor >= 4)
-        });
+    // Reuse the bounded process-group probe; custom tmux wrappers cannot block setup.
+    let mut version = Command::new("/bin/sh");
+    version.args([
+        "-c",
+        r#"version=$("$1" -V 2>/dev/null | /usr/bin/head -c 128)
+case "$version" in 'tmux '*) version=${version#tmux };; *) exit 1;; esac
+major=${version%%.*}; minor=${version#*.}; minor=${minor%%[!0-9]*}
+case "$major:$minor" in *[!0-9:]*|:*|*:) exit 1;; esac
+[ "$major" -gt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -ge 4 ]; }
+"#,
+        "cx-tmux-version",
+    ]);
+    version.arg(tmux_executable());
+    let supports_terminal_color = bounded_provider_check(version, Duration::from_millis(200));
     if !supports_terminal_color {
         // Older tmux rejects `terminal`, opening an error pager instead of the shell.
         config = config.replace("fg=terminal,bg=terminal", "fg=default,bg=default");

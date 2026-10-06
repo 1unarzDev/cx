@@ -147,6 +147,7 @@ fn info() -> Result<serde_json::Value> {
     caps.push("stop-session-v1");
     caps.push("stable-update-v1");
     caps.push("pdf-pages-v1");
+    caps.push("network-candidates-v1");
     Ok(
         serde_json::json!({"host":d.host,"account":d.account,"machine_id":machine.trim(),"capabilities":caps,"protocol":1,"persistent_channel":true,"version":env!("CARGO_PKG_VERSION")}),
     )
@@ -171,6 +172,8 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
             ref boot_id,
         } => sessions::stop_shell(id, pid, started, boot_id),
         Operation::Network => network::observe(),
+        Operation::NetworkCandidates => network::candidates(),
+        Operation::ProbeCandidate { address, interface } => network::probe_candidate(&address, interface.as_deref()),
         Operation::Copy {
             source,
             destination,

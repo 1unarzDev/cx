@@ -99,3 +99,5 @@ v0.1.7 signed release installed on all three hosts; public clean-HOME bootstrap 
 - All published version descriptions now explain features/fixes; future publication requires exact-version CHANGELOG notes. Resolved user preference: release descriptions stay focused on Features and Fixes, without Try it workflows.
 
 Optional physical feedback pending: v0.1.9 sharpness at normal Foot size and Escape restoring selection. Previous larger-preview/j-k/boxed-choice preferences remain resolved.
+
+Missing-preview report investigated: live innovation viewer was still0.1.0. Exact old executable reproduces no raster; fresh installed0.1.9 Foot PNG/PDF workflow passes. User asked to reopen viewer and confirm same files; keep this focused confirmation pending rather than repeating general preview questions. Older orphaned viewers with closed terminals cleaned without stopping persistent sessions. Manual-bootstrap docs now explain reopening the viewer.

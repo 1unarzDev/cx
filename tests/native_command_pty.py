@@ -7,16 +7,20 @@ import base64, errno, fcntl, json, os, pathlib, pty, select, struct, subprocess,
 binary = str(pathlib.Path(sys.argv[1]).resolve())
 unit = '--unit-helper' in sys.argv[2:]
 checks = []
+shell = os.environ.get('CX_TEST_SHELL', '/bin/bash')
 with tempfile.TemporaryDirectory(prefix='cx-command-pty-') as temporary:
     root = pathlib.Path(temporary)
     folder = root / "folder ' quoted ; ☃"
     folder.mkdir()
+    (root/'.bash_profile').write_text("cx_fixture_wrapper() { printf wrapper-ok; }\n")
+    config = root/'config/fish'; config.mkdir(parents=True)
+    (config/'config.fish').write_text("function cx_fixture_wrapper; printf wrapper-ok; end\n")
     def scenario(command, interact=None, expected='Command ended:'):
         payload = {'directory':str(folder), 'command':command}
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
         before = termios.tcgetattr(slave)
-        environment = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root/'state'), SHELL='/bin/bash', TERM='xterm-256color')
+        environment = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root/'state'), XDG_CONFIG_HOME=str(root/'config'), SHELL=shell, TERM='xterm-256color')
         args = [binary, 'native-command', base64.b64encode(json.dumps(payload).encode()).decode()]
         if unit:
             environment['CX_COMMAND_PTY_FIXTURE'] = json.dumps(payload)
@@ -57,6 +61,9 @@ with tempfile.TemporaryDirectory(prefix='cx-command-pty-') as temporary:
     scenario("pwd; printf '%s' 'proof ☃' > 'result file'")
     assert (folder/'result file').read_text() == 'proof ☃'
     checks.append('quoted Unicode directory and exact write')
+    scenario('cx_fixture_wrapper > wrapper-result')
+    assert (folder/'wrapper-result').read_text() == 'wrapper-ok'
+    checks.append('interactive host wrapper preserved')
     scenario('exit 7', expected='exit status: 7')
     checks.append('nonzero status and explicit Enter return')
     def interrupt(master, process, wait):
@@ -68,8 +75,8 @@ with tempfile.TemporaryDirectory(prefix='cx-command-pty-') as temporary:
     def interactive(master, process, wait):
         wait('INPUT_READY')
         os.write(master, b'hello\r')
-    scenario('echo INPUT_READY; read answer; printf "%s" "$answer" > input-result', interactive)
-    assert (folder/'input-result').read_text() == 'hello'
+    scenario('echo INPUT_READY; head -n1 > input-result', interactive)
+    assert (folder/'input-result').read_text().strip() == 'hello'
     checks.append('native stdin')
     def stop_and_cancel(master, process, wait):
         wait('STOP_READY')
@@ -79,7 +86,9 @@ with tempfile.TemporaryDirectory(prefix='cx-command-pty-') as temporary:
         assert os.tcgetpgrp(master) == process.pid
         os.write(master, b'c')
     scenario('echo STOP_READY; exec sleep 30', stop_and_cancel)
-    checks.append('Ctrl+Z offers explicit cancel and restores tty')
+    scenario('echo STOP_READY; sleep 30; printf unsafe > cancelled-suffix', stop_and_cancel)
+    assert not (folder/'cancelled-suffix').exists()
+    checks.append('ordinary and exec Ctrl+Z explicit cancel, no suffix replay')
     def stop_resume_stop_cancel(master, process, wait):
         wait('STOP_READY')
         time.sleep(.2)
@@ -98,6 +107,15 @@ with tempfile.TemporaryDirectory(prefix='cx-command-pty-') as temporary:
         os.write(master, b'c')
     scenario('echo STOP_READY; exec sleep 30', stop_resume_stop_cancel)
     checks.append('Ctrl+Z explicit resume, repeated stop and cancel')
+    def stop_resume_complete(master, process, wait):
+        wait('STOP_READY')
+        time.sleep(.2)
+        os.write(master, b'\x1a')
+        wait('Command suspended')
+        os.write(master, b'r')
+    scenario('echo STOP_READY; sleep .6; printf finished > resumed-result', stop_resume_complete)
+    assert (folder/'resumed-result').read_text() == 'finished'
+    checks.append('ordinary stop resume completes same command')
     scenario('stty -echo -icanon; exit 0')
     checks.append('termios and foreground group restoration')
-    print(json.dumps({'result':'PASS', 'checks':checks, 'backend':'native Bash PTY', 'binary':binary, 'unit_helper':unit}))
+    print(json.dumps({'result':'PASS', 'checks':checks, 'backend':'native shell PTY', 'shell':shell, 'binary':binary, 'unit_helper':unit}))

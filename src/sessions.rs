@@ -818,8 +818,33 @@ pub fn execute_command(request: &RunCommand) -> Result<()> {
     {
         command.args(["--init-command", FISH_VIEWER_PALETTE]);
     }
+    let fish = std::path::Path::new(&shell)
+        .file_name()
+        .is_some_and(|s| s == "fish");
+    // One-shot commands retain interactive shell startup and functions, but
+    // their processes share the launcher's owned group. Otherwise a login
+    // shell can ignore suspend or strand a stopped job in a separate group.
+    let script = if fish {
+        "function __cx_suspend --on-signal TSTP; command kill -STOP $fish_pid; end; status job-control none; eval $argv[1]; exit $status"
+    } else {
+        r#"command set +m
+command trap 'command kill -STOP $$' TSTP
+(command trap - INT QUIT TSTP TTIN TTOU; command eval "$1") < /dev/tty &
+__cx_child=$!
+command wait "$__cx_child"
+__cx_status=$?
+while command kill -0 "$__cx_child" 2>/dev/null; do
+    command wait "$__cx_child"
+    __cx_status=$?
+done
+exit "$__cx_status""#
+    };
+    command.args(["-l", "-i", "-c", script]);
+    if !fish {
+        command.arg("cx-command");
+    }
     command
-        .args(["-l", "-i", "-c", &request.command])
+        .arg(&request.command)
         .current_dir(&directory)
         .env("CX_VIEWER_THEME", "1");
     let (host, account, _) = identity();

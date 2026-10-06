@@ -71,7 +71,11 @@ while True:
         checks.append('wheel enters retained transcript scrollback without prompt-history input; Escape returns live')
         for keys in ('emacs', 'vi'):
             tmux('set-window-option', '-t', session['id'], 'mode-keys', keys)
+            expected=log.read_bytes()+b'a'
             os.write(master, b'a')
+            # alternate_on is already true on pass two. Acknowledge the input
+            # before taking the baseline, or a delayed 'a' looks like wheel input.
+            wait(lambda: log.read_bytes()==expected, 'alternate-screen input not acknowledged')
             wait(lambda: state('#{alternate_on}')=='1', 'alternate screen not enabled')
             before=log.read_bytes()
             os.write(master, wheel_up)

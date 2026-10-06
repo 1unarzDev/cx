@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Offline transport fixtures with real RSA4096 signatures and pinned-key substitution."""
-import concurrent.futures, fcntl, io, json, os, pathlib, pty, re, signal, subprocess, tarfile, tempfile, termios, time
+import concurrent.futures, fcntl, io, json, os, pathlib, pty, re, signal, shutil, subprocess, tarfile, tempfile, termios, time
 source = pathlib.Path('install.sh').resolve()
 if os.getuid() == 0:
     raise SystemExit('Run installer fixtures as an ordinary user (installer refuses root)')
@@ -44,6 +44,18 @@ else:dest.write_bytes(pathlib.Path(os.environ['CX_FIXTURE_SIGNATURE' if url.ends
         assert target.read_bytes()==old,(label,'installed binary changed');outcomes.append(label)
     outcomes=[];reset()
     refused('offline preserves binary',{'CX_FIXTURE_OFFLINE':'1'})
+    # SSH login PATH can omit the existing per-user tmux installation.
+    restricted=root/'restricted-tools';restricted.mkdir()
+    for tool in ('sh','env','id','uname','openssl','ssh','pdftoppm','pdfinfo','ip','ping','infocmp','flock','tar','gzip','stat','timeout','install','mktemp','head','sed','grep','dirname','mkdir','chmod','rm','cat'):
+        found=shutil.which(tool)
+        if found:(restricted/tool).symlink_to(found)
+    (restricted/'curl').symlink_to(fake/'curl')
+    user_tmux=bins/'tmux';user_tmux.write_text('#!/bin/sh\nexit 0\n');user_tmux.chmod(0o700)
+    result=run({'PATH':str(restricted),'CX_FIXTURE_OFFLINE':'1'})
+    assert result.returncode!=0 and 'release unavailable; existing cx unchanged' in result.stderr,result.stderr
+    assert target.read_bytes()==old
+    user_tmux.unlink();outcomes.append('user tmux outside SSH PATH recognized without dependency prompts')
+
     refused('alternate repository refused',{'CX_REPO':'someone/fork'})
     for tag in ['v1.2','v1.2.3/../x','v01.2.3','v1.2.3\nv4.5.6','v1.2.3-rc1']:
         refused('malformed tag '+repr(tag),{'CX_VERSION':tag})

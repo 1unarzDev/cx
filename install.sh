@@ -13,7 +13,11 @@ case "$CX_PREFIX:$CX_STATE" in /*:/*) ;; *) fail 'installation and state paths m
 # ip lives in sbin on RHEL; runtime uses the same standard-path fallback.
 tool_available() {
     command -v "$1" >/dev/null 2>&1 || {
-        [ "$1" = ip ] && { [ -x /usr/sbin/ip ] || [ -x /sbin/ip ]; }
+        case "$1" in
+            ip) [ -x /usr/sbin/ip ] || [ -x /sbin/ip ];;
+            tmux) [ -x "$HOME/.local/bin/tmux" ];;
+            *) return 1;;
+        esac
     }
 }
 CX_MISSING=

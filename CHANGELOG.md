@@ -4,7 +4,8 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
-No changes queued.
+### Fixes
+- Recognize an existing user-installed tmux when a noninteractive SSH login omits its directory from PATH.
 
 ## v0.1.13
 

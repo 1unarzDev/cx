@@ -92,3 +92,8 @@ Pending user feedback: physical confirmation of repaired device switching and th
 Candidate v0.1.7 integrates bounded image/PDF/Markdown/archive previews, clean guarded deletion and `d` managed-shell stop. Root integrated tests pass (234 Rust tests plus browser/helper/stop/mouse PTYs). Installer provides Poppler, network and terminfo tools as well as release prerequisites; enrollment prechecks before replacing a helper. Independent utility review fixes included gzip and RHEL sbin lookup. Distribution/release checks and signed deployment remain the next gate; see VALIDATION.md for evidence and honest limits.
 
 v0.1.7 signed release installed on all three hosts; public clean-HOME bootstrap and live preview checks pass. Followup v0.1.8 narrows tmux absent-server detection after remote validation exposed HOME-relative wrapper errors. Optional user feedback pending: physical preview fit/return and Delete button clarity. No other new user decision is required.
+
+## Preview polish and release descriptions
+- User direction: prioritize larger image/PDF previews, keep j/k scrolling, use separately boxed confirmation choices. These decisions are resolved.
+- Candidate v0.1.9 bundles language highlighting, native preview support and larger workspace. Real Foot cleanup defect fixed and independently inspected. Unknown terminals retain fallback. v0.1.8 remains deployed until signed v0.1.9 release validation/install.
+- All published version descriptions now explain features/fixes; future publication requires exact-version CHANGELOG notes. Optional pending polish: include a short Try it workflow for major new interactions.

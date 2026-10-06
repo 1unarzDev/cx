@@ -4,6 +4,10 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+No changes queued.
+
+## v0.1.9
+
 ### Features
 - Larger image and first-page PDF previews with optional native terminal graphics and a colored-cell fallback.
 - Bundled language grammars for source previews and Markdown code fences; highlighting follows the terminal palette and never executes source code.

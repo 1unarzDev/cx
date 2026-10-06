@@ -272,3 +272,20 @@ Integrated source19e7aa9: 297 Rust tests PASS, one existing ignored (`/tmp/cx-v0
 Independent review19e7aa9 vs5d3ca1d found no critical/high/medium findings; transport, page UI and helper tests independently passed (`/tmp/cx-pages-independent-review.md`, `/tmp/cx-pages-independent-helper.json`). Signed host updates use fixed BatchMode SSH, bounded output/runtime, max2 checks, per-host cooldown and existing per-host maintenance lock; fresh strictly-newer stable version and identity proof required before connection invalidation. Pending requests finish first. Synthetic update subprocess timeout/flood/offline/stale identity/current-on-disk tests passed (`/tmp/cx-host-update-validation.json`). Root32 installer scenarios PASS (`/tmp/cx-pages-installer-fixtures.json`); syntax regression PASS (`/tmp/cx-pages-source-regression.json`). Full signed publication and live auto-upgrade/session-survival acceptance remain next.
 
 Fresh live read-only tranquility now reachable: installed/viewer0.1.9; Poppler26.08.0; helper PNG/PDF/CRLF/archive checks PASS (`/tmp/cx-tranquility-preview-helper.json`). User confirmed preview worked after innovation update; implementing endpoint update/reconciliation addresses this remote workflow. Maximum1280x960 PNG viewer decode regression PASS; an allocation-limit hypothesis was falsified, and limits were not loosened. PDF input16MiB/page-count10,000 are honest limits; server PDF library I/O fault still prevents real PDF rendering there.
+
+## Signed v0.1.10 live acceptance (2026-10-06)
+
+Release source `1213ed3`: workflow37502598744 PASS (both static architectures and nine distro/architecture cases); published Features/Fixes descriptions match CHANGELOG. Final local suite297 PASS/one existing ignored, optimized build PASS (`/tmp/cx-v010-final-{tests,build}.log`). ShellCheck0.10 PASS for install.sh and scripts/enroll-helper.sh.
+
+| Result | Actual scenario | Local evidence |
+|---|---|---|
+| PASS | Innovation exact signed public bootstrap installs0.1.10 | `/tmp/cx-v010-install-innovation.log` |
+| PASS | Ordinary innovation viewer automatically upgrades tranquility0.1.9→0.1.10; verified UI notice, same disposable session ID/PID49757/start ticks/boot identity, termios restored | `/tmp/cx-v010-auto-update-live.json`, `/tmp/cx-v010-auto-update-live.py` |
+| PASS | Same accessed-device update on agent-free verybeautifulserver; disposable PID1863169 and process/boot identity survive | `/tmp/cx-v010-server-auto-update-live.json`, `/tmp/cx-v010-server-auto-update-live.py` |
+| PASS | Installed page helper on innovation and tranquility renders three distinct pages; bounds/malformed/source-integrity checks | `/tmp/cx-v010-installed-pages-{innovation,tranquility}.json` |
+| PASS | Actual optimized viewer PTY shows three page colors/counters, j/k/PgDown/wheel and Escape/terminal restoration | `/tmp/cx-v010-final-pty.json` |
+| PASS | Exact unpinned public curl command in clean ordinary-user HOME starts0.1.10; controlling-TTY prompt and restoration | `/tmp/cx-v010-public-bootstrap-pty.json` |
+
+Root serialized live mutation tests; removed only the two disposable shells via identity-guarded StopSession after verification. No provider/runtime installation on server; command-v inventory before/after has neither Claude nor Codex. No trust, WARP, provider configuration or protected tmux mutations. Updates did not manually reinstall remote hosts: authenticated Info from the actual viewer triggered their own signed updater. This verifies terminal process survival, not a live transfer-upgrade scenario. Synthetic pending-request/mutation tests remain separate. All three installed binaries now0.1.10; existing open viewer executables can remain older until their idle update/relaunch or manual reopening.
+
+FAIL server PDF rendering remains the previously evidenced Poppler/liblcms2 I/O error; no privileged repair attempted. Physical human PDF wheel confirmation pending; real Foot fixture rendering and actual PTY wheel tests passed. Broader fleet acceptance/performance, complete sharing and trust revocation are not declared complete.

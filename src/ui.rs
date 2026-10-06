@@ -79,6 +79,7 @@ struct RichPreview {
     kind: String,
     title: String,
     raster: Option<(usize, usize, Vec<u8>)>,
+    styled: Option<Vec<Line<'static>>>,
 }
 impl RichPreview {
     fn from_value(value: &Value) -> Self {
@@ -87,6 +88,31 @@ impl RichPreview {
             let image = value.get("image")?;
             let w = usize::try_from(image["width"].as_u64()?).ok()?;
             let h = usize::try_from(image["height"].as_u64()?).ok()?;
+            if let Some(encoded) = image["png"].as_str() {
+                if w == 0 || h == 0 || w > 1280 || h > 960 || encoded.len() > 800_000 {
+                    return None;
+                }
+                let png = base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .ok()?;
+                if png.len() > 600_000 || !png.starts_with(b"\x89PNG\r\n\x1a\n") {
+                    return None;
+                }
+                let mut reader = image::ImageReader::with_format(
+                    std::io::Cursor::new(png),
+                    image::ImageFormat::Png,
+                );
+                let mut limits = image::Limits::default();
+                limits.max_image_width = Some(1280);
+                limits.max_image_height = Some(960);
+                limits.max_alloc = Some(8 * 1024 * 1024);
+                reader.limits(limits);
+                let decoded = reader.decode().ok()?.to_rgba8();
+                if decoded.width() as usize != w || decoded.height() as usize != h {
+                    return None;
+                }
+                return Some((w, h, decoded.into_raw()));
+            }
             if w == 0 || h == 0 || w > 160 || h > 100 {
                 return None;
             }
@@ -103,6 +129,17 @@ impl RichPreview {
             kind: value["kind"].as_str().unwrap_or("text").to_owned(),
             title: safe_label(value["title"].as_str().unwrap_or("Preview")),
             raster,
+            styled: match value["kind"].as_str() {
+                Some("code") => Some(crate::syntax_preview::highlight(
+                    &safe_text(value["text"].as_str().unwrap_or("")),
+                    value["path"].as_str().unwrap_or(""),
+                )),
+                Some("markdown") => Some(preview_lines(
+                    value["text"].as_str().unwrap_or(""),
+                    "markdown",
+                )),
+                _ => None,
+            },
         }
     }
 }
@@ -172,6 +209,7 @@ struct Task {
     generation: u64,
 }
 struct Reply {
+    preview: Option<RichPreview>,
     device: usize,
     op: Operation,
     generation: u64,
@@ -1778,7 +1816,11 @@ impl App {
             {
                 if let Some(b) = &mut self.browser {
                     b.preview_scroll = 0;
-                    b.preview_rich = Some(RichPreview::from_value(&value));
+                    b.preview_rich = Some(
+                        reply
+                            .preview
+                            .unwrap_or_else(|| RichPreview::from_value(&value)),
+                    );
                     b.preview = Some(safe_text(
                         value
                             .get("text")
@@ -4296,10 +4338,16 @@ fn render_preview(frame: &mut Frame, area: Rect, browser: &Browser, text: &str, 
         text
     };
     frame.render_widget(
-        Paragraph::new(preview_lines(
-            text,
-            rich.map(|p| p.kind.as_str()).unwrap_or("text"),
-        ))
+        Paragraph::new(if !ascii() && std::env::var_os("NO_COLOR").is_none() {
+            rich.and_then(|p| p.styled.clone()).unwrap_or_else(|| {
+                preview_lines(text, rich.map(|p| p.kind.as_str()).unwrap_or("text"))
+            })
+        } else {
+            safe_text(text)
+                .lines()
+                .map(|line| Line::raw(line.to_owned()))
+                .collect()
+        })
         .wrap(Wrap { trim: false })
         .scroll((browser.preview_scroll, 0)),
         inner,
@@ -5024,8 +5072,14 @@ fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender<Reply>) {
                     }
                 };
                 let result = transport::request(&task.execution, task.op.clone());
+                let preview = if matches!(task.op, Operation::Preview { .. }) {
+                    result.as_ref().ok().map(RichPreview::from_value)
+                } else {
+                    None
+                };
                 let delivered = replies
                     .send(Reply {
+                        preview,
                         device: task.device,
                         op: task.op,
                         generation: task.generation,
@@ -5504,7 +5558,7 @@ mod tests {
         b.marked.insert("/files/alpha.txt".into());
         let generation = a.generation;
         a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        a.apply(Reply { device: 0, op: Operation::List { path: "/files".into() }, generation,
+        a.apply(Reply { preview:None, device: 0, op: Operation::List { path: "/files".into() }, generation,
             result: Ok(serde_json::json!({"path":"/files", "entries":[{"name":"fresh.txt","path":"/files/fresh.txt","kind":"file","size":1}]})) });
         assert!(!a.browser.as_ref().unwrap().loading);
         assert_eq!(a.visible_entries()[0].name, "fresh.txt");
@@ -5647,6 +5701,7 @@ mod tests {
         assert_eq!(a.file_queue.len(), 1);
         assert!(a.transfer_drawer && a.dialog.is_none());
         a.apply(Reply {
+            preview: None,
             device: 0,
             op: first.op,
             generation: a.generation,
@@ -5722,6 +5777,7 @@ mod tests {
         let task = rx.try_recv().unwrap();
         a.generation += 1;
         a.apply(Reply {
+            preview: None,
             device: 0,
             op: task.op,
             generation: task.generation,
@@ -5737,6 +5793,7 @@ mod tests {
         let old = a.generation;
         a.generation += 1;
         a.apply(Reply {
+            preview: None,
             device: 0,
             op: Operation::Rename {
                 path: "/files/alpha.txt".into(),
@@ -5865,6 +5922,7 @@ mod tests {
         for (offset, end, next) in [(0, 1000, Some(1000)), (1000, 1200, None)] {
             let entries=(offset..end).map(|i|serde_json::json!({"name":format!("f{i:04}"),"path":format!("/recordings/f{i:04}"),"kind":"file","size":1})).collect::<Vec<_>>();
             restored.apply(Reply {
+                preview: None,
                 device: 0,
                 op: Operation::ListPage {
                     path: "/recordings".into(),
@@ -5917,7 +5975,7 @@ mod tests {
         a.browser = Some(browser);
         a.view = View::Files;
         for (offset, name, next) in [(0, "z", Some(1)), (1, "a", None)] {
-            a.apply(Reply{device:0,op:Operation::ListPage{path:"/files".into(),offset,limit:1},generation:0,result:Ok(serde_json::json!({"path":"/files","entries":[{"name":name,"path":format!("/files/{name}"),"kind":"file","size":1}],"next_offset":next}))});
+            a.apply(Reply{preview:None,device:0,op:Operation::ListPage{path:"/files".into(),offset,limit:1},generation:0,result:Ok(serde_json::json!({"path":"/files","entries":[{"name":name,"path":format!("/files/{name}"),"kind":"file","size":1}],"next_offset":next}))});
         }
         let browser = a.browser.as_ref().unwrap();
         assert_eq!(browser.entries[browser.selected].path, "/files/z");
@@ -5950,6 +6008,7 @@ mod tests {
         );
         assert_eq!(a.job_rows()[a.dialog_selected].1["key"], "a");
         a.apply(Reply {
+            preview: None,
             device: 0,
             op: Operation::TransferJobs,
             generation: 0,
@@ -5967,6 +6026,7 @@ mod tests {
         for result in [Ok(serde_json::json!({})), Err(anyhow::anyhow!("offline"))] {
             a.network_loading = true;
             a.apply(Reply {
+                preview: None,
                 device: 1,
                 op: Operation::Network,
                 generation: 0,
@@ -5992,6 +6052,7 @@ mod tests {
         assert!(matches!(a.dialog, Some(Dialog::Provider(1, None))));
         assert!(matches!(rx.try_recv().unwrap().op, Operation::Info));
         a.apply(Reply {
+            preview: None,
             device: 1,
             op: Operation::Info,
             generation: 0,
@@ -6030,6 +6091,7 @@ mod tests {
         let (mut a, _rx) = queued_app();
         a.generation = 8;
         a.apply(Reply {
+            preview: None,
             device: 1,
             op: Operation::Info,
             generation: 0,
@@ -6037,6 +6099,7 @@ mod tests {
         });
         assert_eq!(a.provider_choices(1), vec!["shell", "codex"]);
         a.apply(Reply {
+            preview: None,
             device: 1,
             op: Operation::Info,
             generation: 1,
@@ -6066,6 +6129,7 @@ mod tests {
         assert_eq!(spec.provider, "codex");
         let session = serde_json::json!({"id":"new","name":"Codex","directory":"/project/remote","provider":"codex","account":"peace","host":"laptop","pid":1,"started":"x","boot_id":"boot","external":false,"socket":null});
         a.apply(Reply {
+            preview: None,
             device: 1,
             op: task.op,
             generation: 0,
@@ -6183,7 +6247,7 @@ mod tests {
         let (mut a, _) = queued_app();
         a.view = View::Files;
         a.browser = Some(Browser::new(1, "/remote/folder".into()));
-        a.apply(Reply { device: 1, op: Operation::Info, generation: a.generation,
+        a.apply(Reply { preview:None, device: 1, op: Operation::Info, generation: a.generation,
             result: Ok(serde_json::json!({"capabilities": ["shell", "tmux", "native-command-v1", "unrecognized"]})) });
         assert_eq!(a.provider_choices(1), vec!["shell"]);
         assert_eq!(a.providers[&1].0, vec!["native-command-v1"]);
@@ -6520,6 +6584,7 @@ mod tests {
         a.browser = Some(Browser::new(0, "/new".into()));
         a.generation = 2;
         a.apply(Reply {
+            preview: None,
             device: 0,
             op: Operation::List {
                 path: "/old".into(),
@@ -6630,6 +6695,7 @@ mod tests {
         let (mut a, _rx) = file_app();
         let reply = || serde_json::json!({"text":"# Safe","kind":"markdown","title":"Heading"});
         a.apply(Reply {
+            preview: None,
             device: 1,
             op: Operation::Preview {
                 path: "/remote".into(),
@@ -6639,6 +6705,7 @@ mod tests {
         });
         assert!(a.browser.as_ref().unwrap().preview.is_none());
         a.apply(Reply {
+            preview: None,
             device: 0,
             op: Operation::Preview {
                 path: "/files/a".into(),
@@ -6652,6 +6719,7 @@ mod tests {
         a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(a.browser.as_ref().unwrap().preview_rich.is_none());
         a.apply(Reply {
+            preview: None,
             device: 0,
             op: Operation::Preview {
                 path: "/files/a".into(),

@@ -230,6 +230,7 @@ enum Dialog {
     Matching(usize, String, String, Session),
     Jobs,
     Delete(usize, Vec<Entry>),
+    StopShell(usize, Session),
     PendingExit(usize),
 }
 
@@ -371,7 +372,8 @@ impl App {
                         "Transfers"
                     }
                 }
-                Dialog::Delete(..) => "Confirm delete",
+                Dialog::Delete(..) => "Delete",
+                Dialog::StopShell(..) => "Stop shell",
                 Dialog::PendingExit(_) => "Pending actions",
             };
         }
@@ -1110,7 +1112,7 @@ impl App {
         rows
     }
     fn dialog_key(&mut self, key: KeyEvent, dialog: Dialog) {
-        if matches!(dialog, Dialog::Delete(..))
+        if matches!(dialog, Dialog::Delete(..) | Dialog::StopShell(..))
             && !key
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -1140,7 +1142,10 @@ impl App {
                 _ => {}
             }
         }
-        if matches!(dialog, Dialog::Jobs | Dialog::Delete(..)) {
+        if matches!(
+            dialog,
+            Dialog::Jobs | Dialog::Delete(..) | Dialog::StopShell(..)
+        ) {
             match key.code {
                 KeyCode::Tab | KeyCode::BackTab => {
                     self.dialog_detail_focus = !self.dialog_detail_focus;
@@ -1167,7 +1172,8 @@ impl App {
                     return;
                 }
                 KeyCode::Esc
-                    if self.dialog_detail_focus && matches!(dialog, Dialog::Delete(..)) =>
+                    if self.dialog_detail_focus
+                        && matches!(dialog, Dialog::Delete(..) | Dialog::StopShell(..)) =>
                 {
                     self.dialog_detail_focus = false;
                     self.dialog = None;
@@ -1185,7 +1191,7 @@ impl App {
             Dialog::Provider(d, _) => self.provider_choices(*d).len(),
             Dialog::Matching(..) => 2,
             Dialog::Jobs => self.job_rows().len(),
-            Dialog::Delete(..) => 2,
+            Dialog::Delete(..) | Dialog::StopShell(..) => 2,
             Dialog::PendingExit(_) => 2,
         };
         if let Dialog::Provider(device, _) = dialog {
@@ -1237,6 +1243,21 @@ impl App {
                 }
                 Dialog::Jobs => {
                     self.dialog_detail_focus = true;
+                }
+                Dialog::StopShell(d, session) => {
+                    self.dialog = None;
+                    if self.dialog_selected == 1 {
+                        self.send(
+                            d,
+                            Operation::StopSession {
+                                id: session.id,
+                                pid: session.pid,
+                                started: session.started,
+                                boot_id: session.boot_id,
+                            },
+                        );
+                        self.notice = "Stopping confirmed shell…".into();
+                    }
                 }
                 Dialog::Delete(d, entries) => {
                     self.dialog = None;
@@ -1412,7 +1433,10 @@ impl App {
                     .map(|caps| {
                         caps.iter()
                             .filter_map(Value::as_str)
-                            .filter(|p| ["claude", "codex", "native-command-v1"].contains(p))
+                            .filter(|p| {
+                                ["claude", "codex", "native-command-v1", "stop-session-v1"]
+                                    .contains(p)
+                            })
                             .map(str::to_owned)
                             .collect()
                     })
@@ -1459,6 +1483,10 @@ impl App {
                         self.work[reply.device].error = Some("Invalid session metadata".into())
                     }
                 }
+            }
+            Operation::StopSession { .. } => {
+                self.notice = "Shell stopped".into();
+                self.work[reply.device].loading = self.send(reply.device, Operation::Sessions);
             }
             Operation::Create(_) => match serde_json::from_value::<Session>(value) {
                 Ok(s) => {
@@ -2040,6 +2068,31 @@ impl App {
                 KeyCode::Up | KeyCode::Char('k') => self.directional_focus(0, -1),
                 KeyCode::Down | KeyCode::Char('j') => self.directional_focus(0, 1),
                 _ => {}
+            }
+            return;
+        }
+        if self.view == View::Work
+            && self.focus == Focus::Workspace
+            && key.code == KeyCode::Char('d')
+            && key.modifiers.is_empty()
+        {
+            if let Some((device, session)) = self.selected_session() {
+                if session.external || session.provider != "shell" {
+                    self.notice = "Only cx-managed shell sessions can be stopped here".into();
+                } else if self.devices[device].target.is_some()
+                    && !self.providers.get(&device).is_some_and(|(caps, checked)| {
+                        transport::now().saturating_sub(*checked) < 60
+                            && caps.iter().any(|c| c == "stop-session-v1")
+                    })
+                {
+                    self.check_providers(device);
+                    self.notice = "Checking shell-stop support · press d again when ready".into();
+                } else {
+                    self.dialog_selected = 0;
+                    self.dialog_scroll = 0;
+                    self.dialog_detail_focus = false;
+                    self.dialog = Some(Dialog::StopShell(device, session));
+                }
             }
             return;
         }
@@ -3218,7 +3271,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                     },
                 ),
             ]
-        } else if matches!(dialog, Dialog::Delete(..)) {
+        } else if matches!(dialog, Dialog::Delete(..) | Dialog::StopShell(..)) {
             vec![
                 (
                     "↑↓",
@@ -3236,7 +3289,14 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                         "Confirm"
                     },
                 ),
-                ("y / n", "Delete / cancel"),
+                (
+                    "y / n",
+                    if matches!(dialog, Dialog::StopShell(..)) {
+                        "Stop / keep"
+                    } else {
+                        "Delete / cancel"
+                    },
+                ),
                 ("Tab", "Details"),
                 ("PgUpDn", "Scroll"),
                 ("Home", "Top"),
@@ -3488,8 +3548,12 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                     "Enter choose · next: browse folder, then n to start".into()
                 },
             ),
+            Dialog::StopShell(d, session) => (
+                "Stop shell?".into(), vec!["Keep shell".into(), "Stop shell".into()],
+                format!("{}\n{}\n{}\n\nRunning commands in this shell will end.", identity(&app.devices[*d]), safe_label(&session.name), safe_label(&session.directory)),
+            ),
             Dialog::Delete(d, entries) => (
-                format!("Delete {} items permanently?", entries.len()),
+                "Delete permanently?".into(),
                 vec!["Cancel · keep files".into(), "Delete permanently".into()],
                 format!("No undo. {} folders include all contents.\nHost: {}\n{}",
                     entries.iter().filter(|e| e.kind == "directory").count(), identity(&app.devices[*d]),
@@ -3543,13 +3607,19 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 )
             }
         };
-        if matches!(dialog, Dialog::Delete(..)) {
-            let rect = popup(area, 76, 10);
+        if matches!(dialog, Dialog::Delete(..) | Dialog::StopShell(..)) {
+            let stop = matches!(dialog, Dialog::StopShell(..));
+            let rect = popup(area, 68, 10);
             frame.render_widget(Clear, rect);
             frame.render_widget(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(Span::styled(title, accent().add_modifier(Modifier::BOLD))),
+                    .border_type(ratatui::widgets::BorderType::Rounded)
+                    .border_style(tint(Color::Red))
+                    .title(Line::from(Span::styled(
+                        format!(" {title} "),
+                        tint(Color::Red).add_modifier(Modifier::BOLD),
+                    ))),
                 rect,
             );
             let inner = Rect::new(
@@ -3561,9 +3631,10 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             let rows = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Min(3),
+                    Constraint::Min(2),
                     Constraint::Length(1),
-                    Constraint::Length(2),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
                 ])
                 .split(inner);
             frame.render_widget(
@@ -3572,23 +3643,37 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                     .scroll((app.dialog_scroll, 0)),
                 rows[0],
             );
+            let labels = if stop {
+                ["Keep shell", "Stop shell"]
+            } else {
+                ["Cancel", "Delete"]
+            };
             let choices = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(rows[2]);
-            for (i, label) in ["n  Cancel", "y  Delete"].iter().enumerate() {
+            for (i, label) in labels.iter().enumerate() {
+                let selected = app.dialog_selected == i && !app.dialog_detail_focus;
+                let style = if selected {
+                    tint(if i == 1 { Color::Red } else { Color::Cyan })
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                } else {
+                    muted()
+                };
                 frame.render_widget(
-                    Paragraph::new(*label)
-                        .alignment(ratatui::layout::Alignment::Center)
-                        .style(if app.dialog_selected == i && !app.dialog_detail_focus {
-                            selected_style()
-                        } else {
+                    Paragraph::new(Line::from(vec![
+                        Span::styled(if selected { "› " } else { "  " }, style),
+                        Span::styled(
+                            format!(" {} ", if i == 0 { "n" } else { "y" }),
                             if i == 1 {
-                                tint(Color::Red)
+                                tint(Color::Red).add_modifier(Modifier::BOLD)
                             } else {
-                                accent()
-                            }
-                        }),
+                                accent().add_modifier(Modifier::BOLD)
+                            },
+                        ),
+                        Span::styled(format!(" {label} "), style),
+                    ]))
+                    .alignment(ratatui::layout::Alignment::Center),
                     choices[i],
                 );
             }
@@ -3728,6 +3813,9 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             key_row(":", "Run command in current folder"),
             key_row("Ctrl+C", "Quit cx; work keeps running"),
         ];
+        if app.view == View::Work {
+            help.push(key_row("d", "Stop selected cx-managed shell · confirm"));
+        }
         if app.view == View::Files {
             help.push(Line::from(Span::styled("Files", key_style)));
             for (keys, description) in [
@@ -4913,6 +5001,38 @@ mod tests {
     fn press(a: &mut App, c: char) {
         a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
+    #[test]
+    fn shell_stop_requires_confirmation_and_rejects_external_and_agent_rows() {
+        let (mut a, rx) = queued_app();
+        let session: Session = serde_json::from_value(serde_json::json!({
+            "id":"cx-fixture","name":"shell · fixture","directory":"/fixture","provider":"shell",
+            "account":"tester","host":"workstation","pid":123,"started":"start","boot_id":"boot","external":false
+        })).unwrap();
+        a.work[0].sessions.push(session);
+        a.view = View::Work;
+        a.focus = Focus::Workspace;
+        press(&mut a, 'd');
+        assert!(matches!(a.dialog, Some(Dialog::StopShell(..))));
+        assert!(rx.try_recv().is_err());
+        press(&mut a, 'n');
+        assert!(a.dialog.is_none());
+        press(&mut a, 'd');
+        press(&mut a, 'y');
+        assert!(matches!(
+            rx.try_recv().unwrap().op,
+            Operation::StopSession { pid: 123, .. }
+        ));
+        a.work[0].sessions[0].external = true;
+        press(&mut a, 'd');
+        assert!(a.dialog.is_none());
+        assert!(rx.try_recv().is_err());
+        a.work[0].sessions[0].external = false;
+        a.work[0].sessions[0].provider = "codex".into();
+        press(&mut a, 'd');
+        assert!(a.dialog.is_none());
+        assert!(rx.try_recv().is_err());
+    }
+
     #[test]
     fn file_device_selection_retargets_only_the_focused_location() {
         let (mut a, rx) = file_app();

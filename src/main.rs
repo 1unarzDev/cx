@@ -151,8 +151,12 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
         Operation::TransferRetry { key } => transfers::retry(&key),
         Operation::Sessions => Ok(serde_json::to_value(sessions::list()?)?),
         Operation::Create(ref c) => Ok(serde_json::to_value(sessions::create(c)?)?),
-        Operation::StopSession { ref id, pid, ref started, ref boot_id } =>
-            sessions::stop_shell(id, pid, started, boot_id),
+        Operation::StopSession {
+            ref id,
+            pid,
+            ref started,
+            ref boot_id,
+        } => sessions::stop_shell(id, pid, started, boot_id),
         Operation::Network => network::observe(),
         Operation::Copy {
             source,

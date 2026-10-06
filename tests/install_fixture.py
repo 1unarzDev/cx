@@ -30,7 +30,7 @@ if os.environ.get('CX_FIXTURE_OFFLINE'):sys.exit(7)
 if os.environ.get('CX_FIXTURE_SLOW'):time.sleep(20)
 args=sys.argv[1:];dest=pathlib.Path(args[args.index('-o')+1]);url=next(a for a in args if a.startswith('https://'))
 pathlib.Path(os.environ['CX_FIXTURE_URLS']).open('a').write(url+'\\n')
-if 'releases/latest' in url:dest.write_text('{\\n "tag_name": "v9.9.9",\\n}\\n')
+if 'releases/latest' in url:dest.write_text('{"tag_name":"v9.9.9","assets":[]}' if os.environ.get('CX_FIXTURE_COMPACT') else '{\\n "tag_name": "v9.9.9"\\n}\\n')
 else:dest.write_bytes(pathlib.Path(os.environ['CX_FIXTURE_SIGNATURE' if url.endswith('.sig') else 'CX_FIXTURE_ARCHIVE']).read_bytes())
 ''');(fake/'curl').chmod(0o700)
     env=dict(os.environ,HOME=str(home),XDG_CONFIG_HOME=str(home/'.config'),XDG_STATE_HOME=str(home/'.local/state'),PATH=str(fake)+':/usr/bin:/bin',CX_FIXTURE_ARCHIVE=str(archive),CX_FIXTURE_SIGNATURE=str(signature),CX_FIXTURE_URLS=str(root/'urls'),CX_NO_LAUNCH='1',CX_INSTALL_DEPS='never')
@@ -70,6 +70,8 @@ else:dest.write_bytes(pathlib.Path(os.environ['CX_FIXTURE_SIGNATURE' if url.ends
     result=subprocess.run(['sh','-c','. "$1"; . "$1"; printf "%s" "$PATH"','sh',str(shellenv)],env=dict(env,PATH='/usr/bin:/bin'),capture_output=True,text=True,check=True)
     assert result.stdout.split(':').count(str(bins))==1
     outcomes.append('verified install, safe rerun, additive PATH idempotence')
+    result=run({'CX_FIXTURE_COMPACT':'1'});assert result.returncode==0,result.stderr;assert target.read_bytes()==body
+    outcomes.append('compact GitHub latest release JSON')
     reset()
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(lambda _:run(),range(2)))
     assert sorted(r.returncode for r in results)==[0,1],[(r.returncode,r.stderr) for r in results]

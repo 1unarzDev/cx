@@ -106,7 +106,7 @@ download() {
 CX_VERSION=${CX_VERSION:-}
 if [ -z "$CX_VERSION" ]; then
     download https://api.github.com/repos/1unarzDev/cx/releases/latest "$CX_TMP/release.json" 262144
-    CX_VERSION=$(sed -nE 's/^[[:space:]]*"tag_name":[[:space:]]*"(v[0-9]+\.[0-9]+\.[0-9]+)",?[[:space:]]*$/\1/p' "$CX_TMP/release.json")
+    CX_VERSION=$(sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"(v[0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' "$CX_TMP/release.json")
 fi
 printf '%s\n' "$CX_VERSION" | LC_ALL=C grep -Eq '^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$' || fail 'version must be a stable vMAJOR.MINOR.PATCH tag'
 CX_ASSET=cx-$CX_VERSION-linux-$CX_ARCH.tar.gz

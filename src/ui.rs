@@ -3359,7 +3359,24 @@ fn render_with_native(
         sidebar[1],
         &mut state,
     );
-    let details = if let Some(b) = app.browser.as_ref().filter(|_| app.view == View::Files) {
+    let details = if app.view == View::Network {
+        app.network_candidates()
+            .get(app.network_selected)
+            .map(|c| {
+                format!(
+                    "Via {}\n{}\nSSH {}",
+                    c["_device"]
+                        .as_u64()
+                        .and_then(|d| app.devices.get(d as usize))
+                        .map(identity)
+                        .unwrap_or_else(|| "unknown".into()),
+                    safe_label(c["address"].as_str().unwrap_or("unknown")),
+                    neighbor_ssh(c)
+                )
+            })
+            .unwrap_or_else(|| "No observed neighbors".into())
+
+    } else if let Some(b) = app.browser.as_ref().filter(|_| app.view == View::Files) {
         let mut lines = vec![
             format!("Host {}", identity(&app.devices[b.device])),
             format!("Folder {}", safe_label(&b.display_path)),

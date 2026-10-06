@@ -3708,7 +3708,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         };
         if matches!(dialog, Dialog::Delete(..) | Dialog::StopShell(..)) {
             let stop = matches!(dialog, Dialog::StopShell(..));
-            let rect = popup(area, 68, 12);
+            let rect = confirmation_popup(area, &detail);
             frame.render_widget(Clear, rect);
             frame.render_widget(
                 Block::default()
@@ -4116,6 +4116,16 @@ fn raster_lines(w: usize, h: usize, bytes: &[u8], area: Rect) -> Vec<Line<'stati
         })
         .collect()
 }
+fn confirmation_popup(area: Rect, detail: &str) -> Rect {
+    let width = popup(area, 68, 12).width.saturating_sub(4).max(1);
+    let lines = detail
+        .lines()
+        .map(|line| Line::raw(line).width().max(1).div_ceil(usize::from(width)))
+        .sum::<usize>()
+        .clamp(2, 6);
+    popup(area, 68, lines as u16 + 7)
+}
+
 #[derive(Clone, Copy)]
 enum ConfirmationLayout {
     Separate,
@@ -6757,7 +6767,8 @@ mod tests {
                         terminal
                             .draw(|frame| {
                                 render(frame, &a);
-                                let rect = popup(frame.area(), 68, 12);
+                                let detail = if stop {"Running commands in this shell will end.\ntester@workstation\nDisposable shell\n/tmp/cx-disposable"} else {"Deletion cannot be undone.\ntester@workstation\n• alpha.txt"};
+                            let rect = confirmation_popup(frame.area(), detail);
                                 let inner = Rect::new(
                                     rect.x + 2,
                                     rect.y + 1,

@@ -1,0 +1,1521 @@
+//! Native workspace. Remote work runs off the input/render thread; attachment owns the terminal.
+use crate::{
+    model::{CreateSession, Device, Operation, Session},
+    sessions, store, transport,
+};
+use anyhow::{Context, Result};
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    execute,
+    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    Frame, Terminal,
+};
+use serde_json::Value;
+use std::{
+    collections::HashMap,
+    io,
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum View {
+    Work,
+    Files,
+    Network,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    Devices,
+    Workspace,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Input {
+    Search,
+    Palette,
+    Mkdir,
+    Add,
+}
+#[derive(Clone)]
+struct Entry {
+    name: String,
+    path: String,
+    kind: String,
+    size: u64,
+}
+#[derive(Clone)]
+struct Browser {
+    device: usize,
+    path: String,
+    display_path: String,
+    parent: Option<String>,
+    entries: Vec<Entry>,
+    selected: usize,
+    search: String,
+    loading: bool,
+    preview: Option<String>,
+    preview_scroll: u16,
+}
+impl Browser {
+    fn new(device: usize, path: String) -> Self {
+        Self {
+            device,
+            display_path: path.clone(),
+            path,
+            parent: None,
+            entries: vec![],
+            selected: 0,
+            search: String::new(),
+            loading: false,
+            preview: None,
+            preview_scroll: 0,
+        }
+    }
+}
+struct Cached {
+    sessions: Vec<Session>,
+    loading: bool,
+    error: Option<String>,
+    fetched: u64,
+}
+struct Task {
+    device: usize,
+    execution: Device,
+    op: Operation,
+    generation: u64,
+}
+struct Reply {
+    device: usize,
+    op: Operation,
+    generation: u64,
+    result: Result<Value>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Action {
+    Add,
+    Files,
+    Home,
+    Shell,
+    Claude,
+    Codex,
+    Observe,
+    Refresh,
+    Network,
+    Work,
+    Copy,
+    Paste,
+    Mkdir,
+    Help,
+    Quit,
+}
+const ACTIONS: &[(Action, &str)] = &[
+    (Action::Add, "Add device · existing SSH alias / user@host"),
+    (
+        Action::Files,
+        "Files · selected session directory / device home",
+    ),
+    (Action::Home, "Files · device home"),
+    (Action::Shell, "Start here · shell"),
+    (Action::Claude, "Start here · Claude"),
+    (Action::Codex, "Start here · Codex"),
+    (Action::Observe, "Observe session · read only"),
+    (Action::Copy, "Copy selected file / directory"),
+    (Action::Paste, "Paste here · copy into this directory"),
+    (Action::Mkdir, "Create directory here"),
+    (Action::Network, "Network"),
+    (Action::Work, "Work"),
+    (Action::Refresh, "Refresh"),
+    (Action::Help, "Keyboard help"),
+    (Action::Quit, "Quit workspace"),
+];
+struct App {
+    devices: Vec<Device>,
+    device: usize,
+    focus: Focus,
+    view: View,
+    work: Vec<Cached>,
+    selected: usize,
+    search: String,
+    input: Option<Input>,
+    text: String,
+    palette_selected: usize,
+    help: bool,
+    notice: String,
+    browser: Option<Browser>,
+    browser_cache: HashMap<(usize, String), Browser>,
+    generation: u64,
+    creating: bool,
+    network: HashMap<usize, Value>,
+    network_loading: bool,
+    clipboard: Option<(usize, Entry)>,
+    jobs: HashMap<usize, Value>,
+    pending_attach: Option<(usize, Session, bool)>,
+    pending_add: Option<String>,
+    quit: bool,
+    tx: mpsc::SyncSender<Task>,
+}
+impl App {
+    fn new(devices: Vec<Device>, tx: mpsc::SyncSender<Task>) -> Self {
+        let work = devices
+            .iter()
+            .map(|_| Cached {
+                sessions: vec![],
+                loading: false,
+                error: None,
+                fetched: 0,
+            })
+            .collect();
+        Self {
+            devices,
+            device: 0,
+            focus: Focus::Workspace,
+            view: View::Work,
+            work,
+            selected: 0,
+            search: String::new(),
+            input: None,
+            text: String::new(),
+            palette_selected: 0,
+            help: false,
+            notice: "Ctrl+P actions · ? help".into(),
+            browser: None,
+            browser_cache: HashMap::new(),
+            generation: 0,
+            creating: false,
+            network: HashMap::new(),
+            network_loading: false,
+            clipboard: None,
+            jobs: HashMap::new(),
+            pending_attach: None,
+            pending_add: None,
+            quit: false,
+            tx,
+        }
+    }
+    fn send(&self, device: usize, op: Operation) -> bool {
+        self.tx
+            .try_send(Task {
+                device,
+                execution: self.devices[device].clone(),
+                op,
+                generation: self.generation,
+            })
+            .is_ok()
+    }
+    fn refresh_work(&mut self) {
+        for index in 0..self.devices.len() {
+            if (self.device == 0 || self.device == index + 1) && !self.work[index].loading {
+                self.work[index].loading = self.send(index, Operation::Sessions);
+                if !self.work[index].loading {
+                    self.notice = "Refresh queue busy · retry shortly".into();
+                }
+            }
+        }
+    }
+    fn actual_device(&self) -> Option<usize> {
+        if self.device > 0 {
+            Some(self.device - 1)
+        } else {
+            self.selected_session()
+                .map(|(index, _)| index)
+                .or_else(|| self.devices.iter().position(|d| d.target.is_none()))
+        }
+    }
+    fn session_rows(&self) -> Vec<(usize, &Session)> {
+        let query = self.search.to_lowercase();
+        let mut rows: Vec<_> = self
+            .work
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.device == 0 || self.device == i + 1)
+            .flat_map(|(i, c)| c.sessions.iter().map(move |s| (i, s)))
+            .filter(|(_, s)| {
+                query.is_empty()
+                    || format!("{} {} {} {}", s.name, s.directory, s.host, s.provider)
+                        .to_lowercase()
+                        .contains(&query)
+            })
+            .collect();
+        rows.sort_by(|(a, x), (b, y)| {
+            (x.directory.as_str(), *a, x.name.as_str(), x.id.as_str()).cmp(&(
+                y.directory.as_str(),
+                *b,
+                y.name.as_str(),
+                y.id.as_str(),
+            ))
+        });
+        rows
+    }
+    fn selected_session(&self) -> Option<(usize, Session)> {
+        self.session_rows()
+            .get(self.selected)
+            .map(|(i, s)| (*i, (*s).clone()))
+    }
+    fn visible_entries(&self) -> Vec<Entry> {
+        self.browser
+            .as_ref()
+            .map(|b| {
+                b.entries
+                    .iter()
+                    .filter(|e| e.name.to_lowercase().contains(&b.search.to_lowercase()))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    fn palette(&self) -> Vec<(Action, &'static str)> {
+        ACTIONS
+            .iter()
+            .copied()
+            .filter(|(a, label)| {
+                self.action_enabled(*a) && label.to_lowercase().contains(&self.text.to_lowercase())
+            })
+            .collect()
+    }
+    fn action_enabled(&self, action: Action) -> bool {
+        match action {
+            Action::Copy | Action::Mkdir => self.view == View::Files && self.browser.is_some(),
+            Action::Paste => self.view == View::Files && self.clipboard.is_some(),
+            Action::Shell | Action::Claude | Action::Codex => {
+                self.view == View::Files && self.browser.is_some() && !self.creating
+            }
+            Action::Observe => self.view == View::Work && self.selected_session().is_some(),
+            _ => true,
+        }
+    }
+    fn open_browser(&mut self, device: usize, path: String) {
+        self.generation += 1;
+        if let Some(old) = self.browser.take() {
+            if self.browser_cache.len() >= 8 {
+                if let Some(key) = self.browser_cache.keys().next().cloned() {
+                    self.browser_cache.remove(&key);
+                }
+            }
+            self.browser_cache
+                .insert((old.device, old.path.clone()), old);
+        }
+        self.browser = Some(
+            self.browser_cache
+                .remove(&(device, path.clone()))
+                .unwrap_or_else(|| Browser::new(device, path)),
+        );
+        self.view = View::Files;
+        self.focus = Focus::Workspace;
+        self.refresh_browser();
+    }
+    fn refresh_browser(&mut self) {
+        if let Some(b) = self.browser.as_mut() {
+            b.loading = true;
+            b.preview = None;
+            let device = b.device;
+            let path = b.path.clone();
+            if !self.send(device, Operation::List { path }) {
+                if let Some(b) = &mut self.browser {
+                    b.loading = false;
+                }
+                self.notice = "Refresh queue busy · retry shortly".into();
+            }
+        }
+    }
+    fn refresh(&mut self) {
+        match self.view {
+            View::Work => self.refresh_work(),
+            View::Files => self.refresh_browser(),
+            View::Network => {
+                if let Some(d) = self.actual_device().filter(|_| !self.network_loading) {
+                    self.network_loading = self.send(d, Operation::Network);
+                }
+            }
+        }
+    }
+    fn execute(&mut self, action: Action) {
+        self.input = None;
+        self.text.clear();
+        match action {
+            Action::Quit => self.quit = true,
+            Action::Add => {
+                self.input = Some(Input::Add);
+                self.text.clear();
+            }
+            Action::Help => self.help = true,
+            Action::Refresh => self.refresh(),
+            Action::Work => {
+                self.view = View::Work;
+                self.refresh_work();
+            }
+            Action::Network => {
+                self.view = View::Network;
+                self.refresh();
+            }
+            Action::Files | Action::Home => {
+                let selected = if action == Action::Files {
+                    self.selected_session()
+                } else {
+                    None
+                };
+                if let Some((d, s)) = selected {
+                    self.open_browser(d, s.directory);
+                } else if let Some(d) = self.actual_device() {
+                    self.open_browser(d, ".".into());
+                }
+            }
+            Action::Observe => {
+                if let Some((d, s)) = self.selected_session() {
+                    self.pending_attach = Some((d, s, true));
+                }
+            }
+            Action::Shell | Action::Claude | Action::Codex => {
+                if let Some(b) = &self.browser {
+                    let provider = match action {
+                        Action::Claude => "claude",
+                        Action::Codex => "codex",
+                        _ => "shell",
+                    };
+                    let matching = self.work[b.device]
+                        .sessions
+                        .iter()
+                        .find(|s| s.directory == b.path && s.provider == provider)
+                        .cloned();
+                    if let Some(s) = matching {
+                        self.notice = "Opened matching live session".into();
+                        self.pending_attach = Some((b.device, s, false));
+                    } else {
+                        let key = unique_key();
+                        self.creating = self.send(
+                            b.device,
+                            Operation::Create(CreateSession {
+                                key: key.clone(),
+                                directory: b.path.clone(),
+                                provider: provider.into(),
+                                name: format!("{}-{}", provider, key),
+                            }),
+                        );
+                        self.notice = if self.creating {
+                            format!(
+                                "Creating {provider} on {}…",
+                                identity(&self.devices[b.device])
+                            )
+                        } else {
+                            "Request queue busy · retry shortly".into()
+                        };
+                    }
+                }
+            }
+            Action::Copy => {
+                if let Some(b) = &self.browser {
+                    if let Some(e) = self.visible_entries().get(b.selected) {
+                        self.clipboard = Some((b.device, e.clone()));
+                        self.notice = format!(
+                            "Copied selection on {} · choose destination, then Paste here",
+                            identity(&self.devices[b.device])
+                        );
+                    }
+                }
+            }
+            Action::Paste => {
+                if let (Some((source, entry)), Some(b)) = (&self.clipboard, &self.browser) {
+                    if *source != b.device {
+                        self.notice = "Cross-device copy: use cx copy until the transfer backend is integrated".into();
+                    } else {
+                        self.send(
+                            b.device,
+                            Operation::Copy {
+                                source: entry.path.clone(),
+                                destination: b.path.clone(),
+                                conflict: "skip".into(),
+                                key: unique_key(),
+                            },
+                        );
+                        self.notice = format!(
+                            "Copy on {} · existing destinations skipped",
+                            identity(&self.devices[b.device])
+                        );
+                    }
+                }
+            }
+            Action::Mkdir => {
+                self.input = Some(Input::Mkdir);
+                self.text.clear();
+            }
+        }
+    }
+    fn apply(&mut self, reply: Reply) {
+        let is_sessions = matches!(reply.op, Operation::Sessions);
+        if is_sessions {
+            self.work[reply.device].loading = false;
+        }
+        if matches!(reply.op, Operation::Create(_)) {
+            self.creating = false;
+        }
+        let value = match reply.result {
+            Ok(v) => v,
+            Err(e) => {
+                let message =
+                    safe_text(&format!("{}: {e:#}", identity(&self.devices[reply.device])));
+                if is_sessions {
+                    self.work[reply.device].error = Some(message.clone());
+                }
+                if reply.generation == self.generation {
+                    self.notice = message;
+                    if let Some(b) = &mut self.browser {
+                        b.loading = false;
+                    }
+                    self.network_loading = false;
+                }
+                return;
+            }
+        };
+        // Session caches remain useful across view changes; navigation responses do not.
+        match reply.op {
+            Operation::Sessions => {
+                let selected_identity = self.selected_session().map(|(d, s)| (d, s.id));
+                let data = if value.is_array() {
+                    value.clone()
+                } else {
+                    value.get("sessions").cloned().unwrap_or(Value::Null)
+                };
+                match serde_json::from_value::<Vec<Session>>(data) {
+                    Ok(s) => {
+                        self.work[reply.device].sessions = s;
+                        self.work[reply.device].error = None;
+                        self.work[reply.device].fetched = transport::now();
+                        if let Some((device, id)) = selected_identity {
+                            if let Some(index) = self
+                                .session_rows()
+                                .iter()
+                                .position(|(d, s)| *d == device && s.id == id)
+                            {
+                                self.selected = index;
+                            } else {
+                                self.selected = self
+                                    .selected
+                                    .min(self.session_rows().len().saturating_sub(1));
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        self.work[reply.device].error = Some("Invalid session metadata".into())
+                    }
+                }
+            }
+            Operation::Create(_) => match serde_json::from_value::<Session>(value) {
+                Ok(s) => {
+                    self.work[reply.device].sessions.push(s.clone());
+                    self.pending_attach = Some((reply.device, s, false));
+                }
+                Err(_) => {
+                    self.notice = "Creation response invalid · refresh before retrying".into()
+                }
+            },
+            Operation::Jobs => {
+                self.jobs.insert(reply.device, value);
+            }
+            Operation::Copy { .. } => {
+                self.notice = format!(
+                    "Copy {} on {}",
+                    value
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("status unknown"),
+                    identity(&self.devices[reply.device])
+                );
+                self.send(reply.device, Operation::Jobs);
+            }
+            Operation::Network if reply.generation == self.generation => {
+                self.network.insert(reply.device, value);
+                self.network_loading = false;
+            }
+            Operation::List { .. } if reply.generation == self.generation => {
+                if let Some(b) = self.browser.as_mut().filter(|b| b.device == reply.device) {
+                    b.path = value
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .unwrap_or(&b.path)
+                        .to_owned();
+                    b.display_path = value
+                        .get("display_path")
+                        .and_then(Value::as_str)
+                        .unwrap_or(&b.path)
+                        .to_owned();
+                    b.parent = value
+                        .get("parent")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    b.entries = value
+                        .get("entries")
+                        .and_then(Value::as_array)
+                        .map(|entries| {
+                            entries
+                                .iter()
+                                .filter_map(|e| {
+                                    Some(Entry {
+                                        name: e.get("name")?.as_str()?.into(),
+                                        path: e.get("path")?.as_str()?.into(),
+                                        kind: e.get("kind")?.as_str()?.into(),
+                                        size: e.get("size").and_then(Value::as_u64).unwrap_or(0),
+                                    })
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    b.selected = b.selected.min(b.entries.len().saturating_sub(1));
+                    b.loading = false;
+                    if value
+                        .get("truncated")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
+                        self.notice =
+                            "Directory listing bounded · use search or a narrower directory".into();
+                    }
+                }
+            }
+            Operation::Preview { .. } if reply.generation == self.generation => {
+                if let Some(b) = &mut self.browser {
+                    b.preview = Some(safe_text(
+                        value
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Preview unavailable"),
+                    ));
+                }
+            }
+            Operation::Mkdir { .. } if reply.generation == self.generation => {
+                self.refresh_browser()
+            }
+            _ => {}
+        }
+    }
+    fn key(&mut self, key: KeyEvent) {
+        if key.kind == KeyEventKind::Release {
+            return;
+        }
+        if self.help {
+            if matches!(key.code, KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('?')) {
+                self.help = false;
+            }
+            return;
+        }
+        // Input fields own every printable key, including navigation shortcuts.
+        if let Some(mode) = self.input {
+            match key.code {
+                KeyCode::Esc => {
+                    self.input = None;
+                    self.text.clear();
+                }
+                KeyCode::Backspace => {
+                    self.text.pop();
+                    self.palette_selected = 0;
+                }
+                KeyCode::Char(c)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    self.text.push(c);
+                    self.palette_selected = 0;
+                }
+                KeyCode::Down if mode == Input::Palette => {
+                    let n = self.palette().len();
+                    self.palette_selected = (self.palette_selected + 1).min(n.saturating_sub(1));
+                }
+                KeyCode::Up if mode == Input::Palette => {
+                    self.palette_selected = self.palette_selected.saturating_sub(1)
+                }
+                KeyCode::Enter => match mode {
+                    Input::Palette => {
+                        if let Some((action, _)) =
+                            self.palette().get(self.palette_selected).copied()
+                        {
+                            self.execute(action);
+                        }
+                    }
+                    Input::Search => {
+                        if self.view == View::Files {
+                            if let Some(b) = &mut self.browser {
+                                b.search = self.text.clone();
+                                b.selected = 0;
+                            }
+                        } else {
+                            self.search = self.text.clone();
+                            self.selected = 0;
+                        }
+                        self.input = None;
+                    }
+                    Input::Add => {
+                        if transport::valid_target(&self.text) {
+                            self.pending_add = Some(self.text.clone());
+                            self.input = None;
+                        } else {
+                            self.notice = "Use an SSH alias or user@host".into();
+                        }
+                    }
+                    Input::Mkdir => {
+                        if !self.text.is_empty()
+                            && self.text != "."
+                            && self.text != ".."
+                            && !self.text.contains('/')
+                            && !self.text.contains('\0')
+                        {
+                            if let Some(b) = &self.browser {
+                                let path = join_component(&b.path, &self.text);
+                                self.send(b.device, Operation::Mkdir { path });
+                            }
+                            self.input = None;
+                        } else {
+                            self.notice = "Enter a single directory name".into();
+                        }
+                    }
+                },
+                _ => {}
+            }
+            return;
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('p') => {
+                    self.input = Some(Input::Palette);
+                    self.text.clear();
+                    self.palette_selected = 0;
+                }
+                KeyCode::Char('c') => self.quit = true,
+                _ => {}
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Char('?') | KeyCode::F(1) => self.help = true,
+            KeyCode::Char('/') => {
+                self.input = Some(Input::Search);
+                self.text = if self.view == View::Files {
+                    self.browser
+                        .as_ref()
+                        .map(|b| b.search.clone())
+                        .unwrap_or_default()
+                } else {
+                    self.search.clone()
+                };
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.focus = if self.focus == Focus::Devices {
+                    Focus::Workspace
+                } else {
+                    Focus::Devices
+                }
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                if self.view == View::Files && self.focus == Focus::Workspace {
+                    self.parent_directory();
+                } else {
+                    self.focus = Focus::Devices;
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') => self.focus = Focus::Workspace,
+            KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
+            KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
+            KeyCode::Enter => {
+                if self.focus == Focus::Devices {
+                    self.focus = Focus::Workspace;
+                    self.refresh();
+                } else {
+                    match self.view {
+                    View::Work => { if let Some((d,s)) = self.selected_session() { self.pending_attach = Some((d,s,false)); } },
+                    View::Files => { if let Some(b) = &self.browser { if let Some(e) = self.visible_entries().get(b.selected).cloned() { if e.kind == "directory" { self.open_browser(b.device,e.path); } else { self.generation += 1; self.send(b.device,Operation::Preview { path:e.path }); } } } },
+                    View::Network => self.notice = "Ctrl+P · shell / files are available through Work and the device selector".into(),
+                }
+                }
+            }
+            KeyCode::Esc => {
+                if self.view == View::Files {
+                    if let Some(b) = &mut self.browser {
+                        if b.preview.take().is_none() {
+                            self.view = View::Work;
+                        }
+                    }
+                } else if !self.search.is_empty() {
+                    self.search.clear();
+                } else {
+                    self.focus = Focus::Devices;
+                }
+            }
+            _ => {}
+        }
+    }
+    fn parent_directory(&mut self) {
+        if let Some(b) = &self.browser {
+            if let Some(path) = b.parent.clone() {
+                self.open_browser(b.device, path);
+            }
+        }
+    }
+    fn move_selection(&mut self, delta: isize) {
+        if self.view == View::Files {
+            if let Some(b) = &mut self.browser {
+                if b.preview.is_some() {
+                    b.preview_scroll = b.preview_scroll.saturating_add_signed(delta as i16);
+                    return;
+                }
+            }
+        }
+        if self.focus == Focus::Devices {
+            self.device = shift(self.device, delta, self.devices.len() + 1);
+            self.selected = 0;
+            if self.view == View::Files {
+                if let Some(d) = self.actual_device() {
+                    self.open_browser(d, ".".into());
+                }
+            } else {
+                self.refresh();
+            }
+        } else if self.view == View::Files {
+            let len = self.visible_entries().len();
+            if let Some(b) = &mut self.browser {
+                b.selected = shift(b.selected, delta, len);
+            }
+        } else {
+            self.selected = shift(self.selected, delta, self.session_rows().len());
+        }
+    }
+}
+fn shift(index: usize, delta: isize, length: usize) -> usize {
+    index
+        .saturating_add_signed(delta)
+        .min(length.saturating_sub(1))
+}
+fn join_component(path: &str, name: &str) -> String {
+    use base64::Engine;
+    if let Some(encoded) = path.strip_prefix("cx-bytes:") {
+        if let Ok(mut bytes) = base64::engine::general_purpose::STANDARD.decode(encoded) {
+            if !bytes.ends_with(b"/") {
+                bytes.push(b'/');
+            }
+            bytes.extend_from_slice(name.as_bytes());
+            return format!(
+                "cx-bytes:{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            );
+        }
+    }
+    format!("{}/{}", path.trim_end_matches('/'), name)
+}
+fn unique_key() -> String {
+    format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    )
+}
+fn safe_text(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() && c != '\n' && c != '\t' {
+                '�'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+fn identity(device: &Device) -> String {
+    safe_label(&format!("{}@{}", device.account, device.host))
+}
+fn safe_label(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() || matches!(c,'\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
+                '�'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+fn block(title: String, focused: bool) -> Block<'static> {
+    Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(if focused {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        })
+}
+fn selected_style() -> Style {
+    Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+}
+fn render(frame: &mut Frame<'_>, app: &App) {
+    let area = frame.area();
+    if area.width < 36 || area.height < 10 {
+        frame.render_widget(
+            Paragraph::new("cx · enlarge terminal\nCtrl+P actions · Ctrl+C quit")
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(5),
+            Constraint::Length(2),
+        ])
+        .split(area);
+    let label = match app.view {
+        View::Work => "[Work]  Network",
+        View::Files => "Work / Files  Network",
+        View::Network => "Work  [Network]",
+    };
+    let viewer = app
+        .devices
+        .iter()
+        .find(|d| d.target.is_none())
+        .map(identity)
+        .unwrap_or_else(|| "local viewer".into());
+    frame.render_widget(
+        Paragraph::new(format!(
+            "cx   {label}                         viewer {viewer}"
+        )),
+        vertical[0],
+    );
+    let sidebar_width = if area.width < 70 { 17 } else { 24 };
+    let content = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(sidebar_width), Constraint::Min(15)])
+        .split(vertical[1]);
+    let mut device_items = vec![ListItem::new("All devices")];
+    for (i, d) in app.devices.iter().enumerate() {
+        let count = app.work[i].sessions.len();
+        let status = if app.work[i].loading {
+            "checking"
+        } else if app.work[i].error.is_some() {
+            "unavailable"
+        } else if app.work[i].fetched == 0
+            || transport::now().saturating_sub(app.work[i].fetched) > 60
+        {
+            "unknown"
+        } else {
+            "ready"
+        };
+        device_items.push(ListItem::new(vec![
+            Line::from(format!("{}  {count}", safe_label(&d.name))),
+            Line::from(format!("  {status}")),
+        ]));
+    }
+    let mut state = ratatui::widgets::ListState::default().with_selected(Some(app.device));
+    frame.render_stateful_widget(
+        List::new(device_items)
+            .block(block("Devices".into(), app.focus == Focus::Devices))
+            .highlight_style(selected_style()),
+        content[0],
+        &mut state,
+    );
+    match app.view {
+        View::Work => {
+            let rows = app.session_rows();
+            if rows.is_empty() {
+                let checking = app.work.iter().any(|w| w.loading);
+                let errors: Vec<_> = app
+                    .work
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| app.device == 0 || app.device == i + 1)
+                    .filter_map(|(_, w)| w.error.as_deref())
+                    .collect();
+                let text = if checking {
+                    "Checking sessions…".into()
+                } else if !errors.is_empty() {
+                    errors.join("\n")
+                } else {
+                    "No live sessions in this view.\nCtrl+P → Files → Start here".into()
+                };
+                frame.render_widget(
+                    Paragraph::new(text)
+                        .wrap(Wrap { trim: false })
+                        .block(block("Work".into(), app.focus == Focus::Workspace)),
+                    content[1],
+                );
+            } else {
+                let items: Vec<_> = rows
+                    .iter()
+                    .map(|(i, s)| {
+                        ListItem::new(vec![
+                            Line::from(vec![
+                                Span::raw(format!(
+                                    "{}  {}",
+                                    safe_label(&s.provider),
+                                    safe_label(&s.name)
+                                )),
+                                Span::raw(if s.external { " · external" } else { "" }),
+                            ]),
+                            Line::from(format!(
+                                "  {} · {}",
+                                identity(&app.devices[*i]),
+                                safe_label(&s.directory)
+                            )),
+                        ])
+                    })
+                    .collect();
+                let mut state = ratatui::widgets::ListState::default()
+                    .with_selected(Some(app.selected.min(rows.len() - 1)));
+                frame.render_stateful_widget(
+                    List::new(items)
+                        .block(block(
+                            format!("Work · {} top-level sessions", rows.len()),
+                            app.focus == Focus::Workspace,
+                        ))
+                        .highlight_style(selected_style()),
+                    content[1],
+                    &mut state,
+                );
+            }
+        }
+        View::Files => {
+            if let Some(b) = &app.browser {
+                let title = format!(
+                    "{} · {}{}",
+                    identity(&app.devices[b.device]),
+                    safe_label(&b.display_path),
+                    if b.loading { " · checking" } else { "" }
+                );
+                if let Some(preview) = &b.preview {
+                    frame.render_widget(
+                        Paragraph::new(preview.as_str())
+                            .wrap(Wrap { trim: false })
+                            .scroll((b.preview_scroll, 0))
+                            .block(block(title, true)),
+                        content[1],
+                    );
+                } else {
+                    let entries = app.visible_entries();
+                    let items: Vec<_> = entries
+                        .iter()
+                        .map(|e| {
+                            ListItem::new(format!(
+                                "{} {}{}",
+                                if e.kind == "directory" {
+                                    "+"
+                                } else if e.kind == "symlink" {
+                                    "@"
+                                } else {
+                                    " "
+                                },
+                                safe_label(&e.name),
+                                if e.kind == "file" {
+                                    format!("  {} B", e.size)
+                                } else {
+                                    String::new()
+                                }
+                            ))
+                        })
+                        .collect();
+                    let mut state =
+                        ratatui::widgets::ListState::default().with_selected(Some(b.selected));
+                    frame.render_stateful_widget(
+                        List::new(items)
+                            .block(block(title, app.focus == Focus::Workspace))
+                            .highlight_style(selected_style()),
+                        content[1],
+                        &mut state,
+                    );
+                }
+            }
+        }
+        View::Network => {
+            let d = app.actual_device();
+            let title = d
+                .map(|d| format!("Network · {}", identity(&app.devices[d])))
+                .unwrap_or_else(|| "Network · select a device".into());
+            let text = if app.network_loading {
+                "Checking interface and route observations…".into()
+            } else if let Some(value) = d.and_then(|d| app.network.get(&d)) {
+                network_summary(value)
+            } else {
+                "No recent network observation.\nCtrl+P → Refresh".into()
+            };
+            frame.render_widget(
+                Paragraph::new(text)
+                    .wrap(Wrap { trim: false })
+                    .block(block(title, app.focus == Focus::Workspace)),
+                content[1],
+            );
+        }
+    }
+    let jobs_count: usize = app
+        .jobs
+        .values()
+        .filter_map(|v| v.get("jobs").and_then(Value::as_array))
+        .map(Vec::len)
+        .sum();
+    let footer = if jobs_count > 0 {
+        format!("Transfers {jobs_count} · {}\nEnter open · Esc back · / search · Tab focus · Ctrl+P actions",safe_text(&app.notice))
+    } else {
+        format!(
+            "{}\nEnter open · Esc back · / search · Tab focus · Ctrl+P actions",
+            safe_text(&app.notice)
+        )
+    };
+    frame.render_widget(Paragraph::new(footer), vertical[2]);
+    if let Some(input) = app.input {
+        let rect = popup(area, 76, if input == Input::Palette { 16 } else { 5 });
+        frame.render_widget(Clear, rect);
+        if input == Input::Palette {
+            let parts = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Min(1)])
+                .split(rect);
+            frame.render_widget(
+                Paragraph::new(format!("> {}", safe_text(&app.text)))
+                    .block(block("Actions · type to filter".into(), true)),
+                parts[0],
+            );
+            let items = app
+                .palette()
+                .iter()
+                .map(|(_, s)| ListItem::new(*s))
+                .collect::<Vec<_>>();
+            let mut state =
+                ratatui::widgets::ListState::default().with_selected(Some(app.palette_selected));
+            frame.render_stateful_widget(
+                List::new(items)
+                    .block(Block::default().borders(Borders::ALL))
+                    .highlight_style(selected_style()),
+                parts[1],
+                &mut state,
+            );
+        } else {
+            frame.render_widget(
+                Paragraph::new(format!(
+                    "> {}\nEnter confirm · Escape cancel",
+                    safe_text(&app.text)
+                ))
+                .block(block(
+                    match input {
+                        Input::Search => "Search",
+                        Input::Add => "Add device · SSH alias or user@host",
+                        _ => "Directory name",
+                    }
+                    .into(),
+                    true,
+                )),
+                rect,
+            );
+        }
+    }
+    if app.help {
+        let rect = popup(area, 76, 20);
+        frame.render_widget(Clear, rect);
+        let mut help = String::from("Arrows / h j k l  navigate\nEnter  enter directory / preview file / take control\nEscape  back     Tab  focus     /  search\nCtrl+P  actions  Ctrl+C  quit\n\nNative terminal: cx keys are suspended.\nManaged sessions: Ctrl+] Space returns; Ctrl+] twice sends Ctrl+].\nExternal sessions keep their own tmux bindings.\n\nAvailable actions\n");
+        for (_, label) in ACTIONS.iter().filter(|(a, _)| app.action_enabled(*a)) {
+            help.push_str(label);
+            help.push('\n');
+        }
+        frame.render_widget(
+            Paragraph::new(help)
+                .wrap(Wrap { trim: false })
+                .block(block("Help · Escape closes".into(), true)),
+            rect,
+        );
+    }
+}
+fn popup(area: Rect, width: u16, height: u16) -> Rect {
+    let w = width.min(area.width.saturating_sub(2));
+    let h = height.min(area.height.saturating_sub(2));
+    Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    )
+}
+fn network_summary(value: &Value) -> String {
+    let mut lines =
+        vec!["Host observation · internet and overlay access remain unknown.".to_string()];
+    if let Some(backend) = value.get("backend").and_then(Value::as_str) {
+        lines.push(format!("Backend: {}", safe_label(backend)));
+    }
+    let interfaces = value.get("interfaces");
+    if interfaces
+        .and_then(|v| v.get("state"))
+        .and_then(Value::as_str)
+        == Some("unknown")
+    {
+        lines.push("\nInterfaces: unknown · observation unavailable".into());
+    }
+    if let Some(interfaces) = interfaces.and_then(|v| {
+        v.as_array()
+            .or_else(|| v.get("data").and_then(Value::as_array))
+    }) {
+        lines.push("\nInterfaces".into());
+        for interface in interfaces.iter().take(24) {
+            let name = interface
+                .get("display_name")
+                .or_else(|| interface.get("name"))
+                .or_else(|| interface.get("ifname"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let state = interface
+                .get("state")
+                .or_else(|| interface.get("operstate"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            lines.push(format!("  {} · {}", safe_label(name), safe_label(state)));
+        }
+    }
+    let sharing = value.get("sharing");
+    let state = sharing
+        .and_then(|v| v.get("state"))
+        .and_then(Value::as_str)
+        .unwrap_or("unsupported");
+    let reason = sharing
+        .and_then(|v| v.get("reason"))
+        .and_then(Value::as_str)
+        .unwrap_or("No supported mutation backend is available");
+    lines.push(format!(
+        "\nSharing: {}\n{}",
+        safe_label(state),
+        safe_label(reason)
+    ));
+    lines.join("\n")
+}
+fn load_cache(app: &mut App) {
+    let path = store::state_dir().join("ui-sessions.json");
+    if std::fs::metadata(&path).map_or(true, |m| m.len() > 1024 * 1024) {
+        return;
+    }
+    if let Ok(data) = std::fs::read(path) {
+        if let Ok(cache) = serde_json::from_slice::<HashMap<String, Vec<Session>>>(&data) {
+            for (d, w) in app.devices.iter().zip(&mut app.work) {
+                if let Some(s) = cache.get(&d.id) {
+                    w.sessions = s.clone();
+                }
+            }
+        }
+    }
+}
+fn save_cache(app: &App) {
+    // Only launch metadata is retained; no prompts, transcripts, environment or provider secrets.
+    let cache: HashMap<_, _> = app
+        .devices
+        .iter()
+        .zip(&app.work)
+        .map(|(d, w)| (d.id.clone(), w.sessions.clone()))
+        .collect();
+    if let Ok(data) = serde_json::to_vec(&cache) {
+        if data.len() > 1024 * 1024 {
+            return;
+        }
+        if let Ok(dir) = store::ensure() {
+            use std::{io::Write, os::unix::fs::OpenOptionsExt};
+            let temp = dir.join(format!("ui-sessions.{}.tmp", std::process::id()));
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(0o600)
+                .open(&temp)
+            {
+                if file.write_all(&data).is_ok() {
+                    let _ = std::fs::rename(&temp, dir.join("ui-sessions.json"));
+                }
+                let _ = std::fs::remove_file(temp);
+            }
+        }
+    }
+}
+
+struct Screen {
+    terminal: Terminal<CrosstermBackend<io::Stdout>>,
+    active: bool,
+}
+impl Screen {
+    fn new() -> Result<Self> {
+        terminal::enable_raw_mode()?;
+        if let Err(e) = execute!(io::stdout(), EnterAlternateScreen) {
+            let _ = terminal::disable_raw_mode();
+            return Err(e.into());
+        }
+        let terminal = match Terminal::new(CrosstermBackend::new(io::stdout())) {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = terminal::disable_raw_mode();
+                let _ = execute!(io::stdout(), LeaveAlternateScreen);
+                return Err(e.into());
+            }
+        };
+        Ok(Self {
+            terminal,
+            active: true,
+        })
+    }
+    fn suspend(&mut self) -> Result<()> {
+        if self.active {
+            self.active = false;
+            let raw = terminal::disable_raw_mode();
+            let leave = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+            let cursor = self.terminal.show_cursor();
+            raw?;
+            leave?;
+            cursor?;
+        }
+        Ok(())
+    }
+    fn resume(&mut self) -> Result<()> {
+        terminal::enable_raw_mode()?;
+        self.active = true;
+        execute!(self.terminal.backend_mut(), EnterAlternateScreen)?;
+        self.terminal.clear()?;
+        Ok(())
+    }
+}
+impl Drop for Screen {
+    fn drop(&mut self) {
+        let _ = self.suspend();
+    }
+}
+
+pub fn run() -> Result<()> {
+    let devices = store::devices()?;
+    anyhow::ensure!(!devices.is_empty(), "No local device available");
+    let (tx, rx) = mpsc::sync_channel::<Task>(32);
+    let (result_tx, result_rx) = mpsc::channel::<Reply>();
+    // One worker bounds simultaneous probes. No redraw-triggered SSH or credential prompts.
+    thread::spawn(move || {
+        while let Ok(task) = rx.recv() {
+            let result = transport::request(&task.execution, task.op.clone());
+            if result_tx
+                .send(Reply {
+                    device: task.device,
+                    op: task.op,
+                    generation: task.generation,
+                    result,
+                })
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    let mut app = App::new(devices, tx);
+    load_cache(&mut app);
+    app.refresh_work();
+    let mut screen = Screen::new().context("open terminal workspace")?;
+    let mut dirty = true;
+    let mut last_refresh = Instant::now();
+    while !app.quit {
+        let mut cache_changed = false;
+        while let Ok(reply) = result_rx.try_recv() {
+            cache_changed |= matches!(reply.op, Operation::Sessions) && reply.result.is_ok();
+            app.apply(reply);
+            dirty = true;
+        }
+        if cache_changed {
+            save_cache(&app);
+        }
+        if let Some(target) = app.pending_add.take() {
+            screen.suspend()?;
+            let result = crate::add(&target);
+            screen.resume()?;
+            match result {
+                Ok(()) => {
+                    let updated = store::devices()?;
+                    let old: HashMap<_, _> = app
+                        .devices
+                        .iter()
+                        .zip(app.work.drain(..))
+                        .map(|(d, w)| (d.id.clone(), w))
+                        .collect();
+                    app.work = updated
+                        .iter()
+                        .map(|d| {
+                            old.get(&d.id)
+                                .map(|w| Cached {
+                                    sessions: w.sessions.clone(),
+                                    loading: false,
+                                    error: w.error.clone(),
+                                    fetched: w.fetched,
+                                })
+                                .unwrap_or(Cached {
+                                    sessions: vec![],
+                                    loading: false,
+                                    error: None,
+                                    fetched: 0,
+                                })
+                        })
+                        .collect();
+                    app.devices = updated;
+                    app.notice = format!("Added {}", safe_label(&target));
+                    app.refresh_work();
+                }
+                Err(e) => app.notice = safe_text(&format!("Enrollment failed: {e:#}")),
+            }
+            dirty = true;
+        }
+        if let Some((d, session, observe)) = app.pending_attach.take() {
+            screen.suspend()?;
+            let result = sessions::attach(&app.devices[d], &session, observe);
+            screen.resume()?;
+            app.notice = match result {
+                Ok(()) => format!(
+                    "Returned from {} · session remains on execution host",
+                    identity(&app.devices[d])
+                ),
+                Err(e) => safe_text(&format!("Attachment failed: {e:#}")),
+            };
+            app.refresh_work();
+            dirty = true;
+        }
+        if dirty {
+            screen.terminal.draw(|frame| render(frame, &app))?;
+            dirty = false;
+        }
+        if event::poll(Duration::from_millis(100))? {
+            match event::read()? {
+                Event::Key(k) => app.key(k),
+                Event::Resize(_, _) => {}
+                _ => {}
+            }
+            dirty = true;
+        }
+        // Bounded fleet refresh; idle does not continuously redraw.
+        if last_refresh.elapsed() >= Duration::from_secs(30) {
+            if app.view == View::Work {
+                app.refresh_work();
+            }
+            if let Some(b) = &app.browser {
+                app.send(b.device, Operation::Jobs);
+            }
+            last_refresh = Instant::now();
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    fn app() -> App {
+        let (tx, _) = mpsc::sync_channel(32);
+        App::new(
+            vec![Device {
+                id: "local".into(),
+                name: "workstation".into(),
+                target: None,
+                account: "tester".into(),
+                host: "workstation".into(),
+                status: "unknown".into(),
+                observed_at: 0,
+            }],
+            tx,
+        )
+    }
+    #[test]
+    fn printable_navigation_is_text_in_inputs() {
+        let mut a = app();
+        a.input = Some(Input::Search);
+        for c in "hjkl?q/".chars() {
+            a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(a.text, "hjkl?q/");
+        assert!(!a.quit);
+        assert!(!a.help);
+    }
+    #[test]
+    fn enter_file_previews_never_launches() {
+        let mut a = app();
+        a.view = View::Files;
+        a.browser = Some(Browser::new(0, "/tmp".into()));
+        a.browser.as_mut().unwrap().entries = vec![Entry {
+            name: "file".into(),
+            path: "/tmp/file".into(),
+            kind: "file".into(),
+            size: 1,
+        }];
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.pending_attach.is_none());
+    }
+    #[test]
+    fn hostile_controls_are_not_rendered() {
+        assert_eq!(safe_text("\x1b]52;secret\x07"), "�]52;secret�");
+    }
+    #[test]
+    fn stale_directory_reply_cannot_retarget_browser() {
+        let mut a = app();
+        a.browser = Some(Browser::new(0, "/new".into()));
+        a.generation = 2;
+        a.apply(Reply {
+            device: 0,
+            op: Operation::List {
+                path: "/old".into(),
+            },
+            generation: 1,
+            result: Ok(serde_json::json!({"path":"/old","entries":[]})),
+        });
+        assert_eq!(a.browser.unwrap().path, "/new");
+    }
+    #[test]
+    fn terminal_sizes_render_without_panic() {
+        for (w, h) in [(80, 24), (120, 40), (40, 15), (25, 8)] {
+            let a = app();
+            let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+            t.draw(|f| render(f, &a)).unwrap();
+            let content = t
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            assert!(content.contains("cx"));
+        }
+    }
+    #[test]
+    fn opaque_parent_and_browser_state_are_preserved() {
+        let mut a = app();
+        a.open_browser(0, "/recordings".into());
+        let b = a.browser.as_mut().unwrap();
+        b.selected = 7;
+        b.search = "robot".into();
+        b.parent = Some("cx-bytes:Lw==".into());
+        a.open_browser(0, "/other".into());
+        a.open_browser(0, "/recordings".into());
+        assert_eq!(a.browser.as_ref().unwrap().selected, 7);
+        assert_eq!(a.browser.as_ref().unwrap().search, "robot");
+        a.parent_directory();
+        assert_eq!(a.browser.as_ref().unwrap().path, "cx-bytes:Lw==");
+    }
+    #[test]
+    fn bounded_queue_never_blocks_or_leaves_checking() {
+        let (tx, _rx) = mpsc::sync_channel(1);
+        let mut a = app();
+        a.tx = tx;
+        assert!(a.send(0, Operation::Info));
+        a.refresh_work();
+        assert!(!a.work[0].loading);
+        assert!(a.notice.contains("busy"));
+    }
+    #[test]
+    fn network_observation_uses_real_shape_and_honest_sharing() {
+        let text = network_summary(
+            &serde_json::json!({"interfaces":{"state":"observed","data":[{"ifname":"eth0","operstate":"UP"}]},"sharing":{"state":"unsupported","reason":"No privileges requested"}}),
+        );
+        assert!(text.contains("eth0 · UP"));
+        assert!(text.contains("Sharing: unsupported"));
+        assert!(text.contains("unknown"));
+    }
+    #[test]
+    fn labels_cannot_spoof_rows_or_direction() {
+        assert_eq!(safe_label("name\n\t\u{202e}abc"), "name���abc");
+    }
+}

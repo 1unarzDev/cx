@@ -32,6 +32,10 @@ enum Cmd {
     Update {
         #[arg(long)]
         check: bool,
+        #[arg(long, hide = true)]
+        automatic: bool,
+        #[arg(long, hide = true)]
+        json: bool,
     },
     #[command(hide = true)]
     Restart {
@@ -136,6 +140,8 @@ fn info() -> Result<serde_json::Value> {
     caps.extend(sessions::available_providers()?);
     caps.push("native-command-v1");
     caps.push("stop-session-v1");
+    caps.push("stable-update-v1");
+    caps.push("pdf-pages-v1");
     Ok(
         serde_json::json!({"host":d.host,"account":d.account,"machine_id":machine.trim(),"capabilities":caps,"protocol":1,"persistent_channel":true,"version":env!("CARGO_PKG_VERSION")}),
     )
@@ -299,29 +305,50 @@ fn run() -> Result<()> {
         }
         Some(Cmd::Helper) => helper(),
         Some(Cmd::Restart { state }) => ui::run_restored(Some(&state)),
-        Some(Cmd::Update { check }) => {
-            match update::check(true)? {
+        Some(Cmd::Update {
+            check,
+            automatic,
+            json,
+        }) => {
+            let mut version = env!("CARGO_PKG_VERSION").to_string();
+            let (state, message, launch) = match update::check(!automatic)? {
                 update::CheckOutcome::Ready(plan) if !check => {
                     let path = update::install(&plan)?;
-                    println!("Updated cx to {}", plan.version);
-                    if unsafe { libc::isatty(libc::STDIN_FILENO) } != 0 {
-                        use std::os::unix::process::CommandExt;
-                        return Err(Command::new(path).exec().into());
-                    }
+                    version = plan.version.clone();
+                    ("updated", format!("Updated cx to {}", version), Some(path))
                 }
-                update::CheckOutcome::Ready(plan) => println!("Verified cx {} ready", plan.version),
+                update::CheckOutcome::Ready(plan) => {
+                    version = plan.version;
+                    ("ready", format!("Verified cx {} ready", version), None)
+                }
                 update::CheckOutcome::Current => {
-                    println!("cx {} is current", env!("CARGO_PKG_VERSION"))
+                    ("current", format!("cx {} is current", version), None)
                 }
-                update::CheckOutcome::Offline => println!(
-                    "Update service unreachable · keeping cx {}",
-                    env!("CARGO_PKG_VERSION")
+                update::CheckOutcome::Offline => (
+                    "offline",
+                    format!("Update service unreachable · keeping cx {}", version),
+                    None,
                 ),
-                update::CheckOutcome::Unavailable(message) => {
-                    println!("{} · keeping current cx", message)
-                }
-                update::CheckOutcome::Skipped => {
-                    println!("Update check already running · keeping current cx")
+                update::CheckOutcome::Unavailable(message) => (
+                    "unavailable",
+                    format!("{} · keeping current cx", message),
+                    None,
+                ),
+                update::CheckOutcome::Skipped => (
+                    "busy",
+                    "Update check deferred · keeping current cx".into(),
+                    None,
+                ),
+            };
+            if json {
+                println!("{}", serde_json::json!({"state":state,"version":version}));
+            } else {
+                println!("{message}");
+            }
+            if !json && !automatic && unsafe { libc::isatty(libc::STDIN_FILENO) } != 0 {
+                if let Some(path) = launch {
+                    use std::os::unix::process::CommandExt;
+                    return Err(Command::new(path).exec().into());
                 }
             }
             Ok(())

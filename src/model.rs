@@ -60,6 +60,10 @@ pub enum Operation {
     Preview {
         path: String,
     },
+    PreviewPage {
+        path: String,
+        page: u32,
+    },
     Mkdir {
         path: String,
     },

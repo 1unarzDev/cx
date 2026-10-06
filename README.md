@@ -27,7 +27,7 @@ Install as your ordinary user. Missing dependencies require an explicit package-
 
 Select files → `t` → choose device → browse folder → `p`. Or copy/cut, switch devices, and paste. Incoming name conflicts rename by default; overwrite is explicit. Cross-host cuts support regular files; copy supports directories. Delete has no undo. Transfers are not snapshots of growing files.
 
-New sessions use the chosen execution host and folder. Agent choices reflect installed launchable runtimes. Watch opens a read-only terminal; ordinary opening gives input. Existing personal tmux sessions retain their bindings.
+New sessions use the chosen execution host and folder. Agent choices reflect installed launchable runtimes. Watch opens a read-only terminal; ordinary opening gives input. Starting Claude/Codex manually inside a shell updates its badge while the agent owns the terminal; returning to the shell restores it. The original terminal remains attachable. Existing personal tmux sessions retain their bindings.
 
 Updates check signed stable releases in the background, retain the running version when offline, and restore the viewer when idle. Run `cx update --check` to check explicitly. Sessions/jobs keep running independently.
 

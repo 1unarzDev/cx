@@ -171,6 +171,90 @@ fn process_identity(pane: u32, provider: &str) -> Option<ProcessIdentity> {
     }
     None
 }
+fn running_provider(pid: u32) -> Option<&'static str> {
+    let executable = fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    // Claude's native installer uses a version-numbered executable behind claude.
+    if executable.parent()?.file_name()?.to_str()? == "versions"
+        && executable.parent()?.parent()?.file_name()?.to_str()? == "claude"
+        && executable
+            .file_name()?
+            .to_str()?
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b == b'.')
+    {
+        return Some("claude");
+    }
+    match executable.file_name()?.to_str()? {
+        "claude" => Some("claude"),
+        "codex" => Some("codex"),
+        "node" | "nodejs" | "bun" => {
+            // Only examine the executable/script arguments, never prompts or tool inputs.
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            fs::File::open(format!("/proc/{pid}/cmdline"))
+                .ok()?
+                .take(4096)
+                .read_to_end(&mut bytes)
+                .ok()?;
+            let script = bytes.split(|b| *b == 0).nth(1)?;
+            if script.ends_with(b"/@anthropic-ai/claude-code/cli.js") {
+                Some("claude")
+            } else if script.ends_with(b"/@openai/codex/bin/codex.js") {
+                Some("codex")
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+fn terminal_group(pid: u32) -> Option<(i32, i64, i32)> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let fields: Vec<_> = stat
+        .rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .take(6)
+        .collect();
+    Some((
+        fields.get(2)?.parse().ok()?,
+        fields.get(4)?.parse().ok()?,
+        fields.get(5)?.parse().ok()?,
+    ))
+}
+fn foreground_provider(pane: u32) -> Option<(&'static str, ProcessIdentity)> {
+    let (_, terminal, foreground) = terminal_group(pane)?;
+    if terminal == 0 || foreground <= 0 {
+        return None;
+    }
+    let mut queue = std::collections::VecDeque::from([(pane, 0)]);
+    let mut visited = 0;
+    while let Some((pid, depth)) = queue.pop_front() {
+        visited += 1;
+        if visited > 64 {
+            break;
+        }
+        if let Some((group, tty, _)) = terminal_group(pid) {
+            if group == foreground && tty == terminal {
+                if let Some(provider) = running_provider(pid) {
+                    let identity = process_identity(pid, provider)
+                        .or_else(|| process_identity(pid, "shell"))?;
+                    return Some((provider, identity));
+                }
+            }
+        }
+        if depth < 6 {
+            if let Ok(children) = fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")) {
+                for child in children.split_whitespace().take(16) {
+                    if let Ok(child) = child.parse() {
+                        queue.push_back((child, depth + 1));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
 fn inspect(managed: bool, id: &str) -> Result<Session> {
     let (host, account, boot_id) = identity();
     let name = field(managed, id, "#{session_name}")?;
@@ -198,27 +282,30 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
         "{}:{process_start}",
         field(managed, id, "#{session_created}")?
     );
+    let original_provider = prior
+        .as_ref()
+        .map(|s| s.provider.as_str())
+        .unwrap_or("shell");
+    let detected = foreground_provider(pid);
+    let provider = detected
+        .as_ref()
+        .map(|(provider, _)| *provider)
+        .unwrap_or(original_provider);
+    let process = detected
+        .map(|(_, process)| process)
+        .or_else(|| process_identity(pid, original_provider));
     Ok(Session {
         id: if managed { name.clone() } else { id.into() },
         name: prior.as_ref().map(|s| s.name.clone()).unwrap_or(name),
         directory: field(managed, id, "#{pane_current_path}")?,
-        provider: prior
-            .as_ref()
-            .map(|s| s.provider.clone())
-            .unwrap_or_else(|| "shell".into()),
+        provider: provider.into(),
         host,
         account,
         pid,
         started,
         boot_id,
         external: !managed,
-        process: process_identity(
-            pid,
-            prior
-                .as_ref()
-                .map(|s| s.provider.as_str())
-                .unwrap_or("shell"),
-        ),
+        process,
         launcher: prior.as_ref().and_then(|s| s.launcher.clone()),
         socket: if managed {
             Some(socket()?.to_string_lossy().into_owned())

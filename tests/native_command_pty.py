@@ -13,6 +13,8 @@ with tempfile.TemporaryDirectory(prefix='cx-command-pty-') as temporary:
     folder = root / "folder ' quoted ; ☃"
     folder.mkdir()
     (root/'.bash_profile').write_text("cx_fixture_wrapper() { printf wrapper-ok; }\n")
+    # Isolate synthetic Zsh startup from runner-owned global compinit prompts.
+    (root/'.zshenv').write_text("unsetopt GLOBAL_RCS\n")
     (root/'.zshrc').write_text("cx_fixture_wrapper() { printf wrapper-ok; }\n")
     config = root/'config/fish'; config.mkdir(parents=True)
     (config/'config.fish').write_text("function cx_fixture_wrapper; printf wrapper-ok; end\n")
@@ -22,6 +24,7 @@ with tempfile.TemporaryDirectory(prefix='cx-command-pty-') as temporary:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
         before = termios.tcgetattr(slave)
         environment = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root/'state'), XDG_CONFIG_HOME=str(root/'config'), SHELL=shell, TERM='xterm-256color')
+        environment.pop("ZDOTDIR", None)
         args = [binary, 'native-command', base64.b64encode(json.dumps(payload).encode()).decode()]
         if unit:
             environment['CX_COMMAND_PTY_FIXTURE'] = json.dumps(payload)

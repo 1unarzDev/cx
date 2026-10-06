@@ -827,14 +827,14 @@ pub fn execute_command(request: &RunCommand) -> Result<()> {
     let script = if fish {
         "function __cx_suspend --on-signal TSTP; command kill -STOP $fish_pid; end; status job-control none; eval $argv[1]; exit $status"
     } else {
-        r#"command set +m
-command trap 'command kill -STOP $$' TSTP
-(command trap - INT QUIT TSTP TTIN TTOU; command eval "$1") < /dev/tty &
+        r#"builtin set +m
+builtin trap 'command kill -STOP $$' TSTP
+(builtin trap - INT QUIT TSTP TTIN TTOU; builtin eval "$1") < /dev/tty &
 __cx_child=$!
-command wait "$__cx_child"
+builtin wait "$__cx_child"
 __cx_status=$?
 while command kill -0 "$__cx_child" 2>/dev/null; do
-    command wait "$__cx_child"
+    builtin wait "$__cx_child"
     __cx_status=$?
 done
 exit "$__cx_status""#

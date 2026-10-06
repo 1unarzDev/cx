@@ -257,6 +257,122 @@ fn foreground_provider(pane: u32) -> Option<(&'static str, ProcessIdentity)> {
     }
     None
 }
+// Codex's working root can differ from its process cwd (notably with -C).
+// Retain only that allowlisted path; arguments may otherwise contain prompts.
+fn codex_directory_arg(args: &[Vec<u8>]) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let mut args = args.iter().skip(1);
+    let mut directory = None;
+    while let Some(arg) = args.next() {
+        if arg == b"--" {
+            break;
+        }
+        let path = if arg == b"-C" || arg == b"--cd" {
+            args.next()?.as_slice()
+        } else if let Some(path) = arg.strip_prefix(b"--cd=") {
+            path
+        } else if let Some(path) = arg.strip_prefix(b"-C") {
+            path
+        } else {
+            // Skip option values so a config value or image named -C cannot
+            // masquerade as the workspace. Unknown flags fail closed.
+            if [
+                b"-c".as_slice(),
+                b"--config",
+                b"-m",
+                b"--model",
+                b"-p",
+                b"--profile",
+                b"-s",
+                b"--sandbox",
+                b"-a",
+                b"--ask-for-approval",
+                b"-i",
+                b"--image",
+                b"--add-dir",
+                b"--enable",
+                b"--disable",
+                b"--remote",
+                b"--remote-auth-token-env",
+                b"--local-provider",
+            ]
+            .contains(&arg.as_slice())
+            {
+                args.next()?;
+            } else if arg.starts_with(b"-")
+                && !arg.contains(&b'=')
+                && ![
+                    b"--last".as_slice(),
+                    b"--all",
+                    b"--search",
+                    b"--no-alt-screen",
+                    b"--no-daemon",
+                    b"--worktree",
+                    b"--oss",
+                    b"--strict-config",
+                    b"--approve-for-me",
+                    b"--dangerously-bypass-approvals-and-sandbox",
+                    b"--dangerously-bypass-hook-trust",
+                ]
+                .contains(&arg.as_slice())
+            {
+                return None;
+            }
+            continue;
+        };
+        if path.is_empty() {
+            return None;
+        }
+        directory = Some(PathBuf::from(std::ffi::OsString::from_vec(path.to_vec())));
+    }
+    directory
+}
+
+fn provider_directory(provider: &str, process: &ProcessIdentity) -> Option<String> {
+    use std::io::Read;
+    // Guard PID reuse; never retarget a session to a replacement process.
+    let start = || -> Option<String> {
+        let stat = fs::read_to_string(format!("/proc/{}/stat", process.pid)).ok()?;
+        Some(stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.into())
+    };
+    if start()? != process.start_ticks {
+        return None;
+    }
+    let cwd = fs::read_link(format!("/proc/{}/cwd", process.pid)).ok()?;
+    let directory = if provider == "codex" {
+        let mut bytes = Vec::new();
+        fs::File::open(format!("/proc/{}/cmdline", process.pid))
+            .ok()?
+            .take(16385)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        if bytes.len() <= 16384 && bytes.last() == Some(&0) {
+            let args: Vec<_> = bytes[..bytes.len() - 1]
+                .split(|b| *b == 0)
+                .map(<[u8]>::to_vec)
+                .collect();
+            codex_directory_arg(&args)
+                .map(|path| {
+                    if path.is_absolute() {
+                        path
+                    } else {
+                        cwd.join(path)
+                    }
+                })
+                .unwrap_or(cwd)
+        } else {
+            cwd
+        }
+    } else {
+        cwd
+    };
+    if start()? != process.start_ticks {
+        return None;
+    }
+    // Directory is metadata only: it is never a shell command or prompt.
+    Some(directory.canonicalize().ok()?.to_str()?.to_owned())
+}
+
 fn inspect(managed: bool, id: &str) -> Result<Session> {
     let (host, account, boot_id) = identity();
     let name = field(managed, id, "#{session_name}")?;
@@ -296,10 +412,15 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
     let process = detected
         .map(|(_, process)| process)
         .or_else(|| process_identity(pid, original_provider));
+    let directory = process
+        .as_ref()
+        .filter(|_| provider != "shell")
+        .and_then(|process| provider_directory(provider, process))
+        .unwrap_or(field(managed, id, "#{pane_current_path}")?);
     Ok(Session {
         id: if managed { name.clone() } else { id.into() },
         name: prior.as_ref().map(|s| s.name.clone()).unwrap_or(name),
-        directory: field(managed, id, "#{pane_current_path}")?,
+        directory,
         provider: provider.into(),
         host,
         account,
@@ -1085,6 +1206,47 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
     }
+    #[test]
+    fn codex_workspace_argument_ignores_prompt_and_config_values() {
+        let parse = |args: &[&str]| {
+            codex_directory_arg(
+                &args
+                    .iter()
+                    .map(|s| s.as_bytes().to_vec())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(
+            parse(&["codex", "-C", "/projects/cx"]),
+            Some("/projects/cx".into())
+        );
+        assert_eq!(
+            parse(&["codex", "resume", "--last", "--cd=/projects/cx"]),
+            Some("/projects/cx".into())
+        );
+        assert_eq!(
+            parse(&["codex", "-C../quoted ' ☃"]),
+            Some("../quoted ' ☃".into())
+        );
+        assert_eq!(
+            parse(&["codex", "-c", "--cd=/misleading", "-C", "/correct"]),
+            Some("/correct".into())
+        );
+        assert_eq!(parse(&["codex", "--", "-C", "/prompt"]), None);
+        assert_eq!(parse(&["codex", "--future-option", "-C", "/unknown"]), None);
+        assert_eq!(parse(&["codex", "-C"]), None);
+    }
+
+    #[test]
+    fn provider_directory_rejects_pid_reuse() {
+        let process = ProcessIdentity {
+            pid: std::process::id(),
+            start_ticks: "wrong".into(),
+            native_id: None,
+        };
+        assert_eq!(provider_directory("claude", &process), None);
+    }
+
     #[test]
     fn command_validation_is_bounded() {
         for text in [

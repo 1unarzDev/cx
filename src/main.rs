@@ -372,6 +372,12 @@ fn run() -> Result<()> {
             c.arg("-u");
             if !external {
                 sessions::configure_managed()?;
+                let target = args
+                    .windows(2)
+                    .find(|pair| pair[0] == "-t")
+                    .map(|pair| pair[1].as_str())
+                    .context("native attachment requires a session target")?;
+                sessions::refresh_managed_status(target)?;
                 c.arg("-S").arg(sessions::socket()?);
             }
             let status = c.args(args).status()?;

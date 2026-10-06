@@ -373,6 +373,32 @@ fn provider_directory(provider: &str, process: &ProcessIdentity) -> Option<Strin
     Some(directory.canonicalize().ok()?.to_str()?.to_owned())
 }
 
+fn default_session_name(provider: &str, directory: &str) -> String {
+    let folder = directory
+        .rsplit('/')
+        .find(|s| !s.is_empty())
+        .unwrap_or("root");
+    let folder: String = folder
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
+                '�'
+            } else {
+                c
+            }
+        })
+        .collect();
+    format!("{provider} · {folder}")
+}
+fn current_session_name(prior: &Session, provider: &str, directory: &str) -> String {
+    // Refresh the exact cx-generated title convention; preserve other names.
+    if prior.name == default_session_name(&prior.provider, &prior.directory) {
+        default_session_name(provider, directory)
+    } else {
+        prior.name.clone()
+    }
+}
+
 fn inspect(managed: bool, id: &str) -> Result<Session> {
     let (host, account, boot_id) = identity();
     let name = field(managed, id, "#{session_name}")?;
@@ -419,7 +445,10 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
         .unwrap_or(field(managed, id, "#{pane_current_path}")?);
     Ok(Session {
         id: if managed { name.clone() } else { id.into() },
-        name: prior.as_ref().map(|s| s.name.clone()).unwrap_or(name),
+        name: prior
+            .as_ref()
+            .map(|s| current_session_name(s, provider, &directory))
+            .unwrap_or(name),
         directory,
         provider: provider.into(),
         host,
@@ -801,9 +830,18 @@ pub fn create(request: &CreateSession) -> Result<Session> {
     f.write_all(&serde_json::to_vec(&session)?)?;
     f.sync_all()?;
     fs::rename(temp, root.join(format!("{name}.json")))?;
-    let safe = |v: &str| {
-        v.chars()
-            .filter(|c| !c.is_control() && *c != '#')
+    set_managed_status(&session)?;
+    Ok(session)
+}
+fn set_managed_status(session: &Session) -> Result<()> {
+    let safe = |value: &str| {
+        value
+            .chars()
+            .filter(|c| {
+                !c.is_control()
+                    && *c != '#'
+                    && !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            })
             .take(50)
             .collect::<String>()
     };
@@ -813,11 +851,19 @@ pub fn create(request: &CreateSession) -> Result<Session> {
         safe(&session.host),
         safe(&session.name)
     );
-    let mut c = tmux(true)?;
-    c.args(["set-option", "-t", &name, "status-right", &status]);
-    output(c)?;
-    Ok(session)
+    let mut command = tmux(true)?;
+    command.args(["set-option", "-t", &session.id, "status-right", &status]);
+    output(command)?;
+    Ok(())
 }
+pub fn refresh_managed_status(id: &str) -> Result<()> {
+    let id = id.strip_prefix('=').unwrap_or(id);
+    if !id.starts_with("cx-") || id.len() != 67 || !id[3..].bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("invalid managed session identity");
+    }
+    set_managed_status(&inspect(true, id)?)
+}
+
 fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
@@ -837,6 +883,7 @@ pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
     }
     if !session.external && device.target.is_none() {
         configure_managed()?;
+        refresh_managed_status(&session.id)?;
     }
     let mut args = vec![
         "attach-session".to_string(),
@@ -1245,6 +1292,39 @@ mod tests {
             native_id: None,
         };
         assert_eq!(provider_directory("claude", &process), None);
+    }
+
+    #[test]
+    fn generated_session_names_follow_provider_workspace_and_keep_custom_names() {
+        let mut session = Session {
+            id: "fixture".into(),
+            name: "shell · scaling-law".into(),
+            directory: "/projects/scaling-law".into(),
+            provider: "shell".into(),
+            host: "host".into(),
+            account: "account".into(),
+            pid: 1,
+            started: "start".into(),
+            boot_id: "boot".into(),
+            external: false,
+            socket: None,
+            launcher: None,
+            process: None,
+        };
+        assert_eq!(
+            current_session_name(&session, "codex", "/projects/cx"),
+            "codex · cx"
+        );
+        assert_eq!(
+            current_session_name(&session, "shell", "/projects/new"),
+            "shell · new"
+        );
+        session.name = "My important work".into();
+        assert_eq!(
+            current_session_name(&session, "codex", "/projects/cx"),
+            "My important work"
+        );
+        assert_eq!(default_session_name("shell", "/"), "shell · root");
     }
 
     #[test]

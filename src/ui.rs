@@ -316,11 +316,7 @@ const ACTIONS: &[(Action, &str)] = &[
     (Action::Help, "Keyboard help"),
     (
         Action::Update,
-        concat!(
-            "Update cx v",
-            env!("CARGO_PKG_VERSION"),
-            " · check releases"
-        ),
+        concat!("Update cx v", env!("CARGO_PKG_VERSION"), ": check releases"),
     ),
     (Action::Quit, "Quit workspace"),
 ];
@@ -6395,10 +6391,9 @@ fn update_check_notice(result: &Result<crate::update::CheckOutcome>) -> String {
         Ok(CheckOutcome::Unavailable(message)) => safe_text(message),
         Ok(CheckOutcome::Skipped) => "update check already running".into(),
         Ok(CheckOutcome::Current) => "up to date".into(),
-        Ok(CheckOutcome::Ready(plan)) => format!(
-            "v{} ready · waiting for idle workspace",
-            safe_label(&plan.version)
-        ),
+        Ok(CheckOutcome::Ready(plan)) => {
+            format!("v{} ready; waiting for idle", safe_label(&plan.version))
+        }
         Err(_) => "update unavailable; version kept".into(),
     })
 }
@@ -6662,11 +6657,11 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 start_update_check(&update_tx, true);
                 update_phase = UpdatePhase::Checking;
                 last_update_check = Instant::now();
-                app.notice = version_notice("checking verified releases…");
+                app.notice = version_notice("checking verified releases...");
                 dirty = true;
             } else if matches!(update_phase, UpdatePhase::Checking) {
                 update_report_requested = true;
-                app.notice = version_notice("checking verified releases…");
+                app.notice = version_notice("checking verified releases...");
                 dirty = true;
             }
         }
@@ -6677,7 +6672,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     update_phase = match result {
                         Ok(crate::update::CheckOutcome::Ready(plan)) => {
                             app.notice = version_notice(&format!(
-                                "v{} ready · updating when workspace is idle",
+                                "v{} ready; waiting for idle",
                                 safe_label(&plan.version)
                             ));
                             dirty = true;
@@ -6720,7 +6715,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     thread::spawn(move || {
                         let _ = tx.send(UpdateEvent::Installed(crate::update::install(&plan)));
                     });
-                    app.notice = version_notice("installing verified update…");
+                    app.notice = version_notice("installing verified update...");
                     dirty = true;
                 }
             } else if let UpdatePhase::Installed(path) = &update_phase {

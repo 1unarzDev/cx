@@ -766,6 +766,8 @@ mod tests {
         let pid_path = fixture.path().join("child.pid");
         let mut command = Command::new("/bin/bash");
         command.args([
+            "--noprofile",
+            "--norc",
             "-i",
             "-m",
             "-c",

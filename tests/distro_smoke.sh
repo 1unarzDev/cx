@@ -32,10 +32,11 @@ for CX_IMAGE in ubuntu:22.04 ubuntu:24.04 rockylinux:8 rockylinux:9 archlinux:la
         fi
         mkdir -p /tmp/cx-smoke/tests
         cp /repo/install.sh /tmp/cx-smoke/install.sh
-        cp /repo/tests/distro_install_fixture.py /tmp/cx-smoke/tests/
+        cp /repo/tests/distro_install_fixture.py /repo/tests/manual_agents_live.py /tmp/cx-smoke/tests/
         cp /binary/cx /tmp/cx-smoke/cx
         chmod 755 /tmp/cx-smoke /tmp/cx-smoke/tests /tmp/cx-smoke/cx
-        chmod 644 /tmp/cx-smoke/install.sh /tmp/cx-smoke/tests/distro_install_fixture.py
-        exec runuser -u cx-test -- env HOME=/home/cx-test python3 /tmp/cx-smoke/tests/distro_install_fixture.py /tmp/cx-smoke/cx
+        chmod 644 /tmp/cx-smoke/install.sh /tmp/cx-smoke/tests/*.py
+        runuser -u cx-test -- env HOME=/home/cx-test python3 /tmp/cx-smoke/tests/distro_install_fixture.py /tmp/cx-smoke/cx
+        exec runuser -u cx-test -- env HOME=/home/cx-test python3 /tmp/cx-smoke/tests/manual_agents_live.py /tmp/cx-smoke/cx
         '
 done

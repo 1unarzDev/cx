@@ -9,10 +9,10 @@ with tempfile.TemporaryDirectory(prefix='cx-manual-agent-') as directory:
     socket = str(root/'state/cx/managed.sock')
     for provider in ['claude', 'codex']:
         shutil.copy2(shutil.which('sleep'), root/provider)
-    original = json.loads(subprocess.check_output([binary, 'new', '--provider', 'shell', '--directory', str(root), '--key', 'manual-detection'], env=env, text=True))
-    def run(*args): return subprocess.check_output(['tmux', '-S', socket, *args], text=True)
+    original = json.loads(subprocess.check_output([binary, 'new', '--provider', 'shell', '--directory', str(root), '--key', 'manual-detection'], env=env, universal_newlines=True))
+    def run(*args): return subprocess.check_output(['tmux', '-S', socket, *args], universal_newlines=True)
     def send(text): run('send-keys', '-l', text); run('send-keys', 'Enter')
-    def current(): return next(s for s in json.loads(subprocess.check_output([binary, 'sessions'], env=env, text=True)) if s['id'] == original['id'])
+    def current(): return next(s for s in json.loads(subprocess.check_output([binary, 'sessions'], env=env, universal_newlines=True)) if s['id'] == original['id'])
     def expect(provider):
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
@@ -35,4 +35,4 @@ with tempfile.TemporaryDirectory(prefix='cx-manual-agent-') as directory:
         time.sleep(.2); expect('shell')
         print(json.dumps({'result':'PASS','checks':['manual Codex/Claude foreground discovery','return to shell','background excluded','spoofed argv0 excluded','same terminal id/pid/start/boot/socket'], 'agents':'synthetic sleep binaries named codex/claude; no inference'}))
     finally:
-        subprocess.run(['tmux', '-S', socket, 'kill-server'], capture_output=True)
+        subprocess.run(['tmux', '-S', socket, 'kill-server'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)

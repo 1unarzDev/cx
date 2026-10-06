@@ -92,9 +92,11 @@ fn ids(managed: bool) -> Result<Vec<String>> {
     let out = c.output()?;
     if !out.status.success() {
         let e = String::from_utf8_lossy(&out.stderr);
-        if e.contains("no server running")
-            || e.contains("No such file")
-            || e.contains("Connection refused")
+        let e = e.trim();
+        if e.starts_with("no server running on ")
+            || (e.starts_with("error connecting to ")
+                && (e.ends_with("(No such file or directory)")
+                    || e.ends_with("(Connection refused)")))
         {
             return Ok(vec![]);
         }

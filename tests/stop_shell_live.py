@@ -17,7 +17,7 @@ with tempfile.TemporaryDirectory(prefix='cx-stop-shell-') as temporary:
     root = home / 'state/cx'
     root.mkdir(parents=True, mode=0o700)
     socket = root / 'managed.sock'
-    env = dict(os.environ, HOME=str(home), XDG_STATE_HOME=str(home/'state'), SHELL='/bin/bash')
+    env = dict(os.environ, XDG_STATE_HOME=str(home/'state'), SHELL='/bin/bash')
     env.pop('TMUX', None)
     boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
     def tmux(*args, check=True):
@@ -34,10 +34,10 @@ with tempfile.TemporaryDirectory(prefix='cx-stop-shell-') as temporary:
                       external=False, socket=str(socket), launcher='/bin/bash', process=None)
         (root/(name+'.json')).write_text(json.dumps(record))
         return {k: record[k] for k in ('id', 'pid', 'started', 'boot_id')}
-    def stop(args):
+    def stop(args, overrides=None):
         request = json.dumps(dict(version=1, id='fixture-stop', op=dict(op='stop_session', args=args))).encode()
         wire = b'CX1 '+str(len(request)).encode()+b'\n'+request
-        result = subprocess.run([binary, 'helper'], input=wire, env=env, capture_output=True, timeout=5)
+        result = subprocess.run([binary, 'helper'], input=wire, env=dict(env, **(overrides or {})), capture_output=True, timeout=5)
         assert result.returncode == 0, result.stderr.decode()
         header, data = result.stdout.split(b'\n', 1)
         assert header == b'CX1 '+str(len(data)).encode(), result.stdout
@@ -47,6 +47,13 @@ with tempfile.TemporaryDirectory(prefix='cx-stop-shell-') as temporary:
     try:
         victim = create('victim')
         guard = create('protected-equivalent')
+        broken = home/'broken-tools'; broken.mkdir()
+        launcher = broken/'tmux'
+        launcher.write_text("#!/bin/sh\necho 'tmux: error while loading shared libraries: libfixture.so: cannot open shared object file: No such file or directory' >&2\nexit 127\n")
+        launcher.chmod(0o700)
+        response = stop(victim, dict(HOME=str(home), PATH=str(broken)+':'+env['PATH']))
+        assert response['error'] and alive(victim) and alive(guard), response
+        checks.append('tmux loader failure is an error, never already stopped')
         for field, value in [('id', '$0'), ('id', victim['id'][:12]), ('pid', victim['pid']+1),
                              ('started', victim['started']+'0'), ('boot_id', 'different-boot')]:
             bad = dict(victim, **{field:value})

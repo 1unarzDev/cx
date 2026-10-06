@@ -18,7 +18,8 @@ jobs:
           [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           test "${GITHUB_REF_NAME#v}" = "$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
       - run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt
-      - run: cargo fmt --check && cargo test --locked
+      - run: cargo fmt --check && cargo test --locked && cargo build --locked
+      - run: python3 tests/native_command_pty.py target/debug/cx
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
       - run: shellcheck install.sh tests/distro_smoke.sh && python3 tests/install_fixture.py
   portable:

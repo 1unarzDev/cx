@@ -1,6 +1,6 @@
 //! Native workspace. Remote work runs off the input/render thread; attachment owns the terminal.
 use crate::{
-    model::{CreateSession, Device, Operation, Session},
+    model::{CreateSession, Device, Operation, RunCommand, Session},
     sessions, store, transport,
 };
 use anyhow::{Context, Result};
@@ -45,6 +45,7 @@ enum Focus {
 enum Input {
     Search,
     Palette,
+    Command,
     Mkdir,
     Filter,
     Rename,
@@ -150,7 +151,7 @@ enum Action {
     Conflict,
     Jobs,
     Shell,
-    DeviceShell,
+    Command,
     Claude,
     Codex,
     Observe,
@@ -194,10 +195,7 @@ const ACTIONS: &[(Action, &str)] = &[
         "Existing files · skip / overwrite / rename",
     ),
     (Action::Jobs, "Transfers · progress / cancel / retry"),
-    (Action::DeviceShell, "Shell on selected device"),
-    (Action::Shell, "Start here · shell"),
-    (Action::Claude, "Start here · Claude"),
-    (Action::Codex, "Start here · Codex"),
+    (Action::Command, "Run command here · :"),
     (
         Action::Observe,
         "Watch session · read-only terminal, no input",
@@ -216,7 +214,7 @@ const ACTIONS: &[(Action, &str)] = &[
     (Action::Paste, "Paste here · copy into this directory"),
     (Action::Mkdir, "Create directory here"),
     (Action::Network, "Network"),
-    (Action::Work, "Work"),
+    (Action::Work, "Sessions"),
     (Action::Refresh, "Refresh"),
     (Action::Help, "Keyboard help"),
     (Action::Update, "Update cx · check verified releases"),
@@ -284,6 +282,8 @@ struct App {
     transfer_drawer: bool,
     jobs: HashMap<usize, Value>,
     pending_attach: Option<(usize, Session, bool)>,
+    command_target: Option<(usize, String)>,
+    pending_command: Option<(Device, RunCommand)>,
     pending_add: Option<String>,
     quit: bool,
     force_update: bool,
@@ -348,6 +348,8 @@ impl App {
             transfer_drawer: false,
             jobs: HashMap::new(),
             pending_attach: None,
+            command_target: None,
+            pending_command: None,
             pending_add: None,
             quit: false,
             force_update: false,
@@ -380,6 +382,7 @@ impl App {
             return match input {
                 Input::Search => "Search",
                 Input::Palette => "Actions",
+                Input::Command => "Run command",
                 Input::Add => "Add device",
                 Input::Mkdir => "New folder",
                 Input::Rename => "Rename",
@@ -390,7 +393,7 @@ impl App {
             Focus::Devices => "Devices",
             Focus::Actions => "Actions",
             Focus::Workspace => match self.view {
-                View::Work => "Work",
+                View::Work => "Sessions",
                 View::Network => "Network",
                 View::Files if self.other_browser.is_some() => {
                     if self.destination_active {
@@ -552,12 +555,25 @@ impl App {
             self.selected = 0;
         }
     }
+    fn command_context(&self) -> Option<(usize, String)> {
+        if self.view == View::Files {
+            return self.browser.as_ref().map(|b| (b.device, b.path.clone()));
+        }
+        if self.view == View::Work {
+            if let Some((d, session)) = self.selected_session() {
+                return Some((d, session.directory));
+            }
+        }
+        self.actual_device().map(|d| (d, "~".into()))
+    }
     fn palette(&self) -> Vec<(Action, &'static str)> {
         ACTIONS
             .iter()
             .copied()
             .filter(|(a, label)| {
-                self.action_enabled(*a) && label.to_lowercase().contains(&self.text.to_lowercase())
+                workspace_action(*a)
+                    && self.action_enabled(*a)
+                    && label.to_lowercase().contains(&self.text.to_lowercase())
             })
             .collect()
     }
@@ -588,6 +604,7 @@ impl App {
     fn action_enabled(&self, action: Action) -> bool {
         match action {
             Action::Work => self.view != View::Work,
+            Action::Command => self.command_context().is_some(),
             Action::Network => self.view != View::Network,
             Action::Destination | Action::Conflict => self.clipboard.is_some(),
             Action::TransferTo => {
@@ -738,10 +755,45 @@ impl App {
                 self.view = View::Network;
                 self.refresh();
             }
-            Action::New | Action::DeviceShell => {
-                if action == Action::New && self.view == View::Files {
+            Action::Command => {
+                if let Some((d, path)) = self.command_context() {
+                    if self.devices[d].target.is_some()
+                        && self.providers.get(&d).is_none_or(|(_, checked)| {
+                            transport::now().saturating_sub(*checked) >= 60
+                        })
+                    {
+                        self.check_providers(d);
+                        self.notice =
+                            "Checking command support on this device · press : again shortly"
+                                .into();
+                        return;
+                    }
+                    let supported = self.devices[d].target.is_none()
+                        || self.providers.get(&d).is_some_and(|(caps, checked)| {
+                            transport::now().saturating_sub(*checked) < 60
+                                && caps.iter().any(|c| c == "native-command-v1")
+                        });
+                    if !supported {
+                        self.check_providers(d);
+                        self.notice = "Run command needs a current cx helper on this device · update it and retry".into();
+                        return;
+                    }
+                    self.rename_cursor = 0;
+                    self.command_target = Some((d, path));
+                    self.text.clear();
+                    self.input = Some(Input::Command);
+                } else {
+                    self.notice = "Select a device or open its files first".into();
+                }
+            }
+            Action::New => {
+                if self.view == View::Files {
                     if let Some(browser) = &self.browser {
                         let (device, path) = (browser.device, browser.path.clone());
+                        if let Some(provider) = self.launch_provider.take() {
+                            self.start_at(device, path, provider);
+                            return;
+                        }
                         self.check_providers(device);
                         self.dialog = Some(Dialog::Provider(device, Some(path)));
                         self.dialog_selected = 0;
@@ -750,11 +802,15 @@ impl App {
                 }
                 self.other_browser = None;
                 self.destination_active = false;
-                self.launch_provider = if action == Action::DeviceShell {
-                    Some("shell".into())
-                } else {
-                    None
-                };
+                self.launch_provider = None;
+                if self.view == View::Work {
+                    if let Some((d, session)) = self.selected_session() {
+                        self.check_providers(d);
+                        self.dialog = Some(Dialog::Provider(d, Some(session.directory)));
+                        self.dialog_selected = 0;
+                        return;
+                    }
+                }
                 self.choose_device(ChooseDevice::New);
             }
             Action::Files => {
@@ -1188,8 +1244,7 @@ impl App {
                     }
                     self.launch_provider = Some(provider);
                     self.open_browser(d, "~".into());
-                    self.notice =
-                        "Browse to a folder · Ctrl+P → Start here (Enter only opens files)".into();
+                    self.notice = "Browse to a folder · n starts here (Enter opens files)".into();
                 }
                 Dialog::Matching(d, path, provider, session) => {
                     self.dialog = None;
@@ -1754,9 +1809,10 @@ impl App {
                     self.input = None;
                     self.text.clear();
                     self.rename_target = None;
+                    self.command_target = None;
                 }
                 KeyCode::Backspace => {
-                    if mode == Input::Rename {
+                    if matches!(mode, Input::Rename | Input::Command) {
                         if let Some((at, _)) = self.text[..self.rename_cursor].char_indices().last()
                         {
                             self.text.replace_range(at..self.rename_cursor, "");
@@ -1771,21 +1827,25 @@ impl App {
                     self.text.clear();
                     self.rename_cursor = 0;
                 }
-                KeyCode::Left if mode == Input::Rename => {
+                KeyCode::Left if matches!(mode, Input::Rename | Input::Command) => {
                     self.rename_cursor = self.text[..self.rename_cursor]
                         .char_indices()
                         .last()
                         .map(|(at, _)| at)
                         .unwrap_or(0);
                 }
-                KeyCode::Right if mode == Input::Rename => {
+                KeyCode::Right if matches!(mode, Input::Rename | Input::Command) => {
                     if let Some(c) = self.text[self.rename_cursor..].chars().next() {
                         self.rename_cursor += c.len_utf8();
                     }
                 }
-                KeyCode::Home if mode == Input::Rename => self.rename_cursor = 0,
-                KeyCode::End if mode == Input::Rename => self.rename_cursor = self.text.len(),
-                KeyCode::Delete if mode == Input::Rename => {
+                KeyCode::Home if matches!(mode, Input::Rename | Input::Command) => {
+                    self.rename_cursor = 0
+                }
+                KeyCode::End if matches!(mode, Input::Rename | Input::Command) => {
+                    self.rename_cursor = self.text.len()
+                }
+                KeyCode::Delete if matches!(mode, Input::Rename | Input::Command) => {
                     if let Some(c) = self.text[self.rename_cursor..].chars().next() {
                         self.text.replace_range(
                             self.rename_cursor..self.rename_cursor + c.len_utf8(),
@@ -1798,8 +1858,10 @@ impl App {
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
-                    if self.text.chars().count() < 256 {
-                        if mode == Input::Rename {
+                    if self.text.len() + c.len_utf8()
+                        <= if mode == Input::Command { 8192 } else { 256 }
+                    {
+                        if matches!(mode, Input::Rename | Input::Command) {
                             self.text.insert(self.rename_cursor, c);
                             self.rename_cursor += c.len_utf8();
                         } else {
@@ -1833,6 +1895,20 @@ impl App {
                             self.palette().get(self.palette_selected).copied()
                         {
                             self.execute(action);
+                        }
+                    }
+                    Input::Command => {
+                        if !self.text.trim().is_empty() {
+                            if let Some((d, directory)) = self.command_target.take() {
+                                self.pending_command = Some((
+                                    self.devices[d].clone(),
+                                    RunCommand {
+                                        directory,
+                                        command: std::mem::take(&mut self.text),
+                                    },
+                                ));
+                                self.input = None;
+                            }
                         }
                     }
                     Input::Search => {
@@ -2002,6 +2078,8 @@ impl App {
                 KeyCode::Char('p') => Some(Action::Paste),
                 KeyCode::Char('t') => Some(Action::TransferTo),
                 KeyCode::Char('T') => Some(Action::Jobs),
+                KeyCode::Char('M') => Some(Action::Mkdir),
+                KeyCode::Char('o') => Some(Action::Conflict),
                 _ => None,
             };
             if key.code == KeyCode::Char('Y') {
@@ -2024,6 +2102,8 @@ impl App {
             }
         }
         match key.code {
+            KeyCode::Char('n') => self.execute(Action::New),
+            KeyCode::Char(':') => self.execute(Action::Command),
             KeyCode::Char('?') | KeyCode::F(1) => self.help = true,
             KeyCode::Char('T') => self.execute(Action::Jobs),
             KeyCode::Char('/') => {
@@ -2087,7 +2167,7 @@ impl App {
                     match self.view {
                     View::Work => { if let Some((d,s)) = self.selected_session() { self.pending_attach = Some((d,s,false)); } },
                     View::Files => { if let Some(b) = &self.browser { if let Some(e) = self.visible_entries().get(b.selected).cloned() { if e.kind == "directory" { self.open_browser(b.device,e.path); } else { self.generation += 1; self.send(b.device,Operation::Preview { path:e.path }); } } } },
-                    View::Network => self.notice = "Ctrl+P · shell / files are available through Work and the device selector".into(),
+                    View::Network => self.notice = "Ctrl+P · shell / files are available through Sessions and the device selector".into(),
                 }
                 }
             }
@@ -2376,66 +2456,44 @@ fn muted() -> Style {
 fn ascii() -> bool {
     std::env::var_os("CX_ASCII").is_some() || std::env::var("TERM").is_ok_and(|v| v == "dumb")
 }
+fn workspace_action(action: Action) -> bool {
+    !matches!(
+        action,
+        Action::Destination
+            | Action::TransferTo
+            | Action::Conflict
+            | Action::Copy
+            | Action::Cut
+            | Action::Rename
+            | Action::Delete
+            | Action::Hidden
+            | Action::Filter
+            | Action::Select
+            | Action::Visual
+            | Action::Paste
+            | Action::Mkdir
+            | Action::Shell
+            | Action::Claude
+            | Action::Codex
+    )
+}
+
 fn sidebar_actions(app: &App) -> Vec<(Action, &'static str)> {
-    let mut a = vec![
+    let mut actions = vec![
+        (Action::Work, "Sessions"),
         (Action::Files, "Files"),
-        (Action::New, "New session"),
-        (Action::DeviceShell, "Shell"),
-        (Action::Jobs, "Transfers"),
         (Action::Network, "Network"),
+        (Action::New, "New session"),
+        (Action::Jobs, "Transfers"),
         (Action::Add, "Add device"),
     ];
-    if app.view != View::Work {
-        a.insert(0, (Action::Work, "Work"));
-    }
-    if app.view == View::Files {
-        a.insert(0, (Action::TransferTo, "t Transfer to…"));
-        if let Some(provider) = &app.launch_provider {
-            let action = match provider.as_str() {
-                "claude" => Action::Claude,
-                "codex" => Action::Codex,
-                _ => Action::Shell,
-            };
-            a.insert(0, (action, "Start here"));
-        }
-        if app.clipboard.is_some() {
-            a.insert(0, (Action::Destination, "Destination…"));
-            a.insert(
-                0,
-                (
-                    Action::Conflict,
-                    ["Existing: skip", "Existing: overwrite", "Existing: rename"][app.conflict],
-                ),
-            );
-            a.insert(0, (Action::Paste, "Paste here · p"));
-        }
-        a.insert(0, (Action::Copy, "Copy · c"));
-        a.insert(1, (Action::Cut, "Cut · x"));
-        a.insert(2, (Action::Rename, "Rename · r"));
-        a.insert(3, (Action::Delete, "Delete… · d"));
-        a.push((Action::Mkdir, "New folder"));
-    }
-    a.retain(|(action, _)| app.action_enabled(*action));
-    if app.view == View::Files {
-        a.retain(|(action, _)| *action != Action::Files);
-        if app.clipboard.is_some() {
-            // Keep destination controls visible even in a short sidebar.
-            a.sort_by_key(|(action, _)| match action {
-                Action::Paste => 0,
-                Action::Destination => 1,
-                Action::Conflict => 2,
-                Action::Copy => 3,
-                Action::Cut => 4,
-                Action::Rename => 5,
-                Action::Delete => 6,
-                _ => 7,
-            });
-        }
-    }
+    actions.retain(|(action, _)| {
+        app.action_enabled(*action) && !(*action == Action::Files && app.view == View::Files)
+    });
     if app.selected_session().is_some() && app.view == View::Work {
-        a.insert(2, (Action::Observe, "Watch · read-only"));
+        actions.push((Action::Observe, "Watch · read-only"));
     }
-    a
+    actions
 }
 
 fn render(frame: &mut Frame<'_>, app: &App) {
@@ -2471,12 +2529,12 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         ])
         .split(area);
     let label = match (app.view, area.width < 70) {
-        (View::Work, true) => "Work",
+        (View::Work, true) => "Sessions",
         (View::Files, true) => "Files",
         (View::Network, true) => "Network",
-        (View::Work, false) => "[Work]  Network",
-        (View::Files, false) => "Work / Files  Network",
-        (View::Network, false) => "Work  [Network]",
+        (View::Work, false) => "[Sessions]  Network",
+        (View::Files, false) => "Sessions / Files  Network",
+        (View::Network, false) => "Sessions  [Network]",
     };
     let viewer = app
         .devices
@@ -2613,25 +2671,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
     let actions = sidebar_actions(app);
     let items = actions
         .iter()
-        .map(|(action, label)| {
-            ListItem::new(format!(
-                " {}",
-                if sidebar_width < 17 {
-                    match action {
-                        Action::Copy => "c Copy",
-                        Action::Cut => "x Cut",
-                        Action::Rename => "r Rename",
-                        Action::Delete => "d Delete…",
-                        Action::Paste => "p Paste",
-                        Action::Destination => "To device…",
-                        Action::Conflict => "Conflicts…",
-                        _ => label,
-                    }
-                } else {
-                    label
-                }
-            ))
-        })
+        .map(|(_, label)| ListItem::new(format!(" {label}")))
         .collect::<Vec<_>>();
     let mut state =
         ratatui::widgets::ListState::default().with_selected(if app.focus == Focus::Actions {
@@ -2745,7 +2785,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 frame.render_widget(
                     Paragraph::new(text)
                         .wrap(Wrap { trim: false })
-                        .block(block("Work".into(), app.focus == Focus::Workspace)),
+                        .block(block("Sessions".into(), app.focus == Focus::Workspace)),
                     workspace,
                 );
             } else {
@@ -2820,7 +2860,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 )
                 .column_spacing(2)
                 .block(block(
-                    format!("Work · {} sessions", rows.len()),
+                    format!("Sessions · {} sessions", rows.len()),
                     app.focus == Focus::Workspace,
                 ))
                 .row_highlight_style(selected_style())
@@ -2870,7 +2910,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                     let label = app
                         .launch_provider
                         .as_ref()
-                        .map(|p| format!("Start {p} here · actions"))
+                        .map(|p| format!("Start {p} here · n"))
                         .unwrap_or_else(|| "Files".into());
                     render_browser(
                         frame,
@@ -3227,7 +3267,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         }
     } else if matches!(
         app.input,
-        Some(Input::Rename | Input::Mkdir | Input::Add | Input::Palette)
+        Some(Input::Rename | Input::Mkdir | Input::Add | Input::Palette | Input::Command)
     ) {
         vec![("Enter", "Confirm"), ("Esc", "Cancel"), ("Ctrl U", "Clear")]
     } else if matches!(app.input, Some(Input::Search | Input::Filter)) {
@@ -3248,8 +3288,8 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         vec![
             ("Space", "Select"),
             ("c / x", "Copy / cut"),
-            ("p", "Paste here"),
-            ("v", "Range"),
+            ("p / t", "Paste / transfer"),
+            ("n / :", "Session / command"),
             ("r / d", "Rename / delete"),
             ("?", "All keys"),
         ]
@@ -3314,7 +3354,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             76,
             if input == Input::Palette {
                 16
-            } else if input == Input::Rename {
+            } else if matches!(input, Input::Rename | Input::Command) {
                 3
             } else {
                 5
@@ -3346,30 +3386,48 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 &mut state,
             );
         } else {
+            let editing = matches!(input, Input::Rename | Input::Command);
+            let cursor_width = if editing {
+                Span::raw(safe_label(&app.text[..app.rename_cursor])).width() as u16 + 2
+            } else {
+                0
+            };
+            let scroll = cursor_width.saturating_sub(rect.width.saturating_sub(3));
             frame.render_widget(
-                Paragraph::new(if input == Input::Rename {
+                Paragraph::new(if matches!(input, Input::Rename | Input::Command) {
                     format!("> {}", safe_label(&app.text))
                 } else {
                     format!("> {}\nEnter confirm · Escape cancel", safe_label(&app.text))
                 })
+                .scroll((0, scroll))
                 .block(block(
-                    match input {
-                        Input::Search => "Search",
-                        Input::Add => "Add device · SSH alias or user@host",
-                        Input::Rename => "Rename",
-                        _ => "Directory name",
-                    }
-                    .into(),
+                    if input == Input::Command {
+                        app.command_target
+                            .as_ref()
+                            .map(|(d, path)| {
+                                format!(
+                                    "Run command · {} · {}",
+                                    identity(&app.devices[*d]),
+                                    safe_label(path)
+                                )
+                            })
+                            .unwrap_or_else(|| "Run command".into())
+                    } else {
+                        match input {
+                            Input::Search => "Search",
+                            Input::Add => "Add device · SSH alias or user@host",
+                            Input::Rename => "Rename",
+                            Input::Command => "Run command",
+                            _ => "Directory name",
+                        }
+                        .into()
+                    },
                     true,
                 )),
                 rect,
             );
-            if input == Input::Rename {
-                let width = Span::raw(safe_label(&app.text[..app.rename_cursor])).width() as u16;
-                frame.set_cursor_position((
-                    rect.x + 3 + width.min(rect.width.saturating_sub(5)),
-                    rect.y + 1,
-                ));
+            if editing {
+                frame.set_cursor_position((rect.x + 1 + cursor_width - scroll, rect.y + 1));
             }
         }
     }
@@ -3431,7 +3489,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                         safe_label(location)
                     )
                 } else {
-                    "Enter choose · next: browse folder, then Start here".into()
+                    "Enter choose · next: browse folder, then n to start".into()
                 },
             ),
             Dialog::Delete(d, entries) => (
@@ -3670,6 +3728,8 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             key_row("Tab / Shift+Tab", "Next / previous panel"),
             key_row("/", "Search"),
             key_row("Ctrl+P", "Actions"),
+            key_row("n", "New session in current folder"),
+            key_row(":", "Run command in current folder"),
             key_row("Ctrl+C", "Quit cx; work keeps running"),
         ];
         if app.view == View::Files {
@@ -3688,6 +3748,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 ("t", "Transfer to… choose device, folder, then p"),
                 ("T", "Transfer jobs and results"),
                 ("r · d", "Rename / confirm permanent deletion"),
+                ("M · o", "New folder / cycle copy conflict policy"),
                 ("gg / G · 5j / 5k", "First/last file / counted movement"),
             ] {
                 help.push(key_row(keys, description));
@@ -3710,7 +3771,10 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             "Available actions · Ctrl+P",
             key_style,
         )));
-        for (action, label) in ACTIONS.iter().filter(|(a, _)| app.action_enabled(*a)) {
+        for (action, label) in ACTIONS
+            .iter()
+            .filter(|(a, _)| workspace_action(*a) && app.action_enabled(*a))
+        {
             let keys = match action {
                 Action::TransferTo => "t",
                 Action::Jobs => "T",
@@ -4267,7 +4331,7 @@ fn save_restart_at(app: &App, directory: &std::path::Path) -> Result<String> {
     let bytes = serde_json::to_vec(&state)?;
     anyhow::ensure!(
         bytes.len() <= MAX_RESTART_STATE,
-        "Workspace too large for automatic restart; return to Work first"
+        "Workspace too large for automatic restart; return to Sessions first"
     );
     let name = format!("viewer-restart-{}.json", unique_key());
     let mut file = std::fs::OpenOptions::new()
@@ -4384,6 +4448,7 @@ fn can_restart(app: &App) -> bool {
         && !app.help
         && !app.creating
         && app.pending_attach.is_none()
+        && app.pending_command.is_none()
         && app.pending_add.is_none()
         && app.pending_requests.get() == 0
         && !app.file_busy
@@ -4697,6 +4762,20 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     app.refresh_work();
                 }
                 Err(e) => app.notice = safe_text(&format!("Enrollment failed: {e:#}")),
+            }
+            dirty = true;
+        }
+        if let Some((device, command)) = app.pending_command.take() {
+            screen.suspend()?;
+            let result = sessions::run_command(&device, &command);
+            screen.resume()?;
+            last_interaction = Instant::now();
+            app.notice = match result {
+                Ok(()) => format!("Returned from {}", identity(&device)),
+                Err(e) => safe_text(&format!("Command failed: {e:#}")),
+            };
+            if app.view == View::Files {
+                app.refresh();
             }
             dirty = true;
         }
@@ -5478,6 +5557,106 @@ mod tests {
         assert!(a.pending_attach.is_some());
         assert_eq!(a.browser.as_ref().unwrap().search, "recording");
         assert!(a.view == View::Files);
+    }
+    #[test]
+    fn actions_are_workspace_only_and_do_not_duplicate_shell_launch() {
+        let (mut a, _) = queued_app();
+        a.view = View::Files;
+        a.browser = Some(Browser::new(0, "/project".into()));
+        for (action, _) in sidebar_actions(&a).into_iter().chain(a.palette()) {
+            assert!(workspace_action(action));
+        }
+        assert!(sidebar_actions(&a)
+            .iter()
+            .any(|(_, label)| *label == "Sessions"));
+        assert_eq!(
+            a.palette()
+                .iter()
+                .filter(|(a, _)| *a == Action::New)
+                .count(),
+            1
+        );
+        assert!(!a
+            .palette()
+            .iter()
+            .any(|(_, label)| label.contains("Start here")));
+    }
+    #[test]
+    fn new_shortcut_uses_focused_folder_and_available_providers() {
+        let (mut a, _) = queued_app();
+        a.view = View::Files;
+        a.browser = Some(Browser::new(1, "/projects/robot".into()));
+        a.device = 1; // deliberately different selector: browser owns execution location
+        press(&mut a, 'n');
+        assert!(
+            matches!(&a.dialog, Some(Dialog::Provider(1, Some(path))) if path == "/projects/robot")
+        );
+    }
+    #[test]
+    fn command_input_pins_host_folder_and_owns_printable_shortcuts() {
+        let (mut a, _) = queued_app();
+        a.view = View::Files;
+        a.browser = Some(Browser::new(0, "/projects/quoted ' robot".into()));
+        press(&mut a, ':');
+        assert_eq!(
+            a.command_target,
+            Some((0, "/projects/quoted ' robot".into()))
+        );
+        for c in "printf n:hjl".chars() {
+            press(&mut a, c);
+        }
+        assert_eq!(a.text, "printf n:hjl");
+        a.browser = Some(Browser::new(1, "/elsewhere".into()));
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let (device, command) = a.pending_command.as_ref().unwrap();
+        assert_eq!(device.id, a.devices[0].id);
+        assert_eq!(command.directory, "/projects/quoted ' robot");
+        assert_eq!(command.command, "printf n:hjl");
+        assert!(a.input.is_none() && a.text.is_empty());
+        assert!(!can_restart(&a));
+    }
+    #[test]
+    fn long_command_scrolls_and_supports_cursor_edits() {
+        let (mut a, _) = queued_app();
+        a.view = View::Files;
+        a.browser = Some(Browser::new(0, "/files".into()));
+        press(&mut a, ':');
+        for c in "x".repeat(200).chars() {
+            press(&mut a, c);
+        }
+        for c in "TAIL".chars() {
+            press(&mut a, c);
+        }
+        let text = capture_app(&a, 80);
+        assert!(text.contains("TAIL"));
+        a.key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        a.key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert!(a.text.ends_with("TAI"));
+        a.key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        press(&mut a, '☃');
+        assert!(a.text.starts_with('☃'));
+        a.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        a.key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert!(a.text.starts_with("☃x"));
+    }
+    #[test]
+    fn command_cancel_and_unsupported_remote_never_dispatch() {
+        let (mut a, _) = queued_app();
+        a.view = View::Files;
+        a.browser = Some(Browser::new(0, "/files".into()));
+        press(&mut a, ':');
+        press(&mut a, 'n');
+        a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(a.pending_command.is_none() && a.command_target.is_none());
+        a.browser = Some(Browser::new(1, "/remote".into()));
+        a.providers.remove(&1);
+        press(&mut a, ':');
+        assert!(a.input.is_none() && a.pending_command.is_none());
+        assert!(a.notice.contains("Checking"));
+        a.providers
+            .insert(1, (vec!["native-command-v1".into()], transport::now()));
+        press(&mut a, ':');
+        assert!(a.input == Some(Input::Command));
     }
     #[test]
     fn new_session_from_all_explicitly_selects_execution_provider_directory() {

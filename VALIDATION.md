@@ -141,3 +141,17 @@ Deployment: innovation Arch/lunarz and verybeautifulserver Ubuntu24/lunarz both 
 Limits: detection is observational metadata, not provider authentication. Custom/renamed binaries, interpreter flags before script, inaccessible /proc, inactive panes and traversal beyond64 processes/depth6 may remain Shell/unknown. Background agents do not replace the active shell badge; original names persist. Non-tmux running terminals cannot be retrofitted reliably. Older tmux default-color fallback and foreground/control PTYs tested; not every advanced tmux option/Watch mode or physical emulator/theme. Full sharing, enrollment trust/revocation, owned uninstall, broader failure/hardware and performance acceptance remain incomplete. Prior performance observations remain in their earlier records;0.275sec above measures a deliberately stalled setup probe only.
 
 Removal/rollback: when no active transfer needs the helper, remove only `~/.local/bin/cx` to stop new launches; leave state/user work/tmux sessions alone. Full owned-resource uninstall is not implemented. Reinstall a pinned reviewed release with `CX_VERSION=v0.1.2 CX_NO_LAUNCH=1 sh install.sh`; the same signature/locking checks apply. Do not delete state, stop jobs or restore whole firewall/configuration as an uninstall shortcut.
+
+### Actions audit and foreground folder commands — 0.1.3 candidate
+
+Host: innovation, Linux/Arch; native Bash and tmux, allocated PTYs (not a physical emulator confirmation). Source includes backend aa3a33c and integrated UI changes.
+
+| Result | Scenario | Evidence |
+|---|---|---|
+| PASS | Full Rust suite: 176 passed, one existing ignored; workspace-only actions, n folder/provider context, pinned : input, cancellation/unsupported helper, long-command editing/scroll | /tmp/cx-context-tests.log |
+| PASS | Native command: quoted Unicode directory/exact write, exit7 and Enter, Ctrl+C, stdin, termios/foreground-group restoration, optimized binary | /tmp/cx-context-native-release.json |
+| PASS | Integrated browser/navigation/clipboard/destination/conflict/jobs at 80x24,120x40,48x24 | /tmp/cx-context-flows/results.json and terminal captures |
+| PASS | Actual detached copy/integrity/job drawer, folder shell creation and single-key return | /tmp/cx-context-jobs/results.json and terminal captures |
+| BLOCKED | tranquility deployment/live remote command | SSH BatchMode/ConnectTimeout5: No route to host; no network/trust changes |
+
+Independent Actions review: /tmp/cx-actions-command-review.md. File operations and duplicate shell controls were removed from workspace actions. Long command visibility/editing and misleading missing-capability remedy were fixed, with regression tests. Foreground commands deliberately do not provide managed-session lifetime through disconnect.

@@ -77,9 +77,9 @@ for rows, cols in [(40, 120)]:
             send(b'\r')
             assert 'synthetic file preview' in text(), text()
             send(b'\x1b')
-            palette('Copy selected')
+            send(b'y')
             assert 'destination device' not in text()
-            palette('Destination')
+            send(b't')
             assert 'destination device' in text(), text()
             send(b'\r')
             assert 'Source' in text() and 'Destination' in text(), text()
@@ -90,7 +90,7 @@ for rows, cols in [(40, 120)]:
             # BackTab activates source and Tab returns to destination.
             send(b'\x1b[Z')
             send(b'\t')
-            palette('Paste here')
+            send(b'p')
             target = home/'destination/source.bin.copy-1'
             deadline = time.monotonic()+8
             while not target.exists() and time.monotonic()<deadline:

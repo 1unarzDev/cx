@@ -64,3 +64,10 @@ Pending user feedback: physical confirmation of repaired device switching and th
 - Older tmux now uses default colors instead of unsupported terminal-color syntax; managed command parsing is POSIX while explicitly preserving the user's selected shell. Fish palette/wrapper quoting and real tmux2.7 PTY agent recognition pass. Capability probing is bounded.
 - Pending preference: whether manual agents should change the session name. Current direction preserves names and changes only provider badges. Earlier physical Files/t-picker feedback remains pending; do not repeat answered color/return questions.
 - Full sharing, trust/revocation, owned uninstall and broader product acceptance remain incomplete.
+
+## Actions and contextual commands (2026-10-06)
+
+- Actions sidebar now contains workspace navigation, one New session action, transfers and enrollment; Ctrl+P excludes file-level mutations and duplicate shell launch actions. Visible Work is Sessions; persisted view identifiers remain compatible.
+- n starts in the focused browser folder with only available providers. : pins that host/folder, opens an editable command prompt, hands the terminal to its native login/interactive shell and returns on Enter after completion. Commands are foreground, not persistent/replayed. Unsupported helpers refuse execution; stale capabilities request a check rather than suggesting a false upgrade.
+- File commands remain available on their keys/help. M creates a folder and o cycles the existing copy-conflict policy (rename default).
+- Review fixed hidden long commands with cursor editing/scroll and distinguished missing capability evidence from unsupported helpers. Unit and allocated-PTY evidence is recorded in VALIDATION.md. Physical user confirmation and tranquility deployment remain pending while that host is unreachable.

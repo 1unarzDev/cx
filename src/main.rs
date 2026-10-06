@@ -23,6 +23,10 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Cmd {
+    #[command(hide = true)]
+    NativeCommand {
+        payload: String,
+    },
     Update {
         #[arg(long)]
         check: bool,
@@ -128,6 +132,7 @@ fn info() -> Result<serde_json::Value> {
         }
     }
     caps.extend(sessions::available_providers()?);
+    caps.push("native-command-v1");
     Ok(
         serde_json::json!({"host":d.host,"account":d.account,"machine_id":machine.trim(),"capabilities":caps,"protocol":1,"persistent_channel":true,"version":env!("CARGO_PKG_VERSION")}),
     )
@@ -276,6 +281,13 @@ fn add(target: &str) -> Result<()> {
 fn run() -> Result<()> {
     match Cli::parse().command {
         None => ui::run(),
+        Some(Cmd::NativeCommand { payload }) => {
+            use base64::Engine;
+            anyhow::ensure!(payload.len() <= 32768, "Command payload too large");
+            let bytes = base64::engine::general_purpose::STANDARD.decode(payload)?;
+            let command: RunCommand = serde_json::from_slice(&bytes)?;
+            sessions::execute_command(&command)
+        }
         Some(Cmd::Helper) => helper(),
         Some(Cmd::Restart { state }) => ui::run_restored(Some(&state)),
         Some(Cmd::Update { check }) => {

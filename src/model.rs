@@ -28,6 +28,11 @@ pub struct Session {
     pub process: Option<ProcessIdentity>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RunCommand {
+    pub directory: String,
+    pub command: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateSession {
     pub key: String,
     pub directory: String,

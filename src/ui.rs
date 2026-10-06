@@ -106,7 +106,10 @@ struct Reply {
 enum Action {
     Add,
     Files,
-    Home,
+    New,
+    Destination,
+    Conflict,
+    Jobs,
     Shell,
     DeviceShell,
     Claude,
@@ -127,7 +130,16 @@ const ACTIONS: &[(Action, &str)] = &[
         Action::Files,
         "Files · selected session directory / device home",
     ),
-    (Action::Home, "Files · device home"),
+    (
+        Action::New,
+        "New session · choose device, provider and folder",
+    ),
+    (Action::Destination, "Destination · choose transfer device"),
+    (
+        Action::Conflict,
+        "Existing files · skip / overwrite / rename",
+    ),
+    (Action::Jobs, "Transfers · progress / cancel / retry"),
     (Action::DeviceShell, "Shell on selected device"),
     (Action::Shell, "Start here · shell"),
     (Action::Claude, "Start here · Claude"),
@@ -142,6 +154,20 @@ const ACTIONS: &[(Action, &str)] = &[
     (Action::Help, "Keyboard help"),
     (Action::Quit, "Quit workspace"),
 ];
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChooseDevice {
+    New,
+    Files,
+    Destination,
+}
+#[derive(Clone)]
+enum Dialog {
+    Device(ChooseDevice),
+    Provider(usize),
+    Matching(usize, String, String, Session),
+    Jobs,
+}
+
 struct App {
     devices: Vec<Device>,
     device: usize,
@@ -158,6 +184,13 @@ struct App {
     help_scroll: u16,
     notice: String,
     browser: Option<Browser>,
+    other_browser: Option<Browser>,
+    destination_active: bool,
+    conflict: usize,
+    dialog: Option<Dialog>,
+    dialog_selected: usize,
+    launch_provider: Option<String>,
+    submitted: HashMap<String, crate::model::TransferSpec>,
     browser_cache: HashMap<(usize, String), Browser>,
     generation: u64,
     creating: bool,
@@ -168,6 +201,7 @@ struct App {
     pending_attach: Option<(usize, Session, bool)>,
     pending_add: Option<String>,
     quit: bool,
+    panels: std::cell::RefCell<Vec<(Focus, bool, Rect)>>,
     tx: mpsc::SyncSender<Task>,
 }
 impl App {
@@ -197,6 +231,13 @@ impl App {
             help_scroll: 0,
             notice: "Ctrl+P actions · ? help".into(),
             browser: None,
+            other_browser: None,
+            destination_active: false,
+            conflict: 0,
+            dialog: None,
+            dialog_selected: 0,
+            launch_provider: None,
+            submitted: HashMap::new(),
             browser_cache: HashMap::new(),
             generation: 0,
             creating: false,
@@ -207,6 +248,7 @@ impl App {
             pending_attach: None,
             pending_add: None,
             quit: false,
+            panels: std::cell::RefCell::new(Vec::new()),
             tx,
         }
     }
@@ -275,17 +317,10 @@ impl App {
             .map(|(i, s)| (*i, (*s).clone()))
     }
     fn visible_entries(&self) -> Vec<Entry> {
-        let Some(b) = &self.browser else {
-            return vec![];
-        };
-        let mut rows: Vec<_> = b
-            .entries
-            .iter()
-            .enumerate()
-            .filter_map(|(i, e)| fuzzy_score(&b.search, &e.name).map(|score| (score, i, e.clone())))
-            .collect();
-        rows.sort_by(|(a, i, _), (b, j, _)| b.cmp(a).then_with(|| i.cmp(j)));
-        rows.into_iter().map(|(_, _, e)| e).collect()
+        self.browser
+            .as_ref()
+            .map(browser_entries)
+            .unwrap_or_default()
     }
     fn live_search(&mut self) {
         if self.view == View::Files {
@@ -309,8 +344,13 @@ impl App {
     }
     fn action_enabled(&self, action: Action) -> bool {
         match action {
+            Action::Work => self.view != View::Work,
+            Action::Network => self.view != View::Network,
+            Action::Destination | Action::Conflict => self.clipboard.is_some(),
             Action::Copy | Action::Mkdir => self.view == View::Files && self.browser.is_some(),
-            Action::Paste => self.view == View::Files && self.clipboard.is_some(),
+            Action::Paste => {
+                self.view == View::Files && self.clipboard.is_some() && self.destination_active
+            }
             Action::Shell | Action::Claude | Action::Codex => {
                 self.view == View::Files && self.browser.is_some() && !self.creating
             }
@@ -382,30 +422,40 @@ impl App {
                 self.view = View::Network;
                 self.refresh();
             }
-            Action::Files | Action::Home => {
-                let selected = if action == Action::Files {
-                    self.selected_session()
+            Action::New | Action::DeviceShell => {
+                self.other_browser = None;
+                self.destination_active = false;
+                self.clipboard = None;
+                self.launch_provider = if action == Action::DeviceShell {
+                    Some("shell".into())
                 } else {
                     None
                 };
-                if let Some((d, s)) = selected {
-                    self.open_browser(d, s.directory);
-                } else if let Some(d) = self.actual_device() {
-                    self.open_browser(d, "~".into());
+                self.choose_device(ChooseDevice::New);
+            }
+            Action::Files => {
+                self.clipboard = None;
+                self.launch_provider = None;
+                self.other_browser = None;
+                self.destination_active = false;
+                if let Some((d, session)) =
+                    self.selected_session().filter(|_| self.view == View::Work)
+                {
+                    self.open_browser(d, session.directory);
+                } else {
+                    self.choose_device(ChooseDevice::Files);
                 }
             }
-            Action::DeviceShell => {
-                if let Some(d) = self.actual_device() {
-                    let key = unique_key();
-                    self.creating = self.send(
-                        d,
-                        Operation::Create(CreateSession {
-                            key: key.clone(),
-                            directory: "~".into(),
-                            provider: "shell".into(),
-                            name: format!("shell-{key}"),
-                        }),
-                    );
+            Action::Destination => self.choose_device(ChooseDevice::Destination),
+            Action::Conflict => {
+                self.conflict = (self.conflict + 1) % 3;
+                self.notice = format!("Existing files: {}", self.conflict_policy());
+            }
+            Action::Jobs => {
+                self.dialog = Some(Dialog::Jobs);
+                self.dialog_selected = 0;
+                for d in 0..self.devices.len() {
+                    self.send(d, Operation::TransferJobs);
                 }
             }
             Action::Observe => {
@@ -420,73 +470,227 @@ impl App {
                         Action::Codex => "codex",
                         _ => "shell",
                     };
-                    let matching = self.work[b.device]
-                        .sessions
-                        .iter()
-                        .find(|s| s.directory == b.path && s.provider == provider)
-                        .cloned();
-                    if let Some(s) = matching {
-                        self.notice = "Opened matching live session".into();
-                        self.pending_attach = Some((b.device, s, false));
-                    } else {
-                        let key = unique_key();
-                        self.creating = self.send(
-                            b.device,
-                            Operation::Create(CreateSession {
-                                key: key.clone(),
-                                directory: b.path.clone(),
-                                provider: provider.into(),
-                                name: format!("{}-{}", provider, key),
-                            }),
-                        );
-                        self.notice = if self.creating {
-                            format!(
-                                "Creating {provider} on {}…",
-                                identity(&self.devices[b.device])
-                            )
-                        } else {
-                            "Request queue busy · retry shortly".into()
-                        };
-                    }
+                    self.start_at(b.device, b.path.clone(), provider.into());
                 }
             }
             Action::Copy => {
                 if let Some(b) = &self.browser {
                     if let Some(e) = self.visible_entries().get(b.selected) {
                         self.clipboard = Some((b.device, e.clone()));
-                        self.notice = format!(
-                            "Copied selection on {} · choose destination, then Paste here",
-                            identity(&self.devices[b.device])
-                        );
+                        self.other_browser = None;
+                        self.destination_active = false;
+                        self.launch_provider = None;
+                        self.notice =
+                            "Choose destination device · Enter browses, Paste here confirms copy"
+                                .into();
+                        self.dialog = Some(Dialog::Device(ChooseDevice::Destination));
+                        self.dialog_selected = b.device;
                     }
                 }
             }
-            Action::Paste => {
-                if let (Some((source, entry)), Some(b)) = (&self.clipboard, &self.browser) {
-                    if let Some(local) = self.devices.iter().position(|d| d.target.is_none()) {
-                        self.send(
-                            local,
-                            Operation::Transfer(crate::model::TransferSpec {
-                                source: self.devices[*source].clone(),
-                                source_path: entry.path.clone(),
-                                destination: self.devices[b.device].clone(),
-                                destination_path: b.path.clone(),
-                                conflict: "skip".into(),
-                                key: unique_key(),
-                            }),
-                        );
-                        self.notice = format!(
-                            "Copy {} → {} · skip existing",
-                            identity(&self.devices[*source]),
-                            identity(&self.devices[b.device])
-                        );
-                    }
-                }
-            }
+            Action::Paste => self.submit_transfer(),
             Action::Mkdir => {
                 self.input = Some(Input::Mkdir);
                 self.text.clear();
             }
+        }
+    }
+    fn choose_device(&mut self, purpose: ChooseDevice) {
+        if self.device > 0 && purpose != ChooseDevice::Destination {
+            self.chosen_device(self.device - 1, purpose);
+        } else {
+            self.dialog = Some(Dialog::Device(purpose));
+            self.dialog_selected = self.actual_device().unwrap_or(0);
+        }
+    }
+    fn chosen_device(&mut self, d: usize, purpose: ChooseDevice) {
+        self.dialog = None;
+        match purpose {
+            ChooseDevice::New => {
+                self.work[d].loading = self.send(d, Operation::Sessions);
+                if self.launch_provider.is_some() {
+                    self.open_browser(d, "~".into());
+                } else {
+                    self.dialog = Some(Dialog::Provider(d));
+                    self.dialog_selected = 0;
+                }
+            }
+            ChooseDevice::Files => self.open_browser(d, "~".into()),
+            ChooseDevice::Destination => {
+                if !self.destination_active {
+                    self.other_browser = self.browser.take();
+                    self.destination_active = true;
+                }
+                self.open_browser(d, "~".into());
+            }
+        }
+    }
+    fn conflict_policy(&self) -> &'static str {
+        ["skip", "overwrite", "rename"][self.conflict]
+    }
+    fn start_at(&mut self, d: usize, directory: String, provider: String) {
+        if let Some(s) = self.work[d]
+            .sessions
+            .iter()
+            .find(|s| s.directory == directory && s.provider == provider)
+            .cloned()
+        {
+            self.dialog = Some(Dialog::Matching(d, directory, provider, s));
+            self.dialog_selected = 0;
+        } else {
+            self.create_at(d, directory, provider);
+        }
+    }
+    fn create_at(&mut self, d: usize, directory: String, provider: String) {
+        let key = unique_key();
+        self.creating = self.send(
+            d,
+            Operation::Create(CreateSession {
+                key: key.clone(),
+                directory,
+                provider: provider.clone(),
+                name: format!("{provider}-{key}"),
+            }),
+        );
+        self.notice = if self.creating {
+            format!("Creating {provider} on {}…", identity(&self.devices[d]))
+        } else {
+            "Request queue busy · retry shortly".into()
+        };
+    }
+    fn submit_transfer(&mut self) {
+        if !self.destination_active {
+            return;
+        }
+        if let (Some((source, entry)), Some(b)) = (&self.clipboard, &self.browser) {
+            if let Some(local) = self.devices.iter().position(|d| d.target.is_none()) {
+                let spec = crate::model::TransferSpec {
+                    source: self.devices[*source].clone(),
+                    source_path: entry.path.clone(),
+                    destination: self.devices[b.device].clone(),
+                    destination_path: b.path.clone(),
+                    conflict: self.conflict_policy().into(),
+                    key: unique_key(),
+                };
+                if self.send(local, Operation::Transfer(spec.clone())) {
+                    self.notice = format!(
+                        "Copy {} → {} · {}",
+                        identity(&spec.source),
+                        identity(&spec.destination),
+                        spec.conflict
+                    );
+                    if self.submitted.len() >= 256 {
+                        if let Some(key) = self.submitted.keys().next().cloned() {
+                            self.submitted.remove(&key);
+                        }
+                    }
+                    self.submitted.insert(spec.key.clone(), spec);
+                    self.dialog = Some(Dialog::Jobs);
+                    self.dialog_selected = 0;
+                } else {
+                    self.notice = "Request queue busy · retry shortly".into();
+                }
+            }
+        }
+    }
+    fn job_rows(&self) -> Vec<(usize, Value)> {
+        let mut unique = HashMap::new();
+        for (d, value) in &self.jobs {
+            if let Some(jobs) = value["jobs"].as_array() {
+                for job in jobs {
+                    let key = (
+                        job["key"].as_str().unwrap_or("").to_string(),
+                        job["source_host"].as_str().unwrap_or("").to_string(),
+                        job["destination_host"].as_str().unwrap_or("").to_string(),
+                    );
+                    let row = unique.entry(key).or_insert((*d, job.clone()));
+                    // Prefer the viewer's durable forwarding reference, which knows job ownership.
+                    if *d < row.0 {
+                        *row = (*d, job.clone());
+                    }
+                }
+            }
+        }
+        let mut rows = unique.into_values().collect::<Vec<_>>();
+        rows.sort_by(|(a, x), (b, y)| {
+            y["updated"]
+                .as_u64()
+                .cmp(&x["updated"].as_u64())
+                .then_with(|| a.cmp(b))
+                .then_with(|| x["key"].as_str().cmp(&y["key"].as_str()))
+        });
+        rows
+    }
+    fn dialog_key(&mut self, key: KeyEvent, dialog: Dialog) {
+        let count = match &dialog {
+            Dialog::Device(_) => self.devices.len(),
+            Dialog::Provider(_) => 3,
+            Dialog::Matching(..) => 2,
+            Dialog::Jobs => self.job_rows().len(),
+        };
+        match key.code {
+            KeyCode::Esc => self.dialog = None,
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.dialog_selected = shift(self.dialog_selected, 1, count)
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.dialog_selected = shift(self.dialog_selected, -1, count)
+            }
+            KeyCode::Enter => match dialog {
+                Dialog::Device(purpose) => {
+                    if self.dialog_selected < self.devices.len() {
+                        self.chosen_device(self.dialog_selected, purpose);
+                    }
+                }
+                Dialog::Provider(d) => {
+                    self.launch_provider =
+                        Some(["shell", "claude", "codex"][self.dialog_selected].into());
+                    self.dialog = None;
+                    self.open_browser(d, "~".into());
+                    self.notice =
+                        "Browse to a folder · Ctrl+P → Start here (Enter only opens files)".into();
+                }
+                Dialog::Matching(d, path, provider, session) => {
+                    self.dialog = None;
+                    if self.dialog_selected == 0 {
+                        self.pending_attach = Some((d, session, false));
+                    } else {
+                        self.create_at(d, path, provider);
+                    }
+                }
+                Dialog::Jobs => {}
+            },
+            KeyCode::Char('c') if matches!(dialog, Dialog::Jobs) => {
+                if let Some((d, job)) = self.job_rows().get(self.dialog_selected).cloned() {
+                    if matches!(
+                        job["status"].as_str(),
+                        Some("running" | "queued" | "submitting")
+                    ) {
+                        if let Some(key) = job["key"].as_str() {
+                            self.send(d, Operation::TransferCancel { key: key.into() });
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('r') if matches!(dialog, Dialog::Jobs) => {
+                if let Some((d, job)) = self.job_rows().get(self.dialog_selected).cloned() {
+                    if matches!(job["status"].as_str(), Some("failed" | "cancelled")) {
+                        if let Some(spec) = job["key"]
+                            .as_str()
+                            .and_then(|k| self.submitted.get(k))
+                            .cloned()
+                        {
+                            self.send(d, Operation::Transfer(spec));
+                        } else {
+                            self.notice = "Reopen source and copy to retry this older job · saved resume data is preserved".into();
+                        }
+                    }
+                }
+                for d in 0..self.devices.len() {
+                    self.send(d, Operation::TransferJobs);
+                }
+            }
+            _ => {}
         }
     }
     fn apply(&mut self, reply: Reply) {
@@ -515,6 +719,12 @@ impl App {
                         b.loading = false;
                     }
                     self.network_loading = false;
+                    if matches!(reply.op, Operation::Network) {
+                        if let Some(v) = self.network.get_mut(&reply.device) {
+                            v["internet"]["state"] = serde_json::json!("unknown");
+                            v["internet"]["stale"] = serde_json::json!(true);
+                        }
+                    }
                 }
                 return;
             }
@@ -563,6 +773,10 @@ impl App {
             },
             Operation::Jobs | Operation::TransferJobs => {
                 self.jobs.insert(reply.device, value);
+            }
+            Operation::TransferCancel { .. } => {
+                self.send(reply.device, Operation::TransferJobs);
+                self.notice = "Cancellation requested · waiting for worker".into();
             }
             Operation::Transfer(_) => {
                 self.notice = format!(
@@ -680,6 +894,10 @@ impl App {
             self.quit = true;
             return;
         }
+        if let Some(dialog) = self.dialog.clone() {
+            self.dialog_key(key, dialog);
+            return;
+        }
         if self.help {
             match key.code {
                 KeyCode::Down | KeyCode::Char('j') => {
@@ -791,6 +1009,10 @@ impl App {
                     self.palette_selected = 0;
                 }
                 KeyCode::Char('c') => self.quit = true,
+                KeyCode::Left | KeyCode::Char('h') => self.directional_focus(-1, 0),
+                KeyCode::Right | KeyCode::Char('l') => self.directional_focus(1, 0),
+                KeyCode::Up | KeyCode::Char('k') => self.directional_focus(0, -1),
+                KeyCode::Down | KeyCode::Char('j') => self.directional_focus(0, 1),
                 _ => {}
             }
             return;
@@ -874,7 +1096,63 @@ impl App {
             _ => {}
         }
     }
+    fn switch_pane(&mut self) {
+        std::mem::swap(&mut self.browser, &mut self.other_browser);
+        self.destination_active = !self.destination_active;
+        self.generation += 1;
+        self.refresh_browser();
+    }
+    fn directional_focus(&mut self, dx: i32, dy: i32) {
+        let panels = self.panels.borrow().clone();
+        let Some((_, _, current)) = panels.iter().find(|(focus, dest, _)| {
+            *focus == self.focus && (*focus != Focus::Workspace || *dest == self.destination_active)
+        }) else {
+            return;
+        };
+        let center = |r: &Rect| {
+            (
+                r.x as i32 * 2 + r.width as i32,
+                r.y as i32 * 2 + r.height as i32,
+            )
+        };
+        let (cx, cy) = center(current);
+        let selected = panels
+            .iter()
+            .filter_map(|(focus, dest, r)| {
+                let (x, y) = center(r);
+                let primary = (x - cx) * dx + (y - cy) * dy;
+                let cross = if dx != 0 {
+                    (y - cy).abs()
+                } else {
+                    (x - cx).abs()
+                };
+                (primary > 0).then_some((primary + cross * 2, *focus, *dest))
+            })
+            .min_by_key(|(score, _, _)| *score);
+        if let Some((_, focus, dest)) = selected {
+            if focus == Focus::Workspace
+                && self.other_browser.is_some()
+                && dest != self.destination_active
+            {
+                self.switch_pane();
+            }
+            self.focus = focus;
+        }
+    }
     fn cycle_focus(&mut self, reverse: bool) {
+        if self.view == View::Files && self.other_browser.is_some() {
+            if self.focus == Focus::Workspace && self.destination_active == reverse {
+                self.switch_pane();
+                return;
+            }
+            if (self.focus == Focus::Actions && !reverse)
+                || (self.focus == Focus::Devices && reverse)
+            {
+                if self.destination_active != reverse {
+                    self.switch_pane();
+                }
+            }
+        }
         self.focus = match (self.focus, reverse) {
             (Focus::Workspace, false) | (Focus::Actions, true) => Focus::Devices,
             (Focus::Devices, false) | (Focus::Workspace, true) => Focus::Actions,
@@ -902,11 +1180,7 @@ impl App {
         } else if self.focus == Focus::Devices {
             self.device = shift(self.device, delta, self.devices.len() + 1);
             self.selected = 0;
-            if self.view == View::Files {
-                if let Some(d) = self.actual_device() {
-                    self.open_browser(d, "~".into());
-                }
-            } else {
+            if self.view != View::Files {
                 self.refresh();
             }
         } else if self.view == View::Files {
@@ -1057,11 +1331,42 @@ fn ascii() -> bool {
 fn sidebar_actions(app: &App) -> Vec<(Action, &'static str)> {
     let mut a = vec![
         (Action::Files, "Files"),
+        (Action::New, "New session"),
         (Action::DeviceShell, "Shell"),
+        (Action::Jobs, "Transfers"),
         (Action::Network, "Network"),
         (Action::Add, "Add device"),
     ];
-    if app.selected_session().is_some() {
+    if app.view != View::Work {
+        a.insert(0, (Action::Work, "Work"));
+    }
+    if app.view == View::Files {
+        if let Some(provider) = &app.launch_provider {
+            let action = match provider.as_str() {
+                "claude" => Action::Claude,
+                "codex" => Action::Codex,
+                _ => Action::Shell,
+            };
+            a.insert(0, (action, "Start here"));
+        }
+        if app.clipboard.is_some() {
+            a.insert(0, (Action::Destination, "Destination…"));
+            a.insert(
+                0,
+                (
+                    Action::Conflict,
+                    ["Existing: skip", "Existing: overwrite", "Existing: rename"][app.conflict],
+                ),
+            );
+            if app.destination_active {
+                a.insert(0, (Action::Paste, "Paste here"));
+            }
+        } else {
+            a.insert(0, (Action::Copy, "Copy to…"));
+        }
+    }
+    a.retain(|(action, _)| app.action_enabled(*action));
+    if app.selected_session().is_some() && app.view == View::Work {
         a.insert(2, (Action::Observe, "Observe"));
     }
     a
@@ -1094,10 +1399,13 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             Constraint::Length(if show_search { 6 } else { 4 }),
         ])
         .split(area);
-    let label = match app.view {
-        View::Work => "[Work]  Network",
-        View::Files => "Work / Files  Network",
-        View::Network => "Work  [Network]",
+    let label = match (app.view, area.width < 70) {
+        (View::Work, true) => "Work",
+        (View::Files, true) => "Files",
+        (View::Network, true) => "Network",
+        (View::Work, false) => "[Work]  Network",
+        (View::Files, false) => "Work / Files  Network",
+        (View::Network, false) => "Work  [Network]",
     };
     let viewer = app
         .devices
@@ -1192,6 +1500,15 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             Constraint::Min(0),
         ])
         .split(content[0]);
+    *app.panels.borrow_mut() = vec![
+        (Focus::Devices, false, sidebar[0]),
+        (Focus::Actions, false, sidebar[1]),
+    ];
+    if app.view != View::Files || app.other_browser.is_none() {
+        app.panels
+            .borrow_mut()
+            .push((Focus::Workspace, app.destination_active, content[1]));
+    }
     let mut state = ratatui::widgets::ListState::default().with_selected(Some(app.device));
     frame.render_stateful_widget(
         List::new(device_items)
@@ -1280,7 +1597,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 } else if !errors.is_empty() {
                     errors.join("\n")
                 } else {
-                    "No live sessions in this view.\nCtrl+P → Files → Start here".into()
+                    "No live sessions in this view.\nCtrl+P → New session → choose provider and folder".into()
                 };
                 frame.render_widget(
                     Paragraph::new(text)
@@ -1370,51 +1687,53 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         }
         View::Files => {
             if let Some(b) = &app.browser {
-                let title = format!(
-                    "{} · {}{}",
-                    identity(&app.devices[b.device]),
-                    safe_label(&b.display_path),
-                    if b.loading { " · checking" } else { "" }
-                );
-                if let Some(preview) = &b.preview {
-                    frame.render_widget(
-                        Paragraph::new(preview.as_str())
-                            .wrap(Wrap { trim: false })
-                            .scroll((b.preview_scroll, 0))
-                            .block(block(title, true)),
-                        content[1],
+                if let Some(other) = &app.other_browser {
+                    let panes = Layout::default()
+                        .direction(if content[1].width >= 52 {
+                            Direction::Horizontal
+                        } else {
+                            Direction::Vertical
+                        })
+                        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                        .split(content[1]);
+                    app.panels.borrow_mut().extend([
+                        (Focus::Workspace, false, panes[0]),
+                        (Focus::Workspace, true, panes[1]),
+                    ]);
+                    let (source, destination) = if app.destination_active {
+                        (other, b)
+                    } else {
+                        (b, other)
+                    };
+                    render_browser(
+                        frame,
+                        source,
+                        &app.devices[source.device],
+                        panes[0],
+                        !app.destination_active && app.focus == Focus::Workspace,
+                        "Source",
+                    );
+                    render_browser(
+                        frame,
+                        destination,
+                        &app.devices[destination.device],
+                        panes[1],
+                        app.destination_active && app.focus == Focus::Workspace,
+                        &format!("Destination · {}", app.conflict_policy()),
                     );
                 } else {
-                    let entries = app.visible_entries();
-                    let items: Vec<_> = entries
-                        .iter()
-                        .map(|e| {
-                            ListItem::new(format!(
-                                "{} {}{}",
-                                if e.kind == "directory" {
-                                    "+"
-                                } else if e.kind == "symlink" {
-                                    "@"
-                                } else {
-                                    " "
-                                },
-                                safe_label(&e.name),
-                                if e.kind == "file" {
-                                    format!("  {} B", e.size)
-                                } else {
-                                    String::new()
-                                }
-                            ))
-                        })
-                        .collect();
-                    let mut state =
-                        ratatui::widgets::ListState::default().with_selected(Some(b.selected));
-                    frame.render_stateful_widget(
-                        List::new(items)
-                            .block(block(title, app.focus == Focus::Workspace))
-                            .highlight_style(selected_style()),
+                    let label = app
+                        .launch_provider
+                        .as_ref()
+                        .map(|p| format!("Start {p} here · actions"))
+                        .unwrap_or_else(|| "Files".into());
+                    render_browser(
+                        frame,
+                        b,
+                        &app.devices[b.device],
                         content[1],
-                        &mut state,
+                        app.focus == Focus::Workspace,
+                        &label,
                     );
                 }
             }
@@ -1424,10 +1743,18 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             let title = d
                 .map(|d| format!("Network · {}", identity(&app.devices[d])))
                 .unwrap_or_else(|| "Network · select a device".into());
-            let text = if app.network_loading {
+            let text = if let Some(value) = d.and_then(|d| app.network.get(&d)) {
+                format!(
+                    "{}{}",
+                    network_summary(value),
+                    if app.network_loading {
+                        "\nRefreshing…"
+                    } else {
+                        ""
+                    }
+                )
+            } else if app.network_loading {
                 "Checking interface and route observations…".into()
-            } else if let Some(value) = d.and_then(|d| app.network.get(&d)) {
-                network_summary(value)
             } else {
                 "No recent network observation.\nCtrl+P → Refresh".into()
             };
@@ -1696,10 +2023,112 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             );
         }
     }
+    if let Some(dialog) = &app.dialog {
+        let (title, labels, detail) = match dialog {
+            Dialog::Device(purpose) => (
+                match purpose {
+                    ChooseDevice::New => "New session · execution device",
+                    ChooseDevice::Files => "Files · choose device",
+                    ChooseDevice::Destination => "Copy · destination device",
+                }
+                .to_string(),
+                app.devices
+                    .iter()
+                    .map(|d| format!("{} · {}", safe_label(&d.name), identity(d)))
+                    .collect::<Vec<_>>(),
+                if *purpose == ChooseDevice::Destination {
+                    app.clipboard
+                        .as_ref()
+                        .map(|(d, e)| {
+                            format!(
+                                "Source: {} · {}\nEnter choose · Escape cancel",
+                                identity(&app.devices[*d]),
+                                safe_label(&e.name)
+                            )
+                        })
+                        .unwrap_or_else(|| "Enter choose · Escape cancel".into())
+                } else {
+                    "Enter choose · Escape cancel".to_string()
+                },
+            ),
+            Dialog::Provider(d) => (
+                format!("New session · {}", identity(&app.devices[*d])),
+                vec![
+                    "Shell · ordinary terminal".into(),
+                    "Claude · existing host profile".into(),
+                    "Codex · existing host profile".into(),
+                ],
+                "Enter choose · next: browse folder, then Start here".into(),
+            ),
+            Dialog::Matching(d, path, provider, s) => (
+                format!("Matching {provider} · {}", identity(&app.devices[*d])),
+                vec![
+                    format!("Open existing · {}", safe_label(&s.name)),
+                    "Create another session".into(),
+                ],
+                safe_label(path),
+            ),
+            Dialog::Jobs => {
+                let jobs = app.job_rows();
+                let detail = jobs
+                    .get(app.dialog_selected)
+                    .map(|(_, j)| {
+                        format!(
+                            "{} → {}\n{}\n{}",
+                            safe_label(j["source_path"].as_str().unwrap_or("")),
+                            safe_label(j["destination_path"].as_str().unwrap_or("")),
+                            safe_label(j["route"].as_str().unwrap_or("route unknown")),
+                            safe_label(j["error"].as_str().unwrap_or(""))
+                        )
+                    })
+                    .unwrap_or_else(|| "No transfers yet · Files → Copy to…".into());
+                (
+                    "Transfers · c cancel · r retry/refresh · Esc close".into(),
+                    jobs.iter()
+                        .map(|(_, j)| {
+                            format!(
+                                "{}  {} → {}  {} / {} B",
+                                safe_label(j["status"].as_str().unwrap_or("unknown")),
+                                safe_label(j["source_host"].as_str().unwrap_or("?")),
+                                safe_label(j["destination_host"].as_str().unwrap_or("?")),
+                                j["bytes"].as_u64().unwrap_or(0),
+                                j["total"].as_u64().unwrap_or(0)
+                            )
+                        })
+                        .collect(),
+                    detail,
+                )
+            }
+        };
+        let mut rect = popup(area, 90, 15);
+        if matches!(dialog, Dialog::Jobs) {
+            rect.y = area.y + area.height.saturating_sub(rect.height + 5);
+        }
+        frame.render_widget(Clear, rect);
+        let parts = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(4)])
+            .split(rect);
+        let mut state =
+            ratatui::widgets::ListState::default().with_selected(Some(app.dialog_selected));
+        frame.render_stateful_widget(
+            List::new(labels.into_iter().map(ListItem::new).collect::<Vec<_>>())
+                .block(block(title, true))
+                .highlight_style(selected_style()),
+            parts[0],
+            &mut state,
+        );
+        frame.render_widget(
+            Paragraph::new(detail)
+                .wrap(Wrap { trim: false })
+                .block(block("Context".into(), false)),
+            parts[1],
+        );
+    }
     if app.help {
         let rect = popup(area, 76, 20);
         frame.render_widget(Clear, rect);
-        let mut help = String::from("Arrows / h j k l  navigate\nEnter  enter directory / preview file / take control\nFiles: Left/h parent · Right/l enter directory\nEscape  back     Tab / Shift+Tab  focus     /  search\nCtrl+P  actions  Ctrl+C  quit\n\nNative terminal: cx keys are suspended.\nManaged sessions: Ctrl+] Space returns; Ctrl+] twice sends Ctrl+].\nExternal sessions keep their own tmux bindings.\n\nAvailable actions\n");
+        let mut help = String::from("Arrows / h j k l  navigate\nCtrl+arrows / Ctrl+h j k l  move panel focus\nEnter  enter directory / preview file / take control\nFiles: Left/h parent · Right/l enter directory\nEscape  back     Tab / Shift+Tab  focus     /  search\nCtrl+P  actions  Ctrl+C  quit\n\nNative terminal: cx keys are suspended.\nManaged sessions: Ctrl+] returns to cx.\nExternal sessions keep their own tmux bindings.\n\nAvailable actions\n");
         for (_, label) in ACTIONS.iter().filter(|(a, _)| app.action_enabled(*a)) {
             help.push_str(label);
             help.push('\n');
@@ -1710,6 +2139,125 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 .scroll((app.help_scroll, 0))
                 .block(block("Help · ↑↓ scroll · Escape closes".into(), true)),
             rect,
+        );
+    }
+}
+fn browser_entries(b: &Browser) -> Vec<Entry> {
+    let mut rows = b
+        .entries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| fuzzy_score(&b.search, &e.name).map(|score| (score, i, e.clone())))
+        .collect::<Vec<_>>();
+    rows.sort_by(|(a, i, _), (b, j, _)| b.cmp(a).then_with(|| i.cmp(j)));
+    rows.into_iter().map(|(_, _, e)| e).collect()
+}
+fn compact_path(path: &str, width: usize) -> String {
+    let safe = safe_label(path);
+    if Span::raw(&safe).width() <= width {
+        return safe;
+    }
+    let mut tail = String::new();
+    let mut used = 1;
+    for c in safe.chars().rev() {
+        let w = Span::raw(c.to_string()).width();
+        if used + w > width {
+            break;
+        }
+        tail.insert(0, c);
+        used += w;
+    }
+    format!("…{tail}")
+}
+fn render_browser(
+    frame: &mut Frame<'_>,
+    b: &Browser,
+    device: &Device,
+    area: Rect,
+    focused: bool,
+    label: &str,
+) {
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                format!(" {label}"),
+                accent().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(format!(" {}", identity(device)), accent())),
+            Line::from(Span::styled(
+                format!(
+                    " {}{}",
+                    compact_path(&b.display_path, area.width.saturating_sub(2) as usize),
+                    if b.loading { " · checking" } else { "" }
+                ),
+                muted(),
+            )),
+        ]),
+        parts[0],
+    );
+    if let Some(preview) = &b.preview {
+        frame.render_widget(
+            Paragraph::new(preview.as_str())
+                .wrap(Wrap { trim: false })
+                .scroll((b.preview_scroll, 0))
+                .block(block("Preview · Escape back".into(), focused)),
+            parts[1],
+        );
+    } else {
+        let rows = browser_entries(b);
+        let items = rows
+            .iter()
+            .map(|e| {
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        if e.kind == "directory" {
+                            "+ "
+                        } else if e.kind == "symlink" {
+                            "@ "
+                        } else {
+                            "  "
+                        },
+                        if e.kind == "directory" {
+                            accent()
+                        } else {
+                            Style::default()
+                        },
+                    ),
+                    Span::raw(safe_label(&e.name)),
+                    Span::styled(
+                        if e.kind == "file" {
+                            format!("  {} B", e.size)
+                        } else {
+                            String::new()
+                        },
+                        muted(),
+                    ),
+                ]))
+            })
+            .collect::<Vec<_>>();
+        let items = if items.is_empty() {
+            vec![ListItem::new(if b.loading {
+                "Checking…"
+            } else if b.search.is_empty() {
+                "Empty folder"
+            } else {
+                "No matches"
+            })
+            .style(muted())]
+        } else {
+            items
+        };
+        let mut state = ratatui::widgets::ListState::default().with_selected(Some(b.selected));
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(block("Enter open · h/l folders".into(), focused))
+                .highlight_style(selected_style()),
+            parts[1],
+            &mut state,
         );
     }
 }
@@ -1724,8 +2272,35 @@ fn popup(area: Rect, width: u16, height: u16) -> Rect {
     )
 }
 fn network_summary(value: &Value) -> String {
-    let mut lines =
-        vec!["Host observation · internet and overlay access remain unknown.".to_string()];
+    let internet = &value["internet"];
+    let age = transport::now().saturating_sub(internet["observed_at"].as_u64().unwrap_or(0));
+    let stale = internet["stale"].as_bool().unwrap_or(true) || age > 90;
+    let reachable = internet["state"] == "reachable" && !stale;
+    let mut lines = vec![
+        format!(
+            "Internet {} · {}{}",
+            if reachable {
+                if ascii() {
+                    "+"
+                } else {
+                    "●"
+                }
+            } else {
+                "?"
+            },
+            if reachable {
+                "reachable (ICMP)"
+            } else {
+                "not confirmed"
+            },
+            if internet["observed_at"].as_u64().unwrap_or(0) > 0 {
+                format!(" · {age}s ago{}", if stale { " · stale" } else { "" })
+            } else {
+                String::new()
+            }
+        ),
+        "DNS / HTTPS and overlay access: unknown".to_string(),
+    ];
     if let Some(backend) = value.get("backend").and_then(Value::as_str) {
         lines.push(format!("Backend: {}", safe_label(backend)));
     }
@@ -2006,6 +2581,8 @@ pub fn run() -> Result<()> {
         if last_refresh.elapsed() >= Duration::from_secs(30) {
             if app.view == View::Work {
                 app.refresh_work();
+            } else if app.view == View::Network {
+                app.refresh();
             }
             if app.browser.is_some() {
                 if let Some(local) = app.devices.iter().position(|d| d.target.is_none()) {
@@ -2036,6 +2613,162 @@ mod tests {
             }],
             tx,
         )
+    }
+    fn queued_app() -> (App, mpsc::Receiver<Task>) {
+        let (tx, rx) = mpsc::sync_channel(64);
+        let mut devices = app().devices;
+        let mut remote = devices[0].clone();
+        remote.id = "remote".into();
+        remote.name = "laptop".into();
+        remote.account = "peace".into();
+        remote.host = "laptop".into();
+        remote.target = Some("laptop".into());
+        devices.push(remote);
+        (App::new(devices, tx), rx)
+    }
+    #[test]
+    fn new_session_from_all_explicitly_selects_execution_provider_directory() {
+        let (mut a, rx) = queued_app();
+        assert!(a.action_enabled(Action::New));
+        assert!(!a.action_enabled(Action::Work));
+        assert_eq!(
+            ACTIONS
+                .iter()
+                .filter(|(_, label)| label.starts_with("Files"))
+                .count(),
+            1
+        );
+        a.execute(Action::New);
+        assert!(matches!(a.dialog, Some(Dialog::Device(ChooseDevice::New))));
+        a.dialog_selected = 1;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(a.dialog, Some(Dialog::Provider(1))));
+        a.dialog_selected = 2;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(a.browser.as_ref().unwrap().device, 1);
+        assert_eq!(a.launch_provider.as_deref(), Some("codex"));
+        let sessions = rx.try_recv().unwrap();
+        assert!(matches!(sessions.op, Operation::Sessions));
+        let list = rx.try_recv().unwrap();
+        assert!(matches!(list.op, Operation::List { .. }));
+        a.browser.as_mut().unwrap().path = "/projects/test".into();
+        a.execute(Action::Codex);
+        let task = rx.try_recv().unwrap();
+        assert_eq!(task.device, 1);
+        let Operation::Create(spec) = task.op else {
+            panic!("expected create")
+        };
+        assert_eq!(spec.provider, "codex");
+        assert_eq!(spec.directory, "/projects/test");
+    }
+    #[test]
+    fn matching_live_session_offers_reuse_and_explicit_new() {
+        let (mut a, rx) = queued_app();
+        let session: Session=serde_json::from_value(serde_json::json!({"id":"same","name":"existing","directory":"/project","provider":"codex","account":"peace","host":"laptop","pid":1,"started":"x","boot_id":"boot","external":false,"socket":null})).unwrap();
+        a.work[1].sessions.push(session);
+        a.start_at(1, "/project".into(), "codex".into());
+        assert!(matches!(a.dialog, Some(Dialog::Matching(..))));
+        assert!(a.pending_attach.is_none());
+        a.dialog_selected = 1;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(rx.try_recv().unwrap().op, Operation::Create(_)));
+    }
+    #[test]
+    fn transfer_locations_stay_independent_and_submit_real_spec() {
+        let (mut a, rx) = queued_app();
+        a.view = View::Files;
+        let mut source = Browser::new(1, "/recordings".into());
+        source.entries.push(Entry {
+            name: "test.bin".into(),
+            path: "/recordings/test.bin".into(),
+            kind: "file".into(),
+            size: 3,
+        });
+        a.browser = Some(source);
+        a.execute(Action::Copy);
+        a.dialog_selected = 0;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.destination_active);
+        assert_eq!(a.other_browser.as_ref().unwrap().device, 1);
+        a.browser.as_mut().unwrap().path = "/receive".into();
+        while rx.try_recv().is_ok() {}
+        a.execute(Action::Conflict);
+        assert_eq!(a.conflict_policy(), "overwrite");
+        a.execute(Action::Paste);
+        let task = rx.try_recv().unwrap();
+        assert_eq!(task.device, 0);
+        let Operation::Transfer(spec) = task.op else {
+            panic!("expected durable transfer")
+        };
+        assert_eq!(spec.source.id, "remote");
+        assert_eq!(spec.destination.id, "local");
+        assert_eq!(spec.source_path, "/recordings/test.bin");
+        assert_eq!(spec.destination_path, "/receive");
+        assert_eq!(spec.conflict, "overwrite");
+        assert!(matches!(a.dialog, Some(Dialog::Jobs)));
+        a.dialog = None;
+        a.focus = Focus::Workspace;
+        a.cycle_focus(true);
+        assert!(!a.destination_active);
+        assert_eq!(a.browser.as_ref().unwrap().path, "/recordings");
+        a.cycle_focus(false);
+        assert!(a.destination_active);
+        a.cycle_focus(false);
+        assert!(a.focus == Focus::Devices);
+    }
+    #[test]
+    fn jobs_cancel_owner_and_retry_same_idempotency_spec() {
+        let (mut a, rx) = queued_app();
+        let spec = crate::model::TransferSpec {
+            source: a.devices[1].clone(),
+            source_path: "/data/source".into(),
+            destination: a.devices[0].clone(),
+            destination_path: "/destination".into(),
+            conflict: "skip".into(),
+            key: "test-transfer".into(),
+        };
+        a.submitted.insert(spec.key.clone(), spec);
+        a.jobs.insert(0,serde_json::json!({"jobs":[{"key":"test-transfer","status":"running","source_host":"peace@laptop","destination_host":"tester@workstation","route":"direct on laptop","bytes":2,"total":10}]}));
+        a.dialog = Some(Dialog::Jobs);
+        a.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        let task = rx.try_recv().unwrap();
+        assert_eq!(task.device, 0);
+        assert!(matches!(task.op,Operation::TransferCancel { key } if key=="test-transfer"));
+        a.jobs.get_mut(&0).unwrap()["jobs"][0]["status"] = serde_json::json!("failed");
+        a.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        let Operation::Transfer(spec) = rx.try_recv().unwrap().op else {
+            panic!("real retry operation required")
+        };
+        assert_eq!(spec.key, "test-transfer");
+        assert_eq!(spec.source_path, "/data/source");
+    }
+    #[test]
+    fn directional_panel_focus_obeys_geometry_and_input_ownership() {
+        let (mut a, _rx) = queued_app();
+        a.panels.borrow_mut().extend([
+            (Focus::Devices, false, Rect::new(0, 0, 20, 8)),
+            (Focus::Actions, false, Rect::new(0, 8, 20, 8)),
+            (Focus::Workspace, false, Rect::new(20, 0, 60, 16)),
+        ]);
+        a.key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+        assert!(a.focus == Focus::Devices);
+        a.key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
+        assert!(a.focus == Focus::Actions);
+        a.key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+        assert!(a.focus == Focus::Workspace);
+        a.input = Some(Input::Search);
+        a.key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        assert!(a.focus == Focus::Workspace);
+    }
+    #[test]
+    fn internet_evidence_is_not_https_or_stale_readiness() {
+        let value = serde_json::json!({"internet":{"state":"reachable","stale":false,"observed_at":transport::now()},"sharing":{"state":"unsupported"}});
+        let text = network_summary(&value);
+        assert!(text.contains("reachable (ICMP)"));
+        assert!(text.contains("DNS / HTTPS"));
+        let mut stale = value;
+        stale["internet"]["observed_at"] = serde_json::json!(transport::now() - 120);
+        assert!(network_summary(&stale).contains("not confirmed"));
     }
     #[test]
     fn reverse_tab_cycles_focus_and_leaves_search() {

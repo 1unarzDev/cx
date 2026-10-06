@@ -314,7 +314,14 @@ const ACTIONS: &[(Action, &str)] = &[
     (Action::Work, "Sessions"),
     (Action::Refresh, "Refresh"),
     (Action::Help, "Keyboard help"),
-    (Action::Update, "Update cx · check verified releases"),
+    (
+        Action::Update,
+        concat!(
+            "Update cx v",
+            env!("CARGO_PKG_VERSION"),
+            " · check releases"
+        ),
+    ),
     (Action::Quit, "Quit workspace"),
 ];
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -4281,7 +4288,7 @@ fn render_with_native(
                 },
             )
             .style(muted()),
-            footer[2],
+            notice_area(footer[2]),
         );
     }
     if show_search {
@@ -4294,7 +4301,7 @@ fn render_with_native(
                 },
             )
             .style(muted()),
-            footer[3],
+            notice_area(footer[3]),
         );
     }
     let mut hints = if app.help {
@@ -6368,6 +6375,34 @@ fn can_restart(app: &App) -> bool {
 fn restart_ready(app: &App, idle: Duration, pending_input: bool) -> bool {
     !pending_input && idle >= Duration::from_secs(3) && can_restart(app)
 }
+// Align notices with the padded footer keys and sidebar text, including narrow
+// layouts. The notice remains on the terminal's default background.
+fn notice_area(area: Rect) -> Rect {
+    area.inner(ratatui::layout::Margin::new(2, 0))
+}
+fn version_notice(message: &str) -> String {
+    format!(
+        "cx v{} {} {}",
+        env!("CARGO_PKG_VERSION"),
+        if ascii() { "|" } else { "·" },
+        safe_text(message)
+    )
+}
+fn update_check_notice(result: &Result<crate::update::CheckOutcome>) -> String {
+    use crate::update::CheckOutcome;
+    version_notice(&match result {
+        Ok(CheckOutcome::Offline) => "update unreachable; retry".into(),
+        Ok(CheckOutcome::Unavailable(message)) => safe_text(message),
+        Ok(CheckOutcome::Skipped) => "update check already running".into(),
+        Ok(CheckOutcome::Current) => "up to date".into(),
+        Ok(CheckOutcome::Ready(plan)) => format!(
+            "v{} ready · waiting for idle workspace",
+            safe_label(&plan.version)
+        ),
+        Err(_) => "update unavailable; version kept".into(),
+    })
+}
+
 enum UpdatePhase {
     Idle,
     Checking,
@@ -6627,11 +6662,11 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 start_update_check(&update_tx, true);
                 update_phase = UpdatePhase::Checking;
                 last_update_check = Instant::now();
-                app.notice = "Checking verified cx releases…".into();
+                app.notice = version_notice("checking verified releases…");
                 dirty = true;
             } else if matches!(update_phase, UpdatePhase::Checking) {
                 update_report_requested = true;
-                app.notice = "Checking verified cx releases…".into();
+                app.notice = version_notice("checking verified releases…");
                 dirty = true;
             }
         }
@@ -6641,31 +6676,16 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     let force = force || std::mem::take(&mut update_report_requested);
                     update_phase = match result {
                         Ok(crate::update::CheckOutcome::Ready(plan)) => {
-                            app.notice = format!(
-                                "cx {} ready · updating when workspace is idle",
+                            app.notice = version_notice(&format!(
+                                "v{} ready · updating when workspace is idle",
                                 safe_label(&plan.version)
-                            );
+                            ));
                             dirty = true;
                             UpdatePhase::Ready(plan)
                         }
                         other => {
                             if force {
-                                app.notice = match other {
-                                    Ok(crate::update::CheckOutcome::Offline) => {
-                                        "Update service unreachable · current cx kept".into()
-                                    }
-                                    Ok(crate::update::CheckOutcome::Unavailable(message)) => {
-                                        safe_text(&message)
-                                    }
-                                    Ok(crate::update::CheckOutcome::Skipped) => {
-                                        "Another update check is running".into()
-                                    }
-                                    Ok(crate::update::CheckOutcome::Current) => {
-                                        "cx is current".into()
-                                    }
-                                    Err(_) => "Update unavailable · current cx kept".into(),
-                                    _ => unreachable!(),
-                                };
+                                app.notice = update_check_notice(&other);
                                 dirty = true;
                             }
                             UpdatePhase::Idle
@@ -6676,7 +6696,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     update_phase = match result {
                         Ok(path) => UpdatePhase::Installed(path),
                         Err(_) => {
-                            app.notice = "Update could not install · current cx kept".into();
+                            app.notice = version_notice("update could not install; version kept");
                             dirty = true;
                             UpdatePhase::Idle
                         }
@@ -6700,7 +6720,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     thread::spawn(move || {
                         let _ = tx.send(UpdateEvent::Installed(crate::update::install(&plan)));
                     });
-                    app.notice = "Installing verified cx update…".into();
+                    app.notice = version_notice("installing verified update…");
                     dirty = true;
                 }
             } else if let UpdatePhase::Installed(path) = &update_phase {
@@ -7742,6 +7762,89 @@ mod tests {
             .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+    #[test]
+    fn update_menu_and_notices_identify_the_running_binary() {
+        let label = ACTIONS
+            .iter()
+            .find(|(action, _)| *action == Action::Update)
+            .unwrap()
+            .1;
+        assert!(label.contains(concat!("cx v", env!("CARGO_PKG_VERSION"))));
+        for width in [48, 80, 120] {
+            let (mut a, _rx) = file_app();
+            a.input = Some(Input::Palette);
+            a.text = "update".into();
+            let rendered = capture_app(&a, width);
+            assert!(
+                rendered.contains(concat!("Update cx v", env!("CARGO_PKG_VERSION"))),
+                "{rendered}"
+            );
+        }
+        for result in [
+            Ok(crate::update::CheckOutcome::Current),
+            Ok(crate::update::CheckOutcome::Offline),
+            Ok(crate::update::CheckOutcome::Skipped),
+            Err(anyhow::anyhow!(
+                "synthetic failure; no raw detail displayed"
+            )),
+        ] {
+            let text = update_check_notice(&result);
+            assert!(text.starts_with(concat!("cx v", env!("CARGO_PKG_VERSION"), " ")));
+            assert!(!text.contains("synthetic failure"));
+        }
+        assert!(update_check_notice(&Ok(crate::update::CheckOutcome::Offline)).contains("retry"));
+        assert!(
+            update_check_notice(&Ok(crate::update::CheckOutcome::Current)).contains("up to date")
+        );
+        assert_eq!(notice_area(Rect::new(0, 0, 2, 1)).width, 0);
+    }
+    #[test]
+    fn update_notice_capture_matrix_aligns_and_preserves_default_background() {
+        for width in [48, 80, 120] {
+            for search in [false, true] {
+                for (state, result) in [
+                    ("current", Ok(crate::update::CheckOutcome::Current)),
+                    ("offline", Ok(crate::update::CheckOutcome::Offline)),
+                ] {
+                    let (mut a, _rx) = file_app();
+                    a.view = View::Work;
+                    a.browser = None;
+                    a.search = if search {
+                        "no-match".into()
+                    } else {
+                        String::new()
+                    };
+                    a.notice = update_check_notice(&result);
+                    let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+                    terminal.draw(|frame| render(frame, &a)).unwrap();
+                    let buffer = terminal.backend().buffer();
+                    let row = (0..width)
+                        .map(|x| buffer.cell((x, 23)).unwrap().symbol())
+                        .collect::<String>();
+                    assert!(
+                        row.starts_with(&format!("  {}", a.notice)),
+                        "{width} {state}: {row}"
+                    );
+                    assert!(buffer.content.iter().all(|cell| cell.bg == Color::Reset));
+                    if let Some(directory) = std::env::var_os("CX_UPDATE_CAPTURE_DIR") {
+                        let directory = std::path::PathBuf::from(directory);
+                        std::fs::create_dir_all(&directory).unwrap();
+                        let text = buffer
+                            .content
+                            .chunks(width as usize)
+                            .map(|cells| cells.iter().map(|cell| cell.symbol()).collect::<String>())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        std::fs::write(
+                            directory.join(format!("{width}-{state}-search-{search}.txt")),
+                            text,
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        }
     }
     #[test]
     fn long_failed_transfer_details_scroll_and_modal_keys_own_footer() {

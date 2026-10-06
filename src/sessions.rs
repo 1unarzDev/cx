@@ -866,12 +866,25 @@ fn foreground_command(command: &mut Command) -> Result<std::process::ExitStatus>
         .context("native commands require a controlling terminal")?;
     let fd = tty.as_raw_fd();
     let mut modes: libc::termios = unsafe { std::mem::zeroed() };
-    let previous = unsafe { libc::tcgetpgrp(fd) };
-    if previous < 0 || unsafe { libc::tcgetattr(fd, &mut modes) } != 0 {
+    // A freshly exec'd native helper can run before its viewer has handed off
+    // the tty. Wait without reading or changing it; never steal another group's
+    // foreground ownership ourselves.
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    let previous = loop {
+        let group = unsafe { libc::tcgetpgrp(fd) };
+        if group < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        if group == unsafe { libc::getpgrp() } {
+            break group;
+        }
+        if std::time::Instant::now() >= deadline {
+            bail!("native command viewer must own the foreground terminal");
+        }
+        thread::sleep(Duration::from_millis(2));
+    };
+    if unsafe { libc::tcgetattr(fd, &mut modes) } != 0 {
         return Err(std::io::Error::last_os_error().into());
-    }
-    if previous != unsafe { libc::getpgrp() } {
-        bail!("native command viewer must own the foreground terminal");
     }
     struct Restore {
         fd: i32,

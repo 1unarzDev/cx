@@ -95,5 +95,5 @@ v0.1.7 signed release installed on all three hosts; public clean-HOME bootstrap 
 
 ## Preview polish and release descriptions
 - User direction: prioritize larger image/PDF previews, keep j/k scrolling, use separately boxed confirmation choices. These decisions are resolved.
-- Candidate v0.1.9 bundles language highlighting, native preview support and larger workspace. Real Foot cleanup defect fixed and independently inspected. Unknown terminals retain fallback. v0.1.8 remains deployed until signed v0.1.9 release validation/install.
-- All published version descriptions now explain features/fixes; future publication requires exact-version CHANGELOG notes. Optional pending polish: include a short Try it workflow for major new interactions.
+- Candidate v0.1.9 bundles language highlighting, native preview support and larger workspace. Real Foot cleanup defect fixed and independently inspected. Unknown terminals retain fallback. Signed v0.1.9/source1626cb7 published after workflow37494951757 PASS and installed on innovation/verybeautifulserver. Tranquility remains v0.1.8 while unreachable. Server PDF rendering is currently unavailable because Poppler reports a library I/O error; cx degrades explicitly.
+- All published version descriptions now explain features/fixes; future publication requires exact-version CHANGELOG notes. Resolved user preference: release descriptions stay focused on Features and Fixes, without Try it workflows.

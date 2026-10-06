@@ -185,6 +185,13 @@ fn verified_endpoint(value: &Value, device: &crate::model::Device) -> bool {
 }
 pub fn start(spec: &TransferSpec) -> Result<Value> {
     valid_key(&spec.key)?;
+    // Resolve relative locations on their actual execution hosts before detaching.
+    // systemd's working directory must never silently retarget a CLI copy.
+    let mut normalized = spec.clone();
+    normalized.source_path = text(&info(&spec.source, &spec.source_path)?, "path")?.to_owned();
+    normalized.destination_path =
+        text(&info(&spec.destination, &spec.destination_path)?, "path")?.to_owned();
+    let spec = &normalized;
     if !matches!(spec.conflict.as_str(), "skip" | "overwrite" | "rename") {
         bail!("invalid conflict policy");
     }
@@ -613,6 +620,7 @@ fn worker_inner(spec: &TransferSpec) -> Result<()> {
     job.status = "running".into();
     job.error = None;
     write_json(&record, &job)?;
+    let mut last_saved = std::time::Instant::now();
     let outcome = (|| -> Result<()> {
         for index in 0..job.entries.len() {
             check_cancel(&root, &spec.key)?;
@@ -731,7 +739,10 @@ fn worker_inner(spec: &TransferSpec) -> Result<()> {
                         job.entries[index].bytes = offset;
                         job.bytes = job.entries.iter().map(|e| e.bytes).sum();
                         job.updated = now();
-                        write_json(&record, &job)?;
+                        if last_saved.elapsed().as_millis() >= 200 {
+                            write_json(&record, &job)?;
+                            last_saved = std::time::Instant::now();
+                        }
                     }
                     if text(&info(&spec.source, &entry.source)?, "identity")? != entry.identity {
                         bail!("source changed before finalization");

@@ -3,7 +3,7 @@
 Usage: native_command_pty.py BINARY [--unit-helper]
 The unit helper is cargo's test executable; otherwise BINARY is cx.
 """
-import base64, errno, fcntl, json, os, pathlib, pty, select, struct, subprocess, sys, tempfile, termios, time
+import base64, errno, fcntl, json, os, pathlib, pty, select, signal, struct, subprocess, sys, tempfile, termios, time
 binary = str(pathlib.Path(sys.argv[1]).resolve())
 unit = '--unit-helper' in sys.argv[2:]
 checks = []
@@ -30,9 +30,12 @@ with tempfile.TemporaryDirectory(prefix='cx-command-pty-') as temporary:
             fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
         process = subprocess.Popen(args, stdin=slave, stdout=slave, stderr=slave, env=environment, preexec_fn=tty)
         output = bytearray()
+        owned_groups = set()
         def wait_for(text, timeout=8):
             deadline = time.monotonic() + timeout
             while text.encode() not in output:
+                group = os.tcgetpgrp(master)
+                if group > 0 and group != process.pid: owned_groups.add(group)
                 if time.monotonic() >= deadline:
                     raise AssertionError('timeout '+repr(text)+' output='+repr(bytes(output)[-3000:]))
                 if select.select([master], [], [], .1)[0]:
@@ -57,6 +60,14 @@ with tempfile.TemporaryDirectory(prefix='cx-command-pty-') as temporary:
         finally:
             if process.poll() is None:
                 process.kill(); process.wait(timeout=5)
+            # Failure cleanup only touches process groups observed on this
+            # fixture's private tty and still belonging to its private session.
+            for group in owned_groups:
+                try:
+                    fields = pathlib.Path('/proc/%s/stat' % group).read_text().rsplit(')',1)[1].split()
+                    if int(fields[3]) == process.pid:
+                        os.killpg(group, signal.SIGKILL)
+                except (OSError, ValueError): pass
             os.close(master); os.close(slave)
     scenario("pwd; printf '%s' 'proof ☃' > 'result file'")
     assert (folder/'result file').read_text() == 'proof ☃'

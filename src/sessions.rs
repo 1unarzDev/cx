@@ -891,8 +891,8 @@ fn foreground_command(command: &mut Command) -> Result<std::process::ExitStatus>
         pgrp: libc::pid_t,
         modes: libc::termios,
     }
-    impl Drop for Restore {
-        fn drop(&mut self) {
+    impl Restore {
+        fn now(&self) {
             unsafe {
                 let mut mask: libc::sigset_t = std::mem::zeroed();
                 let mut old: libc::sigset_t = std::mem::zeroed();
@@ -903,6 +903,11 @@ fn foreground_command(command: &mut Command) -> Result<std::process::ExitStatus>
                 libc::tcsetattr(self.fd, libc::TCSANOW, &self.modes);
                 libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
             }
+        }
+    }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            self.now();
         }
     }
     let restore = Restore {
@@ -925,9 +930,100 @@ fn foreground_command(command: &mut Command) -> Result<std::process::ExitStatus>
     unsafe {
         libc::kill(-pid, libc::SIGCONT);
     }
-    let result = child.wait().context("native command wait failed");
-    drop(restore);
-    result
+    use std::os::unix::process::ExitStatusExt;
+    loop {
+        let mut status = 0;
+        let waited = unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) };
+        if waited < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error).context("native command wait failed");
+        }
+        if libc::WIFSTOPPED(status) {
+            // Preserve an application's current modes for an explicit resume.
+            let mut child_modes = modes;
+            unsafe {
+                libc::tcgetattr(fd, &mut child_modes);
+            }
+            restore.now();
+            let resume = stopped_command_choice(fd, pid)?;
+            if resume {
+                if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &child_modes) } != 0
+                    || unsafe { libc::tcsetpgrp(fd, pid) } != 0
+                {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                unsafe {
+                    libc::kill(-pid, libc::SIGCONT);
+                }
+            } else {
+                // Cancel is explicit: terminate only the group created above.
+                unsafe {
+                    libc::kill(-pid, libc::SIGKILL);
+                }
+            }
+        } else if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+            drop(restore);
+            return Ok(std::process::ExitStatus::from_raw(status));
+        }
+    }
+}
+
+/// A suspended command is never silently discarded. The helper takes back its
+/// tty, offers two single-key choices, and treats Ctrl+C as explicit Cancel.
+fn stopped_command_choice(fd: i32, pid: libc::pid_t) -> Result<bool> {
+    let mut saved: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(fd, &mut saved) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    struct Modes {
+        fd: i32,
+        saved: libc::termios,
+    }
+    impl Drop for Modes {
+        fn drop(&mut self) {
+            unsafe {
+                libc::tcsetattr(self.fd, libc::TCSANOW, &self.saved);
+            }
+        }
+    }
+    let _restore = Modes { fd, saved };
+    let mut input = saved;
+    input.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG);
+    input.c_cc[libc::VMIN] = 1;
+    input.c_cc[libc::VTIME] = 0;
+    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &input) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    println!("\r\nCommand suspended · [r] Resume  [c] Cancel");
+    std::io::stdout().flush()?;
+    loop {
+        let mut key = 0u8;
+        let read = unsafe { libc::read(fd, (&mut key as *mut u8).cast(), 1) };
+        if read < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            bail!("suspended command {pid} could not read choice: {error}");
+        }
+        if read == 0 {
+            bail!("terminal closed; command {pid} remains suspended");
+        }
+        match key {
+            b'r' | b'R' => {
+                println!("Resume");
+                return Ok(true);
+            }
+            b'c' | b'C' | 3 => {
+                println!("Cancel");
+                return Ok(false);
+            }
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]

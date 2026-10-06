@@ -71,6 +71,33 @@ with tempfile.TemporaryDirectory(prefix='cx-command-pty-') as temporary:
     scenario('echo INPUT_READY; read answer; printf "%s" "$answer" > input-result', interactive)
     assert (folder/'input-result').read_text() == 'hello'
     checks.append('native stdin')
+    def stop_and_cancel(master, process, wait):
+        wait('STOP_READY')
+        time.sleep(.2)
+        os.write(master, b'\x1a')
+        wait('Command suspended')
+        assert os.tcgetpgrp(master) == process.pid
+        os.write(master, b'c')
+    scenario('echo STOP_READY; exec sleep 30', stop_and_cancel)
+    checks.append('Ctrl+Z offers explicit cancel and restores tty')
+    def stop_resume_stop_cancel(master, process, wait):
+        wait('STOP_READY')
+        time.sleep(.2)
+        os.write(master, b'\x1a')
+        wait('Command suspended')
+        os.write(master, b'r')
+        deadline = time.monotonic() + 5
+        while os.tcgetpgrp(master) == process.pid:
+            assert time.monotonic() < deadline, 'resume did not return foreground'
+            time.sleep(.02)
+        os.write(master, b'\x1a')
+        deadline = time.monotonic() + 5
+        while os.tcgetpgrp(master) != process.pid:
+            assert time.monotonic() < deadline, 'second stop did not restore helper'
+            time.sleep(.02)
+        os.write(master, b'c')
+    scenario('echo STOP_READY; exec sleep 30', stop_resume_stop_cancel)
+    checks.append('Ctrl+Z explicit resume, repeated stop and cancel')
     scenario('stty -echo -icanon; exit 0')
     checks.append('termios and foreground group restoration')
     print(json.dumps({'result':'PASS', 'checks':checks, 'backend':'native Bash PTY', 'binary':binary, 'unit_helper':unit}))

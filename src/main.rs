@@ -271,11 +271,26 @@ fn enroll_target(target: &str) -> Result<()> {
     };
     let facts = String::from_utf8(out.stdout)?;
     let lines: Vec<_> = facts.lines().collect();
-    let platform = format!("Linux {}", std::env::consts::ARCH);
-    if !lines.iter().any(|s| *s == platform) {
-        bail!("enrollment requires the same Linux architecture as this viewer; install cx on the host separately for a different architecture")
+    let remote_arch = lines
+        .iter()
+        .find_map(|line| match *line {
+            "Linux x86_64" => Some("x86_64"),
+            "Linux aarch64" => Some("aarch64"),
+            _ => None,
+        })
+        .context("Execution hosts currently require Linux x86_64 or ARM64")?;
+    // Foreign executables are verified against the release key, never run here.
+    // Keep the stage handle alive until the remote installer finishes.
+    let enrollment = if remote_arch != std::env::consts::ARCH {
+        Some(update::obtain_enrollment_binary(remote_arch)?)
+    } else {
+        None
     };
-    let binary = std::env::current_exe()?;
+    let binary = if let Some(artifact) = &enrollment {
+        artifact.path()
+    } else {
+        std::env::current_exe()?
+    };
     let bytes = std::fs::read(binary)?;
     let mut c = transport::ssh(target, true)?;
     let script = include_str!("../scripts/enroll-helper.sh").replace('\'', "'\"'\"'");

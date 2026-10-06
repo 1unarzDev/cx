@@ -6,6 +6,18 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.13
+
+### Features
+- Browse neighbors observed across enrolled devices in Network, with device/interface context, explicit SSH-port checks and honest unknown authentication/internet states.
+- Connect through an enrolled device using OpenSSH jump routes, including sessions, commands, browsing and transfers. ARM64 enrollment obtains the matching signed helper on the viewer, so an offline robot does not need to download it.
+- Give panels consistent padding and focus treatment, aligned colored footer keys, selected session/file context, and useful New session/Add device empty states.
+
+### Fixes
+- Keep the selected-file sidebar tied to the focused pane and show the transfer destination separately.
+- Prevent background jump-host authentication prompts and reject enrollment that would silently retarget a device on an overlapping network.
+- Preserve numeric address ordering and age stale SSH-port observations to unknown.
+
 ## v0.1.12
 
 ### Fixes

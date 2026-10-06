@@ -239,10 +239,11 @@ pub fn ssh(target: &str, interactive: bool) -> Result<std::process::Command> {
         c.args(["-o", "BatchMode=yes"]);
     }
     let hops = route(target)?;
+    if !interactive {
+        // Covers both cx routes and ProxyJump from the user's SSH configuration.
+        c.arg("-F").arg(background_ssh_config()?);
+    }
     if !hops.is_empty() {
-        if !interactive {
-            c.arg("-F").arg(background_ssh_config()?);
-        }
         c.args(["-J", &hops.join(",")]);
     }
     c.arg(target);

@@ -1,3 +1,4 @@
+mod auth;
 mod files;
 mod model;
 mod network;
@@ -262,10 +263,82 @@ fn add_via(target: &str, via: Option<&Device>) -> Result<()> {
     }
     result
 }
+// Bound enrollment I/O even if a remote host stops consuming the binary.
+fn enrollment_command(
+    mut command: Command,
+    bytes: Option<Vec<u8>>,
+) -> Result<std::process::Output> {
+    use std::{
+        io::Read,
+        os::unix::process::CommandExt,
+        thread,
+        time::{Duration, Instant},
+    };
+    if bytes.is_none() {
+        command.stdin(Stdio::null());
+    }
+    command
+        .process_group(0)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command.spawn()?;
+    let mut stdout = child.stdout.take().context("enrollment output")?;
+    let reader = thread::spawn(move || {
+        let mut output = Vec::new();
+        let _ = stdout.by_ref().take(65536).read_to_end(&mut output);
+        output
+    });
+    let writer = bytes.map(|bytes| {
+        let mut input = child.stdin.take().expect("installer input");
+        thread::spawn(move || input.write_all(&bytes))
+    });
+    let started = Instant::now();
+    let status = loop {
+        if auth::cancelled() || started.elapsed() > Duration::from_secs(300) {
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("Enrollment cancelled or timed out; host keys are only accepted with explicit approval");
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error.into());
+            }
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
+    // Descendants must release stdin/stdout before joining either I/O thread.
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    if let Some(writer) = writer {
+        writer
+            .join()
+            .map_err(|_| anyhow::anyhow!("installer input failed"))??;
+    }
+    let stdout = reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("enrollment output failed"))?;
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr: Vec::new(),
+    })
+}
+
 fn enroll_target(target: &str) -> Result<()> {
     let mut c = transport::ssh(target, true)?;
     c.arg("uname -sm; id -un");
-    let out = c.output()?;
+    let out = enrollment_command(c, None)?;
     if !out.status.success() {
         bail!("SSH access failed; verify or unlock this host with ssh {target}")
     };
@@ -295,13 +368,10 @@ fn enroll_target(target: &str) -> Result<()> {
     let mut c = transport::ssh(target, true)?;
     let script = include_str!("../scripts/enroll-helper.sh").replace('\'', "'\"'\"'");
     c.arg(format!("sh -c '{script}'")).stdin(Stdio::piped());
-    let mut child = c.spawn()?;
-    child
-        .stdin
-        .take()
-        .context("installer stdin")?
-        .write_all(&bytes)?;
-    if !child.wait()?.success() {
+    if auth::active() {
+        c.stdout(Stdio::null()).stderr(Stdio::null());
+    }
+    if !enrollment_command(c, Some(bytes))?.status.success() {
         bail!("helper installation failed")
     };
     let mut d = Device {
@@ -333,10 +403,12 @@ fn enroll_target(target: &str) -> Result<()> {
         ds.push(d.clone())
     };
     store::save_devices(&ds)?;
-    println!(
-        "Added {} · {}@{} · {}",
-        d.name, d.account, d.host, value["capabilities"]
-    );
+    if !auth::active() {
+        println!(
+            "Added {} · {}@{} · {}",
+            d.name, d.account, d.host, value["capabilities"]
+        );
+    }
     Ok(())
 }
 fn run() -> Result<()> {
@@ -537,6 +609,9 @@ fn run() -> Result<()> {
     }
 }
 fn main() {
+    if auth::is_askpass_client() {
+        std::process::exit(if auth::askpass_client().is_ok() { 0 } else { 1 });
+    }
     if let Err(e) = run() {
         eprintln!("cx: {e:#}");
         std::process::exit(1)

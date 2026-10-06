@@ -3670,6 +3670,9 @@ fn render_with_native(
                 let mut last_project = None;
                 for (index, (i, s)) in rows.iter().enumerate() {
                     if last_project != Some(s.directory.as_str()) {
+                        if last_project.is_some() {
+                            display_rows.push(Row::new(vec![Cell::from("")]).height(1));
+                        }
                         display_rows.push(
                             Row::new(if compact {
                                 vec![Cell::from(safe_label(&s.directory)), Cell::from("")]
@@ -3681,8 +3684,8 @@ fn render_with_native(
                                     Cell::from(""),
                                 ]
                             })
-                            .style(muted())
-                            .height(2),
+                            .style(muted().add_modifier(Modifier::BOLD))
+                            .height(1),
                         );
                         last_project = Some(s.directory.as_str());
                     }
@@ -4199,9 +4202,11 @@ fn render_with_native(
         } else {
             vec![("↑↓", "Choose"), ("Enter", "Confirm"), ("Esc", "Cancel")]
         }
+    } else if app.input == Some(Input::Add) {
+        vec![("Ctrl U", "Clear")]
     } else if matches!(
         app.input,
-        Some(Input::Rename | Input::Mkdir | Input::Add | Input::Palette | Input::Command)
+        Some(Input::Rename | Input::Mkdir | Input::Palette | Input::Command)
     ) {
         vec![
             (
@@ -4378,9 +4383,15 @@ fn render_with_native(
                 &mut state,
             );
         } else {
-            let editing = matches!(input, Input::Rename | Input::Command);
+            let editing = matches!(input, Input::Rename | Input::Command | Input::Add);
             let cursor_width = if editing {
-                Span::raw(safe_label(&app.text[..app.rename_cursor])).width() as u16 + 2
+                Span::raw(safe_label(if input == Input::Add {
+                    &app.text
+                } else {
+                    &app.text[..app.rename_cursor]
+                }))
+                .width() as u16
+                    + 2
             } else {
                 0
             };
@@ -4412,12 +4423,16 @@ fn render_with_native(
                                 )
                             })
                             .unwrap_or_else(|| "Run command".into())
+                    } else if input == Input::Add && app.network_add_target.is_some() {
+                        let (d, address) = app.network_add_target.as_ref().unwrap();
+                        format!(
+                            "SSH account · {} via {}",
+                            safe_label(address),
+                            safe_label(&app.devices[*d].name)
+                        )
                     } else {
                         match input {
                             Input::Search => "Search",
-                            Input::Add if app.network_add_target.is_some() => {
-                                "Connect via selected device · SSH account"
-                            }
                             Input::Add => "Add device · SSH alias or user@host",
                             Input::Rename => "Rename",
                             Input::Command => "Run command",
@@ -4522,7 +4537,7 @@ fn render_with_native(
             Dialog::Peer(d) => (
                 format!("Device · {}", safe_label(&app.devices[*d].name)),
                 vec!["Open sessions".into(), "Browse files".into(), "New shell".into(), "New session".into()],
-                format!("{}\n{}\nViewer-authenticated helper evidence\nReachability from selected device: unknown", identity(&app.devices[*d]), app.peer_status(*d)),
+                format!("{}\n{}\nFrom viewer · helper evidence\nVia selected device: unknown", identity(&app.devices[*d]), app.peer_status(*d)),
             ),
             Dialog::Neighbor(d, candidate) => (
                 format!("Neighbor · {}", safe_label(candidate["address"].as_str().unwrap_or("unknown"))),
@@ -5578,9 +5593,28 @@ fn render_network(frame: &mut Frame<'_>, app: &App, area: Rect) {
         );
         return;
     }
+    let compact = sections[1].width < 45;
     let rows = candidates.iter().map(|c| {
         if let Some(d) = c["_peer"].as_u64().map(|d| d as usize) {
             let device = &app.devices[d];
+            if compact {
+                let status = app.peer_status(d);
+                let label = if status.contains("checking") {
+                    "checking"
+                } else if status.contains("reached") {
+                    "ready"
+                } else if status.contains("unavailable") {
+                    "offline"
+                } else if status.contains("cached") {
+                    "cached"
+                } else {
+                    "unknown"
+                };
+                return Row::new(vec![
+                    Cell::from(format!("P {}", safe_label(&device.name))),
+                    Cell::from(label),
+                ]);
+            }
             Row::new(vec![
                 Cell::from(safe_label(&device.name)),
                 Cell::from(identity(device)),
@@ -5588,6 +5622,19 @@ fn render_network(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 Cell::from(app.peer_status(d)),
             ])
         } else {
+            if compact {
+                return Row::new(vec![
+                    Cell::from(format!(
+                        "L {}",
+                        safe_label(c["address"].as_str().unwrap_or("unknown"))
+                    )),
+                    Cell::from(match neighbor_ssh(c) {
+                        "port open" => "open",
+                        "port closed" => "closed",
+                        _ => "unknown",
+                    }),
+                ]);
+            }
             Row::new(vec![
                 Cell::from(format!(
                     "{} / {}",
@@ -5606,20 +5653,36 @@ fn render_network(frame: &mut Frame<'_>, app: &App, area: Rect) {
     });
     let table = Table::new(
         rows,
-        [
-            Constraint::Percentage(25),
-            Constraint::Percentage(30),
-            Constraint::Percentage(15),
-            Constraint::Percentage(30),
-        ],
+        if compact {
+            vec![Constraint::Min(13), Constraint::Length(8)]
+        } else {
+            vec![
+                Constraint::Percentage(25),
+                Constraint::Percentage(30),
+                Constraint::Length(8),
+                Constraint::Percentage(30),
+            ]
+        },
     )
-    .header(Row::new(["Device / link", "Execution / address", "Source", "Evidence"]).style(muted()))
+    .header(
+        Row::new(if compact {
+            vec!["P peer / L LAN", "Access"]
+        } else {
+            vec!["Device / link", "Execution / address", "Source", "Evidence"]
+        })
+        .style(muted()),
+    )
     .row_highlight_style(selected_style());
     let mut state = TableState::default().with_selected(Some(app.network_selected));
     frame.render_stateful_widget(table, sections[1], &mut state);
     if let Some(candidate) = candidates.get(app.network_selected) {
         let detail = if let Some(d) = candidate["_peer"].as_u64().map(|d| d as usize) {
-            format!("{} · {}\n{}\nViewer-authenticated helper evidence · LAN cache shown separately\nReachability from selected device: unknown", safe_label(&app.devices[d].name), identity(&app.devices[d]), app.peer_status(d))
+            format!(
+                "{} · {}\n{}\nFrom viewer · helper evidence\nVia selected device: unknown",
+                safe_label(&app.devices[d].name),
+                identity(&app.devices[d]),
+                app.peer_status(d)
+            )
         } else {
             format!(
                 "{} · {}\n{}",
@@ -5756,6 +5819,149 @@ fn save_cache(app: &App) {
                 }
                 let _ = std::fs::remove_file(temp);
             }
+        }
+    }
+}
+
+// Secrets have their own short-lived editor; they never enter App/cache/snapshots.
+struct SecretInput(String);
+impl Drop for SecretInput {
+    fn drop(&mut self) {
+        unsafe {
+            for b in self.0.as_bytes_mut() {
+                std::ptr::write_volatile(b, 0);
+            }
+        }
+    }
+}
+fn authentication_modal(
+    screen: &mut Screen,
+    prompt: crate::auth::Prompt,
+) -> Result<crate::auth::Answer> {
+    use crate::auth::{Answer, PromptKind};
+    let trust = prompt.kind == PromptKind::HostKey;
+    let title = match prompt.kind {
+        PromptKind::HostKey => "Verify host key",
+        PromptKind::Password => "SSH password",
+        PromptKind::KeyPassphrase => "Unlock SSH key",
+        PromptKind::Verification => "SSH verification",
+    };
+    let mut secret = SecretInput(String::with_capacity(8192));
+    let started = Instant::now();
+    let mut scroll = 0u16;
+    let mut reviewed = false;
+    loop {
+        if started.elapsed() > Duration::from_secs(240) {
+            return Ok(Answer::Cancel);
+        }
+        screen.terminal.draw(|f| {
+            let area = popup(f.area(), 76, if trust { 13 } else { 7 });
+            f.render_widget(Clear, area);
+            let panel = block(title.into(), true).padding(Padding::horizontal(1));
+            let inner = panel.inner(area);
+            f.render_widget(panel, area);
+            if trust {
+                let content = Rect {
+                    height: inner.height.saturating_sub(2),
+                    ..inner
+                };
+                let mut lines = Vec::new();
+                for original in prompt.text.lines() {
+                    let mut line = String::new();
+                    let mut width = 0usize;
+                    for c in safe_label(original).chars() {
+                        let cells = if c.is_ascii() { 1 } else { 2 };
+                        if width + cells > content.width as usize && !line.is_empty() {
+                            lines.push(Line::from(std::mem::take(&mut line)));
+                            width = 0;
+                        }
+                        line.push(c);
+                        width += cells;
+                    }
+                    lines.push(Line::from(line));
+                }
+                let last = lines
+                    .len()
+                    .saturating_sub(content.height as usize)
+                    .min(u16::MAX as usize) as u16;
+                scroll = scroll.min(last);
+                reviewed |= content.height > 0 && scroll >= last;
+                f.render_widget(Paragraph::new(lines).scroll((scroll, 0)), content);
+                let footer = Rect {
+                    y: inner.y + inner.height.saturating_sub(1),
+                    height: 1,
+                    ..inner
+                };
+                f.render_widget(
+                    Paragraph::new(if reviewed {
+                        "y Trust fingerprint   n Cancel"
+                    } else {
+                        "↓ Review fingerprint   n Cancel"
+                    })
+                    .style(Style::default().fg(Color::Yellow)),
+                    footer,
+                );
+            } else {
+                let mut lines: Vec<Line> = prompt
+                    .text
+                    .lines()
+                    .take(2)
+                    .map(|line| Line::from(safe_label(line)))
+                    .collect();
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "*".repeat(secret.0.chars().count().min(inner.width as usize)),
+                    Style::default().fg(Color::Cyan),
+                )));
+                f.render_widget(Paragraph::new(lines), inner);
+            }
+        })?;
+        if !event::poll(Duration::from_millis(100))? {
+            continue;
+        }
+        match event::read()? {
+            Event::Key(key) if key.kind != KeyEventKind::Release => {
+                if key.code == KeyCode::Esc
+                    || (key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL))
+                {
+                    return Ok(Answer::Cancel);
+                }
+                if trust {
+                    match key.code {
+                        KeyCode::Char('y') if reviewed => return Ok(Answer::Submit("yes".into())),
+                        KeyCode::Char('n') => return Ok(Answer::Cancel),
+                        KeyCode::Down | KeyCode::PageDown => scroll = scroll.saturating_add(1),
+                        KeyCode::Up | KeyCode::PageUp => scroll = scroll.saturating_sub(1),
+                        _ => {}
+                    }
+                } else {
+                    match key.code {
+                        KeyCode::Enter => return Ok(Answer::Submit(std::mem::take(&mut secret.0))),
+                        KeyCode::Backspace => {
+                            if let Some((index, _)) = secret.0.char_indices().last() {
+                                unsafe {
+                                    for b in &mut secret.0.as_bytes_mut()[index..] {
+                                        std::ptr::write_volatile(b, 0);
+                                    }
+                                }
+                                secret.0.truncate(index);
+                            }
+                        }
+                        KeyCode::Char(c)
+                            if !c.is_control()
+                                && !key
+                                    .modifiers
+                                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                                && secret.0.len() + c.len_utf8() < 8192 =>
+                        {
+                            secret.0.push(c)
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -6392,10 +6598,16 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
         if let Some(target) = app.pending_add.take() {
             cleanup_native_preview(&mut screen, &mut native_preview)?;
-            screen.suspend()?;
             let via = app.pending_add_via.take();
-            let result = crate::add_via(&target, via.as_ref());
-            screen.resume()?;
+            let owned_target = target.clone();
+            app.notice = format!("Connecting to {}", safe_label(&target));
+            screen
+                .terminal
+                .draw(|frame| render_with_native(frame, &app, None))?;
+            let result = crate::auth::with_broker(
+                move || crate::add_via(&owned_target, via.as_ref()),
+                |prompt| authentication_modal(&mut screen, prompt),
+            );
             match result {
                 Ok(()) => {
                     let updated = store::devices()?;
@@ -6695,8 +6907,8 @@ mod tests {
         a.network_selected = 1;
         let text = capture_app(&a, 120);
         assert!(text.contains("laptop"));
-        assert!(text.contains("Viewer-authenticated helper evidence"));
-        assert!(text.contains("Reachability from selected device: unknown"));
+        assert!(text.contains("From viewer"));
+        assert!(text.contains("Via selected device: unknown"));
         assert!(rx.try_recv().is_err());
     }
     #[test]

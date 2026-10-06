@@ -246,6 +246,45 @@ pub fn ssh(target: &str, interactive: bool) -> Result<std::process::Command> {
     if !hops.is_empty() {
         c.args(["-J", &hops.join(",")]);
     }
+    if interactive && crate::auth::configure(&mut c)? {
+        c.stderr(std::process::Stdio::null());
+    }
+    // A private enrollment master carries authenticated access, never a saved password.
+    use sha2::{Digest, Sha256};
+    let sockets = ensure()?.join("ssh");
+    match std::os::unix::fs::DirBuilderExt::mode(&mut fs::DirBuilder::new(), 0o700).create(&sockets)
+    {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(&sockets)?;
+    anyhow::ensure!(
+        metadata.is_dir()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o077 == 0,
+        "unsafe SSH connection directory"
+    );
+    let route_identity = format!("{target}:{hops:?}");
+    let digest = format!("{:x}", Sha256::digest(route_identity.as_bytes()));
+    let socket = sockets.join(format!("{}-%C", &digest[..8]));
+    anyhow::ensure!(
+        socket.as_os_str().len() + 38 < 104,
+        "SSH connection path too long"
+    );
+    c.arg("-o").arg(format!("ControlPath={}", socket.display()));
+    c.args([
+        "-o",
+        if crate::auth::active() {
+            "ControlMaster=auto"
+        } else {
+            "ControlMaster=no"
+        },
+    ]);
+    if crate::auth::active() {
+        c.args(["-o", "ControlPersist=600"]);
+    }
     c.arg(target);
     Ok(c)
 }

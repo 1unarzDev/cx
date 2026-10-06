@@ -28,6 +28,8 @@ jobs:
       - run: python3 tests/clipboard_pty.py target/debug/cx
       - run: python3 tests/metadata_reconnect_cli.py target/debug/cx
       - run: python3 tests/jump_routes_cli.py target/debug/cx
+      - run: python3 tests/enrollment_auth_pty.py target/debug/cx
+      - run: python3 tests/enrollment_ssh.py .
       - run: python3 tests/stop_shell_live.py target/debug/cx
       - run: python3 tests/preview_helper_live.py target/debug/cx
       - run: python3 tests/source_preview_pty.py target/debug/cx

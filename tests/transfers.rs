@@ -492,3 +492,6 @@ fn integrated_tree_and_resume() {
         "incomplete"
     );
 }
+
+#[path = "../src/auth.rs"]
+mod auth;

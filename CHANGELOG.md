@@ -6,6 +6,19 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.15
+
+### Features
+- Network keeps enrolled devices visible alongside separately scoped LAN neighbors, with recent viewer-authenticated access evidence and direct session/files actions.
+- Enroll discovered neighbors through their observing device using compact account entry and masked OpenSSH password, key-unlock or verification prompts. New host keys require explicit review of a complete, scrollable fingerprint.
+- Reuse a private authenticated SSH connection for ten idle minutes without saving passwords; background checks never open credential dialogs.
+
+### Fixes
+- Keep project directory headings directly above their sessions, with spacing before the next group.
+- Slim the Add device panel and remove redundant confirmation/cancellation instructions.
+- Show a refused neighbor SSH connection as port closed rather than unknown.
+- Bound enrollment I/O and cancellation; keep passwords outside application caches, logs, process arguments and environment.
+
 ## v0.1.14
 
 ### Features

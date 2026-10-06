@@ -94,3 +94,6 @@ fn persistent_idempotent_hostile_directory() {
         std::panic::resume_unwind(e)
     }
 }
+
+#[path = "../src/auth.rs"]
+mod auth;

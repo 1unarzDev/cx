@@ -335,7 +335,7 @@ pub fn probe_candidate(address: &str, interface: Option<&str>) -> Result<Value> 
             json!({"state":"tcp_reachable","port":22,"authenticated":false,"method":"tcp_connect","timeout_ms":750})
         }
         Err(error) => {
-            json!({"state":"unknown","port":22,"authenticated":false,"method":"tcp_connect","timeout_ms":750,"reason":crate::files::display(&error.to_string())})
+            json!({"state":if error.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused) {"closed"} else {"unknown"},"port":22,"authenticated":false,"method":"tcp_connect","timeout_ms":750,"reason":crate::files::display(&error.to_string())})
         }
     };
     Ok(value)

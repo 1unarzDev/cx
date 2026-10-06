@@ -11,7 +11,10 @@ use std::{
     },
     path::PathBuf,
     process::Command,
-    sync::mpsc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    },
     thread,
     time::Duration,
 };
@@ -41,6 +44,7 @@ pub enum Answer {
 struct Locator {
     socket: PathBuf,
     nonce: String,
+    cancelled: Arc<AtomicBool>,
 }
 thread_local! { static BROKER: RefCell<Option<Locator>> = const { RefCell::new(None) }; }
 
@@ -69,6 +73,18 @@ fn nonce() -> Result<String> {
 
 /// Apply only to interactive SSH commands constructed inside `with_broker`'s worker.
 /// Returns false outside enrollment, preserving existing ordinary SSH behavior.
+pub fn cancelled() -> bool {
+    BROKER.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|l| l.cancelled.load(Ordering::Relaxed))
+    })
+}
+
+pub fn active() -> bool {
+    BROKER.with(|slot| slot.borrow().is_some())
+}
+
 pub fn configure(command: &mut Command) -> Result<bool> {
     BROKER.with(|slot| {
         let borrowed = slot.borrow();
@@ -201,8 +217,10 @@ pub fn with_broker(
     let listener = UnixListener::bind(&socket)?;
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
+    let cancellation = Arc::new(AtomicBool::new(false));
     let locator = Locator {
         socket,
+        cancelled: cancellation.clone(),
         nonce: token.clone(),
     };
     let (sender, receiver) = mpsc::channel();
@@ -250,6 +268,7 @@ pub fn with_broker(
                     match answer {
                         Answer::Cancel => {
                             cancelled = true;
+                            cancellation.store(true, Ordering::Relaxed);
                             let _ = frame_write(&mut stream, &[0]);
                         }
                         Answer::Submit(mut value) => {
@@ -264,6 +283,7 @@ pub fn with_broker(
                                 clear(&mut bytes);
                             } else {
                                 cancelled = true;
+                                cancellation.store(true, Ordering::Relaxed);
                                 let _ = frame_write(&mut stream, &[0]);
                             }
                             unsafe {
@@ -278,6 +298,7 @@ pub fn with_broker(
             }
             Err(error) => {
                 cancelled = true;
+                cancellation.store(true, Ordering::Relaxed);
                 callback_error = Some(error.into());
                 thread::sleep(Duration::from_millis(20));
             }

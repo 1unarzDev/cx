@@ -150,7 +150,38 @@ fn same_spec(a: &TransferSpec, b: &TransferSpec) -> bool {
         && a.conflict == b.conflict
 }
 fn summary(job: &Job) -> Value {
-    json!({"key":job.key,"source_host":job.source_host,"destination_host":job.destination_host,"source_path":job.source_path,"destination_path":job.destination_path,"route":job.route,"status":job.status,"bytes":job.bytes,"total":job.total,"updated":job.updated,"error":job.error,"items":job.entries.len()})
+    json!({"key":job.key,"source_host":job.source_host,"destination_host":job.destination_host,"source_path":job.source_path,"destination_path":job.destination_path,"source_display":display(&decode_path(&job.source_path).map(|p|p.to_string_lossy().into_owned()).unwrap_or_else(|_|job.source_path.clone())),"destination_display":display(&decode_path(&job.destination_path).map(|p|p.to_string_lossy().into_owned()).unwrap_or_else(|_|job.destination_path.clone())),"route":job.route,"status":job.status,"bytes":job.bytes,"total":job.total,"updated":job.updated,"error":job.error,"items":job.entries.len()})
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct DirectRef {
+    owner: crate::model::Device,
+    last: Value,
+}
+fn direct_path(root: &Path, key: &str) -> PathBuf {
+    root.join(format!("{key}.direct.json"))
+}
+fn direct_spec(spec: &TransferSpec, owner: &crate::model::Device) -> TransferSpec {
+    let mut spec = spec.clone();
+    if owner.id == spec.source.id {
+        spec.source.target = None;
+    } else {
+        spec.destination.target = None;
+    }
+    spec
+}
+fn direct_result(mut value: Value, owner: &crate::model::Device) -> Value {
+    value["route"] = json!(format!("direct on {}@{}", owner.account, owner.host));
+    value["worker_host"] = json!(format!("{}@{}", owner.account, owner.host));
+    value
+}
+fn verified_endpoint(value: &Value, device: &crate::model::Device) -> bool {
+    value["account"].as_str() == Some(device.account.as_str())
+        && value["host"].as_str() == Some(device.host.as_str())
+        && (!device.id.contains(':')
+            || device
+                .id
+                .split_once(':')
+                .is_some_and(|(id, _)| value["machine_id"].as_str() == Some(id)))
 }
 pub fn start(spec: &TransferSpec) -> Result<Value> {
     valid_key(&spec.key)?;
@@ -173,6 +204,56 @@ pub fn start(spec: &TransferSpec) -> Result<Value> {
         let job: Job = read_json(&record)?;
         if job.status == "complete" || Lock::acquire(&root, &spec.key).is_err() {
             return Ok(summary(&job));
+        }
+    }
+    let direct = direct_path(&root, &spec.key);
+    if direct.try_exists()? {
+        let mut reference: DirectRef = read_json(&direct)?;
+        let result = transport::request(
+            &reference.owner,
+            Operation::Transfer(direct_spec(spec, &reference.owner)),
+        )
+        .context("owning endpoint unavailable; existing job remains there")?;
+        reference.last = direct_result(result, &reference.owner);
+        write_json(&direct, &reference)?;
+        return Ok(reference.last);
+    }
+    if spec.source.target.is_some() && spec.destination.target.is_some() {
+        // Prove destination authentication from the actual candidate, without prompts,
+        // key copying or agent forwarding. No job is submitted merely on mesh evidence.
+        for (candidate, other) in [
+            (&spec.source, &spec.destination),
+            (&spec.destination, &spec.source),
+        ] {
+            let probe = transport::request(
+                candidate,
+                Operation::TransferReachability {
+                    destination: other.clone(),
+                },
+            );
+            if probe
+                .as_ref()
+                .is_ok_and(|value| verified_endpoint(value, other))
+            {
+                let reference = DirectRef {
+                    owner: candidate.clone(),
+                    last: json!({"key":spec.key,"status":"submitting","route":format!("direct on {}@{}",candidate.account,candidate.host)}),
+                };
+                // Record the owning endpoint before submission, so a lost response never
+                // silently reroutes a potentially running job to another machine.
+                write_json(&direct, &reference)?;
+                let result = transport::request(
+                    candidate,
+                    Operation::Transfer(direct_spec(spec, candidate)),
+                )
+                .context("endpoint submission response lost; retry reconciles the same job")?;
+                let reference = DirectRef {
+                    owner: candidate.clone(),
+                    last: direct_result(result, candidate),
+                };
+                write_json(&direct, &reference)?;
+                return Ok(reference.last);
+            }
         }
     }
     let cancellation = root.join(format!("{}.cancel", spec.key));
@@ -254,27 +335,71 @@ pub fn start(spec: &TransferSpec) -> Result<Value> {
 pub fn jobs() -> Result<Value> {
     let root = root()?;
     let mut values = Vec::new();
+    let mut observations: std::collections::HashMap<String, Option<Value>> =
+        std::collections::HashMap::new();
     for entry in fs::read_dir(&root)?.take(4096) {
         let path = entry?.path();
-        if path
+        let name = path
             .file_name()
-            .is_some_and(|n| n.to_string_lossy().ends_with(".job.json"))
-        {
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if name.ends_with(".job.json") {
             if let Ok(mut job) = read_json::<Job>(&path) {
                 if job.status == "running" && Lock::acquire(&root, &job.key).is_ok() {
                     job.status = "incomplete".into();
                 }
-                values.push(job);
+                values.push(summary(&job));
+            }
+        } else if name.ends_with(".direct.json") {
+            if let Ok(mut reference) = read_json::<DirectRef>(&path) {
+                let key = name.trim_end_matches(".direct.json");
+                let observation = observations
+                    .entry(reference.owner.id.clone())
+                    .or_insert_with(|| {
+                        transport::request(&reference.owner, Operation::TransferJobs).ok()
+                    });
+                match observation {
+                    Some(jobs) => {
+                        if let Some(job) = jobs["jobs"]
+                            .as_array()
+                            .and_then(|jobs| jobs.iter().find(|v| v["key"] == key))
+                        {
+                            reference.last = direct_result(job.clone(), &reference.owner);
+                            write_json(&path, &reference)?;
+                        }
+                        values.push(reference.last);
+                    }
+                    None => {
+                        let mut value = reference.last;
+                        value["status"] = json!("unknown");
+                        value["error"] =
+                            json!("Execution endpoint unavailable; job lifetime is unknown");
+                        values.push(value);
+                    }
+                }
             }
         }
     }
-    values.sort_by(|a, b| b.updated.cmp(&a.updated));
+    values.sort_by(|a, b| {
+        b["updated"]
+            .as_u64()
+            .unwrap_or(0)
+            .cmp(&a["updated"].as_u64().unwrap_or(0))
+    });
     values.truncate(256);
-    Ok(json!({"jobs":values.iter().map(summary).collect::<Vec<_>>()}))
+    Ok(json!({"jobs":values}))
 }
 pub fn cancel(key: &str) -> Result<Value> {
     valid_key(key)?;
     let root = root()?;
+    let direct = direct_path(&root, key);
+    if direct.try_exists()? {
+        let reference: DirectRef = read_json(&direct)?;
+        return transport::request(
+            &reference.owner,
+            Operation::TransferCancel { key: key.into() },
+        );
+    }
     if !spec_path(&root, key).try_exists()? {
         bail!("unknown transfer");
     }
@@ -307,6 +432,7 @@ fn collect(
     entries: &mut Vec<Entry>,
     depth: usize,
 ) -> Result<()> {
+    check_cancel(&root()?, &spec.key)?;
     if depth > 64 || entries.len() >= 100000 {
         bail!("copy tree exceeds bounded depth/item limit");
     }
@@ -328,29 +454,43 @@ fn collect(
         bytes: 0,
     });
     if kind == "directory" {
-        let listing = transport::request(
-            &spec.source,
-            Operation::List {
-                path: source.into(),
-            },
-        )?;
-        if listing["truncated"] == true {
-            bail!("directory exceeds bounded listing limit; pagination is required before copying");
-        }
-        for child in listing["entries"]
-            .as_array()
-            .context("invalid directory listing")?
-        {
-            let childpath = text(child, "path")?;
-            let childinfo = info(&spec.source, childpath)?;
-            let name = text(&childinfo, "name")?;
-            collect(
-                spec,
-                childpath,
-                &join(destination, name)?,
-                entries,
-                depth + 1,
+        let mut offset = 0;
+        loop {
+            check_cancel(&root()?, &spec.key)?;
+            let listing = transport::request(
+                &spec.source,
+                Operation::ListPage {
+                    path: source.into(),
+                    offset,
+                    limit: 1000,
+                },
             )?;
+            for child in listing["entries"]
+                .as_array()
+                .context("invalid directory listing")?
+            {
+                let childpath = text(child, "path")?;
+                let childinfo = info(&spec.source, childpath)?;
+                let name = text(&childinfo, "name")?;
+                collect(
+                    spec,
+                    childpath,
+                    &join(destination, name)?,
+                    entries,
+                    depth + 1,
+                )?;
+            }
+            if let Some(next) = listing["next_offset"].as_u64() {
+                if next <= offset {
+                    bail!("pagination did not advance");
+                }
+                offset = next;
+            } else {
+                break;
+            }
+            if text(&info(&spec.source, source)?, "identity")? != identity {
+                bail!("source directory changed during listing");
+            }
         }
         if text(&info(&spec.source, source)?, "identity")? != identity {
             bail!("source directory changed during listing");
@@ -406,7 +546,11 @@ fn worker_inner(spec: &TransferSpec) -> Result<()> {
         if destination_info["kind"] == "directory" {
             destination = join(text(&destination_info, "path")?, text(&source, "name")?)?;
         }
-        if spec.source.id == spec.destination.id {
+        if spec.source.id == spec.destination.id
+            || (spec.source.target.is_none() && spec.destination.target.is_none())
+            || (spec.source.host == spec.destination.host
+                && spec.source.account == spec.destination.account)
+        {
             let src = decode_path(text(&source, "path")?)?;
             let dst = decode_path(&destination)?;
             if src == dst || (source["kind"] == "directory" && dst.starts_with(&src)) {
@@ -498,6 +642,7 @@ fn worker_inner(spec: &TransferSpec) -> Result<()> {
                     let result = transport::request(
                         &spec.destination,
                         Operation::ReceiveSymlink {
+                            key: file_key(&spec.key, &entry.destination),
                             path: entry.destination.clone(),
                             target: entry.target.clone().context("symlink target unavailable")?,
                             conflict: spec.conflict.clone(),

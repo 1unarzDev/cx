@@ -110,4 +110,90 @@ fn integrated_tree_and_resume() {
     })
     .unwrap();
     assert_eq!(std::fs::read(target).unwrap(), b"abcdef");
+    // Real filesystem pagination beyond the browser's first bounded page.
+    let large = t.path().join("large");
+    std::fs::create_dir(&large).unwrap();
+    for index in 0..1005 {
+        std::fs::write(large.join(format!("entry-{index}")), b"").unwrap();
+    }
+    let first = dispatch(model::Operation::ListPage {
+        path: large.to_str().unwrap().into(),
+        offset: 0,
+        limit: 1000,
+    })
+    .unwrap();
+    assert_eq!(first["entries"].as_array().unwrap().len(), 1000);
+    assert_eq!(first["next_offset"], 1000);
+    let second = dispatch(model::Operation::ListPage {
+        path: large.to_str().unwrap().into(),
+        offset: 1000,
+        limit: 1000,
+    })
+    .unwrap();
+    assert_eq!(second["entries"].as_array().unwrap().len(), 5);
+    assert!(second["next_offset"].is_null());
+    assert!(dispatch(model::Operation::ListPage {
+        path: large.to_str().unwrap().into(),
+        offset: 0,
+        limit: 0
+    })
+    .is_err());
+    // Source version changes are rejected before sending bytes.
+    let changed = t.path().join("changed");
+    std::fs::write(&changed, b"before").unwrap();
+    let metadata = dispatch(model::Operation::FileInfo {
+        path: changed.to_str().unwrap().into(),
+    })
+    .unwrap();
+    std::fs::write(&changed, b"after changed").unwrap();
+    assert!(dispatch(model::Operation::ReadChunk {
+        path: changed.to_str().unwrap().into(),
+        offset: 0,
+        limit: 1024,
+        identity: metadata["identity"].as_str().unwrap().into()
+    })
+    .is_err());
+    #[cfg(unix)]
+    {
+        let link = t.path().join("owned-link");
+        std::fs::write(&link, b"existing").unwrap();
+        let operation = model::Operation::ReceiveSymlink {
+            path: link.to_str().unwrap().into(),
+            target: "../../external".into(),
+            conflict: "rename".into(),
+            key: "link-rename".into(),
+        };
+        let result = dispatch(operation.clone()).unwrap();
+        assert_eq!(dispatch(operation).unwrap()["path"], result["path"]);
+        assert_eq!(std::fs::read(&link).unwrap(), b"existing");
+        assert_eq!(
+            std::fs::read_link(t.path().join("owned-link.copy-1")).unwrap(),
+            std::path::Path::new("../../external")
+        );
+        assert!(!t.path().join("owned-link.copy-2").exists());
+        dispatch(model::Operation::ReceiveSymlink {
+            path: link.to_str().unwrap().into(),
+            target: "external".into(),
+            conflict: "overwrite".into(),
+            key: "link-overwrite".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            std::path::Path::new("external")
+        );
+    }
+    let mut into_self = spec.clone();
+    into_self.key = "into-self".into();
+    into_self.destination_path = source.join("child").to_str().unwrap().into();
+    assert!(transfers::worker(&into_self).is_err());
+    assert!(!source.join("child").exists());
+    // Changed endpoints under an existing key fail before launching a service.
+    let state = store::ensure().unwrap().join("transfers");
+    let saved = state.join("collision.spec.json");
+    let mut collision = spec.clone();
+    collision.key = "collision".into();
+    std::fs::write(saved, serde_json::to_vec(&collision).unwrap()).unwrap();
+    collision.destination_path = t.path().join("other").to_str().unwrap().into();
+    assert!(transfers::start(&collision).is_err());
 }

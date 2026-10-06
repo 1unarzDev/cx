@@ -81,6 +81,11 @@ fn absolute(path: &Path) -> Result<PathBuf> {
 pub fn handle(op: &Operation) -> Result<Value> {
     match op {
         Operation::List { path } => list(&decode_path(path)?),
+        Operation::ListPage {
+            path,
+            offset,
+            limit,
+        } => list_page(&decode_path(path)?, *offset, *limit),
         Operation::Preview { path } => preview(&decode_path(path)?),
         Operation::Mkdir { path } => {
             let path = absolute(&decode_path(path)?)?;
@@ -129,22 +134,29 @@ pub fn handle(op: &Operation) -> Result<Value> {
             path,
             target,
             conflict,
-        } => receive_symlink(&decode_path(path)?, &decode_path(target)?, conflict),
+            key,
+        } => receive_symlink(&decode_path(path)?, &decode_path(target)?, conflict, key),
         _ => bail!("unsupported filesystem operation"),
     }
 }
 fn list(path: &Path) -> Result<Value> {
+    list_page(path, 0, LIST_LIMIT as u32)
+}
+fn list_page(path: &Path, offset: u64, limit: u32) -> Result<Value> {
+    if limit == 0 || limit > LIST_LIMIT as u32 || offset > 100000 {
+        bail!("listing pagination exceeds bounds");
+    }
     let path = fs::canonicalize(path).context("open directory")?;
     let mut entries = Vec::new();
     let mut truncated = false;
     let mut budget = 0;
-    for entry in fs::read_dir(&path)? {
+    for entry in fs::read_dir(&path)?.skip(offset as usize) {
         let entry = entry?;
         let metadata = fs::symlink_metadata(entry.path())?;
         let name = display(&entry.file_name().to_string_lossy());
         let opaque = encode_path(&entry.path());
         budget += name.len() + opaque.len() + 128;
-        if entries.len() == LIST_LIMIT || budget > 512 * 1024 {
+        if entries.len() == limit as usize || budget > 512 * 1024 {
             truncated = true;
             break;
         }
@@ -166,7 +178,7 @@ fn list(path: &Path) -> Result<Value> {
             .then_with(|| a["name"].as_str().cmp(&b["name"].as_str()))
     });
     Ok(
-        json!({"path":encode_path(&path),"display_path":display(&path.to_string_lossy()),"parent":path.parent().map(encode_path),"entries":entries,"truncated":truncated}),
+        json!({"path":encode_path(&path),"display_path":display(&path.to_string_lossy()),"parent":path.parent().map(encode_path),"next_offset":if truncated{Some(offset+entries.len() as u64)}else{None},"entries":entries,"truncated":truncated}),
     )
 }
 fn open_read(path: &Path) -> Result<File> {
@@ -642,9 +654,28 @@ fn file_info(path: &Path) -> Result<Value> {
     let metadata = match fs::symlink_metadata(&path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(json!({"path":encode_path(&path),"kind":"missing"}))
+            let path = if let Some(parent) = path.parent() {
+                match fs::canonicalize(parent) {
+                    Ok(parent) => parent.join(
+                        path.file_name()
+                            .context("missing destination has no filename")?,
+                    ),
+                    Err(_) => path,
+                }
+            } else {
+                path
+            };
+            return Ok(json!({"path":encode_path(&path),"kind":"missing"}));
         }
         Err(e) => return Err(e.into()),
+    };
+    let path = if metadata.is_symlink() {
+        path.parent()
+            .and_then(|p| fs::canonicalize(p).ok())
+            .map(|parent| parent.join(path.file_name().unwrap()))
+            .unwrap_or(path)
+    } else {
+        fs::canonicalize(path)?
     };
     let kind = if metadata.is_symlink() {
         "symlink"
@@ -962,10 +993,18 @@ fn receive_finalize(key: &str, checksum: &str) -> Result<Value> {
     receive_save(&root, &r)?;
     receive_state(&r)
 }
-fn receive_symlink(path: &Path, target: &Path, conflict: &str) -> Result<Value> {
-    if !matches!(conflict, "skip" | "overwrite" | "rename") {
-        bail!("invalid conflict policy");
-    }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SymlinkReceive {
+    key: String,
+    requested: String,
+    path: String,
+    target: String,
+    conflict: String,
+    status: String,
+}
+fn receive_symlink(path: &Path, target: &Path, conflict: &str, key: &str) -> Result<Value> {
+    valid_symlink_request(conflict, key)?;
     #[cfg(not(unix))]
     {
         let _ = (path, target);
@@ -973,35 +1012,113 @@ fn receive_symlink(path: &Path, target: &Path, conflict: &str) -> Result<Value> 
     }
     #[cfg(unix)]
     {
-        let mut path = absolute(path)?;
-        if let Ok(m) = fs::symlink_metadata(&path) {
-            if m.is_symlink() && fs::read_link(&path)? == target {
-                return Ok(json!({"path":encode_path(&path),"status":"complete"}));
+        let root = receive_root()?;
+        let _lock = Lock::acquire(&root, key)?;
+        let requested = absolute(path)?;
+        let record = root.join(format!("{key}.symlink.json"));
+        let mut r = if record.try_exists()? {
+            let r: SymlinkReceive = serde_json::from_reader(open_read(&record)?.take(32768))?;
+            if r.requested != encode_path(&requested)
+                || r.target != encode_path(target)
+                || r.conflict != conflict
+            {
+                bail!("symlink key belongs to another copy");
             }
-            if conflict == "skip" {
-                return Ok(json!({"path":encode_path(&path),"status":"skipped"}));
-            }
-            if conflict == "overwrite" {
-                bail!("symlink overwrite requires explicit removal; destination preserved");
-            }
-            let name = path.file_name().context("no filename")?.to_owned();
-            let parent = path.parent().context("no parent")?;
-            let mut found = None;
-            for n in 1..=10000 {
-                let mut candidate = name.clone();
-                candidate.push(format!(".copy-{n}"));
-                let p = parent.join(candidate);
-                if fs::symlink_metadata(&p).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
-                {
-                    found = Some(p);
-                    break;
+            r
+        } else {
+            let mut chosen = requested.clone();
+            let mut status = "pending";
+            if let Ok(m) = fs::symlink_metadata(&chosen) {
+                if conflict == "skip" {
+                    status = "skipped";
+                } else if conflict == "rename" {
+                    let name = chosen.file_name().context("no filename")?.to_owned();
+                    let parent = chosen.parent().context("no parent")?;
+                    let mut found = None;
+                    for n in 1..=10000 {
+                        let mut candidate = name.clone();
+                        candidate.push(format!(".copy-{n}"));
+                        let p = parent.join(candidate);
+                        if fs::symlink_metadata(&p)
+                            .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+                        {
+                            found = Some(p);
+                            break;
+                        }
+                    }
+                    chosen = found.context("no available rename destination")?;
+                } else if m.is_dir() {
+                    bail!("cannot overwrite a directory with a symlink");
                 }
             }
-            path = found.context("no available rename destination")?;
+            SymlinkReceive {
+                key: key.into(),
+                requested: encode_path(&requested),
+                path: encode_path(&chosen),
+                target: encode_path(target),
+                conflict: conflict.into(),
+                status: status.into(),
+            }
+        };
+        let save = |r: &SymlinkReceive| -> Result<()> {
+            let tmp = root.join(format!("{key}.{}.symlink.tmp", std::process::id()));
+            let mut opts = OpenOptions::new();
+            opts.write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW);
+            let mut file = opts.open(&tmp)?;
+            file.write_all(&serde_json::to_vec(r)?)?;
+            file.sync_all()?;
+            fs::rename(tmp, &record)?;
+            Ok(())
+        };
+        if r.status == "complete" || r.status == "skipped" {
+            return Ok(json!({"path":r.path,"status":r.status}));
         }
-        std::os::unix::fs::symlink(target, &path)?;
-        Ok(json!({"path":encode_path(&path),"status":"complete"}))
+        save(&r)?;
+        let path = decode_path(&r.path)?;
+        let parent = path.parent().context("no parent")?;
+        let temp = parent.join(format!(".cx-{key}.symlink.partial"));
+        if r.status == "finalizing"
+            && fs::symlink_metadata(&temp).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        {
+            if fs::read_link(&path)? != target {
+                bail!("finalized symlink target changed");
+            }
+        } else {
+            if let Ok(m) = fs::symlink_metadata(&temp) {
+                if !m.is_symlink() || fs::read_link(&temp)? != target {
+                    bail!("symlink partial does not belong to this job");
+                }
+            } else {
+                std::os::unix::fs::symlink(target, &temp)?;
+            }
+            r.status = "finalizing".into();
+            save(&r)?;
+            if conflict == "overwrite" {
+                if fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
+                    bail!("destination changed to a directory");
+                }
+                fs::rename(&temp, &path)?;
+            } else {
+                fs::hard_link(&temp, &path)?;
+                fs::remove_file(&temp)?;
+            }
+            File::open(parent)?.sync_all()?;
+        }
+        r.status = "complete".into();
+        save(&r)?;
+        Ok(json!({"path":r.path,"status":r.status}))
     }
+}
+fn valid_symlink_request(conflict: &str, key: &str) -> Result<()> {
+    validate_key(key)?;
+    if !matches!(conflict, "skip" | "overwrite" | "rename") {
+        bail!("invalid conflict policy");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

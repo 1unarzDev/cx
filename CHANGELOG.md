@@ -6,6 +6,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.18
+
+### Fixes
+- Join the file cursor to its filename with a compact chevron and restrained ANSI accent. Remove the detached rail and reversed white highlight, preserving the terminal’s default background.
+- Keep inactive pane cursors dim, selection/copy/cut marks separate, and selected file sizes readable. The slimmer gutter gives long filenames more room.
+
 ## v0.1.17
 
 ### Features

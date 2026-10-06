@@ -5712,9 +5712,7 @@ fn render_browser(
                     };
                     let selected = index == b.selected;
                     let name_style = if selected && focused {
-                        // Swap the terminal's default pair for reliable light/dark
-                        // contrast; the separate cursor rail carries the accent.
-                        Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
+                        accent().add_modifier(Modifier::BOLD)
                     } else if selected {
                         Style::default().add_modifier(Modifier::BOLD)
                     } else if e.kind == "directory" {
@@ -5722,21 +5720,16 @@ fn render_browser(
                     } else {
                         Style::default()
                     };
+                    let cursor = if selected {
+                        if ascii() {
+                            "> "
+                        } else {
+                            "▸ "
+                        }
+                    } else {
+                        "  "
+                    };
                     Row::new(vec![
-                        Cell::from(if selected {
-                            if focused && !ascii() {
-                                "▌"
-                            } else {
-                                ">"
-                            }
-                        } else {
-                            " "
-                        })
-                        .style(if focused {
-                            accent().add_modifier(Modifier::BOLD)
-                        } else {
-                            muted()
-                        }),
                         Cell::from(marker).style(style.add_modifier(Modifier::BOLD)),
                         Cell::from(match e.kind.as_str() {
                             "directory" => "/",
@@ -5744,19 +5737,28 @@ fn render_browser(
                             _ => " ",
                         })
                         .style(accent()),
-                        Cell::from(Line::from(Span::styled(
-                            format!(
-                                " {} ",
-                                compact_path(&e.name, area.width.saturating_sub(20) as usize)
+                        // Keep the cursor attached to its filename instead of a remote rail.
+                        // ANSI foreground only: preserve light/dark defaults and transparency.
+                        Cell::from(Line::from(vec![
+                            Span::styled(cursor, if focused { name_style } else { muted() }),
+                            Span::styled(
+                                format!(
+                                    "{} ",
+                                    compact_path(&e.name, area.width.saturating_sub(18) as usize)
+                                ),
+                                name_style,
                             ),
-                            name_style,
-                        ))),
+                        ])),
                         Cell::from(if e.kind == "file" {
                             human_size(e.size)
                         } else {
                             String::new()
                         })
-                        .style(muted()),
+                        .style(if selected && focused {
+                            Style::default()
+                        } else {
+                            muted()
+                        }),
                     ])
                 })
                 .collect::<Vec<_>>();
@@ -5765,7 +5767,6 @@ fn render_browser(
                 Table::new(
                     table_rows,
                     [
-                        Constraint::Length(2),
                         Constraint::Length(1),
                         Constraint::Length(1),
                         Constraint::Min(1),
@@ -9195,9 +9196,15 @@ mod tests {
                     "search",
                     "sessions",
                     "destination",
+                    "files",
+                    "files-inactive",
+                    "files-marked",
                 ] {
                     let (mut a, _rx) = file_app();
-                    if state != "destination" {
+                    if !matches!(
+                        state,
+                        "destination" | "files" | "files-inactive" | "files-marked"
+                    ) {
                         a.view = View::Work;
                         a.browser = None;
                         a.devices.truncate(1);
@@ -9214,6 +9221,18 @@ mod tests {
                             a.work[0].fetched = transport::now();
                         }
                         "destination" => a.other_browser = Some(Browser::new(1, "/output".into())),
+                        "files" | "files-inactive" | "files-marked" => {
+                            let b = a.browser.as_mut().unwrap();
+                            b.entries[0].name = "recordings".into();
+                            b.entries[0].kind = "directory".into();
+                            b.selected = 1;
+                            if state == "files-inactive" {
+                                a.focus = Focus::Devices;
+                            }
+                            if state == "files-marked" {
+                                b.marked.insert(b.entries[1].path.clone());
+                            }
+                        }
                         _ => {}
                     }
                     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();

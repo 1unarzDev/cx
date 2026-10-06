@@ -18,8 +18,8 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, BorderType, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, TableState,
-        Wrap,
+        Block, BorderType, Borders, Cell, Clear, List, ListItem, Padding, Paragraph, Row, Table,
+        TableState, Wrap,
     },
     Frame, Terminal,
 };
@@ -2313,6 +2313,9 @@ impl App {
         }
         match key.code {
             KeyCode::Char('n') => self.execute(Action::New),
+            KeyCode::Char('a') if self.view == View::Work && local_only(self) => {
+                self.execute(Action::Add)
+            }
             KeyCode::Char(':') => self.execute(Action::Command),
             KeyCode::Char('?') | KeyCode::F(1) => self.help = true,
             KeyCode::Char('T') => self.execute(Action::Jobs),
@@ -2379,7 +2382,7 @@ impl App {
                     self.focus = Focus::Workspace;
                 } else {
                     match self.view {
-                    View::Work => { if let Some((d,s)) = self.selected_session() { self.pending_attach = Some((d,s,false)); } },
+                    View::Work => { if let Some((d,s)) = self.selected_session() { self.pending_attach = Some((d,s,false)); } else if empty_work_can_create(self) { self.execute(Action::New); } },
                     View::Files => { if let Some(b) = &self.browser { if let Some(e) = self.visible_entries().get(b.selected).cloned() { if e.kind == "directory" { self.open_browser(b.device,e.path); } else { self.open_preview(b.device, e.path); } } } },
                     View::Network => self.notice = "Ctrl+P · shell / files are available through Sessions and the device selector".into(),
                 }
@@ -2810,7 +2813,7 @@ fn block(title: String, focused: bool) -> Block<'static> {
         })
 }
 fn selected_style() -> Style {
-    accent().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+    accent().add_modifier(Modifier::UNDERLINED | Modifier::BOLD)
 }
 fn accent() -> Style {
     if std::env::var_os("NO_COLOR").is_some() {
@@ -2843,6 +2846,22 @@ fn workspace_action(action: Action) -> bool {
             | Action::Paste
             | Action::Mkdir
     )
+}
+
+fn local_only(app: &App) -> bool {
+    !app.devices.is_empty() && app.devices.iter().all(|d| d.target.is_none())
+}
+fn empty_work_can_create(app: &App) -> bool {
+    app.view == View::Work
+        && app.search.is_empty()
+        && app.session_rows().is_empty()
+        && !app.creating
+        && !app
+            .work
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| app.device == 0 || app.device == i + 1)
+            .any(|(_, w)| w.loading || w.error.is_some())
 }
 
 fn sidebar_actions(app: &App) -> Vec<(Action, &'static str)> {
@@ -2952,7 +2971,6 @@ fn render_with_native(
         .split(vertical[1]);
     let mut device_items = vec![ListItem::new("All devices")];
     for (i, d) in app.devices.iter().enumerate() {
-        let count = app.work[i].sessions.len();
         let status = if app.work[i].loading {
             "checking"
         } else if app.work[i].error.is_some() {
@@ -2995,16 +3013,12 @@ fn render_with_native(
                 "ready" => Color::Green,
                 "checking" => Color::Cyan,
                 "unavailable" => Color::Yellow,
-                _ => Color::DarkGray,
+                _ => Color::Reset,
             })
         };
         device_items.push(ListItem::new(Line::from(vec![
             Span::styled(format!("{indicator} "), dot_style),
-            Span::raw(format!(
-                "{:<width$} {count:>2}",
-                fit_label(&d.name, sidebar_width.saturating_sub(9) as usize),
-                width = sidebar_width.saturating_sub(9) as usize
-            )),
+            Span::raw(fit_label(&d.name, sidebar_width.saturating_sub(8) as usize)),
         ])));
     }
     let sidebar = Layout::default()
@@ -3033,7 +3047,10 @@ fn render_with_native(
     let mut state = ratatui::widgets::ListState::default().with_selected(Some(app.device));
     frame.render_stateful_widget(
         List::new(device_items)
-            .block(block("Devices".into(), app.focus == Focus::Devices))
+            .block(
+                block("Devices".into(), app.focus == Focus::Devices)
+                    .padding(Padding::horizontal(1)),
+            )
             .highlight_style(if app.focus == Focus::Devices {
                 selected_style()
             } else {
@@ -3046,7 +3063,7 @@ fn render_with_native(
     let actions = sidebar_actions(app);
     let items = actions
         .iter()
-        .map(|(_, label)| ListItem::new(format!(" {label}")))
+        .map(|(_, label)| ListItem::new(*label))
         .collect::<Vec<_>>();
     let mut state =
         ratatui::widgets::ListState::default().with_selected(if app.focus == Focus::Actions {
@@ -3056,71 +3073,58 @@ fn render_with_native(
         });
     frame.render_stateful_widget(
         List::new(items)
-            .block(block("Actions".into(), app.focus == Focus::Actions))
+            .block(
+                block("Actions".into(), app.focus == Focus::Actions)
+                    .padding(Padding::horizontal(1)),
+            )
             .highlight_style(selected_style()),
         sidebar[1],
         &mut state,
     );
     let details = if let Some(b) = app.browser.as_ref().filter(|_| app.view == View::Files) {
-        let entry = browser_entries(b).get(b.selected).cloned();
+        let context = if app.destination_active || app.other_browser.is_some() {
+            "Destination"
+        } else {
+            "Folder"
+        };
+        let destination = app.other_browser.as_ref().unwrap_or(b);
         format!(
-            "{}\n\n{}\n{}\n\n{} selected{}",
-            identity(&app.devices[b.device]),
-            entry
-                .as_ref()
-                .map(|e| safe_label(&e.name))
-                .unwrap_or_else(|| "No file".into()),
-            entry
-                .as_ref()
-                .map(|e| format!("{} · {}", e.kind, human_size(e.size)))
-                .unwrap_or_default(),
+            "Host {}\n{context} {}\n{} marked · t send",
+            identity(&app.devices[destination.device]),
+            safe_label(&destination.display_path),
             b.marked.len(),
-            if b.marked
-                .iter()
-                .any(|p| !browser_entries(b).iter().any(|e| &e.path == p))
-            {
-                " (includes hidden/filtered)"
-            } else {
-                ""
-            }
         )
     } else if let Some((i, s)) = app.selected_session() {
         format!(
-            "{}\n{}\n\n{}\n\n{}",
-            safe_label(&s.name),
-            safe_label(&s.provider),
+            "Host {}\nFolder {}\nEnter open · n new",
             identity(&app.devices[i]),
-            safe_label(&s.directory)
-        )
-    } else if let Some(b) = &app.browser {
-        format!(
-            "{}\n\n{}",
-            identity(&app.devices[b.device]),
-            safe_label(&b.display_path)
+            safe_label(&s.directory),
         )
     } else if let Some(i) = app.actual_device() {
         format!(
-            "{}\n{}\n\n{} sessions",
-            safe_label(&app.devices[i].name),
+            "Host {}\n{} sessions\nn new · Ctrl+P actions",
             identity(&app.devices[i]),
             app.work[i].sessions.len()
         )
     } else {
-        "Select work to see\nits execution context".into()
+        "Choose a device\nn new · Ctrl+P actions".into()
     };
     if sidebar[2].height > 3 {
+        let details = details
+            .lines()
+            .map(|line| fit_label(line, sidebar_width.saturating_sub(2) as usize))
+            .collect::<Vec<_>>()
+            .join("\n");
         frame.render_widget(
-            Paragraph::new(details)
-                .style(muted())
-                .wrap(Wrap { trim: false })
-                .block(
-                    Block::default()
-                        .title(Line::from(Span::styled(
-                            " Selected ",
-                            accent().add_modifier(Modifier::BOLD),
-                        )))
-                        .borders(Borders::TOP),
-                ),
+            Paragraph::new(details).wrap(Wrap { trim: false }).block(
+                Block::default()
+                    .padding(Padding::horizontal(1))
+                    .title(Line::from(Span::styled(
+                        " Selected ",
+                        accent().add_modifier(Modifier::BOLD),
+                    )))
+                    .borders(Borders::TOP),
+            ),
             sidebar[2],
         );
     }
@@ -3142,7 +3146,12 @@ fn render_with_native(
         View::Work => {
             let rows = app.session_rows();
             if rows.is_empty() {
-                let checking = app.work.iter().any(|w| w.loading);
+                let checking = app
+                    .work
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| app.device == 0 || app.device == i + 1)
+                    .any(|(_, w)| w.loading);
                 let errors: Vec<_> = app
                     .work
                     .iter()
@@ -3150,17 +3159,57 @@ fn render_with_native(
                     .filter(|(i, _)| app.device == 0 || app.device == i + 1)
                     .filter_map(|(_, w)| w.error.as_deref())
                     .collect();
-                let text = if checking {
-                    "Checking sessions…".into()
+                let mut lines = vec![Line::from("")];
+                if checking {
+                    lines.push(Line::from(Span::styled("Checking sessions…", accent())));
+                    lines.push(Line::from("Waiting for device evidence"));
                 } else if !errors.is_empty() {
-                    errors.join("\n")
+                    lines.push(Line::from(Span::styled(
+                        "Device unavailable",
+                        tint(Color::Yellow),
+                    )));
+                    for error in errors {
+                        lines.push(Line::from(safe_text(error)));
+                    }
+                    lines.push(Line::from("Ctrl+P → Refresh"));
+                } else if !app.search.is_empty() {
+                    lines.push(Line::from("No matching sessions"));
+                    lines.push(Line::from("Esc clears search"));
+                    lines.push(Line::from("n starts a new session"));
                 } else {
-                    "No live sessions in this view.\nCtrl+P → New session → choose provider and folder".into()
-                };
+                    lines.push(Line::from(Span::styled(
+                        "No live sessions",
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )));
+                    lines.push(Line::from("Choose a provider and folder."));
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        if app.creating {
+                            "Creating session…"
+                        } else {
+                            "[ Enter / n  New session ]"
+                        },
+                        if app.focus == Focus::Workspace && !app.creating {
+                            selected_style()
+                        } else {
+                            accent().add_modifier(Modifier::BOLD)
+                        },
+                    )));
+                    if local_only(app) {
+                        lines.push(Line::from(""));
+                        lines.push(Line::from("Use this computer now."));
+                        lines.push(Line::from(Span::styled(
+                            "a  Add device",
+                            accent().add_modifier(Modifier::BOLD),
+                        )));
+                        lines.push(Line::from("Connect an existing SSH target."));
+                    }
+                }
                 frame.render_widget(
-                    Paragraph::new(text)
-                        .wrap(Wrap { trim: false })
-                        .block(block("Sessions".into(), app.focus == Focus::Workspace)),
+                    Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+                        block("Sessions".into(), app.focus == Focus::Workspace)
+                            .padding(Padding::horizontal(1)),
+                    ),
                     workspace,
                 );
             } else {
@@ -3184,18 +3233,23 @@ fn render_with_native(
                 } else {
                     workspace
                 };
+                let compact = workspace.width < 50;
                 let mut display_rows = Vec::new();
                 let mut selected_row = 0;
                 let mut last_project = None;
                 for (index, (i, s)) in rows.iter().enumerate() {
                     if last_project != Some(s.directory.as_str()) {
                         display_rows.push(
-                            Row::new([
-                                Cell::from(""),
-                                Cell::from(safe_label(&s.directory)),
-                                Cell::from(""),
-                                Cell::from(""),
-                            ])
+                            Row::new(if compact {
+                                vec![Cell::from(safe_label(&s.directory)), Cell::from("")]
+                            } else {
+                                vec![
+                                    Cell::from(""),
+                                    Cell::from(safe_label(&s.directory)),
+                                    Cell::from(""),
+                                    Cell::from(""),
+                                ]
+                            })
                             .style(muted())
                             .height(2),
                         );
@@ -3208,7 +3262,7 @@ fn render_with_native(
                         && transport::now().saturating_sub(app.work[*i].fetched) <= 60
                         && app.work[*i].error.is_none();
                     let badge = format!("[{}]", safe_label(&s.provider));
-                    display_rows.push(Row::new([
+                    let cells = vec![
                         Cell::from(badge).style(if std::env::var_os("NO_COLOR").is_some() {
                             Style::default()
                         } else {
@@ -3236,24 +3290,37 @@ fn render_with_native(
                             }
                         })
                         .style(if !fresh { muted() } else { accent() }),
-                    ]));
+                    ];
+                    display_rows.push(Row::new(if compact {
+                        vec![cells[1].clone(), cells[3].clone()]
+                    } else {
+                        cells
+                    }));
                 }
                 let mut state = TableState::default().with_selected(Some(selected_row));
                 let table = Table::new(
                     display_rows,
-                    [
-                        Constraint::Length(9),
-                        Constraint::Min(10),
-                        Constraint::Length(if workspace.width > 65 { 24 } else { 18 }),
-                        Constraint::Length(8),
-                    ],
+                    if compact {
+                        vec![Constraint::Min(10), Constraint::Length(8)]
+                    } else {
+                        vec![
+                            Constraint::Length(9),
+                            Constraint::Min(10),
+                            Constraint::Length(if workspace.width > 65 { 24 } else { 18 }),
+                            Constraint::Length(8),
+                        ]
+                    },
                 )
                 .header(
-                    Row::new(["AGENT", "SESSION", "EXECUTION", "STATE"])
-                        .style(muted())
-                        .bottom_margin(1),
+                    Row::new(if compact {
+                        vec!["SESSION", "STATE"]
+                    } else {
+                        vec!["AGENT", "SESSION", "EXECUTION", "STATE"]
+                    })
+                    .style(muted())
+                    .bottom_margin(1),
                 )
-                .column_spacing(2)
+                .column_spacing(if compact { 1 } else { 2 })
                 .block(block(
                     format!("Sessions · {} sessions", rows.len()),
                     app.focus == Focus::Workspace,
@@ -3546,7 +3613,10 @@ fn render_with_native(
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
             if errors > 0 {
-                format!(" ◆ {errors} unavailable  ")
+                format!(
+                    " {} {errors} unavailable  ",
+                    if ascii() { "!" } else { "◆" }
+                )
             } else {
                 format!(
                     " {} {ready}/{} devices  ",
@@ -3554,7 +3624,13 @@ fn render_with_native(
                     app.devices.len()
                 )
             },
-            if errors > 0 { warning } else { healthy },
+            if errors > 0 {
+                warning
+            } else if ready == 0 {
+                muted()
+            } else {
+                healthy
+            },
         )])),
         status_sections[0],
     );
@@ -3756,6 +3832,22 @@ fn render_with_native(
             ("r / d", "Rename / delete"),
             ("?", "All keys"),
         ]
+    } else if empty_work_can_create(app) && app.focus == Focus::Workspace {
+        vec![
+            ("Enter/n", "New session"),
+            (
+                if local_only(app) { "a" } else { "/" },
+                if local_only(app) {
+                    "Add device"
+                } else {
+                    "Search"
+                },
+            ),
+            ("Tab", "Focus"),
+            ("Ctrl P", "Actions"),
+            ("Ctrl C", "Quit"),
+            ("?", "Help"),
+        ]
     } else {
         vec![
             (
@@ -3807,7 +3899,7 @@ fn render_with_native(
         };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(format!("  {key:<6}  "), key_style),
+                Span::styled(format!(" {key} "), key_style),
                 Span::raw(label),
             ])),
             cells[i % columns],
@@ -7082,6 +7174,111 @@ mod tests {
             result: Ok(serde_json::json!({"path":"/old","entries":[]})),
         });
         assert_eq!(a.browser.unwrap().path, "/new");
+    }
+    #[test]
+    fn empty_session_action_respects_loading_errors_search_and_focus() {
+        let (mut a, _rx) = queued_app();
+        a.devices.truncate(1);
+        a.work.truncate(1);
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(a.dialog, Some(Dialog::Device(ChooseDevice::New))));
+        for state in ["loading", "error", "search", "creating"] {
+            let mut a = app();
+            match state {
+                "loading" => a.work[0].loading = true,
+                "error" => a.work[0].error = Some("offline".into()),
+                "search" => a.search = "missing".into(),
+                "creating" => a.creating = true,
+                _ => unreachable!(),
+            }
+            a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            assert!(a.dialog.is_none(), "{state}");
+        }
+        let mut a = app();
+        press(&mut a, 'a');
+        assert!(a.input == Some(Input::Add));
+        a.text.clear();
+        press(&mut a, 'a');
+        assert_eq!(a.text, "a");
+        let (mut a, _rx) = queued_app();
+        press(&mut a, 'a');
+        assert!(a.input.is_none());
+    }
+    #[test]
+    fn workspace_polish_capture_matrix() {
+        for width in [48, 80, 120] {
+            for height in [24, 40] {
+                for state in [
+                    "first-run",
+                    "checking",
+                    "unavailable",
+                    "search",
+                    "sessions",
+                    "destination",
+                ] {
+                    let (mut a, _rx) = file_app();
+                    if state != "destination" {
+                        a.view = View::Work;
+                        a.browser = None;
+                        a.devices.truncate(1);
+                        a.work.truncate(1);
+                    }
+                    match state {
+                        "checking" => a.work[0].loading = true,
+                        "unavailable" => {
+                            a.work[0].error = Some("Device unreachable over SSH".into())
+                        }
+                        "search" => a.search = "no-match".into(),
+                        "sessions" => {
+                            a.work[0].sessions.push(disposable_shell());
+                            a.work[0].fetched = transport::now();
+                        }
+                        "destination" => a.other_browser = Some(Browser::new(1, "/output".into())),
+                        _ => {}
+                    }
+                    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                    terminal.draw(|f| render(f, &a)).unwrap();
+                    let buffer = terminal.backend().buffer();
+                    let text = buffer
+                        .content
+                        .chunks(width as usize)
+                        .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    assert!(
+                        buffer.content.iter().all(|c| c.bg == Color::Reset),
+                        "{state} {width}x{height}: opaque background"
+                    );
+                    if state == "sessions" {
+                        assert!(text.contains("STATE"), "{width}x{height}: {text}");
+                        assert!(text.contains("live"), "{width}x{height}: {text}");
+                    }
+                    if state == "first-run" {
+                        assert!(text.contains("New session"), "{width}x{height}: {text}");
+                        assert!(text.contains("Add device"), "{width}x{height}: {text}");
+                    }
+                    if let Some(directory) = std::env::var_os("CX_WORKSPACE_CAPTURE_DIR") {
+                        let directory = std::path::PathBuf::from(directory);
+                        std::fs::create_dir_all(&directory).unwrap();
+                        let file = format!("{width}x{height}-{state}");
+                        std::fs::write(directory.join(format!("{file}.txt")), text).unwrap();
+                        let cells = buffer.content.iter().map(|c| serde_json::json!({
+                            "text": c.symbol(), "fg": format!("{:?}", c.fg),
+                            "bg": format!("{:?}", c.bg), "modifier": format!("{:?}", c.modifier)
+                        })).collect::<Vec<_>>();
+                        std::fs::write(
+                            directory.join(format!("{file}.json")),
+                            serde_json::to_vec(&serde_json::json!({
+                                "width":width, "height":height, "cells":cells,
+                                "backend":"Ratatui TestBackend fixture; not a physical terminal"
+                            }))
+                            .unwrap(),
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        }
     }
     #[test]
     fn terminal_sizes_render_without_panic() {

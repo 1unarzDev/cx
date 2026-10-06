@@ -1,6 +1,6 @@
 # cx status
 
-Implementation is in progress, not release ready. Origin is https://github.com/1unarzDev/cx.git; public publication is not authorized. Integrated baseline 81fce86; bounded workers use isolated branches under worktrees. Sharing worker returned df75d04 with scoped controller/panel/fixtures; it is not integrated. NM DHCP/DNS, secure privileged packaging, endpoint verification and physical hardware acceptance remain unresolved.
+Implementation is in progress; the full product acceptance gates remain incomplete. Origin is https://github.com/1unarzDev/cx.git; the user authorized commits, pushes, releases and GitHub build workers on 2026-10-06. Integrated baseline 81fce86; bounded workers use isolated branches under worktrees. Sharing worker returned df75d04 with scoped controller/panel/fixtures; it is not integrated. NM DHCP/DNS, secure privileged packaging, endpoint verification and physical hardware acceptance remain unresolved.
 
 Working inventory: innovation Arch/tmux 3.7c/Codex 0.160.1/Claude 2.1.290; tranquility Arch with system Codex 0.160.1 but Fish version probe returns Codex 0.160.1, npm installed, user-owned signature-verified tmux added; server Ubuntu 24.04/tmux 3.4, no AI runtimes. Existing rideshare_planning untouched. All six directed inter-device SSH edges were previously verified; innovation self-alias trust fails and is not modified. Linger is enabled on both Arch accounts (rechecked 2026-10-06). These observations are local deployment facts, not product defaults.
 

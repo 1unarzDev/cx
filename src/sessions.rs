@@ -743,6 +743,48 @@ mod tests {
         );
     }
     #[test]
+    fn managed_launcher_preserves_fish_palette_quoting() {
+        if !std::path::Path::new("/usr/bin/fish").exists() {
+            return;
+        }
+        let config = include_str!("../assets/tmux.conf");
+        let parser = config
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("set -g default-shell '")
+                    .and_then(|s| s.strip_suffix('\''))
+            })
+            .expect("managed launcher must select its command parser");
+        let args = [
+            "/usr/bin/fish",
+            "--no-config",
+            "--init-command",
+            FISH_VIEWER_PALETTE,
+            "-c",
+            "printf AFTER",
+        ];
+        let command = format!(
+            "exec env CX_VIEWER_THEME=1 {}",
+            args.iter()
+                .map(|arg| quote(arg))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let output = Command::new(parser)
+            .args(["-c", &command])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            output.stdout,
+            b"\x1b]104\x1b\\\x1b]110\x1b\\\x1b]111\x1b\\AFTER"
+        );
+    }
+    #[test]
     fn stalled_terminfo_is_bounded_and_reaped() {
         let fixture = tempfile::tempdir().unwrap();
         let pid_path = fixture.path().join("probe-pid");

@@ -2954,7 +2954,39 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         }
         View::Files => {
             if let Some(b) = &app.browser {
-                if let Some(other) = &app.other_browser {
+                if b.preview.is_some()
+                    && b.preview_rich
+                        .as_ref()
+                        .is_some_and(|p| matches!(p.kind.as_str(), "image" | "pdf"))
+                {
+                    let rows = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Length(1), Constraint::Min(1)])
+                        .split(workspace);
+                    frame.render_widget(
+                        Paragraph::new(Line::from(vec![
+                            Span::styled(
+                                format!(" {} ", identity(&app.devices[b.device])),
+                                accent().add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                fit_label(
+                                    &b.display_path,
+                                    usize::from(rows[0].width.saturating_sub(24)),
+                                ),
+                                muted(),
+                            ),
+                        ])),
+                        rows[0],
+                    );
+                    render_preview(
+                        frame,
+                        rows[1],
+                        b,
+                        b.preview.as_deref().unwrap_or(""),
+                        app.focus == Focus::Workspace,
+                    );
+                } else if let Some(other) = &app.other_browser {
                     let panes = Layout::default()
                         .direction(if workspace.width >= 52 {
                             Direction::Horizontal
@@ -3676,7 +3708,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         };
         if matches!(dialog, Dialog::Delete(..) | Dialog::StopShell(..)) {
             let stop = matches!(dialog, Dialog::StopShell(..));
-            let rect = popup(area, 68, 10);
+            let rect = popup(area, 68, 12);
             frame.render_widget(Clear, rect);
             frame.render_widget(
                 Block::default()
@@ -3700,7 +3732,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 .constraints([
                     Constraint::Min(2),
                     Constraint::Length(1),
-                    Constraint::Length(1),
+                    Constraint::Length(3),
                     Constraint::Length(1),
                 ])
                 .split(inner);
@@ -3710,51 +3742,14 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                     .scroll((app.dialog_scroll, 0)),
                 rows[0],
             );
-            let labels = if stop {
-                ["Keep shell", "Stop shell"]
-            } else {
-                ["Cancel", "Delete"]
-            };
-            let choices = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(rows[2]);
-            for (i, label) in labels.iter().enumerate() {
-                let selected = app.dialog_selected == i && !app.dialog_detail_focus;
-                let style = if selected {
-                    tint(if i == 1 { Color::Red } else { Color::Cyan })
-                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-                } else {
-                    muted()
-                };
-                frame.render_widget(
-                    Paragraph::new(Line::from(vec![
-                        Span::styled(
-                            if selected {
-                                if ascii() {
-                                    "> "
-                                } else {
-                                    "› "
-                                }
-                            } else {
-                                "  "
-                            },
-                            style,
-                        ),
-                        Span::styled(
-                            format!(" {} ", if i == 0 { "n" } else { "y" }),
-                            if i == 1 {
-                                tint(Color::Red).add_modifier(Modifier::BOLD)
-                            } else {
-                                accent().add_modifier(Modifier::BOLD)
-                            },
-                        ),
-                        Span::styled(format!(" {label} "), style),
-                    ]))
-                    .alignment(ratatui::layout::Alignment::Center),
-                    choices[i],
-                );
-            }
+            confirmation_buttons(
+                frame,
+                rows[2],
+                stop,
+                app.dialog_selected,
+                app.dialog_detail_focus,
+                ConfirmationLayout::Separate,
+            );
         } else {
             let mut rect = popup(
                 area,
@@ -4094,9 +4089,7 @@ fn raster_lines(w: usize, h: usize, bytes: &[u8], area: Rect) -> Vec<Line<'stati
     if available_w == 0 || available_h == 0 {
         return vec![];
     }
-    let scale = (available_w as f64 / w as f64)
-        .min(available_h as f64 / h as f64)
-        .min(1.0);
+    let scale = (available_w as f64 / w as f64).min(available_h as f64 / h as f64);
     let width = ((w as f64 * scale).floor() as usize).max(1);
     let height = ((h as f64 * scale).floor() as usize).max(1);
     let pixel = |x: usize, y: usize| -> Option<Color> {
@@ -4123,6 +4116,144 @@ fn raster_lines(w: usize, h: usize, bytes: &[u8], area: Rect) -> Vec<Line<'stati
         })
         .collect()
 }
+#[derive(Clone, Copy)]
+enum ConfirmationLayout {
+    Separate,
+    #[cfg(test)]
+    Joined,
+    #[cfg(test)]
+    Compact,
+}
+fn confirmation_buttons(
+    frame: &mut Frame,
+    area: Rect,
+    stop: bool,
+    selected: usize,
+    detail_focus: bool,
+    layout: ConfirmationLayout,
+) {
+    frame.render_widget(Clear, area);
+    let labels = if stop {
+        if area.width < 38 {
+            ["Keep", "Stop"]
+        } else {
+            ["Keep shell", "Stop shell"]
+        }
+    } else {
+        ["Cancel", "Delete"]
+    };
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+    #[cfg(test)]
+    if matches!(layout, ConfirmationLayout::Joined) {
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(if ascii() {
+                    BorderType::Plain
+                } else {
+                    BorderType::Rounded
+                })
+                .border_style(muted()),
+            area,
+        );
+    }
+    for (i, label) in labels.into_iter().enumerate() {
+        let active = selected == i && !detail_focus;
+        let color = if i == 1 { Color::Red } else { Color::Cyan };
+        let emphasis = if active {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        };
+        let style = tint(color).add_modifier(emphasis);
+        let line = Line::from(vec![
+            Span::styled(
+                if active {
+                    if ascii() {
+                        "> "
+                    } else {
+                        "› "
+                    }
+                } else {
+                    "  "
+                },
+                style,
+            ),
+            Span::styled(
+                format!("{} ", if i == 0 { "n" } else { "y" }),
+                tint(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(label, style),
+        ]);
+        match layout {
+            ConfirmationLayout::Separate => {
+                let button = Rect::new(
+                    columns[i].x + u16::from(i == 1),
+                    columns[i].y,
+                    columns[i].width.saturating_sub(1),
+                    columns[i].height,
+                );
+                frame.render_widget(
+                    Paragraph::new(line)
+                        .alignment(ratatui::layout::Alignment::Center)
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .border_type(if ascii() {
+                                    BorderType::Plain
+                                } else {
+                                    BorderType::Rounded
+                                })
+                                .border_style(if active { style } else { muted() }),
+                        ),
+                    button,
+                );
+            }
+            #[cfg(test)]
+            ConfirmationLayout::Joined => {
+                let button = Rect::new(
+                    columns[i].x + 1,
+                    columns[i].y + 1,
+                    columns[i].width.saturating_sub(2),
+                    1,
+                );
+                frame.render_widget(
+                    Paragraph::new(line).alignment(ratatui::layout::Alignment::Center),
+                    button,
+                );
+                if i == 1 {
+                    frame.render_widget(
+                        Paragraph::new(if ascii() { "|" } else { "│" }).style(muted()),
+                        Rect::new(columns[i].x, columns[i].y + 1, 1, 1),
+                    );
+                }
+            }
+            #[cfg(test)]
+            ConfirmationLayout::Compact => {
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled("[ ", style),
+                        Span::styled(
+                            format!(
+                                "{}{} {label}",
+                                if active { "> " } else { "  " },
+                                if i == 0 { "n" } else { "y" }
+                            ),
+                            style,
+                        ),
+                        Span::styled(" ]", style),
+                    ]))
+                    .alignment(ratatui::layout::Alignment::Center),
+                    Rect::new(columns[i].x, columns[i].y + 1, columns[i].width, 1),
+                );
+            }
+        }
+    }
+}
+
 fn render_preview(frame: &mut Frame, area: Rect, browser: &Browser, text: &str, focused: bool) {
     let rich = browser.preview_rich.as_ref();
     let title = rich
@@ -6604,5 +6735,115 @@ mod tests {
             terminal.draw(|f| render(f, &a)).unwrap();
             write(&terminal, "stop-shell");
         }
+    }
+    #[test]
+    fn boxed_confirmation_variant_captures() {
+        for (width, height) in [(120, 40), (80, 24), (48, 24), (36, 24)] {
+            for (variant, name) in [
+                (ConfirmationLayout::Separate, "a-separate"),
+                (ConfirmationLayout::Joined, "b-joined"),
+                (ConfirmationLayout::Compact, "c-compact"),
+            ] {
+                for stop in [false, true] {
+                    for selected in [0, 1] {
+                        let (mut a, _rx) = file_app();
+                        a.dialog = Some(if stop {
+                            Dialog::StopShell(0, disposable_shell())
+                        } else {
+                            Dialog::Delete(0, vec![a.browser.as_ref().unwrap().entries[0].clone()])
+                        });
+                        a.dialog_selected = selected;
+                        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                        terminal
+                            .draw(|frame| {
+                                render(frame, &a);
+                                let rect = popup(frame.area(), 68, 12);
+                                let inner = Rect::new(
+                                    rect.x + 2,
+                                    rect.y + 1,
+                                    rect.width.saturating_sub(4),
+                                    rect.height.saturating_sub(2),
+                                );
+                                let rows = Layout::default()
+                                    .direction(Direction::Vertical)
+                                    .constraints([
+                                        Constraint::Min(2),
+                                        Constraint::Length(1),
+                                        Constraint::Length(3),
+                                        Constraint::Length(1),
+                                    ])
+                                    .split(inner);
+                                confirmation_buttons(
+                                    frame, rows[2], stop, selected, false, variant,
+                                );
+                            })
+                            .unwrap();
+                        let buffer = terminal.backend().buffer();
+                        let text = buffer
+                            .content
+                            .chunks(usize::from(width))
+                            .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        assert!(text.contains(if stop {
+                            "Running commands"
+                        } else {
+                            "Deletion cannot be"
+                        }));
+                        assert!(text.contains("tester@workstation"));
+                        assert!(
+                            text.contains(if stop {
+                                if width < 48 {
+                                    "Keep"
+                                } else {
+                                    "Keep shell"
+                                }
+                            } else {
+                                "Cancel"
+                            }) && text.contains(if stop { "Stop shell" } else { "Delete" })
+                        );
+                        if let Some(directory) = std::env::var_os("CX_CONFIRMATION_CAPTURE_DIR") {
+                            let directory = std::path::PathBuf::from(directory);
+                            std::fs::create_dir_all(&directory).unwrap();
+                            let file = format!(
+                                "{width}x{height}-{name}-{}-{}",
+                                if stop { "stop-shell" } else { "delete" },
+                                if selected == 0 { "cancel" } else { "confirm" }
+                            );
+                            std::fs::write(directory.join(format!("{file}.txt")), text).unwrap();
+                            let cells=buffer.content.iter().map(|cell|serde_json::json!({"text":cell.symbol(),"fg":format!("{:?}",cell.fg),"bg":format!("{:?}",cell.bg),"modifier":format!("{:?}",cell.modifier)})).collect::<Vec<_>>();
+                            std::fs::write(directory.join(format!("{file}.json")),serde_json::to_vec(&serde_json::json!({"width":width,"height":height,"cells":cells,"backend":"TestBackend fixture; not physical emulator"})).unwrap()).unwrap();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn larger_image_preview_uses_workspace_without_changing_locations() {
+        use base64::Engine;
+        let (mut a, _rx) = file_app();
+        a.other_browser = Some(Browser::new(1, "/other-device".into()));
+        let browser = a.browser.as_mut().unwrap();
+        browser.selected = 1;
+        browser.preview = Some("Image preview".into());
+        browser.preview_rich = Some(RichPreview::from_value(
+            &serde_json::json!({"kind":"image","title":"Photo","image":{"width":2,"height":2,"rgba":base64::engine::general_purpose::STANDARD.encode([255u8;16])}}),
+        ));
+        let text = capture_app(&a, 80);
+        assert!(
+            text.contains("tester@workstation")
+                && text.contains("Photo")
+                && !text.contains("NORMAL")
+        );
+        assert_eq!(a.browser.as_ref().unwrap().selected, 1);
+        assert_eq!(a.other_browser.as_ref().unwrap().path, "/other-device");
+        a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(a.browser.as_ref().unwrap().preview.is_none());
+        assert_eq!(a.browser.as_ref().unwrap().selected, 1);
+        assert_eq!(a.other_browser.as_ref().unwrap().device, 1);
+        let lines = raster_lines(2, 2, &[255u8; 16], Rect::new(0, 0, 20, 10));
+        assert_eq!(lines.len(), 10);
+        assert_eq!(lines[0].spans.len(), 20);
     }
 }

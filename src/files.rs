@@ -92,6 +92,24 @@ pub fn handle(op: &Operation) -> Result<Value> {
             limit,
         } => list_page(&decode_path(path)?, *offset, *limit),
         Operation::Preview { path } => preview(&decode_path(path)?),
+        Operation::Rename {
+            path,
+            name,
+            expected_identity,
+        } => rename_entry(&decode_path(path)?, name, expected_identity.as_deref()),
+        Operation::Remove {
+            path,
+            expected_identity,
+        } => remove_entry(&decode_path(path)?, expected_identity.as_deref()),
+        Operation::Move {
+            path,
+            destination,
+            expected_identity,
+        } => move_entry(
+            &decode_path(path)?,
+            &decode_path(destination)?,
+            expected_identity.as_deref(),
+        ),
         Operation::Mkdir { path } => {
             let path = absolute(&decode_path(path)?)?;
             let anchor = Anchor::parent(&path)?;
@@ -169,7 +187,7 @@ fn list_page(path: &Path, offset: u64, limit: u32) -> Result<Value> {
         let metadata = fs::symlink_metadata(entry.path())?;
         let name = display(&entry.file_name().to_string_lossy());
         let opaque = encode_path(&entry.path());
-        budget += name.len() + opaque.len() + 128;
+        budget += name.len() + opaque.len() + entry.file_name().as_bytes().len() + 256;
         if entries.len() == limit as usize || budget > 512 * 1024 {
             truncated = true;
             break;
@@ -183,7 +201,13 @@ fn list_page(path: &Path, offset: u64, limit: u32) -> Result<Value> {
         } else {
             "other"
         };
-        entries.push(json!({"name":name,"path":opaque,"kind":kind,"size":metadata.len()}));
+        let filename = entry.file_name();
+        let rename_name = filename
+            .to_str()
+            .filter(|s| !s.chars().any(char::is_control));
+        let hidden = filename.as_bytes().first() == Some(&b'.');
+        entries.push(json!({"name":name,"path":opaque,"kind":kind,"size":metadata.len(),
+            "hidden":hidden,"rename_name":rename_name,"identity":serde_json::to_string(&identity(&metadata)?)?}));
     }
     entries.sort_by(|a, b| {
         let group = |v: &Value| if v["kind"] == "directory" { 0 } else { 1 };
@@ -861,6 +885,266 @@ fn set_permissions(path: &Path, mode: u32, expected: Option<&str>) -> Result<Val
     file.set_permissions(fs::Permissions::from_mode(mode))?;
     Ok(json!({"path":encode_path(path),"mode":mode}))
 }
+// Name mutations remain relative to an open parent, never a shell command.
+fn mutation_stat(anchor: &Anchor, name: &std::ffi::OsStr) -> Result<libc::stat> {
+    let name = Anchor::cstr(name)?;
+    let mut stat = std::mem::MaybeUninit::uninit();
+    if unsafe {
+        libc::fstatat(
+            anchor.dir.as_raw_fd(),
+            name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error()).context("inspect selected entry");
+    }
+    Ok(unsafe { stat.assume_init() })
+}
+fn check_mutation_identity(stat: &libc::stat, expected: Option<&str>) -> Result<()> {
+    if let Some(expected) = expected {
+        if expected.len() > 2048 {
+            bail!("expected identity too large");
+        }
+        let expected: Identity = serde_json::from_str(expected)?;
+        let modified =
+            (stat.st_mtime as u128).saturating_mul(1_000_000_000) + stat.st_mtime_nsec as u128;
+        if stat.st_dev as u64 != expected.device
+            || stat.st_ino as u64 != expected.inode
+            || stat.st_size as u64 != expected.size
+            || modified != expected.modified
+        {
+            bail!("selected entry changed; refresh before trying again");
+        }
+    }
+    Ok(())
+}
+fn rename_noreplace(anchor: &Anchor, from: &std::ffi::OsStr, to: &std::ffi::OsStr) -> Result<()> {
+    rename_between(anchor, from, anchor, to)
+}
+fn rename_between(
+    anchor: &Anchor,
+    from: &std::ffi::OsStr,
+    destination: &Anchor,
+    to: &std::ffi::OsStr,
+) -> Result<()> {
+    let from = Anchor::cstr(from)?;
+    let to = Anchor::cstr(to)?;
+    #[cfg(target_os = "linux")]
+    if unsafe {
+        libc::renameat2(
+            anchor.dir.as_raw_fd(),
+            from.as_ptr(),
+            destination.dir.as_raw_fd(),
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    } == 0
+    {
+        return Ok(());
+    }
+    #[cfg(not(target_os = "linux"))]
+    bail!("safe no-overwrite rename requires Linux");
+    #[cfg(target_os = "linux")]
+    Err(std::io::Error::last_os_error()).context("rename without overwriting")
+}
+fn protected_mutation(path: &Path, anchor: &Anchor) -> Result<()> {
+    // Reject dot components rather than letting file_name normalize them away.
+    if path
+        .as_os_str()
+        .as_bytes()
+        .split(|b| *b == b'/')
+        .any(|p| p == b"." || p == b"..")
+    {
+        bail!("dot components are not valid mutation paths");
+    }
+    let selected = mutation_stat(anchor, &anchor.name)?;
+    for protected in [
+        Some(std::env::current_dir()?),
+        std::env::var_os("HOME").map(PathBuf::from),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Ok(m) = fs::metadata(protected) {
+            if selected.st_dev as u64 == m.dev() && selected.st_ino as u64 == m.ino() {
+                bail!("refusing to mutate the current directory or home directory");
+            }
+        }
+    }
+    Ok(())
+}
+fn rename_entry(path: &Path, name: &str, expected: Option<&str>) -> Result<Value> {
+    let destination_name = PathBuf::from(name);
+    let bytes = destination_name.as_os_str().as_bytes();
+    if bytes.is_empty() || bytes.contains(&b'/') || bytes == b"." || bytes == b".." {
+        bail!("rename requires one filename, not a path");
+    }
+    let path = absolute(path)?;
+    let anchor = Anchor::parent(&path)?;
+    protected_mutation(&path, &anchor)?;
+    let destination = path
+        .parent()
+        .context("missing parent")?
+        .join(destination_name);
+    move_entry(&path, &destination, expected)
+}
+fn move_entry(path: &Path, destination: &Path, expected: Option<&str>) -> Result<Value> {
+    let path = absolute(path)?;
+    let destination = absolute(destination)?;
+    let source = Anchor::parent(&path)?;
+    let target = Anchor::parent(&destination)?;
+    protected_mutation(&path, &source)?;
+    if destination
+        .as_os_str()
+        .as_bytes()
+        .split(|b| *b == b'/')
+        .any(|p| p == b"." || p == b"..")
+    {
+        bail!("dot components are not valid mutation paths");
+    }
+    let before = mutation_stat(&source, &source.name)?;
+    check_mutation_identity(&before, expected)?;
+    rename_between(&source, &source.name, &target, &target.name)?;
+    let claimed = mutation_stat(&target, &target.name)?;
+    if before.st_dev != claimed.st_dev
+        || before.st_ino != claimed.st_ino
+        || check_mutation_identity(&claimed, expected).is_err()
+    {
+        let restored = rename_between(&target, &target.name, &source, &source.name);
+        bail!(
+            "selected entry changed during move; restore {}",
+            if restored.is_ok() {
+                "complete"
+            } else {
+                "failed; inspect destination"
+            }
+        );
+    }
+    source.dir.sync_all()?;
+    target.dir.sync_all()?;
+    Ok(json!({"path":encode_path(&destination),"moved":true}))
+}
+fn remove_entry(path: &Path, expected: Option<&str>) -> Result<Value> {
+    let path = absolute(path)?;
+    let anchor = Anchor::parent(&path)?;
+    protected_mutation(&path, &anchor)?;
+    let initial = mutation_stat(&anchor, &anchor.name)?;
+    check_mutation_identity(&initial, expected)?;
+    // Claim the exact selected name first. A changed object is restored, never deleted.
+    let quarantine = std::ffi::OsString::from(format!(
+        ".cx-delete-{}-{}",
+        std::process::id(),
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+    ));
+    rename_noreplace(&anchor, &anchor.name, &quarantine)?;
+    let claimed = mutation_stat(&anchor, &quarantine)?;
+    if claimed.st_dev != initial.st_dev
+        || claimed.st_ino != initial.st_ino
+        || check_mutation_identity(&claimed, expected).is_err()
+    {
+        let restored = rename_noreplace(&anchor, &quarantine, &anchor.name);
+        bail!(
+            "selected entry changed; refusing deletion (restore: {})",
+            if restored.is_ok() {
+                "complete"
+            } else {
+                "failed; inspect hidden .cx-delete entry"
+            }
+        );
+    }
+    let mut budget = 100_000usize;
+    let result = remove_anchored(&anchor, &quarantine, initial.st_dev, 0, &mut budget);
+    if let Err(error) = result {
+        let restored = rename_noreplace(&anchor, &quarantine, &anchor.name);
+        bail!(
+            "deletion incomplete: {error:#}; remaining entry {}",
+            if restored.is_ok() {
+                "restored to original name"
+            } else {
+                "retained under hidden .cx-delete name"
+            }
+        );
+    }
+    anchor.dir.sync_all()?;
+    Ok(json!({"path":encode_path(&path),"removed":true}))
+}
+fn remove_anchored(
+    anchor: &Anchor,
+    name: &std::ffi::OsStr,
+    device: libc::dev_t,
+    depth: usize,
+    budget: &mut usize,
+) -> Result<()> {
+    use std::os::unix::io::FromRawFd;
+    if depth > 64 || *budget == 0 {
+        bail!("deletion exceeds depth or entry limit");
+    }
+    *budget -= 1;
+    let before = mutation_stat(anchor, name)?;
+    if before.st_dev != device {
+        bail!("refusing to cross a filesystem boundary");
+    }
+    let cname = Anchor::cstr(name)?;
+    let directory = before.st_mode & libc::S_IFMT == libc::S_IFDIR;
+    if directory {
+        // RESOLVE_NO_XDEV also rejects bind mounts on the same filesystem.
+        // Older kernels fail safely instead of falling back to unsafe traversal.
+        #[repr(C)]
+        struct OpenHow {
+            flags: u64,
+            mode: u64,
+            resolve: u64,
+        }
+        let how = OpenHow {
+            flags: (libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u64,
+            mode: 0,
+            resolve: 1 | 4,
+        };
+        let fd = unsafe {
+            libc::syscall(
+                libc::SYS_openat2,
+                anchor.dir.as_raw_fd(),
+                cname.as_ptr(),
+                &how,
+                std::mem::size_of::<OpenHow>(),
+            )
+        } as i32;
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let dir = unsafe { File::from_raw_fd(fd) };
+        let m = dir.metadata()?;
+        if m.ino() != before.st_ino as u64 || m.dev() != before.st_dev as u64 {
+            bail!("directory changed during deletion");
+        }
+        let child = Anchor {
+            dir,
+            name: std::ffi::OsString::new(),
+        };
+        // /proc exposes the already-open descriptor; no selected path is retraversed.
+        for entry in fs::read_dir(format!("/proc/self/fd/{}", child.dir.as_raw_fd()))? {
+            remove_anchored(&child, &entry?.file_name(), device, depth + 1, budget)?;
+        }
+    }
+    let after = mutation_stat(anchor, name)?;
+    if after.st_dev != before.st_dev || after.st_ino != before.st_ino {
+        bail!("entry changed during deletion");
+    }
+    if unsafe {
+        libc::unlinkat(
+            anchor.dir.as_raw_fd(),
+            cname.as_ptr(),
+            if directory { libc::AT_REMOVEDIR } else { 0 },
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error()).context("remove selected entry");
+    }
+    Ok(())
+}
+
 const CHUNK_LIMIT: usize = 128 * 1024;
 fn file_info(path: &Path) -> Result<Value> {
     let path = absolute(path)?;

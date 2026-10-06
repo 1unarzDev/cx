@@ -48,6 +48,12 @@ pub enum Operation {
     },
     Sessions,
     Create(CreateSession),
+    StopSession {
+        id: String,
+        pid: u32,
+        started: String,
+        boot_id: String,
+    },
     List {
         path: String,
     },

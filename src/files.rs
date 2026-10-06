@@ -34,7 +34,7 @@ pub fn display(text: &str) -> String {
         })
         .collect()
 }
-fn encode_path(path: &Path) -> String {
+pub(crate) fn encode_path(path: &Path) -> String {
     #[cfg(unix)]
     {
         let bytes = path.as_os_str().as_bytes();
@@ -48,7 +48,7 @@ fn encode_path(path: &Path) -> String {
         path.to_string_lossy().to_string()
     }
 }
-fn decode_path(path: &str) -> Result<PathBuf> {
+pub(crate) fn decode_path(path: &str) -> Result<PathBuf> {
     if path.len() > 16384 {
         bail!("path is too long");
     }
@@ -101,6 +101,35 @@ pub fn handle(op: &Operation) -> Result<Value> {
         ),
         Operation::Jobs => jobs(&job_root()?),
         Operation::Cancel { key } => cancel(&job_root()?, key),
+        Operation::FileInfo { path } => file_info(&decode_path(path)?),
+        Operation::ReadChunk {
+            path,
+            offset,
+            limit,
+            identity,
+        } => read_chunk(&decode_path(path)?, *offset, *limit, identity),
+        Operation::ReceivePrepare {
+            path,
+            key,
+            source_identity,
+            total,
+            conflict,
+            mode,
+        } => receive_prepare(
+            &decode_path(path)?,
+            key,
+            source_identity,
+            *total,
+            conflict,
+            *mode,
+        ),
+        Operation::ReceiveChunk { key, offset, data } => receive_chunk(key, *offset, data),
+        Operation::ReceiveFinalize { key, sha256 } => receive_finalize(key, sha256),
+        Operation::ReceiveSymlink {
+            path,
+            target,
+            conflict,
+        } => receive_symlink(&decode_path(path)?, &decode_path(target)?, conflict),
         _ => bail!("unsupported filesystem operation"),
     }
 }
@@ -605,6 +634,374 @@ fn copy_file(
     job.updated = now();
     save_job(root, &job)?;
     Ok(serde_json::to_value(job)?)
+}
+
+const CHUNK_LIMIT: usize = 128 * 1024;
+fn file_info(path: &Path) -> Result<Value> {
+    let path = absolute(path)?;
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(json!({"path":encode_path(&path),"kind":"missing"}))
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let kind = if metadata.is_symlink() {
+        "symlink"
+    } else if metadata.is_file() {
+        "file"
+    } else if metadata.is_dir() {
+        "directory"
+    } else {
+        "other"
+    };
+    #[cfg(unix)]
+    let mode = metadata.permissions().mode() & 0o777;
+    #[cfg(not(unix))]
+    let mode = 0;
+    let token = serde_json::to_string(&identity(&metadata)?)?;
+    Ok(
+        json!({"path":encode_path(&path),"name":path.file_name().map(|p|encode_path(Path::new(p))),"kind":kind,"size":metadata.len(),"identity":token,"mode":mode,"target":if metadata.is_symlink(){Some(encode_path(&fs::read_link(&path)?))}else{None}}),
+    )
+}
+fn read_chunk(path: &Path, offset: u64, limit: u32, expected: &str) -> Result<Value> {
+    if limit == 0 || limit as usize > CHUNK_LIMIT {
+        bail!("chunk limit must be 1–131072 bytes");
+    }
+    let mut file = open_read(path)?;
+    let before = serde_json::to_string(&identity(&file.metadata()?)?)?;
+    if before != expected {
+        bail!("source changed before read");
+    }
+    if offset > file.metadata()?.len() {
+        bail!("offset exceeds source size");
+    }
+    file.seek(SeekFrom::Start(offset))?;
+    let mut bytes = Vec::new();
+    (&mut file).take(limit as u64).read_to_end(&mut bytes)?;
+    if serde_json::to_string(&identity(&file.metadata()?)?)? != expected
+        || serde_json::to_string(&identity(&fs::metadata(path)?)?)? != expected
+    {
+        bail!("source changed during read");
+    }
+    Ok(json!({"data":STANDARD.encode(&bytes),"bytes":bytes.len(),"offset":offset}))
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Receive {
+    key: String,
+    requested: String,
+    path: String,
+    source_identity: String,
+    total: u64,
+    bytes: u64,
+    conflict: String,
+    mode: u32,
+    status: String,
+    sha256: Option<String>,
+}
+fn receive_root() -> Result<PathBuf> {
+    let root = job_root()?.join("receives");
+    fs::create_dir_all(&root)?;
+    let metadata = fs::symlink_metadata(&root)?;
+    if !metadata.is_dir() || metadata.is_symlink() {
+        bail!("receive state is not a directory");
+    }
+    #[cfg(unix)]
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+    Ok(root)
+}
+fn receive_load(root: &Path, key: &str) -> Result<Option<Receive>> {
+    validate_key(key)?;
+    let path = root.join(format!("{key}.json"));
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    Ok(Some(serde_json::from_reader(
+        open_read(&path)?.take(32768),
+    )?))
+}
+fn receive_save(root: &Path, r: &Receive) -> Result<()> {
+    let path = root.join(format!("{}.{}.tmp", r.key, std::process::id()));
+    let mut opts = OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    let mut file = opts.open(&path)?;
+    file.write_all(&serde_json::to_vec(r)?)?;
+    file.sync_all()?;
+    fs::rename(path, root.join(format!("{}.json", r.key)))?;
+    Ok(())
+}
+fn receive_partial(r: &Receive) -> Result<PathBuf> {
+    Ok(decode_path(&r.path)?
+        .parent()
+        .context("destination has no parent")?
+        .join(format!(".cx-{}.partial", r.key)))
+}
+fn receive_state(r: &Receive) -> Result<Value> {
+    let prefix = if r.status == "receiving" {
+        let mut f = open_read(&receive_partial(r)?)?;
+        format!("{:x}", hash_prefix(&mut f, r.bytes)?.finalize())
+    } else {
+        r.sha256.clone().unwrap_or_default()
+    };
+    Ok(
+        json!({"key":r.key,"path":r.path,"bytes":r.bytes,"total":r.total,"status":r.status,"prefix_sha256":prefix}),
+    )
+}
+fn receive_prepare(
+    path: &Path,
+    key: &str,
+    source_identity: &str,
+    total: u64,
+    conflict: &str,
+    mode: u32,
+) -> Result<Value> {
+    validate_key(key)?;
+    if source_identity.len() > 2048 {
+        bail!("source identity too large");
+    }
+    if !matches!(conflict, "skip" | "overwrite" | "rename") {
+        bail!("invalid conflict policy");
+    }
+    let root = receive_root()?;
+    let _lock = Lock::acquire(&root, key)?;
+    let requested = absolute(path)?;
+    if let Some(r) = receive_load(&root, key)? {
+        if r.requested != encode_path(&requested)
+            || r.source_identity != source_identity
+            || r.total != total
+            || r.conflict != conflict
+            || r.mode != (mode & 0o777)
+        {
+            bail!("receive key belongs to another file");
+        }
+        if r.status == "receiving" {
+            let mut options = OpenOptions::new();
+            options.write(true);
+            #[cfg(unix)]
+            options.custom_flags(libc::O_NOFOLLOW);
+            let file = options.open(receive_partial(&r)?)?;
+            if file.metadata()?.len() < r.bytes {
+                bail!("partial file shorter than recorded progress");
+            }
+            file.set_len(r.bytes)?;
+        }
+        return receive_state(&r);
+    }
+    let mut path = requested.clone();
+    if let Ok(m) = fs::symlink_metadata(&path) {
+        if conflict == "skip" {
+            let r = Receive {
+                key: key.into(),
+                requested: encode_path(&requested),
+                path: encode_path(&path),
+                source_identity: source_identity.into(),
+                total,
+                bytes: 0,
+                conflict: conflict.into(),
+                mode: mode & 0o777,
+                status: "skipped".into(),
+                sha256: None,
+            };
+            receive_save(&root, &r)?;
+            return receive_state(&r);
+        }
+        if conflict == "rename" {
+            let name = path
+                .file_name()
+                .context("destination has no filename")?
+                .to_owned();
+            let parent = path.parent().context("destination has no parent")?;
+            let mut found = None;
+            for n in 1..=10000 {
+                let mut candidate = name.clone();
+                candidate.push(format!(".copy-{n}"));
+                let p = parent.join(candidate);
+                if fs::symlink_metadata(&p).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+                {
+                    found = Some(p);
+                    break;
+                }
+            }
+            path = found.context("no available rename destination")?;
+        } else if !m.is_file() {
+            bail!("only regular destinations can be overwritten");
+        }
+    }
+    if !path.parent().context("destination has no parent")?.is_dir() {
+        bail!("destination directory does not exist");
+    }
+    let r = Receive {
+        key: key.into(),
+        requested: encode_path(&requested),
+        path: encode_path(&path),
+        source_identity: source_identity.into(),
+        total,
+        bytes: 0,
+        conflict: conflict.into(),
+        mode: mode & 0o777,
+        status: "receiving".into(),
+        sha256: None,
+    };
+    let mut opts = OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    opts.open(receive_partial(&r)?)?.sync_all()?;
+    receive_save(&root, &r)?;
+    receive_state(&r)
+}
+fn receive_chunk(key: &str, offset: u64, data: &str) -> Result<Value> {
+    validate_key(key)?;
+    if data.len() > CHUNK_LIMIT * 4 / 3 + 4 {
+        bail!("chunk too large");
+    }
+    let bytes = STANDARD.decode(data)?;
+    if bytes.len() > CHUNK_LIMIT {
+        bail!("chunk too large");
+    }
+    let root = receive_root()?;
+    let _lock = Lock::acquire(&root, key)?;
+    let mut r = receive_load(&root, key)?.context("unknown receive key")?;
+    if r.status != "receiving" {
+        bail!("receive is not accepting data");
+    }
+    if offset
+        .checked_add(bytes.len() as u64)
+        .is_none_or(|end| end > r.total)
+    {
+        bail!("chunk exceeds source length");
+    }
+    let mut opts = OpenOptions::new();
+    opts.read(true).write(true);
+    #[cfg(unix)]
+    opts.custom_flags(libc::O_NOFOLLOW);
+    let mut file = opts.open(receive_partial(&r)?)?;
+    if offset < r.bytes {
+        if offset + bytes.len() as u64 > r.bytes {
+            bail!("chunk overlaps checkpoint");
+        }
+        file.seek(SeekFrom::Start(offset))?;
+        let mut existing = vec![0; bytes.len()];
+        file.read_exact(&mut existing)?;
+        if existing != bytes {
+            bail!("retry data differs from written chunk");
+        }
+    } else {
+        if offset != r.bytes {
+            bail!("chunk offset is not next recorded byte");
+        }
+        file.set_len(r.bytes)?;
+        file.seek(SeekFrom::Start(r.bytes))?;
+        file.write_all(&bytes)?;
+        file.sync_data()?;
+        r.bytes += bytes.len() as u64;
+        receive_save(&root, &r)?;
+    }
+    Ok(json!({"key":key,"bytes":r.bytes,"status":r.status}))
+}
+fn receive_finalize(key: &str, checksum: &str) -> Result<Value> {
+    if checksum.len() != 64 || !checksum.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("invalid SHA-256 checksum");
+    }
+    let root = receive_root()?;
+    validate_key(key)?;
+    let _lock = Lock::acquire(&root, key)?;
+    let mut r = receive_load(&root, key)?.context("unknown receive key")?;
+    if r.status == "complete" {
+        if r.sha256.as_deref() != Some(checksum) {
+            bail!("finalize checksum changed");
+        }
+        return receive_state(&r);
+    }
+    if r.status == "skipped" {
+        return receive_state(&r);
+    }
+    if r.bytes != r.total {
+        bail!("partial is not complete");
+    }
+    let partial = receive_partial(&r)?;
+    let destination = decode_path(&r.path)?;
+    if r.status == "finalizing" && !partial.try_exists()? {
+        let mut file = open_read(&destination)?;
+        if file.metadata()?.len() != r.total
+            || format!("{:x}", hash_prefix(&mut file, r.total)?.finalize()) != checksum
+        {
+            bail!("destination integrity mismatch on reconciliation");
+        }
+    } else {
+        let mut file = open_read(&partial)?;
+        if file.metadata()?.len() != r.total
+            || format!("{:x}", hash_prefix(&mut file, r.total)?.finalize()) != checksum
+        {
+            bail!("partial integrity mismatch");
+        }
+        #[cfg(unix)]
+        fs::set_permissions(&partial, fs::Permissions::from_mode(r.mode))?;
+        file.sync_all()?;
+        r.sha256 = Some(checksum.into());
+        r.status = "finalizing".into();
+        receive_save(&root, &r)?;
+        if r.conflict == "overwrite" {
+            if let Ok(m) = fs::symlink_metadata(&destination) {
+                if !m.is_file() {
+                    bail!("destination changed to a non-regular file");
+                }
+            }
+            fs::rename(&partial, &destination)?;
+        } else {
+            fs::hard_link(&partial, &destination)
+                .context("destination appeared before finalization")?;
+            fs::remove_file(&partial)?;
+        }
+        File::open(destination.parent().context("destination has no parent")?)?.sync_all()?;
+    }
+    r.status = "complete".into();
+    r.sha256 = Some(checksum.into());
+    receive_save(&root, &r)?;
+    receive_state(&r)
+}
+fn receive_symlink(path: &Path, target: &Path, conflict: &str) -> Result<Value> {
+    if !matches!(conflict, "skip" | "overwrite" | "rename") {
+        bail!("invalid conflict policy");
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, target);
+        bail!("symlink copy currently requires Unix");
+    }
+    #[cfg(unix)]
+    {
+        let mut path = absolute(path)?;
+        if let Ok(m) = fs::symlink_metadata(&path) {
+            if m.is_symlink() && fs::read_link(&path)? == target {
+                return Ok(json!({"path":encode_path(&path),"status":"complete"}));
+            }
+            if conflict == "skip" {
+                return Ok(json!({"path":encode_path(&path),"status":"skipped"}));
+            }
+            if conflict == "overwrite" {
+                bail!("symlink overwrite requires explicit removal; destination preserved");
+            }
+            let name = path.file_name().context("no filename")?.to_owned();
+            let parent = path.parent().context("no parent")?;
+            let mut found = None;
+            for n in 1..=10000 {
+                let mut candidate = name.clone();
+                candidate.push(format!(".copy-{n}"));
+                let p = parent.join(candidate);
+                if fs::symlink_metadata(&p).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+                {
+                    found = Some(p);
+                    break;
+                }
+            }
+            path = found.context("no available rename destination")?;
+        }
+        std::os::unix::fs::symlink(target, &path)?;
+        Ok(json!({"path":encode_path(&path),"status":"complete"}))
+    }
 }
 
 #[cfg(test)]

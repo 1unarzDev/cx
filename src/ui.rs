@@ -169,6 +169,8 @@ struct Browser {
     preview: Option<String>,
     #[serde(skip)]
     preview_rich: Option<RichPreview>,
+    #[serde(skip)]
+    preview_revision: u64,
     preview_scroll: u16,
     #[serde(default)]
     restore_selection: Option<String>,
@@ -191,6 +193,7 @@ impl Browser {
             loading: false,
             preview: None,
             preview_rich: None,
+            preview_revision: 0,
             preview_scroll: 0,
             restore_selection: None,
         }
@@ -1816,6 +1819,7 @@ impl App {
             {
                 if let Some(b) = &mut self.browser {
                     b.preview_scroll = 0;
+                    b.preview_revision = b.preview_revision.wrapping_add(1);
                     b.preview_rich = Some(
                         reply
                             .preview
@@ -2622,7 +2626,15 @@ fn sidebar_actions(app: &App) -> Vec<(Action, &'static str)> {
     actions
 }
 
+#[cfg(test)]
 fn render(frame: &mut Frame<'_>, app: &App) {
+    render_with_native(frame, app, None)
+}
+fn render_with_native(
+    frame: &mut Frame<'_>,
+    app: &App,
+    native: Option<&mut crate::terminal_preview::NativePreview>,
+) {
     let area = frame.area();
     if area.width < 36 || area.height < 10 {
         frame.render_widget(
@@ -3021,12 +3033,13 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                         ])),
                         rows[0],
                     );
-                    render_preview(
+                    render_preview_with_native(
                         frame,
                         rows[1],
                         b,
                         b.preview.as_deref().unwrap_or(""),
                         app.focus == Focus::Workspace,
+                        native,
                     );
                 } else if let Some(other) = &app.other_browser {
                     let panes = Layout::default()
@@ -4307,6 +4320,16 @@ fn confirmation_buttons(
 }
 
 fn render_preview(frame: &mut Frame, area: Rect, browser: &Browser, text: &str, focused: bool) {
+    render_preview_with_native(frame, area, browser, text, focused, None)
+}
+fn render_preview_with_native(
+    frame: &mut Frame,
+    area: Rect,
+    browser: &Browser,
+    text: &str,
+    focused: bool,
+    native: Option<&mut crate::terminal_preview::NativePreview>,
+) {
     let rich = browser.preview_rich.as_ref();
     let title = rich
         .map(|p| p.title.as_str())
@@ -4321,6 +4344,9 @@ fn render_preview(frame: &mut Frame, area: Rect, browser: &Browser, text: &str, 
     );
     let inner = border.inner(area);
     frame.render_widget(border, area);
+    if native.is_some_and(|native| native.render(frame, inner)) {
+        return;
+    }
     if !ascii() && std::env::var_os("NO_COLOR").is_none() {
         if let Some((w, h, bytes)) = rich.and_then(|p| p.raster.as_ref()) {
             frame.render_widget(Paragraph::new(raster_lines(*w, *h, bytes, inner)), inner);
@@ -5096,6 +5122,95 @@ fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender<Reply>) {
     }
 }
 
+/// Geometry mirrors the existing workspace layout; no preview owns another location.
+fn native_preview_area(app: &App, area: Rect) -> Option<Rect> {
+    if area.width < 36
+        || area.height < 10
+        || app.view != View::Files
+        || app.help
+        || app.dialog.is_some()
+        || app.input.is_some()
+    {
+        return None;
+    }
+    let browser = app.browser.as_ref()?;
+    browser.preview.as_ref()?;
+    let rich = browser.preview_rich.as_ref()?;
+    if !matches!(rich.kind.as_str(), "image" | "pdf") || rich.raster.is_none() {
+        return None;
+    }
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(5),
+            Constraint::Length(if browser.search.is_empty() { 4 } else { 7 }),
+        ])
+        .split(area);
+    let sidebar_width = if area.width < 60 && app.focus == Focus::Workspace {
+        14
+    } else if area.width < 70 {
+        17
+    } else {
+        21
+    };
+    let content = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(sidebar_width), Constraint::Min(15)])
+        .split(vertical[1]);
+    let workspace = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(5),
+            Constraint::Length(if app.transfer_drawer && content[1].height >= 12 {
+                4
+            } else {
+                0
+            }),
+        ])
+        .split(content[1]);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(workspace[0]);
+    let inner = Block::default().borders(Borders::ALL).inner(rows[1]);
+    (inner.width > 0 && inner.height > 0).then_some(inner)
+}
+fn prepare_native_preview(
+    app: &App,
+    area: Rect,
+    native: &mut crate::terminal_preview::NativePreview,
+) {
+    if let Some(area) = native_preview_area(app, area) {
+        let browser = app.browser.as_ref().unwrap();
+        let (width, height, rgba) = browser
+            .preview_rich
+            .as_ref()
+            .unwrap()
+            .raster
+            .as_ref()
+            .unwrap();
+        // Revision changes on every accepted response, even if title/path/dimensions match.
+        let key = format!(
+            "{}:{}:{}",
+            app.generation, browser.device, browser.preview_revision
+        );
+        native.prepare(&key, *width as u32, *height as u32, rgba, area);
+    } else {
+        native.hide();
+    }
+}
+fn cleanup_native_preview(
+    screen: &mut Screen,
+    native: &mut crate::terminal_preview::NativePreview,
+) -> Result<()> {
+    native.hide();
+    if native.cleanup(&mut io::stdout())? {
+        screen.terminal.clear()?;
+    }
+    Ok(())
+}
+
 pub fn run() -> Result<()> {
     run_restored(None)
 }
@@ -5129,6 +5244,8 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         app.send(d, Operation::TransferJobs);
     }
     let mut screen = Screen::new().context("open terminal workspace")?;
+    // Drop ordering cleans owned bitmaps before Screen restores the original terminal.
+    let mut native_preview = crate::terminal_preview::NativePreview::detect();
     let mut dirty = true;
     let (update_tx, update_rx) = mpsc::channel::<UpdateEvent>();
     start_update_check(&update_tx, false);
@@ -5232,6 +5349,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                             continue;
                         }
                         use std::os::unix::process::CommandExt;
+                        cleanup_native_preview(&mut screen, &mut native_preview)?;
                         screen.suspend()?;
                         let error = std::process::Command::new(path)
                             .arg("restart")
@@ -5262,6 +5380,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             save_cache(&app);
         }
         if let Some(target) = app.pending_add.take() {
+            cleanup_native_preview(&mut screen, &mut native_preview)?;
             screen.suspend()?;
             let result = crate::add(&target);
             screen.resume()?;
@@ -5301,6 +5420,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             dirty = true;
         }
         if let Some((device, command)) = app.pending_command.take() {
+            cleanup_native_preview(&mut screen, &mut native_preview)?;
             screen.suspend()?;
             let result = sessions::run_command(&device, &command);
             screen.resume()?;
@@ -5315,6 +5435,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             dirty = true;
         }
         if let Some((d, session, observe)) = app.pending_attach.take() {
+            cleanup_native_preview(&mut screen, &mut native_preview)?;
             screen.suspend()?;
             let result = sessions::attach(&app.devices[d], &session, observe);
             screen.resume()?;
@@ -5329,8 +5450,24 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             app.refresh_work();
             dirty = true;
         }
+        let was_encoding = native_preview.pending();
+        let size = screen.terminal.size()?;
+        prepare_native_preview(
+            &app,
+            Rect::new(0, 0, size.width, size.height),
+            &mut native_preview,
+        );
+        if was_encoding && !native_preview.pending() {
+            dirty = true;
+        }
+        if native_preview.cleanup(&mut io::stdout())? {
+            screen.terminal.clear()?;
+            dirty = true;
+        }
         if dirty {
-            screen.terminal.draw(|frame| render(frame, &app))?;
+            screen
+                .terminal
+                .draw(|frame| render_with_native(frame, &app, Some(&mut native_preview)))?;
             dirty = false;
         }
         if event::poll(Duration::from_millis(100))? {
@@ -5339,7 +5476,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     last_interaction = Instant::now();
                     app.key(k);
                 }
-                Event::Resize(_, _) => {}
+                Event::Resize(_, _) => {
+                    native_preview.hide();
+                }
                 _ => {}
             }
             dirty = true;
@@ -5391,6 +5530,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             last_refresh = Instant::now();
         }
     }
+    cleanup_native_preview(&mut screen, &mut native_preview)?;
     Ok(())
 }
 
@@ -6924,5 +7064,81 @@ mod tests {
         let lines = raster_lines(2, 2, &[255u8; 16], Rect::new(0, 0, 20, 10));
         assert_eq!(lines.len(), 10);
         assert_eq!(lines[0].spans.len(), 20);
+    }
+    #[test]
+    fn native_bitmap_geometry_tracks_workspace_and_suppresses_overlays() {
+        use base64::Engine;
+        let (mut a, _rx) = file_app();
+        let browser = a.browser.as_mut().unwrap();
+        browser.preview = Some("Image".into());
+        browser.preview_rich = Some(RichPreview::from_value(
+            &serde_json::json!({"kind":"image","title":"PNG","image":{"width":2,"height":2,"rgba":base64::engine::general_purpose::STANDARD.encode([255u8;16])}}),
+        ));
+        let screen = Rect::new(0, 0, 80, 24);
+        assert_eq!(
+            native_preview_area(&a, screen),
+            Some(Rect::new(22, 4, 57, 15))
+        );
+        a.transfer_drawer = true;
+        assert_eq!(
+            native_preview_area(&a, screen),
+            Some(Rect::new(22, 4, 57, 11))
+        );
+        a.browser.as_mut().unwrap().search = "photo".into();
+        assert_eq!(
+            native_preview_area(&a, screen),
+            Some(Rect::new(22, 4, 57, 8))
+        );
+        a.transfer_drawer = false;
+        a.browser.as_mut().unwrap().search.clear();
+        assert_eq!(
+            native_preview_area(&a, Rect::new(0, 0, 48, 24)),
+            Some(Rect::new(15, 4, 32, 15))
+        );
+        a.help = true;
+        assert!(native_preview_area(&a, screen).is_none());
+        a.help = false;
+        for input in [Input::Palette, Input::Search, Input::Filter, Input::Rename] {
+            a.input = Some(input);
+            assert!(native_preview_area(&a, screen).is_none());
+        }
+        a.input = None;
+        a.dialog = Some(Dialog::Jobs);
+        assert!(native_preview_area(&a, screen).is_none());
+        a.dialog = None;
+        a.view = View::Work;
+        assert!(native_preview_area(&a, screen).is_none());
+        a.view = View::Files;
+        assert!(native_preview_area(&a, Rect::new(0, 0, 35, 24)).is_none());
+        assert!(native_preview_area(&a, Rect::new(0, 0, 80, 9)).is_none());
+    }
+    #[test]
+    fn accepted_preview_responses_change_native_identity_even_when_metadata_matches() {
+        let (mut a, _rx) = file_app();
+        for revision in [1, 2] {
+            a.apply(Reply {
+                device: 0,
+                op: Operation::Preview {
+                    path: "/files/alpha.txt".into(),
+                },
+                generation: a.generation,
+                preview: None,
+                result: Ok(serde_json::json!({"kind":"text","title":"same","text":"same"})),
+            });
+            assert_eq!(a.browser.as_ref().unwrap().preview_revision, revision);
+        }
+        let encoded = serde_json::to_string(a.browser.as_ref().unwrap()).unwrap();
+        assert!(!encoded.contains("preview_revision"));
+        let before = a.browser.as_ref().unwrap().preview_revision;
+        a.apply(Reply {
+            device: 1,
+            op: Operation::Preview {
+                path: "/remote".into(),
+            },
+            generation: a.generation,
+            preview: None,
+            result: Ok(serde_json::json!({"text":"stale"})),
+        });
+        assert_eq!(a.browser.as_ref().unwrap().preview_revision, before);
     }
 }

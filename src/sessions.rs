@@ -532,31 +532,31 @@ pub fn create(request: &CreateSession) -> Result<Session> {
         .open(root.join(format!("{name}.json")))?;
     intent.write_all(&serde_json::to_vec(&pending)?)?;
     intent.sync_all()?;
-    let mut c = tmux(true)?;
-    c.args([
-        "new-session",
-        "-d",
-        "-e",
-        "CX_VIEWER_THEME=1",
-        "-s",
-        &name,
-        "-n",
-        "work",
-        "-c",
-    ])
-    .arg(directory)
-    .arg(&shell);
+    // A single safely quoted shell-command works on tmux 2.7 as well as newer
+    // versions; multi-argument new-session and -e were added later.
+    let mut launcher = vec![shell.clone()];
     if std::path::Path::new(&shell)
         .file_name()
         .is_some_and(|name| name == "fish")
     {
-        c.args(["--init-command", FISH_VIEWER_PALETTE]);
+        launcher.extend(["--init-command".into(), FISH_VIEWER_PALETTE.into()]);
     }
-    if request.provider == "shell" {
-        c.arg("-l");
-    } else {
-        c.args(["-l", "-i", "-c", &request.provider]);
+    launcher.extend(["-l".into()]);
+    if request.provider != "shell" {
+        launcher.extend(["-i".into(), "-c".into(), request.provider.clone()]);
     }
+    let command = format!(
+        "exec env CX_VIEWER_THEME=1 {}",
+        launcher
+            .iter()
+            .map(|arg| quote(arg))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let mut c = tmux(true)?;
+    c.args(["new-session", "-d", "-s", &name, "-n", "work", "-c"])
+        .arg(directory)
+        .arg(command);
     output(c)?;
     let mut session = inspect(true, &name)?;
     session.name = request.name.clone();

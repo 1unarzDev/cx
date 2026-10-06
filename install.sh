@@ -68,7 +68,12 @@ umask 077
 mkdir -p "$CX_STATE" "$CX_PREFIX/bin"
 [ "$(stat -c %u "$CX_STATE")" = "$(id -u)" ] || fail 'foreign state directory'
 safe_file "$CX_STATE/maintenance.lock"
+if [ -e "$CX_STATE/maintenance.lock" ]; then
+    CX_MODE=$(stat -c %a "$CX_STATE/maintenance.lock")
+    [ "$((0$CX_MODE & 0022))" = 0 ] || fail 'writeable maintenance lock'
+fi
 : >>"$CX_STATE/maintenance.lock"
+chmod 600 "$CX_STATE/maintenance.lock"
 exec 9>>"$CX_STATE/maintenance.lock"
 flock -n 9 || fail 'another cx maintenance operation is active; existing cx unchanged'
 safe_file "$CX_PREFIX/bin/cx"
@@ -128,8 +133,6 @@ safe_file "$CX_CONFIG/cx/env.sh"
 safe_file "$CX_CONFIG/fish/conf.d/cx-path.fish"
 CX_INSTALLING=$(mktemp "$CX_PREFIX/bin/.cx-install.XXXXXX")
 install -m 700 "$CX_TMP/cx" "$CX_INSTALLING"
-mv -f "$CX_INSTALLING" "$CX_PREFIX/bin/cx"
-CX_INSTALLING=
 # Fish loads additive conf.d snippets; Bash/Zsh use the owned sourceable env file.
 case "$CX_PREFIX" in *[!a-zA-Z0-9_./-]*) printf '%s\n' 'Custom prefix: configure your shell PATH manually.';; *)
     mkdir -p "$CX_CONFIG/cx" "$CX_CONFIG/fish/conf.d"
@@ -137,6 +140,8 @@ case "$CX_PREFIX" in *[!a-zA-Z0-9_./-]*) printf '%s\n' 'Custom prefix: configure
     # PATH is intentionally expanded by Fish at shell startup.
     # shellcheck disable=SC2016
     printf 'if status is-interactive; and not contains -- %s/bin $PATH\n    set -gx PATH %s/bin $PATH\nend\n' "$CX_PREFIX" "$CX_PREFIX" >"$CX_CONFIG/fish/conf.d/cx-path.fish";; esac
+mv -f "$CX_INSTALLING" "$CX_PREFIX/bin/cx"
+CX_INSTALLING=
 # Offer one owned additive source line; never rewrite an existing shell configuration.
 case "$CX_CONFIG" in *[!a-zA-Z0-9_./-]*) ;; *)
     CX_STARTUP=

@@ -175,10 +175,24 @@ pub(super) fn render(path: &Path, mut file: File) -> Result<Value> {
                                 break;
                             }
                             match entry.and_then(|e| Ok((e.path()?.into_owned(), e.size()))) {
-                                Ok((name, length)) => text.push_str(&format!(
-                                    "{} · {length} bytes\n",
-                                    super::display(&name.to_string_lossy())
-                                )),
+                                Ok((name, length)) => {
+                                    // PAX names can be enormous even for an empty entry.
+                                    // Bound before escaping/allocation and before appending.
+                                    let name = name.to_string_lossy();
+                                    let short: String = name.chars().take(512).collect();
+                                    let clipped = name.chars().count() > 512;
+                                    truncated |= clipped;
+                                    let line = format!(
+                                        "{}{} · {length} bytes\n",
+                                        super::display(&short),
+                                        if clipped { "…" } else { "" }
+                                    );
+                                    if text.len() + line.len() > TEXT {
+                                        truncated = true;
+                                        break;
+                                    }
+                                    text.push_str(&line);
+                                }
                                 Err(_) => {
                                     text.push_str("Archive listing incomplete or malformed\n");
                                     truncated = true;
@@ -424,6 +438,27 @@ mod tests {
         assert_eq!(v["kind"], "archive");
         assert!(v["text"].as_str().unwrap().contains("folder/example.txt"));
     }
+    #[test]
+    fn enormous_pax_name_stays_inside_response_budget() {
+        let mut builder = tar::Builder::new(Vec::new());
+        let name = "a".repeat(1_100_000);
+        builder
+            .append_pax_extensions([("path", name.as_bytes())])
+            .unwrap();
+        let mut header = tar::Header::new_gnu();
+        header.set_size(0);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "short", Cursor::new(b""))
+            .unwrap();
+        builder.finish().unwrap();
+        let v = fixture("long-name.tar", &builder.into_inner().unwrap());
+        assert_eq!(v["truncated"], true);
+        assert!(v["text"].as_str().unwrap().len() < TEXT);
+        assert!(serde_json::to_vec(&v).unwrap().len() < TEXT + 1024);
+    }
+
     #[test]
     fn wav_metadata_is_inert() {
         let mut wav = vec![0; 44];

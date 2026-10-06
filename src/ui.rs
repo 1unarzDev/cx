@@ -1283,21 +1283,6 @@ impl App {
                 Dialog::Jobs => {
                     self.dialog_detail_focus = true;
                 }
-                Dialog::StopShell(d, session) => {
-                    self.dialog = None;
-                    if self.dialog_selected == 1 {
-                        self.send(
-                            d,
-                            Operation::StopSession {
-                                id: session.id,
-                                pid: session.pid,
-                                started: session.started,
-                                boot_id: session.boot_id,
-                            },
-                        );
-                        self.notice = "Stopping confirmed shell…".into();
-                    }
-                }
                 Dialog::Delete(d, entries) => {
                     self.dialog = None;
                     if self.dialog_selected == 1 {
@@ -1537,10 +1522,6 @@ impl App {
                         self.work[reply.device].error = Some("Invalid session metadata".into())
                     }
                 }
-            }
-            Operation::StopSession { .. } => {
-                self.notice = "Shell stopped".into();
-                self.work[reply.device].loading = self.send(reply.device, Operation::Sessions);
             }
             Operation::Create(_) => match serde_json::from_value::<Session>(value) {
                 Ok(s) => {
@@ -3617,19 +3598,14 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             ),
             Dialog::StopShell(d, session) => (
                 "Stop shell?".into(), vec!["Keep shell".into(), "Stop shell".into()],
-                format!("{}\n{}\n{}\n\nRunning commands in this shell will end.", identity(&app.devices[*d]), safe_label(&session.name), safe_label(&session.directory)),
+                format!("Running commands in this shell will end.\n{}\n{}\n{}", identity(&app.devices[*d]), safe_label(&session.name), safe_label(&session.directory)),
             ),
             Dialog::Delete(d, entries) => (
                 format!("Delete {} {}?", entries.len(), if entries.len() == 1 { "item" } else { "items" }),
                 vec!["Cancel · keep files".into(), "Delete permanently".into()],
-                format!("No undo. {} folders include all contents.\nHost: {}\n{}",
-                    entries.iter().filter(|e| e.kind == "directory").count(), identity(&app.devices[*d]),
+                format!("{}\n{}\n{}",
+                    if entries.iter().any(|e| e.kind == "directory") { "No undo · folders include their contents." } else { "Deletion cannot be undone." }, identity(&app.devices[*d]),
                     entries.iter().map(|e| format!("{} {}", if ascii() { "-" } else { "•" }, safe_label(&e.name))).collect::<Vec<_>>().join("\n")),
-            ),
-            Dialog::StopShell(d, session) => (
-                "Stop shell?".into(),
-                vec!["Cancel".into(), "Stop".into()],
-                format!("Running shell commands will end.\n{}\n{}\n{}", identity(&app.devices[*d]), safe_label(&session.name), safe_label(&session.directory)),
             ),
             Dialog::PendingExit(count) => (
                 "File actions are still being submitted".into(),
@@ -4149,6 +4125,16 @@ fn render_preview(frame: &mut Frame, area: Rect, browser: &Browser, text: &str, 
             return;
         }
     }
+    let fallback;
+    let text = if rich.is_some_and(|p| p.raster.is_some()) {
+        fallback = format!(
+            "{}\n{}\nColor thumbnail unavailable in ASCII/monochrome mode.",
+            title, text
+        );
+        fallback.as_str()
+    } else {
+        text
+    };
     frame.render_widget(
         Paragraph::new(preview_lines(
             text,

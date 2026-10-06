@@ -2362,7 +2362,9 @@ impl App {
         if self.view == View::Files && self.focus == Focus::Workspace {
             if let Some(b) = &mut self.browser {
                 if b.preview.is_some() {
-                    b.preview_scroll = b.preview_scroll.saturating_add_signed(delta as i16);
+                    b.preview_scroll = b.preview_scroll.saturating_add_signed(
+                        delta.clamp(i16::MIN as isize, i16::MAX as isize) as i16,
+                    );
                     return;
                 }
             }
@@ -2478,7 +2480,9 @@ fn fit_label(text: &str, width: usize) -> String {
 fn safe_text(text: &str) -> String {
     text.chars()
         .map(|c| {
-            if c.is_control() && c != '\n' && c != '\t' {
+            if (c.is_control() && c != '\n' && c != '\t')
+                || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            {
                 '�'
             } else {
                 c
@@ -3382,6 +3386,16 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             ("Esc", "Done"),
             ("Tab", "Focus"),
         ]
+    } else if app.view == View::Files
+        && app.focus == Focus::Workspace
+        && app.browser.as_ref().is_some_and(|b| b.preview.is_some())
+    {
+        vec![
+            ("j/k", "Scroll"),
+            ("PgUpDn", "Page"),
+            ("Esc", "Back"),
+            ("?", "Help"),
+        ]
     } else if app.view == View::Files && app.focus == Focus::Workspace {
         vec![
             ("Space", "Select"),
@@ -3412,7 +3426,12 @@ fn render(frame: &mut Frame<'_>, app: &App) {
     if columns == 2 && !matches!(app.input, Some(Input::Search | Input::Filter)) {
         hints.retain(|(_, label)| !matches!(*label, "Search" | "Focus"));
         hints.truncate(4);
-        if app.dialog.is_none() && app.input.is_none() && !app.help && app.view == View::Files {
+        if app.dialog.is_none()
+            && app.input.is_none()
+            && !app.help
+            && app.view == View::Files
+            && app.browser.as_ref().is_some_and(|b| b.preview.is_none())
+        {
             hints[3] = ("t / T", "Send / jobs");
         }
     }
@@ -4334,7 +4353,9 @@ fn render_browser(
             );
         }
     }
-    let bottom = if let Some(c) = clipboard {
+    let bottom = if b.preview.is_some() {
+        " Preview · j/k scroll · Escape back".into()
+    } else if let Some(c) = clipboard {
         format!(
             " {} {} · {}{}",
             if c.cut { "CUT" } else { "COPY" },

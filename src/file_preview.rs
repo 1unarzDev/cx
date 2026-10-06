@@ -55,14 +55,29 @@ fn raster(bytes: &[u8]) -> Result<(Value, String)> {
     if w == 0 || h == 0 || u64::from(w) * u64::from(h) * 4 > 32 * 1024 * 1024 {
         bail!("image exceeds decoded preview limit");
     }
-    let img = reader
-        .decode()?
-        .thumbnail(w.min(160), h.min(100))
-        .to_rgba8();
-    Ok((
-        json!({"width":img.width(),"height":img.height(),"rgba":STANDARD.encode(img.as_raw())}),
-        format!("{w} × {h}"),
-    ))
+    let mut img = reader.decode()?.thumbnail(w.min(1280), h.min(960));
+    // Small legacy payloads remain readable by older viewers. Larger previews use
+    // compressed PNG, with a hard wire budget independent of image complexity.
+    if img.width() <= 160 && img.height() <= 100 {
+        let rgba = img.to_rgba8();
+        return Ok((
+            json!({"width":rgba.width(),"height":rgba.height(),"rgba":STANDARD.encode(rgba.as_raw())}),
+            format!("{w} × {h}"),
+        ));
+    }
+    loop {
+        let mut png = Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png)?;
+        if png.get_ref().len() <= 600_000 {
+            return Ok((
+                json!({"width":img.width(),"height":img.height(),"png":STANDARD.encode(png.into_inner())}),
+                format!("{w} × {h}"),
+            ));
+        }
+        let next_w = (img.width() * 3 / 4).max(1);
+        let next_h = (img.height() * 3 / 4).max(1);
+        img = img.thumbnail(next_w, next_h);
+    }
 }
 fn extension(path: &Path) -> String {
     path.extension()
@@ -249,7 +264,7 @@ fn pdf_converter(bytes: &[u8], program: &std::ffi::OsStr) -> Result<Vec<u8>> {
             "1",
             "-singlefile",
             "-scale-to",
-            "160",
+            "1280",
             "-png",
             "-",
         ])
@@ -372,13 +387,14 @@ mod tests {
         img.write_to(&mut out, image::ImageFormat::Png).unwrap();
         let v = fixture("misleading.txt", out.get_ref());
         assert_eq!(v["kind"], "image");
-        assert_eq!(v["image"]["width"], 160);
-        assert_eq!(v["image"]["height"], 100);
-        let rgba = STANDARD
-            .decode(v["image"]["rgba"].as_str().unwrap())
+        assert_eq!(v["image"]["width"], 320);
+        assert_eq!(v["image"]["height"], 200);
+        let png = STANDARD
+            .decode(v["image"]["png"].as_str().unwrap())
             .unwrap();
-        assert_eq!(rgba.len(), 160 * 100 * 4);
-        assert_eq!(&rgba[..4], &[255, 0, 0, 128]);
+        let rgba = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!(rgba.dimensions(), (320, 200));
+        assert_eq!(&rgba.as_raw()[..4], &[255, 0, 0, 128]);
     }
     #[test]
     fn supported_image_formats_have_real_thumbnails() {

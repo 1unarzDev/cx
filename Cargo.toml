@@ -6,6 +6,7 @@ rust-version = "1.85"
 repository = "https://github.com/1unarzDev/cx"
 
 [dependencies]
+syntect = { version = "=5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"

@@ -13,7 +13,7 @@ use syntect::{
     parsing::SyntaxSet,
 };
 
-static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
+static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
 static THEMES: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
 fn palette(color: TokenColor) -> Color {
     // Map trusted grammar theme roles onto the viewer's ANSI palette. Never set background.
@@ -110,6 +110,24 @@ mod tests {
                     .collect::<Vec<_>>()
                     .join("\n"),
                 source.trim_end_matches('\n')
+            );
+        }
+    }
+    #[test]
+    fn fish_typescript_toml_and_docker_use_bundled_grammars() {
+        for (path, source) in [
+            ("a.fish", "set name \"hello\"\n"),
+            ("a.ts", "const name: string = \"hello\";\n"),
+            ("a.toml", "name = \"hello\"\n"),
+            ("Dockerfile", "FROM ubuntu:24.04\n"),
+        ] {
+            let lines = highlight(source, path);
+            assert!(
+                lines
+                    .iter()
+                    .flat_map(|line| line.spans.iter())
+                    .any(|span| span.style.fg.is_some_and(|color| color != Color::Reset)),
+                "{path}"
             );
         }
     }

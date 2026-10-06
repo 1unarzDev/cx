@@ -119,12 +119,26 @@ struct Candidate {
     interface: String,
     interface_index: u32,
     link_state: String,
+    lladdr: Option<String>,
 }
 impl Candidate {
     fn value(&self) -> Value {
         json!({"address":self.address.to_string(),"hostname":null,
-            "interface":self.interface,"link_state":self.link_state,"source":"neighbor",
+            "interface":self.interface,"link_state":self.link_state,"lladdr":self.lladdr,"source":"neighbor",
             "ssh":{"state":"unknown"},"internet":{"state":"unknown"}})
+    }
+}
+fn normalize_link_address(value: &str) -> Option<String> {
+    let parts: Vec<_> = value.split(':').collect();
+    if parts.len() == 6
+        && parts
+            .iter()
+            .all(|p| p.len() == 2 && p.bytes().all(|c| c.is_ascii_hexdigit()))
+        && value != "00:00:00:00:00:00"
+    {
+        Some(value.to_ascii_lowercase())
+    } else {
+        None
     }
 }
 fn candidate_interface(name: &str) -> bool {
@@ -265,12 +279,16 @@ fn parse_candidates(
                 if state < c.link_state {
                     c.link_state = state.clone();
                 }
+                if c.lladdr != row["lladdr"].as_str().and_then(normalize_link_address) {
+                    c.lladdr = None;
+                }
             })
             .or_insert(Candidate {
                 address,
                 interface: interface.to_owned(),
                 interface_index: index,
                 link_state: state,
+                lladdr: row["lladdr"].as_str().and_then(normalize_link_address),
             });
     }
     // Keep the helper response well below the shared 1 MiB framing limit.
@@ -835,6 +853,23 @@ mod candidate_tests {
             {"ifname":"eth\u{1b}[2J","ifindex":6},
             {"ifname":"eth\u{fffd}","ifindex":7}
         ])
+    }
+    #[test]
+    fn link_addresses_are_bounded_and_conflicts_do_not_imply_identity() {
+        let rows = parse_candidates(
+            &addresses(),
+            &json!([
+                {"dst":"192.0.2.9","dev":"eth0","lladdr":"AA:BB:CC:DD:EE:FF","state":["STALE"]},
+                {"dst":"192.0.2.10","dev":"eth0","lladdr":"\u{1b}[31m","state":["STALE"]},
+                {"dst":"192.0.2.11","dev":"eth0","lladdr":"00:00:00:00:00:00","state":["STALE"]},
+                {"dst":"192.0.2.12","dev":"eth0","lladdr":"aa:bb:cc:dd:ee:01","state":["STALE"]},
+                {"dst":"192.0.2.12","dev":"eth0","lladdr":"aa:bb:cc:dd:ee:02","state":["STALE"]}
+            ]),
+            &json!([]),
+        )
+        .unwrap();
+        assert_eq!(rows[0].value()["lladdr"], "aa:bb:cc:dd:ee:ff");
+        assert!(rows[1..].iter().all(|r| r.value()["lladdr"].is_null()));
     }
     #[test]
     fn candidates_are_numeric_sorted_deduplicated_and_unknown() {

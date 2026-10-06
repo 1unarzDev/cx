@@ -132,7 +132,7 @@ const ACTIONS: &[(Action, &str)] = &[
     ),
     (
         Action::New,
-        "New session · choose device, provider and folder",
+        "New session · current folder / choose workspace",
     ),
     (Action::Destination, "Destination · choose transfer device"),
     (
@@ -163,7 +163,7 @@ enum ChooseDevice {
 #[derive(Clone)]
 enum Dialog {
     Device(ChooseDevice),
-    Provider(usize),
+    Provider(usize, Option<String>),
     Matching(usize, String, String, Session),
     Jobs,
 }
@@ -263,7 +263,7 @@ impl App {
         if let Some(dialog) = &self.dialog {
             return match dialog {
                 Dialog::Device(_) => "Device picker",
-                Dialog::Provider(_) => "Provider",
+                Dialog::Provider(..) => "Provider",
                 Dialog::Matching(..) => "Session choice",
                 Dialog::Jobs => "Transfers",
             };
@@ -506,6 +506,15 @@ impl App {
                 self.refresh();
             }
             Action::New | Action::DeviceShell => {
+                if action == Action::New && self.view == View::Files {
+                    if let Some(browser) = &self.browser {
+                        let (device, path) = (browser.device, browser.path.clone());
+                        self.check_providers(device);
+                        self.dialog = Some(Dialog::Provider(device, Some(path)));
+                        self.dialog_selected = 0;
+                        return;
+                    }
+                }
                 self.other_browser = None;
                 self.destination_active = false;
                 self.clipboard = None;
@@ -595,7 +604,7 @@ impl App {
                 if self.launch_provider.is_some() {
                     self.open_browser(d, "~".into());
                 } else {
-                    self.dialog = Some(Dialog::Provider(d));
+                    self.dialog = Some(Dialog::Provider(d, None));
                     self.dialog_selected = 0;
                 }
             }
@@ -728,11 +737,11 @@ impl App {
     fn dialog_key(&mut self, key: KeyEvent, dialog: Dialog) {
         let count = match &dialog {
             Dialog::Device(_) => self.devices.len(),
-            Dialog::Provider(d) => self.provider_choices(*d).len(),
+            Dialog::Provider(d, _) => self.provider_choices(*d).len(),
             Dialog::Matching(..) => 2,
             Dialog::Jobs => self.job_rows().len(),
         };
-        if let Dialog::Provider(device) = dialog {
+        if let Dialog::Provider(device, _) = dialog {
             if key.code == KeyCode::Enter && self.dialog_selected >= count {
                 self.check_providers(device);
                 self.notice = "Agent availability changed · checking before launch".into();
@@ -754,13 +763,18 @@ impl App {
                         self.chosen_device(self.dialog_selected, purpose);
                     }
                 }
-                Dialog::Provider(d) => {
+                Dialog::Provider(d, path) => {
                     let choices = self.provider_choices(d);
                     let Some(provider) = choices.get(self.dialog_selected) else {
                         return;
                     };
-                    self.launch_provider = Some((*provider).into());
+                    let provider = (*provider).to_string();
                     self.dialog = None;
+                    if let Some(directory) = path {
+                        self.start_at(d, directory, provider);
+                        return;
+                    }
+                    self.launch_provider = Some(provider);
                     self.open_browser(d, "~".into());
                     self.notice =
                         "Browse to a folder · Ctrl+P → Start here (Enter only opens files)".into();
@@ -856,7 +870,7 @@ impl App {
         // Session caches remain useful across view changes; navigation responses do not.
         match reply.op {
             Operation::Info => {
-                let previous = if matches!(self.dialog, Some(Dialog::Provider(d)) if d == reply.device)
+                let previous = if matches!(self.dialog, Some(Dialog::Provider(d, _)) if d == reply.device)
                 {
                     let mut choices = vec!["shell".to_string()];
                     if let Some((available, _)) = self.providers.get(&reply.device) {
@@ -883,7 +897,7 @@ impl App {
                     .unwrap_or_default();
                 self.providers
                     .insert(reply.device, (available, transport::now()));
-                if matches!(self.dialog, Some(Dialog::Provider(d)) if d == reply.device) {
+                if matches!(self.dialog, Some(Dialog::Provider(d, _)) if d == reply.device) {
                     self.dialog_selected = previous
                         .and_then(|provider| {
                             self.provider_choices(reply.device)
@@ -2222,7 +2236,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                     "Enter choose · Escape cancel".to_string()
                 },
             ),
-            Dialog::Provider(d) => (
+            Dialog::Provider(d, path) => (
                 format!("New session · {}", identity(&app.devices[*d])),
                 app.provider_choices(*d)
                     .iter()
@@ -2240,6 +2254,17 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                     .is_some_and(|(_, checked)| transport::now().saturating_sub(*checked) < 60)
                 {
                     "Agent availability unknown · Escape, then Refresh to retry".into()
+                } else if let Some(path) = path {
+                    let location = app
+                        .browser
+                        .as_ref()
+                        .filter(|b| b.device == *d && b.path == *path)
+                        .map(|b| b.display_path.as_str())
+                        .unwrap_or(path);
+                    format!(
+                        "Enter starts here: {} · Escape cancel",
+                        safe_label(location)
+                    )
                 } else {
                     "Enter choose · next: browse folder, then Start here".into()
                 },
@@ -2767,7 +2792,7 @@ pub fn run() -> Result<()> {
             if let Some(browser) = &app.browser {
                 app.check_providers(browser.device);
             }
-            if let Some(Dialog::Provider(device)) = app.dialog {
+            if let Some(Dialog::Provider(device, _)) = app.dialog {
                 app.check_providers(device);
             }
             if app.view == View::Work {
@@ -2862,7 +2887,7 @@ mod tests {
     #[test]
     fn expired_agent_selection_cannot_turn_into_shell_launch() {
         let (mut a, rx) = queued_app();
-        a.dialog = Some(Dialog::Provider(1));
+        a.dialog = Some(Dialog::Provider(1, None));
         a.dialog_selected = 2;
         a.providers.insert(
             1,
@@ -2873,7 +2898,7 @@ mod tests {
         );
         a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(a.launch_provider.is_none());
-        assert!(matches!(a.dialog, Some(Dialog::Provider(1))));
+        assert!(matches!(a.dialog, Some(Dialog::Provider(1, None))));
         assert!(matches!(rx.try_recv().unwrap().op, Operation::Info));
         a.apply(Reply {
             device: 1,
@@ -2893,7 +2918,7 @@ mod tests {
         a.open_browser(1, "~".into());
         assert!(a.action_enabled(Action::Codex));
         assert!(!a.action_enabled(Action::Claude));
-        a.dialog = Some(Dialog::Provider(1));
+        a.dialog = Some(Dialog::Provider(1, None));
         a.dialog_selected = 1;
         a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(a.launch_provider.as_deref(), Some("codex"));
@@ -2929,6 +2954,37 @@ mod tests {
         assert_eq!(a.provider_choices(1), vec!["shell"]);
     }
     #[test]
+    fn new_from_files_starts_current_execution_location_and_attaches_on_reply() {
+        let (mut a, rx) = queued_app();
+        a.browser = Some(Browser::new(1, "/project/remote".into()));
+        a.browser.as_mut().unwrap().search = "recording".into();
+        a.view = View::Files;
+        a.focus = Focus::Actions;
+        a.execute(Action::New);
+        assert!(
+            matches!(&a.dialog, Some(Dialog::Provider(1, Some(path))) if path == "/project/remote")
+        );
+        a.dialog_selected = 2;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let task = rx.try_recv().unwrap();
+        assert_eq!(task.device, 1);
+        let Operation::Create(spec) = &task.op else {
+            panic!("expected direct create, not browser reset")
+        };
+        assert_eq!(spec.directory, "/project/remote");
+        assert_eq!(spec.provider, "codex");
+        let session = serde_json::json!({"id":"new","name":"Codex","directory":"/project/remote","provider":"codex","account":"peace","host":"laptop","pid":1,"started":"x","boot_id":"boot","external":false,"socket":null});
+        a.apply(Reply {
+            device: 1,
+            op: task.op,
+            generation: 0,
+            result: Ok(session),
+        });
+        assert!(a.pending_attach.is_some());
+        assert_eq!(a.browser.as_ref().unwrap().search, "recording");
+        assert!(a.view == View::Files);
+    }
+    #[test]
     fn new_session_from_all_explicitly_selects_execution_provider_directory() {
         let (mut a, rx) = queued_app();
         assert!(a.action_enabled(Action::New));
@@ -2944,7 +3000,7 @@ mod tests {
         assert!(matches!(a.dialog, Some(Dialog::Device(ChooseDevice::New))));
         a.dialog_selected = 1;
         a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(matches!(a.dialog, Some(Dialog::Provider(1))));
+        assert!(matches!(a.dialog, Some(Dialog::Provider(1, None))));
         a.dialog_selected = 2;
         a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(a.browser.as_ref().unwrap().device, 1);

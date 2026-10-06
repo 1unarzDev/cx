@@ -100,11 +100,12 @@ for rows, cols in [(40, 120)]:
             assert 'complete' in text(), 'Completed copy missing from drawer: '+text()
             send(b'\x1b')
             palette('New session')
+            assert 'Enter starts here:' in text(), 'Files launch should use current folder: '+text()
             send(b'\r')
-            send(b'\r')
-            palette('Start here')
             read(1)
-            assert 'Return to cx' in text(), 'shell did not attach'
+            assert 'Return to cx' in text(), 'shell did not auto-attach from Files actions'
+            directory = subprocess.run(['tmux','-S',str(home/'state/cx/managed.sock'),'display-message','-p','#{pane_current_path}'],capture_output=True,text=True,check=True).stdout.strip()
+            assert directory == str(home/'destination'), ('wrong launch directory', directory)
             send(b'\x1d')
             assert 'Files' in text() or 'Start shell' in text(), 'browser state did not return'
 

@@ -556,8 +556,15 @@ pub fn stop_shell(id: &str, pid: u32, started: &str, boot_id: &str) -> Result<se
     if !created.bytes().all(|b| b.is_ascii_digit()) || created.is_empty() {
         bail!("invalid process start identity");
     }
+    let runtime_guard =
+        format!("#{{&&:#{{==:#{{pane_pid}},{pid}}},#{{==:#{{session_created}},{created}}}}}");
+    let shape_guard = "#{&&:#{==:#{session_windows},1},#{==:#{window_panes},1}}";
+    // tmux checks its current command again in the same command queue as the kill.
+    // This narrows (but cannot completely eliminate) concurrent provider-start races.
+    let provider_guard =
+        "#{&&:#{!=:#{pane_current_command},claude},#{!=:#{pane_current_command},codex}}";
     let guard = format!(
-        "#{{&&:#{{&&:#{{==:#{{pane_pid}},{pid}}},#{{==:#{{session_created}},{created}}}}},#{{&&:#{{==:#{{session_windows}},1}},#{{==:#{{window_panes}},1}}}}}}"
+        "#{{&&:#{{&&:{runtime_guard},{shape_guard}}},#{{&&:{provider_guard},#{{==:#{{session_name}},{id}}}}}}}"
     );
     let mut stop = tmux(true)?;
     stop.args([

@@ -74,3 +74,10 @@ Pending user feedback: physical confirmation of repaired device switching and th
 
 - Live server acceptance caught the viewer discarding native-command-v1 from real Info responses.0.1.4 retains the allowlisted capability, with a reply-to-dialog regression; actual remote command/folder/return checks now pass against the agent-free server.0.1.4 is published and installed from signed public assets on innovation and verybeautifulserver, superseding0.1.3 for remote commands; tranquility remains unreachable. Final signed native and remote PTY checks pass, with evidence in VALIDATION.md.
 - Optional physical feedback pending: updated Files → n/Shell/return and :/pwd/return, checking execution location and the persistent-session/foreground-command distinction. Continue independent work; do not repeat this question.
+
+
+## Native command colors / Actions cleanup
+- Fixed native Fish command launch resetting the viewer palette/default foreground/background; managed tmux pane resets remain scoped to tmux.
+- Removed Command from Ctrl+P/Actions; `:` and its help entry remain.
+- The known Caelestia Fish startup loader needs a cx-scoped guard for direct native commands; targeted chezmoi integration preserves ordinary terminal themes and a private pre-change backup. This supersedes the earlier guard removal for this specific native-launch path.
+- Optimized native Bash/Fish/sh PTYs, integrated folder command workflows, Rust suite and actual local Fish palette capture pass. Release/deployment and independent review follow.

@@ -7,6 +7,8 @@ for shell in sys.argv[2:] or ['/bin/bash']:
     with tempfile.TemporaryDirectory(prefix='cx-folder-ui-') as temporary:
         root = pathlib.Path(temporary); folder = root / "current ' folder ☃"; folder.mkdir()
         (folder/'before.txt').write_text('fixture')
+        config = root/'config/fish'; config.mkdir(parents=True)
+        (config/'config.fish').write_text("if not set -q CX_VIEWER_THEME; printf '%b' '\\e]4;1;rgb:12/34/56\\a'; end\n")
         state = root/'state/cx'; state.mkdir(parents=True)
         name = 'viewer-restart-123-789.json'
         snapshot = dict(schema=1, expires_at=int(time.time())+300, device_ids=['local'], device=1,
@@ -15,7 +17,7 @@ for shell in sys.argv[2:] or ['/bin/bash']:
                 entries=[], selected=0, search='', preview_scroll=0, restore_selection=None),
             other_browser=None, destination_active=False, conflict=2, launch_provider=None, clipboard=None, submitted={})
         snapshot_path = state/name; snapshot_path.write_text(json.dumps(snapshot)); snapshot_path.chmod(0o600)
-        env = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root/'state'), SHELL=shell,
+        env = dict(os.environ, HOME=str(root), XDG_CONFIG_HOME=str(root/'config'), XDG_STATE_HOME=str(root/'state'), SHELL=shell,
             TERM='xterm-256color', HTTPS_PROXY='http://127.0.0.1:9')
         env.pop('TMUX',None); env.pop('TMUX_PANE',None)
         master, slave = pty.openpty(); before = termios.tcgetattr(slave)
@@ -38,12 +40,18 @@ for shell in sys.argv[2:] or ['/bin/bash']:
             output.clear(); os.write(master,text)
         try:
             wait('before.txt')
+            send(b'\x10'); wait('Actions')
+            time.sleep(.2); read()
+            assert b'Run command here' not in output, 'command remains in Actions'
+            send(b'\x1b'); time.sleep(.2); read()
             send(b'n'); wait('New session'); wait('Shell')
             send(b'\x1b'); time.sleep(.2); read()
             send(b':'); wait('Run command')
             # Includes browser shortcut characters, safely treated as command text.
             os.write(master,b"printf '%s' 'hjkl:n x' > proof.txt\r")
             wait('Command ended:'); assert process.poll() is None
+            for code in (b'\x1b]4;', b'\x1b]104', b'\x1b]110', b'\x1b]111'):
+                assert code not in output, 'native command changed viewer palette: '+repr(code)
             assert (folder/'proof.txt').read_text() == 'hjkl:n x'
             send(b'\r'); wait('Returned from'); wait('proof.txt')
             assert os.tcgetpgrp(master)==process.pid
@@ -55,7 +63,7 @@ for shell in sys.argv[2:] or ['/bin/bash']:
             send(b'\x03'); process.wait(timeout=5)
             assert process.returncode==0
             assert termios.tcgetattr(slave)==before
-            results.append(dict(shell=shell,result='PASS',checks=['n current-folder provider dialog','colon input owns browser shortcuts','exact current folder execution','Enter restores browser and refreshes new file','Ctrl+C interrupts command and preserves viewer','foreground/modes restored']))
+            results.append(dict(shell=shell,result='PASS',checks=['Actions omits command','colon preserves viewer palette','n current-folder provider dialog','colon input owns browser shortcuts','exact current folder execution','Enter restores browser and refreshes new file','Ctrl+C interrupts command and preserves viewer','foreground/modes restored']))
         finally:
             if process.poll() is None: process.kill(); process.wait(timeout=5)
             os.close(master); os.close(slave)

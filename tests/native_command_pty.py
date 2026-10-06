@@ -18,7 +18,7 @@ with tempfile.TemporaryDirectory(prefix='cx-command-pty-') as temporary:
     (root/'.zshrc').write_text("cx_fixture_wrapper() { printf wrapper-ok; }\n")
     (root/'.profile').write_text("cx_fixture_wrapper() { printf wrapper-ok; }\n")
     config = root/'config/fish'; config.mkdir(parents=True)
-    (config/'config.fish').write_text("function cx_fixture_wrapper; printf wrapper-ok; end\n")
+    (config/'config.fish').write_text("if not set -q CX_VIEWER_THEME; printf '%b' '\\e]4;1;rgb:12/34/56\\a'; end\nfunction cx_fixture_wrapper; printf wrapper-ok; end\n")
     def scenario(command, interact=None, expected='Command ended:'):
         payload = {'directory':str(folder), 'command':command}
         master, slave = pty.openpty()
@@ -74,6 +74,11 @@ with tempfile.TemporaryDirectory(prefix='cx-command-pty-') as temporary:
                         os.killpg(group, signal.SIGKILL)
                 except (OSError, ValueError): pass
             os.close(master); os.close(slave)
+    palette_output = scenario('printf PALETTE_PRESERVED')
+    for reset in (b'\x1b]104', b'\x1b]110', b'\x1b]111'):
+        assert reset not in palette_output, 'command reset viewer palette: ' + repr(reset)
+    assert b'\x1b]4;' not in palette_output, 'host startup theme escaped cx guard'
+    checks.append('foreground command preserves viewer palette/default background')
     scenario("pwd; printf '%s' 'proof ☃' > 'result file'")
     assert (folder/'result file').read_text() == 'proof ☃'
     checks.append('quoted Unicode directory and exact write')

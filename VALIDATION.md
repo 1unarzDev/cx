@@ -181,3 +181,20 @@ Installed0.1.4 from the public pinned bootstrap on innovation (Arch/lunarz) and 
 PASS — final installed0.1.4 innovation → lunarz@verybeautifulserver live workflow: python3 tests/remote_folder_command_pty.py ~/.local/bin/cx verybeautifulserver; /tmp/cx-context-remote-installed.json. Agent inventory absent before/after; temporary folder cleaned. Both installed client and helper are0.1.4. Tranquility remains BLOCKED: latest BatchMode/ConnectTimeout5 retry returns No route to host. No new host packages, user services, provider configuration, SSH trust, mesh settings or personal tmux configuration were changed by this slice. Existing owned binary/PATH integration was updated.
 
 Rollback: CX_VERSION=v0.1.2 CX_NO_LAUNCH=1 sh install.sh installs the reviewed prior signed build without deleting session/job state. Remove only ~/.local/bin/cx when no active job needs the helper; full owned-resource uninstall remains unfinished. Physical Files/n/: feedback is optional and pending; broader product limitations above remain applicable.
+
+
+## Native command palette preservation (2026-10-06)
+
+Source: next v0.1.5. A harmless Fish native command reproduced OSC104/110/111 resetting the viewer's dynamic palette/default colors in v0.1.4. Those resets are now confined to managed tmux panes. Native commands retain `CX_VIEWER_THEME=1`; targeted personal chezmoi integration guards the known Caelestia startup palette loader while preserving ordinary terminal behavior.
+
+| Result | Scenario | Evidence |
+|---|---|---|
+| PASS | Original v0.1.4 regression fails on OSC104; optimized fixed Bash/Fish/sh native PTYs retain palette, wrappers, command/signal semantics and tty restoration | `/tmp/cx-palette-native-{bash,fish,sh}.json` |
+| PASS | Integrated Files → `:` → command → browser restoration in Bash/Fish; Actions excludes Command while `:` remains available | `/tmp/cx-palette-folder-ui-final.json`, Rust UI regression |
+| PASS | Full Rust suite: 178 passed, one existing live test ignored | `/tmp/cx-palette-tests-final.log` |
+| PASS | Caelestia guard fixture preserves ordinary palette emission, suppresses it under CX_VIEWER_THEME, and reruns without extra backups | chezmoi `tests/check-cx-theme.py` (including stale atime regression) |
+| PASS | Actual innovation Fish startup + native command emits no palette mutation codes | `/tmp/cx-palette-live-innovation.json` |
+
+Physical emulator palette/transparency confirmation remains a user check. Programs and unrelated startup themes can explicitly change terminal colors; cx does not filter native terminal traffic or claim to override them.
+
+Independent review: no high/blocking Rust finding; guard false-race on self-updated atime fixed and regression-tested before deployment. Evidence `/tmp/cx-independent-palette-{bash,fish}.json`, `/tmp/cx-theme-guard-atime-review.txt`.

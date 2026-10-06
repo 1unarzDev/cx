@@ -399,7 +399,8 @@ fn provider_available(shell: &str, probe: &str) -> bool {
 }
 
 // Fish runs init commands after its normal configuration. These tmux-supported
-// resets restore the viewer palette/defaults without editing any shell config.
+// resets restore pane defaults without editing shell config. They are safe only
+// inside managed tmux: on a native viewer terminal they erase its dynamic theme.
 const FISH_VIEWER_PALETTE: &str = r"printf '%b' '\e]104\e\\' '\e]110\e\\' '\e]111\e\\'";
 
 fn bounded_provider_check(mut command: Command, timeout: Duration) -> bool {
@@ -812,12 +813,9 @@ pub fn execute_command(request: &RunCommand) -> Result<()> {
     }
     let shell = launch_shell()?;
     let mut command = Command::new(&shell);
-    if std::path::Path::new(&shell)
-        .file_name()
-        .is_some_and(|s| s == "fish")
-    {
-        command.args(["--init-command", FISH_VIEWER_PALETTE]);
-    }
+    // This shell writes directly to the viewing terminal. Palette resets here
+    // would erase its dynamic colors/background; only managed tmux panes may
+    // use FISH_VIEWER_PALETTE (tmux scopes those changes to the pane).
     let fish = std::path::Path::new(&shell)
         .file_name()
         .is_some_and(|s| s == "fish");

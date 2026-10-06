@@ -2440,7 +2440,8 @@ fn ascii() -> bool {
 fn workspace_action(action: Action) -> bool {
     !matches!(
         action,
-        Action::Destination
+        Action::Command
+            | Action::Destination
             | Action::TransferTo
             | Action::Conflict
             | Action::Copy
@@ -5575,6 +5576,12 @@ mod tests {
             .palette()
             .iter()
             .any(|(_, label)| label.contains("Start here")));
+        assert!(!a
+            .palette()
+            .iter()
+            .any(|(action, _)| *action == Action::Command));
+        press(&mut a, ':');
+        assert!(a.input == Some(Input::Command));
     }
     #[test]
     fn new_shortcut_uses_focused_folder_and_available_providers() {

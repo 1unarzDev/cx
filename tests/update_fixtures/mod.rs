@@ -109,6 +109,11 @@ impl Mock {
 impl TestBackend for Mock {
     fn run(&self, tool: Tool, args: &[String], executable: Option<&Path>) -> Result<Output> {
         self.calls.set(self.calls.get() + 1);
+        if matches!(tool, Tool::Curl) && args.iter().any(|arg| arg.ends_with(".intoto.jsonl")) {
+            let at = args.iter().position(|arg| arg == "--output").unwrap();
+            fs::write(&args[at + 1], b"synthetic provenance bundle").unwrap();
+            return out(0, b"\n200");
+        }
         match tool {
             Tool::Curl if args.iter().any(|a| a == "--output") => {
                 assert!(args.contains(&"--max-filesize".into()));
@@ -122,7 +127,7 @@ impl TestBackend for Mock {
             Tool::Gh => {
                 assert_eq!(&args[0..2], &["attestation", "verify"]);
                 assert_eq!(
-                    &args[3..],
+                    &args[5..],
                     &[
                         "--repo",
                         REPO,
@@ -137,6 +142,10 @@ impl TestBackend for Mock {
                         "10"
                     ]
                 );
+                assert_eq!(args[3], "--bundle");
+                assert!(fs::read(&args[4])
+                    .unwrap()
+                    .starts_with(b"synthetic provenance"));
                 if self.mutate_verify {
                     fs::write(&args[2], b"tampered").unwrap();
                 }
@@ -199,6 +208,17 @@ fn offline_timeout_missing_curl_and_no_releases() {
     }
 }
 #[test]
+fn offline_check_recovers_without_replacing_the_current_binary() {
+    let f = Fixture::new();
+    let b = Mock::new(vec![out(6, b""), response("v0.1.0")]);
+    assert!(matches!(f.check(false, &b), CheckOutcome::Offline));
+    assert!(matches!(f.check(false, &b), CheckOutcome::Skipped));
+    assert_eq!(b.calls.get(), 1, "offline backoff avoids repeated probes");
+    assert!(matches!(f.check(true, &b), CheckOutcome::Current));
+    assert_eq!(b.calls.get(), 2, "interactive retry bypasses backoff");
+    assert_eq!(fs::read(&f.source).unwrap(), b"old executable");
+}
+#[test]
 fn current_downgrade_and_ttl_force() {
     for tag in ["v0.1.0", "v0.0.9"] {
         let f = Fixture::new();
@@ -244,7 +264,7 @@ fn missing_gh_signature_tag_and_probe_failure_never_install() {
         let f = Fixture::new();
         let b = Mock::new(vec![response("v0.2.0"), out(0, b"\n200"), failed]);
         assert!(matches!(f.check(true, &b), CheckOutcome::Unavailable(_)));
-        assert_eq!(b.calls.get(), 3);
+        assert_eq!(b.calls.get(), 4);
         assert_eq!(fs::read(&f.source).unwrap(), b"old executable");
         assert_eq!(fs::read_dir(f.state.join("update")).unwrap().count(), 0);
     }
@@ -262,7 +282,7 @@ fn missing_gh_signature_tag_and_probe_failure_never_install() {
     let mut b = Mock::success();
     b.mutate_verify = true;
     assert!(matches!(f.check(true, &b), CheckOutcome::Unavailable(_)));
-    assert_eq!(b.calls.get(), 3);
+    assert_eq!(b.calls.get(), 4);
 }
 #[test]
 fn archive_rejects_links_extras_paths_truncation_and_bombs() {
@@ -420,12 +440,12 @@ fn bounded_real_process_outcomes_without_network() {
 }
 
 #[test]
-fn real_verified_fixture_probe_install_and_relaunch() {
+fn fixture_provenance_gate_then_actual_probe_install_and_relaunch() {
     struct RealProbe(Mock);
     impl TestBackend for RealProbe {
         fn run(&self, tool: Tool, args: &[String], executable: Option<&Path>) -> Result<Output> {
             if matches!(tool, Tool::Probe) {
-                assert_eq!(self.0.calls.get(), 3, "provenance must precede execution");
+                assert_eq!(self.0.calls.get(), 4, "provenance must precede execution");
                 bounded(executable.unwrap(), args, Duration::from_secs(1), 1024)
             } else {
                 self.0.run(tool, args, executable)

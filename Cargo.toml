@@ -3,6 +3,7 @@ name = "cx"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
+repository = "https://github.com/1unarzDev/cx"
 
 [dependencies]
 anyhow = "1"
@@ -15,6 +16,8 @@ base64 = "0.22"
 sha2 = "0.10"
 libc = "0.2"
 signal-hook = "0.3"
+tar = "0.4"
+flate2 = "1"
 
 [dev-dependencies]
 tempfile = "3"

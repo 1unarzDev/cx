@@ -1,5 +1,13 @@
 # Validation record
 
+## Offline updater and workspace restoration (2026-10-06)
+
+PASS — integrated `cargo test --locked --quiet`: 78 unit, 20 files/network, 16 session, 15 transfer and 15 update fixture tests; one session test ignored. Log `/tmp/cx-update-integrated-tests.log`. DNS/timeout fixtures preserve the binary, suppress repeated checks within backoff, and permit explicit recovery. Provenance in fixtures is synthetic, not live verification.
+
+PASS — `python3 tests/install_fixture.py`: unavailable network preserves binary; trust-root mismatch and symlink target refused; lock inode preserved; concurrent installers serialized. PASS — `uv run --with pyte python tests/update_viewer_pty.py target/release/cx`: offline update action preserves navigation and termios; private restart snapshot restores host/folder/search/focus. Evidence `local-evidence/update-viewer-pty.json`.
+
+PASS — optimized `HTTPS_PROXY=http://127.0.0.1:9 target/release/cx update --check`: exit 0, current version retained. Independent review found no critical/high issues; fixed dropped manual-result request during startup check. BLOCKED — actual public signed artifact/bootstrap/update: no published release and first publication requires authorization. Tests simulate unavailable update transport without disconnecting production WARP; physical outage behavior of every provider remains unverified.
+
 Each result distinguishes implemented code, fixture tests, PTY tests and physical hardware. No acceptance gate is complete merely because its code compiles. Sensitive local evidence is outside tracked files.
 
 | Gate | Status | Evidence / limit |

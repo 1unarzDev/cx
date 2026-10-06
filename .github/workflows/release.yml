@@ -12,16 +12,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Check release version
+        shell: bash
+        run: |
+          test "${GITHUB_REF_NAME#v}" = "$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
       - run: cargo test --locked
       - run: cargo build --release --locked
       - run: |
           mkdir -p dist
-          tar -C target/release -czf dist/cx-linux-x86_64.tar.gz cx
+          tar -C target/release -czf "dist/cx-${GITHUB_REF_NAME}-linux-x86_64.tar.gz" cx
           cd dist
-          sha256sum cx-linux-x86_64.tar.gz > SHA256SUMS
+          sha256sum *.tar.gz > SHA256SUMS
       - uses: actions/attest-build-provenance@v2
+        id: attest
         with:
-          subject-path: dist/cx-linux-x86_64.tar.gz
+          subject-path: dist/*.tar.gz
+      - name: Include signed provenance for verification without copying GitHub credentials
+        shell: bash
+        run: cp "${{ steps.attest.outputs.bundle-path }}" "dist/cx-${GITHUB_REF_NAME}-linux-x86_64.tar.gz.intoto.jsonl"
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*

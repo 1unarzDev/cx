@@ -188,7 +188,7 @@ struct Stage {
 impl Drop for Stage {
     fn drop(&mut self) {
         // Never scan/delete arbitrary interrupted stages or files created by another process.
-        for n in ["archive", "cx", "metadata", "cache.tmp"] {
+        for n in ["archive", "provenance.jsonl", "cx", "metadata", "cache.tmp"] {
             let _ = fs::remove_file(self.dir.path(n));
         }
         let p = self.parent.path(&self.name);
@@ -403,7 +403,19 @@ fn bounded(program: &Path, args: &[String], timeout: Duration, cap: usize) -> Re
                     Err(e) => return Err(e.into()),
                 }
             }
-            if let Some(status) = child.try_wait()? {
+            let mut status: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            let observed = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    child.id(),
+                    &mut status,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if observed != 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            if unsafe { status.si_pid() } != 0 {
                 loop {
                     match pipe.read(&mut buf) {
                         Ok(0) => break,
@@ -417,7 +429,11 @@ fn bounded(program: &Path, args: &[String], timeout: Duration, cap: usize) -> Re
                     }
                 }
                 return Ok(Output {
-                    code: status.code().unwrap_or(-1),
+                    code: if status.si_code == libc::CLD_EXITED {
+                        unsafe { status.si_status() }
+                    } else {
+                        -1
+                    },
                     bytes,
                 });
             }
@@ -603,10 +619,40 @@ fn prepare(
         "invalid archive size"
     );
     archive.sync_all()?;
+    // Release bundles allow verification without transferring personal GitHub credentials.
+    let bundle = new_file(&s.dir.path("provenance.jsonl"))?;
+    let bundle_path = PathBuf::from(format!(
+        "/proc/{}/fd/{}",
+        std::process::id(),
+        bundle.as_raw_fd()
+    ));
+    let mut bundle_args = curl_args(&format!("{url}.intoto.jsonl"));
+    bundle_args.extend([
+        "--location".into(),
+        "--max-filesize".into(),
+        "1048576".into(),
+        "--output".into(),
+        bundle_path.to_string_lossy().into_owned(),
+    ]);
+    let (status, _) = match backend.run(Tool::Curl, &bundle_args, None).and_then(http) {
+        Ok(value) => value,
+        Err(_) => return Ok(CheckOutcome::Offline),
+    };
+    if status != 200 {
+        return Ok(CheckOutcome::Unavailable(
+            "Release provenance bundle unavailable; keeping current cx".into(),
+        ));
+    }
+    ensure!(
+        bundle.metadata()?.len() > 0 && bundle.metadata()?.len() <= 1024 * 1024,
+        "invalid provenance bundle size"
+    );
     let args = vec![
         "attestation".into(),
         "verify".into(),
         archive_path.to_string_lossy().into_owned(),
+        "--bundle".into(),
+        bundle_path.to_string_lossy().into_owned(),
         "--repo".into(),
         REPO.into(),
         "--signer-workflow".into(),

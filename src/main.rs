@@ -7,6 +7,7 @@ mod store;
 mod transfers;
 mod transport;
 mod ui;
+mod update;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use model::*;
@@ -22,6 +23,14 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Cmd {
+    Update {
+        #[arg(long)]
+        check: bool,
+    },
+    #[command(hide = true)]
+    Restart {
+        state: String,
+    },
     Add {
         target: String,
     },
@@ -263,6 +272,34 @@ fn run() -> Result<()> {
     match Cli::parse().command {
         None => ui::run(),
         Some(Cmd::Helper) => helper(),
+        Some(Cmd::Restart { state }) => ui::run_restored(Some(&state)),
+        Some(Cmd::Update { check }) => {
+            match update::check(true)? {
+                update::CheckOutcome::Ready(plan) if !check => {
+                    let path = update::install(&plan)?;
+                    println!("Updated cx to {}", plan.version);
+                    if unsafe { libc::isatty(libc::STDIN_FILENO) } != 0 {
+                        use std::os::unix::process::CommandExt;
+                        return Err(Command::new(path).exec().into());
+                    }
+                }
+                update::CheckOutcome::Ready(plan) => println!("Verified cx {} ready", plan.version),
+                update::CheckOutcome::Current => {
+                    println!("cx {} is current", env!("CARGO_PKG_VERSION"))
+                }
+                update::CheckOutcome::Offline => println!(
+                    "Update service unreachable · keeping cx {}",
+                    env!("CARGO_PKG_VERSION")
+                ),
+                update::CheckOutcome::Unavailable(message) => {
+                    println!("{} · keeping current cx", message)
+                }
+                update::CheckOutcome::Skipped => {
+                    println!("Update check already running · keeping current cx")
+                }
+            }
+            Ok(())
+        }
         Some(Cmd::Copy {
             source,
             destination,

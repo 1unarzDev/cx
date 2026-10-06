@@ -29,13 +29,13 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum View {
     Work,
     Files,
     Network,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Focus {
     Devices,
     Actions,
@@ -48,14 +48,14 @@ enum Input {
     Mkdir,
     Add,
 }
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Entry {
     name: String,
     path: String,
     kind: String,
     size: u64,
 }
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Browser {
     device: usize,
     path: String,
@@ -64,9 +64,13 @@ struct Browser {
     entries: Vec<Entry>,
     selected: usize,
     search: String,
+    #[serde(skip)]
     loading: bool,
+    #[serde(skip)]
     preview: Option<String>,
     preview_scroll: u16,
+    #[serde(default)]
+    restore_selection: Option<String>,
 }
 impl Browser {
     fn new(device: usize, path: String) -> Self {
@@ -81,6 +85,7 @@ impl Browser {
             loading: false,
             preview: None,
             preview_scroll: 0,
+            restore_selection: None,
         }
     }
 }
@@ -122,6 +127,7 @@ enum Action {
     Paste,
     Mkdir,
     Help,
+    Update,
     Quit,
 }
 const ACTIONS: &[(Action, &str)] = &[
@@ -152,6 +158,7 @@ const ACTIONS: &[(Action, &str)] = &[
     (Action::Work, "Work"),
     (Action::Refresh, "Refresh"),
     (Action::Help, "Keyboard help"),
+    (Action::Update, "Update cx · check verified releases"),
     (Action::Quit, "Quit workspace"),
 ];
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -203,6 +210,8 @@ struct App {
     pending_attach: Option<(usize, Session, bool)>,
     pending_add: Option<String>,
     quit: bool,
+    force_update: bool,
+    pending_requests: std::cell::Cell<usize>,
     panels: std::cell::RefCell<Vec<(Focus, bool, Rect)>>,
     tx: mpsc::SyncSender<Task>,
 }
@@ -252,6 +261,8 @@ impl App {
             pending_attach: None,
             pending_add: None,
             quit: false,
+            force_update: false,
+            pending_requests: std::cell::Cell::new(0),
             panels: std::cell::RefCell::new(Vec::new()),
             tx,
         }
@@ -294,14 +305,19 @@ impl App {
         }
     }
     fn send(&self, device: usize, op: Operation) -> bool {
-        self.tx
+        let sent = self
+            .tx
             .try_send(Task {
                 device,
                 execution: self.devices[device].clone(),
                 op,
                 generation: self.generation,
             })
-            .is_ok()
+            .is_ok();
+        if sent {
+            self.pending_requests.set(self.pending_requests.get() + 1);
+        }
+        sent
     }
     fn refresh_work(&mut self) {
         for index in 0..self.devices.len() {
@@ -370,6 +386,7 @@ impl App {
         if self.view == View::Files {
             if let Some(b) = &mut self.browser {
                 b.search = self.text.clone();
+                b.restore_selection = None;
                 b.selected = 0;
             }
         } else {
@@ -459,6 +476,11 @@ impl App {
     fn refresh_browser(&mut self) {
         self.generation += 1;
         if let Some(b) = self.browser.as_mut() {
+            if b.restore_selection.is_none() {
+                b.restore_selection = browser_entries(b)
+                    .get(b.selected)
+                    .map(|entry| entry.path.clone());
+            }
             b.loading = true;
             b.preview = None;
             let device = b.device;
@@ -490,6 +512,7 @@ impl App {
         self.input = None;
         self.text.clear();
         match action {
+            Action::Update => self.force_update = true,
             Action::Quit => self.quit = true,
             Action::Add => {
                 self.input = Some(Input::Add);
@@ -823,6 +846,8 @@ impl App {
         }
     }
     fn apply(&mut self, reply: Reply) {
+        self.pending_requests
+            .set(self.pending_requests.get().saturating_sub(1));
         let listing_offset = match &reply.op {
             Operation::ListPage { offset, .. } => *offset,
             _ => 0,
@@ -1026,6 +1051,11 @@ impl App {
                                 .collect()
                         })
                         .unwrap_or_default();
+                    if b.restore_selection.is_none() && listing_offset > 0 {
+                        b.restore_selection = browser_entries(b)
+                            .get(b.selected)
+                            .map(|entry| entry.path.clone());
+                    }
                     if listing_offset == 0 {
                         b.entries = entries;
                     } else {
@@ -1035,7 +1065,22 @@ impl App {
                         (a.kind != "directory", a.name.as_str())
                             .cmp(&(b.kind != "directory", b.name.as_str()))
                     });
-                    b.selected = b.selected.min(b.entries.len().saturating_sub(1));
+                    if let Some(path) = &b.restore_selection {
+                        let visible = browser_entries(b);
+                        if let Some(index) = visible.iter().position(|entry| &entry.path == path) {
+                            b.selected = index;
+                            if value["next_offset"].is_null() {
+                                b.restore_selection = None;
+                            }
+                        } else {
+                            b.selected = 0;
+                            if value["next_offset"].is_null() {
+                                b.restore_selection = None;
+                            }
+                        }
+                    } else {
+                        b.selected = b.selected.min(browser_entries(b).len().saturating_sub(1));
+                    }
                     b.loading = false;
                 }
                 if let Some(offset) = value["next_offset"].as_u64() {
@@ -1377,6 +1422,7 @@ impl App {
         } else if self.view == View::Files {
             let len = self.visible_entries().len();
             if let Some(b) = &mut self.browser {
+                b.restore_selection = None;
                 b.selected = shift(b.selected, delta, len);
             }
         } else {
@@ -2652,7 +2698,211 @@ impl Drop for Screen {
     }
 }
 
+const MAX_RESTART_STATE: usize = 4 * 1024 * 1024;
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RestartState {
+    schema: u32,
+    expires_at: u64,
+    device_ids: Vec<String>,
+    device: usize,
+    focus: Focus,
+    view: View,
+    selected: usize,
+    #[serde(default)]
+    selected_session: Option<(String, String)>,
+    side_selected: usize,
+    search: String,
+    browser: Option<Browser>,
+    other_browser: Option<Browser>,
+    destination_active: bool,
+    conflict: usize,
+    launch_provider: Option<String>,
+    clipboard: Option<(usize, Entry)>,
+    submitted: HashMap<String, crate::model::TransferSpec>,
+}
+fn restart_browser(browser: &Option<Browser>) -> Option<Browser> {
+    browser.as_ref().map(|browser| {
+        let mut snapshot = browser.clone();
+        snapshot.restore_selection = browser_entries(browser)
+            .get(browser.selected)
+            .map(|entry| entry.path.clone());
+        snapshot
+    })
+}
+fn save_restart(app: &App) -> Result<String> {
+    save_restart_at(app, &store::ensure()?)
+}
+fn save_restart_at(app: &App, directory: &std::path::Path) -> Result<String> {
+    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    let state = RestartState {
+        schema: 1,
+        expires_at: transport::now() + 300,
+        device_ids: app.devices.iter().map(|d| d.id.clone()).collect(),
+        device: app.device,
+        focus: app.focus,
+        view: app.view,
+        selected: app.selected,
+        selected_session: app
+            .selected_session()
+            .map(|(device, session)| (app.devices[device].id.clone(), session.id)),
+        side_selected: app.side_selected,
+        search: app.search.clone(),
+        browser: restart_browser(&app.browser),
+        other_browser: restart_browser(&app.other_browser),
+        destination_active: app.destination_active,
+        conflict: app.conflict,
+        launch_provider: app.launch_provider.clone(),
+        clipboard: app.clipboard.clone(),
+        submitted: app.submitted.clone(),
+    };
+    let bytes = serde_json::to_vec(&state)?;
+    anyhow::ensure!(
+        bytes.len() <= MAX_RESTART_STATE,
+        "Workspace too large for automatic restart; return to Work first"
+    );
+    let name = format!("viewer-restart-{}.json", unique_key());
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(directory.join(&name))?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    Ok(name)
+}
+fn restore_restart(app: &mut App, name: &str) -> Result<()> {
+    restore_restart_at(app, name, &store::ensure()?)
+}
+fn restore_restart_at(app: &mut App, name: &str, directory: &std::path::Path) -> Result<()> {
+    use std::{
+        io::Read,
+        os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    };
+    anyhow::ensure!(
+        name.starts_with("viewer-restart-")
+            && name.ends_with(".json")
+            && name.len() < 100
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_digit() || b"viewer-sta.json".contains(&b)),
+        "Invalid restart state name"
+    );
+    let path = directory.join(name);
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)?;
+    let metadata = file.metadata()?;
+    anyhow::ensure!(
+        metadata.is_file()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.permissions().mode() & 0o077 == 0
+            && metadata.len() <= MAX_RESTART_STATE as u64,
+        "Unsafe restart state"
+    );
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(MAX_RESTART_STATE as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() <= MAX_RESTART_STATE,
+        "Restart state exceeds limit"
+    );
+    let mut state: RestartState = serde_json::from_slice(&bytes)?;
+    anyhow::ensure!(
+        state.schema == 1
+            && state.expires_at >= transport::now()
+            && state.expires_at <= transport::now() + 300,
+        "Restart state expired or unsupported"
+    );
+    let remap = |old: usize| {
+        state
+            .device_ids
+            .get(old)
+            .and_then(|id| app.devices.iter().position(|d| &d.id == id))
+    };
+    app.device = if state.device == 0 {
+        0
+    } else {
+        remap(state.device - 1).map(|d| d + 1).unwrap_or(0)
+    };
+    for browser in [&mut state.browser, &mut state.other_browser] {
+        if let Some(b) = browser {
+            if let Some(device) = remap(b.device) {
+                b.device = device;
+            } else {
+                *browser = None;
+            }
+        }
+    }
+    app.clipboard = state.clipboard.and_then(|(d, e)| remap(d).map(|d| (d, e)));
+    app.browser = state.browser;
+    app.other_browser = state.other_browser;
+    app.view = if state.view == View::Files && app.browser.is_none() {
+        View::Work
+    } else {
+        state.view
+    };
+    app.focus = state.focus;
+    app.search = state.search;
+    app.selected = state
+        .selected_session
+        .and_then(|(device, id)| {
+            app.session_rows()
+                .iter()
+                .position(|(d, s)| app.devices[*d].id == device && s.id == id)
+        })
+        .unwrap_or(
+            state
+                .selected
+                .min(app.session_rows().len().saturating_sub(1)),
+        );
+    app.side_selected = state.side_selected;
+    app.destination_active = state.destination_active;
+    app.conflict = state.conflict.min(2);
+    app.launch_provider = state.launch_provider;
+    app.submitted = state.submitted;
+    std::fs::remove_file(path)?;
+    Ok(())
+}
+fn can_restart(app: &App) -> bool {
+    app.input.is_none()
+        && app.dialog.is_none()
+        && !app.help
+        && !app.creating
+        && app.pending_attach.is_none()
+        && app.pending_add.is_none()
+        && app.pending_requests.get() == 0
+        && app.browser.as_ref().is_none_or(|b| b.preview.is_none())
+}
+
+fn restart_ready(app: &App, idle: Duration, pending_input: bool) -> bool {
+    !pending_input && idle >= Duration::from_secs(3) && can_restart(app)
+}
+enum UpdatePhase {
+    Idle,
+    Checking,
+    Ready(crate::update::UpdatePlan),
+    Installing,
+    Installed(std::path::PathBuf),
+}
+enum UpdateEvent {
+    Checked(bool, Result<crate::update::CheckOutcome>),
+    Installed(Result<std::path::PathBuf>),
+}
+fn start_update_check(tx: &mpsc::Sender<UpdateEvent>, force: bool) {
+    let tx = tx.clone();
+    thread::spawn(move || {
+        let result = crate::update::check(force);
+        let _ = tx.send(UpdateEvent::Checked(force, result));
+    });
+}
+
 pub fn run() -> Result<()> {
+    run_restored(None)
+}
+pub fn run_restored(restore: Option<&str>) -> Result<()> {
     let stopping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     for sig in [
         signal_hook::consts::SIGTERM,
@@ -2684,16 +2934,142 @@ pub fn run() -> Result<()> {
     });
     let mut app = App::new(devices, tx);
     load_cache(&mut app);
+    if let Some(name) = restore {
+        if let Err(error) = restore_restart(&mut app, name) {
+            app.notice = safe_text(&format!("Update restored workspace defaults: {error:#}"));
+        }
+    }
     app.refresh_work();
     for d in 0..app.devices.len() {
         app.check_providers(d);
         app.send(d, Operation::TransferJobs);
     }
+    if restore.is_some() && app.view == View::Files {
+        app.refresh_browser();
+    }
     let mut screen = Screen::new().context("open terminal workspace")?;
     let mut dirty = true;
+    let (update_tx, update_rx) = mpsc::channel::<UpdateEvent>();
+    start_update_check(&update_tx, false);
+    let mut update_phase = UpdatePhase::Checking;
+    let mut update_report_requested = false;
+    let mut last_update_check = Instant::now();
+    let mut last_interaction = Instant::now();
     let mut last_refresh = Instant::now();
     let mut last_jobs = Instant::now();
     while !app.quit && !stopping.load(std::sync::atomic::Ordering::Relaxed) {
+        if app.force_update {
+            app.force_update = false;
+            if matches!(update_phase, UpdatePhase::Idle) {
+                start_update_check(&update_tx, true);
+                update_phase = UpdatePhase::Checking;
+                last_update_check = Instant::now();
+                app.notice = "Checking verified cx releases…".into();
+                dirty = true;
+            } else if matches!(update_phase, UpdatePhase::Checking) {
+                update_report_requested = true;
+                app.notice = "Checking verified cx releases…".into();
+                dirty = true;
+            }
+        }
+        while let Ok(event) = update_rx.try_recv() {
+            match event {
+                UpdateEvent::Checked(force, result) => {
+                    let force = force || std::mem::take(&mut update_report_requested);
+                    update_phase = match result {
+                        Ok(crate::update::CheckOutcome::Ready(plan)) => {
+                            app.notice = format!(
+                                "cx {} ready · updating when workspace is idle",
+                                safe_label(&plan.version)
+                            );
+                            dirty = true;
+                            UpdatePhase::Ready(plan)
+                        }
+                        other => {
+                            if force {
+                                app.notice = match other {
+                                    Ok(crate::update::CheckOutcome::Offline) => {
+                                        "Update service unreachable · current cx kept".into()
+                                    }
+                                    Ok(crate::update::CheckOutcome::Unavailable(message)) => {
+                                        safe_text(&message)
+                                    }
+                                    Ok(crate::update::CheckOutcome::Skipped) => {
+                                        "Another update check is running".into()
+                                    }
+                                    Ok(crate::update::CheckOutcome::Current) => {
+                                        "cx is current".into()
+                                    }
+                                    Err(_) => "Update unavailable · current cx kept".into(),
+                                    _ => unreachable!(),
+                                };
+                                dirty = true;
+                            }
+                            UpdatePhase::Idle
+                        }
+                    };
+                }
+                UpdateEvent::Installed(result) => {
+                    update_phase = match result {
+                        Ok(path) => UpdatePhase::Installed(path),
+                        Err(_) => {
+                            app.notice = "Update could not install · current cx kept".into();
+                            dirty = true;
+                            UpdatePhase::Idle
+                        }
+                    };
+                }
+            }
+        }
+        if matches!(
+            update_phase,
+            UpdatePhase::Ready(_) | UpdatePhase::Installed(_)
+        ) && restart_ready(
+            &app,
+            last_interaction.elapsed(),
+            event::poll(Duration::ZERO)?,
+        ) {
+            if matches!(update_phase, UpdatePhase::Ready(_)) {
+                if let UpdatePhase::Ready(plan) =
+                    std::mem::replace(&mut update_phase, UpdatePhase::Installing)
+                {
+                    let tx = update_tx.clone();
+                    thread::spawn(move || {
+                        let _ = tx.send(UpdateEvent::Installed(crate::update::install(&plan)));
+                    });
+                    app.notice = "Installing verified cx update…".into();
+                    dirty = true;
+                }
+            } else if let UpdatePhase::Installed(path) = &update_phase {
+                match save_restart(&app) {
+                    Ok(name) => {
+                        // A key can arrive while serializing the snapshot; consume it before takeover.
+                        if event::poll(Duration::ZERO)? {
+                            let _ = std::fs::remove_file(store::state_dir().join(name));
+                            last_interaction = Instant::now();
+                            continue;
+                        }
+                        use std::os::unix::process::CommandExt;
+                        screen.suspend()?;
+                        let error = std::process::Command::new(path)
+                            .arg("restart")
+                            .arg(&name)
+                            .exec();
+                        let _ = std::fs::remove_file(store::state_dir().join(name));
+                        screen.resume()?;
+                        app.notice =
+                            safe_text(&format!("Update installed; reopen cx to use it: {error}"));
+                        dirty = true;
+                        update_phase = UpdatePhase::Idle;
+                    }
+                    Err(_) => {
+                        app.notice="Update installed · workspace too large to restore; reopen cx when convenient".into();
+                        dirty = true;
+                        update_phase = UpdatePhase::Idle;
+                    }
+                }
+            }
+        }
         let mut cache_changed = false;
         while let Ok(reply) = result_rx.try_recv() {
             cache_changed |= matches!(reply.op, Operation::Sessions) && reply.result.is_ok();
@@ -2746,6 +3122,7 @@ pub fn run() -> Result<()> {
             screen.suspend()?;
             let result = sessions::attach(&app.devices[d], &session, observe);
             screen.resume()?;
+            last_interaction = Instant::now();
             app.notice = match result {
                 Ok(()) => format!(
                     "Returned from {} · session remains on execution host",
@@ -2762,7 +3139,10 @@ pub fn run() -> Result<()> {
         }
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
-                Event::Key(k) => app.key(k),
+                Event::Key(k) => {
+                    last_interaction = Instant::now();
+                    app.key(k);
+                }
                 Event::Resize(_, _) => {}
                 _ => {}
             }
@@ -2786,6 +3166,13 @@ pub fn run() -> Result<()> {
                 }
             }
             last_jobs = Instant::now();
+        }
+        if matches!(update_phase, UpdatePhase::Idle)
+            && last_update_check.elapsed() >= Duration::from_secs(3600)
+        {
+            start_update_check(&update_tx, false);
+            update_phase = UpdatePhase::Checking;
+            last_update_check = Instant::now();
         }
         // Bounded fleet refresh; idle does not continuously redraw.
         if last_refresh.elapsed() >= Duration::from_secs(30) {
@@ -2846,6 +3233,156 @@ mod tests {
                 .insert(d, (vec!["claude".into(), "codex".into()], transport::now()));
         }
         (a, rx)
+    }
+    #[test]
+    fn restart_restores_browser_host_search_focus_and_copy_without_preview_content() {
+        let fixture = tempfile::tempdir().unwrap();
+        let (mut a, _rx) = queued_app();
+        a.device = 2;
+        a.view = View::Files;
+        a.focus = Focus::Actions;
+        a.browser = Some(Browser::new(1, "/recordings/日本語".into()));
+        let browser = a.browser.as_mut().unwrap();
+        browser.search = "record".into();
+        browser.preview = Some("SYNTHETIC_PRIVATE_PREVIEW".into());
+        browser.entries.push(Entry {
+            name: "record.bin".into(),
+            path: "/recordings/日本語/record.bin".into(),
+            kind: "file".into(),
+            size: 5,
+        });
+        a.clipboard = Some((1, browser.entries[0].clone()));
+        let name = save_restart_at(&a, fixture.path()).unwrap();
+        let bytes = std::fs::read(fixture.path().join(&name)).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("SYNTHETIC_PRIVATE_PREVIEW"));
+        let (mut restored, _) = queued_app();
+        restored.devices.swap(0, 1);
+        restore_restart_at(&mut restored, &name, fixture.path()).unwrap();
+        assert_eq!(restored.device, 1);
+        assert!(restored.view == View::Files && restored.focus == Focus::Actions);
+        let browser = restored.browser.as_ref().unwrap();
+        assert_eq!(browser.device, 0);
+        assert_eq!(browser.search, "record");
+        assert_eq!(browser.path, "/recordings/日本語");
+        assert!(browser.preview.is_none());
+        assert_eq!(restored.clipboard.as_ref().unwrap().0, 0);
+        assert!(!fixture.path().join(name).exists());
+    }
+    #[test]
+    fn restart_preserves_selected_session_identity_when_devices_reorder() {
+        let fixture = tempfile::tempdir().unwrap();
+        let (mut a, _) = queued_app();
+        for d in 0..2 {
+            a.work[d].sessions.push(serde_json::from_value(serde_json::json!({"id":format!("session-{d}"),"name":format!("session-{d}"),"directory":"/tmp","provider":"shell","account":a.devices[d].account,"host":a.devices[d].host,"pid":1,"started":"x","boot_id":"boot","external":false,"socket":null})).unwrap());
+        }
+        a.search = "session-1".into();
+        a.selected = a
+            .session_rows()
+            .iter()
+            .position(|(_, s)| s.id == "session-1")
+            .unwrap();
+        let name = save_restart_at(&a, fixture.path()).unwrap();
+        let (mut restored, _) = queued_app();
+        restored.devices.swap(0, 1);
+        restored.work[0].sessions = a.work[1].sessions.clone();
+        restored.work[1].sessions = a.work[0].sessions.clone();
+        restore_restart_at(&mut restored, &name, fixture.path()).unwrap();
+        assert_eq!(restored.selected_session().unwrap().1.id, "session-1");
+    }
+    #[test]
+    fn restored_file_identity_survives_page_one_clamping() {
+        let fixture = tempfile::tempdir().unwrap();
+        let (mut a, _) = queued_app();
+        let mut browser = Browser::new(0, "/recordings".into());
+        browser.entries = (0..1200)
+            .map(|i| Entry {
+                name: format!("f{i:04}"),
+                path: format!("/recordings/f{i:04}"),
+                kind: "file".into(),
+                size: 1,
+            })
+            .collect();
+        browser.selected = 1100;
+        a.browser = Some(browser);
+        a.view = View::Files;
+        let name = save_restart_at(&a, fixture.path()).unwrap();
+        let (mut restored, _rx) = queued_app();
+        restore_restart_at(&mut restored, &name, fixture.path()).unwrap();
+        for (offset, end, next) in [(0, 1000, Some(1000)), (1000, 1200, None)] {
+            let entries=(offset..end).map(|i|serde_json::json!({"name":format!("f{i:04}"),"path":format!("/recordings/f{i:04}"),"kind":"file","size":1})).collect::<Vec<_>>();
+            restored.apply(Reply {
+                device: 0,
+                op: Operation::ListPage {
+                    path: "/recordings".into(),
+                    offset,
+                    limit: 1000,
+                },
+                generation: 0,
+                result: Ok(
+                    serde_json::json!({"path":"/recordings","entries":entries,"next_offset":next}),
+                ),
+            });
+        }
+        let browser = restored.browser.as_ref().unwrap();
+        assert_eq!(browser.entries[browser.selected].path, "/recordings/f1100");
+    }
+    #[test]
+    fn restart_rejects_unsafe_names_symlinks_and_expires() {
+        let fixture = tempfile::tempdir().unwrap();
+        let (a, _) = queued_app();
+        let name = save_restart_at(&a, fixture.path()).unwrap();
+        let (mut restored, _) = queued_app();
+        assert!(restore_restart_at(&mut restored, "../anything", fixture.path()).is_err());
+        let link = "viewer-restart-123.json";
+        std::os::unix::fs::symlink(fixture.path().join(&name), fixture.path().join(link)).unwrap();
+        assert!(restore_restart_at(&mut restored, link, fixture.path()).is_err());
+        let mut value: Value =
+            serde_json::from_slice(&std::fs::read(fixture.path().join(&name)).unwrap()).unwrap();
+        value["expires_at"] = serde_json::json!(0);
+        std::fs::write(
+            fixture.path().join(&name),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap();
+        assert!(restore_restart_at(&mut restored, &name, fixture.path()).is_err());
+    }
+    #[test]
+    fn queued_palette_input_prevents_restart_before_and_after_dispatch() {
+        let (mut a, _) = queued_app();
+        assert!(restart_ready(&a, Duration::from_secs(4), false));
+        assert!(!restart_ready(&a, Duration::from_secs(4), true));
+        a.key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        assert!(a.input == Some(Input::Palette));
+        assert!(!restart_ready(&a, Duration::from_secs(4), false));
+    }
+    #[test]
+    fn later_directory_pages_cannot_retarget_the_selected_file() {
+        let (mut a, _rx) = queued_app();
+        let mut browser = Browser::new(0, "/files".into());
+        browser.restore_selection = Some("/files/z".into());
+        a.browser = Some(browser);
+        a.view = View::Files;
+        for (offset, name, next) in [(0, "z", Some(1)), (1, "a", None)] {
+            a.apply(Reply{device:0,op:Operation::ListPage{path:"/files".into(),offset,limit:1},generation:0,result:Ok(serde_json::json!({"path":"/files","entries":[{"name":name,"path":format!("/files/{name}"),"kind":"file","size":1}],"next_offset":next}))});
+        }
+        let browser = a.browser.as_ref().unwrap();
+        assert_eq!(browser.entries[browser.selected].path, "/files/z");
+    }
+    #[test]
+    fn restart_waits_for_inputs_dialogs_and_mutation_responses() {
+        let (mut a, _) = queued_app();
+        assert!(can_restart(&a));
+        a.input = Some(Input::Search);
+        assert!(!can_restart(&a));
+        a.input = None;
+        a.dialog = Some(Dialog::Provider(0, None));
+        assert!(!can_restart(&a));
+        a.dialog = None;
+        a.creating = true;
+        assert!(!can_restart(&a));
+        a.creating = false;
+        a.pending_requests.set(1);
+        assert!(!can_restart(&a));
     }
     #[test]
     fn progress_reordering_preserves_job_cancellation_identity() {

@@ -5918,6 +5918,30 @@ mod tests {
         a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     #[test]
+    fn failed_cached_session_keeps_refresh_visible_at_small_widths() {
+        let (mut a, _) = queued_app();
+        a.view = View::Work;
+        a.device = 1;
+        a.focus = Focus::Workspace;
+        a.work[0].sessions.push(disposable_shell());
+        a.work[0].error = Some("account@execution-device: Device unreachable over SSH · check its connection, then Refresh: helper closed before response".into());
+        for width in [48, 80, 120] {
+            let text = capture_app(&a, width);
+            assert!(text.contains("Ctrl+P → Refresh"), "{width}: {text}");
+            if width >= 80 {
+                assert!(text.contains("cached"), "{width}: {text}");
+            }
+        }
+        a.apply(Reply {
+            device: 0,
+            op: Operation::Sessions,
+            generation: a.generation,
+            result: Ok(serde_json::json!([])),
+            preview: None,
+        });
+        assert!(a.work[0].sessions.is_empty() && a.work[0].error.is_none());
+    }
+    #[test]
     fn shell_stop_requires_confirmation_and_rejects_external_and_agent_rows() {
         let (mut a, rx) = queued_app();
         let session: Session = serde_json::from_value(serde_json::json!({

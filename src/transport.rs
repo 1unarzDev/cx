@@ -652,6 +652,29 @@ fn run_bounded_update(
 mod tests {
     use super::*;
     #[test]
+    fn helper_exit_with_inherited_stderr_is_bounded_and_owned_group_is_reaped() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 30 >&2 & exit 0"]);
+        let mut connection = Connection::from_command(command).unwrap();
+        let start = std::time::Instant::now();
+        assert!(connection
+            .replies
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap()
+            .is_err());
+        assert_eq!(connection.failure_reason(), ConnectionFailure::Closed);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        let (_, empty) = std::sync::mpsc::channel();
+        let failure = std::mem::replace(&mut connection.failure, empty);
+        drop(connection);
+        assert_eq!(
+            failure
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap(),
+            ConnectionFailure::Closed
+        );
+    }
+    #[test]
     fn disconnected_observations_retry_once_but_mutations_never_replay() {
         for op in [Operation::Info, Operation::Sessions] {
             let mut attempts = 0;

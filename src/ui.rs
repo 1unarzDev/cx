@@ -669,6 +669,9 @@ impl App {
         }
     }
     fn command_context(&self) -> Option<(usize, String)> {
+        if self.view == View::Network {
+            return self.network_device().map(|d| (d, "~".into()));
+        }
         if self.view == View::Files {
             return self.browser.as_ref().map(|b| (b.device, b.path.clone()));
         }

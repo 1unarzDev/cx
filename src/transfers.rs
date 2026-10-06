@@ -107,6 +107,12 @@ impl Drop for Lock {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Entry {
     #[serde(default)]
+    receive_key: Option<String>,
+    #[serde(default)]
+    finalized_destination: Option<String>,
+    #[serde(default)]
+    finalized_sha256: Option<String>,
+    #[serde(default)]
     created: bool,
     #[serde(default)]
     destination_identity: Option<String>,
@@ -122,6 +128,8 @@ struct Entry {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Job {
+    #[serde(default)]
+    cut: bool,
     key: String,
     source_host: String,
     destination_host: String,
@@ -141,6 +149,20 @@ fn job_path(root: &Path, key: &str) -> PathBuf {
 fn spec_path(root: &Path, key: &str) -> PathBuf {
     root.join(format!("{key}.spec.json"))
 }
+fn validate_source_selection(spec: &TransferSpec, metadata: &Value) -> Result<()> {
+    if let Some(expected) = &spec.source_identity {
+        if metadata["identity"].as_str() != Some(expected.as_str()) {
+            bail!("Selected source changed; select it again before copying or moving");
+        }
+    }
+    Ok(())
+}
+fn same_endpoint(spec: &TransferSpec) -> bool {
+    spec.source.account == spec.destination.account
+        && (spec.source.id == spec.destination.id
+            || (spec.source.host == spec.destination.host)
+            || (spec.source.target.is_none() && spec.destination.target.is_none()))
+}
 fn same_spec(a: &TransferSpec, b: &TransferSpec) -> bool {
     a.key == b.key
         && a.source.id == b.source.id
@@ -152,9 +174,11 @@ fn same_spec(a: &TransferSpec, b: &TransferSpec) -> bool {
         && a.source_path == b.source_path
         && a.destination_path == b.destination_path
         && a.conflict == b.conflict
+        && a.cut == b.cut
+        && a.source_identity == b.source_identity
 }
 fn summary(job: &Job) -> Value {
-    json!({"key":job.key,"source_host":job.source_host,"destination_host":job.destination_host,"source_path":job.source_path,"destination_path":job.destination_path,"source_display":display(&decode_path(&job.source_path).map(|p|p.to_string_lossy().into_owned()).unwrap_or_else(|_|job.source_path.clone())),"destination_display":display(&decode_path(&job.destination_path).map(|p|p.to_string_lossy().into_owned()).unwrap_or_else(|_|job.destination_path.clone())),"route":job.route,"status":job.status,"bytes":job.bytes,"total":job.total,"updated":job.updated,"error":job.error,"items":job.entries.len()})
+    json!({"key":job.key,"source_host":job.source_host,"destination_host":job.destination_host,"source_path":job.source_path,"destination_path":job.destination_path,"source_display":display(&decode_path(&job.source_path).map(|p|p.to_string_lossy().into_owned()).unwrap_or_else(|_|job.source_path.clone())),"destination_display":display(&decode_path(&job.destination_path).map(|p|p.to_string_lossy().into_owned()).unwrap_or_else(|_|job.destination_path.clone())),"route":job.route,"status":job.status,"bytes":job.bytes,"total":job.total,"updated":job.updated,"error":job.error,"items":job.entries.len(),"operation":if job.cut {"move"}else{"copy"},"copied":job.entries.iter().filter(|e|matches!(e.status.as_str(),"complete"|"removed")).count(),"skipped":job.entries.iter().filter(|e|e.status=="skipped").count(),"actual_destinations":job.entries.iter().filter_map(|e|e.finalized_destination.as_ref()).take(256).collect::<Vec<_>>()})
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct DirectRef {
@@ -196,6 +220,19 @@ pub fn start(spec: &TransferSpec) -> Result<Value> {
     normalized.destination_path =
         text(&info(&spec.destination, &spec.destination_path)?, "path")?.to_owned();
     let spec = &normalized;
+    let source_metadata = info(&spec.source, &spec.source_path)?;
+    if source_metadata["kind"] != "missing" {
+        validate_source_selection(spec, &source_metadata)?;
+    }
+    if spec.cut
+        && !same_endpoint(spec)
+        && matches!(
+            info(&spec.source, &spec.source_path)?["kind"].as_str(),
+            Some("directory" | "symlink")
+        )
+    {
+        bail!("Cut currently supports regular files only; copy this directory or symlink instead");
+    }
     if !matches!(spec.conflict.as_str(), "skip" | "overwrite" | "rename") {
         bail!("invalid conflict policy");
     }
@@ -213,7 +250,10 @@ pub fn start(spec: &TransferSpec) -> Result<Value> {
     let record = job_path(&root, &spec.key);
     if record.try_exists()? {
         let job: Job = read_json(&record)?;
-        if job.status == "complete" || Lock::acquire(&root, &spec.key).is_err() {
+        if job.status == "complete"
+            || (job.status == "queued" && now().saturating_sub(job.updated) < 15)
+            || Lock::acquire(&root, &spec.key).is_err()
+        {
             return Ok(summary(&job));
         }
     }
@@ -271,7 +311,9 @@ pub fn start(spec: &TransferSpec) -> Result<Value> {
     if cancellation.try_exists()? {
         fs::remove_file(cancellation)?;
     }
+    let executable = std::env::current_exe()?;
     let queued = Job {
+        cut: spec.cut,
         key: spec.key.clone(),
         source_host: format!("{}@{}", spec.source.account, spec.source.host),
         destination_host: format!("{}@{}", spec.destination.account, spec.destination.host),
@@ -292,8 +334,13 @@ pub fn start(spec: &TransferSpec) -> Result<Value> {
     };
     if !record.try_exists()? {
         write_json(&record, &queued)?;
+    } else {
+        let mut previous: Job = read_json(&record)?;
+        previous.status = "queued".into();
+        previous.error = None;
+        previous.updated = now();
+        write_json(&record, &previous)?;
     }
-    let executable = std::env::current_exe()?;
     let unit = format!("cx-transfer-{}", spec.key);
     let mut detached = Command::new("systemd-run");
     detached.args([
@@ -329,32 +376,48 @@ pub fn start(spec: &TransferSpec) -> Result<Value> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    let backend = if result.is_ok_and(|s| s.success()) {
-        "systemd-user-unit"
-    } else {
-        // setsid alone cannot escape a service's cgroup. Refuse that unsafe fallback.
-        let cgroup = fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
-        if cgroup.lines().any(|line| line.contains(".service")) {
-            bail!("user service manager unavailable; cannot detach safely from a service cgroup");
+    let launch = (|| -> Result<&str> {
+        let backend = if result.is_ok_and(|s| s.success()) {
+            "systemd-user-unit"
+        } else {
+            // setsid alone cannot escape a service's cgroup. Refuse that unsafe fallback.
+            let cgroup = fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
+            if cgroup.lines().any(|line| line.contains(".service")) {
+                bail!(
+                    "user service manager unavailable; cannot detach safely from a service cgroup"
+                );
+            }
+            let mut command = Command::new(&executable);
+            command
+                .arg("transfer-worker")
+                .arg(&path)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            #[cfg(unix)]
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            command.spawn()?;
+            "detached-process (logind persistence unverified)"
+        };
+        Ok(backend)
+    })();
+    let backend = match launch {
+        Ok(backend) => backend,
+        Err(error) => {
+            let mut job: Job = read_json(&record)?;
+            job.status = "failed".into();
+            job.error = Some(display(&format!("{error:#}")));
+            job.updated = now();
+            write_json(&record, &job)?;
+            return Err(error);
         }
-        let mut command = Command::new(&executable);
-        command
-            .arg("transfer-worker")
-            .arg(&path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        #[cfg(unix)]
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        command.spawn()?;
-        "detached-process (logind persistence unverified)"
     };
     Ok(
         json!({"key":spec.key,"status":"queued","backend":backend,"route":if spec.source.target.is_some() && spec.destination.target.is_some(){"relay through this host"}else{"this host is endpoint"},"source_host":spec.source.host,"destination_host":spec.destination.host}),
@@ -373,8 +436,16 @@ pub fn jobs() -> Result<Value> {
             .unwrap_or_default();
         if name.ends_with(".job.json") {
             if let Ok(mut job) = read_json::<Job>(&path) {
-                if job.status == "running" && Lock::acquire(&root, &job.key).is_ok() {
-                    job.status = "incomplete".into();
+                if job.status == "running"
+                    || (job.status == "queued" && now().saturating_sub(job.updated) >= 15)
+                {
+                    if let Ok(_lock) = Lock::acquire(&root, &job.key) {
+                        job.status = "incomplete".into();
+                        job.error =
+                            Some("Worker stopped before completion; Retry resumes this job".into());
+                        job.updated = now();
+                        write_json(&path, &job)?;
+                    }
                 }
                 values.push(summary(&job));
             }
@@ -416,6 +487,29 @@ pub fn jobs() -> Result<Value> {
     });
     values.truncate(256);
     Ok(json!({"jobs":values}))
+}
+/// Reload the durable submission, including its chosen direct endpoint.
+/// A new viewer need not retain any in-memory transfer specification.
+pub fn retry(key: &str) -> Result<Value> {
+    valid_key(key)?;
+    let root = root()?;
+    let spec: TransferSpec = read_json(&spec_path(&root, key)).context("unknown transfer")?;
+    if spec.key != key {
+        bail!("transfer state key mismatch");
+    }
+    let direct = direct_path(&root, key);
+    if direct.try_exists()? {
+        let mut reference: DirectRef = read_json(&direct)?;
+        let result = transport::request(
+            &reference.owner,
+            Operation::TransferRetry { key: key.into() },
+        )
+        .context("owning endpoint unavailable; existing job remains there")?;
+        reference.last = direct_result(result, &reference.owner);
+        write_json(&direct, &reference)?;
+        return Ok(reference.last);
+    }
+    start(&spec)
 }
 pub fn cancel(key: &str) -> Result<Value> {
     valid_key(key)?;
@@ -471,6 +565,9 @@ fn collect(
     }
     let identity = text(&metadata, "identity")?.to_owned();
     entries.push(Entry {
+        receive_key: Some(file_key(&spec.key, destination)),
+        finalized_destination: None,
+        finalized_sha256: None,
         created: false,
         destination_identity: None,
         source: source.into(),
@@ -529,12 +626,22 @@ fn collect(
     Ok(())
 }
 fn file_key(key: &str, path: &str) -> String {
-    format!(
-        "{}-{:x}",
-        &key[..key.len().min(40)],
-        Sha256::digest(path.as_bytes())
-    )[..73.min(key.len().min(40) + 65)]
-        .to_owned()
+    let mut hash = Sha256::new();
+    hash.update((key.len() as u64).to_be_bytes());
+    hash.update(key.as_bytes());
+    hash.update(path.as_bytes());
+    format!("cx-{:x}", hash.finalize())
+}
+fn entry_key(spec: &TransferSpec, entry: &Entry) -> String {
+    entry.receive_key.clone().unwrap_or_else(|| {
+        // Preserve pre-upgrade receive checkpoints instead of abandoning partials.
+        format!(
+            "{}-{:x}",
+            &spec.key[..spec.key.len().min(40)],
+            Sha256::digest(entry.destination.as_bytes())
+        )[..73.min(spec.key.len().min(40) + 65)]
+            .to_owned()
+    })
 }
 fn check_cancel(root: &Path, key: &str) -> Result<()> {
     if root.join(format!("{key}.cancel")).try_exists()? {
@@ -548,6 +655,9 @@ pub fn worker(spec: &TransferSpec) -> Result<()> {
         // Initialization errors are durable too; no phantom queued success.
         if let Ok(root) = root() {
             let record = job_path(&root, &spec.key);
+            let Ok(_lock) = Lock::acquire(&root, &spec.key) else {
+                return result;
+            };
             if let Ok(mut job) = read_json::<Job>(&record) {
                 if job.entries.is_empty() {
                     job.status = "failed".into();
@@ -565,10 +675,19 @@ fn worker_inner(spec: &TransferSpec) -> Result<()> {
     let root = root()?;
     let _lock = Lock::acquire(&root, &spec.key)?;
     let record = job_path(&root, &spec.key);
+    if spec.cut && same_endpoint(spec) {
+        return atomic_cut(spec, &root, &record);
+    }
     let mut job = if record.try_exists()? && !read_json::<Job>(&record)?.entries.is_empty() {
         read_json::<Job>(&record)?
     } else {
         let source = info(&spec.source, &spec.source_path)?;
+        validate_source_selection(spec, &source)?;
+        if spec.cut && source["kind"] != "file" {
+            bail!(
+                "Cut currently supports regular files only; copy this directory or symlink instead"
+            );
+        }
         let source_path = text(&source, "path")?.to_owned();
         let mut destination = spec.destination_path.clone();
         let destination_info = info(&spec.destination, &destination)?;
@@ -618,6 +737,7 @@ fn worker_inner(spec: &TransferSpec) -> Result<()> {
             .try_fold(0u64, |a, b| a.checked_add(b))
             .context("copy size overflow")?;
         Job {
+            cut: spec.cut,
             key: spec.key.clone(),
             source_host: format!("{}@{}", spec.source.account, spec.source.host),
             destination_host: format!("{}@{}", spec.destination.account, spec.destination.host),
@@ -648,6 +768,9 @@ fn worker_inner(spec: &TransferSpec) -> Result<()> {
         for index in 0..job.entries.len() {
             check_cancel(&root, &spec.key)?;
             let entry = job.entries[index].clone();
+            if spec.cut && matches!(entry.status.as_str(), "removing" | "removed") {
+                continue;
+            }
             if text(&info(&spec.source, &entry.source)?, "identity")? != entry.identity {
                 bail!("source changed since copy began");
             }
@@ -678,16 +801,18 @@ fn worker_inner(spec: &TransferSpec) -> Result<()> {
                     let result = transport::request(
                         &spec.destination,
                         Operation::ReceiveSymlink {
-                            key: file_key(&spec.key, &entry.destination),
+                            key: entry_key(spec, &entry),
                             path: entry.destination.clone(),
                             target: entry.target.clone().context("symlink target unavailable")?,
                             conflict: spec.conflict.clone(),
                         },
                     )?;
                     job.entries[index].status = text(&result, "status")?.into();
+                    job.entries[index].finalized_destination =
+                        result["path"].as_str().map(str::to_owned);
                 }
                 "file" => {
-                    let key = file_key(&spec.key, &entry.destination);
+                    let key = entry_key(spec, &entry);
                     let state = transport::request(
                         &spec.destination,
                         Operation::ReceivePrepare {
@@ -709,6 +834,11 @@ fn worker_inner(spec: &TransferSpec) -> Result<()> {
                     if offset > entry.size {
                         bail!("receive offset exceeds source size");
                     }
+                    job.bytes = job
+                        .bytes
+                        .saturating_sub(job.entries[index].bytes)
+                        .saturating_add(offset);
+                    job.entries[index].bytes = offset;
                     let mut hash = Sha256::new();
                     let mut read_offset = 0;
                     while read_offset < offset {
@@ -764,8 +894,8 @@ fn worker_inner(spec: &TransferSpec) -> Result<()> {
                             bail!("invalid destination acknowledgement");
                         }
                         hash.update(&bytes);
+                        job.bytes = job.bytes.saturating_add(offset - job.entries[index].bytes);
                         job.entries[index].bytes = offset;
-                        job.bytes = job.entries.iter().map(|e| e.bytes).sum();
                         job.updated = now();
                         if last_saved.elapsed().as_millis() >= 200 {
                             write_json(&record, &job)?;
@@ -775,21 +905,29 @@ fn worker_inner(spec: &TransferSpec) -> Result<()> {
                     if text(&info(&spec.source, &entry.source)?, "identity")? != entry.identity {
                         bail!("source changed before finalization");
                     }
-                    transport::request(
+                    let checksum = format!("{:x}", hash.finalize());
+                    let finalized = transport::request(
                         &spec.destination,
                         Operation::ReceiveFinalize {
                             key,
-                            sha256: format!("{:x}", hash.finalize()),
+                            sha256: checksum.clone(),
                         },
                     )?;
+                    let final_path = text(&finalized, "path")?.to_owned();
+                    job.entries[index].destination_identity =
+                        Some(text(&info(&spec.destination, &final_path)?, "identity")?.into());
+                    job.entries[index].finalized_destination = Some(final_path);
+                    job.entries[index].finalized_sha256 = Some(checksum);
                     job.entries[index].status = "complete".into();
                     job.entries[index].bytes = entry.size;
                 }
                 _ => bail!("unsupported file kind"),
             }
-            job.bytes = job.entries.iter().map(|e| e.bytes).sum();
             job.updated = now();
-            write_json(&record, &job)?;
+            if last_saved.elapsed().as_millis() >= 200 {
+                write_json(&record, &job)?;
+                last_saved = std::time::Instant::now();
+            }
         }
         // Finalize newly created directories bottom-up. Existing destination
         // directories retain their permissions; never chmod unrelated user state.
@@ -817,9 +955,17 @@ fn worker_inner(spec: &TransferSpec) -> Result<()> {
         // Metadata-only final validation detects source changes without huge tree hashes.
         for entry in &job.entries {
             check_cancel(&root, &spec.key)?;
+            if spec.cut && matches!(entry.status.as_str(), "removing" | "removed") {
+                continue;
+            }
             if text(&info(&spec.source, &entry.source)?, "identity")? != entry.identity {
                 bail!("source changed before tree completion");
             }
+        }
+        if spec.cut {
+            // Persist finalization receipts before any source deletion.
+            write_json(&record, &job)?;
+            finish_cut(spec, &root, &record, &mut job)?;
         }
         Ok(())
     })();
@@ -839,5 +985,230 @@ fn worker_inner(spec: &TransferSpec) -> Result<()> {
         }
     }
     write_json(&record, &job)?;
+    Ok(())
+}
+
+// Cut is deliberately narrow: one immutable regular file and a checksum-verified
+// destination receipt. Directory removal requires a separate tree transaction.
+fn finish_cut(spec: &TransferSpec, root: &Path, record: &Path, job: &mut Job) -> Result<()> {
+    if job.entries.len() != 1 || job.entries[0].kind != "file" {
+        bail!("Cut currently supports regular files only");
+    }
+    let entry = job.entries[0].clone();
+    if entry.status == "skipped" {
+        bail!(
+            "Destination skipped; source retained. Retry with a new rename or overwrite transfer"
+        );
+    }
+    if !matches!(entry.status.as_str(), "complete" | "removing" | "removed") {
+        bail!("Cut destination is not verified; source retained");
+    }
+    check_cancel(root, &spec.key)?;
+    // Stored receive completion alone is insufficient: rehash the actual path
+    // with its recorded identity before destructive source cleanup.
+    let path = entry
+        .finalized_destination
+        .as_ref()
+        .context("Cut destination receipt unavailable; source retained")?;
+    let expected = entry
+        .destination_identity
+        .as_ref()
+        .context("Cut destination identity unavailable; source retained")?;
+    let metadata = info(&spec.destination, path)?;
+    if metadata["kind"] != "file"
+        || metadata["size"].as_u64() != Some(entry.size)
+        || metadata["identity"].as_str() != Some(expected.as_str())
+    {
+        bail!("Cut destination changed; source retained");
+    }
+    let mut hash = Sha256::new();
+    let mut offset = 0;
+    while offset < entry.size {
+        check_cancel(root, &spec.key)?;
+        let chunk = transport::request(
+            &spec.destination,
+            Operation::ReadChunk {
+                path: path.clone(),
+                offset,
+                limit: (entry.size - offset).min(CHUNK as u64) as u32,
+                identity: expected.clone(),
+            },
+        )?;
+        let bytes = STANDARD.decode(text(&chunk, "data")?)?;
+        if bytes.is_empty()
+            || bytes.len() > CHUNK as usize
+            || offset + bytes.len() as u64 > entry.size
+        {
+            bail!("Invalid destination verification chunk; source retained");
+        }
+        offset += bytes.len() as u64;
+        hash.update(bytes);
+    }
+    if Some(format!("{:x}", hash.finalize())) != entry.finalized_sha256
+        || info(&spec.destination, path)?["identity"].as_str() != Some(expected.as_str())
+    {
+        bail!("Cut destination integrity changed; source retained");
+    }
+    if entry.status == "removed" {
+        return Ok(());
+    }
+    let source = info(&spec.source, &entry.source)?;
+    if source["kind"] == "missing" && entry.status == "removing" {
+        // Removal response may have been lost; the durable receipt still verifies.
+        job.entries[0].status = "removed".into();
+        write_json(record, job)?;
+        return Ok(());
+    }
+    if text(&source, "identity")? != entry.identity {
+        bail!("Source changed before cut removal; source retained");
+    }
+    job.entries[0].status = "removing".into();
+    write_json(record, job)?;
+    check_cancel(root, &spec.key)?;
+    transport::request(
+        &spec.source,
+        Operation::Remove {
+            path: entry.source,
+            expected_identity: Some(entry.identity),
+        },
+    )?;
+    job.entries[0].status = "removed".into();
+    write_json(record, job)?;
+    Ok(())
+}
+
+// Same-endpoint moves never copy/delete: the backend performs one no-clobber
+// anchored rename. EXDEV is an honest unsupported error with the source intact.
+fn atomic_cut(spec: &TransferSpec, root: &Path, record: &Path) -> Result<()> {
+    let mut job = if record.try_exists()? && !read_json::<Job>(record)?.entries.is_empty() {
+        read_json::<Job>(record)?
+    } else {
+        let source = info(&spec.source, &spec.source_path)?;
+        validate_source_selection(spec, &source)?;
+        if !matches!(
+            source["kind"].as_str(),
+            Some("file" | "directory" | "symlink")
+        ) {
+            bail!("Move source is unavailable or unsupported");
+        }
+        let mut destination = spec.destination_path.clone();
+        if info(&spec.destination, &destination)?["kind"] == "directory" {
+            destination = join(&destination, text(&source, "name")?)?;
+        }
+        let src = decode_path(text(&source, "path")?)?;
+        let dst = decode_path(&destination)?;
+        if src == dst || (source["kind"] == "directory" && dst.starts_with(&src)) {
+            bail!("Move destination cannot be the source or inside its tree");
+        }
+        let mut status = "moving";
+        if info(&spec.destination, &destination)?["kind"] != "missing" {
+            match spec.conflict.as_str() {
+                "skip" => status = "skipped",
+                "rename" => {
+                    let path = decode_path(&destination)?;
+                    let parent = path.parent().context("destination has no parent")?;
+                    let name = path.file_name().context("destination has no name")?;
+                    let mut chosen = None;
+                    for n in 1..=10000 {
+                        let mut next = name.to_owned();
+                        next.push(format!(".copy-{n}"));
+                        let next = encode_path(&parent.join(next));
+                        if info(&spec.destination, &next)?["kind"] == "missing" {
+                            chosen = Some(next);
+                            break;
+                        }
+                    }
+                    destination = chosen.context("no rename destination available")?;
+                }
+                // Never delete an existing destination before a move succeeds.
+                "overwrite" => {
+                    bail!("Move destination exists; choose Rename or remove it explicitly first")
+                }
+                _ => bail!("invalid conflict policy"),
+            }
+        }
+        let entry = Entry {
+            receive_key: None,
+            finalized_destination: None,
+            finalized_sha256: None,
+            created: false,
+            destination_identity: None,
+            source: text(&source, "path")?.into(),
+            destination: destination.clone(),
+            kind: text(&source, "kind")?.into(),
+            identity: text(&source, "identity")?.into(),
+            size: source["size"].as_u64().unwrap_or(0),
+            mode: 0,
+            target: None,
+            status: status.into(),
+            bytes: 0,
+        };
+        Job {
+            cut: spec.cut,
+            key: spec.key.clone(),
+            source_host: format!("{}@{}", spec.source.account, spec.source.host),
+            destination_host: format!("{}@{}", spec.destination.account, spec.destination.host),
+            source_path: entry.source.clone(),
+            destination_path: destination,
+            route: "atomic move on endpoint".into(),
+            status: "running".into(),
+            bytes: 0,
+            total: entry.size,
+            updated: now(),
+            error: None,
+            entries: vec![entry],
+        }
+    };
+    if job.status == "complete" {
+        return Ok(());
+    }
+    let entry = job.entries.first().context("Move receipt missing")?.clone();
+    if entry.status == "skipped" {
+        job.status = "failed".into();
+        job.error = Some("Destination skipped; source retained".into());
+        write_json(record, &job)?;
+        bail!("Destination skipped; source retained");
+    }
+    job.status = "running".into();
+    job.updated = now();
+    write_json(record, &job)?;
+    let outcome = (|| -> Result<()> {
+        check_cancel(root, &spec.key)?;
+        let source = info(&spec.source, &entry.source)?;
+        if source["kind"] == "missing" {
+            // A lost response is reconciled against the original inode/content
+            // metadata at the exact durable destination, never a guessed path.
+            let destination = info(&spec.destination, &entry.destination)?;
+            if destination["identity"].as_str() != Some(entry.identity.as_str()) {
+                bail!("Move outcome unknown; source missing and destination identity differs");
+            }
+        } else {
+            transport::request(
+                &spec.source,
+                Operation::Move {
+                    path: entry.source.clone(),
+                    destination: entry.destination.clone(),
+                    expected_identity: Some(entry.identity.clone()),
+                },
+            )?;
+        }
+        Ok(())
+    })();
+    job.updated = now();
+    match outcome {
+        Ok(()) => {
+            job.status = "complete".into();
+            job.entries[0].status = "removed".into();
+            job.bytes = job.total;
+            job.error = None;
+        }
+        Err(error) => {
+            job.status = "failed".into();
+            job.error = Some(display(&format!("{error:#}")));
+            write_json(record, &job)?;
+            return Err(error);
+        }
+    }
+    write_json(record, &job)?;
     Ok(())
 }

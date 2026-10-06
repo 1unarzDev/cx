@@ -251,6 +251,10 @@ fn add_via(target: &str, via: Option<&Device>) -> Result<()> {
     } else {
         previous.clone()
     };
+    anyhow::ensure!(
+        previous == next || !store::devices()?.iter().any(|d| d.target.as_deref() == Some(target)),
+        "This target is already enrolled through another route. Use distinct SSH aliases for devices on overlapping networks; the existing device was not changed."
+    );
     store::set_route(target, &next)?;
     let result = enroll_target(target);
     if result.is_err() {

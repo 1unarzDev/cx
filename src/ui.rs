@@ -423,7 +423,7 @@ impl App {
             pending_g: false,
             help: false,
             help_scroll: 0,
-            notice: "Ctrl+P actions · ? help".into(),
+            notice: String::new(),
             browser: None,
             other_browser: None,
             destination_active: false,
@@ -3296,18 +3296,24 @@ fn render_with_native(
         &mut state,
     );
     let details = if let Some(b) = app.browser.as_ref().filter(|_| app.view == View::Files) {
-        let context = if app.destination_active || app.other_browser.is_some() {
-            "Destination"
-        } else {
-            "Folder"
-        };
-        let destination = app.other_browser.as_ref().unwrap_or(b);
-        format!(
-            "Host {}\n{context} {}\n{} marked · t send",
-            identity(&app.devices[destination.device]),
-            safe_label(&destination.display_path),
-            b.marked.len(),
-        )
+        let mut lines = vec![
+            format!("Host {}", identity(&app.devices[b.device])),
+            format!("Folder {}", safe_label(&b.display_path)),
+            format!("{} marked · t send", b.marked.len()),
+        ];
+        if let Some(other) = &app.other_browser {
+            let (destination, label) = if app.destination_active {
+                (b, "To")
+            } else {
+                (other, "To")
+            };
+            lines.push(format!(
+                "{label} {}",
+                identity(&app.devices[destination.device])
+            ));
+            lines.push(safe_label(&destination.display_path));
+        }
+        lines.join("\n")
     } else if let Some((i, s)) = app.selected_session() {
         format!(
             "Host {}\nFolder {}\nEnter open · n new",

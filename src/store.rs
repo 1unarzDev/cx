@@ -169,6 +169,57 @@ pub fn valid_target(s: &str) -> bool {
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"@._-:[]".contains(&b))
 }
+// ProxyJump inherits -F, but not the outer process's -o options. Put the
+// noninteractive policy before the normal configs so every hop fails closed.
+fn background_ssh_config() -> Result<PathBuf> {
+    const CONFIG: &[u8] = b"Host *\n  BatchMode yes\n  ForwardAgent no\n  ConnectTimeout 6\n  ServerAliveInterval 5\n  ServerAliveCountMax 2\nInclude ~/.ssh/config\nInclude /etc/ssh/ssh_config\n";
+    let dir = ensure()?;
+    let path = dir.join("ssh-background.conf");
+    match fs::symlink_metadata(&path) {
+        Ok(m) => {
+            use std::os::unix::fs::MetadataExt;
+            anyhow::ensure!(
+                m.is_file()
+                    && m.uid() == unsafe { libc::geteuid() }
+                    && m.mode() & 0o077 == 0
+                    && m.len() <= 4096,
+                "unsafe background SSH configuration"
+            );
+            anyhow::ensure!(
+                fs::read(&path)? == CONFIG,
+                "background SSH configuration changed"
+            );
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let temporary = dir.join(format!(
+                "ssh-background.{}.{}.tmp",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_nanos()
+            ));
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temporary)?;
+            let result = (|| -> Result<()> {
+                file.write_all(CONFIG)?;
+                file.sync_all()?;
+                fs::rename(&temporary, &path)?;
+                Ok(())
+            })();
+            if result.is_err() {
+                let _ = fs::remove_file(&temporary);
+            }
+            result?;
+        }
+        Err(e) => return Err(e.into()),
+    }
+    Ok(path)
+}
 pub fn ssh(target: &str, interactive: bool) -> Result<std::process::Command> {
     if !valid_target(target) {
         anyhow::bail!("invalid SSH target")
@@ -189,6 +240,9 @@ pub fn ssh(target: &str, interactive: bool) -> Result<std::process::Command> {
     }
     let hops = route(target)?;
     if !hops.is_empty() {
+        if !interactive {
+            c.arg("-F").arg(background_ssh_config()?);
+        }
         c.args(["-J", &hops.join(",")]);
     }
     c.arg(target);

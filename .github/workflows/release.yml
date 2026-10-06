@@ -17,6 +17,8 @@ jobs:
         run: |
           [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           test "${GITHUB_REF_NAME#v}" = "$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+      - name: Require reviewed version notes
+        run: python3 scripts/release_notes.py "$GITHUB_REF_NAME" > /dev/null
       - run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt
       - run: cargo fmt --check && cargo test --locked && cargo build --locked
       - run: python3 tests/native_command_pty.py target/debug/cx
@@ -76,13 +78,7 @@ jobs:
           CX_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
         run: |
           for asset in dist/*.tar.gz; do cp "$CX_BUNDLE" "$asset.intoto.jsonl"; done
-          cat > notes.md <<'NOTES'
-          Portable Linux x86_64 and aarch64 builds. Ubuntu, Rocky Linux (RHEL compatibility), and Arch installation smoke tests run before publication.
-
-          cx is under active development. This release is not a declaration that every product acceptance scenario is complete. See VALIDATION.md for tested behavior and known limitations.
-
-          Verify downloads against the pinned release-key.pem; SHA256SUMS alone is not an authenticity check.
-          NOTES
+          python3 scripts/release_notes.py "$GITHUB_REF_NAME" > notes.md
           if gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft' > published-state; then
             if [ "$(cat published-state)" = false ]; then
               echo 'Published release is immutable; retaining existing assets.'

@@ -40,3 +40,5 @@ Updates check signed stable releases in the background, retain the running versi
 Development is ongoing: Network observation works; sharing, full trust/revocation and full uninstall are not release-ready. See [validation](VALIDATION.md) for tested behavior and limits. Remove only `~/.local/bin/cx` when no active job needs its helper; preserve state and sessions. No public hostnames or mesh provider are required.
 
 Build: `cargo build --release --locked`. Check: `cargo test --locked`. GitHub workers test builds and installer fixtures across distributions; RHEL itself requires access to a licensed environment, so Rocky Linux supplies the compatible CI fixture.
+
+Release changes: [CHANGELOG.md](CHANGELOG.md). Before tagging a stable version, move its reviewed changes from Unreleased into an exact `vX.Y.Z` section; publication requires these notes.

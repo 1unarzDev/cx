@@ -1,0 +1,82 @@
+# Release notes
+
+Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
+
+## Unreleased
+
+### Features
+- Larger image and first-page PDF previews with optional native terminal graphics and a colored-cell fallback.
+- Bundled language grammars for source previews and Markdown code fences; highlighting follows the terminal palette and never executes source code.
+- Separate outlined confirmation buttons for deleting files and stopping managed shells.
+
+### Fixes
+- Decode images and prepare syntax highlighting outside the input/render loop.
+- Clear fallback image cells when native graphics finish encoding, and clean up graphics on resize, overlays and return.
+
+## v0.1.8
+
+### Fixes
+- Distinguish an absent tmux session server from a failed tmux runtime. Missing libraries or wrapper failures now report an error rather than incorrectly claiming a session has already stopped.
+
+## v0.1.7
+
+### Features
+- Preview images, the first page of PDFs, Markdown, source files, tar/tar.gz archive entries and WAV metadata directly in Files. Image/PDF previews use colored terminal cells in this version.
+- Press `d` in Sessions to stop a cx-managed shell with confirmation. Agent and external sessions remain protected.
+- Compact, consistent confirmation dialogs for file deletion and shell stopping.
+
+### Fixes
+- Normalize text line endings and escape terminal control characters in previews; bound image decoding, archive listing and PDF conversion.
+- Install PDF, network and terminfo utilities through apt, dnf/yum or pacman. Enrollment checks required host utilities before replacing the helper.
+- Resolve detected foreground-agent workspace directories independently of the original shell directory, refreshing generated session titles and attached location labels.
+
+## v0.1.6
+
+### Fixes
+- Mouse-wheel scrolling in managed terminals reviews retained conversation scrollback rather than sending prompt-history arrow keys. Applications requesting native mouse input keep those events.
+- Escape returns from tmux scrollback to the live terminal; the status strip identifies scrollback mode. Existing running applications may need to refresh their terminal mouse mode.
+
+## v0.1.5
+
+### Fixes
+- Preserve viewer colors and default backgrounds when running native folder commands with Fish. Theme loading can respect the cx-only viewer-theme guard without changing ordinary terminals.
+- Remove the redundant Run command action from the Actions menu; `:` remains the current-folder command shortcut.
+
+## v0.1.4
+
+### Fixes
+- Retain the remote helper’s negotiated native-command capability so supported devices can execute `:` commands instead of incorrectly requesting an upgrade.
+- Restore predictable interrupt and suspend behavior for POSIX shell command profiles.
+
+## v0.1.3
+
+### Features
+- Simplify Actions around workspace navigation, New session, transfers and enrollment; file operations stay with the file browser.
+- Press `n` to create and enter a session on the current device in the focused folder, using its available providers.
+- Press `:` to run a command in that device’s current folder with native terminal input and execution-location context. Enter returns after completion; suspended commands offer Resume or Cancel.
+
+### Fixes
+- Preserve interactive Fish/Bash/Zsh wrappers and shell builtins while controlling foreground command process groups.
+- Guard concurrent session creation, retain long-command editing and scrolling, and distinguish stale capability evidence from unsupported helpers.
+
+## v0.1.2
+
+### Features
+- Recognize foreground Claude or Codex launched manually inside a persistent shell, updating its provider badge while retaining the same attachable terminal. Returning to the shell restores the Shell badge.
+
+### Fixes
+- Support older tmux color capabilities and bounded capability checks, including user wrappers.
+- Parse compact GitHub release responses correctly during bootstrap installation.
+
+## v0.1.1
+
+### Features
+- First published stable-channel build of the fleet workspace: persistent shells and Claude/Codex sessions over SSH, shared device context, Files and read-only network observations.
+- Create and enter sessions from the selected host/folder; provider choices reflect detected host runtimes. A client-only device can view and enter work on another host.
+- Unified file selection, rename, copy/cut/paste and destination-device browsing, with durable transfer jobs and incoming conflict renaming by default.
+- Single `Ctrl+]` return from managed terminals while sessions continue running.
+- Signed stable-release updates with background checks, idle relaunch and graceful offline preservation.
+- User-level bootstrap with signature verification, static Linux x86_64/ARM64 binaries and Ubuntu, Rocky Linux (RHEL-compatible) and Arch installation checks.
+
+### Limits
+- Network sharing, full trust/revocation and owned-resource uninstall are not release-ready. Network observation is available; see VALIDATION.md for actual acceptance evidence.

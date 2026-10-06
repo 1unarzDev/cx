@@ -10,7 +10,7 @@ cx add user@host                 # existing SSH alias also works
 
 Install as your ordinary user. Missing dependencies require an explicit package-manager confirmation through your terminal; no Rust toolchain is needed. The installer verifies downloads using the pinned [release public key](release-key.pem), stages privately and replaces the binary atomically. Re-running is safe; failed/offline downloads preserve an existing installation. The script itself is trusted from GitHub over HTTPS. Builds also carry GitHub provenance.
 
-**Requirements:** OpenSSH, tmux, curl, OpenSSL and standard Linux utilities. Transfers use supported detached processes; a working systemd user manager is needed when launched from a service cgroup. Fish, Bash and Zsh work; terminal colors/backgrounds remain yours. Agents and their credentials stay on the execution host. Enrollment currently requires matching viewer/host architectures; install separately on a different architecture.
+**Requirements:** Linux; guarded filesystem mutations need kernel 5.6+ and fail safely when unavailable. OpenSSH, tmux, curl, OpenSSL and standard Linux utilities. Transfers use supported detached processes; a working systemd user manager is needed when launched from a service cgroup. Fish, Bash and Zsh work; terminal colors/backgrounds remain yours. Agents and their credentials stay on the execution host. Enrollment currently requires matching viewer/host architectures; install separately on a different architecture.
 
 | Keys | Action |
 |---|---|

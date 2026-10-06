@@ -19,17 +19,20 @@ if [ -n "$CX_MISSING" ]; then
     if command -v apt-get >/dev/null 2>&1; then
         set -- apt-get install -y curl openssl openssh-client tmux ca-certificates util-linux tar coreutils
     elif command -v dnf >/dev/null 2>&1; then
-        set -- dnf install -y curl openssl openssh-clients tmux ca-certificates util-linux tar coreutils
+        set -- dnf install -y openssl openssh-clients tmux ca-certificates util-linux tar coreutils
     elif command -v yum >/dev/null 2>&1; then
-        set -- yum install -y curl openssl openssh-clients tmux ca-certificates util-linux tar coreutils
+        set -- yum install -y openssl openssh-clients tmux ca-certificates util-linux tar coreutils
     elif command -v pacman >/dev/null 2>&1; then
         set -- pacman -S --needed curl openssl openssh tmux ca-certificates util-linux tar coreutils
     else fail "missing tools:$CX_MISSING; no supported package manager"; fi
+    case "$1" in dnf|yum) command -v curl >/dev/null 2>&1 || set -- "$@" curl;; esac
     command -v sudo >/dev/null 2>&1 || fail "missing tools:$CX_MISSING; install as administrator then retry"
     ( : </dev/tty ) 2>/dev/null || fail "missing tools:$CX_MISSING; interactive dependency setup requires a terminal"
     printf 'Install required tools using sudo %s? [y/N] ' "$*" >/dev/tty
     read -r CX_REPLY </dev/tty
-    case "$CX_REPLY" in y|Y|yes|YES) sudo "$@";; *) fail 'dependency installation declined';; esac
+    case "$CX_REPLY" in y|Y|yes|YES)
+        if [ "$1" = apt-get ]; then sudo apt-get update; fi
+        sudo "$@";; *) fail 'dependency installation declined';; esac
     for CX_TOOL in curl openssl ssh tmux flock tar stat timeout install mktemp head sed grep; do
         command -v "$CX_TOOL" >/dev/null 2>&1 || fail "required tool still unavailable: $CX_TOOL"
     done

@@ -19,7 +19,9 @@ for CX_IMAGE in ubuntu:22.04 ubuntu:24.04 rockylinux:8 rockylinux:9 archlinux:la
             apt-get update -qq
             DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 openssl curl openssh-client tmux util-linux passwd
         elif command -v dnf >/dev/null; then
-            dnf install -y python3 openssl curl openssh-clients tmux util-linux shadow-utils
+            set -- python3 openssl openssh-clients tmux util-linux shadow-utils
+            command -v curl >/dev/null 2>&1 || set -- "$@" curl
+            dnf install -y "$@"
         else
             pacman -Syu --noconfirm --needed python openssl curl openssh tmux util-linux shadow
         fi

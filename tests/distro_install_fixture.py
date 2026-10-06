@@ -86,4 +86,4 @@ out.write_bytes(pathlib.Path(source).read_bytes())
     assert header == b"CX1 " + str(len(payload)).encode(), response
     assert json.loads(payload)["error"] is None, response
     assert (folder / "renamed.txt").read_text() == "fixture\n"
-    print(json.dumps({"result": "PASS", "version": version, "checks": ["signed real binary installation", "idempotent rerun", "version", "filesystem listing", "managed shell", "detached copy", "no-clobber rename syscall"], "trust": "synthetic test key; release authenticity tested separately"}))
+    print(json.dumps({"result": "PASS", "version": version, "architecture": os.uname().machine, "openssl": subprocess.check_output(["openssl", "version"], universal_newlines=True).strip(), "python": sys.version.split()[0], "checks": ["signed real binary installation", "idempotent rerun", "version", "filesystem listing", "managed shell", "detached copy", "no-clobber rename syscall"], "trust": "synthetic test key; release authenticity tested separately"}))

@@ -90,7 +90,7 @@ else:dest.write_bytes(pathlib.Path(os.environ['CX_FIXTURE_SIGNATURE' if url.ends
             found=shutil.which(command);assert found,command;(tools/command).symlink_to(found)
         (tools/manager).write_text('#!/bin/sh\nexit 0\n');(tools/manager).chmod(0o700)
         logfile=root/('sudo-'+manager)
-        (tools/'sudo').write_text('#!/bin/sh\nprintf "%s\\n" "$*" > '+str(logfile)+'\nexit 1\n');(tools/'sudo').chmod(0o700)
+        (tools/'sudo').write_text('#!/bin/sh\nprintf "%s\\n" "$*" > '+str(logfile)+'\ncase "$*" in "apt-get update") exit 0;; esac\nexit 1\n');(tools/'sudo').chmod(0o700)
         master,slave=pty.openpty()
         def tty_setup():
             os.setsid();fcntl.ioctl(slave,termios.TIOCSCTTY,0)

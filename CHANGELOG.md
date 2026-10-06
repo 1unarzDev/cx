@@ -4,6 +4,13 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+No changes queued.
+
+## v0.1.14
+
+### Features
+- Replace the file browser's row-wide underline with a solid cursor rail and padded filename highlight. The highlight follows the terminal's default color pair for light/dark contrast; inactive panes retain a quieter cursor, and file marks/copy/cut indicators keep their own colors.
+
 ### Fixes
 - Recognize an existing user-installed tmux when a noninteractive SSH login omits its directory from PATH.
 

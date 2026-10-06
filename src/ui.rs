@@ -333,6 +333,7 @@ enum Dialog {
     StopShell(usize, Session),
     PendingExit(usize),
     Neighbor(usize, Value),
+    Peer(usize),
 }
 
 struct App {
@@ -371,6 +372,9 @@ struct App {
     providers: HashMap<usize, (Vec<String>, u64)>,
     provider_loading: std::collections::HashSet<usize>,
     network: HashMap<usize, Value>,
+    peer_checks: VecDeque<usize>,
+    peer_inflight: BTreeSet<usize>,
+    peer_evidence: HashMap<usize, (u64, bool)>,
     network_loading: bool,
     network_inflight: BTreeSet<usize>,
     network_selected: usize,
@@ -444,6 +448,9 @@ impl App {
             providers: HashMap::new(),
             provider_loading: std::collections::HashSet::new(),
             network: HashMap::new(),
+            peer_checks: VecDeque::new(),
+            peer_inflight: BTreeSet::new(),
+            peer_evidence: HashMap::new(),
             network_loading: false,
             network_inflight: BTreeSet::new(),
             network_selected: 0,
@@ -491,6 +498,7 @@ impl App {
                 Dialog::StopShell(..) => "Stop shell",
                 Dialog::PendingExit(_) => "Pending actions",
                 Dialog::Neighbor(..) => "Neighbor actions",
+                Dialog::Peer(_) => "Device actions",
             };
         }
         if let Some(input) = self.input {
@@ -672,7 +680,7 @@ impl App {
     }
     fn command_context(&self) -> Option<(usize, String)> {
         if self.view == View::Network {
-            return self.network_device().map(|d| (d, "~".into()));
+            return self.network_action_device().map(|d| (d, "~".into()));
         }
         if self.view == View::Files {
             return self.browser.as_ref().map(|b| (b.device, b.path.clone()));
@@ -835,7 +843,7 @@ impl App {
         if self.device > 0 {
             Some(self.device - 1)
         } else {
-            self.network_candidates()
+            self.network_rows()
                 .get(self.network_selected)
                 .and_then(|c| c["_device"].as_u64())
                 .map(|d| d as usize)
@@ -875,26 +883,94 @@ impl App {
         });
         rows
     }
-    fn open_neighbor(&mut self) {
-        if let Some(candidate) = self
-            .network_candidates()
+    // Enrolled rows are independent of the selected helper's passive LAN snapshot.
+    fn network_rows(&self) -> Vec<Value> {
+        let mut rows: Vec<_> = self
+            .devices
+            .iter()
+            .enumerate()
+            .map(|(d, device)| serde_json::json!({"_peer": d, "id": device.id}))
+            .collect();
+        rows.extend(self.network_candidates());
+        rows
+    }
+    fn network_action_device(&self) -> Option<usize> {
+        self.network_rows()
             .get(self.network_selected)
-            .cloned()
+            .and_then(|r| r["_peer"].as_u64().or_else(|| r["_device"].as_u64()))
+            .map(|d| d as usize)
+            .or_else(|| self.network_device())
+    }
+    fn peer_status(&self, d: usize) -> String {
+        if self.peer_inflight.contains(&d) {
+            return "checking helper".into();
+        }
+        if let Some((checked, success)) = self.peer_evidence.get(&d) {
+            let age = transport::now().saturating_sub(*checked);
+            return if *success && age <= 90 {
+                format!("helper reached · {age}s ago")
+            } else if *success {
+                format!("cached helper · {age}s ago")
+            } else {
+                format!("helper unavailable · {age}s ago")
+            };
+        }
+        let checked = self.providers.get(&d).map(|(_, time)| *time).or_else(|| {
+            self.work
+                .get(d)
+                .filter(|w| w.error.is_none() && w.fetched > 0)
+                .map(|w| w.fetched)
+        });
+        checked
+            .map(|time| {
+                format!(
+                    "cached helper · {}s ago",
+                    transport::now().saturating_sub(time)
+                )
+            })
+            .unwrap_or_else(|| "helper not checked".into())
+    }
+    fn pump_peer_checks(&mut self) {
+        while self.peer_inflight.len()
+            + self
+                .network_inflight
+                .union(&self.network_candidates_inflight)
+                .count()
+            < 4
         {
-            if let Some(d) = candidate["_device"].as_u64().map(|d| d as usize) {
-                self.dialog_selected = 0;
-                self.dialog = Some(Dialog::Neighbor(d, candidate));
+            let Some(d) = self.peer_checks.pop_front() else {
+                break;
+            };
+            if self.provider_loading.contains(&d) {
+                continue;
+            }
+            if !self.send(d, Operation::Info) {
+                self.peer_checks.push_front(d);
+                break;
+            }
+            self.provider_loading.insert(d);
+            self.peer_inflight.insert(d);
+        }
+    }
+    fn open_neighbor(&mut self) {
+        if let Some(row) = self.network_rows().get(self.network_selected).cloned() {
+            self.dialog_selected = 0;
+            if let Some(d) = row["_peer"].as_u64() {
+                self.dialog = Some(Dialog::Peer(d as usize));
+            } else if let Some(d) = row["_device"].as_u64() {
+                self.dialog = Some(Dialog::Neighbor(d as usize, row));
             }
         } else {
-            self.notice = "No observed neighbors · refresh reads existing neighbor evidence".into();
+            self.notice = "No devices or observed LAN neighbors".into();
         }
     }
     fn pump_network_refresh(&mut self) {
         // Four enrolled helpers at once; each host has one observation and one passive snapshot.
-        while self
-            .network_inflight
-            .union(&self.network_candidates_inflight)
-            .count()
+        while self.peer_inflight.len()
+            + self
+                .network_inflight
+                .union(&self.network_candidates_inflight)
+                .count()
             < 4
         {
             let Some(d) = self.network_refresh_queue.pop_front() else {
@@ -915,6 +991,7 @@ impl App {
                 break;
             }
         }
+        self.pump_peer_checks();
         self.network_loading = !self.network_inflight.is_empty()
             || !self.network_candidates_inflight.is_empty()
             || !self.network_refresh_queue.is_empty();
@@ -952,6 +1029,17 @@ impl App {
             View::Work => self.refresh_work(),
             View::Files => self.refresh_browser(),
             View::Network => {
+                for d in 0..self.devices.len() {
+                    if !self.peer_inflight.contains(&d)
+                        && !self.peer_checks.contains(&d)
+                        && self
+                            .providers
+                            .get(&d)
+                            .is_none_or(|(_, t)| transport::now().saturating_sub(*t) >= 60)
+                    {
+                        self.peer_checks.push_back(d);
+                    }
+                }
                 for d in 0..self.devices.len() {
                     if (self.device == 0 || self.device == d + 1)
                         && !self.network_inflight.contains(&d)
@@ -1022,6 +1110,14 @@ impl App {
                 if self.creating {
                     return;
                 }
+                if self.view == View::Network {
+                    if let Some(d) = self.network_action_device() {
+                        self.check_providers(d);
+                        self.dialog = Some(Dialog::Provider(d, None));
+                        self.dialog_selected = 0;
+                        return;
+                    }
+                }
                 if self.view == View::Files {
                     if let Some(browser) = &self.browser {
                         let (device, path) = (browser.device, browser.path.clone());
@@ -1051,6 +1147,12 @@ impl App {
                 self.choose_device(ChooseDevice::New);
             }
             Action::Files => {
+                if self.view == View::Network {
+                    if let Some(d) = self.network_action_device() {
+                        self.open_browser(d, "~".into());
+                        return;
+                    }
+                }
                 self.launch_provider = None;
                 self.other_browser = None;
                 self.destination_active = false;
@@ -1438,6 +1540,7 @@ impl App {
             Dialog::Delete(..) | Dialog::StopShell(..) => 2,
             Dialog::PendingExit(_) => 2,
             Dialog::Neighbor(..) => 2,
+            Dialog::Peer(_) => 4,
         };
         if let Dialog::Provider(device, _) = dialog {
             if key.code == KeyCode::Enter && self.dialog_selected >= count {
@@ -1524,6 +1627,24 @@ impl App {
                         self.notice = "Stopping confirmed shell…".into();
                     }
                 }
+                Dialog::Peer(d) => {
+                    self.dialog = None;
+                    match self.dialog_selected {
+                        0 => {
+                            self.device = d + 1;
+                            self.view = View::Work;
+                            self.selected = 0;
+                            self.refresh_work();
+                        }
+                        1 => self.open_browser(d, "~".into()),
+                        2 => self.start_at(d, "~".into(), "shell".into()),
+                        _ => {
+                            self.check_providers(d);
+                            self.dialog = Some(Dialog::Provider(d, None));
+                            self.dialog_selected = 0;
+                        }
+                    }
+                }
                 Dialog::Neighbor(d, candidate) => {
                     self.dialog = None;
                     if self.dialog_selected == 0 {
@@ -1599,6 +1720,11 @@ impl App {
         };
         if matches!(reply.op, Operation::Info) {
             self.provider_loading.remove(&reply.device);
+            if self.peer_inflight.remove(&reply.device) {
+                self.peer_evidence
+                    .insert(reply.device, (transport::now(), reply.result.is_ok()));
+                self.pump_network_refresh();
+            }
         }
         if matches!(reply.op, Operation::Network) {
             self.network_inflight.remove(&reply.device);
@@ -1957,29 +2083,28 @@ impl App {
                 }
                 self.network_selected = self
                     .network_selected
-                    .min(self.network_candidates().len().saturating_sub(1));
+                    .min(self.network_rows().len().saturating_sub(1));
             }
             Operation::NetworkCandidates => {
-                let selected = self
-                    .network_candidates()
-                    .get(self.network_selected)
-                    .map(|c| {
-                        (
-                            c["_device"].clone(),
-                            c["address"].clone(),
-                            c["interface"].clone(),
-                        )
-                    });
+                let selected = self.network_rows().get(self.network_selected).map(|c| {
+                    (
+                        c["_peer"].clone(),
+                        c["_device"].clone(),
+                        c["address"].clone(),
+                        c["interface"].clone(),
+                    )
+                });
                 self.network
                     .entry(reply.device)
                     .or_insert_with(|| serde_json::json!({}))["candidates"] =
                     value["candidates"].clone();
                 if self.device == 0 || self.device == reply.device + 1 {
-                    let rows = self.network_candidates();
+                    let rows = self.network_rows();
                     self.network_selected = selected
-                        .and_then(|(device, address, interface)| {
+                        .and_then(|(peer, device, address, interface)| {
                             rows.iter().position(|c| {
-                                c["_device"] == device
+                                c["_peer"] == peer
+                                    && c["_device"] == device
                                     && c["address"] == address
                                     && c["interface"] == interface
                             })
@@ -2955,11 +3080,7 @@ impl App {
                 }
             }
         } else if self.view == View::Network {
-            self.network_selected = shift(
-                self.network_selected,
-                delta,
-                self.network_candidates().len(),
-            );
+            self.network_selected = shift(self.network_selected, delta, self.network_rows().len());
         } else {
             self.selected = shift(self.selected, delta, self.session_rows().len());
         }
@@ -3360,9 +3481,16 @@ fn render_with_native(
         &mut state,
     );
     let details = if app.view == View::Network {
-        app.network_candidates()
+        app.network_rows()
             .get(app.network_selected)
             .map(|c| {
+                if let Some(d) = c["_peer"].as_u64().map(|d| d as usize) {
+                    return format!(
+                        "{}\n{}\nViewer helper evidence",
+                        identity(&app.devices[d]),
+                        app.peer_status(d)
+                    );
+                }
                 format!(
                     "Via {}\n{}\nSSH {}",
                     c["_device"]
@@ -3847,7 +3975,7 @@ fn render_with_native(
         .count();
     let errors = app.work.iter().filter(|w| w.error.is_some()).count();
     let shown = if app.view == View::Network {
-        app.network_candidates().len()
+        app.network_rows().len()
     } else if app.view == View::Files {
         app.visible_entries().len()
     } else {
@@ -4120,7 +4248,7 @@ fn render_with_native(
         ]
     } else if app.view == View::Network && app.focus == Focus::Workspace {
         vec![
-            ("j/k", "Neighbors"),
+            ("j/k", "Devices / LAN"),
             ("Enter", "Actions"),
             ("Tab", "Device scope"),
             ("Ctrl P", "Actions"),
@@ -4215,10 +4343,10 @@ fn render_with_native(
     {
         let rect = popup(
             area,
-            76,
+            if input == Input::Add { 64 } else { 76 },
             if input == Input::Palette {
                 16
-            } else if matches!(input, Input::Rename | Input::Command) {
+            } else if matches!(input, Input::Rename | Input::Command | Input::Add) {
                 3
             } else {
                 5
@@ -4258,11 +4386,13 @@ fn render_with_native(
             };
             let scroll = cursor_width.saturating_sub(rect.width.saturating_sub(3));
             frame.render_widget(
-                Paragraph::new(if matches!(input, Input::Rename | Input::Command) {
-                    format!("> {}", safe_label(&app.text))
-                } else {
-                    format!("> {}\nEnter confirm · Escape cancel", safe_label(&app.text))
-                })
+                Paragraph::new(
+                    if matches!(input, Input::Rename | Input::Command | Input::Add) {
+                        format!("> {}", safe_label(&app.text))
+                    } else {
+                        format!("> {}\nEnter confirm · Escape cancel", safe_label(&app.text))
+                    },
+                )
                 .scroll((0, scroll))
                 .block(block(
                     if input == Input::Command {
@@ -4388,6 +4518,11 @@ fn render_with_native(
                     "Create another session".into(),
                 ],
                 safe_label(path),
+            ),
+            Dialog::Peer(d) => (
+                format!("Device · {}", safe_label(&app.devices[*d].name)),
+                vec!["Open sessions".into(), "Browse files".into(), "New shell".into(), "New session".into()],
+                format!("{}\n{}\nViewer-authenticated helper evidence\nReachability from selected device: unknown", identity(&app.devices[*d]), app.peer_status(*d)),
             ),
             Dialog::Neighbor(d, candidate) => (
                 format!("Neighbor · {}", safe_label(candidate["address"].as_str().unwrap_or("unknown"))),
@@ -5435,14 +5570,24 @@ fn render_network(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Paragraph::new(summary).wrap(Wrap { trim: false }),
         sections[0],
     );
-    let candidates = app.network_candidates();
+    let candidates = app.network_rows();
     if candidates.is_empty() {
         frame.render_widget(
-            Paragraph::new("No observed neighbors · no active discovery is performed"),
+            Paragraph::new("No enrolled devices or observed LAN neighbors"),
             sections[1],
         );
-    } else {
-        let rows = candidates.iter().map(|c| {
+        return;
+    }
+    let rows = candidates.iter().map(|c| {
+        if let Some(d) = c["_peer"].as_u64().map(|d| d as usize) {
+            let device = &app.devices[d];
+            Row::new(vec![
+                Cell::from(safe_label(&device.name)),
+                Cell::from(identity(device)),
+                Cell::from("Enrolled"),
+                Cell::from(app.peer_status(d)),
+            ])
+        } else {
             Row::new(vec![
                 Cell::from(format!(
                     "{} / {}",
@@ -5454,36 +5599,43 @@ fn render_network(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     safe_label(c["interface"].as_str().unwrap_or("unknown"))
                 )),
                 Cell::from(safe_label(c["address"].as_str().unwrap_or("unknown"))),
-                Cell::from(safe_label(c["source"].as_str().unwrap_or("unknown"))),
+                Cell::from("LAN cache"),
                 Cell::from(neighbor_ssh(c)),
             ])
-        });
-        let table = Table::new(
-            rows,
-            [
-                Constraint::Percentage(30),
-                Constraint::Percentage(35),
-                Constraint::Percentage(15),
-                Constraint::Percentage(20),
-            ],
-        )
-        .header(Row::new(["Device / link", "Address", "Source", "SSH"]).style(muted()))
-        .row_highlight_style(selected_style());
-        let mut state = TableState::default().with_selected(Some(app.network_selected));
-        frame.render_stateful_widget(table, sections[1], &mut state);
-        if let Some(candidate) = candidates.get(app.network_selected) {
-            frame.render_widget(
-                Paragraph::new(format!(
-                    "{} · {}\n{}",
-                    d.map(|d| identity(&app.devices[d]))
-                        .unwrap_or_else(|| "unknown".into()),
-                    safe_label(candidate["address"].as_str().unwrap_or("unknown")),
-                    neighbor_detail(candidate)
-                ))
-                .wrap(Wrap { trim: false }),
-                sections[2],
-            );
         }
+    });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Percentage(25),
+            Constraint::Percentage(30),
+            Constraint::Percentage(15),
+            Constraint::Percentage(30),
+        ],
+    )
+    .header(Row::new(["Device / link", "Execution / address", "Source", "Evidence"]).style(muted()))
+    .row_highlight_style(selected_style());
+    let mut state = TableState::default().with_selected(Some(app.network_selected));
+    frame.render_stateful_widget(table, sections[1], &mut state);
+    if let Some(candidate) = candidates.get(app.network_selected) {
+        let detail = if let Some(d) = candidate["_peer"].as_u64().map(|d| d as usize) {
+            format!("{} · {}\n{}\nViewer-authenticated helper evidence · LAN cache shown separately\nReachability from selected device: unknown", safe_label(&app.devices[d].name), identity(&app.devices[d]), app.peer_status(d))
+        } else {
+            format!(
+                "{} · {}\n{}",
+                candidate["_device"]
+                    .as_u64()
+                    .and_then(|d| app.devices.get(d as usize))
+                    .map(identity)
+                    .unwrap_or_else(|| "unknown".into()),
+                safe_label(candidate["address"].as_str().unwrap_or("unknown")),
+                neighbor_detail(candidate)
+            )
+        };
+        frame.render_widget(
+            Paragraph::new(detail).wrap(Wrap { trim: false }),
+            sections[2],
+        );
     }
 }
 fn network_summary(value: &Value) -> String {
@@ -6466,10 +6618,123 @@ mod tests {
     fn network_fixture(a: &mut App) {
         a.view = View::Network;
         a.focus = Focus::Workspace;
+        a.network_selected = a.devices.len();
         a.network.insert(0, serde_json::json!({"internet":{"state":"unknown"}, "candidates":[
             {"address":"192.0.2.2","interface":"eth0","source":"neighbor","link_state":"STALE","ssh":{"state":"unknown"}},
             {"address":"192.0.2.1","interface":"eth0","source":"neighbor","link_state":"REACHABLE","observed_at":transport::now(),"ssh":{"state":"open"}}
         ]}));
+    }
+    #[test]
+    fn network_enrolled_peers_exist_without_lan_and_capture_execution_identity() {
+        let (mut a, rx) = queued_app();
+        a.view = View::Network;
+        a.device = 1;
+        assert!(a.network_candidates().is_empty());
+        let rows = a.network_rows();
+        assert_eq!(rows.len(), a.devices.len());
+        assert_eq!(rows[1]["_peer"], 1);
+        a.network_selected = 1;
+        a.open_neighbor();
+        assert!(matches!(a.dialog, Some(Dialog::Peer(1))));
+        a.device = 2; // Action identity was captured before scope changed.
+        a.dialog_selected = 1;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(a.browser.as_ref().unwrap().device, 1);
+        assert!(rx
+            .try_iter()
+            .any(|t| t.device == 1 && matches!(t.op, Operation::List { .. })));
+        assert!(a.pending_add.is_none());
+    }
+    #[test]
+    fn network_peer_checks_bounded_cached_offline_and_no_redraw_requests() {
+        let (mut a, rx) = queued_app();
+        a.view = View::Network;
+        a.device = 1;
+        a.providers.clear();
+        for index in 2..7 {
+            let mut d = a.devices[1].clone();
+            d.id = format!("peer-{index}");
+            a.devices.push(d);
+            a.work.push(Cached {
+                sessions: vec![],
+                loading: false,
+                error: None,
+                fetched: 0,
+            });
+        }
+        a.refresh();
+        let tasks: Vec<_> = rx.try_iter().collect();
+        assert_eq!(
+            tasks
+                .iter()
+                .filter(|t| matches!(t.op, Operation::Info))
+                .count(),
+            3
+        );
+        assert!(tasks
+            .iter()
+            .filter(|t| matches!(t.op, Operation::Network | Operation::NetworkCandidates))
+            .all(|t| t.device == 0));
+        assert_eq!(a.peer_inflight.len(), 3);
+        a.apply(Reply {
+            device: 1,
+            generation: a.generation,
+            op: Operation::Info,
+            result: Err(anyhow::anyhow!("offline")),
+            preview: None,
+        });
+        assert_eq!(a.peer_inflight.len(), 3);
+        assert!(a.peer_status(1).contains("unavailable"));
+        let next: Vec<_> = rx.try_iter().collect();
+        assert!(next
+            .iter()
+            .any(|t| t.device == 3 && matches!(t.op, Operation::Info)));
+        a.peer_evidence
+            .insert(1, (transport::now().saturating_sub(100), true));
+        assert!(a.peer_status(1).contains("cached helper"));
+        a.network_selected = 1;
+        let text = capture_app(&a, 120);
+        assert!(text.contains("laptop"));
+        assert!(text.contains("Viewer-authenticated helper evidence"));
+        assert!(text.contains("Reachability from selected device: unknown"));
+        assert!(rx.try_recv().is_err());
+    }
+    #[test]
+    fn network_peer_selection_survives_lan_reordering_and_actions_target_peer() {
+        let (mut a, rx) = queued_app();
+        network_fixture(&mut a);
+        a.network_selected = 1;
+        a.apply(Reply {
+            device: 0,
+            generation: a.generation,
+            op: Operation::NetworkCandidates,
+            result: Ok(
+                serde_json::json!({"candidates":[{"address":"192.0.2.0","interface":"eth0"}]}),
+            ),
+            preview: None,
+        });
+        assert_eq!(a.network_selected, 1);
+        assert_eq!(a.command_context(), Some((1, "~".into())));
+        a.execute(Action::New);
+        assert!(matches!(a.dialog, Some(Dialog::Provider(1, _))));
+        a.dialog = None;
+        a.execute(Action::Files);
+        assert_eq!(a.browser.as_ref().unwrap().device, 1);
+        assert!(rx
+            .try_iter()
+            .any(|t| t.device == 1 && matches!(t.op, Operation::List { .. })));
+    }
+    #[test]
+    fn add_device_modal_is_compact_and_keeps_contextual_keys() {
+        let (mut a, _rx) = queued_app();
+        a.execute(Action::Add);
+        let text = capture_app(&a, 100);
+        assert!(text.contains("Add device"));
+        assert!(!text.contains("Enter confirm"));
+        assert!(!text.contains("Escape cancel"));
+        a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(a.input.is_none());
+        assert!(a.pending_add.is_none());
     }
     #[test]
     fn network_numeric_order_stale_port_and_linklocal_enrollment() {
@@ -6498,7 +6763,7 @@ mod tests {
                         a.device = 2;
                     }
                     if state == "menu" || state == "account" {
-                        a.network_selected = 2;
+                        a.network_selected = a.devices.len() + 2;
                         a.open_neighbor();
                     }
                     if state == "account" {
@@ -6558,7 +6823,7 @@ mod tests {
         assert!(next.iter().all(|t| t.device == 4));
         assert_eq!(a.network_inflight.len(), 4);
         a.network.insert(1, serde_json::json!({"candidates":[{"address":"192.0.2.1","interface":"eth0","source":"neighbor","ssh":{"state":"unknown"}}]}));
-        a.network_selected = 2;
+        a.network_selected = a.devices.len() + 2;
         a.open_neighbor();
         assert!(matches!(a.dialog, Some(Dialog::Neighbor(1, _))));
         a.device = 1;
@@ -6577,9 +6842,9 @@ mod tests {
         let (mut a, _rx) = queued_app();
         network_fixture(&mut a);
         a.network.insert(1, serde_json::json!({"candidates":[{"address":"192.0.2.1","interface":"eth0","source":"neighbor"}]}));
-        a.network_selected = 2;
+        a.network_selected = a.devices.len() + 2;
         a.apply(Reply {device:0, generation:a.generation, op:Operation::NetworkCandidates, result:Ok(serde_json::json!({"candidates":[{"address":"192.0.2.0","interface":"eth0","source":"neighbor"}]})), preview:None});
-        assert_eq!(a.network_selected, 1);
+        assert_eq!(a.network_selected, a.devices.len() + 1);
         assert_eq!(a.network_device(), Some(1));
     }
     #[test]

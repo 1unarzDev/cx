@@ -19,6 +19,15 @@ fn integrated_tree_and_resume() {
     let source = t.path().join("source");
     std::fs::create_dir(&source).unwrap();
     std::fs::create_dir(source.join("nested")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            source.join("nested"),
+            std::fs::Permissions::from_mode(0o750),
+        )
+        .unwrap();
+    }
     std::fs::write(source.join("hello\u{1b}[2J.txt"), b"hello world").unwrap();
     std::fs::write(source.join("nested/zero"), b"").unwrap();
     #[cfg(unix)]
@@ -196,4 +205,52 @@ fn integrated_tree_and_resume() {
     std::fs::write(saved, serde_json::to_vec(&collision).unwrap()).unwrap();
     collision.destination_path = t.path().join("other").to_str().unwrap().into();
     assert!(transfers::start(&collision).is_err());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(destination.join("source/nested"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o750
+        );
+        let selected = t.path().join("selected");
+        let outside = t.path().join("outside");
+        let moved = t.path().join("moved");
+        std::fs::create_dir(&selected).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let operation = model::Operation::ReceivePrepare {
+            path: selected.join("file").to_str().unwrap().into(),
+            key: "swap".into(),
+            source_identity: "source".into(),
+            total: 3,
+            conflict: "overwrite".into(),
+            mode: 0o600,
+        };
+        dispatch(operation).unwrap();
+        std::fs::rename(&selected, &moved).unwrap();
+        std::os::unix::fs::symlink(&outside, &selected).unwrap();
+        assert!(dispatch(model::Operation::ReceiveChunk {
+            key: "swap".into(),
+            offset: 0,
+            data: "YWJj".into()
+        })
+        .is_err());
+        assert!(dispatch(model::Operation::Mkdir {
+            path: selected.join("injected").to_str().unwrap().into()
+        })
+        .is_err());
+        assert!(!outside.join("file").exists());
+        assert!(!outside.join("injected").exists());
+        std::fs::remove_file(&selected).unwrap();
+        std::fs::rename(&moved, &selected).unwrap();
+        dispatch(model::Operation::ReceiveChunk {
+            key: "swap".into(),
+            offset: 0,
+            data: "YWJj".into(),
+        })
+        .unwrap();
+    }
 }

@@ -106,6 +106,8 @@ impl Drop for Lock {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Entry {
+    #[serde(default)]
+    created: bool,
     source: String,
     destination: String,
     kind: String,
@@ -450,6 +452,7 @@ fn collect(
     }
     let identity = text(&metadata, "identity")?.to_owned();
     entries.push(Entry {
+        created: false,
         source: source.into(),
         destination: destination.into(),
         kind: kind.clone(),
@@ -641,6 +644,7 @@ fn worker_inner(spec: &TransferSpec) -> Result<()> {
                                 path: entry.destination.clone(),
                             },
                         )?;
+                        job.entries[index].created = true;
                     } else if current["kind"] != "directory" {
                         bail!("directory destination conflicts with a non-directory");
                     }
@@ -762,6 +766,23 @@ fn worker_inner(spec: &TransferSpec) -> Result<()> {
             job.bytes = job.entries.iter().map(|e| e.bytes).sum();
             job.updated = now();
             write_json(&record, &job)?;
+        }
+        // Finalize newly created directories bottom-up. Existing destination
+        // directories retain their permissions; never chmod unrelated user state.
+        for entry in job
+            .entries
+            .iter()
+            .rev()
+            .filter(|e| e.kind == "directory" && e.created)
+        {
+            check_cancel(&root, &spec.key)?;
+            transport::request(
+                &spec.destination,
+                Operation::SetPermissions {
+                    path: entry.destination.clone(),
+                    mode: entry.mode,
+                },
+            )?;
         }
         // Metadata-only final validation detects source changes without huge tree hashes.
         for entry in &job.entries {

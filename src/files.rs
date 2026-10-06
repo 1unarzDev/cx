@@ -89,7 +89,11 @@ pub fn handle(op: &Operation) -> Result<Value> {
         Operation::Preview { path } => preview(&decode_path(path)?),
         Operation::Mkdir { path } => {
             let path = absolute(&decode_path(path)?)?;
-            fs::create_dir(&path).context("create directory")?;
+            let anchor = Anchor::parent(&path)?;
+            let name = Anchor::cstr(&anchor.name)?;
+            if unsafe { libc::mkdirat(anchor.dir.as_raw_fd(), name.as_ptr(), 0o777) } != 0 {
+                return Err(std::io::Error::last_os_error()).context("create anchored directory");
+            }
             Ok(json!({"path":encode_path(&path)}))
         }
         Operation::Copy {
@@ -106,6 +110,7 @@ pub fn handle(op: &Operation) -> Result<Value> {
         ),
         Operation::Jobs => jobs(&job_root()?),
         Operation::Cancel { key } => cancel(&job_root()?, key),
+        Operation::SetPermissions { path, mode } => set_permissions(&decode_path(path)?, *mode),
         Operation::FileInfo { path } => file_info(&decode_path(path)?),
         Operation::ReadChunk {
             path,
@@ -648,6 +653,190 @@ fn copy_file(
     Ok(serde_json::to_value(job)?)
 }
 
+// Keep every destination mutation anchored to a directory descriptor. Traversing
+// ancestors with O_NOFOLLOW rejects redirection through a replaced symlink.
+#[cfg(unix)]
+struct Anchor {
+    dir: File,
+    name: std::ffi::OsString,
+}
+#[cfg(unix)]
+impl Anchor {
+    fn cstr(value: &std::ffi::OsStr) -> Result<std::ffi::CString> {
+        Ok(std::ffi::CString::new(value.as_bytes())?)
+    }
+    fn parent(path: &Path) -> Result<Self> {
+        use std::os::unix::io::FromRawFd;
+        let path = absolute(path)?;
+        let parent = path.parent().context("destination has no parent")?;
+        let mut dir = File::open("/")?;
+        for part in parent.components() {
+            let name = match part {
+                std::path::Component::RootDir | std::path::Component::CurDir => continue,
+                std::path::Component::Normal(name) => name,
+                std::path::Component::ParentDir => std::ffi::OsStr::new(".."),
+                _ => bail!("unsupported path prefix"),
+            };
+            let name = Self::cstr(name)?;
+            let fd = unsafe {
+                libc::openat(
+                    dir.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("destination ancestor is unavailable or a symlink");
+            }
+            dir = unsafe { File::from_raw_fd(fd) };
+        }
+        Ok(Self {
+            dir,
+            name: path
+                .file_name()
+                .context("destination has no filename")?
+                .to_owned(),
+        })
+    }
+    fn parent_identity(&self) -> Result<(u64, u64)> {
+        let m = self.dir.metadata()?;
+        Ok((m.dev(), m.ino()))
+    }
+    fn open(&self, name: &std::ffi::OsStr, flags: i32) -> Result<File> {
+        use std::os::unix::io::FromRawFd;
+        let name = Self::cstr(name)?;
+        let fd = unsafe {
+            libc::openat(
+                self.dir.as_raw_fd(),
+                name.as_ptr(),
+                flags | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
+                0o600,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error()).context("open anchored regular file");
+        }
+        let file = unsafe { File::from_raw_fd(fd) };
+        if !file.metadata()?.is_file() {
+            bail!("anchored entry is not a regular file");
+        }
+        Ok(file)
+    }
+    fn mode(&self, name: &std::ffi::OsStr) -> Result<Option<u32>> {
+        let name = Self::cstr(name)?;
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe {
+            libc::fstatat(
+                self.dir.as_raw_fd(),
+                name.as_ptr(),
+                stat.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } != 0
+        {
+            let e = std::io::Error::last_os_error();
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return Ok(None);
+            }
+            return Err(e.into());
+        }
+        Ok(Some(unsafe { stat.assume_init() }.st_mode as u32))
+    }
+    fn rename(&self, from: &std::ffi::OsStr, to: &std::ffi::OsStr) -> Result<()> {
+        let from = Self::cstr(from)?;
+        let to = Self::cstr(to)?;
+        if unsafe {
+            libc::renameat(
+                self.dir.as_raw_fd(),
+                from.as_ptr(),
+                self.dir.as_raw_fd(),
+                to.as_ptr(),
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+    fn link(&self, from: &std::ffi::OsStr, to: &std::ffi::OsStr) -> Result<()> {
+        let from = Self::cstr(from)?;
+        let to = Self::cstr(to)?;
+        if unsafe {
+            libc::linkat(
+                self.dir.as_raw_fd(),
+                from.as_ptr(),
+                self.dir.as_raw_fd(),
+                to.as_ptr(),
+                0,
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+    fn unlink(&self, name: &std::ffi::OsStr) -> Result<()> {
+        let name = Self::cstr(name)?;
+        if unsafe { libc::unlinkat(self.dir.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+    fn symlink(&self, name: &std::ffi::OsStr, target: &Path) -> Result<()> {
+        let name = Self::cstr(name)?;
+        let target = Self::cstr(target.as_os_str())?;
+        if unsafe { libc::symlinkat(target.as_ptr(), self.dir.as_raw_fd(), name.as_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+    fn readlink(&self, name: &std::ffi::OsStr) -> Result<PathBuf> {
+        let name = Self::cstr(name)?;
+        let mut bytes = vec![0u8; 16384];
+        let count = unsafe {
+            libc::readlinkat(
+                self.dir.as_raw_fd(),
+                name.as_ptr(),
+                bytes.as_mut_ptr().cast(),
+                bytes.len(),
+            )
+        };
+        if count < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        if count as usize == bytes.len() {
+            bail!("symlink target exceeds limit");
+        }
+        bytes.truncate(count as usize);
+        Ok(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
+    }
+}
+fn set_permissions(path: &Path, mode: u32) -> Result<Value> {
+    use std::os::unix::io::FromRawFd;
+    if mode > 0o777 {
+        bail!("only ordinary rwx permissions are supported");
+    }
+    let anchor = Anchor::parent(path)?;
+    let name = Anchor::cstr(&anchor.name)?;
+    let fd = unsafe {
+        libc::openat(
+            anchor.dir.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let file = unsafe { File::from_raw_fd(fd) };
+    let metadata = file.metadata()?;
+    if !metadata.is_dir() && !metadata.is_file() {
+        bail!("permissions apply only to regular files and directories");
+    }
+    file.set_permissions(fs::Permissions::from_mode(mode))?;
+    Ok(json!({"path":encode_path(path),"mode":mode}))
+}
 const CHUNK_LIMIT: usize = 128 * 1024;
 fn file_info(path: &Path) -> Result<Value> {
     let path = absolute(path)?;
@@ -719,6 +908,8 @@ fn read_chunk(path: &Path, offset: u64, limit: u32, expected: &str) -> Result<Va
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Receive {
+    #[serde(default)]
+    parent_identity: Option<(u64, u64)>,
     key: String,
     requested: String,
     path: String,
@@ -763,15 +954,20 @@ fn receive_save(root: &Path, r: &Receive) -> Result<()> {
     fs::rename(path, root.join(format!("{}.json", r.key)))?;
     Ok(())
 }
-fn receive_partial(r: &Receive) -> Result<PathBuf> {
-    Ok(decode_path(&r.path)?
-        .parent()
-        .context("destination has no parent")?
-        .join(format!(".cx-{}.partial", r.key)))
+fn receive_anchor(r: &Receive) -> Result<Anchor> {
+    let a = Anchor::parent(&decode_path(&r.path)?)?;
+    if r.parent_identity != Some(a.parent_identity()?) {
+        bail!("destination parent changed; refusing redirected writes");
+    }
+    Ok(a)
+}
+fn partial_name(r: &Receive) -> std::ffi::OsString {
+    format!(".cx-{}.partial", r.key).into()
 }
 fn receive_state(r: &Receive) -> Result<Value> {
     let prefix = if r.status == "receiving" {
-        let mut f = open_read(&receive_partial(r)?)?;
+        let a = receive_anchor(r)?;
+        let mut f = a.open(&partial_name(r), libc::O_RDONLY)?;
         format!("{:x}", hash_prefix(&mut f, r.bytes)?.finalize())
     } else {
         r.sha256.clone().unwrap_or_default()
@@ -808,11 +1004,8 @@ fn receive_prepare(
             bail!("receive key belongs to another file");
         }
         if r.status == "receiving" {
-            let mut options = OpenOptions::new();
-            options.write(true);
-            #[cfg(unix)]
-            options.custom_flags(libc::O_NOFOLLOW);
-            let file = options.open(receive_partial(&r)?)?;
+            let anchor = receive_anchor(&r)?;
+            let file = anchor.open(&partial_name(&r), libc::O_RDWR)?;
             if file.metadata()?.len() < r.bytes {
                 bail!("partial file shorter than recorded progress");
             }
@@ -824,6 +1017,7 @@ fn receive_prepare(
     if let Ok(m) = fs::symlink_metadata(&path) {
         if conflict == "skip" {
             let r = Receive {
+                parent_identity: Some(Anchor::parent(&path)?.parent_identity()?),
                 key: key.into(),
                 requested: encode_path(&requested),
                 path: encode_path(&path),
@@ -864,6 +1058,7 @@ fn receive_prepare(
         bail!("destination directory does not exist");
     }
     let r = Receive {
+        parent_identity: Some(Anchor::parent(&path)?.parent_identity()?),
         key: key.into(),
         requested: encode_path(&requested),
         path: encode_path(&path),
@@ -875,11 +1070,13 @@ fn receive_prepare(
         status: "receiving".into(),
         sha256: None,
     };
-    let mut opts = OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    opts.open(receive_partial(&r)?)?.sync_all()?;
+    let anchor = receive_anchor(&r)?;
+    anchor
+        .open(
+            &partial_name(&r),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+        )?
+        .sync_all()?;
     receive_save(&root, &r)?;
     receive_state(&r)
 }
@@ -904,11 +1101,8 @@ fn receive_chunk(key: &str, offset: u64, data: &str) -> Result<Value> {
     {
         bail!("chunk exceeds source length");
     }
-    let mut opts = OpenOptions::new();
-    opts.read(true).write(true);
-    #[cfg(unix)]
-    opts.custom_flags(libc::O_NOFOLLOW);
-    let mut file = opts.open(receive_partial(&r)?)?;
+    let anchor = receive_anchor(&r)?;
+    let mut file = anchor.open(&partial_name(&r), libc::O_RDWR)?;
     if offset < r.bytes {
         if offset + bytes.len() as u64 > r.bytes {
             bail!("chunk overlaps checkpoint");
@@ -952,41 +1146,43 @@ fn receive_finalize(key: &str, checksum: &str) -> Result<Value> {
     if r.bytes != r.total {
         bail!("partial is not complete");
     }
-    let partial = receive_partial(&r)?;
-    let destination = decode_path(&r.path)?;
-    if r.status == "finalizing" && !partial.try_exists()? {
-        let mut file = open_read(&destination)?;
+    let anchor = receive_anchor(&r)?;
+    let partial = partial_name(&r);
+    if r.status == "finalizing" && anchor.mode(&partial)?.is_none() {
+        let mut file = anchor.open(&anchor.name, libc::O_RDONLY)?;
         if file.metadata()?.len() != r.total
             || format!("{:x}", hash_prefix(&mut file, r.total)?.finalize()) != checksum
         {
             bail!("destination integrity mismatch on reconciliation");
         }
     } else {
-        let mut file = open_read(&partial)?;
+        let mut file = anchor.open(&partial, libc::O_RDONLY)?;
         if file.metadata()?.len() != r.total
             || format!("{:x}", hash_prefix(&mut file, r.total)?.finalize()) != checksum
         {
             bail!("partial integrity mismatch");
         }
         #[cfg(unix)]
-        fs::set_permissions(&partial, fs::Permissions::from_mode(r.mode))?;
+        file.set_permissions(fs::Permissions::from_mode(r.mode))?;
         file.sync_all()?;
         r.sha256 = Some(checksum.into());
         r.status = "finalizing".into();
         receive_save(&root, &r)?;
         if r.conflict == "overwrite" {
-            if let Ok(m) = fs::symlink_metadata(&destination) {
-                if !m.is_file() {
-                    bail!("destination changed to a non-regular file");
-                }
+            if anchor
+                .mode(&anchor.name)?
+                .is_some_and(|mode| mode & libc::S_IFMT != libc::S_IFREG)
+            {
+                bail!("destination changed to a non-regular entry");
             }
-            fs::rename(&partial, &destination)?;
+            anchor.rename(&partial, &anchor.name)?;
         } else {
-            fs::hard_link(&partial, &destination)
+            anchor
+                .link(&partial, &anchor.name)
                 .context("destination appeared before finalization")?;
-            fs::remove_file(&partial)?;
+            anchor.unlink(&partial)?;
         }
-        File::open(destination.parent().context("destination has no parent")?)?.sync_all()?;
+        anchor.dir.sync_all()?;
     }
     r.status = "complete".into();
     r.sha256 = Some(checksum.into());
@@ -996,6 +1192,8 @@ fn receive_finalize(key: &str, checksum: &str) -> Result<Value> {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SymlinkReceive {
+    #[serde(default)]
+    parent_identity: Option<(u64, u64)>,
     key: String,
     requested: String,
     path: String,
@@ -1052,6 +1250,7 @@ fn receive_symlink(path: &Path, target: &Path, conflict: &str, key: &str) -> Res
                 }
             }
             SymlinkReceive {
+                parent_identity: Some(Anchor::parent(&chosen)?.parent_identity()?),
                 key: key.into(),
                 requested: encode_path(&requested),
                 path: encode_path(&chosen),
@@ -1078,35 +1277,38 @@ fn receive_symlink(path: &Path, target: &Path, conflict: &str, key: &str) -> Res
             return Ok(json!({"path":r.path,"status":r.status}));
         }
         save(&r)?;
-        let path = decode_path(&r.path)?;
-        let parent = path.parent().context("no parent")?;
-        let temp = parent.join(format!(".cx-{key}.symlink.partial"));
-        if r.status == "finalizing"
-            && fs::symlink_metadata(&temp).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
-        {
-            if fs::read_link(&path)? != target {
+        let anchor = Anchor::parent(&decode_path(&r.path)?)?;
+        if r.parent_identity != Some(anchor.parent_identity()?) {
+            bail!("symlink destination parent changed");
+        }
+        let temp: std::ffi::OsString = format!(".cx-{key}.symlink.partial").into();
+        if r.status == "finalizing" && anchor.mode(&temp)?.is_none() {
+            if anchor.readlink(&anchor.name)? != target {
                 bail!("finalized symlink target changed");
             }
         } else {
-            if let Ok(m) = fs::symlink_metadata(&temp) {
-                if !m.is_symlink() || fs::read_link(&temp)? != target {
+            if let Some(mode) = anchor.mode(&temp)? {
+                if mode & libc::S_IFMT != libc::S_IFLNK || anchor.readlink(&temp)? != target {
                     bail!("symlink partial does not belong to this job");
                 }
             } else {
-                std::os::unix::fs::symlink(target, &temp)?;
+                anchor.symlink(&temp, target)?;
             }
             r.status = "finalizing".into();
             save(&r)?;
             if conflict == "overwrite" {
-                if fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
+                if anchor
+                    .mode(&anchor.name)?
+                    .is_some_and(|mode| mode & libc::S_IFMT == libc::S_IFDIR)
+                {
                     bail!("destination changed to a directory");
                 }
-                fs::rename(&temp, &path)?;
+                anchor.rename(&temp, &anchor.name)?;
             } else {
-                fs::hard_link(&temp, &path)?;
-                fs::remove_file(&temp)?;
+                anchor.link(&temp, &anchor.name)?;
+                anchor.unlink(&temp)?;
             }
-            File::open(parent)?.sync_all()?;
+            anchor.dir.sync_all()?;
         }
         r.status = "complete".into();
         save(&r)?;
@@ -1324,6 +1526,27 @@ mod tests {
             decode_path(list(&out).unwrap()["parent"].as_str().unwrap()).unwrap(),
             d.path()
         );
+    }
+    #[test]
+    #[cfg(unix)]
+    fn anchored_directory_swap_never_redirects_writes() {
+        let d = tempdir().unwrap();
+        let selected = d.path().join("selected");
+        let outside = d.path().join("outside");
+        let moved = d.path().join("moved");
+        fs::create_dir(&selected).unwrap();
+        fs::create_dir(&outside).unwrap();
+        let anchor = Anchor::parent(&selected.join("file")).unwrap();
+        fs::rename(&selected, &moved).unwrap();
+        std::os::unix::fs::symlink(&outside, &selected).unwrap();
+        anchor
+            .open(&anchor.name, libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL)
+            .unwrap()
+            .write_all(b"owned")
+            .unwrap();
+        assert!(!outside.join("file").exists());
+        assert_eq!(fs::read(moved.join("file")).unwrap(), b"owned");
+        assert!(Anchor::parent(&selected.join("later")).is_err());
     }
     #[test]
     fn directory_copy_is_honestly_unsupported() {

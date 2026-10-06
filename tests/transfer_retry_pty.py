@@ -33,7 +33,7 @@ with tempfile.TemporaryDirectory(prefix='cx-retry-') as temporary:
     def send(keys): os.write(master,keys);read()
     def text(): return '\n'.join(screen.display)
     try:
-        read(1);send(b't')
+        read(1);send(b'T')
         deadline=time.monotonic()+15
         while not ('Permission' in text() and 'denied' in text()) and time.monotonic()<deadline: read(.1)
         assert 'Permission' in text() and 'denied' in text(),text()

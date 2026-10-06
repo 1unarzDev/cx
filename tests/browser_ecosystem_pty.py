@@ -73,7 +73,9 @@ for width, height in [(120, 40), (80, 24), (48, 24)]:
             assert 'Transfers · c cancel' not in text(), text()
             capture('copied')
             # Rename uses the hovered file and preserves other selection state.
-            filter_name('alpha'); wait_for(lambda: 'alpha.txt' in text()); send(b'r\x15renamed.txt\r')
+            filter_name('alpha'); wait_for(lambda: 'alpha.txt' in text()); send(b'r'); capture('rename-panel')
+            assert 'Rename · Enter' not in text() and 'Enter confirm' not in text(),text()
+            send(b'\x15renamed.txt\r')
             wait_for(lambda: (destination/'renamed.txt').exists())
             filter_name('renamed'); send(b'd'); assert 'permanently?' in text()
             send(b'\r'); assert (destination/'renamed.txt').exists()  # Cancel default
@@ -88,9 +90,22 @@ for width, height in [(120, 40), (80, 24), (48, 24)]:
             assert 'No undo.' in text() and 'folders include all contents' in text(), text()
             assert 'Cancel' in text() and 'Copy / cut' not in text(), text()
             send(b'\r'); assert (source/'directory').is_dir()
-            send(b't'); capture('transfer-details')
+            send(b'T'); capture('transfer-details')
             assert 'Route:' in text(), text()
             assert 'Copy / cut' not in text(), text()
+            send(b'\x1b')
+            send(b't'); capture('transfer-picker')
+            assert 'destination device' in text(),text()
+            assert 'Choose device' in text() and 'p Paste' in text() and 'here' in text(),text()
+            send(b'\x1b')
+            send(b'?'); capture('help-colored-keys')
+            for row, line in enumerate(screen.display):
+                if 'Arrows / h j k l' in line:
+                    col=line.index('Arrows')
+                    assert screen.buffer[row][col].bold
+                    if width>48: assert screen.buffer[row][col].fg != 'default'
+                    break
+            else: raise AssertionError('navigation key row missing from help: '+text())
             send(b'\x1b')
             send(b'\x03'); proc.wait(timeout=4)
             assert termios.tcgetattr(slave)==before

@@ -146,6 +146,7 @@ enum Action {
     Files,
     New,
     Destination,
+    TransferTo,
     Conflict,
     Jobs,
     Shell,
@@ -180,7 +181,14 @@ const ACTIONS: &[(Action, &str)] = &[
         Action::New,
         "New session · current folder / choose workspace",
     ),
-    (Action::Destination, "Destination · choose transfer device"),
+    (
+        Action::Destination,
+        "Destination · paste clipboard on another device",
+    ),
+    (
+        Action::TransferTo,
+        "Transfer to… · choose device and folder · t",
+    ),
     (
         Action::Conflict,
         "Existing files · skip / overwrite / rename",
@@ -190,7 +198,10 @@ const ACTIONS: &[(Action, &str)] = &[
     (Action::Shell, "Start here · shell"),
     (Action::Claude, "Start here · Claude"),
     (Action::Codex, "Start here · Codex"),
-    (Action::Observe, "Observe session · read only"),
+    (
+        Action::Observe,
+        "Watch session · read-only terminal, no input",
+    ),
     (Action::Copy, "Copy selected files · c / y"),
     (Action::Cut, "Cut selected files · x"),
     (Action::Rename, "Rename hovered file · r"),
@@ -255,6 +266,7 @@ struct App {
     submitted_clipboards: HashMap<String, String>,
     watched_jobs: BTreeSet<String>,
     browser_cache: HashMap<(usize, String), Browser>,
+    file_locations: HashMap<usize, String>,
     generation: u64,
     creating: bool,
     providers: HashMap<usize, (Vec<String>, u64)>,
@@ -316,6 +328,7 @@ impl App {
             submitted_clipboards: HashMap::new(),
             watched_jobs: BTreeSet::new(),
             browser_cache: HashMap::new(),
+            file_locations: HashMap::new(),
             generation: 0,
             creating: false,
             providers: HashMap::new(),
@@ -573,6 +586,11 @@ impl App {
             Action::Work => self.view != View::Work,
             Action::Network => self.view != View::Network,
             Action::Destination | Action::Conflict => self.clipboard.is_some(),
+            Action::TransferTo => {
+                self.view == View::Files
+                    && self.browser.as_ref().is_some_and(|b| b.preview.is_none())
+                    && (self.clipboard.is_some() || !self.chosen_entries().is_empty())
+            }
             Action::Copy | Action::Cut | Action::Delete => {
                 self.view == View::Files
                     && self.browser.as_ref().is_some_and(|b| b.preview.is_none())
@@ -612,7 +630,7 @@ impl App {
         }
     }
     fn open_browser(&mut self, device: usize, path: String) {
-        self.check_providers(device);
+        self.device = device + 1;
         let show_hidden = self
             .browser
             .as_ref()
@@ -621,6 +639,7 @@ impl App {
         self.finish_visual();
         self.generation += 1;
         if let Some(old) = self.browser.take() {
+            self.file_locations.insert(old.device, old.path.clone());
             if self.browser_cache.len() >= 8 {
                 if let Some(key) = self.browser_cache.keys().next().cloned() {
                     self.browser_cache.remove(&key);
@@ -640,6 +659,25 @@ impl App {
         self.view = View::Files;
         self.focus = Focus::Workspace;
         self.refresh_browser();
+        self.check_providers(device);
+    }
+    fn select_file_device(&mut self) {
+        // Files always has one execution host; All devices returns to the local location.
+        let device = self
+            .device
+            .checked_sub(1)
+            .or_else(|| self.devices.iter().position(|d| d.target.is_none()));
+        if let Some(device) = device {
+            if self.browser.as_ref().is_none_or(|b| b.device != device) {
+                let path = self
+                    .file_locations
+                    .get(&device)
+                    .cloned()
+                    .unwrap_or_else(|| "~".into());
+                self.open_browser(device, path);
+            }
+        }
+        self.focus = Focus::Devices;
     }
     fn refresh_browser(&mut self) {
         self.generation += 1;
@@ -728,6 +766,14 @@ impl App {
                 }
             }
             Action::Destination => self.choose_device(ChooseDevice::Destination),
+            Action::TransferTo => {
+                if self.clipboard.is_none() {
+                    self.execute(Action::Copy);
+                }
+                if self.clipboard.is_some() {
+                    self.choose_device(ChooseDevice::Destination);
+                }
+            }
             Action::Conflict => {
                 self.conflict = (self.conflict + 1) % 3;
                 self.notice = format!("Existing files: {}", self.conflict_policy());
@@ -769,7 +815,7 @@ impl App {
                             source_label: identity(&self.devices[b.device]),
                         });
                         self.launch_provider = None;
-                        self.notice = format!("{} {count} item{} · p pastes here · Destination… chooses another device",
+                        self.notice = format!("{} {count} item{} · p pastes here · switch device then p to paste · t chooses a destination",
                             if action == Action::Cut { "Cut" } else { "Copied" }, if count == 1 { "" } else { "s" });
                         self.finish_visual();
                         if let Some(b) = &mut self.browser {
@@ -879,8 +925,12 @@ impl App {
                     self.dialog_selected = 0;
                 }
             }
-            ChooseDevice::Files => self.open_browser(d, "~".into()),
+            ChooseDevice::Files => {
+                self.device = d + 1;
+                self.open_browser(d, "~".into());
+            }
             ChooseDevice::Destination => {
+                self.device = d + 1;
                 if !self.destination_active {
                     self.other_browser = self.browser.take();
                     self.destination_active = true;
@@ -1862,13 +1912,10 @@ impl App {
                 KeyCode::Char('d') => Some(Action::Delete),
                 KeyCode::Char('f') => Some(Action::Filter),
                 KeyCode::Char('p') => Some(Action::Paste),
-                KeyCode::Char('t') => Some(Action::Jobs),
+                KeyCode::Char('t') => Some(Action::TransferTo),
+                KeyCode::Char('T') => Some(Action::Jobs),
                 _ => None,
             };
-            if key.code == KeyCode::Char('T') {
-                self.transfer_drawer = !self.transfer_drawer;
-                return;
-            }
             if key.code == KeyCode::Char('Y') {
                 self.clipboard = None;
                 self.notice = "Clipboard cleared · files unchanged".into();
@@ -1890,6 +1937,7 @@ impl App {
         }
         match key.code {
             KeyCode::Char('?') | KeyCode::F(1) => self.help = true,
+            KeyCode::Char('T') => self.execute(Action::Jobs),
             KeyCode::Char('/') => {
                 self.finish_visual();
                 self.input = Some(Input::Search);
@@ -1941,8 +1989,12 @@ impl App {
                         self.execute(*action)
                     };
                 } else if self.focus == Focus::Devices {
+                    if self.view == View::Files {
+                        self.select_file_device();
+                    } else {
+                        self.refresh();
+                    }
                     self.focus = Focus::Workspace;
-                    self.refresh();
                 } else {
                     match self.view {
                     View::Work => { if let Some((d,s)) = self.selected_session() { self.pending_attach = Some((d,s,false)); } },
@@ -1952,7 +2004,6 @@ impl App {
                 }
             }
             KeyCode::Esc => {
-                self.generation += 1;
                 if self.view == View::Files {
                     if let Some(b) = &mut self.browser {
                         if b.preview.take().is_none() {
@@ -1968,7 +2019,11 @@ impl App {
                                 b.selected = 0;
                             } else {
                                 self.view = View::Work;
+                                self.generation += 1;
+                                b.loading = false;
                             }
+                        } else {
+                            self.generation += 1;
                         }
                     }
                 } else if !self.search.is_empty() {
@@ -1982,6 +2037,9 @@ impl App {
     }
     fn switch_pane(&mut self) {
         std::mem::swap(&mut self.browser, &mut self.other_browser);
+        if let Some(browser) = &self.browser {
+            self.device = browser.device + 1;
+        }
         self.destination_active = !self.destination_active;
         self.generation += 1;
         self.refresh_browser();
@@ -2051,7 +2109,7 @@ impl App {
         }
     }
     fn move_selection(&mut self, delta: isize) {
-        if self.view == View::Files {
+        if self.view == View::Files && self.focus == Focus::Workspace {
             if let Some(b) = &mut self.browser {
                 if b.preview.is_some() {
                     b.preview_scroll = b.preview_scroll.saturating_add_signed(delta as i16);
@@ -2064,7 +2122,9 @@ impl App {
         } else if self.focus == Focus::Devices {
             self.device = shift(self.device, delta, self.devices.len() + 1);
             self.selected = 0;
-            if self.view != View::Files {
+            if self.view == View::Files {
+                self.select_file_device();
+            } else {
                 self.refresh();
             }
         } else if self.view == View::Files {
@@ -2241,6 +2301,7 @@ fn sidebar_actions(app: &App) -> Vec<(Action, &'static str)> {
         a.insert(0, (Action::Work, "Work"));
     }
     if app.view == View::Files {
+        a.insert(0, (Action::TransferTo, "t Transfer to…"));
         if let Some(provider) = &app.launch_provider {
             let action = match provider.as_str() {
                 "claude" => Action::Claude,
@@ -2284,7 +2345,7 @@ fn sidebar_actions(app: &App) -> Vec<(Action, &'static str)> {
         }
     }
     if app.selected_session().is_some() && app.view == View::Work {
-        a.insert(2, (Action::Observe, "Observe"));
+        a.insert(2, (Action::Observe, "Watch · read-only"));
     }
     a
 }
@@ -2827,7 +2888,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             } else {
                 lines
             })
-            .block(block("Transfers · t open · T hide".into(), false)),
+            .block(block("Transfers · T details".into(), false)),
             split_workspace[1],
         );
     }
@@ -3126,7 +3187,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         hints.retain(|(_, label)| !matches!(*label, "Search" | "Focus"));
         hints.truncate(4);
         if app.dialog.is_none() && app.input.is_none() && !app.help && app.view == View::Files {
-            hints[3] = ("?", "All keys");
+            hints[3] = ("t / T", "Send / jobs");
         }
     }
     let rows = Layout::default()
@@ -3188,15 +3249,16 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             );
         } else {
             frame.render_widget(
-                Paragraph::new(format!(
-                    "> {}\nEnter confirm · Escape cancel",
-                    safe_label(&app.text)
-                ))
+                Paragraph::new(if input == Input::Rename {
+                    format!("> {}", safe_label(&app.text))
+                } else {
+                    format!("> {}\nEnter confirm · Escape cancel", safe_label(&app.text))
+                })
                 .block(block(
                     match input {
                         Input::Search => "Search",
                         Input::Add => "Add device · SSH alias or user@host",
-                        Input::Rename => "Rename · Enter saves · Escape cancels",
+                        Input::Rename => "Rename",
                         _ => "Directory name",
                     }
                     .into(),
@@ -3219,7 +3281,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 match purpose {
                     ChooseDevice::New => "New session · execution device",
                     ChooseDevice::Files => "Files · choose device",
-                    ChooseDevice::Destination => "Copy · destination device",
+                    ChooseDevice::Destination => "Transfer to · destination device",
                 }
                 .to_string(),
                 app.devices
@@ -3231,7 +3293,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                         .as_ref()
                         .map(|c| {
                             format!(
-                                "Source: {} · {}\nEnter choose · Escape cancel",
+                                "Source: {} · {}\nChoose device, browse folder, then p Paste here\nEnter choose · Escape cancel",
                                 identity(&app.devices[c.device]),
                                 format!("{} {} items", if c.cut { "cut" } else { "copy" }, c.entries.len())
                             )
@@ -3300,10 +3362,12 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                     .get(app.dialog_selected)
                     .map(|(_, j)| {
                         format!(
-                            "{}\nRoute: {}\nSource: {}\nDestination: {}",
+                            "{}\nRoute: {}\nSource: {} · {}\nDestination: {} · {}",
                             j["error"].as_str().map(safe_label).unwrap_or_else(|| format!("{} · {}", transfer_status(j), if j["operation"] == "move" { "move" } else { "copy" })),
                             safe_label(j["route"].as_str().unwrap_or("route unknown")),
+                            safe_label(j["source_host"].as_str().unwrap_or("unknown host")),
                             safe_label(j["source_display"].as_str().or(j["source_path"].as_str()).unwrap_or("")),
+                            safe_label(j["destination_host"].as_str().unwrap_or("unknown host")),
                             transfer_destination(j),
                         )
                     })
@@ -3354,19 +3418,83 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 ]
             })
             .split(rect);
-        let mut state =
-            ratatui::widgets::ListState::default().with_selected(Some(app.dialog_selected));
-        frame.render_stateful_widget(
-            List::new(labels.into_iter().map(ListItem::new).collect::<Vec<_>>())
+        let selection_style = if app.dialog_detail_focus {
+            accent()
+        } else {
+            selected_style()
+        };
+        if matches!(dialog, Dialog::Jobs) {
+            let progress_width = if parts[0].width < 60 { 10 } else { 18 };
+            let file_width = parts[0].width.saturating_sub(progress_width + 15) as usize;
+            let rows = app
+                .job_rows()
+                .into_iter()
+                .map(|(_, job)| {
+                    let status_color = match job["status"].as_str() {
+                        Some("failed" | "incomplete") => Color::Red,
+                        Some("complete") => Color::Green,
+                        _ => Color::Yellow,
+                    };
+                    let operation = if job["operation"] == "move" {
+                        "move"
+                    } else {
+                        "copy"
+                    };
+                    Row::new(vec![
+                        Cell::from(Span::styled(
+                            safe_label(job["status"].as_str().unwrap_or("unknown")),
+                            tint(status_color),
+                        )),
+                        Cell::from(Line::from(vec![
+                            Span::styled(
+                                format!("{operation} "),
+                                tint(if operation == "move" {
+                                    Color::Magenta
+                                } else {
+                                    Color::Cyan
+                                }),
+                            ),
+                            Span::raw(compact_path(
+                                &transfer_name(&job),
+                                file_width.saturating_sub(5),
+                            )),
+                        ])),
+                        Cell::from(format!(
+                            "{}/{}",
+                            human_size(job["bytes"].as_u64().unwrap_or(0)),
+                            human_size(job["total"].as_u64().unwrap_or(0))
+                        )),
+                    ])
+                })
+                .collect::<Vec<_>>();
+            let mut state = TableState::default().with_selected(Some(app.dialog_selected));
+            frame.render_stateful_widget(
+                Table::new(
+                    rows,
+                    [
+                        Constraint::Length(10),
+                        Constraint::Min(8),
+                        Constraint::Length(progress_width),
+                    ],
+                )
+                .header(Row::new(["Status", "File", "Progress"]).style(muted()))
+                .column_spacing(1)
                 .block(block(title, true))
-                .highlight_style(if app.dialog_detail_focus {
-                    accent()
-                } else {
-                    selected_style()
-                }),
-            parts[0],
-            &mut state,
-        );
+                .row_highlight_style(selection_style),
+                parts[0],
+                &mut state,
+            );
+        } else {
+            let mut state =
+                ratatui::widgets::ListState::default().with_selected(Some(app.dialog_selected));
+            frame.render_stateful_widget(
+                List::new(labels.into_iter().map(ListItem::new).collect::<Vec<_>>())
+                    .block(block(title, true))
+                    .highlight_style(selection_style),
+                parts[0],
+                &mut state,
+            );
+        }
         frame.render_widget(
             Paragraph::new(detail)
                 .wrap(Wrap { trim: false })
@@ -3378,16 +3506,104 @@ fn render(frame: &mut Frame<'_>, app: &App) {
     if app.help {
         let rect = popup(area, 76, 20);
         frame.render_widget(Clear, rect);
-        let mut help = String::from("Arrows / h j k l  navigate\nCtrl+arrows / Ctrl+h j k l  move panel focus\nEnter  enter directory / preview file / take control\nFiles: Left/h parent · Right/l enter directory\nSpace toggle + advance · v range · . hidden\nu clear selection · Y clear clipboard · Home/End/PgUp/PgDn navigate\nc/y copy · x cut · p paste here · r rename · d delete (confirm)\nf name filter (Enter finishes) · / fuzzy search\nt transfers · T drawer · Esc finish range / clear selection / clear filter\nTransfers: c cancel · r retry · Enter/Tab details · PgUp/PgDn scroll\nEscape  back     Tab / Shift+Tab  focus     /  search\nCtrl+P  actions  Ctrl+C  quit\n\nNative terminal: cx keys are suspended.\nManaged sessions: Ctrl+] returns to cx.\nExternal sessions keep their own tmux bindings.\n\nAvailable actions\n");
-        for (_, label) in ACTIONS.iter().filter(|(a, _)| app.action_enabled(*a)) {
-            help.push_str(label);
-            help.push('\n');
+        let key_style = accent().add_modifier(Modifier::BOLD);
+        let key_row = |keys: &str, description: &str| {
+            Line::from(vec![
+                Span::styled(format!("{keys:<22} "), key_style),
+                Span::raw(description.to_owned()),
+            ])
+        };
+        let mut help = vec![
+            key_row("Arrows / h j k l", "Navigate"),
+            key_row("Ctrl+arrows / hjkl", "Move panel focus (hold Ctrl)"),
+            key_row("Enter", "Open / enter session with input"),
+            key_row("Escape", "Back / clear current mode"),
+            key_row("Tab / Shift+Tab", "Next / previous panel"),
+            key_row("/", "Search"),
+            key_row("Ctrl+P", "Actions"),
+            key_row("Ctrl+C", "Quit cx; work keeps running"),
+        ];
+        if app.view == View::Files {
+            help.push(Line::from(Span::styled("Files", key_style)));
+            for (keys, description) in [
+                ("Left/h · Right/l", "Parent / enter directory"),
+                ("Space", "Select and advance"),
+                ("v · u", "Visual range / clear selection"),
+                (".", "Show / hide hidden files"),
+                ("f", "Filter names"),
+                (
+                    "c/y · x",
+                    "Copy / cut, then choose another folder or device",
+                ),
+                ("p · Y", "Paste here / clear clipboard"),
+                ("t", "Transfer to… choose device, folder, then p"),
+                ("T", "Transfer jobs and results"),
+                ("r · d", "Rename / confirm permanent deletion"),
+                ("Home/End · PgUp/PgDn", "First/last file / page"),
+            ] {
+                help.push(key_row(keys, description));
+            }
+        }
+        if matches!(app.dialog, Some(Dialog::Jobs)) {
+            help.push(Line::from(Span::styled("Transfer jobs", key_style)));
+            help.extend([
+                key_row("c · r", "Cancel / retry saved job"),
+                key_row("Enter / Tab", "Focus details"),
+                key_row("PgUp/PgDn", "Scroll details"),
+            ]);
+        }
+        help.push(Line::default());
+        help.push(Line::raw("Native terminals own their input."));
+        help.push(key_row("Ctrl+]", "Return from a managed session"));
+        help.push(Line::raw("External sessions keep their tmux bindings."));
+        help.push(Line::default());
+        help.push(Line::from(Span::styled(
+            "Available actions · Ctrl+P",
+            key_style,
+        )));
+        for (action, label) in ACTIONS.iter().filter(|(a, _)| app.action_enabled(*a)) {
+            let keys = match action {
+                Action::TransferTo => "t",
+                Action::Jobs => "T",
+                Action::Copy => "c / y",
+                Action::Cut => "x",
+                Action::Rename => "r",
+                Action::Delete => "d",
+                Action::Hidden => ".",
+                Action::Filter => "f",
+                Action::Select => "Space",
+                Action::Visual => "v",
+                Action::Paste => "p",
+                Action::Help => "? / F1",
+                Action::Quit => "Ctrl+C",
+                _ => "",
+            };
+            let description = if matches!(
+                action,
+                Action::TransferTo
+                    | Action::Copy
+                    | Action::Cut
+                    | Action::Rename
+                    | Action::Delete
+                    | Action::Hidden
+                    | Action::Filter
+                    | Action::Select
+                    | Action::Visual
+            ) {
+                label
+                    .rsplit_once(" · ")
+                    .map(|(description, _)| description)
+                    .unwrap_or(label)
+            } else {
+                label
+            };
+            help.push(key_row(keys, description));
         }
         frame.render_widget(
             Paragraph::new(help)
                 .wrap(Wrap { trim: false })
                 .scroll((app.help_scroll, 0))
-                .block(block("Help · ↑↓ scroll · Escape closes".into(), true)),
+                .block(block("Help".into(), true)),
             rect,
         );
     }
@@ -4048,6 +4264,89 @@ fn start_update_check(tx: &mpsc::Sender<UpdateEvent>, force: bool) {
     });
 }
 
+// Four workers permit independent hosts to progress while preserving FIFO per SSH target.
+// Both the incoming channel and scheduler backlog are bounded. Sleeping workers use a
+// condition variable, so an idle fleet causes no polling or redraw loop.
+fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender<Reply>) {
+    use std::sync::{Arc, Condvar, Mutex};
+    #[derive(Default)]
+    struct Queue {
+        tasks: VecDeque<Task>,
+        busy: BTreeSet<String>,
+        closed: bool,
+    }
+    fn endpoint(task: &Task) -> String {
+        task.execution.target.clone().unwrap_or_else(|| {
+            if matches!(
+                task.op,
+                Operation::List { .. } | Operation::ListPage { .. } | Operation::Preview { .. }
+            ) {
+                "<local-files-read>".into()
+            } else {
+                "<local>".into()
+            }
+        })
+    }
+    let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
+    let input = shared.clone();
+    thread::spawn(move || {
+        let (lock, changed) = &*input;
+        while let Ok(task) = rx.recv() {
+            let mut queue = lock.lock().unwrap();
+            while queue.tasks.len() >= 32 {
+                queue = changed.wait(queue).unwrap();
+            }
+            queue.tasks.push_back(task);
+            changed.notify_all();
+        }
+        lock.lock().unwrap().closed = true;
+        changed.notify_all();
+    });
+    for _ in 0..4 {
+        let shared = shared.clone();
+        let replies = replies.clone();
+        thread::spawn(move || {
+            let (lock, changed) = &*shared;
+            loop {
+                let (task, host) = {
+                    let mut queue = lock.lock().unwrap();
+                    loop {
+                        if let Some(index) = queue
+                            .tasks
+                            .iter()
+                            .position(|task| !queue.busy.contains(&endpoint(task)))
+                        {
+                            let task = queue.tasks.remove(index).unwrap();
+                            let host = endpoint(&task);
+                            queue.busy.insert(host.clone());
+                            changed.notify_all();
+                            break (task, host);
+                        }
+                        if queue.closed && queue.tasks.is_empty() {
+                            return;
+                        }
+                        queue = changed.wait(queue).unwrap();
+                    }
+                };
+                let result = transport::request(&task.execution, task.op.clone());
+                let delivered = replies
+                    .send(Reply {
+                        device: task.device,
+                        op: task.op,
+                        generation: task.generation,
+                        result,
+                    })
+                    .is_ok();
+                lock.lock().unwrap().busy.remove(&host);
+                changed.notify_all();
+                if !delivered {
+                    return;
+                }
+            }
+        });
+    }
+}
+
 pub fn run() -> Result<()> {
     run_restored(None)
 }
@@ -4064,23 +4363,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     anyhow::ensure!(!devices.is_empty(), "No local device available");
     let (tx, rx) = mpsc::sync_channel::<Task>(32);
     let (result_tx, result_rx) = mpsc::channel::<Reply>();
-    // One worker bounds simultaneous probes. No redraw-triggered SSH or credential prompts.
-    thread::spawn(move || {
-        while let Ok(task) = rx.recv() {
-            let result = transport::request(&task.execution, task.op.clone());
-            if result_tx
-                .send(Reply {
-                    device: task.device,
-                    op: task.op,
-                    generation: task.generation,
-                    result,
-                })
-                .is_err()
-            {
-                break;
-            }
-        }
-    });
+    start_task_workers(rx, result_tx);
     let mut app = App::new(devices, tx);
     load_cache(&mut app);
     if let Some(name) = restore {
@@ -4088,13 +4371,13 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             app.notice = safe_text(&format!("Update restored workspace defaults: {error:#}"));
         }
     }
+    if restore.is_some() && app.view == View::Files {
+        app.refresh_browser();
+    }
     app.refresh_work();
     for d in 0..app.devices.len() {
         app.check_providers(d);
         app.send(d, Operation::TransferJobs);
-    }
-    if restore.is_some() && app.view == View::Files {
-        app.refresh_browser();
     }
     let mut screen = Screen::new().context("open terminal workspace")?;
     let mut dirty = true;
@@ -4405,6 +4688,99 @@ mod tests {
     }
     fn press(a: &mut App, c: char) {
         a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    #[test]
+    fn file_device_selection_retargets_only_the_focused_location() {
+        let (mut a, rx) = file_app();
+        a.device = 1;
+        a.focus = Focus::Devices;
+        a.other_browser = Some(Browser::new(0, "/destination".into()));
+        press(&mut a, 'j');
+        assert_eq!(a.device, 2);
+        assert_eq!(
+            a.browser.as_ref().unwrap().device,
+            1,
+            "Files must follow selected device"
+        );
+        assert_eq!(a.browser.as_ref().unwrap().path, "~");
+        assert_eq!(a.other_browser.as_ref().unwrap().path, "/destination");
+        assert!(a.focus == Focus::Devices);
+        assert!(rx
+            .try_iter()
+            .any(|t| t.device == 1 && matches!(t.op, Operation::List { .. })));
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.focus == Focus::Workspace);
+        assert_eq!(a.browser.as_ref().unwrap().device, 1);
+    }
+    #[test]
+    fn transfer_shortcut_captures_selection_and_opens_destination_picker() {
+        let (mut a, _rx) = file_app();
+        press(&mut a, ' ');
+        press(&mut a, 't');
+        assert!(matches!(
+            a.dialog,
+            Some(Dialog::Device(ChooseDevice::Destination))
+        ));
+        assert_eq!(a.clipboard.as_ref().unwrap().entries[0].name, "alpha.txt");
+        assert!(!a.clipboard.as_ref().unwrap().cut);
+        assert_eq!(a.browser.as_ref().unwrap().device, 0);
+        a.chosen_device(1, ChooseDevice::Destination);
+        assert_eq!(a.browser.as_ref().unwrap().device, 1);
+        assert_eq!(a.other_browser.as_ref().unwrap().device, 0);
+        assert_eq!(a.device, 2);
+        a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        a.view = View::Files;
+        a.focus = Focus::Workspace;
+        press(&mut a, 'T');
+        assert!(matches!(a.dialog, Some(Dialog::Jobs)));
+    }
+    #[test]
+    fn device_switch_restores_folder_and_does_not_consume_cut_clipboard() {
+        let (mut a, _rx) = file_app();
+        press(&mut a, 'x');
+        a.device = 1;
+        a.focus = Focus::Devices;
+        a.browser.as_mut().unwrap().preview = Some("preview".into());
+        press(&mut a, 'j');
+        assert_eq!(a.browser.as_ref().unwrap().device, 1);
+        press(&mut a, 'k');
+        assert_eq!(a.browser.as_ref().unwrap().device, 0);
+        assert_eq!(a.browser.as_ref().unwrap().path, "/files");
+        assert!(a.clipboard.as_ref().unwrap().cut);
+        assert_eq!(a.clipboard.as_ref().unwrap().device, 0);
+        a.execute(Action::TransferTo);
+        assert!(a.clipboard.as_ref().unwrap().cut);
+        assert!(matches!(
+            a.dialog,
+            Some(Dialog::Device(ChooseDevice::Destination))
+        ));
+    }
+    #[test]
+    fn escape_clearing_selection_does_not_discard_inflight_directory_listing() {
+        let (mut a, _rx) = file_app();
+        let b = a.browser.as_mut().unwrap();
+        b.loading = true;
+        b.marked.insert("/files/alpha.txt".into());
+        let generation = a.generation;
+        a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        a.apply(Reply { device: 0, op: Operation::List { path: "/files".into() }, generation,
+            result: Ok(serde_json::json!({"path":"/files", "entries":[{"name":"fresh.txt","path":"/files/fresh.txt","kind":"file","size":1}]})) });
+        assert!(!a.browser.as_ref().unwrap().loading);
+        assert_eq!(a.visible_entries()[0].name, "fresh.txt");
+    }
+    #[test]
+    fn opening_remote_files_from_all_devices_keeps_execution_context_on_enter() {
+        let (mut a, rx) = queued_app();
+        a.device = 0;
+        a.open_browser(1, "/project".into());
+        assert_eq!(a.device, 2);
+        a.focus = Focus::Devices;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(a.browser.as_ref().unwrap().device, 1);
+        assert_eq!(a.browser.as_ref().unwrap().path, "/project");
+        assert!(!rx
+            .try_iter()
+            .any(|t| t.device == 0 && matches!(t.op, Operation::List { .. })));
     }
     #[test]
     fn space_advances_range_shrinks_and_escape_preserves_then_clears_marks() {

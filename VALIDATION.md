@@ -86,3 +86,26 @@ Interaction reference inspected: installed `/usr/bin/yazi` keymap overrides and 
 Limitations: cross-host directory/symlink cut refused; same-host cross-filesystem cut refuses safely; stable source/destination required (no distributed snapshot); large-tree stress/job-registry retention beyond bounded4096 scan unresolved; permanent delete has no undo. Earlier retry/launch-status gaps are resolved. These captures prove allocated PTY behavior, not physical Foot/Kitty/Ghostty or all themes/hardware. Broader sharing/enrollment/release acceptance remains incomplete.
 
 Deployment PASS: final optimized binary atomically installed under each per-user maintenance lock on innovation and verybeautifulserver. Build and both installed binaries match SHA-256 de16d78818e9efa7a5d89b61fc5c4fda6b10bd011073a0fca3a952d0701008e0. Server command lookup confirms Claude/Codex absent after deployment. Tranquility deployment BLOCKED: fresh `ssh -o BatchMode=yes -o ConnectTimeout=6 tranquility 'id -un'` reports No route to host. No mesh/trust/agent settings changed. Reopen cx to use this viewer build; managed sessions remain running.
+
+## Files device switching and direct-transfer feedback
+
+Reproduction on 5cd85f7: `cargo test --bin cx file_device_selection_retargets_only_the_focused_location --quiet` FAIL (browser.device0 after selecting device1). `uv run --with pyte python tests/browser_device_loading_pty.py target/release/cx` FAIL (local directory still Loading after2.5 seconds while synthetic SSH sleeps4 seconds). No live SSH settings changed by the failure fixture.
+
+Fix: retarget the focused Files location on device selection, preserve per-host folders and independent clipboard/panes; synchronize sidebar context on pane focus; bound concurrent metadata workers to4, serialize per SSH target, separate local file reads from potentially remote-blocking job/provider coordination; prioritize restored Files before background probes. Clearing a selection with Escape no longer invalidates an in-flight directory list.
+
+Independent review `/tmp/cx-files-device-queue-review.md` identified three P2 gaps: x→t lost cut intent, pane switches retained the wrong sidebar context, and local job coordination could still block Files on remote owners. All corrected; cut intent and focused-host behavior have regression checks. No shared host services/networking changed.
+
+Focused independent rereview `/tmp/cx-file-ui-final-rereview.md` confirmed those corrections and found opening remote Files from All devices retained stale sidebar context. Root synchronized context in open_browser; regression `opening_remote_files_from_all_devices_keeps_execution_context_on_enter` and full164-test suite PASS after correction. T is also available for jobs outside Files; input fields retain printable text ownership.
+
+| Result | Command/scenario | Evidence |
+|---|---|---|
+| PASS | Full locked test suite: 164 passed, one existing live session test ignored; optimized build | `/tmp/cx-file-device-tests.log`, `/tmp/cx-file-device-build.log` |
+| PASS | `uv run --with pyte python tests/browser_device_loading_pty.py target/release/cx`: local listing ~102ms with4-second slow SSH fixture, sidebar retarget/return and clipboard preservation, restored termios | `local-evidence/browser-device-loading/results.json` |
+| PASS | `uv run --with pyte python tests/browser_devices_live_pty.py target/release/cx`: actual read-only innovation Files→verybeautifulserver home listing→original local folder, clipboard retained; private viewer state, no remote writes/sessions started | `local-evidence/browser-devices-live/results.json` |
+| PASS | Browser ecosystem at120x40/80x24/48x24, including t destination picker, plain Rename title and colored/bold Help keys; actual copy/cut/delete/termios retained | `local-evidence/browser-ecosystem/results.json`, rename-panel/help-colored-keys/transfer-picker captures |
+| PASS | New-viewer durable retry and actual Files folder shell attach/return | `local-evidence/browser-retry/results.json`, `local-evidence/browser-live-launch-device-fix/results.json` |
+| PASS | Existing workspace flow at3 sizes | `local-evidence/browser-workspace-device-fix/results.json` |
+
+Interaction: t chooses transfer device/folder (preserves existing copy/cut clipboard; captures selection for copy if empty), p submits, T opens aligned Status/File/Progress jobs and endpoint details. Observe is now Watch · read-only. No physical-emulator success is inferred from these allocated PTYs. Tranquility availability and broader acceptance limits remain as previously recorded.
+
+Deployment PASS: installed final build on innovation and verybeautifulserver under maintenance locks; matching SHA-256 5795afe7cc360742966e34826dc73ef814dc204a775da926ee837d6ac1859af3. Tranquility BLOCKED: fresh SSH still reports No route to host. Physical user confirmation requested for repaired switching and t picker; pending, not a pass.

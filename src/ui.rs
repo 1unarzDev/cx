@@ -150,10 +150,7 @@ enum Action {
     TransferTo,
     Conflict,
     Jobs,
-    Shell,
     Command,
-    Claude,
-    Codex,
     Observe,
     Refresh,
     Network,
@@ -604,6 +601,7 @@ impl App {
     fn action_enabled(&self, action: Action) -> bool {
         match action {
             Action::Work => self.view != View::Work,
+            Action::New => !self.creating,
             Action::Command => self.command_context().is_some(),
             Action::Network => self.view != View::Network,
             Action::Destination | Action::Conflict => self.clipboard.is_some(),
@@ -633,18 +631,6 @@ impl App {
             }
             Action::Paste => {
                 self.view == View::Files && self.clipboard.is_some() && self.browser.is_some()
-            }
-            Action::Shell | Action::Claude | Action::Codex => {
-                self.view == View::Files
-                    && !self.creating
-                    && self.browser.as_ref().is_some_and(|b| {
-                        let provider = match action {
-                            Action::Claude => "claude",
-                            Action::Codex => "codex",
-                            _ => "shell",
-                        };
-                        self.provider_choices(b.device).contains(&provider)
-                    })
             }
             Action::Observe => self.view == View::Work && self.selected_session().is_some(),
             _ => true,
@@ -787,6 +773,9 @@ impl App {
                 }
             }
             Action::New => {
+                if self.creating {
+                    return;
+                }
                 if self.view == View::Files {
                     if let Some(browser) = &self.browser {
                         let (device, path) = (browser.device, browser.path.clone());
@@ -850,16 +839,6 @@ impl App {
             Action::Observe => {
                 if let Some((d, s)) = self.selected_session() {
                     self.pending_attach = Some((d, s, true));
-                }
-            }
-            Action::Shell | Action::Claude | Action::Codex => {
-                if let Some(b) = &self.browser {
-                    let provider = match action {
-                        Action::Claude => "claude",
-                        Action::Codex => "codex",
-                        _ => "shell",
-                    };
-                    self.start_at(b.device, b.path.clone(), provider.into());
                 }
             }
             Action::Copy | Action::Cut => {
@@ -2472,9 +2451,6 @@ fn workspace_action(action: Action) -> bool {
             | Action::Visual
             | Action::Paste
             | Action::Mkdir
-            | Action::Shell
-            | Action::Claude
-            | Action::Codex
     )
 }
 
@@ -5490,16 +5466,16 @@ mod tests {
         assert_eq!(a.provider_choices(0), vec!["shell", "claude", "codex"]);
         assert_eq!(a.provider_choices(1), vec!["shell", "codex"]);
         a.open_browser(1, "~".into());
-        assert!(a.action_enabled(Action::Codex));
-        assert!(!a.action_enabled(Action::Claude));
+        assert!(a.provider_choices(1).contains(&"codex"));
+        assert!(!a.provider_choices(1).contains(&"claude"));
         a.dialog = Some(Dialog::Provider(1, None));
         a.dialog_selected = 1;
         a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(a.launch_provider.as_deref(), Some("codex"));
         a.providers.insert(1, (vec![], transport::now()));
         assert_eq!(a.provider_choices(1), vec!["shell"]);
-        assert!(!a.action_enabled(Action::Codex));
-        assert!(a.action_enabled(Action::Shell));
+        assert!(!a.provider_choices(1).contains(&"codex"));
+        assert!(a.provider_choices(1).contains(&"shell"));
         a.providers.remove(&1);
         assert_eq!(a.provider_choices(1), vec!["shell"]);
         a.providers.insert(
@@ -5684,7 +5660,7 @@ mod tests {
         let list = rx.try_recv().unwrap();
         assert!(matches!(list.op, Operation::List { .. }));
         a.browser.as_mut().unwrap().path = "/projects/test".into();
-        a.execute(Action::Codex);
+        press(&mut a, 'n');
         let task = rx.try_recv().unwrap();
         assert_eq!(task.device, 1);
         let Operation::Create(spec) = task.op else {

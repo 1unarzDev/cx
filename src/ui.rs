@@ -3247,7 +3247,18 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         app.input,
         Some(Input::Rename | Input::Mkdir | Input::Add | Input::Palette | Input::Command)
     ) {
-        vec![("Enter", "Confirm"), ("Esc", "Cancel"), ("Ctrl U", "Clear")]
+        vec![
+            (
+                "Enter",
+                if app.input == Some(Input::Command) {
+                    "Run"
+                } else {
+                    "Confirm"
+                },
+            ),
+            ("Esc", "Cancel"),
+            ("Ctrl U", "Clear"),
+        ]
     } else if matches!(app.input, Some(Input::Search | Input::Filter)) {
         vec![
             ("↑↓", "Select"),
@@ -3386,7 +3397,13 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                                 format!(
                                     "Run command · {} · {}",
                                     identity(&app.devices[*d]),
-                                    safe_label(path)
+                                    safe_label(
+                                        app.browser
+                                            .as_ref()
+                                            .filter(|b| b.device == *d && b.path == *path)
+                                            .map(|b| b.display_path.as_str())
+                                            .unwrap_or(path)
+                                    )
                                 )
                             })
                             .unwrap_or_else(|| "Run command".into())
@@ -5569,6 +5586,22 @@ mod tests {
         assert!(
             matches!(&a.dialog, Some(Dialog::Provider(1, Some(path))) if path == "/projects/robot")
         );
+    }
+    #[test]
+    fn moving_to_client_only_host_drops_unavailable_launch_profile() {
+        let (mut a, rx) = queued_app();
+        a.view = View::Files;
+        a.browser = Some(Browser::new(1, "/server/files".into()));
+        a.launch_provider = Some("codex".into());
+        a.providers
+            .insert(1, (vec!["shell".into()], transport::now()));
+        press(&mut a, 'n');
+        assert!(
+            matches!(&a.dialog, Some(Dialog::Provider(1, Some(path))) if path == "/server/files")
+        );
+        assert!(a.launch_provider.is_none());
+        assert!(rx.try_recv().is_err());
+        assert_eq!(a.provider_choices(1), vec!["shell"]);
     }
     #[test]
     fn command_input_pins_host_folder_and_owns_printable_shortcuts() {

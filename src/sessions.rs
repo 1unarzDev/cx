@@ -478,6 +478,130 @@ pub fn list() -> Result<Vec<Session>> {
     result.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(result)
 }
+/// Stop only the exact cx-owned shell shown to the user at confirmation time.
+/// Never target personal/external tmux sessions or silently stop a provider takeover.
+pub fn stop_shell(id: &str, pid: u32, started: &str, boot_id: &str) -> Result<serde_json::Value> {
+    if id.len() != 67
+        || !id.starts_with("cx-")
+        || !id[3..].bytes().all(|b| b.is_ascii_hexdigit())
+        || pid == 0
+        || started.is_empty()
+        || started.contains("unknown")
+    {
+        bail!("invalid managed shell identity");
+    }
+    let current_boot = identity().2;
+    if boot_id.is_empty() || current_boot.is_empty() || boot_id != current_boot {
+        bail!("execution device restarted; refresh sessions before stopping work");
+    }
+    let root = state()?;
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .open(root.join("sessions.lock"))?;
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        bail!("session lock unavailable");
+    }
+    let record: Session = serde_json::from_slice(
+        &fs::read(root.join(format!("{id}.json"))).context("shell ownership record unavailable")?,
+    )?;
+    if record.id != id
+        || record.external
+        || record.provider != "shell"
+        || record.pid != pid
+        || record.started != started
+        || record.boot_id != boot_id
+    {
+        bail!("shell ownership or runtime identity changed; refresh sessions");
+    }
+    let mut target = None;
+    for session_id in ids(true)? {
+        if field(true, &session_id, "#{session_name}")? == id {
+            target = Some(session_id);
+            break;
+        }
+    }
+    let Some(target) = target else {
+        return Ok(serde_json::json!({"status": "already_stopped"}));
+    };
+    // Refuse expanded terminals: stopping a whole session must not kill unshown work.
+    let mut panes = tmux(true)?;
+    panes.args(["list-panes", "-s", "-t", &target, "-F", "#{pane_id}"]);
+    if output(panes)?.lines().count() != 1 {
+        bail!("shell has multiple panes; stop it from its terminal instead");
+    }
+    let current = inspect(true, &target)?;
+    if current.id != id
+        || current.pid != pid
+        || current.started != started
+        || current.boot_id != boot_id
+        || current.provider != "shell"
+    {
+        bail!("session changed or is running an agent; refresh sessions");
+    }
+    reject_provider_descendants(pid)?;
+    // Check again immediately before submitting an atomic tmux identity/shape guard.
+    let current = inspect(true, &target)?;
+    if current.pid != pid || current.started != started || current.provider != "shell" {
+        bail!("session changed while confirming; refresh sessions");
+    }
+    reject_provider_descendants(pid)?;
+    let created = started
+        .split_once(':')
+        .context("invalid process start identity")?
+        .0;
+    if !created.bytes().all(|b| b.is_ascii_digit()) || created.is_empty() {
+        bail!("invalid process start identity");
+    }
+    let guard = format!(
+        "#{{&&:#{{&&:#{{==:#{{pane_pid}},{pid}}},#{{==:#{{session_created}},{created}}}}},#{{&&:#{{==:#{{session_windows}},1}},#{{==:#{{window_panes}},1}}}}}}"
+    );
+    let mut stop = tmux(true)?;
+    stop.args([
+        "if-shell",
+        "-F",
+        "-t",
+        &target,
+        &guard,
+        &format!("kill-session -t {target}"),
+        "display-message -p identity_changed",
+    ]);
+    let result = output(stop)?;
+    if result.contains("identity_changed") {
+        bail!("session changed while confirming; refresh sessions");
+    }
+    // Keep the original record as a creation/idempotency tombstone.
+    if ids(true)?.iter().any(|session| session == &target) {
+        bail!("shell stop was not confirmed; refresh sessions before retrying");
+    }
+    Ok(serde_json::json!({"status": "stopped"}))
+}
+
+fn reject_provider_descendants(pane: u32) -> Result<()> {
+    let mut queue = std::collections::VecDeque::from([(pane, 0)]);
+    let mut visited = 0;
+    while let Some((pid, depth)) = queue.pop_front() {
+        visited += 1;
+        if visited > 128 || depth > 12 {
+            bail!("shell process tree exceeds safe stop limits; stop it from its terminal");
+        }
+        if running_provider(pid).is_some() {
+            bail!("shell is running an agent; stop it from its terminal instead");
+        }
+        let children = match fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")) {
+            Ok(children) => children,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => bail!("cannot verify shell processes; stop it from its terminal"),
+        };
+        for child in children.split_whitespace() {
+            queue.push_back((child.parse::<u32>()?, depth + 1));
+        }
+    }
+    Ok(())
+}
 pub fn set_launch_shell(name: &str) -> Result<serde_json::Value> {
     if !["fish", "bash", "zsh", "sh"].contains(&name) {
         bail!("choose Fish, Bash, Zsh or sh");

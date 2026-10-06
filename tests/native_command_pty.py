@@ -13,6 +13,7 @@ with tempfile.TemporaryDirectory(prefix='cx-command-pty-') as temporary:
     folder = root / "folder ' quoted ; ☃"
     folder.mkdir()
     (root/'.bash_profile').write_text("cx_fixture_wrapper() { printf wrapper-ok; }\n")
+    (root/'.zshrc').write_text("cx_fixture_wrapper() { printf wrapper-ok; }\n")
     config = root/'config/fish'; config.mkdir(parents=True)
     (config/'config.fish').write_text("function cx_fixture_wrapper; printf wrapper-ok; end\n")
     def scenario(command, interact=None, expected='Command ended:'):

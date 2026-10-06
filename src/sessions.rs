@@ -262,9 +262,27 @@ pub fn set_launch_shell(name: &str) -> Result<serde_json::Value> {
     fs::rename(temp, root.join("launcher.json"))?;
     Ok(serde_json::json!({"launcher":path,"applies_to":"new sessions only"}))
 }
+fn managed_config() -> String {
+    let terminal = ["tmux-256color", "tmux", "screen-256color"]
+        .into_iter()
+        .find(|name| {
+            Command::new("infocmp")
+                .arg(name)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+        .unwrap_or("screen-256color");
+    include_str!("../assets/tmux.conf").replace(
+        "set -g default-terminal 'tmux-256color'",
+        &format!("set -g default-terminal '{terminal}'"),
+    )
+}
 pub fn configure_managed() -> Result<()> {
     let conf = state()?.join("tmux.conf");
-    fs::write(&conf, include_str!("../assets/tmux.conf"))?;
+    fs::write(&conf, managed_config())?;
     fs::set_permissions(&conf, fs::Permissions::from_mode(0o600))?;
     let mut c = tmux(true)?;
     c.arg("source-file").arg(conf);
@@ -277,7 +295,7 @@ fn ensure_server() -> Result<()> {
     }
     let root = state()?;
     let conf = root.join("tmux.conf");
-    fs::write(&conf, include_str!("../assets/tmux.conf"))?;
+    fs::write(&conf, managed_config())?;
     fs::set_permissions(&conf, fs::Permissions::from_mode(0o600))?;
     let sock = socket()?;
     // A foreground tmux server in its own user service cannot inherit the metadata service cgroup.

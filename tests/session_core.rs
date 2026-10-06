@@ -55,7 +55,7 @@ fn persistent_idempotent_hostile_directory() {
             .args(["-S", &socket, "show-options", "-g", "prefix"])
             .output()
             .unwrap();
-        assert_eq!(String::from_utf8_lossy(&prefix.stdout).trim(), "prefix C-]");
+        assert_eq!(String::from_utf8_lossy(&prefix.stdout).trim(), "prefix None");
         Command::new("tmux")
             .args(["-S", &socket, "kill-session", "-t", &first.id])
             .status()

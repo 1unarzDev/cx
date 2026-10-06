@@ -15,8 +15,8 @@ while time.monotonic()<deadline and proc.poll() is None:
  if select.select([master],[],[],.1)[0]:
   try:output.extend(os.read(master,65536))
   except OSError:break
-# Managed prefix + Space must return without sending Ctrl+B/Ctrl+C into provider.
-os.write(master,b'\x1d ')
+# Managed Ctrl+] must return without sending Ctrl+B/Ctrl+C into provider.
+os.write(master,b'\x1d')
 try:proc.wait(timeout=5)
 except subprocess.TimeoutExpired:proc.terminate();proc.wait(timeout=3)
 print(json.dumps({'host':TARGET,'session':SESSION,'pty_exit':proc.returncode,'bytes':len(output),'host_identity_visible':b'peace@tranquility' in output,'codex_visible':b'Codex' in output or b'codex' in output,'detach_marker':b'detached' in output}))

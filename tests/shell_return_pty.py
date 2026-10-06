@@ -3,7 +3,7 @@
 import fcntl, json, os, pathlib, pty, select, struct, subprocess, tempfile, termios, time
 binary = str(pathlib.Path('target/release/cx').resolve())
 with tempfile.TemporaryDirectory(prefix='cx-shell-return-') as tmp:
-    env = dict(os.environ, XDG_STATE_HOME=tmp, TERM='xterm-256color', LANG='C', LC_ALL='C')
+    env = dict(os.environ, XDG_STATE_HOME=tmp, TERM=os.environ.get('CX_TEST_TERM', 'xterm-256color'), LANG='C', LC_ALL='C')
     env.pop('TMUX', None)
     env.pop('TMUX_PANE', None)
     socket = str(pathlib.Path(tmp) / 'cx/managed.sock')
@@ -43,20 +43,22 @@ with tempfile.TemporaryDirectory(prefix='cx-shell-return-') as tmp:
             subprocess.run(['tmux', '-S', socket, 'send-keys', '-l', command], check=True)
             subprocess.run(['tmux', '-S', socket, 'send-keys', 'Enter'], check=True)
             italic_output = read(.5)
+            tail = italic_output.rsplit(b'CX_ITALIC', 1)[0][-32:]
             pane = subprocess.check_output(['tmux', '-S', socket, 'capture-pane', '-p', '-e'])
             italic_line = next(line for line in pane.splitlines()
                                if line.endswith(b'CX_ITALIC\x1b[0m') or
                                   line.endswith(b'CX_ITALIC\x1b[23m'))
-            os.write(master, b'\x1d ')
+            os.write(master, b'\x1d')
             returned = read(1)
             os.write(master, b'\x03')
             p.wait(timeout=3)
             alive = subprocess.run(['tmux', '-S', socket, 'has-session'],
                                    capture_output=True).returncode == 0
             result = {'workspace_before': b'Work' in initial,
-                      'return_hint_complete': b'Ctrl+] Space' in attached,
+                      'return_hint_complete': b'Ctrl+]' in attached,
                       'utf8_with_ascii_ssh_locale': sample.encode() in glyph_output,
                       'italic_not_reverse': b'\x1b[3m' in italic_line and b'\x1b[7m' not in italic_line,
+                      'terminal_italic_not_reverse': b'\x1b[3m' in tail and b'\x1b[7m' not in tail,
                       'workspace_returned': b'Work' in returned,
                       'selection_restored': b'cx-return-fixture' in returned,
                       'shell_survived': alive,

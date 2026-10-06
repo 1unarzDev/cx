@@ -11,7 +11,7 @@ def read_for(seconds):
    try:output.extend(os.read(master,65536))
    except OSError:break
  return bytes(output)
-a=read_for(2);os.write(master,b'j\r');b=read_for(3);os.write(master,b'\x1d ');c=read_for(1);os.write(master,b'\x03')
+a=read_for(2);os.write(master,b'j\r');b=read_for(3);os.write(master,b'\x1d');c=read_for(1);os.write(master,b'\x03')
 p.wait(timeout=5)
 print(json.dumps({'viewer':'verybeautifulserver','initial_work_visible':b'Work' in a,'codex_native_visible':b'Codex' in b or b'codex' in b,'execution_strip_visible':b'peace@tranquility' in b,'workspace_restored':b'Work' in c,'exit':p.returncode,'agent_free_server':True}))
 assert b'Work' in a and b'peace@tranquility' in b and b'Work' in c and p.returncode==0

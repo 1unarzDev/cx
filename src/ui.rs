@@ -4081,11 +4081,20 @@ fn preview_inline(text: &str) -> Vec<Span<'static>> {
 }
 fn preview_lines(text: &str, kind: &str) -> Vec<Line<'static>> {
     let safe = safe_text(text);
+    let code = if kind == "markdown" {
+        crate::syntax_preview::fenced_lines(&safe)
+    } else {
+        Vec::new()
+    };
     let mut fenced = false;
     safe.lines()
-        .map(|line| {
+        .enumerate()
+        .map(|(index, line)| {
             if kind == "markdown" {
-                if line.trim_start().starts_with("```") {
+                if let Some(Some(highlighted)) = code.get(index) {
+                    return highlighted.clone();
+                }
+                if line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~") {
                     fenced = !fenced;
                     return Line::from(Span::styled(line.to_owned(), muted()));
                 }

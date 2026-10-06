@@ -173,7 +173,9 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
         } => sessions::stop_shell(id, pid, started, boot_id),
         Operation::Network => network::observe(),
         Operation::NetworkCandidates => network::candidates(),
-        Operation::ProbeCandidate { address, interface } => network::probe_candidate(&address, interface.as_deref()),
+        Operation::ProbeCandidate { address, interface } => {
+            network::probe_candidate(&address, interface.as_deref())
+        }
         Operation::Copy {
             source,
             destination,

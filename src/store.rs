@@ -62,15 +62,12 @@ pub fn save_devices(d: &[Device]) -> Result<()> {
 // No discovered hostname is allowed to install a key or change this map.
 const ROUTE_LIMIT: usize = 128;
 fn validate_route(target: &str, hops: &[String]) -> Result<()> {
-    anyhow::ensure!(
-        crate::transport::valid_target(target),
-        "invalid route target"
-    );
+    anyhow::ensure!(valid_target(target), "invalid route target");
     anyhow::ensure!(hops.len() <= 4, "at most four SSH jumps are supported");
     let mut unique = std::collections::HashSet::new();
     for hop in hops {
         anyhow::ensure!(
-            crate::transport::valid_target(hop) && hop != target && unique.insert(hop),
+            valid_target(hop) && hop != target && unique.insert(hop),
             "invalid or cyclic SSH jump route"
         );
     }
@@ -117,7 +114,10 @@ pub fn set_route(target: &str, hops: &[String]) -> Result<()> {
     let temporary = dir.join(format!(
         "routes.{}.{}.tmp",
         std::process::id(),
-        crate::transport::now()
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
     ));
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -160,4 +160,37 @@ mod route_tests {
             assert!(validate_route("robot", &hops).is_err());
         }
     }
+}
+
+pub fn valid_target(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() < 256
+        && !s.starts_with('-')
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"@._-:[]".contains(&b))
+}
+pub fn ssh(target: &str, interactive: bool) -> Result<std::process::Command> {
+    if !valid_target(target) {
+        anyhow::bail!("invalid SSH target")
+    };
+    let mut c = std::process::Command::new("ssh");
+    c.args([
+        "-o",
+        "ConnectTimeout=6",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=2",
+        "-o",
+        "ForwardAgent=no",
+    ]);
+    if !interactive {
+        c.args(["-o", "BatchMode=yes"]);
+    }
+    let hops = route(target)?;
+    if !hops.is_empty() {
+        c.args(["-J", &hops.join(",")]);
+    }
+    c.arg(target);
+    Ok(c)
 }

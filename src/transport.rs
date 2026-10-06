@@ -54,30 +54,9 @@ pub fn read_frame<T: serde::de::DeserializeOwned>(r: &mut impl BufRead) -> Resul
     }
 }
 pub fn ssh(target: &str, interactive: bool) -> Result<Command> {
-    if !valid_target(target) {
-        bail!("invalid SSH target")
-    };
-    let mut c = Command::new("ssh");
-    c.args([
-        "-o",
-        "ConnectTimeout=6",
-        "-o",
-        "ServerAliveInterval=5",
-        "-o",
-        "ServerAliveCountMax=2",
-        "-o",
-        "ForwardAgent=no",
-    ]);
-    if !interactive {
-        c.args(["-o", "BatchMode=yes"]);
-    }
-    let hops = crate::store::route(target)?;
-    if !hops.is_empty() {
-        c.args(["-J", &hops.join(",")]);
-    }
-    c.arg(target);
-    Ok(c)
+    crate::store::ssh(target, interactive)
 }
+
 struct Connection {
     child: std::process::Child,
     input: std::process::ChildStdin,

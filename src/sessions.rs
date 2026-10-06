@@ -1034,11 +1034,11 @@ pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
         if target.starts_with('-') || target.bytes().any(|b| b.is_ascii_whitespace() || b < 32) {
             bail!("invalid SSH target");
         }
-        let mut c = crate::transport::ssh(target, true)?;
+        let mut c = crate::store::ssh(target, true)?;
         // Insert PTY options before the destination already owned by ssh().
-        let args = c.get_args().map(|a| a.to_os_string()).collect::<Vec<_>>();
+        let ssh_args = c.get_args().map(|a| a.to_os_string()).collect::<Vec<_>>();
         let mut with_pty = Command::new("ssh");
-        with_pty.arg("-t").args(args);
+        with_pty.arg("-t").args(ssh_args);
         c = with_pty;
         let prefix = if session.external {
             "~/.local/bin/cx native-attach --external".to_string()
@@ -1077,7 +1077,7 @@ pub fn run_command(device: &Device, request: &RunCommand) -> Result<()> {
         {
             bail!("invalid SSH target");
         }
-        let routed = crate::transport::ssh(target, true)?;
+        let routed = crate::store::ssh(target, true)?;
         let mut command = Command::new("ssh");
         command.arg("-tt").args(routed.get_args());
         // Only base64's fixed alphabet enters the remote shell command.

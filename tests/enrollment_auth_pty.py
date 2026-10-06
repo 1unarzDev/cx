@@ -11,6 +11,7 @@ for width,kind in [(80,'password'),(48,'host'),(80,'cancel')]:
   ssh.write_text('''#!/usr/bin/env python3
 import os,subprocess,sys
 kind=os.environ['CX_FIXTURE_KIND']
+open(os.environ['CX_FIXTURE_RESULT']+'.pid','w').write(str(os.getpid()))
 prompt="fixture@host's password: " if kind!='host' else "The authenticity of host 'fixture.example (192.0.2.1)' can't be established.\\nED25519 key fingerprint is SHA256:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqr.\\nAre you sure you want to continue connecting (yes/no/[fingerprint])? "
 r=subprocess.run([os.environ['SSH_ASKPASS'],prompt],capture_output=True)
 expected=b'yes\\n' if kind=='host' else b'fixture-secret-937\\n'
@@ -47,9 +48,18 @@ sys.exit(1)
    elif kind=='cancel':os.write(master,b'\x1b')
    else:
     os.write(master,b'fixture-secret-937');read();assert 'fixture-secret-937' not in text();assert '********' in text();os.write(master,b'\r')
-   deadline=time.monotonic()+8
-   while not (root/'result').exists() and time.monotonic()<deadline:read()
-   assert (root/'result').read_text()=='PASS'
+   if kind=='cancel':
+    # Cancellation may kill the owned SSH group before the fixture can acknowledge it.
+    wait('authentication cancelled')
+    fixture_pid=(root/'result.pid').read_text()
+    deadline=time.monotonic()+2
+    while pathlib.Path(f'/proc/{fixture_pid}').exists() and time.monotonic()<deadline:read(.05)
+    assert not pathlib.Path(f'/proc/{fixture_pid}').exists(), 'cancelled SSH process survived'
+    if (root/'result').exists():assert (root/'result').read_text()=='PASS'
+   else:
+    deadline=time.monotonic()+8
+    while not (root/'result').exists() and time.monotonic()<deadline:read()
+    assert (root/'result').read_text()=='PASS'
    assert b'fixture-secret-937' not in output,'secret leaked into terminal output'
    read();os.write(master,b'\x03');p.wait(timeout=5)
    assert termios.tcgetattr(slave)==before

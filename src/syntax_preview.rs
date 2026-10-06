@@ -29,6 +29,9 @@ fn palette(color: TokenColor) -> Color {
     }
 }
 pub fn highlight(text: &str, path: &str) -> Vec<Line<'static>> {
+    highlight_with_budget(text, path, Duration::from_millis(500))
+}
+fn highlight_with_budget(text: &str, path: &str, budget: Duration) -> Vec<Line<'static>> {
     let syntaxes = &*SYNTAXES;
     let file = std::path::Path::new(path);
     let syntax = file
@@ -54,7 +57,7 @@ pub fn highlight(text: &str, path: &str) -> Vec<Line<'static>> {
         .map(|line| {
             // Very long lines and exhausted budgets degrade to literal text for the rest.
             // The UI caches this result; rendering never reparses source.
-            stopped |= line.len() > 2048 || started.elapsed() > Duration::from_millis(500);
+            stopped |= line.len() > 2048 || started.elapsed() > budget;
             if stopped {
                 return Line::raw(line.trim_end_matches('\n').to_owned());
             }
@@ -175,11 +178,23 @@ mod tests {
         }
     }
     #[test]
+    fn exhausted_budget_retains_literal_source_without_styles() {
+        let source = "let value = \"hello\";\nlet next = 2;\n";
+        let lines = highlight_with_budget(source, "sample.rs", Duration::ZERO);
+        assert_eq!(lines.len(), 2);
+        assert!(lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .all(|span| span.style == Style::default()));
+        assert_eq!(lines[0].spans[0].content, "let value = \"hello\";");
+    }
+    #[test]
     fn multiline_source_retains_token_colors_beyond_first_line() {
         let source = (0..20)
             .map(|i| format!("let item_{i} = \"hello\"; // inert source\n"))
             .collect::<String>();
-        let lines = highlight(&source, "sample.rs");
+        // Test parser continuity independently of permitted wall-clock fallback under load.
+        let lines = highlight_with_budget(&source, "sample.rs", Duration::MAX);
         assert_eq!(lines.len(), 20);
         assert!(lines
             .last()

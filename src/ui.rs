@@ -382,6 +382,7 @@ struct App {
     network_inflight: BTreeSet<usize>,
     network_selected: usize,
     network_expanded: BTreeSet<String>,
+    network_detail_scroll: u16,
     network_jump_routes: HashMap<usize, Option<Vec<String>>>,
     network_candidates_inflight: BTreeSet<usize>,
     network_refresh_queue: VecDeque<usize>,
@@ -463,6 +464,7 @@ impl App {
             network_inflight: BTreeSet::new(),
             network_selected: 0,
             network_expanded: BTreeSet::new(),
+            network_detail_scroll: 0,
             network_jump_routes: HashMap::new(),
             network_candidates_inflight: BTreeSet::new(),
             network_refresh_queue: VecDeque::new(),
@@ -1006,6 +1008,7 @@ impl App {
             .unwrap_or_else(|| self.network_selected.min(rows.len().saturating_sub(1)));
     }
     fn network_tree_motion(&mut self, expand: bool) {
+        self.network_detail_scroll = 0;
         let rows = self.network_rows();
         let Some(row) = rows.get(self.network_selected) else {
             return;
@@ -1041,7 +1044,7 @@ impl App {
             _ => "not read".into(),
         };
         if row["_peer"].is_u64() {
-            return format!("{} · {}\nRoute found: viewer{arrow}{}\n{} · viewer-authenticated helper\nSSH jumps (saved): {hops}\nVia another observer: unknown", safe_label(&observer.name), identity(observer), safe_label(&observer.name), self.peer_status(d));
+            return format!("{} · {}\nRoute found: viewer{arrow}{}\n{} · helper evidence from viewer\nSSH jumps (saved): {hops}\nVia another observer: unknown", safe_label(&observer.name), identity(observer), safe_label(&observer.name), self.peer_status(d));
         }
         let name = row["_known_peer"]
             .as_u64()
@@ -3001,6 +3004,15 @@ impl App {
             }
         }
         match key.code {
+            KeyCode::Char('J') | KeyCode::Char('K')
+                if self.view == View::Network && self.focus == Focus::Workspace =>
+            {
+                self.network_detail_scroll = if key.code == KeyCode::Char('J') {
+                    self.network_detail_scroll.saturating_add(1).min(256)
+                } else {
+                    self.network_detail_scroll.saturating_sub(1)
+                };
+            }
             KeyCode::Char('n') => self.execute(Action::New),
             KeyCode::Char('a') if self.view == View::Work && local_only(self) => {
                 self.execute(Action::Add)
@@ -3339,6 +3351,9 @@ impl App {
         true
     }
     fn move_selection(&mut self, delta: isize) {
+        if self.view == View::Network {
+            self.network_detail_scroll = 0;
+        }
         if self.view == View::Files && self.focus == Focus::Workspace {
             if let Some(b) = &mut self.browser {
                 if b.preview.is_some() {
@@ -3805,21 +3820,26 @@ fn render_with_native(
             .get(app.network_selected)
             .map(|row| {
                 let owner = row["_device"].as_u64().unwrap_or(0) as usize;
-                if row["_peer"].is_u64() {
-                    return format!(
-                        "{}\n{}\n{}",
-                        safe_label(&app.devices[owner].name),
-                        identity(&app.devices[owner]),
-                        app.peer_status(owner)
-                    );
+                let observer = safe_label(&app.devices[owner].name);
+                let arrow = if ascii() { "->" } else { "→" };
+                let mut lines = vec!["Route".to_owned(), format!("viewer {arrow} {observer}")];
+                if !row["_peer"].is_u64() {
+                    lines.push(format!(
+                        "{arrow} {}",
+                        safe_label(row["address"].as_str().unwrap_or("unknown"))
+                    ));
+                    lines.push(format!(
+                        "Link {}",
+                        safe_label(row["interface"].as_str().unwrap_or("unknown"))
+                    ));
                 }
-                format!(
-                    "{} / {}\nObserved on {}\nSSH {}",
-                    safe_label(row["address"].as_str().unwrap_or("unknown")),
-                    safe_label(row["interface"].as_str().unwrap_or("unknown")),
-                    safe_label(&app.devices[owner].name),
-                    neighbor_ssh(row)
-                )
+                if let Some(Some(hops)) = app.network_jump_routes.get(&owner) {
+                    if !hops.is_empty() {
+                        lines.push("SSH hops (saved)".into());
+                        lines.extend(hops.iter().map(|hop| safe_label(hop)));
+                    }
+                }
+                lines.join("\n")
             })
             .unwrap_or_else(|| "No devices or LAN observations".into())
     } else if let Some(b) = app.browser.as_ref().filter(|_| app.view == View::Files) {
@@ -3860,11 +3880,15 @@ fn render_with_native(
         "Choose a device\nn new · Ctrl+P actions".into()
     };
     if sidebar[2].height > 3 {
-        let details = details
-            .lines()
-            .map(|line| fit_label(line, sidebar_width.saturating_sub(2) as usize))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let details = if app.view == View::Network {
+            details
+        } else {
+            details
+                .lines()
+                .map(|line| fit_label(line, sidebar_width.saturating_sub(2) as usize))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
         frame.render_widget(
             Paragraph::new(details).wrap(Wrap { trim: false }).block(
                 Block::default()
@@ -4575,6 +4599,7 @@ fn render_with_native(
             ("j/k", "Devices / LAN"),
             ("Enter", "Open / connect"),
             ("h / l", "Fold / expand"),
+            ("J / K", "Scroll details"),
             ("Ctrl P", "Actions"),
             ("?", "Help"),
             ("Ctrl C", "Quit"),
@@ -4638,7 +4663,7 @@ fn render_with_native(
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Length(1)])
         .split(footer[key_row]);
-    for (i, (key, label)) in hints.into_iter().enumerate() {
+    for (i, (key, label)) in hints.into_iter().take(columns * 2).enumerate() {
         let key = if ascii() && key == "↑↓" {
             "j/k"
         } else {
@@ -5893,12 +5918,24 @@ fn render_network(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let outer = block(title, app.focus == Focus::Workspace);
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
+    let candidates = app.network_rows();
+    let detail = candidates
+        .get(app.network_selected)
+        .map(|row| app.network_detail(row))
+        .unwrap_or_default();
+    // Use the installed Ratatui wrapper's count so word wrapping and Unicode match scrolling.
+    let detail_lines = Paragraph::new(detail.as_str())
+        .wrap(Wrap { trim: false })
+        .line_count(inner.width);
+    let detail_height = (detail_lines as u16)
+        .max(7)
+        .min(inner.height.saturating_sub(7));
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(3),
-            Constraint::Length(7),
+            Constraint::Length(detail_height),
         ])
         .split(inner);
     let value = d.and_then(|d| app.network.get(&d));
@@ -5918,7 +5955,6 @@ fn render_network(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Paragraph::new(summary).wrap(Wrap { trim: false }),
         sections[0],
     );
-    let candidates = app.network_rows();
     if candidates.is_empty() {
         frame.render_widget(
             Paragraph::new("No enrolled devices or observed LAN neighbors"),
@@ -6001,9 +6037,13 @@ fn render_network(frame: &mut Frame<'_>, app: &App, area: Rect) {
     .row_highlight_style(selected_style());
     let mut state = TableState::default().with_selected(Some(app.network_selected));
     frame.render_stateful_widget(table, sections[1], &mut state);
-    if let Some(row) = candidates.get(app.network_selected) {
+    if !detail.is_empty() {
         frame.render_widget(
-            Paragraph::new(app.network_detail(row)).wrap(Wrap { trim: false }),
+            Paragraph::new(detail).wrap(Wrap { trim: false }).scroll((
+                app.network_detail_scroll
+                    .min((detail_lines as u16).saturating_sub(detail_height)),
+                0,
+            )),
             sections[2],
         );
     }
@@ -7344,6 +7384,13 @@ mod tests {
             "2001:db8::20"
         );
         assert!(a.network_expanded.contains(&a.peer_key(0)));
+        a.view = View::Work;
+        a.view = View::Network;
+        assert!(a.network_expanded.contains(&a.peer_key(0)));
+        assert_eq!(
+            a.network_rows()[a.network_selected]["address"],
+            "2001:db8::20"
+        );
         a.focus = Focus::Devices;
         a.device = 1;
         a.move_selection(1);
@@ -7369,6 +7416,20 @@ mod tests {
         assert!(detail.contains("SSH jumps to observer (saved): saved-bastion"));
         assert!(detail.contains("authentication unknown"));
         assert!(!detail.contains("authenticated transit"));
+        a.network_jump_routes.insert(
+            1,
+            Some((0..8).map(|i| format!("long-saved-gateway-{i}")).collect()),
+        );
+        let before = capture_app(&a, 48);
+        assert!(before.contains("Route"));
+        for _ in 0..30 {
+            press(&mut a, 'J');
+        }
+        let after = capture_app(&a, 48);
+        assert!(after.contains("authentication"));
+        assert!(after.contains("Internet unknown"));
+        press(&mut a, 'j');
+        assert_eq!(a.network_detail_scroll, 0);
     }
     #[test]
     fn network_observer_capture_matrix_has_no_evidence_column() {
@@ -7482,7 +7543,7 @@ mod tests {
         a.network_selected = 1;
         let text = capture_app(&a, 120);
         assert!(text.contains("laptop"));
-        assert!(text.contains("viewer-authenticated helper"));
+        assert!(text.contains("helper evidence from viewer"));
         assert!(text.contains("Via another observer: unknown"));
         assert!(rx.try_recv().is_err());
     }

@@ -143,3 +143,10 @@ Integrated enrolled peers independent of LAN cache, slim Add device panel and ma
 
 User clarified that SSH checks should be automatic. Candidate0.1.16 checks fresh observed LAN candidates quietly in background, bounded/cached, with direct Enter→account→masked authentication; manual Check SSH removed. Directory header spacing fixed and covered by two-project rendering. User's initial Network confirmation was premature on0.1.14; do not repeat the question before signed deployment.0.1.15 release pipeline37530479286 PASS, signed deployment/live PTY underway.0.1.16 integration/release next.
 Signed0.1.15 installed on all three hosts; actual tranquility Network PTY now shows both enrolled peers (PASS). User may need to reopen an older viewer; no forced detach/restart.0.1.16 automatic-probe integration passes370 Rust tests (one protected live case ignored); final fixtures/release validation pending.
+
+
+## Network routes and update clarity — candidate v0.1.17
+- User clarified that LAN addresses are distinct devices, not duplicate server identities. Observer groups start collapsed; expansion persists across views within cx (resolved preference).
+- Route information belongs in Selected: concise discovery path/interface in the sidebar, fuller saved SSH hops/status beneath the Network list. J/K scroll long details. No Evidence column or popup required.
+- Update actions identify the running version; notices use consistent inset, transparent background and short ASCII-compatible wording.
+- Integrated381 Rust tests pass (one protected live case ignored),98 UI tests in default/ASCII/NO_COLOR, synthetic auth/native encrypted-key/master/jump fixtures and three-size browser PTYs pass. Candidate innovation live Network/Update PTY passes. Independent placement/clipping findings fixed; final re-review and signed publication/deployment pending.

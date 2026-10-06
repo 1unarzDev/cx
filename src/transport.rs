@@ -944,14 +944,29 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("timed out"));
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
         let pid = std::fs::read_to_string(path).unwrap();
-        // A killed grandchild may briefly be a zombie awaiting the host's reaper.
-        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-            assert!(stat
-                .split(')')
-                .nth(1)
-                .unwrap()
-                .trim_start()
-                .starts_with('Z'));
+        // SIGKILL delivery and reaping are asynchronous; observe the actual bounded outcome.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Ok(stat)
+                    if stat
+                        .rsplit(')')
+                        .next()
+                        .unwrap()
+                        .trim_start()
+                        .starts_with('Z') =>
+                {
+                    break
+                }
+                _ => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "owned descendant survived SIGKILL"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
         }
     }
     #[test]

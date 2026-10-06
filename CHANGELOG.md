@@ -6,6 +6,17 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.17
+
+### Features
+- Organize Network beneath collapsible observing devices. Every LAN address remains a distinct entry; Right/l expands and Left/h folds or returns to its observer. Expansion is remembered within cx.
+- Show the selected neighbor’s discovery path, observing interface and saved SSH jumps in selected-item details; J/K scroll longer paths. Known names require fresh, unique authenticated address/link metadata.
+- Show the running cx version in the Update menu and update status messages.
+
+### Fixes
+- Remove Network’s Evidence column and distinguish an observer’s neighbors from its own addresses.
+- Align notices with the footer and shorten update messages for narrow terminals, preserving transparent backgrounds and ASCII output.
+
 ## v0.1.16
 
 ### Features

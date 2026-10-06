@@ -38,7 +38,11 @@ pub fn highlight(text: &str, path: &str) -> Vec<Line<'static>> {
         .or_else(|| {
             file.extension()
                 .and_then(|ext| ext.to_str())
-                .and_then(|ext| syntaxes.find_syntax_by_extension(ext))
+                .and_then(|ext| {
+                    syntaxes
+                        .find_syntax_by_extension(ext)
+                        .or_else(|| syntaxes.find_syntax_by_token(ext))
+                })
         })
         .or_else(|| syntaxes.find_syntax_by_first_line(text.lines().next().unwrap_or("")))
         .unwrap_or_else(|| syntaxes.find_syntax_plain_text());
@@ -73,6 +77,45 @@ pub fn highlight(text: &str, path: &str) -> Vec<Line<'static>> {
             }
         })
         .collect()
+}
+
+/// Per-line overrides for fenced code; prose remains the UI's inert Markdown renderer.
+pub fn fenced_lines(text: &str) -> Vec<Option<Line<'static>>> {
+    let source = text.lines().collect::<Vec<_>>();
+    let mut result = vec![None; source.len()];
+    let mut at = 0;
+    let started = Instant::now();
+    while at < source.len() {
+        let line = source[at].trim_start();
+        let marker = line.chars().next().unwrap_or(' ');
+        let count = line.chars().take_while(|c| *c == marker).count();
+        if !matches!(marker, '`' | '~') || count < 3 {
+            at += 1;
+            continue;
+        }
+        let language = line[count..].split_whitespace().next().unwrap_or("");
+        let start = at + 1;
+        at = start;
+        while at < source.len() {
+            let close = source[at].trim_start();
+            let close_count = close.chars().take_while(|c| *c == marker).count();
+            if close_count >= count && close[close_count..].trim().is_empty() {
+                break;
+            }
+            at += 1;
+        }
+        if started.elapsed() <= Duration::from_millis(1000) {
+            let body = source[start..at].join("\n");
+            let path = format!("fence.{language}");
+            for (index, line) in highlight(&body, &path).into_iter().enumerate() {
+                if start + index < at {
+                    result[start + index] = Some(line);
+                }
+            }
+        }
+        at += 1;
+    }
+    result
 }
 
 #[cfg(test)]
@@ -144,6 +187,29 @@ mod tests {
             .spans
             .iter()
             .any(|span| span.style.fg == Some(Color::Green)));
+    }
+    #[test]
+    fn fenced_markdown_languages_preserve_prose_and_source() {
+        let source = "# Heading\n```rust\nlet name = \"hello\";\n```\nProse\n~~~python\nreturn \"world\"\n~~~";
+        let result = fenced_lines(source);
+        assert_eq!(result.len(), 8);
+        for index in [0, 1, 3, 4, 5, 7] {
+            assert!(result[index].is_none());
+        }
+        for index in [2, 6] {
+            let line = result[index].as_ref().unwrap();
+            assert!(line
+                .spans
+                .iter()
+                .any(|span| span.style.fg == Some(Color::Green)));
+            assert_eq!(
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>(),
+                source.lines().nth(index).unwrap()
+            );
+        }
     }
     #[test]
     fn unknown_and_long_lines_are_literal_and_bounded() {

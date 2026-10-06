@@ -19,7 +19,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 const PATH_PREFIX: &str = "cx-bytes:";
-const PREVIEW_LIMIT: usize = 32 * 1024;
+#[path = "file_preview.rs"]
+mod file_preview;
 const LIST_LIMIT: usize = 1000;
 
 /// Escape all terminal controls, including C1 controls. Metadata must not render escapes.
@@ -238,31 +239,7 @@ fn open_read(path: &Path) -> Result<File> {
     Ok(f)
 }
 fn preview(path: &Path) -> Result<Value> {
-    let file = open_read(path)?;
-    let mut bytes = Vec::new();
-    file.take((PREVIEW_LIMIT + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    let truncated = bytes.len() > PREVIEW_LIMIT;
-    bytes.truncate(PREVIEW_LIMIT);
-    let binary = bytes.contains(&0);
-    // Preserve ordinary line breaks and tabs, escape all other terminal controls.
-    let text: String = if binary {
-        "Binary file — preview unavailable".into()
-    } else {
-        String::from_utf8_lossy(&bytes)
-            .chars()
-            .flat_map(|c| {
-                if c == '\n' || c == '\t' {
-                    vec![c]
-                } else if c.is_control() {
-                    c.escape_default().collect()
-                } else {
-                    vec![c]
-                }
-            })
-            .collect()
-    };
-    Ok(json!({"path":encode_path(path),"text":text,"truncated":truncated,"binary":binary}))
+    file_preview::render(path, open_read(path)?)
 }
 fn job_root() -> Result<PathBuf> {
     let base = match std::env::var_os("XDG_STATE_HOME") {

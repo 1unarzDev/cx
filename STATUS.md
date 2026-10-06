@@ -81,3 +81,9 @@ Pending user feedback: physical confirmation of repaired device switching and th
 - Removed Command from Ctrl+P/Actions; `:` and its help entry remain.
 - The known Caelestia Fish startup loader needs a cx-scoped guard for direct native commands; targeted chezmoi integration preserves ordinary terminal themes and a private pre-change backup. This supersedes the earlier guard removal for this specific native-launch path.
 - Optimized native PTYs, integrated folder command workflows, Rust suite and independent review pass. Signed v0.1.5/source `10e4a10` published (workflow37480567781 PASS) and installed via public bootstrap on all three hosts; real native commands emit no palette changes on each. Server remains agent-free. ChezMoi `4b6f8f0` pushed and narrowly applied on both Arch hosts. Actual remote server folder-command test passes; physical color confirmation remains optional.
+
+
+## Managed terminal wheel scrolling
+- Managed mouse reporting prevents viewing terminals converting wheel motion to prompt-history Up/Down keys. Explicit wheel routing forwards only to applications requesting mouse input; normal/alternate screens otherwise enter tmux scrollback. Escape exits both emacs/vi copy modes; status strip identifies scrollback. Native arrows and Ctrl+] remain intact.
+- Real managed PTYs pass on tmux3.7c and container tmux2.7; alternate screens, app mouse forwarding, original process identity, detach/reattach and mode return covered. Independent review caught alternate-screen default-binding and vi Escape pitfalls; both fixed and rechecked. Only cx-owned live servers received scoped hotfix bindings.
+- tmux history remains bounded at 2000 lines. Unrendered application history and older discarded lines cannot be recovered by tmux; native provider transcript controls remain relevant. Physical wheel behavior on the user's existing Codex chat awaits confirmation.

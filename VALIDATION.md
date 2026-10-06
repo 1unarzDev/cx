@@ -204,3 +204,17 @@ Release workflow [37480567781](https://github.com/1unarzDev/cx/actions/runs/3748
 Actual installed native palette captures on all three hosts PASS: `/tmp/cx-palette-installed-{innovation,tranquility,server}.json`. Installed Bash/Fish folder UI including Actions exclusion PASS: `/tmp/cx-palette-installed-folder-ui.json`. Installed actual remote folder workflow on server PASS: `/tmp/cx-palette-remote-folder-installed.json`. Server has no Claude/Codex commands on PATH before/after; no agent installation occurred. Install evidence: `/tmp/cx-palette-install-{innovation,tranquility,server}.log`.
 
 ChezMoi integration `second_dots/main/4b6f8f0` pushed and narrowly applied on both Arch hosts; ordinary theme and cx guard independently pass `/tmp/cx-independent-guard-final.log`. Only the recognized palette-load block changes, backed up under `~/.local/state/cx/fish-theme-before-*`. To reverse this integration, remove its guarded block and restore the original single `cat ~/.local/state/caelestia/sequences.txt 2> /dev/null` line; remove the integration script from source before a future apply. No unrelated tmux, trust, provider or network state changed. A fresh viewing terminal is needed if v0.1.4 already reset its palette. Physical GUI confirmation remains unverified.
+
+
+## Managed terminal wheel scrollback (2026-10-06)
+
+Source: next v0.1.6. Reproduced v0.1.5 managed mouse=off; terminals can synthesize Up/Down on wheel motion in alternate screens, invoking native prompt history. Independent actual alternate-screen/no-mouse reproduction showed tmux3.7c's default WheelUp also fails to enter scrollback when mouse is enabled. Explicit cx-owned routing now considers app mouse requests and copy mode, rather than alternate-screen state. Both copy-mode key tables explicitly cancel on Escape. No provider command, endpoint or credential changed.
+
+| Result | Scenario | Evidence |
+|---|---|---|
+| PASS | Real managed/native-attach PTY on tmux3.7c: wheel enters/scrolls history without application input, normal+alternate screen, emacs/vi Escape, native Up key, requested native mouse events, Ctrl+] in copy/live modes, same pane PID after reattach | `tests/mouse_scrollback_pty.py`, `/tmp/cx-wheel-after-final.json` |
+| PASS | Same managed-PTY scenarios on actual tmux2.7/Rocky8 container using MUSL build | `/tmp/cx-wheel-tmux27.json`, image `cx-tmux27-fixture:local` |
+| PASS | Independent integrated tmux3.7c PTYs; reviewed alternate-screen and vi Escape defects fixed | `/tmp/cx-mouse-independent-final.json`, `/tmp/cx-mouse-final-review.md` |
+| PASS | Full Rust suite178 passed, one existing live test ignored | `/tmp/cx-wheel-rust-tests.log` |
+
+Physical Foot/trackpad/Codex chat scrolling is not established by synthetic PTYs. No transcript scraping/inference requests used. History remains bounded2000 lines and cannot restore text an application never rendered or tmux already discarded. External personal tmux sessions are unchanged.

@@ -142,16 +142,20 @@ Limits: detection is observational metadata, not provider authentication. Custom
 
 Removal/rollback: when no active transfer needs the helper, remove only `~/.local/bin/cx` to stop new launches; leave state/user work/tmux sessions alone. Full owned-resource uninstall is not implemented. Reinstall a pinned reviewed release with `CX_VERSION=v0.1.2 CX_NO_LAUNCH=1 sh install.sh`; the same signature/locking checks apply. Do not delete state, stop jobs or restore whole firewall/configuration as an uninstall shortcut.
 
-### Actions audit and foreground folder commands — 0.1.3 candidate
+### Actions audit and foreground folder commands — 0.1.3 actions/commands
 
-Host: innovation, Linux/Arch; native Bash and tmux, allocated PTYs (not a physical emulator confirmation). Source includes backend aa3a33c and integrated UI changes.
+Host: innovation, Linux/Arch; native Bash and tmux, allocated PTYs (not a physical emulator confirmation). Source: 7fba202; optimized static MUSL binary.
 
 | Result | Scenario | Evidence |
 |---|---|---|
-| PASS | Full Rust suite: 176 passed, one existing ignored; workspace-only actions, n folder/provider context, pinned : input, cancellation/unsupported helper, long-command editing/scroll | /tmp/cx-context-tests.log |
-| PASS | Native command: quoted Unicode directory/exact write, exit7 and Enter, Ctrl+C, stdin, termios/foreground-group restoration, optimized binary | /tmp/cx-context-native-release.json |
-| PASS | Integrated browser/navigation/clipboard/destination/conflict/jobs at 80x24,120x40,48x24 | /tmp/cx-context-flows/results.json and terminal captures |
+| PASS | Full Rust suite: 177 passed, one existing ignored; workspace-only actions, n folder/provider context, pinned : input, cancellation/unsupported helper, long-command editing/scroll | /tmp/cx-context-final-tests.log |
+| PASS | Native command: exact quoted/Unicode folder/write, wrapper, exit7, Ctrl+C, stdin, ordinary/exec Ctrl+Z resume/cancel, no suffix replay, same-command completion, termios/foreground restoration; optimized MUSL Bash/Fish | /tmp/cx-context-native-final.json |
+| PASS | Integrated browser/navigation/clipboard/destination/conflict/jobs at 80x24,120x40,48x24 | /tmp/cx-context-final-flows/results.json and terminal captures |
 | PASS | Actual detached copy/integrity/job drawer, folder shell creation and single-key return | /tmp/cx-context-jobs/results.json and terminal captures |
 | BLOCKED | tranquility deployment/live remote command | SSH BatchMode/ConnectTimeout5: No route to host; no network/trust changes |
 
 Independent Actions review: /tmp/cx-actions-command-review.md. File operations and duplicate shell controls were removed from workspace actions. Long command visibility/editing and misleading missing-capability remedy were fixed, with regression tests. Foreground commands deliberately do not provide managed-session lifetime through disconnect.
+
+PASS — Zsh native-command scenarios above in an isolated nonroot Arch container with initialized synthetic .zshrc: /tmp/cx-context-zsh-fixture.log. New-user Zsh first-run wizard is preserved in production; fixture supplies an ordinary startup file. Initial fixture exposed Zsh treating command-prefixed builtins as external commands; corrected to explicit builtin invocation and Bash/Fish/Zsh scenarios rerun. Release checks now gate all three shells.
+
+PASS — integrated current-folder n/: workflows, real foreground commands and outer-viewer survival with Bash/Fish: /tmp/cx-context-integrated-final.json. Independent review additionally exposed ordinary child-job suspension beyond direct exec; shell adapters now keep these commands in their owned group and offer explicit Resume/Cancel. Scope is one-shot command execution; personal and managed tmux servers are unchanged.

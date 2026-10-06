@@ -29,7 +29,7 @@ Install as your ordinary user. Missing dependencies require an explicit package-
 
 Select files → `t` → choose device → browse folder → `p`. Or copy/cut, switch devices, and paste. Incoming name conflicts rename by default; overwrite is explicit. Cross-host cuts support regular files; copy supports directories. Delete has no undo. Transfers are not snapshots of growing files.
 
-Sessions lists persistent work. New session is the single launch action; file operations live on browser keys. Press `n` in Files to start in that folder. `:` opens a command prompt pinned to the execution host/folder and runs it in the native terminal; Ctrl+C interrupts the command, and Enter returns after completion. Commands are foreground work, are not saved/retried, and do not survive disconnect as managed sessions do.
+Sessions lists persistent work. New session is the single launch action; file operations live on browser keys. Press `n` in Files to start in that folder. `:` opens a command prompt pinned to the execution host/folder and runs it in the native terminal; Ctrl+C interrupts the command; Ctrl+Z offers Resume/Cancel; Enter returns after completion. Commands are foreground work, are not saved/retried, and do not survive disconnect as managed sessions do.
 
 New sessions use the chosen execution host and folder. Agent choices reflect installed launchable runtimes. Watch opens a read-only terminal; ordinary opening gives input. Starting Claude/Codex manually inside a shell updates its badge while the agent owns the terminal; returning to the shell restores it. The original terminal remains attachable. Existing personal tmux sessions retain their bindings.
 

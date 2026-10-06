@@ -52,7 +52,7 @@ jobs:
             test -f "$binary" && test ! -L "$binary"
             chmod 755 "$binary"
             asset="dist/cx-$GITHUB_REF_NAME-linux-$arch.tar.gz"
-            tar --owner=0 --group=0 --numeric-owner -C "binaries/binary-$arch" -czf "$asset" cx
+            tar --mtime="@$(git log -1 --format=%ct)" --owner=0 --group=0 --numeric-owner -C "binaries/binary-$arch" -czf "$asset" cx
             openssl dgst -sha256 -sign "$key" -out "$asset.sig" "$asset"
             openssl dgst -sha256 -verify release-key.pem -signature "$asset.sig" "$asset"
           done

@@ -227,7 +227,8 @@ fn add(target: &str) -> Result<()> {
     let binary = std::env::current_exe()?;
     let bytes = std::fs::read(binary)?;
     let mut c = transport::ssh(target, true)?;
-    c.arg("sh -c 'set -eu; umask 077; mkdir -p ~/.local/bin ~/.local/state/cx; exec 9> ~/.local/state/cx/maintenance.lock; flock -n 9 || exit 75; tmp=$(mktemp ~/.local/bin/.cx-install.XXXXXX); trap \"rm -f \\\"$tmp\\\"\" EXIT HUP INT TERM; cat > \"$tmp\"; chmod 700 \"$tmp\"; \"$tmp\" --version >/dev/null; mv \"$tmp\" ~/.local/bin/cx'").stdin(Stdio::piped());
+    let script = include_str!("../scripts/enroll-helper.sh").replace('\'', "'\"'\"'");
+    c.arg(format!("sh -c '{script}'")).stdin(Stdio::piped());
     let mut child = c.spawn()?;
     child
         .stdin

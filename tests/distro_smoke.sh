@@ -23,11 +23,17 @@ for CX_IMAGE in ubuntu:22.04 ubuntu:24.04 rockylinux:8 rockylinux:9 archlinux:la
         else
             pacman -Syu --noconfirm --needed python openssl curl openssh tmux util-linux shadow
         fi
-        useradd -m -u 1000 cx-test
+        useradd -m -u 10001 cx-test
         # Root installer refusal is tested separately from ordinary-user installation.
         if CX_NO_LAUNCH=1 sh /repo/install.sh >/dev/null 2>&1; then
             echo "root installer unexpectedly accepted" >&2; exit 1
         fi
-        exec runuser -u cx-test -- env HOME=/home/cx-test python3 /repo/tests/distro_install_fixture.py /binary/cx
+        mkdir -p /tmp/cx-smoke/tests
+        cp /repo/install.sh /tmp/cx-smoke/install.sh
+        cp /repo/tests/distro_install_fixture.py /tmp/cx-smoke/tests/
+        cp /binary/cx /tmp/cx-smoke/cx
+        chmod 755 /tmp/cx-smoke /tmp/cx-smoke/tests /tmp/cx-smoke/cx
+        chmod 644 /tmp/cx-smoke/install.sh /tmp/cx-smoke/tests/distro_install_fixture.py
+        exec runuser -u cx-test -- env HOME=/home/cx-test python3 /tmp/cx-smoke/tests/distro_install_fixture.py /tmp/cx-smoke/cx
         '
 done

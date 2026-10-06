@@ -3217,7 +3217,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                         "Confirm"
                     },
                 ),
-                ("Esc", "Cancel"),
+                ("y / n", "Delete / cancel"),
                 ("Tab", "Details"),
                 ("PgUpDn", "Scroll"),
                 ("Home", "Top"),

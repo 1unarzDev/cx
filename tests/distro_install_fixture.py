@@ -66,4 +66,24 @@ out.write_bytes(pathlib.Path(source).read_bytes())
     (folder / "hello.txt").write_text("fixture\n")
     listing = subprocess.check_output([str(installed), "files", str(folder)], env=env, universal_newlines=True)
     assert "hello.txt" in listing, listing
-    print(json.dumps({"result": "PASS", "version": version, "checks": ["signed real binary installation", "idempotent rerun", "version", "filesystem listing"], "trust": "synthetic test key; release authenticity tested separately"}))
+    socket = home / ".local/state/cx/managed.sock"
+    try:
+        session = json.loads(subprocess.check_output([str(installed), "new", "--provider", "shell", "--directory", str(folder), "--key", "distro-shell"], env=env, universal_newlines=True))
+        assert session["directory"] == str(folder), session
+        assert json.loads(subprocess.check_output([str(installed), "sessions"], env=env, universal_newlines=True)), "managed shell missing"
+        destination = home / "copies"; destination.mkdir()
+        subprocess.run([str(installed), "copy", str(folder / "hello.txt"), str(destination), "--key", "distro-copy"], env=env, check=True, stdout=subprocess.PIPE)
+        import time
+        deadline = time.monotonic() + 15
+        while not (destination / "hello.txt").exists() and time.monotonic() < deadline: time.sleep(.1)
+        assert (destination / "hello.txt").read_text() == "fixture\n"
+    finally:
+        subprocess.run(["tmux", "-S", str(socket), "kill-server"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    request = json.dumps({"version": 1, "id": "static-rename", "op": {"op": "rename", "args": {"path": str(folder / "hello.txt"), "name": "renamed.txt", "expected_identity": None}}}).encode()
+    framed = b"CX1 " + str(len(request)).encode() + b"\n" + request
+    response = subprocess.check_output([str(installed), "helper"], env=env, input=framed)
+    header, payload = response.split(b"\n", 1)
+    assert header == b"CX1 " + str(len(payload)).encode(), response
+    assert json.loads(payload)["error"] is None, response
+    assert (folder / "renamed.txt").read_text() == "fixture\n"
+    print(json.dumps({"result": "PASS", "version": version, "checks": ["signed real binary installation", "idempotent rerun", "version", "filesystem listing", "managed shell", "detached copy", "no-clobber rename syscall"], "trust": "synthetic test key; release authenticity tested separately"}))

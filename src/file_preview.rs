@@ -85,7 +85,16 @@ fn extension(path: &Path) -> String {
         .unwrap_or("")
         .to_ascii_lowercase()
 }
-pub(super) fn render(path: &Path, mut file: File) -> Result<Value> {
+pub(super) fn render(path: &Path, file: File) -> Result<Value> {
+    render_inner(path, file, None)
+}
+pub(super) fn render_page(path: &Path, file: File, page: u32) -> Result<Value> {
+    if !(1..=10000).contains(&page) {
+        bail!("PDF page must be between 1 and 10000");
+    }
+    render_inner(path, file, Some(page))
+}
+fn render_inner(path: &Path, mut file: File, requested_page: Option<u32>) -> Result<Value> {
     let before = file.metadata()?;
     let size = before.len();
     let mut bytes = Vec::new();
@@ -94,6 +103,11 @@ pub(super) fn render(path: &Path, mut file: File) -> Result<Value> {
         .read_to_end(&mut bytes)?;
     let ext = extension(path);
     let pdf = bytes.starts_with(b"%PDF-");
+    if requested_page.is_some() && !pdf {
+        bail!("page preview requires a PDF file");
+    }
+    let page = requested_page.unwrap_or(1);
+    let mut pages: Option<u32> = None;
     let image = image::guess_format(&bytes).is_ok();
     let tar = bytes.get(257..262) == Some(b"ustar");
     let gzip = bytes.starts_with(&[0x1f, 0x8b]) && matches!(ext.as_str(), "gz" | "tgz");
@@ -139,6 +153,9 @@ pub(super) fn render(path: &Path, mut file: File) -> Result<Value> {
             "archive"
         };
         if size > INPUT {
+            if requested_page.is_some() {
+                bail!("PDF exceeds 16 MiB preview input limit");
+            }
             text = format!("Preview unavailable · file exceeds 16 MiB input limit ({size} bytes)");
         } else {
             file.seek(SeekFrom::Start(0))?;
@@ -163,22 +180,24 @@ pub(super) fn render(path: &Path, mut file: File) -> Result<Value> {
                     }
                 }
             } else if pdf {
-                // Pass the opened file, never a name that could be swapped after validation.
-                match pdf_first_page(&bytes) {
-                    Ok(png) => match raster(&png) {
-                        Ok((value, _)) => {
-                            img = value;
-                            title = "PDF · page 1".into();
-                            text = "First page only".into();
-                            truncated = true;
-                        }
-                        Err(e) => {
-                            text = format!(
-                                "PDF preview unavailable · {}",
-                                super::display(&e.to_string())
-                            )
-                        }
-                    },
+                // Count and render only bounded bytes read from the authenticated descriptor.
+                let result = (|| -> Result<Value> {
+                    let count = pdf_page_count(&bytes)?;
+                    pages = Some(count);
+                    if page > count {
+                        bail!("PDF page {page} is out of range (document has {count} pages)");
+                    }
+                    let png = pdf_page(&bytes, page)?;
+                    Ok(raster(&png)?.0)
+                })();
+                match result {
+                    Ok(value) => {
+                        img = value;
+                        title = format!("PDF · page {page}");
+                        text = String::new();
+                        truncated = pages.is_some_and(|count| count > 1);
+                    }
+                    Err(e) if requested_page.is_some() => return Err(e),
                     Err(e) => {
                         text = format!(
                             "PDF preview unavailable · {}",
@@ -253,25 +272,59 @@ pub(super) fn render(path: &Path, mut file: File) -> Result<Value> {
     if after.len() != size || after.modified()? != before.modified()? {
         bail!("source changed during preview; retry");
     }
-    Ok(
-        json!({"path":super::encode_path(path),"text":text,"truncated":truncated,"binary":binary,"kind":kind,"title":title,"image":img}),
-    )
+    let mut response = json!({"path":super::encode_path(path),"text":text,"truncated":truncated,"binary":binary,"kind":kind,"title":title,"image":img});
+    if pdf {
+        response["page"] = json!(page);
+        response["pages"] = json!(pages);
+    }
+    Ok(response)
 }
 
 #[cfg(unix)]
-fn pdf_first_page(bytes: &[u8]) -> Result<Vec<u8>> {
-    pdf_converter(bytes, std::ffi::OsStr::new("pdftoppm"))
+fn pdf_page_count(bytes: &[u8]) -> Result<u32> {
+    let output = run_converter(bytes, std::ffi::OsStr::new("pdfinfo"), &["-"], 64 * 1024)?;
+    parse_page_count(&output)
+}
+fn parse_page_count(output: &[u8]) -> Result<u32> {
+    let text = std::str::from_utf8(output).context("invalid PDF page metadata")?;
+    let mut counts = text.lines().filter_map(|line| line.strip_prefix("Pages:"));
+    let count: u32 = counts
+        .next()
+        .context("PDF page count unavailable")?
+        .trim()
+        .parse()
+        .context("invalid PDF page count")?;
+    if count == 0 || counts.next().is_some() {
+        bail!("invalid PDF page count");
+    }
+    Ok(count)
 }
 #[cfg(unix)]
+fn pdf_page(bytes: &[u8], page: u32) -> Result<Vec<u8>> {
+    let page = page.to_string();
+    run_converter(
+        bytes,
+        std::ffi::OsStr::new("pdftoppm"),
+        &[
+            "-f",
+            &page,
+            "-l",
+            &page,
+            "-singlefile",
+            "-scale-to",
+            "1280",
+            "-png",
+            "-",
+        ],
+        2 * 1024 * 1024,
+    )
+}
+#[cfg(all(unix, test))]
 fn pdf_converter(bytes: &[u8], program: &std::ffi::OsStr) -> Result<Vec<u8>> {
-    use std::{
-        os::unix::{io::AsRawFd, process::CommandExt},
-        process::{Command, Stdio},
-        time::{Duration, Instant},
-    };
-    let mut command = Command::new(program);
-    command
-        .args([
+    run_converter(
+        bytes,
+        program,
+        &[
             "-f",
             "1",
             "-l",
@@ -281,7 +334,26 @@ fn pdf_converter(bytes: &[u8], program: &std::ffi::OsStr) -> Result<Vec<u8>> {
             "1280",
             "-png",
             "-",
-        ])
+        ],
+        2 * 1024 * 1024,
+    )
+}
+#[cfg(unix)]
+fn run_converter(
+    bytes: &[u8],
+    program: &std::ffi::OsStr,
+    args: &[&str],
+    output_limit: usize,
+) -> Result<Vec<u8>> {
+    use std::{
+        os::unix::{io::AsRawFd, process::CommandExt},
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .env("LC_ALL", "C")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -307,9 +379,12 @@ fn pdf_converter(bytes: &[u8], program: &std::ffi::OsStr) -> Result<Vec<u8>> {
             Ok(())
         });
     }
-    let mut child = command
-        .spawn()
-        .context("optional pdftoppm converter not available")?;
+    let mut child = command.spawn().with_context(|| {
+        format!(
+            "optional {} converter not available",
+            program.to_string_lossy()
+        )
+    })?;
     // Feed only the bounded snapshot read from the validated descriptor. A
     // growing file cannot extend the converter's input or reopen a swapped name.
     let mut stdin = child.stdin.take().context("converter input unavailable")?;
@@ -324,7 +399,9 @@ fn pdf_converter(bytes: &[u8], program: &std::ffi::OsStr) -> Result<Vec<u8>> {
         .context("converter output unavailable")?;
     let fd = stdout.as_raw_fd();
     if unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) } < 0 {
-        let _ = child.kill();
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
         let _ = child.wait();
         let _ = writer.join();
         bail!("could not bound converter output");
@@ -346,7 +423,7 @@ fn pdf_converter(bytes: &[u8], program: &std::ffi::OsStr) -> Result<Vec<u8>> {
                     }
                 }
                 Ok(n) => {
-                    if output.len() + n > 2 * 1024 * 1024 {
+                    if output.len() + n > output_limit {
                         bail!("converter output exceeds limit");
                     }
                     output.extend_from_slice(&chunk[..n]);
@@ -374,7 +451,12 @@ fn pdf_converter(bytes: &[u8], program: &std::ffi::OsStr) -> Result<Vec<u8>> {
     Ok(output)
 }
 #[cfg(not(unix))]
-fn pdf_first_page(_: &[u8]) -> Result<Vec<u8>> {
+fn pdf_page(_: &[u8], _: u32) -> Result<Vec<u8>> {
+    bail!("PDF converter unavailable on this platform")
+}
+
+#[cfg(not(unix))]
+fn pdf_page_count(_: &[u8]) -> Result<u32> {
     bail!("PDF converter unavailable on this platform")
 }
 
@@ -569,6 +651,115 @@ mod tests {
         let v = fixture("bomb.bmp", &bytes);
         assert!(v["image"].is_null());
         assert!(v["text"].as_str().unwrap().contains("limit"));
+    }
+    fn three_page_pdf() -> Vec<u8> {
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets = vec![0];
+        let mut objects = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R] /Count 3 >>".to_owned(),
+        ];
+        for (index, color) in ["1 0 0", "0 1 0", "0 0 1"].iter().enumerate() {
+            objects.push(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << >> /Contents {} 0 R >>",4+index*2));
+            let content = format!("{color} rg 0 0 200 100 re f\n");
+            objects.push(format!(
+                "<< /Length {} >>\nstream\n{content}endstream",
+                content.len()
+            ));
+        }
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", index + 1).as_bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+        );
+        for offset in offsets.iter().skip(1) {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+        pdf
+    }
+    #[test]
+    fn actual_three_page_pdf_exact_pages_and_bounds() {
+        if std::process::Command::new("pdfinfo")
+            .arg("-v")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_err()
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("- PDF\u{1b}[31m.pdf");
+        std::fs::write(&path, three_page_pdf()).unwrap();
+        for page in 1..=3 {
+            let response = render_page(&path, File::open(&path).unwrap(), page).unwrap();
+            assert_eq!(response["pages"], 3);
+            assert_eq!(response["page"], page);
+            assert_eq!(response["title"], format!("PDF · page {page}"));
+            let png = STANDARD
+                .decode(response["image"]["png"].as_str().unwrap())
+                .unwrap();
+            let image = image::load_from_memory(&png).unwrap().to_rgb8();
+            let pixel = image.get_pixel(image.width() / 2, image.height() / 2);
+            for channel in 0..3 {
+                assert_eq!(
+                    pixel[channel],
+                    if channel == page as usize - 1 { 255 } else { 0 }
+                );
+            }
+            assert!(serde_json::to_vec(&response).unwrap().len() < 1024 * 1024);
+        }
+        let original = std::fs::read(&path).unwrap();
+        for page in [0, 4, 10001] {
+            assert!(render_page(&path, File::open(&path).unwrap(), page).is_err());
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let default = render(&path, File::open(&path).unwrap()).unwrap();
+        assert_eq!(default["page"], 1);
+        assert_eq!(default["pages"], 3);
+        std::fs::write(&path, b"%PDF-1.4 broken").unwrap();
+        assert!(render_page(&path, File::open(&path).unwrap(), 1).is_err());
+        assert!(render(&path, File::open(&path).unwrap()).unwrap()["image"].is_null());
+        std::fs::write(&path, b"text file").unwrap();
+        assert!(render_page(&path, File::open(&path).unwrap(), 1).is_err());
+    }
+    #[test]
+    fn page_metadata_is_allowlisted_and_precise() {
+        assert_eq!(
+            parse_page_count(b"Title: malicious\x1b[31m\nPages: 3\n").unwrap(),
+            3
+        );
+        for data in [
+            b"Pages: 0\n".as_slice(),
+            b"Pages: 3\nPages: 4\n",
+            b"Pages: junk\n",
+            b"Pages: 4294967296\n",
+            b"Pages: 3\x1b[31m\n",
+            b"No pages\n",
+        ] {
+            assert!(parse_page_count(data).is_err());
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn metadata_converter_output_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("noisy-metadata");
+        std::fs::write(&script, b"#!/bin/sh\nhead -c 70000 /dev/zero\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let error = run_converter(b"%PDF-", script.as_os_str(), &["-"], 64 * 1024).unwrap_err();
+        assert!(error.to_string().contains("output exceeds limit"));
     }
     #[test]
     fn real_pdf_first_page_when_poppler_available() {

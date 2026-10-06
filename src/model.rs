@@ -145,6 +145,8 @@ pub enum Operation {
         key: String,
     },
     Network,
+    NetworkCandidates,
+    ProbeCandidate { address: String, interface: Option<String> },
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Request {

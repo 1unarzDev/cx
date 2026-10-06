@@ -289,6 +289,21 @@ struct Asset {
     size: u64,
 }
 fn release(bytes: &[u8], current: &str) -> Result<Option<(String, String)>> {
+    release_for_arch(bytes, Some(current), ARCH)
+}
+fn supported_arch(arch: &str) -> Result<()> {
+    ensure!(
+        matches!(arch, "x86_64" | "aarch64"),
+        "Enrollment supports Linux x86_64 and aarch64"
+    );
+    Ok(())
+}
+fn release_for_arch(
+    bytes: &[u8],
+    current: Option<&str>,
+    arch: &str,
+) -> Result<Option<(String, String)>> {
+    supported_arch(arch)?;
     let r: Release = serde_json::from_slice(bytes).context("invalid release metadata")?;
     ensure!(!r.draft && !r.prerelease, "release is not stable");
     let version = r
@@ -296,10 +311,12 @@ fn release(bytes: &[u8], current: &str) -> Result<Option<(String, String)>> {
         .strip_prefix('v')
         .context("invalid release tag")?;
     let candidate = numeric(version)?;
-    if candidate <= numeric(current)? {
-        return Ok(None);
+    if let Some(current) = current {
+        if candidate <= numeric(current)? {
+            return Ok(None);
+        }
     }
-    let name = format!("cx-{}-linux-{ARCH}.tar.gz", r.tag_name);
+    let name = format!("cx-{}-linux-{arch}.tar.gz", r.tag_name);
     let url = format!(
         "https://github.com/{REPO}/releases/download/{}/{name}",
         r.tag_name
@@ -604,102 +621,13 @@ fn prepare(
     let Some((version, url)) = release(&bytes, current)? else {
         return Ok(CheckOutcome::Current);
     };
-    let s = stage(root.child("update", true)?)?;
-    let archive = new_file(&s.dir.path("archive"))?;
-    let archive_path = PathBuf::from(format!(
-        "/proc/{}/fd/{}",
-        std::process::id(),
-        archive.as_raw_fd()
-    ));
-    let mut args = curl_args(&url);
-    args.extend([
-        "--location".into(),
-        "--max-filesize".into(),
-        ARCHIVE_LIMIT.to_string(),
-        "--output".into(),
-        archive_path.to_string_lossy().into_owned(),
-    ]);
-    let (status, _) = match backend.run(Tool::Curl, &args, None).and_then(http) {
-        Ok(v) => v,
-        Err(_) => return Ok(CheckOutcome::Offline),
-    };
-    if status != 200 {
-        return Ok(CheckOutcome::Unavailable(
-            "Release artifact unavailable".into(),
-        ));
-    }
-    ensure!(
-        archive.metadata()?.len() > 0 && archive.metadata()?.len() <= ARCHIVE_LIMIT,
-        "invalid archive size"
-    );
-    archive.sync_all()?;
-    // Detached signatures are verified against the public key compiled into this binary.
-    let bundle = new_file(&s.dir.path("signature"))?;
-    let bundle_path = PathBuf::from(format!(
-        "/proc/{}/fd/{}",
-        std::process::id(),
-        bundle.as_raw_fd()
-    ));
-    let mut bundle_args = curl_args(&format!("{url}.sig"));
-    bundle_args.extend([
-        "--location".into(),
-        "--max-filesize".into(),
-        "8192".into(),
-        "--output".into(),
-        bundle_path.to_string_lossy().into_owned(),
-    ]);
-    let (status, _) = match backend.run(Tool::Curl, &bundle_args, None).and_then(http) {
-        Ok(value) => value,
-        Err(_) => return Ok(CheckOutcome::Offline),
-    };
-    if status != 200 {
-        return Ok(CheckOutcome::Unavailable(
-            "Release signature unavailable; keeping current cx".into(),
-        ));
-    }
-    ensure!(
-        bundle.metadata()?.len() > 0 && bundle.metadata()?.len() <= 8192,
-        "invalid signature size"
-    );
-    let mut key = new_file(&s.dir.path("release-key.pem"))?;
-    key.write_all(RELEASE_KEY.as_bytes())?;
-    key.sync_all()?;
-    let key_path = PathBuf::from(format!(
-        "/proc/{}/fd/{}",
-        std::process::id(),
-        key.as_raw_fd()
-    ));
-    let args = vec![
-        "dgst".into(),
-        "-sha256".into(),
-        "-verify".into(),
-        key_path.to_string_lossy().into_owned(),
-        "-signature".into(),
-        bundle_path.to_string_lossy().into_owned(),
-        archive_path.to_string_lossy().into_owned(),
-    ];
-    let archive_digest = digest(&archive)?;
-    let verified = match backend.run(Tool::OpenSsl, &args, None) {
-        Ok(v) => v,
-        Err(_) => {
-            return Ok(CheckOutcome::Unavailable(
-                "Install OpenSSL and retry".into(),
-            ))
+    let (s, binary) = match download_verified(root.child("update", true)?, &url, backend)? {
+        ArtifactOutcome::Offline => return Ok(CheckOutcome::Offline),
+        ArtifactOutcome::Unavailable(message) => {
+            return Ok(CheckOutcome::Unavailable(message.into()))
         }
+        ArtifactOutcome::Ready(stage, binary) => (stage, binary),
     };
-    ensure!(verified.code == 0, "release signature rejected");
-    ensure!(
-        digest(&archive)? == archive_digest,
-        "verified archive changed"
-    );
-    // Hash before/after verification and extraction prevents changing the verified subject.
-    // Archive is never executed. Extract only after the exact pinned public key signature passes.
-    let archive_copy = archive.try_clone()?;
-    let binary = extract(archive, &s.dir)?;
-    ensure!(
-        self::digest(&archive_copy)? == archive_digest,
-        "verified archive changed during extraction"
-    );
     let m = binary.metadata()?;
     let digest = digest(&binary)?;
     binary.set_permissions(fs::Permissions::from_mode(0o700))?;
@@ -739,6 +667,165 @@ fn prepare(
         state: state.into(),
     }))
 }
+enum ArtifactOutcome {
+    Offline,
+    Unavailable(&'static str),
+    Ready(Stage, File),
+}
+// Both updater and enrollment share the exact download, pinned signature and bounded extraction path.
+fn download_verified(parent: Dir, url: &str, backend: &Backend) -> Result<ArtifactOutcome> {
+    let s = stage(parent)?;
+    let archive = new_file(&s.dir.path("archive"))?;
+    let archive_path = PathBuf::from(format!(
+        "/proc/{}/fd/{}",
+        std::process::id(),
+        archive.as_raw_fd()
+    ));
+    let mut args = curl_args(&url);
+    args.extend([
+        "--location".into(),
+        "--max-filesize".into(),
+        ARCHIVE_LIMIT.to_string(),
+        "--output".into(),
+        archive_path.to_string_lossy().into_owned(),
+    ]);
+    let (status, _) = match backend.run(Tool::Curl, &args, None).and_then(http) {
+        Ok(v) => v,
+        Err(_) => return Ok(ArtifactOutcome::Offline),
+    };
+    if status != 200 {
+        return Ok(ArtifactOutcome::Unavailable("Release artifact unavailable"));
+    }
+    ensure!(
+        archive.metadata()?.len() > 0 && archive.metadata()?.len() <= ARCHIVE_LIMIT,
+        "invalid archive size"
+    );
+    archive.sync_all()?;
+    // Detached signatures are verified against the public key compiled into this binary.
+    let bundle = new_file(&s.dir.path("signature"))?;
+    let bundle_path = PathBuf::from(format!(
+        "/proc/{}/fd/{}",
+        std::process::id(),
+        bundle.as_raw_fd()
+    ));
+    let mut bundle_args = curl_args(&format!("{url}.sig"));
+    bundle_args.extend([
+        "--location".into(),
+        "--max-filesize".into(),
+        "8192".into(),
+        "--output".into(),
+        bundle_path.to_string_lossy().into_owned(),
+    ]);
+    let (status, _) = match backend.run(Tool::Curl, &bundle_args, None).and_then(http) {
+        Ok(value) => value,
+        Err(_) => return Ok(ArtifactOutcome::Offline),
+    };
+    if status != 200 {
+        return Ok(ArtifactOutcome::Unavailable(
+            "Release signature unavailable; keeping current cx",
+        ));
+    }
+    ensure!(
+        bundle.metadata()?.len() > 0 && bundle.metadata()?.len() <= 8192,
+        "invalid signature size"
+    );
+    let mut key = new_file(&s.dir.path("release-key.pem"))?;
+    key.write_all(RELEASE_KEY.as_bytes())?;
+    key.sync_all()?;
+    let key_path = PathBuf::from(format!(
+        "/proc/{}/fd/{}",
+        std::process::id(),
+        key.as_raw_fd()
+    ));
+    let args = vec![
+        "dgst".into(),
+        "-sha256".into(),
+        "-verify".into(),
+        key_path.to_string_lossy().into_owned(),
+        "-signature".into(),
+        bundle_path.to_string_lossy().into_owned(),
+        archive_path.to_string_lossy().into_owned(),
+    ];
+    let archive_digest = digest(&archive)?;
+    let verified = match backend.run(Tool::OpenSsl, &args, None) {
+        Ok(v) => v,
+        Err(_) => return Ok(ArtifactOutcome::Unavailable("Install OpenSSL and retry")),
+    };
+    ensure!(verified.code == 0, "release signature rejected");
+    ensure!(
+        digest(&archive)? == archive_digest,
+        "verified archive changed"
+    );
+    // Hash before/after verification and extraction prevents changing the verified subject.
+    // Archive is never executed. Extract only after the exact pinned public key signature passes.
+    let archive_copy = archive.try_clone()?;
+    let binary = extract(archive, &s.dir)?;
+    ensure!(
+        self::digest(&archive_copy)? == archive_digest,
+        "verified archive changed during extraction"
+    );
+    Ok(ArtifactOutcome::Ready(s, binary))
+}
+
+/// A verified enrollment artifact. Keep this handle alive until remote transfer finishes.
+/// Its local file has no execute permission and is never probed or installed by this API.
+#[derive(Debug)]
+pub struct EnrollmentBinary {
+    pub version: String,
+    pub arch: String,
+    binary: File,
+    _stage: Stage,
+}
+impl EnrollmentBinary {
+    /// An FD-pinned path usable by a child transfer process while this handle is alive.
+    pub fn path(&self) -> PathBuf {
+        PathBuf::from(format!(
+            "/proc/{}/fd/{}",
+            std::process::id(),
+            self.binary.as_raw_fd()
+        ))
+    }
+}
+/// Download the latest official stable Linux artifact for enrollment, including foreign architectures.
+/// This bypasses local update version/cache checks without changing their behavior.
+pub fn obtain_enrollment_binary(arch: &str) -> Result<EnrollmentBinary> {
+    supported_arch(arch)?;
+    let (home, state) = paths()?;
+    obtain_enrollment_with(arch, &home, &state, &Backend::system())
+}
+fn obtain_enrollment_with(
+    arch: &str,
+    home: &Path,
+    state: &Path,
+    backend: &Backend,
+) -> Result<EnrollmentBinary> {
+    supported_arch(arch)?;
+    let (status, bytes) = http(backend.run(Tool::Curl, &curl_args(API), None)?)?;
+    ensure!(
+        status == 200,
+        "Official stable release unavailable (HTTP {status})"
+    );
+    let (version, url) =
+        release_for_arch(&bytes, None, arch)?.context("Official stable release unavailable")?;
+    let root = state_dir(home, state)?;
+    let (stage, binary) = match download_verified(root.child("enrollment", true)?, &url, backend)? {
+        ArtifactOutcome::Offline => bail!("Enrollment artifact download unavailable"),
+        ArtifactOutcome::Unavailable(message) => bail!("{message}"),
+        ArtifactOutcome::Ready(stage, binary) => (stage, binary),
+    };
+    ensure!(
+        binary.metadata()?.mode() & 0o111 == 0,
+        "Enrollment artifact must not execute locally"
+    );
+    binary.sync_all()?;
+    Ok(EnrollmentBinary {
+        version,
+        arch: arch.into(),
+        binary,
+        _stage: stage,
+    })
+}
+
 fn digest(f: &File) -> Result<String> {
     use std::os::unix::fs::FileExt;
     let mut hash = Sha256::new();
@@ -932,3 +1019,268 @@ fn install_with(plan: &UpdatePlan, source: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 #[path = "../tests/update_fixtures/mod.rs"]
 mod tests;
+
+#[cfg(test)]
+mod enrollment_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct SignedFixture {
+        metadata: Vec<u8>,
+        archive: Vec<u8>,
+        verification: u8,
+        synthetic_signature: Option<(PathBuf, Vec<u8>)>,
+        calls: RefCell<Vec<&'static str>>,
+    }
+    fn archive(path: &str, kind: tar::EntryType) -> Vec<u8> {
+        let gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut tar = tar::Builder::new(gzip);
+        let bytes = b"foreign fixture: never execute";
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(kind);
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o755);
+        if kind.is_symlink() {
+            header.set_link_name("elsewhere").unwrap();
+        }
+        header.set_cksum();
+        tar.append_data(&mut header, path, bytes.as_slice())
+            .unwrap();
+        tar.into_inner().unwrap().finish().unwrap()
+    }
+    impl SignedFixture {
+        fn new() -> Self {
+            let assets = ["x86_64", "aarch64"].map(|arch| serde_json::json!({
+                "name":format!("cx-v0.1.0-linux-{arch}.tar.gz"), "size":100,
+                "browser_download_url":format!("https://github.com/{REPO}/releases/download/v0.1.0/cx-v0.1.0-linux-{arch}.tar.gz")
+            }));
+            Self {
+                metadata: serde_json::to_vec(&serde_json::json!({
+                    "tag_name":"v0.1.0", "draft":false, "prerelease":false, "assets":assets
+                }))
+                .unwrap(),
+                archive: archive("cx", tar::EntryType::Regular),
+                verification: 0,
+                synthetic_signature: None,
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+    }
+    impl TestBackend for SignedFixture {
+        fn run(&self, tool: Tool, args: &[String], _: Option<&Path>) -> Result<Output> {
+            match tool {
+                Tool::Probe => panic!("Enrollment must never execute an artifact"),
+                Tool::OpenSsl => {
+                    self.calls.borrow_mut().push("verify");
+                    assert_eq!(&args[..3], &["dgst", "-sha256", "-verify"]);
+                    assert_eq!(fs::read_to_string(&args[3])?, RELEASE_KEY);
+                    if let Some((test_key, _)) = &self.synthetic_signature {
+                        // Test-only tool boundary: production still supplies its compiled trust root.
+                        let mut args = args.to_vec();
+                        args[3] = test_key.to_string_lossy().into_owned();
+                        return Backend::system().run(tool, &args, None);
+                    }
+                    match self.verification {
+                        2 => return Backend::system().run(tool, args, None),
+                        3 => fs::write(&args[6], b"changed after verification")?,
+                        _ => (),
+                    }
+                    Ok(Output {
+                        code: i32::from(self.verification == 1),
+                        bytes: vec![],
+                    })
+                }
+                Tool::Curl => {
+                    if let Some(index) = args.iter().position(|s| s == "--output") {
+                        let signature = args.iter().any(|s| s.ends_with(".sig"));
+                        self.calls.borrow_mut().push(if signature {
+                            "signature"
+                        } else {
+                            "archive"
+                        });
+                        let signature_bytes = self
+                            .synthetic_signature
+                            .as_ref()
+                            .map(|(_, signature)| signature.as_slice())
+                            .unwrap_or(b"synthetic detached signature");
+                        fs::write(
+                            &args[index + 1],
+                            if signature {
+                                signature_bytes
+                            } else {
+                                &self.archive
+                            },
+                        )?;
+                        Ok(Output {
+                            code: 0,
+                            bytes: b"\n200".to_vec(),
+                        })
+                    } else {
+                        self.calls.borrow_mut().push("metadata");
+                        assert!(args.contains(&API.into()));
+                        let mut bytes = self.metadata.clone();
+                        bytes.extend_from_slice(b"\n200");
+                        Ok(Output { code: 0, bytes })
+                    }
+                }
+            }
+        }
+    }
+    fn obtain(home: &Path, fixture: &SignedFixture, arch: &str) -> Result<EnrollmentBinary> {
+        obtain_enrollment_with(
+            arch,
+            home,
+            &home.join(".local/state/cx"),
+            &Backend::fixture(fixture),
+        )
+    }
+    #[test]
+    fn latest_both_architectures_are_fd_pinned_nonexecutable_and_cleaned() {
+        for arch in ["x86_64", "aarch64"] {
+            let home = tempfile::tempdir().unwrap();
+            let fixture = SignedFixture::new();
+            let binary = obtain(home.path(), &fixture, arch).unwrap();
+            assert_eq!(binary.version, "0.1.0");
+            assert_eq!(binary.arch, arch);
+            let path = binary.path();
+            let identity = fs::metadata(&path).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), b"foreign fixture: never execute");
+            assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+            assert_eq!(
+                &*fixture.calls.borrow(),
+                &["metadata", "archive", "signature", "verify"]
+            );
+            let stages = home.path().join(".local/state/cx/enrollment");
+            assert_eq!(fs::read_dir(&stages).unwrap().count(), 1);
+            drop(binary);
+            // Parallel tests may reuse the numeric FD immediately; it must no longer identify this artifact.
+            assert!(fs::metadata(&path).map_or(true, |m| (m.dev(), m.ino())
+                != (identity.dev(), identity.ino())));
+            assert_eq!(fs::read_dir(stages).unwrap().count(), 0);
+            assert!(!home
+                .path()
+                .join(".local/state/cx/update-cache.json")
+                .exists());
+        }
+    }
+    #[test]
+    fn unknown_architecture_rejects_before_network_or_local_state() {
+        let home = tempfile::tempdir().unwrap();
+        let fixture = SignedFixture::new();
+        for arch in ["arm64", "linux-aarch64", "../x86_64", "", "x86_64;false"] {
+            assert!(obtain(home.path(), &fixture, arch).is_err());
+        }
+        assert!(fixture.calls.borrow().is_empty());
+        assert!(!home.path().join(".local").exists());
+    }
+    #[test]
+    fn signature_rejection_tampering_and_archive_paths_cleanup() {
+        for verification in [1, 2, 3] {
+            let home = tempfile::tempdir().unwrap();
+            let mut fixture = SignedFixture::new();
+            fixture.verification = verification;
+            assert!(obtain(home.path(), &fixture, "aarch64").is_err());
+            assert_eq!(
+                fs::read_dir(home.path().join(".local/state/cx/enrollment"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+        }
+        for (path, kind) in [
+            ("nested/cx", tar::EntryType::Regular),
+            ("cx", tar::EntryType::Symlink),
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let mut fixture = SignedFixture::new();
+            fixture.archive = archive(path, kind);
+            assert!(obtain(home.path(), &fixture, "aarch64").is_err());
+            assert_eq!(
+                fs::read_dir(home.path().join(".local/state/cx/enrollment"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+        }
+    }
+    #[test]
+    fn synthetic_signed_archive_uses_real_crypto_without_foreign_execution() {
+        let home = tempfile::tempdir().unwrap();
+        let keys = tempfile::tempdir().unwrap();
+        let private = keys.path().join("private.pem");
+        let public = keys.path().join("public.pem");
+        let archive = keys.path().join("artifact.tar.gz");
+        let signature = keys.path().join("artifact.sig");
+        let mut fixture = SignedFixture::new();
+        fs::write(&archive, &fixture.archive).unwrap();
+        let commands = vec![
+            vec![
+                "genpkey".into(),
+                "-algorithm".into(),
+                "RSA".into(),
+                "-pkeyopt".into(),
+                "rsa_keygen_bits:2048".into(),
+                "-out".into(),
+                private.to_string_lossy().into_owned(),
+            ],
+            vec![
+                "pkey".into(),
+                "-in".into(),
+                private.to_string_lossy().into_owned(),
+                "-pubout".into(),
+                "-out".into(),
+                public.to_string_lossy().into_owned(),
+            ],
+            vec![
+                "dgst".into(),
+                "-sha256".into(),
+                "-sign".into(),
+                private.to_string_lossy().into_owned(),
+                "-out".into(),
+                signature.to_string_lossy().into_owned(),
+                archive.to_string_lossy().into_owned(),
+            ],
+        ];
+        for args in commands {
+            assert_eq!(
+                Backend::system()
+                    .run(Tool::OpenSsl, &args, None)
+                    .unwrap()
+                    .code,
+                0
+            );
+        }
+        fixture.synthetic_signature = Some((public, fs::read(signature).unwrap()));
+        let artifact = obtain(home.path(), &fixture, "aarch64").unwrap();
+        assert_eq!(
+            fs::read(artifact.path()).unwrap(),
+            b"foreign fixture: never execute"
+        );
+        drop(artifact);
+        fixture.synthetic_signature.as_mut().unwrap().1[0] ^= 1;
+        assert!(obtain(home.path(), &fixture, "aarch64").is_err());
+    }
+    #[test]
+    fn metadata_and_state_paths_are_guarded() {
+        let home = tempfile::tempdir().unwrap();
+        for field in ["name", "browser_download_url", "size"] {
+            let mut fixture = SignedFixture::new();
+            let mut metadata: serde_json::Value =
+                serde_json::from_slice(&fixture.metadata).unwrap();
+            metadata["assets"][1][field] = if field == "size" {
+                (ARCHIVE_LIMIT + 1).into()
+            } else {
+                "https://other.example/cx".into()
+            };
+            fixture.metadata = serde_json::to_vec(&metadata).unwrap();
+            assert!(obtain(home.path(), &fixture, "aarch64").is_err());
+            assert_eq!(&*fixture.calls.borrow(), &["metadata"]);
+        }
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), home.path().join(".local")).unwrap();
+        let fixture = SignedFixture::new();
+        assert!(obtain(home.path(), &fixture, "aarch64").is_err());
+        assert_eq!(&*fixture.calls.borrow(), &["metadata"]);
+        assert_eq!(fs::read_dir(elsewhere.path()).unwrap().count(), 0);
+    }
+}

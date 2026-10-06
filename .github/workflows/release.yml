@@ -20,6 +20,7 @@ jobs:
       - run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt
       - run: cargo fmt --check && cargo test --locked && cargo build --locked
       - run: python3 tests/native_command_pty.py target/debug/cx
+      - run: CX_TEST_SHELL=/bin/sh python3 tests/native_command_pty.py target/debug/cx
       - run: sudo apt-get update && sudo apt-get install -y shellcheck fish zsh
       - run: CX_TEST_SHELL=/usr/bin/fish python3 tests/native_command_pty.py target/debug/cx
       - run: CX_TEST_SHELL=/usr/bin/zsh python3 tests/native_command_pty.py target/debug/cx

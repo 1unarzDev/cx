@@ -824,7 +824,14 @@ pub fn execute_command(request: &RunCommand) -> Result<()> {
     // One-shot commands retain interactive shell startup and functions, but
     // their processes share the launcher's owned group. Otherwise a login
     // shell can ignore suspend or strand a stopped job in a separate group.
-    let script = if fish {
+    let posix = std::path::Path::new(&shell)
+        .file_name()
+        .is_some_and(|s| s == "sh" || s == "dash");
+    let script = if posix {
+        // POSIX batch commands use login startup and default native signals.
+        // Interactive dash otherwise returns to a prompt after interruption.
+        r#"command set +m; command eval "$1""#
+    } else if fish {
         "function __cx_suspend --on-signal TSTP; command kill -STOP $fish_pid; end; status job-control none; eval $argv[1]; exit $status"
     } else {
         r#"builtin set +m
@@ -839,7 +846,11 @@ while command kill -0 "$__cx_child" 2>/dev/null; do
 done
 exit "$__cx_status""#
     };
-    command.args(["-l", "-i", "-c", script]);
+    if posix {
+        command.args(["-l", "-c", script]);
+    } else {
+        command.args(["-l", "-i", "-c", script]);
+    }
     if !fish {
         command.arg("cx-command");
     }

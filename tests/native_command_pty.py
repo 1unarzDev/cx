@@ -16,6 +16,7 @@ with tempfile.TemporaryDirectory(prefix='cx-command-pty-') as temporary:
     # Isolate synthetic Zsh startup from runner-owned global compinit prompts.
     (root/'.zshenv').write_text("unsetopt GLOBAL_RCS\n")
     (root/'.zshrc').write_text("cx_fixture_wrapper() { printf wrapper-ok; }\n")
+    (root/'.profile').write_text("cx_fixture_wrapper() { printf wrapper-ok; }\n")
     config = root/'config/fish'; config.mkdir(parents=True)
     (config/'config.fish').write_text("function cx_fixture_wrapper; printf wrapper-ok; end\n")
     def scenario(command, interact=None, expected='Command ended:'):
@@ -78,7 +79,7 @@ with tempfile.TemporaryDirectory(prefix='cx-command-pty-') as temporary:
     checks.append('quoted Unicode directory and exact write')
     scenario('cx_fixture_wrapper > wrapper-result')
     assert (folder/'wrapper-result').read_text() == 'wrapper-ok'
-    checks.append('interactive host wrapper preserved')
+    checks.append('host startup wrapper preserved')
     scenario('exit 7', expected='exit status: 7')
     checks.append('nonzero status and explicit Enter return')
     def interrupt(master, process, wait):

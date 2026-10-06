@@ -295,16 +295,33 @@ pub fn start(spec: &TransferSpec) -> Result<Value> {
     }
     let executable = std::env::current_exe()?;
     let unit = format!("cx-transfer-{}", spec.key);
-    let result = Command::new("systemd-run")
-        .args([
-            "--user",
-            "--quiet",
-            "--collect",
-            "--unit",
-            &unit,
-            "--property=Type=exec",
-            "--",
-        ])
+    let mut detached = Command::new("systemd-run");
+    detached.args([
+        "--user",
+        "--quiet",
+        "--collect",
+        "--unit",
+        &unit,
+        "--property=Type=exec",
+    ]);
+    // The user manager does not inherit the submitting helper's environment.
+    // Preserve only location and agent-socket context, never provider credentials.
+    for variable in ["HOME", "XDG_STATE_HOME", "SSH_AUTH_SOCK"] {
+        if let Some(value) = std::env::var_os(variable) {
+            let mut argument = std::ffi::OsString::from(format!("--setenv={variable}="));
+            argument.push(value);
+            detached.arg(argument);
+        } else if variable == "XDG_STATE_HOME" {
+            // Pin the default too: the manager might have a different XDG value.
+            if let Some(base) = crate::store::state_dir().parent() {
+                let mut argument = std::ffi::OsString::from("--setenv=XDG_STATE_HOME=");
+                argument.push(base);
+                detached.arg(argument);
+            }
+        }
+    }
+    let result = detached
+        .arg("--")
         .arg(&executable)
         .arg("transfer-worker")
         .arg(&path)

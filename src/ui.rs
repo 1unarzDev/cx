@@ -194,6 +194,8 @@ struct App {
     browser_cache: HashMap<(usize, String), Browser>,
     generation: u64,
     creating: bool,
+    providers: HashMap<usize, (Vec<String>, u64)>,
+    provider_loading: std::collections::HashSet<usize>,
     network: HashMap<usize, Value>,
     network_loading: bool,
     clipboard: Option<(usize, Entry)>,
@@ -233,7 +235,7 @@ impl App {
             browser: None,
             other_browser: None,
             destination_active: false,
-            conflict: 0,
+            conflict: 2,
             dialog: None,
             dialog_selected: 0,
             launch_provider: None,
@@ -241,6 +243,8 @@ impl App {
             browser_cache: HashMap::new(),
             generation: 0,
             creating: false,
+            providers: HashMap::new(),
+            provider_loading: std::collections::HashSet::new(),
             network: HashMap::new(),
             network_loading: false,
             clipboard: None,
@@ -250,6 +254,43 @@ impl App {
             quit: false,
             panels: std::cell::RefCell::new(Vec::new()),
             tx,
+        }
+    }
+    fn focus_label(&self) -> &'static str {
+        if self.help {
+            return "Help";
+        }
+        if let Some(dialog) = &self.dialog {
+            return match dialog {
+                Dialog::Device(_) => "Device picker",
+                Dialog::Provider(_) => "Provider",
+                Dialog::Matching(..) => "Session choice",
+                Dialog::Jobs => "Transfers",
+            };
+        }
+        if let Some(input) = self.input {
+            return match input {
+                Input::Search => "Search",
+                Input::Palette => "Actions",
+                Input::Add => "Add device",
+                Input::Mkdir => "New folder",
+            };
+        }
+        match self.focus {
+            Focus::Devices => "Devices",
+            Focus::Actions => "Actions",
+            Focus::Workspace => match self.view {
+                View::Work => "Work",
+                View::Network => "Network",
+                View::Files if self.other_browser.is_some() => {
+                    if self.destination_active {
+                        "Destination"
+                    } else {
+                        "Source"
+                    }
+                }
+                View::Files => "Files",
+            },
         }
     }
     fn send(&self, device: usize, op: Operation) -> bool {
@@ -270,6 +311,9 @@ impl App {
                     self.notice = "Refresh queue busy · retry shortly".into();
                 }
             }
+        }
+        for index in 0..self.devices.len() {
+            self.check_providers(index);
         }
     }
     fn actual_device(&self) -> Option<usize> {
@@ -342,6 +386,30 @@ impl App {
             })
             .collect()
     }
+    fn provider_choices(&self, device: usize) -> Vec<&'static str> {
+        let mut choices = vec!["shell"];
+        if let Some((available, checked)) = self.providers.get(&device) {
+            if transport::now().saturating_sub(*checked) < 60 {
+                for provider in ["claude", "codex"] {
+                    if available.iter().any(|p| p == provider) {
+                        choices.push(provider);
+                    }
+                }
+            }
+        }
+        choices
+    }
+    fn check_providers(&mut self, device: usize) {
+        if !self.provider_loading.contains(&device)
+            && self
+                .providers
+                .get(&device)
+                .is_none_or(|(_, checked)| transport::now().saturating_sub(*checked) >= 60)
+            && self.send(device, Operation::Info)
+        {
+            self.provider_loading.insert(device);
+        }
+    }
     fn action_enabled(&self, action: Action) -> bool {
         match action {
             Action::Work => self.view != View::Work,
@@ -352,13 +420,23 @@ impl App {
                 self.view == View::Files && self.clipboard.is_some() && self.destination_active
             }
             Action::Shell | Action::Claude | Action::Codex => {
-                self.view == View::Files && self.browser.is_some() && !self.creating
+                self.view == View::Files
+                    && !self.creating
+                    && self.browser.as_ref().is_some_and(|b| {
+                        let provider = match action {
+                            Action::Claude => "claude",
+                            Action::Codex => "codex",
+                            _ => "shell",
+                        };
+                        self.provider_choices(b.device).contains(&provider)
+                    })
             }
             Action::Observe => self.view == View::Work && self.selected_session().is_some(),
             _ => true,
         }
     }
     fn open_browser(&mut self, device: usize, path: String) {
+        self.check_providers(device);
         self.generation += 1;
         if let Some(old) = self.browser.take() {
             if self.browser_cache.len() >= 8 {
@@ -379,6 +457,7 @@ impl App {
         self.refresh_browser();
     }
     fn refresh_browser(&mut self) {
+        self.generation += 1;
         if let Some(b) = self.browser.as_mut() {
             b.loading = true;
             b.preview = None;
@@ -393,6 +472,10 @@ impl App {
         }
     }
     fn refresh(&mut self) {
+        for d in 0..self.devices.len() {
+            self.providers.remove(&d);
+            self.check_providers(d);
+        }
         match self.view {
             View::Work => self.refresh_work(),
             View::Files => self.refresh_browser(),
@@ -507,6 +590,7 @@ impl App {
         self.dialog = None;
         match purpose {
             ChooseDevice::New => {
+                self.check_providers(d);
                 self.work[d].loading = self.send(d, Operation::Sessions);
                 if self.launch_provider.is_some() {
                     self.open_browser(d, "~".into());
@@ -529,6 +613,11 @@ impl App {
         ["skip", "overwrite", "rename"][self.conflict]
     }
     fn start_at(&mut self, d: usize, directory: String, provider: String) {
+        if !self.provider_choices(d).contains(&provider.as_str()) {
+            self.check_providers(d);
+            self.notice = "Launch profile unavailable or not yet checked on this device".into();
+            return;
+        }
         if let Some(s) = self.work[d]
             .sessions
             .iter()
@@ -543,13 +632,24 @@ impl App {
     }
     fn create_at(&mut self, d: usize, directory: String, provider: String) {
         let key = unique_key();
+        let location = self
+            .browser
+            .as_ref()
+            .filter(|b| b.device == d && b.path == directory)
+            .map(|b| b.display_path.as_str())
+            .unwrap_or(&directory);
+        let folder = location
+            .rsplit('/')
+            .find(|s| !s.is_empty())
+            .unwrap_or("root");
+        let name = format!("{provider} · {}", safe_label(folder));
         self.creating = self.send(
             d,
             Operation::Create(CreateSession {
                 key: key.clone(),
                 directory,
                 provider: provider.clone(),
-                name: format!("{provider}-{key}"),
+                name,
             }),
         );
         self.notice = if self.creating {
@@ -605,7 +705,11 @@ impl App {
                     );
                     let row = unique.entry(key).or_insert((*d, job.clone()));
                     // Prefer the viewer's durable forwarding reference, which knows job ownership.
-                    if *d < row.0 {
+                    if (self.devices[*d].target.is_none() && self.devices[row.0].target.is_some())
+                        || (self.devices[*d].target.is_none()
+                            == self.devices[row.0].target.is_none()
+                            && *d < row.0)
+                    {
                         *row = (*d, job.clone());
                     }
                 }
@@ -624,10 +728,18 @@ impl App {
     fn dialog_key(&mut self, key: KeyEvent, dialog: Dialog) {
         let count = match &dialog {
             Dialog::Device(_) => self.devices.len(),
-            Dialog::Provider(_) => 3,
+            Dialog::Provider(d) => self.provider_choices(*d).len(),
             Dialog::Matching(..) => 2,
             Dialog::Jobs => self.job_rows().len(),
         };
+        if let Dialog::Provider(device) = dialog {
+            if key.code == KeyCode::Enter && self.dialog_selected >= count {
+                self.check_providers(device);
+                self.notice = "Agent availability changed · checking before launch".into();
+                return;
+            }
+        }
+        self.dialog_selected = self.dialog_selected.min(count.saturating_sub(1));
         match key.code {
             KeyCode::Esc => self.dialog = None,
             KeyCode::Down | KeyCode::Char('j') => {
@@ -643,8 +755,11 @@ impl App {
                     }
                 }
                 Dialog::Provider(d) => {
-                    self.launch_provider =
-                        Some(["shell", "claude", "codex"][self.dialog_selected].into());
+                    let choices = self.provider_choices(d);
+                    let Some(provider) = choices.get(self.dialog_selected) else {
+                        return;
+                    };
+                    self.launch_provider = Some((*provider).into());
                     self.dialog = None;
                     self.open_browser(d, "~".into());
                     self.notice =
@@ -698,6 +813,12 @@ impl App {
             Operation::ListPage { offset, .. } => *offset,
             _ => 0,
         };
+        if matches!(reply.op, Operation::Info) {
+            self.provider_loading.remove(&reply.device);
+        }
+        if matches!(reply.op, Operation::Network) {
+            self.network_loading = false;
+        }
         let is_sessions = matches!(reply.op, Operation::Sessions);
         if is_sessions {
             self.work[reply.device].loading = false;
@@ -710,6 +831,9 @@ impl App {
             Err(e) => {
                 let message =
                     safe_text(&format!("{}: {e:#}", identity(&self.devices[reply.device])));
+                if matches!(reply.op, Operation::Info) {
+                    self.providers.remove(&reply.device);
+                }
                 if is_sessions {
                     self.work[reply.device].error = Some(message.clone());
                 }
@@ -731,6 +855,44 @@ impl App {
         };
         // Session caches remain useful across view changes; navigation responses do not.
         match reply.op {
+            Operation::Info => {
+                let previous = if matches!(self.dialog, Some(Dialog::Provider(d)) if d == reply.device)
+                {
+                    let mut choices = vec!["shell".to_string()];
+                    if let Some((available, _)) = self.providers.get(&reply.device) {
+                        choices.extend(
+                            ["claude", "codex"]
+                                .iter()
+                                .filter(|p| available.iter().any(|v| v == **p))
+                                .map(|p| (*p).to_string()),
+                        );
+                    }
+                    choices.get(self.dialog_selected).cloned()
+                } else {
+                    None
+                };
+                let available = value["capabilities"]
+                    .as_array()
+                    .map(|caps| {
+                        caps.iter()
+                            .filter_map(Value::as_str)
+                            .filter(|p| ["claude", "codex"].contains(p))
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.providers
+                    .insert(reply.device, (available, transport::now()));
+                if matches!(self.dialog, Some(Dialog::Provider(d)) if d == reply.device) {
+                    self.dialog_selected = previous
+                        .and_then(|provider| {
+                            self.provider_choices(reply.device)
+                                .iter()
+                                .position(|p| *p == provider)
+                        })
+                        .unwrap_or(0);
+                }
+            }
             Operation::Sessions => {
                 let selected_identity = self.selected_session().map(|(d, s)| (d, s.id));
                 let data = if value.is_array() {
@@ -772,7 +934,21 @@ impl App {
                 }
             },
             Operation::Jobs | Operation::TransferJobs => {
+                let selected = if matches!(self.dialog, Some(Dialog::Jobs)) {
+                    self.job_rows()
+                        .get(self.dialog_selected)
+                        .map(|(owner, job)| (*owner, job["key"].clone()))
+                } else {
+                    None
+                };
                 self.jobs.insert(reply.device, value);
+                if let Some((owner, key)) = selected {
+                    self.dialog_selected = self
+                        .job_rows()
+                        .iter()
+                        .position(|(d, job)| *d == owner && job["key"] == key)
+                        .unwrap_or(0);
+                }
             }
             Operation::TransferCancel { .. } => {
                 self.send(reply.device, Operation::TransferJobs);
@@ -1076,6 +1252,7 @@ impl App {
                 }
             }
             KeyCode::Esc => {
+                self.generation += 1;
                 if self.view == View::Files {
                     if let Some(b) = &mut self.browser {
                         if b.preview.take().is_none() {
@@ -1297,7 +1474,11 @@ fn safe_label(text: &str) -> String {
 fn block(title: String, focused: bool) -> Block<'static> {
     Block::default()
         .title(Line::from(Span::styled(
-            format!(" {title} "),
+            if focused {
+                format!(" {} {title} ", if ascii() { ">" } else { "▸" })
+            } else {
+                format!(" {title} ")
+            },
             accent().add_modifier(Modifier::BOLD),
         )))
         .border_type(if ascii() {
@@ -1535,7 +1716,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         });
     frame.render_stateful_widget(
         List::new(items)
-            .block(block("Actions · Tab".into(), app.focus == Focus::Actions))
+            .block(block("Actions".into(), app.focus == Focus::Actions))
             .highlight_style(selected_style()),
         sidebar[1],
         &mut state,
@@ -1868,15 +2049,13 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         status_sections[0],
     );
     frame.render_widget(
-        Paragraph::new(format!(
-            "{shown} / {total} {}",
-            if app.view == View::Files {
-                "entries"
-            } else {
-                "sessions"
-            }
-        ))
-        .style(muted())
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("Focus: {}", app.focus_label()),
+                accent().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!(" · {shown}/{total}"), muted()),
+        ]))
         .alignment(ratatui::layout::Alignment::Center),
         status_sections[1],
     );
@@ -1903,15 +2082,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 Span::styled(" /  ", accent().add_modifier(Modifier::BOLD)),
                 Span::raw(safe_label(text)),
             ]))
-            .block(block(
-                if editing {
-                    "Fuzzy search · live"
-                } else {
-                    "Fuzzy search · / edit · Esc clear"
-                }
-                .into(),
-                editing,
-            )),
+            .block(block("Search".into(), editing)),
             footer[0],
         );
         if editing {
@@ -2053,12 +2224,25 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             ),
             Dialog::Provider(d) => (
                 format!("New session · {}", identity(&app.devices[*d])),
-                vec![
-                    "Shell · ordinary terminal".into(),
-                    "Claude · existing host profile".into(),
-                    "Codex · existing host profile".into(),
-                ],
-                "Enter choose · next: browse folder, then Start here".into(),
+                app.provider_choices(*d)
+                    .iter()
+                    .map(|provider| match *provider {
+                        "claude" => "Claude · existing host profile".into(),
+                        "codex" => "Codex · existing host profile".into(),
+                        _ => "Shell · ordinary terminal".into(),
+                    })
+                    .collect(),
+                if app.provider_loading.contains(d) {
+                    "Checking installed agents… · Shell is available now".into()
+                } else if !app
+                    .providers
+                    .get(d)
+                    .is_some_and(|(_, checked)| transport::now().saturating_sub(*checked) < 60)
+                {
+                    "Agent availability unknown · Escape, then Refresh to retry".into()
+                } else {
+                    "Enter choose · next: browse folder, then Start here".into()
+                },
             ),
             Dialog::Matching(d, path, provider, s) => (
                 format!("Matching {provider} · {}", identity(&app.devices[*d])),
@@ -2477,6 +2661,7 @@ pub fn run() -> Result<()> {
     load_cache(&mut app);
     app.refresh_work();
     for d in 0..app.devices.len() {
+        app.check_providers(d);
         app.send(d, Operation::TransferJobs);
     }
     let mut screen = Screen::new().context("open terminal workspace")?;
@@ -2579,6 +2764,12 @@ pub fn run() -> Result<()> {
         }
         // Bounded fleet refresh; idle does not continuously redraw.
         if last_refresh.elapsed() >= Duration::from_secs(30) {
+            if let Some(browser) = &app.browser {
+                app.check_providers(browser.device);
+            }
+            if let Some(Dialog::Provider(device)) = app.dialog {
+                app.check_providers(device);
+            }
             if app.view == View::Work {
                 app.refresh_work();
             } else if app.view == View::Network {
@@ -2624,7 +2815,118 @@ mod tests {
         remote.host = "laptop".into();
         remote.target = Some("laptop".into());
         devices.push(remote);
-        (App::new(devices, tx), rx)
+        let mut a = App::new(devices, tx);
+        for d in 0..a.devices.len() {
+            a.providers
+                .insert(d, (vec!["claude".into(), "codex".into()], transport::now()));
+        }
+        (a, rx)
+    }
+    #[test]
+    fn progress_reordering_preserves_job_cancellation_identity() {
+        let (mut a, rx) = queued_app();
+        a.dialog = Some(Dialog::Jobs);
+        a.jobs.insert(
+            0,
+            serde_json::json!({"jobs":[
+            {"key":"a", "status":"running", "updated":2},
+            {"key":"b", "status":"running", "updated":1}]}),
+        );
+        assert_eq!(a.job_rows()[a.dialog_selected].1["key"], "a");
+        a.apply(Reply {
+            device: 0,
+            op: Operation::TransferJobs,
+            generation: 0,
+            result: Ok(serde_json::json!({"jobs":[
+                {"key":"a", "status":"running", "updated":2},
+                {"key":"b", "status":"running", "updated":3}]})),
+        });
+        a.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert!(matches!(rx.try_recv().unwrap().op, Operation::TransferCancel {key} if key == "a"));
+    }
+    #[test]
+    fn obsolete_network_reply_releases_loading_on_success_and_error() {
+        let (mut a, _rx) = queued_app();
+        a.generation = 5;
+        for result in [Ok(serde_json::json!({})), Err(anyhow::anyhow!("offline"))] {
+            a.network_loading = true;
+            a.apply(Reply {
+                device: 1,
+                op: Operation::Network,
+                generation: 0,
+                result,
+            });
+            assert!(!a.network_loading);
+        }
+    }
+    #[test]
+    fn expired_agent_selection_cannot_turn_into_shell_launch() {
+        let (mut a, rx) = queued_app();
+        a.dialog = Some(Dialog::Provider(1));
+        a.dialog_selected = 2;
+        a.providers.insert(
+            1,
+            (
+                vec!["claude".into(), "codex".into()],
+                transport::now().saturating_sub(61),
+            ),
+        );
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.launch_provider.is_none());
+        assert!(matches!(a.dialog, Some(Dialog::Provider(1))));
+        assert!(matches!(rx.try_recv().unwrap().op, Operation::Info));
+        a.apply(Reply {
+            device: 1,
+            op: Operation::Info,
+            generation: 0,
+            result: Ok(serde_json::json!({"capabilities":["claude", "codex"]})),
+        });
+        assert_eq!(a.dialog_selected, 2);
+    }
+    #[test]
+    fn launch_choices_follow_execution_device_and_unknown_hides_agents() {
+        let (mut a, _rx) = queued_app();
+        a.providers
+            .insert(1, (vec!["codex".into()], transport::now()));
+        assert_eq!(a.provider_choices(0), vec!["shell", "claude", "codex"]);
+        assert_eq!(a.provider_choices(1), vec!["shell", "codex"]);
+        a.open_browser(1, "~".into());
+        assert!(a.action_enabled(Action::Codex));
+        assert!(!a.action_enabled(Action::Claude));
+        a.dialog = Some(Dialog::Provider(1));
+        a.dialog_selected = 1;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(a.launch_provider.as_deref(), Some("codex"));
+        a.providers.insert(1, (vec![], transport::now()));
+        assert_eq!(a.provider_choices(1), vec!["shell"]);
+        assert!(!a.action_enabled(Action::Codex));
+        assert!(a.action_enabled(Action::Shell));
+        a.providers.remove(&1);
+        assert_eq!(a.provider_choices(1), vec!["shell"]);
+        a.providers.insert(
+            1,
+            (vec!["codex".into()], transport::now().saturating_sub(61)),
+        );
+        assert_eq!(a.provider_choices(1), vec!["shell"]);
+    }
+    #[test]
+    fn provider_results_survive_navigation_but_failed_checks_hide_agents() {
+        let (mut a, _rx) = queued_app();
+        a.generation = 8;
+        a.apply(Reply {
+            device: 1,
+            op: Operation::Info,
+            generation: 0,
+            result: Ok(serde_json::json!({"capabilities":["tmux", "codex"]})),
+        });
+        assert_eq!(a.provider_choices(1), vec!["shell", "codex"]);
+        a.apply(Reply {
+            device: 1,
+            op: Operation::Info,
+            generation: 1,
+            result: Err(anyhow::anyhow!("unreachable")),
+        });
+        assert_eq!(a.provider_choices(1), vec!["shell"]);
     }
     #[test]
     fn new_session_from_all_explicitly_selects_execution_provider_directory() {
@@ -2692,6 +2994,9 @@ mod tests {
         assert_eq!(a.other_browser.as_ref().unwrap().device, 1);
         a.browser.as_mut().unwrap().path = "/receive".into();
         while rx.try_recv().is_ok() {}
+        assert_eq!(a.conflict_policy(), "rename");
+        a.execute(Action::Conflict);
+        assert_eq!(a.conflict_policy(), "skip");
         a.execute(Action::Conflict);
         assert_eq!(a.conflict_policy(), "overwrite");
         a.execute(Action::Paste);
@@ -2857,7 +3162,7 @@ mod tests {
             .skip(80 * 18)
             .map(|c| c.symbol())
             .collect::<String>();
-        assert!(bottom.contains("Fuzzy search"));
+        assert!(bottom.contains("Search"));
         assert!(bottom.contains("rcb"));
     }
     #[test]

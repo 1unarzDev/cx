@@ -262,17 +262,134 @@ pub fn set_launch_shell(name: &str) -> Result<serde_json::Value> {
     fs::rename(temp, root.join("launcher.json"))?;
     Ok(serde_json::json!({"launcher":path,"applies_to":"new sessions only"}))
 }
+/// Use exactly the execution host's selected launch profile for both checking and starting.
+pub fn launch_shell() -> Result<String> {
+    let shell = fs::read(state()?.join("launcher.json"))
+        .ok()
+        .and_then(|v| serde_json::from_slice::<String>(&v).ok())
+        .unwrap_or_else(|| std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()));
+    let basename = std::path::Path::new(&shell)
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or("");
+    if !["fish", "bash", "zsh", "sh", "dash"].contains(&basename) {
+        bail!("unsupported login shell: choose Fish, Bash, Zsh or sh");
+    }
+    Ok(shell)
+}
+
+/// This is runtime availability, not provider authentication or model-route health.
+/// No output from shell configuration or providers enters metadata/logs.
+pub fn available_providers() -> Result<Vec<&'static str>> {
+    let shell = launch_shell()?;
+    let mut available = Vec::new();
+    for (provider, probe) in [("claude", "claude --version"), ("codex", "codex --version")] {
+        if provider_available(&shell, probe) {
+            available.push(provider);
+        }
+    }
+    Ok(available)
+}
+
+fn provider_available(shell: &str, probe: &str) -> bool {
+    let mut command = Command::new(shell);
+    let shell_name = std::path::Path::new(shell)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    // Interactive startup is needed for wrappers, but probes do not own a PTY.
+    // Disable inherited monitor mode before the version command so ordinary
+    // background children remain in the disposable probe's process group.
+    let fixed_probe = if ["bash", "zsh", "sh", "dash"].contains(&shell_name) {
+        format!("set +m; {probe}")
+    } else {
+        probe.into()
+    };
+    command.args(["-l", "-i", "-c", &fixed_probe]);
+    bounded_provider_check(command, Duration::from_secs(3))
+}
+
+// Fish runs init commands after its normal configuration. These tmux-supported
+// resets restore the viewer palette/defaults without editing any shell config.
+const FISH_VIEWER_PALETTE: &str = r"printf '%b' '\e]104\e\\' '\e]110\e\\' '\e]111\e\\'";
+
+fn bounded_provider_check(mut command: Command, timeout: Duration) -> bool {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+    let Ok(mut child) = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let deadline = std::time::Instant::now() + timeout;
+    // Observe exit without reaping: the zombie pins the owned group ID until
+    // descendants have been terminated, preventing a recycled-PID signal race.
+    let completed = loop {
+        let mut status: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let observed = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                child.id(),
+                &mut status,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if observed == 0 && unsafe { status.si_pid() } != 0 {
+            break true;
+        }
+        if observed != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            // Do not signal a group if ownership of its leader cannot be established.
+            let _ = child.kill();
+            let _ = child.wait();
+            return false;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    child
+        .wait()
+        .is_ok_and(|status| completed && status.success())
+}
+
+fn bounded_terminfo(mut command: Command) -> bool {
+    let Ok(mut child) = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let deadline = std::time::Instant::now() + Duration::from_millis(200);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(5));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
 fn managed_config() -> String {
     let terminal = ["tmux-256color", "tmux", "screen-256color"]
         .into_iter()
         .find(|name| {
-            Command::new("infocmp")
-                .arg(name)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|status| status.success())
+            let mut command = Command::new("infocmp");
+            command.arg(name);
+            bounded_terminfo(command)
         })
         .unwrap_or("screen-256color");
     include_str!("../assets/tmux.conf").replace(
@@ -375,18 +492,22 @@ pub fn create(request: &CreateSession) -> Result<Session> {
     if root.join(format!("{name}.json")).exists() {
         bail!("original session has ended; use a new creation key to start replacement work");
     }
-    ensure_server()?;
-    let shell = fs::read(state()?.join("launcher.json"))
-        .ok()
-        .and_then(|v| serde_json::from_slice::<String>(&v).ok())
-        .unwrap_or_else(|| std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()));
-    let basename = std::path::Path::new(&shell)
-        .file_name()
-        .and_then(|v| v.to_str())
-        .unwrap_or("");
-    if !["fish", "bash", "zsh", "sh", "dash"].contains(&basename) {
-        bail!("unsupported login shell: choose Fish, Bash, Zsh or sh");
+    let shell = launch_shell()?;
+    if request.provider != "shell"
+        && !provider_available(
+            &shell,
+            match request.provider.as_str() {
+                "claude" => "claude --version",
+                _ => "codex --version",
+            },
+        )
+    {
+        bail!(
+            "{} is not launchable on this execution device; choose an available profile",
+            request.provider
+        );
     }
+    ensure_server()?;
     let (host, account, boot_id) = identity();
     let pending = Session {
         id: name.clone(),
@@ -412,9 +533,25 @@ pub fn create(request: &CreateSession) -> Result<Session> {
     intent.write_all(&serde_json::to_vec(&pending)?)?;
     intent.sync_all()?;
     let mut c = tmux(true)?;
-    c.args(["new-session", "-d", "-s", &name, "-n", "work", "-c"])
-        .arg(directory)
-        .arg(&shell);
+    c.args([
+        "new-session",
+        "-d",
+        "-e",
+        "CX_VIEWER_THEME=1",
+        "-s",
+        &name,
+        "-n",
+        "work",
+        "-c",
+    ])
+    .arg(directory)
+    .arg(&shell);
+    if std::path::Path::new(&shell)
+        .file_name()
+        .is_some_and(|name| name == "fish")
+    {
+        c.args(["--init-command", FISH_VIEWER_PALETTE]);
+    }
     if request.provider == "shell" {
         c.arg("-l");
     } else {
@@ -509,4 +646,113 @@ pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
         bail!("native terminal attachment ended with {result}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn assert_probe_child_stopped(pid: &str) {
+        let deadline = std::time::Instant::now() + Duration::from_millis(250);
+        loop {
+            let stat = fs::read_to_string(format!("/proc/{}/stat", pid.trim()));
+            if stat.is_err()
+                || stat
+                    .unwrap()
+                    .rsplit_once(')')
+                    .unwrap()
+                    .1
+                    .trim_start()
+                    .starts_with('Z')
+            {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "probe child still executing"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+    #[test]
+    fn bash_monitor_mode_is_disabled_for_noninteractive_probe_work() {
+        let fixture = tempfile::tempdir().unwrap();
+        let pid_path = fixture.path().join("child.pid");
+        let mut command = Command::new("/bin/bash");
+        command.args([
+            "-i",
+            "-m",
+            "-c",
+            "set +m; sleep 5 & echo $! > \"$1\"; wait",
+            "probe",
+        ]);
+        command.arg(&pid_path);
+        let start = std::time::Instant::now();
+        assert!(!bounded_provider_check(command, Duration::from_millis(150)));
+        assert!(start.elapsed() < Duration::from_secs(1));
+        let pid = fs::read_to_string(pid_path).unwrap();
+        assert_probe_child_stopped(&pid);
+    }
+    #[test]
+    fn exited_probe_wrappers_do_not_leave_background_work() {
+        for exit in ["0", "1"] {
+            let fixture = tempfile::tempdir().unwrap();
+            let pid_path = fixture.path().join("child.pid");
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", "sleep 5 & echo $! > \"$1\"; exit \"$2\"", "probe"]);
+            command.arg(&pid_path).arg(exit);
+            assert_eq!(
+                bounded_provider_check(command, Duration::from_millis(150)),
+                exit == "0"
+            );
+            let pid = fs::read_to_string(pid_path).unwrap();
+            assert_probe_child_stopped(&pid);
+        }
+    }
+    #[test]
+    fn provider_probe_requires_success_and_bounds_wrappers() {
+        let mut good = Command::new("sh");
+        good.args(["-c", "exit 0"]);
+        assert!(bounded_provider_check(good, Duration::from_millis(150)));
+        let mut broken = Command::new("sh");
+        broken.args(["-c", "echo broken >&2; exit 1"]);
+        assert!(!bounded_provider_check(broken, Duration::from_millis(150)));
+        let mut stalled = Command::new("sh");
+        stalled.args(["-c", "sleep 5 & wait"]);
+        let start = std::time::Instant::now();
+        assert!(!bounded_provider_check(stalled, Duration::from_millis(150)));
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+    #[test]
+    fn fish_palette_reset_is_after_config_before_command() {
+        if !std::path::Path::new("/usr/bin/fish").exists() {
+            return;
+        }
+        let mut command = Command::new("/usr/bin/fish");
+        command.args([
+            "--no-config",
+            "--init-command",
+            FISH_VIEWER_PALETTE,
+            "-c",
+            "printf AFTER",
+        ]);
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            output.stdout,
+            b"\x1b]104\x1b\\\x1b]110\x1b\\\x1b]111\x1b\\AFTER"
+        );
+    }
+    #[test]
+    fn stalled_terminfo_is_bounded_and_reaped() {
+        let fixture = tempfile::tempdir().unwrap();
+        let pid_path = fixture.path().join("probe-pid");
+        let mut command = Command::new("sh");
+        command.args(["-c", "echo $$ > \"$1\"; exec sleep 5", "probe"]);
+        command.arg(&pid_path);
+        let start = std::time::Instant::now();
+        assert!(!bounded_terminfo(command));
+        assert!(start.elapsed() < Duration::from_secs(1));
+        let pid = fs::read_to_string(pid_path).unwrap();
+        assert!(!PathBuf::from(format!("/proc/{}", pid.trim())).exists());
+    }
 }

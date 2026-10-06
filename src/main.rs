@@ -98,7 +98,7 @@ fn info() -> Result<serde_json::Value> {
     let machine = std::fs::read_to_string("/etc/machine-id").unwrap_or_default();
     let mut caps = Vec::new();
     let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-    for tool in ["tmux", "codex", "claude"] {
+    for tool in ["tmux"] {
         let local = home.join(".local/bin").join(tool);
         let path = if local.is_file() {
             local
@@ -113,6 +113,7 @@ fn info() -> Result<serde_json::Value> {
             caps.push(tool)
         }
     }
+    caps.extend(sessions::available_providers()?);
     Ok(
         serde_json::json!({"host":d.host,"account":d.account,"machine_id":machine.trim(),"capabilities":caps,"protocol":1,"persistent_channel":true,"version":env!("CARGO_PKG_VERSION")}),
     )

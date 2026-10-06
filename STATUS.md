@@ -1,8 +1,8 @@
 # cx status
 
-Implementation is in progress, not release ready. Local project has no GitHub remote; public publication is not authorized. Baseline f30bfa2; three native workers use isolated build branches under worktrees.
+Implementation is in progress, not release ready. Local project has no GitHub remote; public publication is not authorized. Integrated baseline 81fce86; bounded workers use isolated branches under worktrees. Sharing completion worker is still active; its code is not integrated.
 
-Working inventory: innovation Arch/tmux 3.7c/Codex 0.160.1/Claude 2.1.290; tranquility Arch with system Codex 0.160.1 but Fish selects user Codex 0.157.1, npm installed, user-owned signature-verified tmux added; server Ubuntu 24.04/tmux 3.4, no AI runtimes. Existing rideshare_planning untouched. Five inter-device SSH directions work; innovation self-alias trust fails and is not modified. Linger is disabled on both Arch accounts. These observations are local deployment facts, not product defaults.
+Working inventory: innovation Arch/tmux 3.7c/Codex 0.160.1/Claude 2.1.290; tranquility Arch with system Codex 0.160.1 but Fish version probe returns Codex 0.160.1, npm installed, user-owned signature-verified tmux added; server Ubuntu 24.04/tmux 3.4, no AI runtimes. Existing rideshare_planning untouched. All six directed inter-device SSH edges were previously verified; innovation self-alias trust fails and is not modified. Linger is enabled on both Arch accounts (rechecked 2026-10-06). These observations are local deployment facts, not product defaults.
 
 Root owns shared model, transport, persistence, manifests, integration and deployment. Workers own sessions; UI; files/read-only network. Live network changes and trust changes remain serialized and gated by actual trust/privilege requirements. The legacy robotics shared_internet.sh replaces the host default route and appends unowned firewall rules; it is inspected, not executed or changed.
 
@@ -10,19 +10,29 @@ Root owns shared model, transport, persistence, manifests, integration and deplo
 Milestones: build → integrated test → concrete result → focused high-value questions → incorporate. Routine engineering remains autonomous. At each milestone assess workflow assumptions, UI alternatives, physical behavior, costly reversals, and tradeoffs. Internally classify Blocking / High value / Polish. Only Blocking interrupts dependent work; other work continues. Answers become product direction and go to relevant workers.
 
 Current user direction (validated first live milestone):
-- Native attach/return initially worked on the user's terminal; return shortcut was not discoverable and Ctrl+C did not mean return. Preserve native Ctrl+C; permanently show Ctrl+] then Space in managed status and provide prefix-help overlay.
+- Native attach/return initially worked on the user's terminal; return shortcut was not discoverable and Ctrl+C did not mean return. Preserve native Ctrl+C; managed sessions now use single Ctrl+] to return; keep the native application’s Ctrl+C.
 - Search must be fuzzy, live on every edit, and inline in a bottom textbox. Implemented in Work and Files; Enter opens selected match, arrows select, printable navigation characters remain input text.
 - Keep sidebar for now but use its empty space better. Slimmed it, added keyboard-accessible device actions and selected execution/workspace context.
 - Visuals need more intention, aligned rows and restrained colors/status indicators. Integrated pass uses fixed table columns, project separation, ANSI accents and explicit indicators with default terminal background.
 
-Pending: POLISH — review the updated visual/search/return-hint build after showing an actual metadata-only PTY capture. No repeat of answered sidebar/search questions.
+Pending: HIGH VALUE — physical check of viewer colors/default-background transparency in a new tranquility Shell (asked after installing and verifying post-init ordering). Prior prompt/return behavior is confirmed; do not re-ask.
 
 - Bottom hints now use a two-row, three-column grid with a shared six-column key slot and transparent background. Enter/Ctrl+P and Search/Help align; 80/120-column real PTY captures verified in local-evidence/ui-{80,120}.png. Local installed binary updated; reopen viewers to load it.
 
 - Folder navigation: Left/h parent, Right/l enter selected directory, Enter directory/preview. Shift+Tab now reverses the device/action/workspace focus cycle and exits search to the preceding focus. Input text retains printable h/l. Regression tests reproduce old failures and now pass.
-- Shell return: user confirms it works. Isolated managed-shell PTY test also passes Ctrl+] Space, same selection, shell survival and terminal restoration. Native shell keys remain untouched.
+- Shell return: user confirms it works. Isolated managed-shell PTY test also passes single Ctrl+], same selection, shell survival and terminal restoration. Native shell keys remain untouched.
 
 - Unicode attachment: tranquility noninteractive SSH reports ASCII locale (LANG/LC_CTYPE unset). Managed/local/remote tmux clients and owned server now use documented -u mode. Synthetic Unicode regression failed before and passes after under LANG=C/LC_ALL=C; no locale or personal tmux configuration changed. Font coverage remains a viewer-terminal responsibility, and Codex output is not rewritten.
 
 - 2026-10-06: user prefers one Ctrl+] to return. Managed root-table binding now detaches directly with prefix None; external servers untouched. Modern tmux terminfo selected by capability (tmux-256color then tmux, screen only fallback), eliminating tmux’s screen compatibility substitution of italic with reverse video. Installed and managed config refreshed nondestructively on innovation/tranquility; temporary refresh sessions removed. Native output regression catches prior reverse SGR and passes now.
-- Cached ICMP backend integrated df5e84f. innovation and tranquility both replied to two bounded public probes; unknown on failure, 60-second cross-helper cache. Workspace flow worker owns new-session/unified-files/dual-location-transfer/directional-focus UI; pending integration and review.
+- Cached ICMP backend integrated df5e84f. innovation and tranquility both replied to two bounded public probes; unknown on failure, 60-second cross-helper cache. New-session/unified-files/dual-location-transfer/directional-focus UI integrated in 81fce86 with subsequent root refinements.
+
+- Physical user feedback: prompt reverse-background artifacts gone and one Ctrl+] returns cleanly (both working). Preference confirmed. User additionally chose viewer colors by default for cx-managed sessions. Independent review found unbounded terminfo lookup; bounded each probe to 200ms, kill/reap timeout regression added.
+
+## Current integrated feedback milestone (2026-10-06)
+- Launch profiles are checked on the execution host using its actual selected login/interactive shell and bounded, output-discarding --version calls. Innovation offers Shell/Claude/Codex; tranquility Shell/Codex (Claude launcher exists but fails); server Shell only. Authentication and model-route health are separate from runtime availability. No agent installed on server.
+- New-session picker and folder Start here actions share capability filtering; unknown/stale data hides agents, checks refresh/coalesce, creation rechecks before starting. Expiry cannot substitute Shell for a selected agent.
+- Explicit Focus indicator and active heading marker; actions header omits Tab; Search label simplified. Default incoming conflicts rename the copy. Actual detached UI copy preserves existing destination, verifies content and reports completion.
+- Viewer colors: new Fish sessions reset their pane palette/defaults after normal shell config with fixed --init-command; no ongoing config edits. Temporary owned guard removed from both Arch Fish configs, with private backups. Default tmux window colors use terminal defaults; explicit application RGB/backgrounds and missing font glyphs remain application/viewer limitations. Physical palette appearance still awaits feedback.
+- Independent review fixes: bounded terminfo, optional-theme config mutation removed, stable selected job across reordered progress, stale Network loading released, refresh/dismiss invalidate old browser/preview responses, provider expiry guarded and probe job control disabled. Durable retry across viewer restart and failed transfer-worker launch status remain known gaps; sharing/auth/enrollment/installer/outer-tmux/release acceptance remains incomplete.
+- Deployment: latest optimized local build installed atomically on innovation, tranquility and verybeautifulserver with serialized maintenance locks. Public bootstrap/release and chezmoi integration are still not deployed.

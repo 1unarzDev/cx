@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Real PTY fixture navigation, no agents, transfers or host mutation.
-Run: uv run --with pyte python tests/workspace_flows_pty.py /absolute/cx [evidence-dir]
+"""Real disposable PTY copy and shell-start integration, no agent prompts.
+Run: uv run --with pyte python tests/workspace_live_jobs_pty.py /absolute/cx [evidence-dir]
 """
 import fcntl
 import json
@@ -20,11 +20,12 @@ binary = str(pathlib.Path(sys.argv[1]).resolve())
 evidence = pathlib.Path(sys.argv[2] if len(sys.argv) > 2 else '/tmp/cx-workspace-flows-evidence')
 evidence.mkdir(parents=True, exist_ok=True)
 results = []
-for rows, cols in [(24, 80), (40, 120), (24, 48)]:
+for rows, cols in [(40, 120)]:
     with tempfile.TemporaryDirectory(prefix='cx-ui-flows-') as root:
         home = pathlib.Path(root)
         (home / 'source.bin').write_bytes(b'synthetic file preview\n')
         (home / 'destination').mkdir()
+        (home / 'destination/source.bin').write_bytes(b'original destination\n')
         master, slave = pty.openpty()
         before = termios.tcgetattr(slave)
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
@@ -35,7 +36,12 @@ for rows, cols in [(24, 80), (40, 120), (24, 48)]:
             os.setsid()
             fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
         proc = subprocess.Popen([binary], stdin=slave, stdout=slave, stderr=slave, env=env, cwd=root, preexec_fn=control)
-        screen = pyte.Screen(cols, rows)
+        class Screen(pyte.Screen):
+            def report_device_status(self, mode, **kwargs):
+                # pyte does not model private DSR; this harness checks display/state.
+                if not kwargs.get('private'):
+                    return super().report_device_status(mode)
+        screen = Screen(cols, rows)
         stream = pyte.Stream(screen)
         def read(duration=.35):
             end = time.monotonic() + duration
@@ -82,20 +88,44 @@ for rows, cols in [(24, 80), (40, 120), (24, 48)]:
             # BackTab activates source and Tab returns to destination.
             send(b'\x1b[Z')
             send(b'\t')
-            palette('Existing files')
-            assert 'skip' in text(), text()
-            # Inspect jobs without starting a copy worker.
-            palette('Transfers')
-            assert 'No transfers yet' in text(), text()
+            palette('Paste here')
+            target = home/'destination/source.bin.copy-1'
+            deadline = time.monotonic()+8
+            while not target.exists() and time.monotonic()<deadline:
+                read(.2)
+            assert target.exists(), 'UI copy did not produce file'
+            assert target.read_bytes() == (home/'source.bin').read_bytes()
+            assert (home/'destination/source.bin').read_bytes() == b'original destination\n'
+            read(2.5)
+            assert 'complete' in text(), 'Completed copy missing from drawer: '+text()
+            send(b'\x1b')
+            palette('New session')
+            send(b'\r')
+            send(b'\r')
+            palette('Start here')
+            read(1)
+            assert 'Return to cx' in text(), 'shell did not attach'
+            send(b'\x1d')
+            assert 'Files' in text() or 'Start shell' in text(), 'browser state did not return'
+
             send(b'\x03')
             proc.wait(timeout=3)
             assert termios.tcgetattr(slave) == before, 'terminal not restored'
-            results.append({'size': f'{cols}x{rows}', 'result': 'PASS', 'scenario': 'All → New → Shell directory browser → preview → two panes → destination → conflict → jobs → restore'})
+            results.append({'size': f'{cols}x{rows}', 'result': 'PASS', 'scenario': 'actual detached copy/integrity/job drawer and actual folder shell start/single-key return'})
         finally:
             if proc.poll() is None:
-                proc.terminate()
-                proc.wait(timeout=3)
+                os.write(master, b'\x1d')
+                read(.2)
+                os.write(master, b'\x03')
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    subprocess.run(['tmux','-S',str(home/'state/cx/managed.sock'),'kill-server'],capture_output=True)
+                    proc.kill()
+                    proc.wait(timeout=2)
             os.close(master)
             os.close(slave)
+            subprocess.run(['tmux','-S',str(home/'state/cx/managed.sock'),'kill-server'],capture_output=True)
+
 (evidence / 'results.json').write_text(json.dumps(results, indent=2))
 print(json.dumps(results))

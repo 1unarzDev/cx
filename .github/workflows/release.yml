@@ -28,6 +28,8 @@ jobs:
       - run: python3 tests/stop_shell_live.py target/debug/cx
       - run: python3 tests/preview_helper_live.py target/debug/cx
       - run: python3 tests/source_preview_pty.py target/debug/cx
+      - run: python3 tests/pdf_pages_helper.py target/debug/cx
+      - run: python3 tests/pdf_pages_pty.py target/debug/cx
       - run: CX_TEST_SHELL=/usr/bin/fish python3 tests/native_command_pty.py target/debug/cx
       - run: CX_TEST_SHELL=/usr/bin/zsh python3 tests/native_command_pty.py target/debug/cx
       - run: shellcheck install.sh tests/distro_smoke.sh && python3 tests/install_fixture.py

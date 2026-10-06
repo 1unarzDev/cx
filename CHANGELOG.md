@@ -6,6 +6,17 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.10
+
+### Features
+- Automatic signed updates now include accessed SSH devices. Updates run in the background; metadata reconnects after a verified helper upgrade while terminals and transfer jobs keep running.
+- Browse multiple PDF pages with j/k, arrows, Page Up/Down or the mouse wheel. A page counter identifies the current page; each wheel step changes one page.
+
+### Fixes
+- Coalesce rapid PDF navigation into one pending render and retain the visible page when rendering fails. Escape rejects late responses and restores the browser.
+- Show loading and invalid-bitmap states explicitly instead of leaving an empty preview.
+- Check for pdfinfo alongside the PDF renderer during installation and enrollment; both come from Poppler.
+
 ## v0.1.9
 
 ### Features

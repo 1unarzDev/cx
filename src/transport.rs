@@ -78,6 +78,7 @@ struct Connection {
     child: std::process::Child,
     input: std::process::ChildStdin,
     replies: std::sync::mpsc::Receiver<Result<Response>>,
+    failure: std::sync::mpsc::Receiver<ConnectionFailure>,
 }
 impl Drop for Connection {
     fn drop(&mut self) {
@@ -99,10 +100,26 @@ impl Connection {
         c.process_group(0)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         let mut child = c.spawn()?;
         let input = child.stdin.take().context("helper input")?;
         let out = child.stdout.take().context("helper output")?;
+        let mut stderr = child.stderr.take().context("helper error output")?;
+        let (failure_tx, failure) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            // Retain only a bounded sample for classification. Never expose startup
+            // text, paths, prompts or credential material in UI errors or logs.
+            let mut sample = Vec::new();
+            let mut chunk = [0; 512];
+            while let Ok(n) = stderr.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                let keep = n.min(4096usize.saturating_sub(sample.len()));
+                sample.extend_from_slice(&chunk[..keep]);
+            }
+            let _ = failure_tx.send(classify_connection_failure(&sample));
+        });
         let (tx, replies) = std::sync::mpsc::sync_channel(4);
         std::thread::spawn(move || {
             let mut reader = BufReader::new(out);
@@ -118,7 +135,81 @@ impl Connection {
             child,
             input,
             replies,
+            failure,
         })
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectionFailure {
+    Unreachable,
+    Authentication,
+    HostKey,
+    MissingHelper,
+    Closed,
+}
+fn classify_connection_failure(stderr: &[u8]) -> ConnectionFailure {
+    let text = String::from_utf8_lossy(stderr);
+    if text.contains("Host key verification failed")
+        || text.contains("REMOTE HOST IDENTIFICATION HAS CHANGED")
+    {
+        ConnectionFailure::HostKey
+    } else if text.contains("Permission denied")
+        || text.contains("sign_and_send_pubkey: signing failed")
+    {
+        ConnectionFailure::Authentication
+    } else if [
+        "No route to host",
+        "Connection refused",
+        "Connection timed out",
+        "Could not resolve hostname",
+        "Network is unreachable",
+    ]
+    .iter()
+    .any(|message| text.contains(message))
+    {
+        ConnectionFailure::Unreachable
+    } else if text.contains("cx")
+        && (text.contains("not found") || text.contains("No such file or directory"))
+    {
+        ConnectionFailure::MissingHelper
+    } else {
+        ConnectionFailure::Closed
+    }
+}
+impl std::fmt::Display for ConnectionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unreachable => "Device unreachable over SSH · check its connection, then Refresh",
+            Self::Authentication => "SSH access unavailable · unlock or authenticate, then Refresh",
+            Self::HostKey => "SSH host identity could not be verified · review the host key before reconnecting",
+            Self::MissingHelper => "cx helper unavailable on device · run cx add to repair enrollment",
+            Self::Closed => "Session metadata connection closed · Refresh to reconnect; terminal state is unconfirmed",
+        })
+    }
+}
+impl std::error::Error for ConnectionFailure {}
+impl Connection {
+    fn failure_reason(&self) -> ConnectionFailure {
+        self.failure
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .unwrap_or(ConnectionFailure::Closed)
+    }
+}
+fn reconnectable_observation(op: &Operation) -> bool {
+    matches!(op, Operation::Info | Operation::Sessions)
+}
+fn retry_observation<T>(op: &Operation, mut attempt: impl FnMut() -> Result<T>) -> Result<T> {
+    let result = attempt();
+    if reconnectable_observation(op)
+        && result.as_ref().err().is_some_and(|e| {
+            e.downcast_ref::<ConnectionFailure>() == Some(&ConnectionFailure::Closed)
+        })
+    {
+        // The failed metadata channel was discarded. Never retry a mutation,
+        // authentication/trust failure, offline endpoint or timed-out request.
+        attempt()
+    } else {
+        result
     }
 }
 static CONNECTIONS: std::sync::LazyLock<
@@ -129,6 +220,9 @@ static CONNECTIONS: std::sync::LazyLock<
 static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// One framed metadata channel per endpoint, separate from native PTY traffic.
 pub fn request(d: &Device, op: Operation) -> Result<serde_json::Value> {
+    retry_observation(&op, || request_once(d, op.clone()))
+}
+fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
     let Some(target) = &d.target else {
         return crate::dispatch(op);
     };
@@ -168,8 +262,9 @@ pub fn request(d: &Device, op: Operation) -> Result<serde_json::Value> {
     };
     let conn = slot.as_mut().unwrap();
     if let Err(error) = frame(&mut conn.input, &req) {
+        let reason = conn.failure_reason();
         *slot = None;
-        return Err(error).context("helper disconnected; reconcile mutations before retry");
+        return Err(error).context(reason);
     }
     let response = match conn
         .replies
@@ -177,12 +272,13 @@ pub fn request(d: &Device, op: Operation) -> Result<serde_json::Value> {
     {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
+            let reason = conn.failure_reason();
             *slot = None;
-            return Err(e).context("helper disconnected; work may still be running");
+            return Err(e).context(reason);
         }
         Err(_) => {
             *slot = None;
-            bail!("host did not respond within 15 seconds; work may still be running")
+            bail!("Device check timed out · Refresh to retry; terminal state is unconfirmed")
         }
     };
     if response.version != 1 || response.id != id {
@@ -555,6 +651,107 @@ fn run_bounded_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn disconnected_observations_retry_once_but_mutations_never_replay() {
+        for op in [Operation::Info, Operation::Sessions] {
+            let mut attempts = 0;
+            let value = retry_observation(&op, || {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(anyhow!(ConnectionFailure::Closed))
+                } else {
+                    Ok(42)
+                }
+            })
+            .unwrap();
+            assert_eq!((value, attempts), (42, 2));
+            let mut attempts = 0;
+            let result: Result<()> = retry_observation(&op, || {
+                attempts += 1;
+                Err(anyhow!(ConnectionFailure::Closed))
+            });
+            assert!(result.is_err());
+            assert_eq!(attempts, 2);
+        }
+        for op in [
+            Operation::Create(CreateSession {
+                key: "fixture".into(),
+                directory: "/tmp".into(),
+                provider: "shell".into(),
+                name: "fixture".into(),
+            }),
+            Operation::StopSession {
+                id: "fixture".into(),
+                pid: 1,
+                started: "fixture".into(),
+                boot_id: "fixture".into(),
+            },
+            Operation::Cancel {
+                key: "fixture".into(),
+            },
+        ] {
+            let mut attempts = 0;
+            let result: Result<()> = retry_observation(&op, || {
+                attempts += 1;
+                Err(anyhow!(ConnectionFailure::Closed))
+            });
+            assert!(result.is_err());
+            assert_eq!(attempts, 1);
+        }
+    }
+    #[test]
+    fn ssh_failures_are_actionable_and_never_expose_stderr() {
+        for (sample, expected) in [
+            (
+                "No route to host\nSYNTHETIC_SECRET",
+                ConnectionFailure::Unreachable,
+            ),
+            (
+                "Permission denied (publickey).\nSYNTHETIC_SECRET",
+                ConnectionFailure::Authentication,
+            ),
+            (
+                "Host key verification failed.\nSYNTHETIC_SECRET",
+                ConnectionFailure::HostKey,
+            ),
+            (
+                "cx: command not found\nSYNTHETIC_SECRET",
+                ConnectionFailure::MissingHelper,
+            ),
+            (
+                "unexpected startup SYNTHETIC_SECRET",
+                ConnectionFailure::Closed,
+            ),
+        ] {
+            let failure = classify_connection_failure(sample.as_bytes());
+            assert_eq!(failure, expected);
+            assert!(!failure.to_string().contains("SYNTHETIC_SECRET"));
+            if failure != ConnectionFailure::Closed {
+                let mut attempts = 0;
+                let result: Result<()> = retry_observation(&Operation::Sessions, || {
+                    attempts += 1;
+                    Err(anyhow!(failure))
+                });
+                assert!(result.is_err());
+                assert_eq!(attempts, 1);
+            }
+        }
+    }
+    #[test]
+    fn actual_helper_stderr_is_bounded_and_classified() {
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "printf 'No route to host\n' >&2; head -c 100000 /dev/zero >&2; exit 255",
+        ]);
+        let connection = Connection::from_command(command).unwrap();
+        assert!(connection
+            .replies
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap()
+            .is_err());
+        assert_eq!(connection.failure_reason(), ConnectionFailure::Unreachable);
+    }
     #[test]
     fn bounded_frames() {
         let v = serde_json::json!({"x":"quoted\n☃"});

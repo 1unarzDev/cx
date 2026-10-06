@@ -6,6 +6,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.12
+
+### Fixes
+- Reconnect once after an unexpectedly closed session-metadata channel when listing sessions or checking a device. Mutations are never replayed.
+- Distinguish SSH connectivity, authentication, host-key and missing-helper failures without displaying raw shell output. Cached sessions show the failure and a Refresh remedy; connectivity loss does not imply a stopped terminal.
+
 ## v0.1.11
 
 ### Features

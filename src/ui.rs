@@ -3164,6 +3164,26 @@ fn render_with_native(
                     workspace,
                 );
             } else {
+                let selected_error = rows
+                    .get(app.selected)
+                    .and_then(|(device, _)| app.work[*device].error.as_deref());
+                let table_area = if let Some(error) = selected_error {
+                    let areas = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Min(3), Constraint::Length(2)])
+                        .split(workspace);
+                    frame.render_widget(
+                        Paragraph::new(format!(
+                            "{}\nCtrl+P → Refresh · state unconfirmed",
+                            fit_label(&safe_text(error), usize::from(areas[1].width))
+                        ))
+                        .style(muted()),
+                        areas[1],
+                    );
+                    areas[0]
+                } else {
+                    workspace
+                };
                 let mut display_rows = Vec::new();
                 let mut selected_row = 0;
                 let mut last_project = None;
@@ -3240,7 +3260,7 @@ fn render_with_native(
                 ))
                 .row_highlight_style(selected_style())
                 .highlight_symbol(if ascii() { "> " } else { "› " });
-                frame.render_stateful_widget(table, workspace, &mut state);
+                frame.render_stateful_widget(table, table_area, &mut state);
             }
         }
         View::Files => {

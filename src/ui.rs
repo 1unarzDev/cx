@@ -780,8 +780,10 @@ impl App {
                     if let Some(browser) = &self.browser {
                         let (device, path) = (browser.device, browser.path.clone());
                         if let Some(provider) = self.launch_provider.take() {
-                            self.start_at(device, path, provider);
-                            return;
+                            if self.provider_choices(device).contains(&provider.as_str()) {
+                                self.start_at(device, path, provider);
+                                return;
+                            }
                         }
                         self.check_providers(device);
                         self.dialog = Some(Dialog::Provider(device, Some(path)));

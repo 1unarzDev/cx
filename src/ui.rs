@@ -1412,7 +1412,7 @@ impl App {
                     .map(|caps| {
                         caps.iter()
                             .filter_map(Value::as_str)
-                            .filter(|p| ["claude", "codex"].contains(p))
+                            .filter(|p| ["claude", "codex", "native-command-v1"].contains(p))
                             .map(str::to_owned)
                             .collect()
                     })
@@ -5649,6 +5649,19 @@ mod tests {
         a.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         a.key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
         assert!(a.text.starts_with("☃x"));
+    }
+    #[test]
+    fn real_info_response_retains_native_command_capability() {
+        let (mut a, _) = queued_app();
+        a.view = View::Files;
+        a.browser = Some(Browser::new(1, "/remote/folder".into()));
+        a.apply(Reply { device: 1, op: Operation::Info, generation: a.generation,
+            result: Ok(serde_json::json!({"capabilities": ["shell", "tmux", "native-command-v1", "unrecognized"]})) });
+        assert_eq!(a.provider_choices(1), vec!["shell"]);
+        assert_eq!(a.providers[&1].0, vec!["native-command-v1"]);
+        press(&mut a, ':');
+        assert!(a.input == Some(Input::Command));
+        assert_eq!(a.command_target, Some((1, "/remote/folder".into())));
     }
     #[test]
     fn command_cancel_and_unsupported_remote_never_dispatch() {

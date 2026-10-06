@@ -211,12 +211,7 @@ fn add(target: &str) -> Result<()> {
     if !transport::valid_target(target) {
         bail!("invalid SSH target")
     };
-    let p = store::ensure()?.join("maintenance.lock");
-    let lock = std::fs::File::create(p)?;
-    use std::os::fd::AsRawFd;
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        bail!("another cx maintenance operation is active")
-    };
+    let _maintenance = update::maintenance_lock()?;
     let mut c = transport::ssh(target, true)?;
     c.arg("uname -sm; id -un");
     let out = c.output()?;
@@ -225,8 +220,9 @@ fn add(target: &str) -> Result<()> {
     };
     let facts = String::from_utf8(out.stdout)?;
     let lines: Vec<_> = facts.lines().collect();
-    if !lines.iter().any(|s| *s == "Linux x86_64") {
-        bail!("enrollment currently supports Linux x86_64; host architecture differs")
+    let platform = format!("Linux {}", std::env::consts::ARCH);
+    if !lines.iter().any(|s| *s == platform) {
+        bail!("enrollment requires the same Linux architecture as this viewer; install cx on the host separately for a different architecture")
     };
     let binary = std::env::current_exe()?;
     let bytes = std::fs::read(binary)?;

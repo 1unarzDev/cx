@@ -19,7 +19,7 @@ with tempfile.TemporaryDirectory(prefix="cx-distro-", dir=os.environ["HOME"]) as
     home.mkdir(mode=0o700)
     key = root / "key.pem"
     pub = root / "pub.pem"
-    subprocess.run(["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(key)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096", "-out", str(key)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     subprocess.run(["openssl", "pkey", "-in", str(key), "-pubout", "-out", str(pub)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     installer = (repo / "install.sh").read_text()
     installer, replacements = re.subn(r"-----BEGIN PUBLIC KEY-----\n.*?-----END PUBLIC KEY-----", pub.read_text().strip(), installer, flags=re.S)

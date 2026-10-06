@@ -63,8 +63,8 @@ fn out(code: i32, bytes: &[u8]) -> Result<Output> {
 fn metadata(tag: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
         "tag_name":tag, "draft":false, "prerelease":false,
-        "assets":[{"name":format!("cx-{tag}-linux-x86_64.tar.gz"),"size":100,
-        "browser_download_url":format!("https://github.com/{REPO}/releases/download/{tag}/cx-{tag}-linux-x86_64.tar.gz")}]
+        "assets":[{"name":format!("cx-{tag}-linux-{ARCH}.tar.gz"),"size":100,
+        "browser_download_url":format!("https://github.com/{REPO}/releases/download/{tag}/cx-{tag}-linux-{ARCH}.tar.gz")}]
     })).unwrap()
 }
 fn response(tag: &str) -> Result<Output> {
@@ -109,9 +109,9 @@ impl Mock {
 impl TestBackend for Mock {
     fn run(&self, tool: Tool, args: &[String], executable: Option<&Path>) -> Result<Output> {
         self.calls.set(self.calls.get() + 1);
-        if matches!(tool, Tool::Curl) && args.iter().any(|arg| arg.ends_with(".intoto.jsonl")) {
+        if matches!(tool, Tool::Curl) && args.iter().any(|arg| arg.ends_with(".sig")) {
             let at = args.iter().position(|arg| arg == "--output").unwrap();
-            fs::write(&args[at + 1], b"synthetic provenance bundle").unwrap();
+            fs::write(&args[at + 1], b"synthetic signature").unwrap();
             return out(0, b"\n200");
         }
         match tool {
@@ -124,30 +124,15 @@ impl TestBackend for Mock {
                     .any(|a| a.starts_with("https://github.com/1unarzDev/cx/releases/download/v")));
             }
             Tool::Curl => assert!(args.contains(&API.into())),
-            Tool::Gh => {
-                assert_eq!(&args[0..2], &["attestation", "verify"]);
-                assert_eq!(
-                    &args[5..],
-                    &[
-                        "--repo",
-                        REPO,
-                        "--signer-workflow",
-                        WORKFLOW,
-                        "--source-ref",
-                        "refs/tags/v0.2.0",
-                        "--deny-self-hosted-runners",
-                        "--hostname",
-                        "github.com",
-                        "--limit",
-                        "10"
-                    ]
-                );
-                assert_eq!(args[3], "--bundle");
-                assert!(fs::read(&args[4])
+            Tool::OpenSsl => {
+                assert_eq!(&args[0..3], &["dgst", "-sha256", "-verify"]);
+                assert_eq!(fs::read_to_string(&args[3]).unwrap(), RELEASE_KEY);
+                assert_eq!(args[4], "-signature");
+                assert!(fs::read(&args[5])
                     .unwrap()
-                    .starts_with(b"synthetic provenance"));
+                    .starts_with(b"synthetic signature"));
                 if self.mutate_verify {
-                    fs::write(&args[2], b"tampered").unwrap();
+                    fs::write(&args[6], b"tampered").unwrap();
                 }
             }
             Tool::Probe => {

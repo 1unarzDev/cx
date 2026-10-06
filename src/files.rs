@@ -933,7 +933,8 @@ fn rename_between(
     let to = Anchor::cstr(to)?;
     #[cfg(target_os = "linux")]
     if unsafe {
-        libc::renameat2(
+        libc::syscall(
+            libc::SYS_renameat2,
             anchor.dir.as_raw_fd(),
             from.as_ptr(),
             destination.dir.as_raw_fd(),

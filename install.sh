@@ -54,7 +54,9 @@ safe_dir() {
 safe_file() {
     [ ! -L "$1" ] || fail "symlink resource: $1"
     if [ -e "$1" ]; then
-        [ -f "$1" ] && [ "$(stat -c %u "$1")" = "$(id -u)" ] && [ "$(stat -c %h "$1")" = 1 ] || fail "foreign or linked resource: $1"
+        if [ ! -f "$1" ] || [ "$(stat -c %u "$1")" != "$(id -u)" ] || [ "$(stat -c %h "$1")" != 1 ]; then
+            fail "foreign or linked resource: $1"
+        fi
     fi
 }
 safe_dir "$CX_PREFIX/bin"
@@ -90,7 +92,7 @@ UwBQK/sksgt8o1NmnQMGStkCAwEAAQ==
 -----END PUBLIC KEY-----
 CX_PUBLIC_KEY
 download() {
-    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --retry 1 --connect-timeout 5 --max-time 60 --max-filesize "$3" "$1" -o "$2" || fail 'release unavailable; existing cx unchanged. Retry when connected'
+    curl --disable --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --retry 1 --connect-timeout 5 --max-time 60 --max-filesize "$3" "$1" -o "$2" || fail 'release unavailable; existing cx unchanged. Retry when connected'
     [ "$(stat -c %s "$2")" -le "$3" ] || fail 'oversized release response'
 }
 CX_VERSION=${CX_VERSION:-}
@@ -104,7 +106,7 @@ CX_URL=https://github.com/1unarzDev/cx/releases/download/$CX_VERSION/$CX_ASSET
 download "$CX_URL" "$CX_TMP/artifact" 33554432
 download "$CX_URL.sig" "$CX_TMP/signature" 512
 [ "$(stat -c %s "$CX_TMP/signature")" = 512 ] || fail 'invalid signature size'
-openssl dgst -sha256 -verify "$CX_TMP/release-key.pem" -signature "$CX_TMP/signature" "$CX_TMP/artifact" >/dev/null 2>&1 || fail 'release signature verification failed'
+env -u OPENSSL_CONF -u OPENSSL_MODULES openssl dgst -sha256 -verify "$CX_TMP/release-key.pem" -signature "$CX_TMP/signature" "$CX_TMP/artifact" >/dev/null 2>&1 || fail 'release signature verification failed'
 # A signed archive is still checked: one regular member named cx, no links/devices.
 LC_ALL=C timeout 15 tar -tzf "$CX_TMP/artifact" >"$CX_TMP/members" || fail 'invalid archive'
 [ "$(cat "$CX_TMP/members")" = cx ] || fail 'unexpected archive members'
@@ -112,7 +114,7 @@ LC_ALL=C timeout 15 tar -tvzf "$CX_TMP/artifact" >"$CX_TMP/types" || fail 'inval
 case $(cat "$CX_TMP/types") in -*) ;; *) fail 'archive member must be a regular file';; esac
 # Stream at most 64 MiB + one byte; never extract archive paths onto the filesystem.
 timeout 15 tar -xOzf "$CX_TMP/artifact" cx | head -c 67108865 >"$CX_TMP/cx"
-[ "$(stat -c %s "$CX_TMP/cx")" -le 67108864 ] && [ -s "$CX_TMP/cx" ] || fail 'invalid binary size'
+if [ "$(stat -c %s "$CX_TMP/cx")" -gt 67108864 ] || [ ! -s "$CX_TMP/cx" ]; then fail 'invalid binary size'; fi
 chmod 700 "$CX_TMP/cx"
 CX_ACTUAL=$(timeout 10 "$CX_TMP/cx" --version) || fail 'release binary cannot run on this system'
 [ "$CX_ACTUAL" = "cx ${CX_VERSION#v}" ] || fail 'release binary version mismatch'
@@ -129,6 +131,8 @@ CX_INSTALLING=
 case "$CX_PREFIX" in *[!a-zA-Z0-9_./-]*) printf '%s\n' 'Custom prefix: configure your shell PATH manually.';; *)
     mkdir -p "$CX_CONFIG/cx" "$CX_CONFIG/fish/conf.d"
     printf "case :\$PATH: in *:'%s':*) ;; *) export PATH='%s':\$PATH;; esac\n" "$CX_PREFIX/bin" "$CX_PREFIX/bin" >"$CX_CONFIG/cx/env.sh"
+    # PATH is intentionally expanded by Fish at shell startup.
+    # shellcheck disable=SC2016
     printf 'if status is-interactive; and not contains -- %s/bin $PATH\n    set -gx PATH %s/bin $PATH\nend\n' "$CX_PREFIX" "$CX_PREFIX" >"$CX_CONFIG/fish/conf.d/cx-path.fish";; esac
 # Offer one owned additive source line; never rewrite an existing shell configuration.
 case "$CX_CONFIG" in *[!a-zA-Z0-9_./-]*) ;; *)

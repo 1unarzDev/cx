@@ -250,6 +250,8 @@ struct App {
     input: Option<Input>,
     text: String,
     palette_selected: usize,
+    motion_count: Option<usize>,
+    pending_g: bool,
     help: bool,
     help_scroll: u16,
     notice: String,
@@ -312,6 +314,8 @@ impl App {
             input: None,
             text: String::new(),
             palette_selected: 0,
+            motion_count: None,
+            pending_g: false,
             help: false,
             help_scroll: 0,
             notice: "Ctrl+P actions · ? help".into(),
@@ -1069,6 +1073,36 @@ impl App {
         rows
     }
     fn dialog_key(&mut self, key: KeyEvent, dialog: Dialog) {
+        if matches!(dialog, Dialog::Delete(..))
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            match key.code {
+                KeyCode::Char('n' | 'N') => {
+                    self.dialog = None;
+                    self.dialog_detail_focus = false;
+                    return;
+                }
+                KeyCode::Char('y' | 'Y') => {
+                    self.dialog_selected = 1;
+                    self.dialog_detail_focus = false;
+                    self.dialog_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), dialog);
+                    return;
+                }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    self.dialog_selected = 0;
+                    self.dialog_detail_focus = false;
+                    return;
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    self.dialog_selected = 1;
+                    self.dialog_detail_focus = false;
+                    return;
+                }
+                _ => {}
+            }
+        }
         if matches!(dialog, Dialog::Jobs | Dialog::Delete(..)) {
             match key.code {
                 KeyCode::Tab | KeyCode::BackTab => {
@@ -1882,6 +1916,60 @@ impl App {
             }
             return;
         }
+        if self.view == View::Files && self.focus == Focus::Workspace {
+            if let KeyCode::Char(c @ '0'..='9') = key.code {
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && (c != '0' || self.motion_count.is_some())
+                {
+                    self.motion_count = Some(
+                        self.motion_count
+                            .unwrap_or(0)
+                            .saturating_mul(10)
+                            .saturating_add((c as u8 - b'0') as usize)
+                            .min(10000),
+                    );
+                    self.pending_g = false;
+                    return;
+                }
+            }
+            if key.modifiers.is_empty() && key.code == KeyCode::Char('g') {
+                if self.pending_g {
+                    self.move_selection(-100_000);
+                    self.pending_g = false;
+                    self.motion_count = None;
+                } else {
+                    self.pending_g = true;
+                }
+                return;
+            }
+            self.pending_g = false;
+            if key.code == KeyCode::Char('G')
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            {
+                self.move_selection(100_000);
+                self.motion_count = None;
+                return;
+            }
+            if matches!(
+                key.code,
+                KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k')
+            ) && key.modifiers.is_empty()
+            {
+                let count = self.motion_count.take().unwrap_or(1) as isize;
+                self.move_selection(if matches!(key.code, KeyCode::Up | KeyCode::Char('k')) {
+                    -count
+                } else {
+                    count
+                });
+                return;
+            }
+        }
+        self.motion_count = None;
+        self.pending_g = false;
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('p') => {
@@ -3064,7 +3152,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             ]))
             .block(block(
                 if app.input == Some(Input::Filter) {
-                    "Filter · Enter done"
+                    "Filter"
                 } else {
                     "Search"
                 }
@@ -3221,7 +3309,17 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         .input
         .filter(|i| !matches!(*i, Input::Search | Input::Filter))
     {
-        let rect = popup(area, 76, if input == Input::Palette { 16 } else { 5 });
+        let rect = popup(
+            area,
+            76,
+            if input == Input::Palette {
+                16
+            } else if input == Input::Rename {
+                3
+            } else {
+                5
+            },
+        );
         frame.render_widget(Clear, rect);
         if input == Input::Palette {
             let parts = Layout::default()
@@ -3391,117 +3489,168 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 )
             }
         };
-        let mut rect = popup(
-            area,
-            90,
+        if matches!(dialog, Dialog::Delete(..)) {
+            let rect = popup(area, 76, 10);
+            frame.render_widget(Clear, rect);
+            frame.render_widget(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(Span::styled(title, accent().add_modifier(Modifier::BOLD))),
+                rect,
+            );
+            let inner = Rect::new(
+                rect.x + 2,
+                rect.y + 1,
+                rect.width.saturating_sub(4),
+                rect.height.saturating_sub(2),
+            );
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(3),
+                    Constraint::Length(1),
+                    Constraint::Length(2),
+                ])
+                .split(inner);
+            frame.render_widget(
+                Paragraph::new(detail)
+                    .wrap(Wrap { trim: false })
+                    .scroll((app.dialog_scroll, 0)),
+                rows[0],
+            );
+            let choices = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(rows[2]);
+            for (i, label) in ["n  Cancel", "y  Delete"].iter().enumerate() {
+                frame.render_widget(
+                    Paragraph::new(*label)
+                        .alignment(ratatui::layout::Alignment::Center)
+                        .style(if app.dialog_selected == i && !app.dialog_detail_focus {
+                            selected_style()
+                        } else {
+                            if i == 1 {
+                                tint(Color::Red)
+                            } else {
+                                accent()
+                            }
+                        }),
+                    choices[i],
+                );
+            }
+        } else {
+            let mut rect = popup(
+                area,
+                90,
+                if matches!(dialog, Dialog::Jobs) {
+                    area.height.saturating_sub(6)
+                } else {
+                    15
+                },
+            );
             if matches!(dialog, Dialog::Jobs) {
-                area.height.saturating_sub(6)
-            } else {
-                15
-            },
-        );
-        if matches!(dialog, Dialog::Jobs) {
-            rect.y = area.y + area.height.saturating_sub(rect.height + 5);
-        }
-        frame.render_widget(Clear, rect);
-        let parts = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(if matches!(dialog, Dialog::Jobs) {
-                vec![
-                    Constraint::Length((rect.height / 3).max(4)),
-                    Constraint::Min(5),
-                ]
-            } else {
-                vec![
-                    Constraint::Length((labels.len() as u16 + 2).min(6)),
-                    Constraint::Min(4),
-                ]
-            })
-            .split(rect);
-        let selection_style = if app.dialog_detail_focus {
-            accent()
-        } else {
-            selected_style()
-        };
-        if matches!(dialog, Dialog::Jobs) {
-            let progress_width = if parts[0].width < 60 { 10 } else { 18 };
-            let file_width = parts[0].width.saturating_sub(progress_width + 15) as usize;
-            let rows = app
-                .job_rows()
-                .into_iter()
-                .map(|(_, job)| {
-                    let status_color = match job["status"].as_str() {
-                        Some("failed" | "incomplete") => Color::Red,
-                        Some("complete") => Color::Green,
-                        _ => Color::Yellow,
-                    };
-                    let operation = if job["operation"] == "move" {
-                        "move"
-                    } else {
-                        "copy"
-                    };
-                    Row::new(vec![
-                        Cell::from(Span::styled(
-                            safe_label(job["status"].as_str().unwrap_or("unknown")),
-                            tint(status_color),
-                        )),
-                        Cell::from(Line::from(vec![
-                            Span::styled(
-                                format!("{operation} "),
-                                tint(if operation == "move" {
-                                    Color::Magenta
-                                } else {
-                                    Color::Cyan
-                                }),
-                            ),
-                            Span::raw(compact_path(
-                                &transfer_name(&job),
-                                file_width.saturating_sub(5),
-                            )),
-                        ])),
-                        Cell::from(format!(
-                            "{}/{}",
-                            human_size(job["bytes"].as_u64().unwrap_or(0)),
-                            human_size(job["total"].as_u64().unwrap_or(0))
-                        )),
-                    ])
+                rect.y = area.y + area.height.saturating_sub(rect.height + 5);
+            }
+            frame.render_widget(Clear, rect);
+            let parts = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(if matches!(dialog, Dialog::Jobs) {
+                    vec![
+                        Constraint::Length((rect.height / 3).max(4)),
+                        Constraint::Min(5),
+                    ]
+                } else {
+                    vec![
+                        Constraint::Length((labels.len() as u16 + 2).min(6)),
+                        Constraint::Min(4),
+                    ]
                 })
-                .collect::<Vec<_>>();
-            let mut state = TableState::default().with_selected(Some(app.dialog_selected));
-            frame.render_stateful_widget(
-                Table::new(
-                    rows,
-                    [
-                        Constraint::Length(10),
-                        Constraint::Min(8),
-                        Constraint::Length(progress_width),
-                    ],
-                )
-                .header(Row::new(["Status", "File", "Progress"]).style(muted()))
-                .column_spacing(1)
-                .block(block(title, true))
-                .row_highlight_style(selection_style),
-                parts[0],
-                &mut state,
-            );
-        } else {
-            let mut state =
-                ratatui::widgets::ListState::default().with_selected(Some(app.dialog_selected));
-            frame.render_stateful_widget(
-                List::new(labels.into_iter().map(ListItem::new).collect::<Vec<_>>())
+                .split(rect);
+            let selection_style = if app.dialog_detail_focus {
+                accent()
+            } else {
+                selected_style()
+            };
+            if matches!(dialog, Dialog::Jobs) {
+                let progress_width = if parts[0].width < 60 { 10 } else { 18 };
+                let file_width = parts[0].width.saturating_sub(progress_width + 15) as usize;
+                let rows = app
+                    .job_rows()
+                    .into_iter()
+                    .map(|(_, job)| {
+                        let status_color = match job["status"].as_str() {
+                            Some("failed" | "incomplete") => Color::Red,
+                            Some("complete") => Color::Green,
+                            _ => Color::Yellow,
+                        };
+                        let operation = if job["operation"] == "move" {
+                            "move"
+                        } else {
+                            "copy"
+                        };
+                        Row::new(vec![
+                            Cell::from(Span::styled(
+                                safe_label(job["status"].as_str().unwrap_or("unknown")),
+                                tint(status_color),
+                            )),
+                            Cell::from(Line::from(vec![
+                                Span::styled(
+                                    format!("{operation} "),
+                                    tint(if operation == "move" {
+                                        Color::Magenta
+                                    } else {
+                                        Color::Cyan
+                                    }),
+                                ),
+                                Span::raw(compact_path(
+                                    &transfer_name(&job),
+                                    file_width.saturating_sub(5),
+                                )),
+                            ])),
+                            Cell::from(format!(
+                                "{}/{}",
+                                human_size(job["bytes"].as_u64().unwrap_or(0)),
+                                human_size(job["total"].as_u64().unwrap_or(0))
+                            )),
+                        ])
+                    })
+                    .collect::<Vec<_>>();
+                let mut state = TableState::default().with_selected(Some(app.dialog_selected));
+                frame.render_stateful_widget(
+                    Table::new(
+                        rows,
+                        [
+                            Constraint::Length(10),
+                            Constraint::Min(8),
+                            Constraint::Length(progress_width),
+                        ],
+                    )
+                    .header(Row::new(["Status", "File", "Progress"]).style(muted()))
+                    .column_spacing(1)
                     .block(block(title, true))
-                    .highlight_style(selection_style),
-                parts[0],
-                &mut state,
+                    .row_highlight_style(selection_style),
+                    parts[0],
+                    &mut state,
+                );
+            } else {
+                let mut state =
+                    ratatui::widgets::ListState::default().with_selected(Some(app.dialog_selected));
+                frame.render_stateful_widget(
+                    List::new(labels.into_iter().map(ListItem::new).collect::<Vec<_>>())
+                        .block(block(title, true))
+                        .highlight_style(selection_style),
+                    parts[0],
+                    &mut state,
+                );
+            }
+            frame.render_widget(
+                Paragraph::new(detail)
+                    .wrap(Wrap { trim: false })
+                    .scroll((app.dialog_scroll, 0))
+                    .block(block("Details · PgUp/PgDn".into(), app.dialog_detail_focus)),
+                parts[1],
             );
         }
-        frame.render_widget(
-            Paragraph::new(detail)
-                .wrap(Wrap { trim: false })
-                .scroll((app.dialog_scroll, 0))
-                .block(block("Details · PgUp/PgDn".into(), app.dialog_detail_focus)),
-            parts[1],
-        );
     }
     if app.help {
         let rect = popup(area, 76, 20);
@@ -3539,7 +3688,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 ("t", "Transfer to… choose device, folder, then p"),
                 ("T", "Transfer jobs and results"),
                 ("r · d", "Rename / confirm permanent deletion"),
-                ("Home/End · PgUp/PgDn", "First/last file / page"),
+                ("gg / G · 5j / 5k", "First/last file / counted movement"),
             ] {
                 help.push(key_row(keys, description));
             }
@@ -4781,6 +4930,31 @@ mod tests {
         assert!(!rx
             .try_iter()
             .any(|t| t.device == 0 && matches!(t.op, Operation::List { .. })));
+    }
+    #[test]
+    fn yazi_motion_counts_and_delete_yes_no_do_not_leak_into_inputs() {
+        let (mut a, rx) = file_app();
+        press(&mut a, '2');
+        press(&mut a, 'j');
+        assert_eq!(a.browser.as_ref().unwrap().selected, 2);
+        press(&mut a, 'g');
+        press(&mut a, 'g');
+        assert_eq!(a.browser.as_ref().unwrap().selected, 0);
+        press(&mut a, 'G');
+        assert_eq!(a.browser.as_ref().unwrap().selected, 2);
+        press(&mut a, 'd');
+        press(&mut a, 'n');
+        assert!(a.dialog.is_none() && rx.try_recv().is_err());
+        press(&mut a, 'd');
+        press(&mut a, 'y');
+        assert!(matches!(
+            rx.try_recv().unwrap().op,
+            Operation::Remove { .. }
+        ));
+        press(&mut a, 'f');
+        press(&mut a, '5');
+        press(&mut a, 'j');
+        assert_eq!(a.text, "5j");
     }
     #[test]
     fn space_advances_range_shrinks_and_escape_preserves_then_clears_marks() {

@@ -16,7 +16,8 @@ use std::{
 };
 const REPO: &str = "1unarzDev/cx";
 const API: &str = "https://api.github.com/repos/1unarzDev/cx/releases/latest";
-const WORKFLOW: &str = "1unarzDev/cx/.github/workflows/release.yml";
+const RELEASE_KEY: &str = include_str!("../release-key.pem");
+const ARCH: &str = std::env::consts::ARCH;
 const ARCHIVE_LIMIT: u64 = 32 * 1024 * 1024;
 const BINARY_LIMIT: u64 = 64 * 1024 * 1024;
 const TAR_LIMIT: u64 = BINARY_LIMIT + 1024 * 1024;
@@ -151,7 +152,7 @@ fn new_file(path: &Path) -> Result<File> {
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)?)
 }
-struct Lock(File);
+pub struct Lock(File);
 impl Drop for Lock {
     fn drop(&mut self) {
         unsafe {
@@ -179,6 +180,11 @@ fn lock(dir: &Dir, name: &str) -> Result<Lock> {
     );
     Ok(Lock(f))
 }
+pub fn maintenance_lock() -> Result<Lock> {
+    let (home, state) = paths()?;
+    let root = state_dir(&home, &state)?;
+    lock(&root, "maintenance.lock")
+}
 #[derive(Debug)]
 struct Stage {
     dir: Dir,
@@ -188,7 +194,14 @@ struct Stage {
 impl Drop for Stage {
     fn drop(&mut self) {
         // Never scan/delete arbitrary interrupted stages or files created by another process.
-        for n in ["archive", "provenance.jsonl", "cx", "metadata", "cache.tmp"] {
+        for n in [
+            "archive",
+            "signature",
+            "release-key.pem",
+            "cx",
+            "metadata",
+            "cache.tmp",
+        ] {
             let _ = fs::remove_file(self.dir.path(n));
         }
         let p = self.parent.path(&self.name);
@@ -286,7 +299,7 @@ fn release(bytes: &[u8], current: &str) -> Result<Option<(String, String)>> {
     if candidate <= numeric(current)? {
         return Ok(None);
     }
-    let name = format!("cx-{}-linux-x86_64.tar.gz", r.tag_name);
+    let name = format!("cx-{}-linux-{ARCH}.tar.gz", r.tag_name);
     let url = format!(
         "https://github.com/{REPO}/releases/download/{}/{name}",
         r.tag_name
@@ -309,7 +322,7 @@ struct Output {
 #[derive(Clone, Copy, Debug)]
 enum Tool {
     Curl,
-    Gh,
+    OpenSsl,
     Probe,
 }
 #[cfg(test)]
@@ -344,7 +357,7 @@ impl Backend<'_> {
         }
         let (program, seconds, cap) = match tool {
             Tool::Curl => (Path::new("/usr/bin/curl"), 35, 256 * 1024),
-            Tool::Gh => (Path::new("/usr/bin/gh"), 60, 64 * 1024),
+            Tool::OpenSsl => (Path::new("/usr/bin/openssl"), 10, 4096),
             Tool::Probe => (executable.context("missing executable")?, 3, 1024),
         };
         bounded(program, args, Duration::from_secs(seconds), cap)
@@ -358,10 +371,8 @@ fn bounded(program: &Path, args: &[String], timeout: Duration, cap: usize) -> Re
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .env("LC_ALL", "C")
-        .env("GH_HOST", "github.com")
-        .env("GH_PROMPT_DISABLED", "1")
-        .env_remove("GH_DEBUG")
-        .env_remove("GH_FORCE_TTY");
+        .env_remove("OPENSSL_CONF")
+        .env_remove("OPENSSL_MODULES");
     unsafe {
         c.pre_exec(|| {
             if libc::setpgid(0, 0) != 0 {
@@ -502,9 +513,12 @@ fn read_limited(mut f: File, limit: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 pub fn check(force: bool) -> Result<CheckOutcome> {
-    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    if !cfg!(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )) {
         return Ok(CheckOutcome::Unavailable(
-            "Auto-update supports Linux x86_64".into(),
+            "Auto-update supports Linux x86_64 and aarch64".into(),
         ));
     }
     let (home, state) = paths()?;
@@ -619,18 +633,18 @@ fn prepare(
         "invalid archive size"
     );
     archive.sync_all()?;
-    // Release bundles allow verification without transferring personal GitHub credentials.
-    let bundle = new_file(&s.dir.path("provenance.jsonl"))?;
+    // Detached signatures are verified against the public key compiled into this binary.
+    let bundle = new_file(&s.dir.path("signature"))?;
     let bundle_path = PathBuf::from(format!(
         "/proc/{}/fd/{}",
         std::process::id(),
         bundle.as_raw_fd()
     ));
-    let mut bundle_args = curl_args(&format!("{url}.intoto.jsonl"));
+    let mut bundle_args = curl_args(&format!("{url}.sig"));
     bundle_args.extend([
         "--location".into(),
         "--max-filesize".into(),
-        "1048576".into(),
+        "8192".into(),
         "--output".into(),
         bundle_path.to_string_lossy().into_owned(),
     ]);
@@ -640,47 +654,46 @@ fn prepare(
     };
     if status != 200 {
         return Ok(CheckOutcome::Unavailable(
-            "Release provenance bundle unavailable; keeping current cx".into(),
+            "Release signature unavailable; keeping current cx".into(),
         ));
     }
     ensure!(
-        bundle.metadata()?.len() > 0 && bundle.metadata()?.len() <= 1024 * 1024,
-        "invalid provenance bundle size"
+        bundle.metadata()?.len() > 0 && bundle.metadata()?.len() <= 8192,
+        "invalid signature size"
     );
+    let mut key = new_file(&s.dir.path("release-key.pem"))?;
+    key.write_all(RELEASE_KEY.as_bytes())?;
+    key.sync_all()?;
+    let key_path = PathBuf::from(format!(
+        "/proc/{}/fd/{}",
+        std::process::id(),
+        key.as_raw_fd()
+    ));
     let args = vec![
-        "attestation".into(),
-        "verify".into(),
-        archive_path.to_string_lossy().into_owned(),
-        "--bundle".into(),
+        "dgst".into(),
+        "-sha256".into(),
+        "-verify".into(),
+        key_path.to_string_lossy().into_owned(),
+        "-signature".into(),
         bundle_path.to_string_lossy().into_owned(),
-        "--repo".into(),
-        REPO.into(),
-        "--signer-workflow".into(),
-        WORKFLOW.into(),
-        "--source-ref".into(),
-        format!("refs/tags/v{version}"),
-        "--deny-self-hosted-runners".into(),
-        "--hostname".into(),
-        "github.com".into(),
-        "--limit".into(),
-        "10".into(),
+        archive_path.to_string_lossy().into_owned(),
     ];
     let archive_digest = digest(&archive)?;
-    let verified = match backend.run(Tool::Gh, &args, None) {
+    let verified = match backend.run(Tool::OpenSsl, &args, None) {
         Ok(v) => v,
         Err(_) => {
             return Ok(CheckOutcome::Unavailable(
-                "Install gh with attestation verify support and retry".into(),
+                "Install OpenSSL and retry".into(),
             ))
         }
     };
-    ensure!(verified.code == 0, "release provenance rejected");
+    ensure!(verified.code == 0, "release signature rejected");
     ensure!(
         digest(&archive)? == archive_digest,
         "verified archive changed"
     );
     // Hash before/after verification and extraction prevents changing the verified subject.
-    // Archive is never executed. Extract only after the exact repo/workflow/tag policy passes.
+    // Archive is never executed. Extract only after the exact pinned public key signature passes.
     let archive_copy = archive.try_clone()?;
     let binary = extract(archive, &s.dir)?;
     ensure!(

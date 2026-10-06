@@ -50,7 +50,7 @@ pub fn highlight(text: &str, path: &str) -> Vec<Line<'static>> {
         .map(|line| {
             // Very long lines and exhausted budgets degrade to literal text for the rest.
             // The UI caches this result; rendering never reparses source.
-            stopped |= line.len() > 2048 || started.elapsed() > Duration::from_millis(30);
+            stopped |= line.len() > 2048 || started.elapsed() > Duration::from_millis(500);
             if stopped {
                 return Line::raw(line.trim_end_matches('\n').to_owned());
             }
@@ -112,6 +112,20 @@ mod tests {
                 source.trim_end_matches('\n')
             );
         }
+    }
+    #[test]
+    fn multiline_source_retains_token_colors_beyond_first_line() {
+        let source = (0..20)
+            .map(|i| format!("let item_{i} = \"hello\"; // inert source\n"))
+            .collect::<String>();
+        let lines = highlight(&source, "sample.rs");
+        assert_eq!(lines.len(), 20);
+        assert!(lines
+            .last()
+            .unwrap()
+            .spans
+            .iter()
+            .any(|span| span.style.fg == Some(Color::Green)));
     }
     #[test]
     fn unknown_and_long_lines_are_literal_and_bounded() {

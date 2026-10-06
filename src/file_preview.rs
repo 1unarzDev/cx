@@ -104,7 +104,21 @@ pub(super) fn render(path: &Path, mut file: File) -> Result<Value> {
         match ext.as_str() {
             "md" | "markdown" | "mdown" => "markdown",
             "rs" | "py" | "sh" | "fish" | "js" | "ts" | "tsx" | "jsx" | "c" | "h" | "cpp"
-            | "go" | "java" | "json" | "toml" | "yaml" | "yml" | "css" | "html" => "code",
+            | "go" | "java" | "json" | "toml" | "yaml" | "yml" | "css" | "html" | "rb" | "php"
+            | "pl" | "lua" | "sql" | "xml" | "ini" | "cs" | "swift" | "r" | "R" | "make"
+            | "cmake" | "tex" => "code",
+            _ if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    matches!(
+                        name,
+                        "Makefile" | "Dockerfile" | "CMakeLists.txt" | ".bashrc" | ".zshrc"
+                    )
+                }) =>
+            {
+                "code"
+            }
             _ => "text",
         }
     };
@@ -395,6 +409,28 @@ mod tests {
         let rgba = image::load_from_memory(&png).unwrap().to_rgba8();
         assert_eq!(rgba.dimensions(), (320, 200));
         assert_eq!(&rgba.as_raw()[..4], &[255, 0, 0, 128]);
+    }
+    #[test]
+    fn complex_large_image_stays_inside_compressed_wire_budget() {
+        let mut random = 42u32;
+        let image = image::RgbaImage::from_fn(640, 480, |_, _| {
+            random = random.wrapping_mul(1664525).wrapping_add(1013904223);
+            image::Rgba(random.to_le_bytes())
+        });
+        let mut source = Cursor::new(Vec::new());
+        image
+            .write_to(&mut source, image::ImageFormat::Png)
+            .unwrap();
+        let result = fixture("noise.png", source.get_ref());
+        let encoded = result["image"]["png"].as_str().unwrap();
+        assert!(encoded.len() <= 800_000);
+        let png = STANDARD.decode(encoded).unwrap();
+        let raster = image::load_from_memory(&png).unwrap();
+        assert_eq!(
+            raster.width() as u64,
+            result["image"]["width"].as_u64().unwrap()
+        );
+        assert!(serde_json::to_vec(&result).unwrap().len() < 1024 * 1024);
     }
     #[test]
     fn supported_image_formats_have_real_thumbnails() {

@@ -375,6 +375,7 @@ struct App {
     network_inflight: BTreeSet<usize>,
     network_selected: usize,
     network_candidates_inflight: BTreeSet<usize>,
+    network_refresh_queue: VecDeque<usize>,
     neighbor_probes: BTreeSet<(usize, String, Option<String>)>,
     network_add_target: Option<(usize, String)>,
     pending_add_via: Option<Device>,
@@ -447,6 +448,7 @@ impl App {
             network_inflight: BTreeSet::new(),
             network_selected: 0,
             network_candidates_inflight: BTreeSet::new(),
+            network_refresh_queue: VecDeque::new(),
             neighbor_probes: BTreeSet::new(),
             network_add_target: None,
             pending_add_via: None,
@@ -833,40 +835,89 @@ impl App {
         if self.device > 0 {
             Some(self.device - 1)
         } else {
-            self.devices.iter().position(|d| d.target.is_none())
+            self.network_candidates()
+                .get(self.network_selected)
+                .and_then(|c| c["_device"].as_u64())
+                .map(|d| d as usize)
+                .or_else(|| self.devices.iter().position(|d| d.target.is_none()))
         }
     }
     fn network_candidates(&self) -> Vec<Value> {
-        let mut rows = self
-            .network_device()
-            .and_then(|d| self.network.get(&d))
-            .and_then(|v| v["candidates"].as_array())
-            .cloned()
-            .unwrap_or_default();
-        rows.retain(|c| c["address"].as_str().is_some());
+        let mut rows = Vec::new();
+        for d in 0..self.devices.len() {
+            if self.device > 0 && self.device != d + 1 {
+                continue;
+            }
+            if let Some(candidates) = self
+                .network
+                .get(&d)
+                .and_then(|v| v["candidates"].as_array())
+            {
+                for candidate in candidates
+                    .iter()
+                    .filter(|c| c["address"].as_str().is_some())
+                {
+                    let mut candidate = candidate.clone();
+                    candidate["_device"] = serde_json::json!(d);
+                    rows.push(candidate);
+                }
+            }
+        }
         rows.sort_by_key(|c| {
             (
+                c["_device"].as_u64().unwrap_or(0),
                 c["interface"].as_str().unwrap_or("").to_string(),
                 c["source"].as_str().unwrap_or("").to_string(),
-                c["address"].as_str().unwrap_or("").to_string(),
+                c["address"]
+                    .as_str()
+                    .and_then(|s| s.parse::<std::net::IpAddr>().ok()),
             )
         });
         rows
     }
     fn open_neighbor(&mut self) {
-        if let Some(d) = self.network_device() {
-            if let Some(candidate) = self
-                .network_candidates()
-                .get(self.network_selected)
-                .cloned()
-            {
+        if let Some(candidate) = self
+            .network_candidates()
+            .get(self.network_selected)
+            .cloned()
+        {
+            if let Some(d) = candidate["_device"].as_u64().map(|d| d as usize) {
                 self.dialog_selected = 0;
                 self.dialog = Some(Dialog::Neighbor(d, candidate));
-            } else {
-                self.notice =
-                    "No observed neighbors · refresh reads existing neighbor evidence".into();
+            }
+        } else {
+            self.notice = "No observed neighbors · refresh reads existing neighbor evidence".into();
+        }
+    }
+    fn pump_network_refresh(&mut self) {
+        // Four enrolled helpers at once; each host has one observation and one passive snapshot.
+        while self
+            .network_inflight
+            .union(&self.network_candidates_inflight)
+            .count()
+            < 4
+        {
+            let Some(d) = self.network_refresh_queue.pop_front() else {
+                break;
+            };
+            let observation =
+                self.network_inflight.contains(&d) || self.send(d, Operation::Network);
+            if observation {
+                self.network_inflight.insert(d);
+            }
+            let candidates = self.network_candidates_inflight.contains(&d)
+                || self.send(d, Operation::NetworkCandidates);
+            if candidates {
+                self.network_candidates_inflight.insert(d);
+            }
+            if !observation || !candidates {
+                self.network_refresh_queue.push_front(d);
+                break;
             }
         }
+        self.network_loading = !self.network_inflight.is_empty()
+            || !self.network_candidates_inflight.is_empty()
+            || !self.network_refresh_queue.is_empty();
     }
     fn probe_neighbor(&mut self, d: usize, candidate: &Value) {
         let Some(address) = candidate["address"].as_str() else {
@@ -891,28 +942,26 @@ impl App {
         }
     }
     fn refresh(&mut self) {
-        for d in 0..self.devices.len() {
-            self.providers.remove(&d);
-            self.check_providers(d);
+        if self.view != View::Network {
+            for d in 0..self.devices.len() {
+                self.providers.remove(&d);
+                self.check_providers(d);
+            }
         }
         match self.view {
             View::Work => self.refresh_work(),
             View::Files => self.refresh_browser(),
             View::Network => {
-                if let Some(d) = self
-                    .network_device()
-                    .filter(|d| !self.network_inflight.contains(d))
-                {
-                    if self.send(d, Operation::Network) {
-                        if !self.network_candidates_inflight.contains(&d)
-                            && self.send(d, Operation::NetworkCandidates)
-                        {
-                            self.network_candidates_inflight.insert(d);
-                        }
-                        self.network_inflight.insert(d);
-                        self.network_loading = true;
+                for d in 0..self.devices.len() {
+                    if (self.device == 0 || self.device == d + 1)
+                        && !self.network_inflight.contains(&d)
+                        && !self.network_candidates_inflight.contains(&d)
+                        && !self.network_refresh_queue.contains(&d)
+                    {
+                        self.network_refresh_queue.push_back(d);
                     }
                 }
+                self.pump_network_refresh();
             }
         }
     }
@@ -1479,6 +1528,10 @@ impl App {
                     self.dialog = None;
                     if self.dialog_selected == 0 {
                         self.probe_neighbor(d, &candidate);
+                    } else if !neighbor_connectable(&candidate) {
+                        self.notice =
+                            "Link-local SSH enrollment needs an interface scope · unavailable here"
+                                .into();
                     } else if let Some(address) = candidate["address"].as_str() {
                         self.network_add_target = Some((d, address.into()));
                         self.input = Some(Input::Add);
@@ -1555,6 +1608,9 @@ impl App {
         }
         if matches!(reply.op, Operation::NetworkCandidates) {
             self.network_candidates_inflight.remove(&reply.device);
+        }
+        if matches!(reply.op, Operation::Network | Operation::NetworkCandidates) {
+            self.pump_network_refresh();
         }
         if let Operation::ProbeCandidate { address, interface } = &reply.op {
             self.neighbor_probes
@@ -1907,17 +1963,25 @@ impl App {
                 let selected = self
                     .network_candidates()
                     .get(self.network_selected)
-                    .map(|c| (c["address"].clone(), c["interface"].clone()));
+                    .map(|c| {
+                        (
+                            c["_device"].clone(),
+                            c["address"].clone(),
+                            c["interface"].clone(),
+                        )
+                    });
                 self.network
                     .entry(reply.device)
                     .or_insert_with(|| serde_json::json!({}))["candidates"] =
                     value["candidates"].clone();
-                if self.network_device() == Some(reply.device) {
+                if self.device == 0 || self.device == reply.device + 1 {
                     let rows = self.network_candidates();
                     self.network_selected = selected
-                        .and_then(|(address, interface)| {
+                        .and_then(|(device, address, interface)| {
                             rows.iter().position(|c| {
-                                c["address"] == address && c["interface"] == interface
+                                c["_device"] == device
+                                    && c["address"] == address
+                                    && c["interface"] == interface
                             })
                         })
                         .unwrap_or_else(|| self.network_selected.min(rows.len().saturating_sub(1)));
@@ -3763,12 +3827,16 @@ fn render_with_native(
         })
         .count();
     let errors = app.work.iter().filter(|w| w.error.is_some()).count();
-    let shown = if app.view == View::Files {
+    let shown = if app.view == View::Network {
+        app.network_candidates().len()
+    } else if app.view == View::Files {
         app.visible_entries().len()
     } else {
         app.session_rows().len()
     };
-    let total = if app.view == View::Files {
+    let total = if app.view == View::Network {
+        shown
+    } else if app.view == View::Files {
         app.browser.as_ref().map(|b| b.entries.len()).unwrap_or(0)
     } else {
         app.work
@@ -3908,13 +3976,27 @@ fn render_with_native(
         }
     } else {
         frame.render_widget(
-            Paragraph::new(safe_text(&app.notice)).style(muted()),
+            Paragraph::new(
+                if app.view == View::Network && app.notice == "Ctrl+P actions · ? help" {
+                    String::new()
+                } else {
+                    safe_text(&app.notice)
+                },
+            )
+            .style(muted()),
             footer[2],
         );
     }
     if show_search {
         frame.render_widget(
-            Paragraph::new(safe_text(&app.notice)).style(muted()),
+            Paragraph::new(
+                if app.view == View::Network && app.notice == "Ctrl+P actions · ? help" {
+                    String::new()
+                } else {
+                    safe_text(&app.notice)
+                },
+            )
+            .style(muted()),
             footer[3],
         );
     }
@@ -4290,7 +4372,7 @@ fn render_with_native(
             ),
             Dialog::Neighbor(d, candidate) => (
                 format!("Neighbor · {}", safe_label(candidate["address"].as_str().unwrap_or("unknown"))),
-                vec!["Check SSH".into(), "Connect via this device".into()],
+                vec!["Check SSH".into(), if neighbor_connectable(candidate) { "Connect via this device".into() } else { "Connect unavailable · link-local scope".into() }],
                 format!("Via {}\n{}\nEnter chooses · Escape cancels", identity(&app.devices[*d]), neighbor_detail(candidate)),
             ),
             Dialog::Jobs => {
@@ -5247,16 +5329,26 @@ fn popup(area: Rect, width: u16, height: u16) -> Rect {
     )
 }
 // Network browser rendering: evidence remains scoped to the selected enrolled device.
+fn neighbor_connectable(candidate: &Value) -> bool {
+    !matches!(candidate["address"].as_str().and_then(|s| s.parse::<std::net::IpAddr>().ok()), Some(std::net::IpAddr::V6(ip)) if ip.is_unicast_link_local())
+}
+fn neighbor_ssh(candidate: &Value) -> &'static str {
+    let observed = candidate["observed_at"].as_u64().unwrap_or(0);
+    if observed == 0 || transport::now().saturating_sub(observed) > 90 {
+        return "unknown";
+    }
+    match candidate["ssh"]["state"].as_str() {
+        Some("open" | "tcp_reachable") => "port open",
+        Some("closed") => "port closed",
+        _ => "unknown",
+    }
+}
 fn neighbor_detail(candidate: &Value) -> String {
     format!(
         "Host {} · link {}\nSSH {} · authentication unknown\nInternet unknown · source {}",
         safe_label(candidate["hostname"].as_str().unwrap_or("unknown")),
         safe_label(candidate["link_state"].as_str().unwrap_or("unknown")),
-        match candidate["ssh"]["state"].as_str() {
-            Some("open" | "tcp_reachable") => "port open",
-            Some("closed") => "port closed",
-            _ => "unknown",
-        },
+        neighbor_ssh(candidate),
         safe_label(candidate["source"].as_str().unwrap_or("unknown"))
     )
 }
@@ -5265,6 +5357,11 @@ fn render_network(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let title = d
         .map(|d| format!("Network · {}", identity(&app.devices[d])))
         .unwrap_or_else(|| "Network · select a device".into());
+    let title = if app.device == 0 {
+        "Network · All devices".to_string()
+    } else {
+        title
+    };
     let outer = block(title, app.focus == Focus::Workspace);
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
@@ -5273,7 +5370,7 @@ fn render_network(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .constraints([
             Constraint::Length(6),
             Constraint::Min(2),
-            Constraint::Length(4),
+            Constraint::Length(5),
         ])
         .split(inner);
     let value = d.and_then(|d| app.network.get(&d));
@@ -5288,7 +5385,7 @@ fn render_network(frame: &mut Frame<'_>, app: &App, area: Rect) {
         let interfaces = v["interfaces"].as_array().or_else(|| v["interfaces"]["data"].as_array())
             .map(|rows| rows.iter().take(8).map(|i| format!("{} {}", safe_label(i["ifname"].as_str().or_else(|| i["name"].as_str()).unwrap_or("?")), safe_label(i["operstate"].as_str().or_else(|| i["state"].as_str()).unwrap_or("unknown")))).collect::<Vec<_>>().join(" · ")).unwrap_or_else(|| "unknown".into());
         let routes = v["routes"].as_array().or_else(|| v["routes"]["data"].as_array()).map(|r| format!("{} observed", r.len())).unwrap_or_else(|| "unknown".into());
-        format!("Internet {internet} · {freshness}\nInterfaces: {interfaces}\nRoutes: {routes} · DNS / HTTPS unknown\nSharing: {}\nNeighbors from existing cache · Enter actions · Ctrl+P refresh", safe_label(v["sharing"]["state"].as_str().unwrap_or("unknown")))
+        format!("{} · Internet {internet} · {freshness}\nInterfaces: {interfaces}\nRoutes: {routes} · DNS / HTTPS unknown\nSharing: {}\nNeighbors from existing cache · passive observation", d.map(|d| identity(&app.devices[d])).unwrap_or_else(|| "unknown".into()), safe_label(v["sharing"]["state"].as_str().unwrap_or("unknown")))
     }).unwrap_or_else(|| if app.network_loading { "Reading network evidence…".into() } else { "No network observation · select device and refresh".into() });
     frame.render_widget(
         Paragraph::new(summary).wrap(Wrap { trim: false }),
@@ -5303,32 +5400,43 @@ fn render_network(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         let rows = candidates.iter().map(|c| {
             Row::new(vec![
-                Cell::from(safe_label(c["interface"].as_str().unwrap_or("unknown"))),
+                Cell::from(format!(
+                    "{} / {}",
+                    c["_device"]
+                        .as_u64()
+                        .and_then(|d| app.devices.get(d as usize))
+                        .map(|d| safe_label(&d.name))
+                        .unwrap_or_else(|| "unknown".into()),
+                    safe_label(c["interface"].as_str().unwrap_or("unknown"))
+                )),
                 Cell::from(safe_label(c["address"].as_str().unwrap_or("unknown"))),
                 Cell::from(safe_label(c["source"].as_str().unwrap_or("unknown"))),
-                Cell::from(match c["ssh"]["state"].as_str() {
-                    Some("open" | "tcp_reachable") => "port open",
-                    Some("closed") => "closed",
-                    _ => "unknown",
-                }),
+                Cell::from(neighbor_ssh(c)),
             ])
         });
         let table = Table::new(
             rows,
             [
-                Constraint::Percentage(20),
-                Constraint::Percentage(40),
-                Constraint::Percentage(20),
+                Constraint::Percentage(30),
+                Constraint::Percentage(35),
+                Constraint::Percentage(15),
                 Constraint::Percentage(20),
             ],
         )
-        .header(Row::new(["Interface", "Address", "Source", "SSH"]).style(muted()))
+        .header(Row::new(["Device / link", "Address", "Source", "SSH"]).style(muted()))
         .row_highlight_style(selected_style());
         let mut state = TableState::default().with_selected(Some(app.network_selected));
         frame.render_stateful_widget(table, sections[1], &mut state);
         if let Some(candidate) = candidates.get(app.network_selected) {
             frame.render_widget(
-                Paragraph::new(neighbor_detail(candidate)).wrap(Wrap { trim: false }),
+                Paragraph::new(format!(
+                    "{} · {}\n{}",
+                    d.map(|d| identity(&app.devices[d]))
+                        .unwrap_or_else(|| "unknown".into()),
+                    safe_label(candidate["address"].as_str().unwrap_or("unknown")),
+                    neighbor_detail(candidate)
+                ))
+                .wrap(Wrap { trim: false }),
                 sections[2],
             );
         }
@@ -6316,8 +6424,119 @@ mod tests {
         a.focus = Focus::Workspace;
         a.network.insert(0, serde_json::json!({"internet":{"state":"unknown"}, "candidates":[
             {"address":"192.0.2.2","interface":"eth0","source":"neighbor","link_state":"STALE","ssh":{"state":"unknown"}},
-            {"address":"192.0.2.1","interface":"eth0","source":"neighbor","link_state":"REACHABLE","ssh":{"state":"open"}}
+            {"address":"192.0.2.1","interface":"eth0","source":"neighbor","link_state":"REACHABLE","observed_at":transport::now(),"ssh":{"state":"open"}}
         ]}));
+    }
+    #[test]
+    fn network_numeric_order_stale_port_and_linklocal_enrollment() {
+        let (mut a, _rx) = queued_app();
+        network_fixture(&mut a);
+        let stale = serde_json::json!({"address":"fe80::1","interface":"eth0","observed_at":transport::now().saturating_sub(100),"ssh":{"state":"tcp_reachable"}});
+        assert_eq!(neighbor_ssh(&stale), "unknown");
+        assert!(!neighbor_connectable(&stale));
+        a.dialog = Some(Dialog::Neighbor(0, stale));
+        a.dialog_selected = 1;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.input.is_none());
+        assert!(a.pending_add.is_none());
+        a.network.insert(0, serde_json::json!({"candidates":[{"address":"192.0.2.100","interface":"eth0"},{"address":"192.0.2.2","interface":"eth0"}]}));
+        assert_eq!(a.network_candidates()[0]["address"], "192.0.2.2");
+    }
+    #[test]
+    fn network_browser_capture_matrix() {
+        for width in [48, 80, 120] {
+            for height in [24, 40] {
+                for state in ["all", "unknown", "menu", "account"] {
+                    let (mut a, _rx) = queued_app();
+                    network_fixture(&mut a);
+                    a.network.insert(1, serde_json::json!({"internet":{"state":"unknown"},"candidates":[{"address":"192.0.2.20","interface":"wlan0","source":"neighbor","link_state":"STALE","ssh":{"state":"unknown"}}]}));
+                    if state == "unknown" {
+                        a.device = 2;
+                    }
+                    if state == "menu" || state == "account" {
+                        a.network_selected = 2;
+                        a.open_neighbor();
+                    }
+                    if state == "account" {
+                        a.dialog_selected = 1;
+                        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                    }
+                    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                    terminal.draw(|f| render(f, &a)).unwrap();
+                    let text = terminal
+                        .backend()
+                        .buffer()
+                        .content
+                        .chunks(width as usize)
+                        .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    assert!(text.contains("Network"));
+                    if let Some(directory) = std::env::var_os("CX_NETWORK_CAPTURE_DIR") {
+                        let directory = std::path::PathBuf::from(directory);
+                        std::fs::create_dir_all(&directory).unwrap();
+                        std::fs::write(
+                            directory.join(format!("{width}x{height}-{state}.txt")),
+                            text,
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn network_all_scope_batches_every_host_and_captures_neighbor_owner() {
+        let (mut a, rx) = queued_app();
+        network_fixture(&mut a);
+        let template = a.devices[1].clone();
+        for i in 2..7 {
+            let mut d = template.clone();
+            d.id = format!("remote-{i}");
+            a.devices.push(d);
+        }
+        a.refresh();
+        let tasks: Vec<_> = rx.try_iter().collect();
+        assert_eq!(tasks.len(), 8);
+        assert_eq!(a.network_inflight.len(), 4);
+        assert_eq!(a.network_refresh_queue.len(), 3);
+        for op in [Operation::Network, Operation::NetworkCandidates] {
+            a.apply(Reply {
+                device: 0,
+                generation: a.generation,
+                op,
+                result: Err(anyhow::anyhow!("offline")),
+                preview: None,
+            });
+        }
+        let next: Vec<_> = rx.try_iter().collect();
+        assert_eq!(next.len(), 2);
+        assert!(next.iter().all(|t| t.device == 4));
+        assert_eq!(a.network_inflight.len(), 4);
+        a.network.insert(1, serde_json::json!({"candidates":[{"address":"192.0.2.1","interface":"eth0","source":"neighbor","ssh":{"state":"unknown"}}]}));
+        a.network_selected = 2;
+        a.open_neighbor();
+        assert!(matches!(a.dialog, Some(Dialog::Neighbor(1, _))));
+        a.device = 1;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            Task {
+                device: 1,
+                op: Operation::ProbeCandidate { .. },
+                ..
+            }
+        ));
+    }
+    #[test]
+    fn network_fleet_reply_preserves_selected_owner_at_duplicate_address() {
+        let (mut a, _rx) = queued_app();
+        network_fixture(&mut a);
+        a.network.insert(1, serde_json::json!({"candidates":[{"address":"192.0.2.1","interface":"eth0","source":"neighbor"}]}));
+        a.network_selected = 2;
+        a.apply(Reply {device:0, generation:a.generation, op:Operation::NetworkCandidates, result:Ok(serde_json::json!({"candidates":[{"address":"192.0.2.0","interface":"eth0","source":"neighbor"}]})), preview:None});
+        assert_eq!(a.network_selected, 1);
+        assert_eq!(a.network_device(), Some(1));
     }
     #[test]
     fn network_neighbors_sorted_and_unknown_is_honest() {

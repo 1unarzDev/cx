@@ -189,14 +189,16 @@ fn running_provider(pid: u32) -> Option<&'static str> {
         "codex" => Some("codex"),
         "node" | "nodejs" | "bun" => {
             // Only examine the executable/script arguments, never prompts or tool inputs.
-            use std::io::Read;
-            let mut bytes = Vec::new();
-            fs::File::open(format!("/proc/{pid}/cmdline"))
-                .ok()?
-                .take(4096)
-                .read_to_end(&mut bytes)
-                .ok()?;
-            let script = bytes.split(|b| *b == 0).nth(1)?;
+            use std::io::{BufRead, BufReader, Read};
+            let file = fs::File::open(format!("/proc/{pid}/cmdline")).ok()?;
+            let mut reader = BufReader::with_capacity(128, file.take(4096));
+            let mut script = Vec::new();
+            reader.read_until(0, &mut script).ok()?;
+            script.clear();
+            reader.read_until(0, &mut script).ok()?;
+            if script.pop()? != 0 {
+                return None;
+            }
             if script.ends_with(b"/@anthropic-ai/claude-code/cli.js") {
                 Some("claude")
             } else if script.ends_with(b"/@openai/codex/bin/codex.js") {
@@ -479,10 +481,37 @@ fn managed_config() -> String {
             bounded_terminfo(command)
         })
         .unwrap_or("screen-256color");
-    include_str!("../assets/tmux.conf").replace(
+    let mut config = include_str!("../assets/tmux.conf").replace(
         "set -g default-terminal 'tmux-256color'",
         &format!("set -g default-terminal '{terminal}'"),
-    )
+    );
+    let version = Command::new(tmux_executable()).arg("-V").output();
+    let supports_terminal_color = version
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| {
+            let value = String::from_utf8_lossy(&o.stdout);
+            let Some((major, minor)) = value
+                .trim()
+                .strip_prefix("tmux ")
+                .and_then(|v| v.split_once('.'))
+            else {
+                return false;
+            };
+            let major = major.parse::<u32>().unwrap_or(0);
+            let minor = minor
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse::<u32>()
+                .unwrap_or(0);
+            major > 3 || (major == 3 && minor >= 4)
+        });
+    if !supports_terminal_color {
+        // Older tmux rejects `terminal`, opening an error pager instead of the shell.
+        config = config.replace("fg=terminal,bg=terminal", "fg=default,bg=default");
+    }
+    config
 }
 pub fn configure_managed() -> Result<()> {
     let conf = state()?.join("tmux.conf");

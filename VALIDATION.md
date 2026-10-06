@@ -185,7 +185,7 @@ Rollback: CX_VERSION=v0.1.2 CX_NO_LAUNCH=1 sh install.sh installs the reviewed p
 
 ## Native command palette preservation (2026-10-06)
 
-Source: next v0.1.5. A harmless Fish native command reproduced OSC104/110/111 resetting the viewer's dynamic palette/default colors in v0.1.4. Those resets are now confined to managed tmux panes. Native commands retain `CX_VIEWER_THEME=1`; targeted personal chezmoi integration guards the known Caelestia startup palette loader while preserving ordinary terminal behavior.
+Source: `10e4a10110b2bd9d922237d28725ea7c95149470`, signed [v0.1.5](https://github.com/1unarzDev/cx/releases/tag/v0.1.5). A harmless Fish native command reproduced OSC104/110/111 resetting the viewer's dynamic palette/default colors in v0.1.4. Those resets are now confined to managed tmux panes. Native commands retain `CX_VIEWER_THEME=1`; targeted personal chezmoi integration guards the known Caelestia startup palette loader while preserving ordinary terminal behavior.
 
 | Result | Scenario | Evidence |
 |---|---|---|
@@ -198,3 +198,9 @@ Source: next v0.1.5. A harmless Fish native command reproduced OSC104/110/111 re
 Physical emulator palette/transparency confirmation remains a user check. Programs and unrelated startup themes can explicitly change terminal colors; cx does not filter native terminal traffic or claim to override them.
 
 Independent review: no high/blocking Rust finding; guard false-race on self-updated atime fixed and regression-tested before deployment. Evidence `/tmp/cx-independent-palette-{bash,fish}.json`, `/tmp/cx-theme-guard-atime-review.txt`.
+
+Release workflow [37480567781](https://github.com/1unarzDev/cx/actions/runs/37480567781) PASS: four-shell native tests, integrated Bash/Fish commands, signed x86_64/aarch64 builds and nine distro smoke cases. Exact public bootstrap with `CX_VERSION=v0.1.5 CX_NO_LAUNCH=1` installed the signed release on innovation, tranquility and verybeautifulserver. Identical binary SHA256: `91ab9ec254e185d551a8b0e46b6c7eda76c81188b844f89e2b3c9fa2584022e8`. Installer maintenance locks serialize mutation. Tranquility's first noninteractive install attempt safely refused because PATH excluded its existing private tmux wrapper; retry with `$HOME/.local/bin` added succeeded without installing packages.
+
+Actual installed native palette captures on all three hosts PASS: `/tmp/cx-palette-installed-{innovation,tranquility,server}.json`. Installed Bash/Fish folder UI including Actions exclusion PASS: `/tmp/cx-palette-installed-folder-ui.json`. Installed actual remote folder workflow on server PASS: `/tmp/cx-palette-remote-folder-installed.json`. Server has no Claude/Codex commands on PATH before/after; no agent installation occurred. Install evidence: `/tmp/cx-palette-install-{innovation,tranquility,server}.log`.
+
+ChezMoi integration `second_dots/main/4b6f8f0` pushed and narrowly applied on both Arch hosts; ordinary theme and cx guard independently pass `/tmp/cx-independent-guard-final.log`. Only the recognized palette-load block changes, backed up under `~/.local/state/cx/fish-theme-before-*`. To reverse this integration, remove its guarded block and restore the original single `cat ~/.local/state/caelestia/sequences.txt 2> /dev/null` line; remove the integration script from source before a future apply. No unrelated tmux, trust, provider or network state changed. A fresh viewing terminal is needed if v0.1.4 already reset its palette. Physical GUI confirmation remains unverified.

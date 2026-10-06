@@ -5657,7 +5657,11 @@ mod tests {
             .extend(["/files/alpha.txt".into(), "/files/beta.txt".into()]);
         press(&mut a, 'd');
         let text = capture_app(&a, 48);
-        assert!(text.contains("No undo.") && text.contains("1 folders") && text.contains("Cancel"));
+        assert!(
+            text.contains("No undo")
+                && text.contains("folders include their contents.")
+                && text.contains("Cancel")
+        );
         assert!(!text
             .lines()
             .skip(21)

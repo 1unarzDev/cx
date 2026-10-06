@@ -23,6 +23,8 @@ jobs:
       - run: CX_TEST_SHELL=/bin/sh python3 tests/native_command_pty.py target/debug/cx
       - run: sudo apt-get update && sudo apt-get install -y shellcheck fish zsh tmux poppler-utils
       - run: python3 tests/mouse_scrollback_pty.py target/debug/cx
+      - run: python3 tests/stop_shell_live.py target/debug/cx
+      - run: python3 tests/preview_helper_live.py target/debug/cx
       - run: CX_TEST_SHELL=/usr/bin/fish python3 tests/native_command_pty.py target/debug/cx
       - run: CX_TEST_SHELL=/usr/bin/zsh python3 tests/native_command_pty.py target/debug/cx
       - run: shellcheck install.sh tests/distro_smoke.sh && python3 tests/install_fixture.py

@@ -101,7 +101,29 @@ else:dest.write_bytes(pathlib.Path(os.environ['CX_FIXTURE_SIGNATURE' if url.ends
         while b'[y/N]' not in output:
             output+=os.read(master,4096)
         os.write(master,b'y\n');proc.wait(timeout=5);os.close(master)
-        assert proc.returncode!=0 and manager in logfile.read_text() and package in logfile.read_text() and ('poppler' if manager == 'pacman' else 'poppler-utils') in logfile.read_text()
+        packages = logfile.read_text().split()
+        required = {
+            'apt-get': ['gzip', 'grep', 'sed', 'poppler-utils', 'iproute2', 'iputils-ping', 'ncurses-bin', 'ncurses-term'],
+            'dnf': ['gzip', 'grep', 'sed', 'poppler-utils', 'iproute', 'iputils', 'ncurses', 'ncurses-term'],
+            'yum': ['gzip', 'grep', 'sed', 'poppler-utils', 'iproute', 'iputils', 'ncurses', 'ncurses-term'],
+            'pacman': ['gzip', 'grep', 'sed', 'poppler', 'iproute2', 'iputils', 'ncurses'],
+        }[manager]
+        assert proc.returncode != 0 and manager in packages and package in packages
+        assert all(p in packages for p in required), (manager, packages)
+        if manager == 'apt-get':
+            assert not set(packages) & {'iproute', 'iputils', 'ncurses'}, packages
         outcomes.append('explicit piped tty dependency consent '+manager)
+    # Enrollment refuses missing host tools before replacing any owned helper.
+    import shutil
+    enroll_tools = root/'enroll-tools'; enroll_tools.mkdir()
+    for command in ('id', 'curl', 'openssl', 'ssh', 'tmux', 'ip', 'ping', 'infocmp', 'flock', 'tar', 'gzip', 'stat', 'timeout', 'install', 'mktemp', 'head', 'sed', 'grep'):
+        found = shutil.which(command); assert found, command
+        (enroll_tools/command).symlink_to(found)
+    reset()
+    enrollment = subprocess.run(['/bin/sh', str(source.parent/'scripts/enroll-helper.sh')], input=body,
+        env=dict(env, PATH=str(enroll_tools)), capture_output=True, timeout=5)
+    assert enrollment.returncode != 0 and b'pdftoppm' in enrollment.stderr
+    assert target.read_bytes() == old
+    outcomes.append('enrollment prerequisites checked before helper replacement')
     (fake/'id').write_text('#!/bin/sh\necho 0\n');(fake/'id').chmod(0o700);result=run();assert result.returncode!=0 and 'ordinary user' in result.stderr;outcomes.append('root refusal')
     print(json.dumps({'result':'PASS','scenarios':outcomes,'signature':'REAL synthetic RSA4096 SHA256; temporary script substitutes pinned public key','public_release':'not tested by this fixture'}))

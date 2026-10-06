@@ -218,3 +218,19 @@ Source: next v0.1.6. Reproduced v0.1.5 managed mouse=off; terminals can synthesi
 | PASS | Full Rust suite178 passed, one existing live test ignored | `/tmp/cx-wheel-rust-tests.log` |
 
 Physical Foot/trackpad/Codex chat scrolling is not established by synthetic PTYs. No transcript scraping/inference requests used. History remains bounded2000 lines and cannot restore text an application never rendered or tmux already discarded. External personal tmux sessions are unchanged.
+
+## Preview, confirmation and installer utility integration (2026-10-06)
+
+Candidate v0.1.7. Images (PNG/JPEG/GIF/WebP/BMP/ICO), inert Markdown, text/code, tar/tar.gz entry lists and WAV metadata are bundled. PDF page-one rendering uses bounded Poppler execution; other formats have an explicit fallback. Text CRLF/CR are normalized, control/bidi characters escaped, and hostile PAX names bounded before protocol framing. Stop is restricted to the original managed shell identity and rejects external sessions, extra panes and detected provider descendants. A process-spawn race cannot be eliminated entirely on a shared Unix account.
+
+| Result | Scenario | Evidence |
+|---|---|---|
+| PASS | Full Rust suite: 234 passed, one existing ignored live test | `/tmp/cx-v017-tests.log` |
+| PASS | Real framed helper: CRLF, terminal controls, Markdown, bundled PNG, corrupt image, actual Poppler PDF, 1.1M-character PAX filename | `tests/preview_helper_live.py`, `/tmp/cx-utils-preview-helper.json` |
+| PASS | Browser PTYs at 120x40, 80x24, monochrome 48x24: selection/copy/cut/rename, delete default cancellation and confirmation, termios restoration | `/tmp/cx-utils-browser-pty.json` |
+| PASS | Exact shell stop, runtime mismatch/reuse/boot guards, provider takeover and peer preservation on private tmux socket | `/tmp/cx-utils-stop-live.json` |
+| PASS | Managed mouse/input/return PTY regressions, tmux3.7c | `/tmp/cx-utils-wheel.json` |
+| PASS | 32 signed installer fixtures; apt/dnf/yum/pacman Poppler/ip/ping/terminfo/gzip/grep/sed mappings; enrollment refusal before helper replacement | `/tmp/cx-utils-install-fixture.json` |
+| PASS | Three-size preview/delete/stop captures, fixture renderer only | `/tmp/cx-preview-captures-current`, `/tmp/cx-utils-captures.log` |
+
+Independent utility review found missing gzip, grep/sed package declarations and enrollment prerequisite validation; fixed. Actual Rocky8 testing exposed ip in sbin outside ordinary PATH; installer/enrollment and network observation now use standard-path fallback. PDF utilities are installed on verybeautifulserver (user supplied). AI runtimes, NetworkManager, systemd and personal shells are not installed or replaced. A working existing systemd user manager is required for persistence when launched from a service cgroup; unsupported environments fail explicitly. RHEL CI uses Rocky compatibility fixtures, not licensed physical RHEL. Physical image/PDF terminal appearance still needs user feedback. Broader sharing/trust/uninstall acceptance remains incomplete.

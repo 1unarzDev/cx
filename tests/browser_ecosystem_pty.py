@@ -77,7 +77,7 @@ for width, height in [(120, 40), (80, 24), (48, 24)]:
             assert 'Rename · Enter' not in text() and 'Enter confirm' not in text(),text()
             send(b'\x15renamed.txt\r')
             wait_for(lambda: (destination/'renamed.txt').exists())
-            filter_name('renamed'); send(b'd'); assert 'permanently?' in text()
+            filter_name('renamed'); send(b'd'); assert 'Delete 1 item?' in text() and 'Deletion cannot be undone.' in text()
             send(b'\r'); assert (destination/'renamed.txt').exists()  # Cancel default
             send(b'dj\r'); wait_for(lambda: not (destination/'renamed.txt').exists())
             filter_name('beta'); send(b'x')
@@ -87,7 +87,7 @@ for width, height in [(120, 40), (80, 24), (48, 24)]:
             send(b'f\x15\r'); send(b'vjj'); assert 'VISUAL' in text(); capture('visual')
             send(b'\x1b'); assert 'NORMAL' in text()
             send(b'd'); capture('delete-scope')
-            assert 'No undo.' in text() and 'folders include all contents' in text(), text()
+            assert 'No undo' in text() and 'folders include their contents.' in text(), text()
             assert 'Cancel' in text() and 'Copy / cut' not in text(), text()
             send(b'\r'); assert (source/'directory').is_dir()
             send(b'T'); capture('transfer-details')

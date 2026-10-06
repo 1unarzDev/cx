@@ -2,6 +2,21 @@
 # Fixed remote stdin installer; called over authenticated SSH, not a root setup.
 set -eu
 [ "$(id -u)" -ne 0 ] || { echo 'cx: enroll an ordinary account' >&2; exit 1; }
+# Honor existing user-owned launchers (including tmux wrappers) on SSH's minimal PATH.
+PATH="$HOME/.local/bin:$PATH"
+export PATH
+missing=
+for tool in curl openssl ssh tmux pdftoppm ip ping infocmp flock tar gzip stat timeout install mktemp head sed grep; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        if [ "$tool" != ip ] || { [ ! -x /usr/sbin/ip ] && [ ! -x /sbin/ip ]; }; then
+            missing="$missing $tool"
+        fi
+    fi
+done
+if [ -n "$missing" ]; then
+    printf 'cx: missing host utilities:%s\nRun the cx installer on this host, then retry cx add.\n' "$missing" >&2
+    exit 1
+fi
 umask 077
 check_dir() {
     path=$1

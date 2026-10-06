@@ -10,20 +10,26 @@ CX_PREFIX=${CX_PREFIX:-"$HOME/.local"}
 CX_STATE=${XDG_STATE_HOME:-"$HOME/.local/state"}/cx
 case "$CX_PREFIX:$CX_STATE" in /*:/*) ;; *) fail 'installation and state paths must be absolute';; esac
 # Install required tools only after an explicit controlling-terminal confirmation.
+# ip lives in sbin on RHEL; runtime uses the same standard-path fallback.
+tool_available() {
+    command -v "$1" >/dev/null 2>&1 || {
+        [ "$1" = ip ] && { [ -x /usr/sbin/ip ] || [ -x /sbin/ip ]; }
+    }
+}
 CX_MISSING=
-for CX_TOOL in curl openssl ssh tmux pdftoppm flock tar stat timeout install mktemp head sed grep; do
-    command -v "$CX_TOOL" >/dev/null 2>&1 || CX_MISSING="$CX_MISSING $CX_TOOL"
+for CX_TOOL in curl openssl ssh tmux pdftoppm ip ping infocmp flock tar gzip stat timeout install mktemp head sed grep; do
+    tool_available "$CX_TOOL" || CX_MISSING="$CX_MISSING $CX_TOOL"
 done
 if [ -n "$CX_MISSING" ]; then
     [ "${CX_INSTALL_DEPS:-ask}" != never ] || fail "missing tools:$CX_MISSING; install them with your package manager"
     if command -v apt-get >/dev/null 2>&1; then
-        set -- apt-get install -y curl openssl openssh-client tmux ca-certificates util-linux tar coreutils poppler-utils
+        set -- apt-get install -y curl openssl openssh-client tmux ca-certificates util-linux tar gzip coreutils grep sed poppler-utils iproute2 iputils-ping ncurses-bin ncurses-term
     elif command -v dnf >/dev/null 2>&1; then
-        set -- dnf install -y openssl openssh-clients tmux ca-certificates util-linux tar coreutils poppler-utils
+        set -- dnf install -y openssl openssh-clients tmux ca-certificates util-linux tar gzip coreutils grep sed poppler-utils iproute iputils ncurses ncurses-term
     elif command -v yum >/dev/null 2>&1; then
-        set -- yum install -y openssl openssh-clients tmux ca-certificates util-linux tar coreutils poppler-utils
+        set -- yum install -y openssl openssh-clients tmux ca-certificates util-linux tar gzip coreutils grep sed poppler-utils iproute iputils ncurses ncurses-term
     elif command -v pacman >/dev/null 2>&1; then
-        set -- pacman -S --needed curl openssl openssh tmux ca-certificates util-linux tar coreutils poppler
+        set -- pacman -S --needed curl openssl openssh tmux ca-certificates util-linux tar gzip coreutils grep sed poppler iproute2 iputils ncurses
     else fail "missing tools:$CX_MISSING; no supported package manager"; fi
     case "$1" in dnf|yum) command -v curl >/dev/null 2>&1 || set -- "$@" curl;; esac
     command -v sudo >/dev/null 2>&1 || fail "missing tools:$CX_MISSING; install as administrator then retry"
@@ -33,8 +39,8 @@ if [ -n "$CX_MISSING" ]; then
     case "$CX_REPLY" in y|Y|yes|YES)
         if [ "$1" = apt-get ]; then sudo apt-get update; fi
         sudo "$@";; *) fail 'dependency installation declined';; esac
-    for CX_TOOL in curl openssl ssh tmux pdftoppm flock tar stat timeout install mktemp head sed grep; do
-        command -v "$CX_TOOL" >/dev/null 2>&1 || fail "required tool still unavailable: $CX_TOOL"
+    for CX_TOOL in curl openssl ssh tmux pdftoppm ip ping infocmp flock tar gzip stat timeout install mktemp head sed grep; do
+        tool_available "$CX_TOOL" || fail "required tool still unavailable: $CX_TOOL"
     done
 fi
 # Refuse symlink/foreign/writeable parent chains before creating owned resources.

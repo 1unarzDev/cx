@@ -17,14 +17,20 @@ for CX_IMAGE in ubuntu:22.04 ubuntu:24.04 rockylinux:8 rockylinux:9 archlinux:la
         "$CX_IMAGE" sh -eu -c '
         if command -v apt-get >/dev/null; then
             apt-get update -qq
-            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 openssl curl openssh-client tmux poppler-utils util-linux passwd
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 openssl curl openssh-client tmux poppler-utils iproute2 iputils-ping ncurses-bin ncurses-term util-linux passwd
         elif command -v dnf >/dev/null; then
-            set -- python3 openssl openssh-clients tmux poppler-utils util-linux shadow-utils
+            set -- python3 openssl openssh-clients tmux poppler-utils iproute iputils ncurses ncurses-term util-linux shadow-utils
             command -v curl >/dev/null 2>&1 || set -- "$@" curl
             dnf install -y "$@"
         else
-            pacman -Syu --noconfirm --needed python openssl curl openssh tmux poppler util-linux shadow
+            pacman -Syu --noconfirm --needed python openssl curl openssh tmux poppler iproute2 iputils ncurses util-linux shadow
         fi
+        PATH="$PATH:/usr/sbin:/sbin"
+        export PATH
+        for tool in curl openssl ssh tmux pdftoppm ip ping infocmp flock tar gzip stat timeout install mktemp head sed grep; do
+            command -v "$tool" >/dev/null || { echo "Missing runtime utility: $tool" >&2; exit 1; }
+        done
+        infocmp tmux-256color >/dev/null
         useradd -m -u 10001 cx-test
         # Root installer refusal is tested separately from ordinary-user installation.
         if CX_NO_LAUNCH=1 sh /repo/install.sh >/dev/null 2>&1; then

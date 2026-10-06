@@ -16,7 +16,16 @@ use std::{
 const OUTPUT_LIMIT: usize = 256 * 1024;
 /// Execute an allowlisted observation with a strict wall clock and output bound.
 fn bounded_command(program: &str, args: &[&str]) -> Result<String> {
-    let mut child = Command::new(program)
+    // RHEL-family installations place ip outside ordinary users' PATH.
+    let executable = if program == "ip" {
+        ["/usr/sbin/ip", "/sbin/ip", "/usr/bin/ip"]
+            .into_iter()
+            .find(|path| Path::new(path).is_file())
+            .unwrap_or(program)
+    } else {
+        program
+    };
+    let mut child = Command::new(executable)
         .args(args)
         .env("LC_ALL", "C")
         .stdin(Stdio::null())

@@ -5201,7 +5201,8 @@ fn render_browser(
         } else {
             let table_rows = rows
                 .iter()
-                .map(|e| {
+                .enumerate()
+                .map(|(index, e)| {
                     let clip = clipboard.filter(|c| {
                         c.device == b.device && c.entries.iter().any(|x| x.path == e.path)
                     });
@@ -5215,7 +5216,33 @@ fn render_browser(
                     } else {
                         (" ", Style::default())
                     };
+                    let selected = index == b.selected;
+                    let name_style = if selected && focused {
+                        // Swap the terminal's default pair for reliable light/dark
+                        // contrast; the separate cursor rail carries the accent.
+                        Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
+                    } else if selected {
+                        Style::default().add_modifier(Modifier::BOLD)
+                    } else if e.kind == "directory" {
+                        tint(Color::Blue).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
                     Row::new(vec![
+                        Cell::from(if selected {
+                            if focused && !ascii() {
+                                "▌"
+                            } else {
+                                ">"
+                            }
+                        } else {
+                            " "
+                        })
+                        .style(if focused {
+                            accent().add_modifier(Modifier::BOLD)
+                        } else {
+                            muted()
+                        }),
                         Cell::from(marker).style(style.add_modifier(Modifier::BOLD)),
                         Cell::from(match e.kind.as_str() {
                             "directory" => "/",
@@ -5223,15 +5250,13 @@ fn render_browser(
                             _ => " ",
                         })
                         .style(accent()),
-                        Cell::from(compact_path(
-                            &e.name,
-                            area.width.saturating_sub(17) as usize,
-                        ))
-                        .style(if e.kind == "directory" {
-                            tint(Color::Blue).add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default()
-                        }),
+                        Cell::from(Line::from(Span::styled(
+                            format!(
+                                " {} ",
+                                compact_path(&e.name, area.width.saturating_sub(20) as usize)
+                            ),
+                            name_style,
+                        ))),
                         Cell::from(if e.kind == "file" {
                             human_size(e.size)
                         } else {
@@ -5246,6 +5271,7 @@ fn render_browser(
                 Table::new(
                     table_rows,
                     [
+                        Constraint::Length(2),
                         Constraint::Length(1),
                         Constraint::Length(1),
                         Constraint::Min(1),
@@ -5254,8 +5280,7 @@ fn render_browser(
                 )
                 .column_spacing(1)
                 .block(block(format!("{} items", rows.len()), focused))
-                .row_highlight_style(selected_style())
-                .highlight_symbol(if ascii() { "> " } else { "› " }),
+                .row_highlight_style(Style::default()),
                 parts[1],
                 &mut state,
             );

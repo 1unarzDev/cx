@@ -110,7 +110,11 @@ pub fn handle(op: &Operation) -> Result<Value> {
         ),
         Operation::Jobs => jobs(&job_root()?),
         Operation::Cancel { key } => cancel(&job_root()?, key),
-        Operation::SetPermissions { path, mode } => set_permissions(&decode_path(path)?, *mode),
+        Operation::SetPermissions {
+            path,
+            mode,
+            expected_identity,
+        } => set_permissions(&decode_path(path)?, *mode, expected_identity.as_deref()),
         Operation::FileInfo { path } => file_info(&decode_path(path)?),
         Operation::ReadChunk {
             path,
@@ -812,7 +816,7 @@ impl Anchor {
         Ok(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
     }
 }
-fn set_permissions(path: &Path, mode: u32) -> Result<Value> {
+fn set_permissions(path: &Path, mode: u32, expected: Option<&str>) -> Result<Value> {
     use std::os::unix::io::FromRawFd;
     if mode > 0o777 {
         bail!("only ordinary rwx permissions are supported");
@@ -833,6 +837,16 @@ fn set_permissions(path: &Path, mode: u32) -> Result<Value> {
     let metadata = file.metadata()?;
     if !metadata.is_dir() && !metadata.is_file() {
         bail!("permissions apply only to regular files and directories");
+    }
+    if let Some(expected) = expected {
+        if expected.len() > 2048 {
+            bail!("expected identity too large");
+        }
+        let expected: Identity = serde_json::from_str(expected)?;
+        let current = identity(&metadata)?;
+        if current.device != expected.device || current.inode != expected.inode {
+            bail!("destination entry changed; refusing chmod of another object");
+        }
     }
     file.set_permissions(fs::Permissions::from_mode(mode))?;
     Ok(json!({"path":encode_path(path),"mode":mode}))

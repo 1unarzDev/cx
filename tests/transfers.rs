@@ -253,4 +253,22 @@ fn integrated_tree_and_resume() {
         })
         .unwrap();
     }
+    #[cfg(unix)]
+    {
+        let dir = t.path().join("mode-owned");
+        let moved = t.path().join("mode-moved");
+        std::fs::create_dir(&dir).unwrap();
+        let metadata = dispatch(model::Operation::FileInfo {
+            path: dir.to_str().unwrap().into(),
+        })
+        .unwrap();
+        std::fs::rename(&dir, &moved).unwrap();
+        std::fs::create_dir(&dir).unwrap();
+        assert!(dispatch(model::Operation::SetPermissions {
+            path: dir.to_str().unwrap().into(),
+            mode: 0o700,
+            expected_identity: Some(metadata["identity"].as_str().unwrap().into())
+        })
+        .is_err());
+    }
 }

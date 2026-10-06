@@ -108,6 +108,8 @@ impl Drop for Lock {
 struct Entry {
     #[serde(default)]
     created: bool,
+    #[serde(default)]
+    destination_identity: Option<String>,
     source: String,
     destination: String,
     kind: String,
@@ -453,6 +455,7 @@ fn collect(
     let identity = text(&metadata, "identity")?.to_owned();
     entries.push(Entry {
         created: false,
+        destination_identity: None,
         source: source.into(),
         destination: destination.into(),
         kind: kind.clone(),
@@ -645,6 +648,10 @@ fn worker_inner(spec: &TransferSpec) -> Result<()> {
                             },
                         )?;
                         job.entries[index].created = true;
+                        job.entries[index].destination_identity = Some(
+                            text(&info(&spec.destination, &entry.destination)?, "identity")?
+                                .to_owned(),
+                        );
                     } else if current["kind"] != "directory" {
                         bail!("directory destination conflicts with a non-directory");
                     }
@@ -781,6 +788,12 @@ fn worker_inner(spec: &TransferSpec) -> Result<()> {
                 Operation::SetPermissions {
                     path: entry.destination.clone(),
                     mode: entry.mode,
+                    expected_identity: Some(
+                        entry
+                            .destination_identity
+                            .clone()
+                            .context("created directory ownership identity unavailable")?,
+                    ),
                 },
             )?;
         }

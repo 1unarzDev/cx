@@ -72,6 +72,8 @@ for rows, cols in [(24, 80), (40, 120), (24, 48)]:
             assert 'synthetic file preview' in text(), text()
             send(b'\x1b')
             palette('Copy selected')
+            assert 'destination device' not in text()
+            palette('Destination')
             assert 'destination device' in text(), text()
             send(b'\r')
             assert 'Source' in text() and 'Destination' in text(), text()

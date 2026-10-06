@@ -22,7 +22,7 @@ use ratatui::{
 };
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap, VecDeque},
     io,
     sync::mpsc,
     thread,
@@ -46,6 +46,8 @@ enum Input {
     Search,
     Palette,
     Mkdir,
+    Filter,
+    Rename,
     Add,
 }
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -54,6 +56,22 @@ struct Entry {
     path: String,
     kind: String,
     size: u64,
+    #[serde(default)]
+    identity: Option<String>,
+    #[serde(default)]
+    hidden: bool,
+    #[serde(default)]
+    rename_name: Option<String>,
+}
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct Clipboard {
+    #[serde(default)]
+    id: String,
+    device: usize,
+    entries: Vec<Entry>,
+    cut: bool,
+    #[serde(default)]
+    source_label: String,
 }
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Browser {
@@ -64,6 +82,16 @@ struct Browser {
     entries: Vec<Entry>,
     selected: usize,
     search: String,
+    #[serde(default)]
+    filter: String,
+    #[serde(default)]
+    show_hidden: bool,
+    #[serde(default)]
+    marked: BTreeSet<String>,
+    #[serde(skip)]
+    visual_anchor: Option<usize>,
+    #[serde(skip)]
+    visual_base: BTreeSet<String>,
     #[serde(skip)]
     loading: bool,
     #[serde(skip)]
@@ -82,6 +110,11 @@ impl Browser {
             entries: vec![],
             selected: 0,
             search: String::new(),
+            filter: String::new(),
+            show_hidden: false,
+            marked: BTreeSet::new(),
+            visual_anchor: None,
+            visual_base: BTreeSet::new(),
             loading: false,
             preview: None,
             preview_scroll: 0,
@@ -124,6 +157,13 @@ enum Action {
     Network,
     Work,
     Copy,
+    Cut,
+    Rename,
+    Delete,
+    Hidden,
+    Filter,
+    Select,
+    Visual,
     Paste,
     Mkdir,
     Help,
@@ -151,7 +191,17 @@ const ACTIONS: &[(Action, &str)] = &[
     (Action::Claude, "Start here · Claude"),
     (Action::Codex, "Start here · Codex"),
     (Action::Observe, "Observe session · read only"),
-    (Action::Copy, "Copy selected file / directory"),
+    (Action::Copy, "Copy selected files · c / y"),
+    (Action::Cut, "Cut selected files · x"),
+    (Action::Rename, "Rename hovered file · r"),
+    (
+        Action::Delete,
+        "Delete selected files · confirm permanently · d",
+    ),
+    (Action::Hidden, "Show / hide hidden files · ."),
+    (Action::Filter, "Filter filenames · f"),
+    (Action::Select, "Select file and move down · Space"),
+    (Action::Visual, "Visual range selection · v"),
     (Action::Paste, "Paste here · copy into this directory"),
     (Action::Mkdir, "Create directory here"),
     (Action::Network, "Network"),
@@ -173,6 +223,8 @@ enum Dialog {
     Provider(usize, Option<String>),
     Matching(usize, String, String, Session),
     Jobs,
+    Delete(usize, Vec<Entry>),
+    PendingExit(usize),
 }
 
 struct App {
@@ -196,8 +248,12 @@ struct App {
     conflict: usize,
     dialog: Option<Dialog>,
     dialog_selected: usize,
+    dialog_detail_focus: bool,
+    dialog_scroll: u16,
     launch_provider: Option<String>,
     submitted: HashMap<String, crate::model::TransferSpec>,
+    submitted_clipboards: HashMap<String, String>,
+    watched_jobs: BTreeSet<String>,
     browser_cache: HashMap<(usize, String), Browser>,
     generation: u64,
     creating: bool,
@@ -205,7 +261,13 @@ struct App {
     provider_loading: std::collections::HashSet<usize>,
     network: HashMap<usize, Value>,
     network_loading: bool,
-    clipboard: Option<(usize, Entry)>,
+    clipboard: Option<Clipboard>,
+    rename_target: Option<(usize, Entry)>,
+    rename_cursor: usize,
+    file_queue: VecDeque<(usize, Operation)>,
+    file_busy: bool,
+    file_errors: Vec<String>,
+    transfer_drawer: bool,
     jobs: HashMap<usize, Value>,
     pending_attach: Option<(usize, Session, bool)>,
     pending_add: Option<String>,
@@ -247,8 +309,12 @@ impl App {
             conflict: 2,
             dialog: None,
             dialog_selected: 0,
+            dialog_detail_focus: false,
+            dialog_scroll: 0,
             launch_provider: None,
             submitted: HashMap::new(),
+            submitted_clipboards: HashMap::new(),
+            watched_jobs: BTreeSet::new(),
             browser_cache: HashMap::new(),
             generation: 0,
             creating: false,
@@ -257,6 +323,12 @@ impl App {
             network: HashMap::new(),
             network_loading: false,
             clipboard: None,
+            rename_target: None,
+            rename_cursor: 0,
+            file_queue: VecDeque::new(),
+            file_busy: false,
+            file_errors: Vec::new(),
+            transfer_drawer: false,
             jobs: HashMap::new(),
             pending_attach: None,
             pending_add: None,
@@ -276,7 +348,15 @@ impl App {
                 Dialog::Device(_) => "Device picker",
                 Dialog::Provider(..) => "Provider",
                 Dialog::Matching(..) => "Session choice",
-                Dialog::Jobs => "Transfers",
+                Dialog::Jobs => {
+                    if self.dialog_detail_focus {
+                        "Transfer details"
+                    } else {
+                        "Transfers"
+                    }
+                }
+                Dialog::Delete(..) => "Confirm delete",
+                Dialog::PendingExit(_) => "Pending actions",
             };
         }
         if let Some(input) = self.input {
@@ -285,6 +365,8 @@ impl App {
                 Input::Palette => "Actions",
                 Input::Add => "Add device",
                 Input::Mkdir => "New folder",
+                Input::Rename => "Rename",
+                Input::Filter => "Filter",
             };
         }
         match self.focus {
@@ -382,6 +464,65 @@ impl App {
             .map(browser_entries)
             .unwrap_or_default()
     }
+    fn chosen_entries(&self) -> Vec<Entry> {
+        let Some(b) = &self.browser else {
+            return vec![];
+        };
+        if b.marked.is_empty() {
+            browser_entries(b)
+                .get(b.selected)
+                .cloned()
+                .into_iter()
+                .collect()
+        } else {
+            // Marks are path identities, independent of hidden/filter state.
+            b.entries
+                .iter()
+                .filter(|e| b.marked.contains(&e.path))
+                .cloned()
+                .collect()
+        }
+    }
+    fn request_quit(&mut self) {
+        self.help = false;
+        self.dialog_detail_focus = false;
+        if self.file_busy || !self.file_queue.is_empty() {
+            self.dialog = Some(Dialog::PendingExit(self.file_queue.len()));
+            self.dialog_selected = 0;
+        } else {
+            self.quit = true;
+        }
+    }
+    fn queue_file_actions(&mut self, actions: Vec<(usize, Operation)>) {
+        if !self.file_busy && self.file_queue.is_empty() {
+            self.file_errors.clear();
+        }
+        for (_, op) in &actions {
+            if let Operation::TransferRetry { key } = op {
+                self.watched_jobs.insert(key.clone());
+            }
+        }
+        self.file_queue.extend(actions);
+        self.start_next_file_action();
+    }
+    fn start_next_file_action(&mut self) {
+        if !self.file_busy {
+            if let Some((d, op)) = self.file_queue.front().cloned() {
+                if self.send(d, op) {
+                    self.file_queue.pop_front();
+                    self.file_busy = true;
+                } else {
+                    self.notice = "Request queue busy · file action remains pending".into();
+                }
+            }
+        }
+    }
+    fn finish_visual(&mut self) {
+        if let Some(b) = &mut self.browser {
+            b.visual_anchor = None;
+            b.visual_base.clear();
+        }
+    }
     fn live_search(&mut self) {
         if self.view == View::Files {
             if let Some(b) = &mut self.browser {
@@ -432,9 +573,27 @@ impl App {
             Action::Work => self.view != View::Work,
             Action::Network => self.view != View::Network,
             Action::Destination | Action::Conflict => self.clipboard.is_some(),
-            Action::Copy | Action::Mkdir => self.view == View::Files && self.browser.is_some(),
+            Action::Copy | Action::Cut | Action::Delete => {
+                self.view == View::Files
+                    && self.browser.as_ref().is_some_and(|b| b.preview.is_none())
+                    && !self.chosen_entries().is_empty()
+                    && (action == Action::Copy
+                        || self.chosen_entries().iter().all(|e| e.identity.is_some()))
+            }
+            Action::Rename => {
+                self.view == View::Files
+                    && self.browser.as_ref().is_some_and(|b| b.preview.is_none())
+                    && self
+                        .visible_entries()
+                        .get(self.browser.as_ref().map(|b| b.selected).unwrap_or(0))
+                        .is_some_and(|e| e.identity.is_some())
+            }
+            Action::Mkdir | Action::Hidden | Action::Filter | Action::Select | Action::Visual => {
+                self.view == View::Files
+                    && self.browser.as_ref().is_some_and(|b| b.preview.is_none())
+            }
             Action::Paste => {
-                self.view == View::Files && self.clipboard.is_some() && self.destination_active
+                self.view == View::Files && self.clipboard.is_some() && self.browser.is_some()
             }
             Action::Shell | Action::Claude | Action::Codex => {
                 self.view == View::Files
@@ -454,6 +613,12 @@ impl App {
     }
     fn open_browser(&mut self, device: usize, path: String) {
         self.check_providers(device);
+        let show_hidden = self
+            .browser
+            .as_ref()
+            .or(self.other_browser.as_ref())
+            .is_some_and(|b| b.show_hidden);
+        self.finish_visual();
         self.generation += 1;
         if let Some(old) = self.browser.take() {
             if self.browser_cache.len() >= 8 {
@@ -469,6 +634,9 @@ impl App {
                 .remove(&(device, path.clone()))
                 .unwrap_or_else(|| Browser::new(device, path)),
         );
+        if let Some(b) = &mut self.browser {
+            b.show_hidden = show_hidden;
+        }
         self.view = View::Files;
         self.focus = Focus::Workspace;
         self.refresh_browser();
@@ -513,7 +681,7 @@ impl App {
         self.text.clear();
         match action {
             Action::Update => self.force_update = true,
-            Action::Quit => self.quit = true,
+            Action::Quit => self.request_quit(),
             Action::Add => {
                 self.input = Some(Input::Add);
                 self.text.clear();
@@ -540,7 +708,6 @@ impl App {
                 }
                 self.other_browser = None;
                 self.destination_active = false;
-                self.clipboard = None;
                 self.launch_provider = if action == Action::DeviceShell {
                     Some("shell".into())
                 } else {
@@ -549,7 +716,6 @@ impl App {
                 self.choose_device(ChooseDevice::New);
             }
             Action::Files => {
-                self.clipboard = None;
                 self.launch_provider = None;
                 self.other_browser = None;
                 self.destination_active = false;
@@ -569,6 +735,8 @@ impl App {
             Action::Jobs => {
                 self.dialog = Some(Dialog::Jobs);
                 self.dialog_selected = 0;
+                self.dialog_detail_focus = false;
+                self.dialog_scroll = 0;
                 for d in 0..self.devices.len() {
                     self.send(d, Operation::TransferJobs);
                 }
@@ -588,18 +756,98 @@ impl App {
                     self.start_at(b.device, b.path.clone(), provider.into());
                 }
             }
-            Action::Copy => {
+            Action::Copy | Action::Cut => {
+                let entries = self.chosen_entries();
                 if let Some(b) = &self.browser {
-                    if let Some(e) = self.visible_entries().get(b.selected) {
-                        self.clipboard = Some((b.device, e.clone()));
-                        self.other_browser = None;
-                        self.destination_active = false;
+                    if !entries.is_empty() {
+                        let count = entries.len();
+                        self.clipboard = Some(Clipboard {
+                            id: unique_key(),
+                            device: b.device,
+                            entries,
+                            cut: action == Action::Cut,
+                            source_label: identity(&self.devices[b.device]),
+                        });
                         self.launch_provider = None;
-                        self.notice =
-                            "Choose destination device · Enter browses, Paste here confirms copy"
-                                .into();
-                        self.dialog = Some(Dialog::Device(ChooseDevice::Destination));
-                        self.dialog_selected = b.device;
+                        self.notice = format!("{} {count} item{} · p pastes here · Destination… chooses another device",
+                            if action == Action::Cut { "Cut" } else { "Copied" }, if count == 1 { "" } else { "s" });
+                        self.finish_visual();
+                        if let Some(b) = &mut self.browser {
+                            b.marked.clear();
+                        }
+                    }
+                }
+            }
+            Action::Rename => {
+                if let Some(b) = &self.browser {
+                    if let Some(e) = browser_entries(b).get(b.selected).cloned() {
+                        if e.identity.is_some() {
+                            self.text = e.rename_name.clone().unwrap_or_default();
+                            self.rename_cursor = self
+                                .text
+                                .rfind('.')
+                                .filter(|at| *at > 0)
+                                .unwrap_or(self.text.len());
+                            self.rename_target = Some((b.device, e));
+                            self.input = Some(Input::Rename);
+                            self.finish_visual();
+                        }
+                    }
+                }
+            }
+            Action::Delete => {
+                let entries = self.chosen_entries();
+                if let Some(b) = &self.browser {
+                    if !entries.is_empty() {
+                        self.dialog = Some(Dialog::Delete(b.device, entries));
+                        self.dialog_selected = 0; // Cancel is always the default.
+                        self.dialog_detail_focus = false;
+                        self.dialog_scroll = 0;
+                        self.finish_visual();
+                    }
+                }
+            }
+            Action::Hidden => {
+                if let Some(b) = &mut self.browser {
+                    let path = browser_entries(b).get(b.selected).map(|e| e.path.clone());
+                    b.show_hidden = !b.show_hidden;
+                    b.visual_anchor = None;
+                    b.selected = path
+                        .and_then(|p| browser_entries(b).iter().position(|e| e.path == p))
+                        .unwrap_or(0);
+                }
+            }
+            Action::Filter => {
+                self.finish_visual();
+                self.text = self
+                    .browser
+                    .as_ref()
+                    .map(|b| b.filter.clone())
+                    .unwrap_or_default();
+                self.input = Some(Input::Filter);
+            }
+            Action::Select => {
+                self.finish_visual();
+                if let Some(b) = &mut self.browser {
+                    if let Some(e) = browser_entries(b).get(b.selected) {
+                        if !b.marked.remove(&e.path) && b.marked.len() < 256 {
+                            b.marked.insert(e.path.clone());
+                        }
+                        b.selected =
+                            (b.selected + 1).min(browser_entries(b).len().saturating_sub(1));
+                    }
+                }
+            }
+            Action::Visual => {
+                if let Some(b) = &mut self.browser {
+                    if b.visual_anchor.take().is_none() {
+                        b.visual_anchor = Some(b.selected);
+                        b.visual_base = b.marked.clone();
+                        if let Some(e) = browser_entries(b).get(b.selected) {
+                            b.marked.insert(e.path.clone());
+                        }
+                    } else {
+                        b.visual_base.clear();
                     }
                 }
             }
@@ -691,39 +939,52 @@ impl App {
         };
     }
     fn submit_transfer(&mut self) {
-        if !self.destination_active {
+        let (Some(clip), Some(b)) = (self.clipboard.clone(), self.browser.as_ref()) else {
             return;
-        }
-        if let (Some((source, entry)), Some(b)) = (&self.clipboard, &self.browser) {
-            if let Some(local) = self.devices.iter().position(|d| d.target.is_none()) {
-                let spec = crate::model::TransferSpec {
-                    source: self.devices[*source].clone(),
-                    source_path: entry.path.clone(),
-                    destination: self.devices[b.device].clone(),
-                    destination_path: b.path.clone(),
-                    conflict: self.conflict_policy().into(),
-                    key: unique_key(),
-                };
-                if self.send(local, Operation::Transfer(spec.clone())) {
-                    self.notice = format!(
-                        "Copy {} → {} · {}",
-                        identity(&spec.source),
-                        identity(&spec.destination),
-                        spec.conflict
-                    );
-                    if self.submitted.len() >= 256 {
-                        if let Some(key) = self.submitted.keys().next().cloned() {
-                            self.submitted.remove(&key);
-                        }
-                    }
-                    self.submitted.insert(spec.key.clone(), spec);
-                    self.dialog = Some(Dialog::Jobs);
-                    self.dialog_selected = 0;
+        };
+        let Some(local) = self.devices.iter().position(|d| d.target.is_none()) else {
+            return;
+        };
+        let destination = self.devices[b.device].clone();
+        let destination_path = b.path.clone();
+        let mut actions = Vec::new();
+        for entry in &clip.entries {
+            let spec = crate::model::TransferSpec {
+                source: self.devices[clip.device].clone(),
+                source_path: entry.path.clone(),
+                destination: destination.clone(),
+                destination_path: destination_path.clone(),
+                conflict: self.conflict_policy().into(),
+                key: unique_key(),
+                cut: clip.cut,
+                source_identity: if clip.cut {
+                    entry.identity.clone()
                 } else {
-                    self.notice = "Request queue busy · retry shortly".into();
+                    None
+                },
+            };
+            if self.submitted.len() >= 256 {
+                if let Some(key) = self.submitted.keys().next().cloned() {
+                    self.submitted.remove(&key);
                 }
             }
+            self.submitted.insert(spec.key.clone(), spec.clone());
+            if clip.cut {
+                self.submitted_clipboards
+                    .insert(spec.key.clone(), clip.id.clone());
+            }
+            actions.push((local, Operation::Transfer(spec)));
         }
+        self.notice = format!(
+            "{} {} items · {} → {} · existing: {}",
+            if clip.cut { "Moving" } else { "Copying" },
+            clip.entries.len(),
+            identity(&self.devices[clip.device]),
+            identity(&destination),
+            self.conflict_policy()
+        );
+        self.queue_file_actions(actions);
+        self.transfer_drawer = true;
     }
     fn job_rows(&self) -> Vec<(usize, Value)> {
         let mut unique = HashMap::new();
@@ -758,11 +1019,53 @@ impl App {
         rows
     }
     fn dialog_key(&mut self, key: KeyEvent, dialog: Dialog) {
+        if matches!(dialog, Dialog::Jobs | Dialog::Delete(..)) {
+            match key.code {
+                KeyCode::Tab | KeyCode::BackTab => {
+                    self.dialog_detail_focus = !self.dialog_detail_focus;
+                    return;
+                }
+                KeyCode::PageDown => {
+                    self.dialog_scroll = self.dialog_scroll.saturating_add(5).min(4096);
+                    return;
+                }
+                KeyCode::PageUp => {
+                    self.dialog_scroll = self.dialog_scroll.saturating_sub(5);
+                    return;
+                }
+                KeyCode::Home => {
+                    self.dialog_scroll = 0;
+                    return;
+                }
+                KeyCode::Down | KeyCode::Char('j') if self.dialog_detail_focus => {
+                    self.dialog_scroll = self.dialog_scroll.saturating_add(1).min(4096);
+                    return;
+                }
+                KeyCode::Up | KeyCode::Char('k') if self.dialog_detail_focus => {
+                    self.dialog_scroll = self.dialog_scroll.saturating_sub(1);
+                    return;
+                }
+                KeyCode::Esc
+                    if self.dialog_detail_focus && matches!(dialog, Dialog::Delete(..)) =>
+                {
+                    self.dialog_detail_focus = false;
+                    self.dialog = None;
+                    return;
+                }
+                KeyCode::Enter | KeyCode::Esc if self.dialog_detail_focus => {
+                    self.dialog_detail_focus = false;
+                    return;
+                }
+                _ => {}
+            }
+        }
         let count = match &dialog {
             Dialog::Device(_) => self.devices.len(),
             Dialog::Provider(d, _) => self.provider_choices(*d).len(),
             Dialog::Matching(..) => 2,
             Dialog::Jobs => self.job_rows().len(),
+            Dialog::Delete(..) => 2,
+            Dialog::PendingExit(_) => 2,
         };
         if let Dialog::Provider(device, _) = dialog {
             if key.code == KeyCode::Enter && self.dialog_selected >= count {
@@ -775,10 +1078,12 @@ impl App {
         match key.code {
             KeyCode::Esc => self.dialog = None,
             KeyCode::Down | KeyCode::Char('j') => {
-                self.dialog_selected = shift(self.dialog_selected, 1, count)
+                self.dialog_selected = shift(self.dialog_selected, 1, count);
+                self.dialog_scroll = 0;
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                self.dialog_selected = shift(self.dialog_selected, -1, count)
+                self.dialog_selected = shift(self.dialog_selected, -1, count);
+                self.dialog_scroll = 0;
             }
             KeyCode::Enter => match dialog {
                 Dialog::Device(purpose) => {
@@ -810,7 +1115,35 @@ impl App {
                         self.create_at(d, path, provider);
                     }
                 }
-                Dialog::Jobs => {}
+                Dialog::Jobs => {
+                    self.dialog_detail_focus = true;
+                }
+                Dialog::Delete(d, entries) => {
+                    self.dialog = None;
+                    if self.dialog_selected == 1 {
+                        self.queue_file_actions(
+                            entries
+                                .into_iter()
+                                .map(|e| {
+                                    (
+                                        d,
+                                        Operation::Remove {
+                                            path: e.path,
+                                            expected_identity: e.identity,
+                                        },
+                                    )
+                                })
+                                .collect(),
+                        );
+                        self.notice = "Deleting confirmed items permanently…".into();
+                    }
+                }
+                Dialog::PendingExit(_) => {
+                    if self.dialog_selected == 1 {
+                        self.quit = true;
+                    }
+                    self.dialog = None;
+                }
             },
             KeyCode::Char('c') if matches!(dialog, Dialog::Jobs) => {
                 if let Some((d, job)) = self.job_rows().get(self.dialog_selected).cloned() {
@@ -826,15 +1159,15 @@ impl App {
             }
             KeyCode::Char('r') if matches!(dialog, Dialog::Jobs) => {
                 if let Some((d, job)) = self.job_rows().get(self.dialog_selected).cloned() {
-                    if matches!(job["status"].as_str(), Some("failed" | "cancelled")) {
-                        if let Some(spec) = job["key"]
-                            .as_str()
-                            .and_then(|k| self.submitted.get(k))
-                            .cloned()
-                        {
-                            self.send(d, Operation::Transfer(spec));
-                        } else {
-                            self.notice = "Reopen source and copy to retry this older job · saved resume data is preserved".into();
+                    if matches!(
+                        job["status"].as_str(),
+                        Some("failed" | "cancelled" | "incomplete")
+                    ) {
+                        if let Some(key) = job["key"].as_str() {
+                            self.queue_file_actions(vec![(
+                                d,
+                                Operation::TransferRetry { key: key.into() },
+                            )]);
                         }
                     }
                 }
@@ -848,6 +1181,17 @@ impl App {
     fn apply(&mut self, reply: Reply) {
         self.pending_requests
             .set(self.pending_requests.get().saturating_sub(1));
+        let file_action = matches!(
+            reply.op,
+            Operation::Remove { .. }
+                | Operation::Rename { .. }
+                | Operation::Transfer(_)
+                | Operation::TransferRetry { .. }
+        );
+        if file_action {
+            self.file_busy = false;
+            self.start_next_file_action();
+        }
         let listing_offset = match &reply.op {
             Operation::ListPage { offset, .. } => *offset,
             _ => 0,
@@ -876,8 +1220,21 @@ impl App {
                 if is_sessions {
                     self.work[reply.device].error = Some(message.clone());
                 }
+                if reply.generation == self.generation || file_action {
+                    if file_action {
+                        if self.file_errors.len() < 8 {
+                            self.file_errors.push(message.clone());
+                        }
+                        self.notice = format!(
+                            "{} file actions failed · {}",
+                            self.file_errors.len(),
+                            message
+                        );
+                    } else {
+                        self.notice = message;
+                    }
+                }
                 if reply.generation == self.generation {
-                    self.notice = message;
                     if let Some(b) = &mut self.browser {
                         b.loading = false;
                     }
@@ -892,6 +1249,26 @@ impl App {
                 return;
             }
         };
+        if let Operation::Transfer(spec) = &reply.op {
+            if spec.cut
+                && matches!(
+                    value["status"].as_str(),
+                    Some("queued" | "running" | "complete" | "submitting")
+                )
+            {
+                let clipboard_id = self.submitted_clipboards.remove(&spec.key);
+                if let Some(c) = self
+                    .clipboard
+                    .as_mut()
+                    .filter(|c| Some(&c.id) == clipboard_id.as_ref())
+                {
+                    c.entries.retain(|e| e.path != spec.source_path);
+                    if c.entries.is_empty() {
+                        self.clipboard = None;
+                    }
+                }
+            }
+        }
         // Session caches remain useful across view changes; navigation responses do not.
         match reply.op {
             Operation::Info => {
@@ -973,6 +1350,53 @@ impl App {
                 }
             },
             Operation::Jobs | Operation::TransferJobs => {
+                let newly_finished = value["jobs"]
+                    .as_array()
+                    .map(|rows| {
+                        rows.iter()
+                            .filter(|j| {
+                                j["key"].as_str().is_some_and(|k| {
+                                    self.submitted.contains_key(k) || self.watched_jobs.contains(k)
+                                }) && matches!(
+                                    j["status"].as_str(),
+                                    Some("complete" | "failed" | "cancelled")
+                                ) && !self
+                                    .jobs
+                                    .get(&reply.device)
+                                    .and_then(|v| v["jobs"].as_array())
+                                    .is_some_and(|old| {
+                                        old.iter().any(|x| {
+                                            x["key"] == j["key"] && x["status"] == j["status"]
+                                        })
+                                    })
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let refresh_files = self.view == View::Files
+                    && self.browser.as_ref().is_some_and(|b| {
+                        let host = identity(&self.devices[b.device]);
+                        value["jobs"].as_array().is_some_and(|rows| {
+                            rows.iter().any(|j| {
+                                let completed = j["status"] == "complete";
+                                let affects_location = j["destination_host"].as_str()
+                                    == Some(host.as_str())
+                                    || (j["operation"] == "move"
+                                        && j["source_host"].as_str() == Some(host.as_str()));
+                                let already_known = self
+                                    .jobs
+                                    .get(&reply.device)
+                                    .and_then(|v| v["jobs"].as_array())
+                                    .is_some_and(|old| {
+                                        old.iter().any(|x| {
+                                            x["key"] == j["key"] && x["status"] == "complete"
+                                        })
+                                    });
+                                completed && affects_location && !already_known
+                            })
+                        })
+                    });
                 let selected = if matches!(self.dialog, Some(Dialog::Jobs)) {
                     self.job_rows()
                         .get(self.dialog_selected)
@@ -981,6 +1405,25 @@ impl App {
                     None
                 };
                 self.jobs.insert(reply.device, value);
+                if let Some(job) = newly_finished
+                    .last()
+                    .filter(|j| self.file_errors.is_empty() || j["status"] == "failed")
+                {
+                    self.notice = format!(
+                        "{} {} · {}{}",
+                        if job["operation"] == "move" {
+                            "Move"
+                        } else {
+                            "Copy"
+                        },
+                        transfer_status(job),
+                        transfer_name(job),
+                        job["error"]
+                            .as_str()
+                            .map(|e| format!(" · {}", safe_label(e)))
+                            .unwrap_or_default()
+                    );
+                }
                 if let Some((owner, key)) = selected {
                     self.dialog_selected = self
                         .job_rows()
@@ -988,17 +1431,29 @@ impl App {
                         .position(|(d, job)| *d == owner && job["key"] == key)
                         .unwrap_or(0);
                 }
+                if refresh_files {
+                    self.browser_cache.clear();
+                    self.refresh_browser();
+                }
             }
             Operation::TransferCancel { .. } => {
                 self.send(reply.device, Operation::TransferJobs);
                 self.notice = "Cancellation requested · waiting for worker".into();
             }
-            Operation::Transfer(_) => {
-                self.notice = format!(
-                    "Transfer {} · {}",
-                    safe_label(value["status"].as_str().unwrap_or("queued")),
-                    safe_label(value["route"].as_str().unwrap_or("worker host"))
-                );
+            Operation::Transfer(_) | Operation::TransferRetry { .. } => {
+                if self.file_errors.is_empty() {
+                    self.notice = format!(
+                        "Transfer {} · {}",
+                        safe_label(value["status"].as_str().unwrap_or("queued")),
+                        safe_label(value["route"].as_str().unwrap_or("worker host"))
+                    );
+                } else {
+                    self.notice = format!(
+                        "{} file actions failed · {}",
+                        self.file_errors.len(),
+                        self.file_errors.last().unwrap()
+                    );
+                }
                 self.send(reply.device, Operation::TransferJobs);
             }
             Operation::Copy { .. } => {
@@ -1046,11 +1501,32 @@ impl App {
                                         path: e.get("path")?.as_str()?.into(),
                                         kind: e.get("kind")?.as_str()?.into(),
                                         size: e.get("size").and_then(Value::as_u64).unwrap_or(0),
+                                        identity: e
+                                            .get("identity")
+                                            .and_then(Value::as_str)
+                                            .map(str::to_owned),
+                                        hidden: e
+                                            .get("hidden")
+                                            .and_then(Value::as_bool)
+                                            .unwrap_or_else(|| {
+                                                e["name"]
+                                                    .as_str()
+                                                    .is_some_and(|s| s.starts_with('.'))
+                                            }),
+                                        rename_name: e
+                                            .get("rename_name")
+                                            .and_then(Value::as_str)
+                                            .map(str::to_owned),
                                     })
                                 })
                                 .collect()
                         })
                         .unwrap_or_default();
+                    if b.visual_anchor.take().is_some() {
+                        b.visual_base.clear();
+                        self.notice =
+                            "Directory refreshed · range finished; selected files kept".into();
+                    }
                     if b.restore_selection.is_none() && listing_offset > 0 {
                         b.restore_selection = browser_entries(b)
                             .get(b.selected)
@@ -1082,6 +1558,11 @@ impl App {
                         b.selected = b.selected.min(browser_entries(b).len().saturating_sub(1));
                     }
                     b.loading = false;
+                    if value["next_offset"].is_null() {
+                        let existing: BTreeSet<_> =
+                            b.entries.iter().map(|e| e.path.clone()).collect();
+                        b.marked.retain(|p| existing.contains(p));
+                    }
                 }
                 if let Some(offset) = value["next_offset"].as_u64() {
                     if let Some(b) = &self.browser {
@@ -1118,6 +1599,32 @@ impl App {
             Operation::Mkdir { .. } if reply.generation == self.generation => {
                 self.refresh_browser()
             }
+            Operation::Rename { path, .. } | Operation::Remove { path, .. } => {
+                if self.file_errors.is_empty() && self.file_queue.is_empty() && !self.file_busy {
+                    self.notice = format!(
+                        "File action complete · {}",
+                        identity(&self.devices[reply.device])
+                    );
+                }
+                self.browser_cache.retain(|(d, _), _| *d != reply.device);
+                for b in [&mut self.browser, &mut self.other_browser]
+                    .into_iter()
+                    .flatten()
+                {
+                    if b.device == reply.device {
+                        b.marked.remove(&path);
+                        b.entries.retain(|e| e.path != path);
+                        b.visual_anchor = None;
+                    }
+                }
+                if self
+                    .browser
+                    .as_ref()
+                    .is_some_and(|b| b.device == reply.device)
+                {
+                    self.refresh_browser();
+                }
+            }
             _ => {}
         }
     }
@@ -1126,11 +1633,7 @@ impl App {
             return;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            self.quit = true;
-            return;
-        }
-        if let Some(dialog) = self.dialog.clone() {
-            self.dialog_key(key, dialog);
+            self.request_quit();
             return;
         }
         if self.help {
@@ -1151,6 +1654,14 @@ impl App {
             }
             return;
         }
+        if let Some(dialog) = self.dialog.clone() {
+            if matches!(key.code, KeyCode::Char('?') | KeyCode::F(1)) {
+                self.help = true;
+                return;
+            }
+            self.dialog_key(key, dialog);
+            return;
+        }
         // Input fields own every printable key, including navigation shortcuts.
         if let Some(mode) = self.input {
             let before_text = self.text.clone();
@@ -1158,10 +1669,45 @@ impl App {
                 KeyCode::Esc => {
                     self.input = None;
                     self.text.clear();
+                    self.rename_target = None;
                 }
                 KeyCode::Backspace => {
-                    self.text.pop();
+                    if mode == Input::Rename {
+                        if let Some((at, _)) = self.text[..self.rename_cursor].char_indices().last()
+                        {
+                            self.text.replace_range(at..self.rename_cursor, "");
+                            self.rename_cursor = at;
+                        }
+                    } else {
+                        self.text.pop();
+                    }
                     self.palette_selected = 0;
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.text.clear();
+                    self.rename_cursor = 0;
+                }
+                KeyCode::Left if mode == Input::Rename => {
+                    self.rename_cursor = self.text[..self.rename_cursor]
+                        .char_indices()
+                        .last()
+                        .map(|(at, _)| at)
+                        .unwrap_or(0);
+                }
+                KeyCode::Right if mode == Input::Rename => {
+                    if let Some(c) = self.text[self.rename_cursor..].chars().next() {
+                        self.rename_cursor += c.len_utf8();
+                    }
+                }
+                KeyCode::Home if mode == Input::Rename => self.rename_cursor = 0,
+                KeyCode::End if mode == Input::Rename => self.rename_cursor = self.text.len(),
+                KeyCode::Delete if mode == Input::Rename => {
+                    if let Some(c) = self.text[self.rename_cursor..].chars().next() {
+                        self.text.replace_range(
+                            self.rename_cursor..self.rename_cursor + c.len_utf8(),
+                            "",
+                        );
+                    }
                 }
                 KeyCode::Char(c)
                     if !key
@@ -1169,13 +1715,22 @@ impl App {
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
                     if self.text.chars().count() < 256 {
-                        self.text.push(c);
+                        if mode == Input::Rename {
+                            self.text.insert(self.rename_cursor, c);
+                            self.rename_cursor += c.len_utf8();
+                        } else {
+                            self.text.push(c);
+                        }
                     }
                     self.palette_selected = 0;
                 }
                 KeyCode::Down if mode == Input::Search => self.move_selection(1),
                 KeyCode::Up if mode == Input::Search => self.move_selection(-1),
-                KeyCode::Tab | KeyCode::BackTab if mode == Input::Search => {
+                KeyCode::Down if mode == Input::Filter => self.move_selection(1),
+                KeyCode::Up if mode == Input::Filter => self.move_selection(-1),
+                KeyCode::Tab | KeyCode::BackTab
+                    if matches!(mode, Input::Search | Input::Filter) =>
+                {
                     self.input = None;
                     self.cycle_focus(
                         key.code == KeyCode::BackTab || key.modifiers.contains(KeyModifiers::SHIFT),
@@ -1200,6 +1755,37 @@ impl App {
                         self.input = None;
                         self.focus = Focus::Workspace;
                         self.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                    }
+                    Input::Filter => {
+                        self.input = None;
+                        self.focus = Focus::Workspace;
+                    }
+                    Input::Rename => {
+                        if !self.text.is_empty()
+                            && self.text != "."
+                            && self.text != ".."
+                            && !self.text.contains('/')
+                            && !self.text.chars().any(char::is_control)
+                        {
+                            if let Some((d, entry)) = self.rename_target.take() {
+                                if entry.rename_name.as_deref() == Some(self.text.as_str()) {
+                                    self.notice = "Name unchanged".into();
+                                } else {
+                                    self.queue_file_actions(vec![(
+                                        d,
+                                        Operation::Rename {
+                                            path: entry.path,
+                                            name: self.text.clone(),
+                                            expected_identity: entry.identity,
+                                        },
+                                    )]);
+                                }
+                            }
+                            self.input = None;
+                        } else {
+                            self.notice =
+                                "Enter one filename · existing files are never replaced".into();
+                        }
                     }
                     Input::Add => {
                         if transport::valid_target(&self.text) {
@@ -1234,6 +1820,16 @@ impl App {
             {
                 self.live_search();
             }
+            if mode == Input::Filter
+                && self.input == Some(Input::Filter)
+                && self.text != before_text
+            {
+                if let Some(b) = &mut self.browser {
+                    b.filter = self.text.clone();
+                    b.selected = 0;
+                    b.restore_selection = None;
+                }
+            }
             return;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -1243,7 +1839,7 @@ impl App {
                     self.text.clear();
                     self.palette_selected = 0;
                 }
-                KeyCode::Char('c') => self.quit = true,
+                KeyCode::Char('c') => self.request_quit(),
                 KeyCode::Left | KeyCode::Char('h') => self.directional_focus(-1, 0),
                 KeyCode::Right | KeyCode::Char('l') => self.directional_focus(1, 0),
                 KeyCode::Up | KeyCode::Char('k') => self.directional_focus(0, -1),
@@ -1252,9 +1848,50 @@ impl App {
             }
             return;
         }
+        if self.view == View::Files
+            && self.focus == Focus::Workspace
+            && self.browser.as_ref().is_some_and(|b| b.preview.is_none())
+        {
+            let action = match key.code {
+                KeyCode::Char('.') => Some(Action::Hidden),
+                KeyCode::Char(' ') => Some(Action::Select),
+                KeyCode::Char('v') => Some(Action::Visual),
+                KeyCode::Char('r') => Some(Action::Rename),
+                KeyCode::Char('c' | 'y') => Some(Action::Copy),
+                KeyCode::Char('x') => Some(Action::Cut),
+                KeyCode::Char('d') => Some(Action::Delete),
+                KeyCode::Char('f') => Some(Action::Filter),
+                KeyCode::Char('p') => Some(Action::Paste),
+                KeyCode::Char('t') => Some(Action::Jobs),
+                _ => None,
+            };
+            if key.code == KeyCode::Char('T') {
+                self.transfer_drawer = !self.transfer_drawer;
+                return;
+            }
+            if key.code == KeyCode::Char('Y') {
+                self.clipboard = None;
+                self.notice = "Clipboard cleared · files unchanged".into();
+                return;
+            }
+            if key.code == KeyCode::Char('u') {
+                self.finish_visual();
+                if let Some(b) = &mut self.browser {
+                    b.marked.clear();
+                }
+                return;
+            }
+            if let Some(action) = action {
+                if self.action_enabled(action) {
+                    self.execute(action);
+                }
+                return;
+            }
+        }
         match key.code {
             KeyCode::Char('?') | KeyCode::F(1) => self.help = true,
             KeyCode::Char('/') => {
+                self.finish_visual();
                 self.input = Some(Input::Search);
                 self.focus = Focus::Workspace;
                 self.text = if self.view == View::Files {
@@ -1293,6 +1930,10 @@ impl App {
             }
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
+            KeyCode::PageDown => self.move_selection(10),
+            KeyCode::PageUp => self.move_selection(-10),
+            KeyCode::Home => self.move_selection(-100_000),
+            KeyCode::End => self.move_selection(100_000),
             KeyCode::Enter => {
                 if self.focus == Focus::Actions {
                     let actions = sidebar_actions(self);
@@ -1315,7 +1956,14 @@ impl App {
                 if self.view == View::Files {
                     if let Some(b) = &mut self.browser {
                         if b.preview.take().is_none() {
-                            if !b.search.is_empty() {
+                            if b.visual_anchor.take().is_some() {
+                                b.visual_base.clear();
+                            } else if !b.marked.is_empty() {
+                                b.marked.clear();
+                            } else if !b.filter.is_empty() {
+                                b.filter.clear();
+                                b.selected = 0;
+                            } else if !b.search.is_empty() {
                                 b.search.clear();
                                 b.selected = 0;
                             } else {
@@ -1424,6 +2072,17 @@ impl App {
             if let Some(b) = &mut self.browser {
                 b.restore_selection = None;
                 b.selected = shift(b.selected, delta, len);
+                if let Some(anchor) = b.visual_anchor {
+                    b.marked = b.visual_base.clone();
+                    let entries = browser_entries(b);
+                    let start = anchor.min(b.selected);
+                    let end = anchor.max(b.selected);
+                    for entry in entries.iter().skip(start).take(end - start + 1) {
+                        if b.marked.len() < 256 {
+                            b.marked.insert(entry.path.clone());
+                        }
+                    }
+                }
             }
         } else {
             self.selected = shift(self.selected, delta, self.session_rows().len());
@@ -1599,14 +2258,31 @@ fn sidebar_actions(app: &App) -> Vec<(Action, &'static str)> {
                     ["Existing: skip", "Existing: overwrite", "Existing: rename"][app.conflict],
                 ),
             );
-            if app.destination_active {
-                a.insert(0, (Action::Paste, "Paste here"));
-            }
-        } else {
-            a.insert(0, (Action::Copy, "Copy to…"));
+            a.insert(0, (Action::Paste, "Paste here · p"));
         }
+        a.insert(0, (Action::Copy, "Copy · c"));
+        a.insert(1, (Action::Cut, "Cut · x"));
+        a.insert(2, (Action::Rename, "Rename · r"));
+        a.insert(3, (Action::Delete, "Delete… · d"));
+        a.push((Action::Mkdir, "New folder"));
     }
     a.retain(|(action, _)| app.action_enabled(*action));
+    if app.view == View::Files {
+        a.retain(|(action, _)| *action != Action::Files);
+        if app.clipboard.is_some() {
+            // Keep destination controls visible even in a short sidebar.
+            a.sort_by_key(|(action, _)| match action {
+                Action::Paste => 0,
+                Action::Destination => 1,
+                Action::Conflict => 2,
+                Action::Copy => 3,
+                Action::Cut => 4,
+                Action::Rename => 5,
+                Action::Delete => 6,
+                _ => 7,
+            });
+        }
+    }
     if app.selected_session().is_some() && app.view == View::Work {
         a.insert(2, (Action::Observe, "Observe"));
     }
@@ -1623,7 +2299,12 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         );
         return;
     }
-    let query = if app.view == View::Files {
+    let query = if app.input == Some(Input::Filter) {
+        app.browser
+            .as_ref()
+            .map(|b| b.filter.as_str())
+            .unwrap_or("")
+    } else if app.view == View::Files {
         app.browser
             .as_ref()
             .map(|b| b.search.as_str())
@@ -1631,13 +2312,13 @@ fn render(frame: &mut Frame<'_>, app: &App) {
     } else {
         app.search.as_str()
     };
-    let show_search = app.input == Some(Input::Search) || !query.is_empty();
+    let show_search = matches!(app.input, Some(Input::Search | Input::Filter)) || !query.is_empty();
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2),
             Constraint::Min(5),
-            Constraint::Length(if show_search { 6 } else { 4 }),
+            Constraint::Length(if show_search { 7 } else { 4 }),
         ])
         .split(area);
     let label = match (app.view, area.width < 70) {
@@ -1675,7 +2356,14 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             .alignment(ratatui::layout::Alignment::Right),
         top[1],
     );
-    let sidebar_width = if area.width < 70 { 17 } else { 21 };
+    let sidebar_width: u16 =
+        if area.width < 60 && app.view == View::Files && app.focus == Focus::Workspace {
+            14
+        } else if area.width < 70 {
+            17
+        } else {
+            21
+        };
     let content = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(sidebar_width), Constraint::Min(15)])
@@ -1730,14 +2418,24 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         };
         device_items.push(ListItem::new(Line::from(vec![
             Span::styled(format!("{indicator} "), dot_style),
-            Span::raw(format!("{:<12} {count:>2}", fit_label(&d.name, 12))),
+            Span::raw(format!(
+                "{:<width$} {count:>2}",
+                fit_label(&d.name, sidebar_width.saturating_sub(9) as usize),
+                width = sidebar_width.saturating_sub(9) as usize
+            )),
         ])));
     }
     let sidebar = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length((app.devices.len() as u16 + 3).min(content[0].height / 2)),
-            Constraint::Length(8),
+            Constraint::Length(
+                (sidebar_actions(app).len() as u16 + 2)
+                    .min(content[0].height.saturating_sub(
+                        (app.devices.len() as u16 + 3).min(content[0].height / 2) + 4,
+                    ))
+                    .max(5),
+            ),
             Constraint::Min(0),
         ])
         .split(content[0]);
@@ -1766,7 +2464,25 @@ fn render(frame: &mut Frame<'_>, app: &App) {
     let actions = sidebar_actions(app);
     let items = actions
         .iter()
-        .map(|(_, label)| ListItem::new(format!("  {label}")))
+        .map(|(action, label)| {
+            ListItem::new(format!(
+                " {}",
+                if sidebar_width < 17 {
+                    match action {
+                        Action::Copy => "c Copy",
+                        Action::Cut => "x Cut",
+                        Action::Rename => "r Rename",
+                        Action::Delete => "d Delete…",
+                        Action::Paste => "p Paste",
+                        Action::Destination => "To device…",
+                        Action::Conflict => "Conflicts…",
+                        _ => label,
+                    }
+                } else {
+                    label
+                }
+            ))
+        })
         .collect::<Vec<_>>();
     let mut state =
         ratatui::widgets::ListState::default().with_selected(if app.focus == Focus::Actions {
@@ -1781,7 +2497,30 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         sidebar[1],
         &mut state,
     );
-    let details = if let Some((i, s)) = app.selected_session() {
+    let details = if let Some(b) = app.browser.as_ref().filter(|_| app.view == View::Files) {
+        let entry = browser_entries(b).get(b.selected).cloned();
+        format!(
+            "{}\n\n{}\n{}\n\n{} selected{}",
+            identity(&app.devices[b.device]),
+            entry
+                .as_ref()
+                .map(|e| safe_label(&e.name))
+                .unwrap_or_else(|| "No file".into()),
+            entry
+                .as_ref()
+                .map(|e| format!("{} · {}", e.kind, human_size(e.size)))
+                .unwrap_or_default(),
+            b.marked.len(),
+            if b.marked
+                .iter()
+                .any(|p| !browser_entries(b).iter().any(|e| &e.path == p))
+            {
+                " (includes hidden/filtered)"
+            } else {
+                ""
+            }
+        )
+    } else if let Some((i, s)) = app.selected_session() {
         format!(
             "{}\n{}\n\n{}\n\n{}",
             safe_label(&s.name),
@@ -1821,6 +2560,20 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             sidebar[2],
         );
     }
+    let split_workspace = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(5),
+            Constraint::Length(
+                if app.view == View::Files && app.transfer_drawer && content[1].height >= 12 {
+                    4
+                } else {
+                    0
+                },
+            ),
+        ])
+        .split(content[1]);
+    let workspace = split_workspace[0];
     match app.view {
         View::Work => {
             let rows = app.session_rows();
@@ -1844,7 +2597,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                     Paragraph::new(text)
                         .wrap(Wrap { trim: false })
                         .block(block("Work".into(), app.focus == Focus::Workspace)),
-                    content[1],
+                    workspace,
                 );
             } else {
                 let mut display_rows = Vec::new();
@@ -1907,7 +2660,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                     [
                         Constraint::Length(9),
                         Constraint::Min(10),
-                        Constraint::Length(if content[1].width > 65 { 24 } else { 18 }),
+                        Constraint::Length(if workspace.width > 65 { 24 } else { 18 }),
                         Constraint::Length(8),
                     ],
                 )
@@ -1923,20 +2676,20 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 ))
                 .row_highlight_style(selected_style())
                 .highlight_symbol(if ascii() { "> " } else { "› " });
-                frame.render_stateful_widget(table, content[1], &mut state);
+                frame.render_stateful_widget(table, workspace, &mut state);
             }
         }
         View::Files => {
             if let Some(b) = &app.browser {
                 if let Some(other) = &app.other_browser {
                     let panes = Layout::default()
-                        .direction(if content[1].width >= 52 {
+                        .direction(if workspace.width >= 52 {
                             Direction::Horizontal
                         } else {
                             Direction::Vertical
                         })
                         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                        .split(content[1]);
+                        .split(workspace);
                     app.panels.borrow_mut().extend([
                         (Focus::Workspace, false, panes[0]),
                         (Focus::Workspace, true, panes[1]),
@@ -1953,6 +2706,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                         panes[0],
                         !app.destination_active && app.focus == Focus::Workspace,
                         "Source",
+                        app.clipboard.as_ref(),
                     );
                     render_browser(
                         frame,
@@ -1961,6 +2715,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                         panes[1],
                         app.destination_active && app.focus == Focus::Workspace,
                         &format!("Destination · {}", app.conflict_policy()),
+                        app.clipboard.as_ref(),
                     );
                 } else {
                     let label = app
@@ -1972,9 +2727,10 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                         frame,
                         b,
                         &app.devices[b.device],
-                        content[1],
+                        workspace,
                         app.focus == Focus::Workspace,
                         &label,
+                        app.clipboard.as_ref(),
                     );
                 }
             }
@@ -2003,9 +2759,77 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 Paragraph::new(text)
                     .wrap(Wrap { trim: false })
                     .block(block(title, app.focus == Focus::Workspace)),
-                content[1],
+                workspace,
             );
         }
+    }
+    if split_workspace[1].height > 0 {
+        let rows = app.job_rows();
+        let mut lines = rows
+            .iter()
+            .take(2)
+            .map(|(_, j)| {
+                Line::from(vec![
+                    Span::styled(
+                        format!(" {} ", transfer_status(j)),
+                        tint(if j["status"] == "failed" {
+                            Color::Red
+                        } else if j["status"] == "complete" {
+                            Color::Green
+                        } else {
+                            Color::Yellow
+                        }),
+                    ),
+                    Span::raw(format!(
+                        "{} {}",
+                        if j["operation"] == "move" {
+                            "move"
+                        } else {
+                            "copy"
+                        },
+                        transfer_name(j)
+                    )),
+                    Span::styled(
+                        format!(
+                            " · {}",
+                            if j["source_host"] == j["destination_host"] {
+                                safe_label(j["source_host"].as_str().unwrap_or("?"))
+                            } else {
+                                format!(
+                                    "{} → {}",
+                                    safe_label(j["source_host"].as_str().unwrap_or("?")),
+                                    safe_label(j["destination_host"].as_str().unwrap_or("?"))
+                                )
+                            }
+                        ),
+                        muted(),
+                    ),
+                ])
+            })
+            .collect::<Vec<_>>();
+        if !app.file_errors.is_empty() {
+            lines.insert(
+                0,
+                Line::from(Span::styled(
+                    format!(
+                        " × {} actions rejected · {}",
+                        app.file_errors.len(),
+                        app.file_errors.last().unwrap()
+                    ),
+                    tint(Color::Red),
+                )),
+            );
+            lines.truncate(2);
+        }
+        frame.render_widget(
+            Paragraph::new(if lines.is_empty() {
+                vec![Line::from(" Submitting selected items…")]
+            } else {
+                lines
+            })
+            .block(block("Transfers · t open · T hide".into(), false)),
+            split_workspace[1],
+        );
     }
     let footer = Layout::default()
         .direction(Direction::Vertical)
@@ -2014,6 +2838,7 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 Constraint::Length(3),
                 Constraint::Length(1),
                 Constraint::Length(2),
+                Constraint::Length(1),
             ]
         } else {
             vec![
@@ -2077,11 +2902,19 @@ fn render(frame: &mut Frame<'_>, app: &App) {
     };
     let status_sections = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(30),
-            Constraint::Percentage(30),
-            Constraint::Percentage(40),
-        ])
+        .constraints(if area.width < 60 {
+            vec![
+                Constraint::Length(0),
+                Constraint::Percentage(55),
+                Constraint::Percentage(45),
+            ]
+        } else {
+            vec![
+                Constraint::Percentage(30),
+                Constraint::Percentage(30),
+                Constraint::Percentage(40),
+            ]
+        })
         .split(footer[status_row]);
     let healthy = if std::env::var_os("NO_COLOR").is_some() {
         Style::default()
@@ -2114,19 +2947,38 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 format!("Focus: {}", app.focus_label()),
                 accent().add_modifier(Modifier::BOLD),
             ),
-            Span::styled(format!(" · {shown}/{total}"), muted()),
+            Span::styled(
+                if app.dialog.is_some() || app.help {
+                    String::new()
+                } else {
+                    format!(" · {shown}/{total}")
+                },
+                muted(),
+            ),
         ]))
         .alignment(ratatui::layout::Alignment::Center),
         status_sections[1],
     );
     let transfer = if active > 0 {
-        format!("↔ {active} copying")
+        format!("{} {active} active", if ascii() { "~" } else { "↔" })
     } else if failed > 0 {
-        format!("× {failed} failed copies")
+        format!("{} {failed} failed", if ascii() { "x" } else { "×" })
     } else if !jobs.is_empty() {
-        format!("● {} copied", jobs.len())
+        let completed = jobs.iter().filter(|j| j["status"] == "complete").count();
+        let skipped = jobs
+            .iter()
+            .map(|j| j["skipped"].as_u64().unwrap_or(0))
+            .sum::<u64>();
+        if skipped > 0 {
+            format!(
+                "{} {completed} done · {skipped} skipped",
+                if ascii() { "+" } else { "●" }
+            )
+        } else {
+            format!("{} {completed} complete", if ascii() { "+" } else { "●" })
+        }
     } else {
-        "↔ transfers idle".into()
+        format!("{} idle", if ascii() { "~" } else { "↔" })
     };
     frame.render_widget(
         Paragraph::new(transfer)
@@ -2135,14 +2987,29 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         status_sections[2],
     );
     if show_search {
-        let editing = app.input == Some(Input::Search);
+        let editing = matches!(app.input, Some(Input::Search | Input::Filter));
         let text = if editing { app.text.as_str() } else { query };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(" /  ", accent().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    if app.input == Some(Input::Filter) {
+                        " f  "
+                    } else {
+                        " /  "
+                    },
+                    accent().add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(safe_label(text)),
             ]))
-            .block(block("Search".into(), editing)),
+            .block(block(
+                if app.input == Some(Input::Filter) {
+                    "Filter · Enter done"
+                } else {
+                    "Search"
+                }
+                .into(),
+                editing,
+            )),
             footer[0],
         );
         if editing {
@@ -2158,12 +3025,84 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             footer[2],
         );
     }
-    let mut hints = if app.input == Some(Input::Search) {
+    if show_search {
+        frame.render_widget(
+            Paragraph::new(safe_text(&app.notice)).style(muted()),
+            footer[3],
+        );
+    }
+    let mut hints = if app.help {
+        vec![("↑↓", "Scroll"), ("PgUpDn", "Page"), ("Esc", "Close")]
+    } else if let Some(dialog) = &app.dialog {
+        if matches!(dialog, Dialog::Jobs) {
+            vec![
+                ("c", "Cancel job"),
+                ("r", "Retry job"),
+                ("Esc", "Back"),
+                ("Tab", "Details"),
+                ("PgUpDn", "Scroll"),
+                (
+                    "Enter",
+                    if app.dialog_detail_focus {
+                        "Back"
+                    } else {
+                        "Details"
+                    },
+                ),
+            ]
+        } else if matches!(dialog, Dialog::Delete(..)) {
+            vec![
+                (
+                    "↑↓",
+                    if app.dialog_detail_focus {
+                        "Scroll"
+                    } else {
+                        "Choose"
+                    },
+                ),
+                (
+                    "Enter",
+                    if app.dialog_detail_focus {
+                        "Back"
+                    } else {
+                        "Confirm"
+                    },
+                ),
+                ("Esc", "Cancel"),
+                ("Tab", "Details"),
+                ("PgUpDn", "Scroll"),
+                ("Home", "Top"),
+            ]
+        } else {
+            vec![("↑↓", "Choose"), ("Enter", "Confirm"), ("Esc", "Cancel")]
+        }
+    } else if matches!(
+        app.input,
+        Some(Input::Rename | Input::Mkdir | Input::Add | Input::Palette)
+    ) {
+        vec![("Enter", "Confirm"), ("Esc", "Cancel"), ("Ctrl U", "Clear")]
+    } else if matches!(app.input, Some(Input::Search | Input::Filter)) {
         vec![
             ("↑↓", "Select"),
-            ("Enter", "Open"),
+            (
+                "Enter",
+                if app.input == Some(Input::Filter) {
+                    "Done"
+                } else {
+                    "Open"
+                },
+            ),
             ("Esc", "Done"),
             ("Tab", "Focus"),
+        ]
+    } else if app.view == View::Files && app.focus == Focus::Workspace {
+        vec![
+            ("Space", "Select"),
+            ("c / x", "Copy / cut"),
+            ("p", "Paste here"),
+            ("v", "Range"),
+            ("r / d", "Rename / delete"),
+            ("?", "All keys"),
         ]
     } else {
         vec![
@@ -2183,14 +3122,23 @@ fn render(frame: &mut Frame<'_>, app: &App) {
         ]
     };
     let columns = if footer[key_row].width >= 60 { 3 } else { 2 };
-    if columns == 2 && app.input != Some(Input::Search) {
+    if columns == 2 && !matches!(app.input, Some(Input::Search | Input::Filter)) {
         hints.retain(|(_, label)| !matches!(*label, "Search" | "Focus"));
+        hints.truncate(4);
+        if app.dialog.is_none() && app.input.is_none() && !app.help && app.view == View::Files {
+            hints[3] = ("?", "All keys");
+        }
     }
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Length(1)])
         .split(footer[key_row]);
     for (i, (key, label)) in hints.into_iter().enumerate() {
+        let key = if ascii() && key == "↑↓" {
+            "j/k"
+        } else {
+            key
+        };
         let cells = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(vec![Constraint::Ratio(1, columns as u32); columns])
@@ -2208,7 +3156,10 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             cells[i % columns],
         );
     }
-    if let Some(input) = app.input.filter(|i| *i != Input::Search) {
+    if let Some(input) = app
+        .input
+        .filter(|i| !matches!(*i, Input::Search | Input::Filter))
+    {
         let rect = popup(area, 76, if input == Input::Palette { 16 } else { 5 });
         frame.render_widget(Clear, rect);
         if input == Input::Palette {
@@ -2239,12 +3190,13 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             frame.render_widget(
                 Paragraph::new(format!(
                     "> {}\nEnter confirm · Escape cancel",
-                    safe_text(&app.text)
+                    safe_label(&app.text)
                 ))
                 .block(block(
                     match input {
                         Input::Search => "Search",
                         Input::Add => "Add device · SSH alias or user@host",
+                        Input::Rename => "Rename · Enter saves · Escape cancels",
                         _ => "Directory name",
                     }
                     .into(),
@@ -2252,6 +3204,13 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 )),
                 rect,
             );
+            if input == Input::Rename {
+                let width = Span::raw(safe_label(&app.text[..app.rename_cursor])).width() as u16;
+                frame.set_cursor_position((
+                    rect.x + 3 + width.min(rect.width.saturating_sub(5)),
+                    rect.y + 1,
+                ));
+            }
         }
     }
     if let Some(dialog) = &app.dialog {
@@ -2270,11 +3229,11 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 if *purpose == ChooseDevice::Destination {
                     app.clipboard
                         .as_ref()
-                        .map(|(d, e)| {
+                        .map(|c| {
                             format!(
                                 "Source: {} · {}\nEnter choose · Escape cancel",
-                                identity(&app.devices[*d]),
-                                safe_label(&e.name)
+                                identity(&app.devices[c.device]),
+                                format!("{} {} items", if c.cut { "cut" } else { "copy" }, c.entries.len())
                             )
                         })
                         .unwrap_or_else(|| "Enter choose · Escape cancel".into())
@@ -2315,6 +3274,18 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                     "Enter choose · next: browse folder, then Start here".into()
                 },
             ),
+            Dialog::Delete(d, entries) => (
+                format!("Delete {} items permanently?", entries.len()),
+                vec!["Cancel · keep files".into(), "Delete permanently".into()],
+                format!("No undo. {} folders include all contents.\nHost: {}\n{}",
+                    entries.iter().filter(|e| e.kind == "directory").count(), identity(&app.devices[*d]),
+                    entries.iter().map(|e| format!("{} {}", if ascii() { "-" } else { "•" }, safe_label(&e.name))).collect::<Vec<_>>().join("\n")),
+            ),
+            Dialog::PendingExit(count) => (
+                "File actions are still being submitted".into(),
+                vec!["Stay · finish submitting".into(), "Quit · discard unsubmitted actions".into()],
+                format!("{count} actions have not been submitted.\nAlready detached transfers continue.\nEnter chooses · Escape stays"),
+            ),
             Dialog::Matching(d, path, provider, s) => (
                 format!("Matching {provider} · {}", identity(&app.devices[*d])),
                 vec![
@@ -2329,25 +3300,26 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                     .get(app.dialog_selected)
                     .map(|(_, j)| {
                         format!(
-                            "{} → {}\n{}\n{}",
-                            safe_label(j["source_path"].as_str().unwrap_or("")),
-                            safe_label(j["destination_path"].as_str().unwrap_or("")),
+                            "{}\nRoute: {}\nSource: {}\nDestination: {}",
+                            j["error"].as_str().map(safe_label).unwrap_or_else(|| format!("{} · {}", transfer_status(j), if j["operation"] == "move" { "move" } else { "copy" })),
                             safe_label(j["route"].as_str().unwrap_or("route unknown")),
-                            safe_label(j["error"].as_str().unwrap_or(""))
+                            safe_label(j["source_display"].as_str().or(j["source_path"].as_str()).unwrap_or("")),
+                            transfer_destination(j),
                         )
                     })
-                    .unwrap_or_else(|| "No transfers yet · Files → Copy to…".into());
+                    .unwrap_or_else(|| "No transfers yet · c copy / x cut → folder → p paste".into());
                 (
-                    "Transfers · c cancel · r retry/refresh · Esc close".into(),
+                    "Transfers".into(),
                     jobs.iter()
                         .map(|(_, j)| {
                             format!(
-                                "{}  {} → {}  {} / {} B",
-                                safe_label(j["status"].as_str().unwrap_or("unknown")),
+                                "{} {} · {} → {} · {} / {}",
+                                transfer_status(j),
+                                transfer_name(j),
                                 safe_label(j["source_host"].as_str().unwrap_or("?")),
                                 safe_label(j["destination_host"].as_str().unwrap_or("?")),
-                                j["bytes"].as_u64().unwrap_or(0),
-                                j["total"].as_u64().unwrap_or(0)
+                                human_size(j["bytes"].as_u64().unwrap_or(0)),
+                                human_size(j["total"].as_u64().unwrap_or(0))
                             )
                         })
                         .collect(),
@@ -2355,35 +3327,58 @@ fn render(frame: &mut Frame<'_>, app: &App) {
                 )
             }
         };
-        let mut rect = popup(area, 90, 15);
+        let mut rect = popup(
+            area,
+            90,
+            if matches!(dialog, Dialog::Jobs) {
+                area.height.saturating_sub(6)
+            } else {
+                15
+            },
+        );
         if matches!(dialog, Dialog::Jobs) {
             rect.y = area.y + area.height.saturating_sub(rect.height + 5);
         }
         frame.render_widget(Clear, rect);
         let parts = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(3), Constraint::Length(4)])
+            .constraints(if matches!(dialog, Dialog::Jobs) {
+                vec![
+                    Constraint::Length((rect.height / 3).max(4)),
+                    Constraint::Min(5),
+                ]
+            } else {
+                vec![
+                    Constraint::Length((labels.len() as u16 + 2).min(6)),
+                    Constraint::Min(4),
+                ]
+            })
             .split(rect);
         let mut state =
             ratatui::widgets::ListState::default().with_selected(Some(app.dialog_selected));
         frame.render_stateful_widget(
             List::new(labels.into_iter().map(ListItem::new).collect::<Vec<_>>())
                 .block(block(title, true))
-                .highlight_style(selected_style()),
+                .highlight_style(if app.dialog_detail_focus {
+                    accent()
+                } else {
+                    selected_style()
+                }),
             parts[0],
             &mut state,
         );
         frame.render_widget(
             Paragraph::new(detail)
                 .wrap(Wrap { trim: false })
-                .block(block("Context".into(), false)),
+                .scroll((app.dialog_scroll, 0))
+                .block(block("Details · PgUp/PgDn".into(), app.dialog_detail_focus)),
             parts[1],
         );
     }
     if app.help {
         let rect = popup(area, 76, 20);
         frame.render_widget(Clear, rect);
-        let mut help = String::from("Arrows / h j k l  navigate\nCtrl+arrows / Ctrl+h j k l  move panel focus\nEnter  enter directory / preview file / take control\nFiles: Left/h parent · Right/l enter directory\nEscape  back     Tab / Shift+Tab  focus     /  search\nCtrl+P  actions  Ctrl+C  quit\n\nNative terminal: cx keys are suspended.\nManaged sessions: Ctrl+] returns to cx.\nExternal sessions keep their own tmux bindings.\n\nAvailable actions\n");
+        let mut help = String::from("Arrows / h j k l  navigate\nCtrl+arrows / Ctrl+h j k l  move panel focus\nEnter  enter directory / preview file / take control\nFiles: Left/h parent · Right/l enter directory\nSpace toggle + advance · v range · . hidden\nu clear selection · Y clear clipboard · Home/End/PgUp/PgDn navigate\nc/y copy · x cut · p paste here · r rename · d delete (confirm)\nf name filter (Enter finishes) · / fuzzy search\nt transfers · T drawer · Esc finish range / clear selection / clear filter\nTransfers: c cancel · r retry · Enter/Tab details · PgUp/PgDn scroll\nEscape  back     Tab / Shift+Tab  focus     /  search\nCtrl+P  actions  Ctrl+C  quit\n\nNative terminal: cx keys are suspended.\nManaged sessions: Ctrl+] returns to cx.\nExternal sessions keep their own tmux bindings.\n\nAvailable actions\n");
         for (_, label) in ACTIONS.iter().filter(|(a, _)| app.action_enabled(*a)) {
             help.push_str(label);
             help.push('\n');
@@ -2402,6 +3397,10 @@ fn browser_entries(b: &Browser) -> Vec<Entry> {
         .entries
         .iter()
         .enumerate()
+        .filter(|(_, e)| {
+            (b.show_hidden || !(e.hidden || e.name.starts_with('.')))
+                && e.name.to_lowercase().contains(&b.filter.to_lowercase())
+        })
         .filter_map(|(i, e)| fuzzy_score(&b.search, &e.name).map(|score| (score, i, e.clone())))
         .collect::<Vec<_>>();
     rows.sort_by(|(a, i, _), (b, j, _)| b.cmp(a).then_with(|| i.cmp(j)));
@@ -2431,26 +3430,73 @@ fn render_browser(
     area: Rect,
     focused: bool,
     label: &str,
+    clipboard: Option<&Clipboard>,
 ) {
     let parts = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
         .split(area);
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(Span::styled(
-                format!(" {label}"),
-                accent().add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(format!(" {}", identity(device)), accent())),
+            Line::from(vec![
+                Span::styled(format!(" {label}  "), accent().add_modifier(Modifier::BOLD)),
+                Span::styled(identity(device), muted()),
+            ]),
             Line::from(Span::styled(
                 format!(
-                    " {}{}",
-                    compact_path(&b.display_path, area.width.saturating_sub(2) as usize),
-                    if b.loading { " · checking" } else { "" }
+                    " {}",
+                    compact_path(&b.display_path, area.width.saturating_sub(2) as usize)
                 ),
-                muted(),
+                accent(),
             )),
+            Line::from(vec![
+                Span::styled(
+                    format!(
+                        " {} ",
+                        if b.visual_anchor.is_some() {
+                            "VISUAL"
+                        } else {
+                            "NORMAL"
+                        }
+                    ),
+                    tint(if b.visual_anchor.is_some() {
+                        Color::Magenta
+                    } else {
+                        Color::Green
+                    })
+                    .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{} selected{}", b.marked.len(), {
+                        let shown = browser_entries(b)
+                            .iter()
+                            .filter(|e| b.marked.contains(&e.path))
+                            .count();
+                        if shown < b.marked.len() {
+                            format!(" ({shown} shown)")
+                        } else {
+                            String::new()
+                        }
+                    }),
+                    if b.marked.is_empty() {
+                        muted()
+                    } else {
+                        tint(Color::Yellow)
+                    },
+                ),
+                Span::styled(
+                    format!(
+                        " · hidden {}{}",
+                        if b.show_hidden { "shown" } else { "off" },
+                        if b.loading { " · loading" } else { "" }
+                    ),
+                    muted(),
+                ),
+            ]),
         ]),
         parts[0],
     );
@@ -2464,58 +3510,156 @@ fn render_browser(
         );
     } else {
         let rows = browser_entries(b);
-        let items = rows
-            .iter()
-            .map(|e| {
-                ListItem::new(Line::from(vec![
-                    Span::styled(
-                        if e.kind == "directory" {
-                            "+ "
-                        } else if e.kind == "symlink" {
-                            "@ "
-                        } else {
-                            "  "
-                        },
-                        if e.kind == "directory" {
-                            accent()
+        if rows.is_empty() {
+            frame.render_widget(
+                Paragraph::new(if b.loading {
+                    " Loading…"
+                } else if !b.search.is_empty() || !b.filter.is_empty() {
+                    " No matches · Escape clears filter"
+                } else {
+                    " Empty folder · . shows hidden files"
+                })
+                .style(muted())
+                .block(block("Files".into(), focused)),
+                parts[1],
+            );
+        } else {
+            let table_rows = rows
+                .iter()
+                .map(|e| {
+                    let clip = clipboard.filter(|c| {
+                        c.device == b.device && c.entries.iter().any(|x| x.path == e.path)
+                    });
+                    let (marker, style) = if b.marked.contains(&e.path) {
+                        (if ascii() { "*" } else { "●" }, tint(Color::Yellow))
+                    } else if let Some(c) = clip {
+                        (
+                            if c.cut { "x" } else { "c" },
+                            tint(if c.cut { Color::Magenta } else { Color::Green }),
+                        )
+                    } else {
+                        (" ", Style::default())
+                    };
+                    Row::new(vec![
+                        Cell::from(marker).style(style.add_modifier(Modifier::BOLD)),
+                        Cell::from(match e.kind.as_str() {
+                            "directory" => "/",
+                            "symlink" => "@",
+                            _ => " ",
+                        })
+                        .style(accent()),
+                        Cell::from(compact_path(
+                            &e.name,
+                            area.width.saturating_sub(17) as usize,
+                        ))
+                        .style(if e.kind == "directory" {
+                            tint(Color::Blue).add_modifier(Modifier::BOLD)
                         } else {
                             Style::default()
-                        },
-                    ),
-                    Span::raw(safe_label(&e.name)),
-                    Span::styled(
-                        if e.kind == "file" {
-                            format!("  {} B", e.size)
+                        }),
+                        Cell::from(if e.kind == "file" {
+                            human_size(e.size)
                         } else {
                             String::new()
-                        },
-                        muted(),
-                    ),
-                ]))
-            })
-            .collect::<Vec<_>>();
-        let items = if items.is_empty() {
-            vec![ListItem::new(if b.loading {
-                "Checking…"
-            } else if b.search.is_empty() {
-                "Empty folder"
+                        })
+                        .style(muted()),
+                    ])
+                })
+                .collect::<Vec<_>>();
+            let mut state = TableState::default().with_selected(Some(b.selected));
+            frame.render_stateful_widget(
+                Table::new(
+                    table_rows,
+                    [
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Min(1),
+                        Constraint::Length(8),
+                    ],
+                )
+                .column_spacing(1)
+                .block(block(format!("{} items", rows.len()), focused))
+                .row_highlight_style(selected_style())
+                .highlight_symbol(if ascii() { "> " } else { "› " }),
+                parts[1],
+                &mut state,
+            );
+        }
+    }
+    let bottom = if let Some(c) = clipboard {
+        format!(
+            " {} {} · {}{}",
+            if c.cut { "CUT" } else { "COPY" },
+            c.entries.len(),
+            safe_label(&c.source_label),
+            if b.filter.is_empty() {
+                " · p paste here".into()
             } else {
-                "No matches"
-            })
-            .style(muted())]
+                format!(" · f {}", safe_label(&b.filter))
+            }
+        )
+    } else if !b.filter.is_empty() {
+        format!(" f Filter: {}", safe_label(&b.filter))
+    } else {
+        " Space select · v range · . hidden".into()
+    };
+    frame.render_widget(
+        Paragraph::new(bottom).style(if clipboard.is_some() {
+            tint(Color::Yellow)
         } else {
-            items
-        };
-        let mut state = ratatui::widgets::ListState::default().with_selected(Some(b.selected));
-        frame.render_stateful_widget(
-            List::new(items)
-                .block(block("Enter open · h/l folders".into(), focused))
-                .highlight_style(selected_style()),
-            parts[1],
-            &mut state,
-        );
+            muted()
+        }),
+        parts[2],
+    );
+}
+fn tint(color: Color) -> Style {
+    if std::env::var_os("NO_COLOR").is_some() {
+        Style::default()
+    } else {
+        Style::default().fg(color)
     }
 }
+fn human_size(size: u64) -> String {
+    if size < 1024 {
+        format!("{size} B")
+    } else if size < 1024 * 1024 {
+        format!("{:.1} KiB", size as f64 / 1024.0)
+    } else if size < 1024 * 1024 * 1024 {
+        format!("{:.1} MiB", size as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} GiB", size as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+fn transfer_name(job: &Value) -> String {
+    let path = job["source_display"]
+        .as_str()
+        .or(job["source_path"].as_str())
+        .unwrap_or("file");
+    safe_label(path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(path))
+}
+fn transfer_status(job: &Value) -> String {
+    let state = safe_label(job["status"].as_str().unwrap_or("unknown"));
+    let skipped = job["skipped"].as_u64().unwrap_or(0);
+    if state == "complete" && skipped > 0 {
+        format!("complete · {skipped} skipped")
+    } else {
+        state
+    }
+}
+fn transfer_destination(job: &Value) -> String {
+    let path = job["actual_destinations"]
+        .as_array()
+        .and_then(|a| a.first())
+        .and_then(Value::as_str)
+        .or(job["destination_display"].as_str())
+        .or(job["destination_path"].as_str())
+        .unwrap_or("");
+    match crate::files::decode_path(path) {
+        Ok(p) => safe_label(&crate::files::display(&p.to_string_lossy())),
+        Err(_) => safe_label(path),
+    }
+}
+
 fn popup(area: Rect, width: u16, height: u16) -> Rect {
     let w = width.min(area.width.saturating_sub(2));
     let h = height.min(area.height.saturating_sub(2));
@@ -2717,7 +3861,7 @@ struct RestartState {
     destination_active: bool,
     conflict: usize,
     launch_provider: Option<String>,
-    clipboard: Option<(usize, Entry)>,
+    clipboard: Option<Clipboard>,
     submitted: HashMap<String, crate::model::TransferSpec>,
 }
 fn restart_browser(browser: &Option<Browser>) -> Option<Browser> {
@@ -2836,7 +3980,10 @@ fn restore_restart_at(app: &mut App, name: &str, directory: &std::path::Path) ->
             }
         }
     }
-    app.clipboard = state.clipboard.and_then(|(d, e)| remap(d).map(|d| (d, e)));
+    app.clipboard = state.clipboard.and_then(|mut c| {
+        c.device = remap(c.device)?;
+        Some(c)
+    });
     app.browser = state.browser;
     app.other_browser = state.other_browser;
     app.view = if state.view == View::Files && app.browser.is_none() {
@@ -2874,6 +4021,8 @@ fn can_restart(app: &App) -> bool {
         && app.pending_attach.is_none()
         && app.pending_add.is_none()
         && app.pending_requests.get() == 0
+        && !app.file_busy
+        && app.file_queue.is_empty()
         && app.browser.as_ref().is_none_or(|b| b.preview.is_none())
 }
 
@@ -2958,6 +4107,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     let mut last_refresh = Instant::now();
     let mut last_jobs = Instant::now();
     while !app.quit && !stopping.load(std::sync::atomic::Ordering::Relaxed) {
+        app.start_next_file_action();
         if app.force_update {
             app.force_update = false;
             if matches!(update_phase, UpdatePhase::Idle) {
@@ -3234,6 +4384,151 @@ mod tests {
         }
         (a, rx)
     }
+    fn file_app() -> (App, mpsc::Receiver<Task>) {
+        let (mut a, rx) = queued_app();
+        let mut b = Browser::new(0, "/files".into());
+        b.entries = ["alpha.txt", "beta.txt", "gamma.txt", ".secret"]
+            .iter()
+            .map(|name| Entry {
+                name: (*name).into(),
+                path: format!("/files/{name}"),
+                kind: "file".into(),
+                size: 15,
+                identity: Some(format!("identity-{name}")),
+                hidden: name.starts_with('.'),
+                rename_name: Some((*name).into()),
+            })
+            .collect();
+        a.browser = Some(b);
+        a.view = View::Files;
+        (a, rx)
+    }
+    fn press(a: &mut App, c: char) {
+        a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    #[test]
+    fn space_advances_range_shrinks_and_escape_preserves_then_clears_marks() {
+        let (mut a, _) = file_app();
+        press(&mut a, ' ');
+        assert_eq!(a.browser.as_ref().unwrap().selected, 1);
+        press(&mut a, 'v');
+        press(&mut a, 'j');
+        assert_eq!(a.browser.as_ref().unwrap().marked.len(), 3);
+        press(&mut a, 'k');
+        assert_eq!(a.browser.as_ref().unwrap().marked.len(), 2);
+        a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(a.browser.as_ref().unwrap().visual_anchor.is_none());
+        assert_eq!(a.browser.as_ref().unwrap().marked.len(), 2);
+        a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(a.browser.as_ref().unwrap().marked.is_empty() && a.view == View::Files);
+    }
+    #[test]
+    fn hidden_and_filter_do_not_lose_selected_paths_or_turn_text_into_actions() {
+        let (mut a, _) = file_app();
+        assert_eq!(a.visible_entries().len(), 3);
+        press(&mut a, '.');
+        assert_eq!(a.visible_entries().len(), 4);
+        a.browser.as_mut().unwrap().selected = 3;
+        press(&mut a, ' ');
+        press(&mut a, '.');
+        assert_eq!(a.chosen_entries()[0].name, ".secret");
+        press(&mut a, 'f');
+        press(&mut a, 'b');
+        assert_eq!(a.visible_entries().len(), 1);
+        assert!(a
+            .browser
+            .as_ref()
+            .unwrap()
+            .marked
+            .contains("/files/.secret"));
+        press(&mut a, 'd');
+        assert!(a.dialog.is_none() && a.input == Some(Input::Filter));
+        a.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(a.visible_entries().len(), 3);
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.input.is_none() && a.browser.as_ref().unwrap().preview.is_none());
+    }
+    #[test]
+    fn delete_defaults_to_cancel_and_uses_captured_identity() {
+        let (mut a, rx) = file_app();
+        press(&mut a, 'd');
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(rx.try_recv().is_err());
+        press(&mut a, 'd');
+        a.browser.as_mut().unwrap().entries[0].identity = Some("replacement".into());
+        press(&mut a, 'j');
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            matches!(rx.try_recv().unwrap().op, Operation::Remove { path, expected_identity: Some(id) }
+            if path == "/files/alpha.txt" && id == "identity-alpha.txt")
+        );
+    }
+    #[test]
+    fn rename_is_one_component_and_input_owns_file_shortcuts() {
+        let (mut a, rx) = file_app();
+        press(&mut a, 'r');
+        assert_eq!(a.text, "alpha.txt");
+        a.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        for c in "../oops".chars() {
+            press(&mut a, c);
+        }
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.input == Some(Input::Rename) && rx.try_recv().is_err());
+        a.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        for c in "cxd.txt".chars() {
+            press(&mut a, c);
+        }
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            matches!(rx.try_recv().unwrap().op, Operation::Rename { name, expected_identity: Some(_), .. } if name == "cxd.txt")
+        );
+        assert!(a.clipboard.is_none());
+    }
+    #[test]
+    fn copy_batch_stays_in_folder_and_paste_is_nonmodal_and_serialized() {
+        let (mut a, rx) = file_app();
+        press(&mut a, ' ');
+        press(&mut a, ' ');
+        press(&mut a, 'c');
+        assert!(a.dialog.is_none());
+        assert_eq!(a.clipboard.as_ref().unwrap().entries.len(), 2);
+        a.browser.as_mut().unwrap().path = "/destination".into();
+        press(&mut a, 'p');
+        let first = rx.try_recv().unwrap();
+        let Operation::Transfer(ref spec) = first.op else {
+            panic!()
+        };
+        assert_eq!(spec.source_path, "/files/alpha.txt");
+        assert!(!spec.cut);
+        assert_eq!(spec.destination_path, "/destination");
+        assert_eq!(spec.conflict, "rename");
+        assert_eq!(a.file_queue.len(), 1);
+        assert!(a.transfer_drawer && a.dialog.is_none());
+        a.apply(Reply {
+            device: 0,
+            op: first.op,
+            generation: a.generation,
+            result: Ok(serde_json::json!({"status":"queued"})),
+        });
+        assert!(
+            matches!(rx.try_recv().unwrap().op, Operation::Transfer(s) if s.source_path=="/files/beta.txt")
+        );
+    }
+    #[test]
+    fn cut_captures_identity_and_queued_quit_requires_intent() {
+        let (mut a, rx) = file_app();
+        press(&mut a, 'x');
+        a.browser.as_mut().unwrap().path = "/destination".into();
+        press(&mut a, 'p');
+        assert!(
+            matches!(rx.try_recv().unwrap().op, Operation::Transfer(s) if s.cut && s.source_identity.as_deref()==Some("identity-alpha.txt"))
+        );
+        a.request_quit();
+        assert!(!a.quit);
+        assert!(matches!(a.dialog, Some(Dialog::PendingExit(_))));
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!a.quit);
+    }
     #[test]
     fn restart_restores_browser_host_search_focus_and_copy_without_preview_content() {
         let fixture = tempfile::tempdir().unwrap();
@@ -3250,8 +4545,17 @@ mod tests {
             path: "/recordings/日本語/record.bin".into(),
             kind: "file".into(),
             size: 5,
+            identity: None,
+            hidden: false,
+            rename_name: None,
         });
-        a.clipboard = Some((1, browser.entries[0].clone()));
+        a.clipboard = Some(Clipboard {
+            id: "fixture".into(),
+            device: 1,
+            entries: vec![browser.entries[0].clone()],
+            cut: false,
+            source_label: "fixture".into(),
+        });
         let name = save_restart_at(&a, fixture.path()).unwrap();
         let bytes = std::fs::read(fixture.path().join(&name)).unwrap();
         assert!(!String::from_utf8_lossy(&bytes).contains("SYNTHETIC_PRIVATE_PREVIEW"));
@@ -3265,8 +4569,109 @@ mod tests {
         assert_eq!(browser.search, "record");
         assert_eq!(browser.path, "/recordings/日本語");
         assert!(browser.preview.is_none());
-        assert_eq!(restored.clipboard.as_ref().unwrap().0, 0);
+        assert_eq!(restored.clipboard.as_ref().unwrap().device, 0);
         assert!(!fixture.path().join(name).exists());
+    }
+    #[test]
+    fn rejected_cut_retains_clipboard_and_late_mutation_errors_remain_visible() {
+        let (mut a, rx) = file_app();
+        press(&mut a, 'x');
+        press(&mut a, 'p');
+        let task = rx.try_recv().unwrap();
+        a.generation += 1;
+        a.apply(Reply {
+            device: 0,
+            op: task.op,
+            generation: task.generation,
+            result: Err(anyhow::anyhow!(
+                "Unsupported directory move; source retained"
+            )),
+        });
+        assert!(a
+            .clipboard
+            .as_ref()
+            .is_some_and(|c| c.cut && c.entries.len() == 1));
+        assert!(a.notice.contains("source retained"));
+        let old = a.generation;
+        a.generation += 1;
+        a.apply(Reply {
+            device: 0,
+            op: Operation::Rename {
+                path: "/files/alpha.txt".into(),
+                name: "beta.txt".into(),
+                expected_identity: None,
+            },
+            generation: old,
+            result: Err(anyhow::anyhow!("destination exists")),
+        });
+        assert!(a.notice.contains("destination exists"));
+    }
+    fn capture_app(a: &App, width: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+        terminal.draw(|f| render(f, a)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(width as usize)
+            .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    #[test]
+    fn long_failed_transfer_details_scroll_and_modal_keys_own_footer() {
+        let (mut a, _rx) = file_app();
+        let destination = format!("/output/{}/recording.copy-1", "long-path/".repeat(30));
+        a.jobs.insert(0, serde_json::json!({"jobs":[{"key":"fixture","status":"failed","error":"Disk full · free space then retry","route":"fixture route","source_host":"tester@workstation","destination_host":"peace@laptop","source_display":format!("/source/{}", "nested/".repeat(30)),"actual_destinations":[destination]}]}));
+        a.dialog = Some(Dialog::Jobs);
+        for width in [48, 80] {
+            let first = capture_app(&a, width);
+            assert!(first.contains("Disk full") && first.contains("Route:"));
+            assert!(!first
+                .lines()
+                .skip(21)
+                .collect::<String>()
+                .contains("Copy / cut"));
+            let mut reached = false;
+            for _ in 0..30 {
+                if capture_app(&a, width).contains("recording.copy-1") {
+                    reached = true;
+                    break;
+                }
+                a.key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+            }
+            assert!(
+                reached,
+                "actual renamed destination must be reachable by scrolling"
+            );
+            a.dialog_scroll = 0;
+        }
+    }
+    #[test]
+    fn recursive_delete_warning_is_visible_and_detail_scrolling_cannot_confirm() {
+        let (mut a, rx) = file_app();
+        let b = a.browser.as_mut().unwrap();
+        b.entries[0].kind = "directory".into();
+        b.marked
+            .extend(["/files/alpha.txt".into(), "/files/beta.txt".into()]);
+        press(&mut a, 'd');
+        let text = capture_app(&a, 48);
+        assert!(text.contains("No undo.") && text.contains("1 folders") && text.contains("Cancel"));
+        assert!(!text
+            .lines()
+            .skip(21)
+            .collect::<String>()
+            .contains("Copy / cut"));
+        a.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        press(&mut a, 'j');
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.dialog.is_some() && !a.dialog_detail_focus && rx.try_recv().is_err());
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.dialog.is_none() && rx.try_recv().is_err());
+        press(&mut a, 'd');
+        a.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(a.dialog.is_none() && !a.dialog_detail_focus && rx.try_recv().is_err());
     }
     #[test]
     fn restart_preserves_selected_session_identity_when_devices_reorder() {
@@ -3300,6 +4705,9 @@ mod tests {
                 path: format!("/recordings/f{i:04}"),
                 kind: "file".into(),
                 size: 1,
+                identity: None,
+                hidden: false,
+                rename_name: None,
             })
             .collect();
         browser.selected = 1100;
@@ -3578,9 +4986,15 @@ mod tests {
             path: "/recordings/test.bin".into(),
             kind: "file".into(),
             size: 3,
+            identity: None,
+            hidden: false,
+            rename_name: None,
         });
         a.browser = Some(source);
         a.execute(Action::Copy);
+        assert!(a.dialog.is_none());
+        assert_eq!(a.browser.as_ref().unwrap().path, "/recordings");
+        a.execute(Action::Destination);
         a.dialog_selected = 0;
         a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(a.destination_active);
@@ -3603,7 +5017,7 @@ mod tests {
         assert_eq!(spec.source_path, "/recordings/test.bin");
         assert_eq!(spec.destination_path, "/receive");
         assert_eq!(spec.conflict, "overwrite");
-        assert!(matches!(a.dialog, Some(Dialog::Jobs)));
+        assert!(a.dialog.is_none() && a.transfer_drawer);
         a.dialog = None;
         a.focus = Focus::Workspace;
         a.cycle_focus(true);
@@ -3618,6 +5032,8 @@ mod tests {
     fn jobs_cancel_owner_and_retry_same_idempotency_spec() {
         let (mut a, rx) = queued_app();
         let spec = crate::model::TransferSpec {
+            cut: false,
+            source_identity: None,
             source: a.devices[1].clone(),
             source_path: "/data/source".into(),
             destination: a.devices[0].clone(),
@@ -3634,11 +5050,10 @@ mod tests {
         assert!(matches!(task.op,Operation::TransferCancel { key } if key=="test-transfer"));
         a.jobs.get_mut(&0).unwrap()["jobs"][0]["status"] = serde_json::json!("failed");
         a.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
-        let Operation::Transfer(spec) = rx.try_recv().unwrap().op else {
+        let Operation::TransferRetry { key } = rx.try_recv().unwrap().op else {
             panic!("real retry operation required")
         };
-        assert_eq!(spec.key, "test-transfer");
-        assert_eq!(spec.source_path, "/data/source");
+        assert_eq!(key, "test-transfer");
     }
     #[test]
     fn directional_panel_focus_obeys_geometry_and_input_ownership() {
@@ -3699,6 +5114,9 @@ mod tests {
                 path: "/fixture/child".into(),
                 kind: "directory".into(),
                 size: 0,
+                identity: None,
+                hidden: false,
+                rename_name: None,
             }];
             a.key(KeyEvent::new(forward, KeyModifiers::NONE));
             assert_eq!(a.browser.as_ref().unwrap().path, "/fixture/child");
@@ -3723,18 +5141,27 @@ mod tests {
                 path: "/fixture/a".into(),
                 kind: "file".into(),
                 size: 0,
+                identity: None,
+                hidden: false,
+                rename_name: None,
             },
             Entry {
                 name: "recording-second.bin".into(),
                 path: "/fixture/b".into(),
                 kind: "file".into(),
                 size: 0,
+                identity: None,
+                hidden: false,
+                rename_name: None,
             },
             Entry {
                 name: "other".into(),
                 path: "/fixture/c".into(),
                 kind: "file".into(),
                 size: 0,
+                identity: None,
+                hidden: false,
+                rename_name: None,
             },
         ];
         a.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
@@ -3795,6 +5222,9 @@ mod tests {
             path: "/tmp/file".into(),
             kind: "file".into(),
             size: 1,
+            identity: None,
+            hidden: false,
+            rename_name: None,
         }];
         a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(a.pending_attach.is_none());

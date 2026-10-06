@@ -79,7 +79,12 @@ enum Cmd {
         source_device: Option<String>,
         #[arg(long)]
         destination_device: Option<String>,
-        #[arg(long, default_value = "skip")]
+        #[arg(
+            long,
+            help = "Move source after verified copy; atomic on the same filesystem"
+        )]
+        cut: bool,
+        #[arg(long, default_value = "rename")]
         conflict: String,
         #[arg(long)]
         key: Option<String>,
@@ -137,6 +142,7 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
         Operation::Transfer(spec) => transfers::start(&spec),
         Operation::TransferJobs => transfers::jobs(),
         Operation::TransferCancel { key } => transfers::cancel(&key),
+        Operation::TransferRetry { key } => transfers::retry(&key),
         Operation::Sessions => Ok(serde_json::to_value(sessions::list()?)?),
         Operation::Create(ref c) => Ok(serde_json::to_value(sessions::create(c)?)?),
         Operation::Network => network::observe(),
@@ -150,6 +156,8 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
             source_path: source,
             destination: store::local_device(),
             destination_path: destination,
+            cut: false,
+            source_identity: None,
             conflict,
             key,
         }),
@@ -305,6 +313,7 @@ fn run() -> Result<()> {
             destination,
             source_device,
             destination_device,
+            cut,
             conflict,
             key,
         }) => {
@@ -313,6 +322,8 @@ fn run() -> Result<()> {
                 source_path: source,
                 destination: device(destination_device)?,
                 destination_path: destination,
+                cut,
+                source_identity: None,
                 conflict,
                 key: key
                     .unwrap_or_else(|| format!("copy-{}-{}", std::process::id(), transport::now())),

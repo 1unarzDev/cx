@@ -52,6 +52,20 @@ pub enum Operation {
     Mkdir {
         path: String,
     },
+    Rename {
+        path: String,
+        name: String,
+        expected_identity: Option<String>,
+    },
+    Remove {
+        path: String,
+        expected_identity: Option<String>,
+    },
+    Move {
+        path: String,
+        destination: String,
+        expected_identity: Option<String>,
+    },
     Copy {
         source: String,
         destination: String,
@@ -112,6 +126,9 @@ pub enum Operation {
     TransferCancel {
         key: String,
     },
+    TransferRetry {
+        key: String,
+    },
     Network,
 }
 #[derive(Debug, Serialize, Deserialize)]
@@ -136,6 +153,10 @@ pub struct TransferSpec {
     pub destination_path: String,
     pub conflict: String,
     pub key: String,
+    #[serde(default)]
+    pub cut: bool,
+    #[serde(default)]
+    pub source_identity: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

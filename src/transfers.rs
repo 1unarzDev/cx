@@ -160,7 +160,6 @@ fn validate_source_selection(spec: &TransferSpec, metadata: &Value) -> Result<()
 fn same_endpoint(spec: &TransferSpec) -> bool {
     spec.source.account == spec.destination.account
         && (spec.source.id == spec.destination.id
-            || (spec.source.host == spec.destination.host)
             || (spec.source.target.is_none() && spec.destination.target.is_none()))
 }
 fn same_spec(a: &TransferSpec, b: &TransferSpec) -> bool {
@@ -1199,6 +1198,8 @@ fn atomic_cut(spec: &TransferSpec, root: &Path, record: &Path) -> Result<()> {
         Ok(()) => {
             job.status = "complete".into();
             job.entries[0].status = "removed".into();
+            job.entries[0].finalized_destination = Some(entry.destination.clone());
+            job.entries[0].destination_identity = Some(entry.identity.clone());
             job.bytes = job.total;
             job.error = None;
         }

@@ -13,7 +13,7 @@ Each result distinguishes implemented code, fixture tests, PTY tests and physica
 | Gate | Status | Evidence / limit |
 |---|---|---|
 | A1 | PASS | 2026-10-05 bounded BatchMode SSH, 6-second connection timeout: innovation→tranquility peace, innovation→server lunarz; tranquility→innovation lunarz, tranquility→server lunarz; server→innovation lunarz, server→tranquility peace. Server peace alias also resolves tranquility. Innovation self-alias fails host-key verification; not one of six directed fleet edges. |
-| A2 | BLOCKED | No authorized repository/release; bootstrap pipeline must be prepared and tested as a fixture, not advertised as public installation. |
+| A2 | BLOCKED | Origin exists, but no published release; bootstrap pipeline fixture validation does not establish working public installation. |
 | A3–A16 | BLOCKED | Not yet exercised; implementation and tests in progress. |
 
 Baseline inventory at f30bfa2/8619484: innovation tmux 3.7c, Codex 0.160.1, Claude 2.1.290; tranquility tmux initially absent/npm installed; server Ubuntu 24.04 tmux 3.4, codex/claude absent. Tranquility dependency extracted as user from tmux 3.7_c-1 and libutempter 1.2.3-1 packages, both verified by pacman-key with fully trusted Arch packaging signatures. No system package or privilege mutation.
@@ -62,3 +62,27 @@ Remaining known transfer limitations: retry after viewer restart lacks durable s
 Root follow-up to `9263cb1`: `cargo test --quiet` passes, including launch on browser host/folder plus unconditional native attachment after Create response. Updated `tests/workspace_live_jobs_pty.py` PASS on innovation allocated 120x40 PTY: Files action New session → Shell immediately enters an actual detached shell; tmux pane_current_path equals chosen destination directory; single Ctrl+] restores Files. Actual copy/integrity/conflict preservation remains passing. Evidence `local-evidence/current-folder-live-jobs/results.json`. This is shell/PTY proof, not a paid agent interaction or every physical emulator.
 
 Final prior milestone full browser-flow fixtures also PASS at 80x24, 120x40, 48x24 (`local-evidence/provider-workspace-flows-final/results.json`), and actual copy/session fixture PASS (`local-evidence/provider-live-jobs-final/results.json`).
+
+## Yazi-inspired browser and transfer ecosystem (2026-10-06)
+
+Integration based on fb656b0, main, innovation Linux x86_64/tmux 3.7c; remote backend verybeautifulserver Ubuntu24.04/tmux3.4. Backend commits 9255cdd and fb656b0 integrated before UI; subsequent integration commit contains final code.
+
+| Result | Actual command/scenario | Evidence |
+|---|---|---|
+| PASS | `cargo test --locked --quiet`: 159 passed, one existing live session test ignored; guarded mutations, clipboard/input ownership, batch errors, durable retry, long paths and delete Cancel | `/tmp/cx-browser-tests-final.log` |
+| PASS | Optimized `cargo build --release --locked` | `/tmp/cx-browser-build-final.log` |
+| PASS | `uv run --with pyte python tests/browser_ecosystem_pty.py target/release/cx`: actual disposable-files hidden/selection/range/copy/paste/rename/delete/cut-conflict/termios at120x40,80x24,48x24;48 uses ASCII/NO_COLOR | `local-evidence/browser-ecosystem/results.json`, sanitized captures alongside |
+| PASS | `uv run --with pyte python tests/transfer_retry_pty.py target/release/cx`: real detached permission failure, visible wrapped error, new-viewer r retry uses existing durable key, integrity/completion/termios at48x24 | `local-evidence/browser-retry/results.json` |
+| PASS | Existing workspace flow PTYs at3 sizes and actual current-folder Shell attachment/copy/default conflict rename | `local-evidence/browser-live-launch/results.json` |
+| PASS | `python3 tests/browser_remote_live.py target/release/cx verybeautifulserver`: local to SSH copy/conflicts/Unicode/punctuation/integrity, SSH to local verified regular-file cut, remote directory move/rename/delete; server agent inventory unchanged; fixtures cleaned | `local-evidence/browser-remote-live/results.json` |
+| PASS | Disposable user-service cgroup without launcher tools: source preserved and durable failed record instead of phantom queued job | `local-evidence/browser-launch-refusal.json` |
+
+Independent reports: `/tmp/cx-file-transfer-audit.md`, `/tmp/cx-cut-integrated-rereview.md`, `/tmp/cx-browser-ux-review.md`, `/tmp/cx-browser-ux-rereview.md`. Fixed skipped-copy deletion risk, stale receipts, key collisions, lost retry state, phantom queued launches, late error/clipboard loss, clipped paths/errors/warnings, stale notices, narrow footer ownership and misleading delete Escape. No demonstrated unresolved critical/high finding within supported cut behavior. Reviewer full-copy repeat was blocked by its unavailable user-service launcher; root actual-copy PTYs passed independently.
+
+Final independent remediation check PASS: delete Details Escape cancels without submitting; modal counts are suppressed; ASCII footer uses j/k. Root reran all159 tests after these fixes. Final current-folder live PTY evidence: `local-evidence/browser-live-launch-final/results.json`.
+
+Interaction reference inspected: installed `/usr/bin/yazi` keymap overrides and upstream `https://raw.githubusercontent.com/sxyazi/yazi/main/yazi-config/preset/keymap-default.toml` (bounded download, private copy `/tmp/cx-yazi-keymap-reference.toml`). Shared vocabulary: h/l parent/child, Space toggle+advance, visual selection, y/x/p clipboard, Y clear and layered Escape. cx retains requested c copy and d confirmed permanent deletion; Yazi's trash behavior is not promised. Yazi is not a runtime dependency.
+
+Limitations: cross-host directory/symlink cut refused; same-host cross-filesystem cut refuses safely; stable source/destination required (no distributed snapshot); large-tree stress/job-registry retention beyond bounded4096 scan unresolved; permanent delete has no undo. Earlier retry/launch-status gaps are resolved. These captures prove allocated PTY behavior, not physical Foot/Kitty/Ghostty or all themes/hardware. Broader sharing/enrollment/release acceptance remains incomplete.
+
+Deployment PASS: final optimized binary atomically installed under each per-user maintenance lock on innovation and verybeautifulserver. Build and both installed binaries match SHA-256 de16d78818e9efa7a5d89b61fc5c4fda6b10bd011073a0fca3a952d0701008e0. Server command lookup confirms Claude/Codex absent after deployment. Tranquility deployment BLOCKED: fresh `ssh -o BatchMode=yes -o ConnectTimeout=6 tranquility 'id -un'` reports No route to host. No mesh/trust/agent settings changed. Reopen cx to use this viewer build; managed sessions remain running.

@@ -1,4 +1,4 @@
-use crate::model::{CreateSession, Device, ProcessIdentity, Session};
+use crate::model::{CreateSession, Device, ProcessIdentity, RunCommand, Session};
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::{
@@ -756,6 +756,167 @@ pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
     Ok(())
 }
 
+/// Run a one-shot native terminal command, never retrying or recording its text.
+pub fn run_command(device: &Device, request: &RunCommand) -> Result<()> {
+    use base64::Engine;
+    validate_command(request)?;
+    let payload = base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(request)?);
+    if payload.len() > 32768 {
+        bail!("command payload is too large");
+    }
+    let mut command = if let Some(target) = &device.target {
+        if target.is_empty()
+            || target.starts_with('-')
+            || target.chars().any(|c| c.is_whitespace() || c.is_control())
+        {
+            bail!("invalid SSH target");
+        }
+        let mut command = Command::new("ssh");
+        command.args(["-tt", "-o", "ForwardAgent=no", "--", target]);
+        // Only base64's fixed alphabet enters the remote shell command.
+        command.arg(format!("~/.local/bin/cx native-command '{}'", payload));
+        command
+    } else {
+        let mut command = Command::new(std::env::current_exe()?);
+        command.args(["native-command", &payload]);
+        command
+    };
+    let result = foreground_command(&mut command)?;
+    if !result.success() {
+        bail!("native command connection ended with {result}; command was not retried");
+    }
+    Ok(())
+}
+
+fn validate_command(request: &RunCommand) -> Result<()> {
+    if request.command.trim().is_empty()
+        || request.command.len() > 8192
+        || request.command.contains('\0')
+    {
+        bail!("command must be nonempty, contain no NUL, and be at most 8192 bytes");
+    }
+    if request.directory.len() > 16384 || request.directory.contains('\0') {
+        bail!("invalid command directory");
+    }
+    Ok(())
+}
+
+/// Native helper endpoint: shell startup/wrappers belong to the execution host.
+pub fn execute_command(request: &RunCommand) -> Result<()> {
+    use std::io::Read;
+    validate_command(request)?;
+    let directory = fs::canonicalize(crate::files::decode_path(&request.directory)?)
+        .context("command directory is unavailable")?;
+    if !directory.is_dir() {
+        bail!("command directory is not a folder");
+    }
+    let shell = launch_shell()?;
+    let mut command = Command::new(&shell);
+    if std::path::Path::new(&shell)
+        .file_name()
+        .is_some_and(|s| s == "fish")
+    {
+        command.args(["--init-command", FISH_VIEWER_PALETTE]);
+    }
+    command
+        .args(["-l", "-i", "-c", &request.command])
+        .current_dir(&directory)
+        .env("CX_VIEWER_THEME", "1");
+    let (host, account, _) = identity();
+    let safe = |s: &str| {
+        s.chars()
+            .filter(|c| !c.is_control())
+            .take(200)
+            .collect::<String>()
+    };
+    println!(
+        "{}@{}  {}",
+        safe(&account),
+        safe(&host),
+        safe(&directory.to_string_lossy())
+    );
+    std::io::stdout().flush()?;
+    let result = foreground_command(&mut command)?;
+    println!("\r\nCommand ended: {result}. Enter to return to cx.");
+    std::io::stdout().flush()?;
+    // Read the controlling terminal rather than accidentally consuming metadata stdin.
+    let mut tty = fs::OpenOptions::new().read(true).open("/dev/tty")?;
+    let mut byte = [0];
+    loop {
+        match tty.read(&mut byte) {
+            Ok(0) => break,
+            Ok(_) if byte[0] == b'\n' || byte[0] == b'\r' => break,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
+/// Own only this child's process group; restore foreground ownership and terminal
+/// modes even when a command exits after changing stty. Blocking SIGTTOU on this
+/// thread avoids changing the viewer's global signal handlers.
+fn foreground_command(command: &mut Command) -> Result<std::process::ExitStatus> {
+    use std::os::unix::process::CommandExt;
+    let tty = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .context("native commands require a controlling terminal")?;
+    let fd = tty.as_raw_fd();
+    let mut modes: libc::termios = unsafe { std::mem::zeroed() };
+    let previous = unsafe { libc::tcgetpgrp(fd) };
+    if previous < 0 || unsafe { libc::tcgetattr(fd, &mut modes) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if previous != unsafe { libc::getpgrp() } {
+        bail!("native command viewer must own the foreground terminal");
+    }
+    struct Restore {
+        fd: i32,
+        pgrp: libc::pid_t,
+        modes: libc::termios,
+    }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            unsafe {
+                let mut mask: libc::sigset_t = std::mem::zeroed();
+                let mut old: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut mask);
+                libc::sigaddset(&mut mask, libc::SIGTTOU);
+                libc::pthread_sigmask(libc::SIG_BLOCK, &mask, &mut old);
+                libc::tcsetpgrp(self.fd, self.pgrp);
+                libc::tcsetattr(self.fd, libc::TCSANOW, &self.modes);
+                libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
+            }
+        }
+    }
+    let restore = Restore {
+        fd,
+        pgrp: previous,
+        modes,
+    };
+    command.process_group(0);
+    let mut child = command.spawn().context("native command could not start")?;
+    let pid = child.id() as libc::pid_t;
+    // A child racing this handoff may stop on SIGTTIN; resume only its own group.
+    if unsafe { libc::tcsetpgrp(fd, pid) } != 0 {
+        let error = std::io::Error::last_os_error();
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+        let _ = child.wait();
+        return Err(error.into());
+    }
+    unsafe {
+        libc::kill(-pid, libc::SIGCONT);
+    }
+    let result = child.wait().context("native command wait failed");
+    drop(restore);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -781,6 +942,36 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
     }
+    #[test]
+    fn command_validation_is_bounded() {
+        for text in [
+            "".into(),
+            "   ".into(),
+            "bad\0text".into(),
+            "x".repeat(8193),
+        ] {
+            assert!(validate_command(&RunCommand {
+                directory: "/tmp".into(),
+                command: text
+            })
+            .is_err());
+        }
+        assert!(validate_command(&RunCommand {
+            directory: "~".into(),
+            command: "printf '%s' 'quotes; spaces ☃'".into()
+        })
+        .is_ok());
+    }
+
+    #[test]
+    fn native_command_fixture() {
+        let Ok(payload) = std::env::var("CX_COMMAND_PTY_FIXTURE") else {
+            return;
+        };
+        let request: RunCommand = serde_json::from_str(&payload).unwrap();
+        execute_command(&request).unwrap();
+    }
+
     #[test]
     fn bash_monitor_mode_is_disabled_for_noninteractive_probe_work() {
         let fixture = tempfile::tempdir().unwrap();

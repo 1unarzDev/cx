@@ -5,7 +5,10 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, MouseEvent, MouseEventKind,
+    },
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -80,6 +83,8 @@ struct RichPreview {
     title: String,
     raster: Option<(usize, usize, Vec<u8>)>,
     styled: Option<Vec<Line<'static>>>,
+    page: u32,
+    pages: Option<u32>,
 }
 impl RichPreview {
     fn from_value(value: &Value) -> Self {
@@ -129,6 +134,15 @@ impl RichPreview {
             kind: value["kind"].as_str().unwrap_or("text").to_owned(),
             title: safe_label(value["title"].as_str().unwrap_or("Preview")),
             raster,
+            page: value["page"]
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok())
+                .filter(|v| (1..=10000).contains(v))
+                .unwrap_or(1),
+            pages: value["pages"]
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok())
+                .filter(|v| (1..=10000).contains(v)),
             styled: match value["kind"].as_str() {
                 Some("code") => Some(crate::syntax_preview::highlight(
                     &safe_text(value["text"].as_str().unwrap_or("")),
@@ -171,6 +185,12 @@ struct Browser {
     preview_rich: Option<RichPreview>,
     #[serde(skip)]
     preview_revision: u64,
+    #[serde(skip)]
+    preview_path: Option<String>,
+    #[serde(skip)]
+    preview_requested_page: u32,
+    #[serde(skip)]
+    preview_pending_page: Option<u32>,
     preview_scroll: u16,
     #[serde(default)]
     restore_selection: Option<String>,
@@ -194,6 +214,9 @@ impl Browser {
             preview: None,
             preview_rich: None,
             preview_revision: 0,
+            preview_path: None,
+            preview_requested_page: 1,
+            preview_pending_page: None,
             preview_scroll: 0,
             restore_selection: None,
         }
@@ -1455,6 +1478,20 @@ impl App {
                         self.notice = message;
                     }
                 }
+                if reply.generation == self.generation
+                    && matches!(
+                        reply.op,
+                        Operation::Preview { .. } | Operation::PreviewPage { .. }
+                    )
+                {
+                    if let Some(b) = &mut self.browser {
+                        b.preview_pending_page = None;
+                        b.preview_requested_page = b.preview_rich.as_ref().map_or(1, |p| p.page);
+                        if b.preview_rich.is_none() {
+                            b.preview = Some(self.notice.clone());
+                        }
+                    }
+                }
                 if reply.generation == self.generation {
                     if let Some(b) = &mut self.browser {
                         b.loading = false;
@@ -1514,8 +1551,15 @@ impl App {
                         caps.iter()
                             .filter_map(Value::as_str)
                             .filter(|p| {
-                                ["claude", "codex", "native-command-v1", "stop-session-v1"]
-                                    .contains(p)
+                                [
+                                    "claude",
+                                    "codex",
+                                    "native-command-v1",
+                                    "stop-session-v1",
+                                    "pdf-pages-v1",
+                                    "stable-update-v1",
+                                ]
+                                .contains(p)
                             })
                             .map(str::to_owned)
                             .collect()
@@ -1531,6 +1575,22 @@ impl App {
                                 .position(|p| *p == provider)
                         })
                         .unwrap_or(0);
+                }
+                if self
+                    .providers
+                    .get(&reply.device)
+                    .is_some_and(|(caps, _)| caps.iter().any(|c| c == "pdf-pages-v1"))
+                    && self.browser.as_ref().is_some_and(|b| {
+                        b.device == reply.device
+                            && b.preview_pending_page.is_none()
+                            && b.preview_rich.as_ref().is_some_and(|p| {
+                                p.kind == "pdf"
+                                    && b.preview_requested_page > 0
+                                    && b.preview_requested_page != p.page
+                            })
+                    })
+                {
+                    self.start_pdf_page_request();
                 }
             }
             Operation::Sessions => {
@@ -1810,27 +1870,50 @@ impl App {
                     }
                 }
             }
-            Operation::Preview { .. }
+            Operation::Preview { ref path } | Operation::PreviewPage { ref path, .. }
                 if reply.generation == self.generation
                     && self
                         .browser
                         .as_ref()
                         .is_some_and(|b| b.device == reply.device) =>
             {
+                let page = match reply.op {
+                    Operation::PreviewPage { page, .. } => page,
+                    _ => 1,
+                };
+                let mut next = false;
                 if let Some(b) = &mut self.browser {
-                    b.preview_scroll = 0;
-                    b.preview_revision = b.preview_revision.wrapping_add(1);
-                    b.preview_rich = Some(
-                        reply
+                    if b.preview_path
+                        .as_ref()
+                        .is_some_and(|requested| requested != path)
+                    {
+                        return;
+                    }
+                    b.preview_path = Some(path.clone());
+                    b.preview_pending_page = None;
+                    if b.preview_requested_page == 0 {
+                        b.preview_requested_page = page;
+                    }
+                    if b.preview_requested_page != page && b.preview_rich.is_some() {
+                        next = true;
+                    } else {
+                        b.preview_requested_page = page;
+                        b.preview_scroll = 0;
+                        b.preview_revision = b.preview_revision.wrapping_add(1);
+                        let rich = reply
                             .preview
-                            .unwrap_or_else(|| RichPreview::from_value(&value)),
-                    );
-                    b.preview = Some(safe_text(
-                        value
-                            .get("text")
-                            .and_then(Value::as_str)
-                            .unwrap_or("Preview unavailable"),
-                    ));
+                            .unwrap_or_else(|| RichPreview::from_value(&value));
+                        let malformed = value["image"].is_object() && rich.raster.is_none();
+                        b.preview = Some(if malformed {
+                            "Image preview unavailable · invalid bitmap response".into()
+                        } else {
+                            safe_text(value["text"].as_str().unwrap_or("Preview unavailable"))
+                        });
+                        b.preview_rich = Some(rich);
+                    }
+                }
+                if next {
+                    self.start_pdf_page_request();
                 }
             }
             Operation::StopSession { .. } => {
@@ -2273,8 +2356,12 @@ impl App {
             }
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
-            KeyCode::PageDown => self.move_selection(10),
-            KeyCode::PageUp => self.move_selection(-10),
+            KeyCode::PageDown => {
+                self.move_selection(if self.pdf_preview_active() { 1 } else { 10 })
+            }
+            KeyCode::PageUp => {
+                self.move_selection(if self.pdf_preview_active() { -1 } else { -10 })
+            }
             KeyCode::Home => self.move_selection(-100_000),
             KeyCode::End => self.move_selection(100_000),
             KeyCode::Enter => {
@@ -2293,7 +2380,7 @@ impl App {
                 } else {
                     match self.view {
                     View::Work => { if let Some((d,s)) = self.selected_session() { self.pending_attach = Some((d,s,false)); } },
-                    View::Files => { if let Some(b) = &self.browser { if let Some(e) = self.visible_entries().get(b.selected).cloned() { if e.kind == "directory" { self.open_browser(b.device,e.path); } else { self.generation += 1; self.send(b.device,Operation::Preview { path:e.path }); } } } },
+                    View::Files => { if let Some(b) = &self.browser { if let Some(e) = self.visible_entries().get(b.selected).cloned() { if e.kind == "directory" { self.open_browser(b.device,e.path); } else { self.open_preview(b.device, e.path); } } } },
                     View::Network => self.notice = "Ctrl+P · shell / files are available through Sessions and the device selector".into(),
                 }
                 }
@@ -2302,6 +2389,8 @@ impl App {
                 if self.view == View::Files {
                     if let Some(b) = &mut self.browser {
                         b.preview_rich = None;
+                        b.preview_pending_page = None;
+                        b.preview_path = None;
                         if b.preview.take().is_none() {
                             if b.visual_anchor.take().is_some() {
                                 b.visual_base.clear();
@@ -2404,10 +2493,158 @@ impl App {
             }
         }
     }
+    fn host_updated(&mut self, update: transport::HostUpdate) {
+        let indices = self
+            .devices
+            .iter()
+            .enumerate()
+            .filter_map(|(d, device)| {
+                (device.target.as_deref() == Some(update.target.as_str())).then_some(d)
+            })
+            .collect::<Vec<_>>();
+        for device in indices {
+            self.providers.remove(&device);
+            self.provider_loading.remove(&device);
+            self.check_providers(device);
+            self.work[device].loading = self.send(device, Operation::Sessions);
+            self.send(device, Operation::TransferJobs);
+            let preview = self
+                .browser
+                .as_ref()
+                .filter(|b| b.device == device && b.preview.is_some())
+                .and_then(|b| {
+                    b.preview_path
+                        .clone()
+                        .map(|path| (path, b.preview_requested_page.max(1)))
+                });
+            if let Some((path, page)) = preview {
+                self.generation += 1;
+                let operation = if page > 1 {
+                    Operation::PreviewPage { path, page }
+                } else {
+                    Operation::Preview { path }
+                };
+                if self.send(device, operation) {
+                    if let Some(b) = &mut self.browser {
+                        b.preview_pending_page = Some(page);
+                    }
+                }
+            }
+            self.notice = format!(
+                "{} · cx {} updated",
+                identity(&self.devices[device]),
+                update.version
+            );
+        }
+    }
+    fn pdf_preview_active(&self) -> bool {
+        self.view == View::Files
+            && self.focus == Focus::Workspace
+            && self.browser.as_ref().is_some_and(|b| {
+                b.preview.is_some()
+                    && b.preview_rich
+                        .as_ref()
+                        .is_some_and(|p| p.kind == "pdf" && p.raster.is_some())
+            })
+    }
+    fn open_preview(&mut self, device: usize, path: String) {
+        self.generation += 1;
+        if let Some(b) = &mut self.browser {
+            b.preview_path = Some(path.clone());
+            b.preview_requested_page = 1;
+            b.preview_pending_page = Some(1);
+            b.preview_rich = None;
+            b.preview = Some("Loading preview…".into());
+        }
+        if !self.send(device, Operation::Preview { path }) {
+            if let Some(b) = &mut self.browser {
+                b.preview_pending_page = None;
+                b.preview = Some("Preview queue busy · Escape and retry".into());
+            }
+        }
+    }
+    fn start_pdf_page_request(&mut self) {
+        let Some(b) = self.browser.as_ref() else {
+            return;
+        };
+        if b.preview_pending_page.is_some()
+            || b.preview_rich
+                .as_ref()
+                .is_some_and(|p| p.page == b.preview_requested_page)
+        {
+            return;
+        }
+        let device = b.device;
+        let path = b
+            .preview_path
+            .clone()
+            .or_else(|| browser_entries(b).get(b.selected).map(|e| e.path.clone()));
+        let Some(path) = path else {
+            return;
+        };
+        let page = b.preview_requested_page.max(1);
+        if self.devices[device].target.is_some()
+            && !self
+                .providers
+                .get(&device)
+                .is_some_and(|(caps, _)| caps.iter().any(|c| c == "pdf-pages-v1"))
+        {
+            self.providers.remove(&device);
+            self.check_providers(device);
+            self.notice = "PDF pages need a current device helper · checking update".into();
+            return;
+        }
+        if self.send(
+            device,
+            Operation::PreviewPage {
+                path: path.clone(),
+                page,
+            },
+        ) {
+            if let Some(b) = &mut self.browser {
+                b.preview_path = Some(path);
+                b.preview_pending_page = Some(page);
+            }
+        } else {
+            self.notice = "Preview queue busy · retry shortly".into();
+        }
+    }
+    fn preview_mouse(&mut self, mouse: MouseEvent, area: Rect) -> bool {
+        if self.help || self.dialog.is_some() || self.input.is_some() || !self.pdf_preview_active()
+        {
+            return false;
+        }
+        if !native_preview_area(self, area)
+            .is_some_and(|r| r.contains(ratatui::layout::Position::new(mouse.column, mouse.row)))
+        {
+            return false;
+        }
+        match mouse.kind {
+            MouseEventKind::ScrollDown => self.move_selection(1),
+            MouseEventKind::ScrollUp => self.move_selection(-1),
+            _ => return false,
+        }
+        true
+    }
     fn move_selection(&mut self, delta: isize) {
         if self.view == View::Files && self.focus == Focus::Workspace {
             if let Some(b) = &mut self.browser {
                 if b.preview.is_some() {
+                    if b.preview_rich.as_ref().is_some_and(|p| p.kind == "pdf") {
+                        let max = b
+                            .preview_rich
+                            .as_ref()
+                            .and_then(|p| p.pages)
+                            .unwrap_or(10000);
+                        let current = b.preview_requested_page.max(1);
+                        let requested =
+                            (i64::from(current) + delta as i64).clamp(1, i64::from(max)) as u32;
+                        if requested != current {
+                            b.preview_requested_page = requested;
+                            self.start_pdf_page_request();
+                        }
+                        return;
+                    }
                     b.preview_scroll = b.preview_scroll.saturating_add_signed(
                         delta.clamp(i16::MIN as isize, i16::MAX as isize) as i16,
                     );
@@ -3478,7 +3715,14 @@ fn render_with_native(
         && app.browser.as_ref().is_some_and(|b| b.preview.is_some())
     {
         vec![
-            ("j/k", "Scroll"),
+            (
+                "j/k",
+                if app.pdf_preview_active() {
+                    "Pages"
+                } else {
+                    "Scroll"
+                },
+            ),
             ("PgUpDn", "Page"),
             ("Esc", "Back"),
             ("?", "Help"),
@@ -4344,8 +4588,20 @@ fn render_preview_with_native(
     native: Option<&mut crate::terminal_preview::NativePreview>,
 ) {
     let rich = browser.preview_rich.as_ref();
-    let title = rich
-        .map(|p| p.title.as_str())
+    let pdf_title = rich.filter(|p| p.kind == "pdf").map(|p| {
+        format!(
+            "PDF · {}/{}{}",
+            p.page,
+            p.pages.map(|n| n.to_string()).unwrap_or("?".into()),
+            browser
+                .preview_pending_page
+                .map(|page| format!(" · {} page {}", if ascii() { "~" } else { "◌" }, page))
+                .unwrap_or_default()
+        )
+    });
+    let title = pdf_title
+        .as_deref()
+        .or_else(|| rich.map(|p| p.title.as_str()))
         .filter(|t| !t.is_empty())
         .unwrap_or("Preview");
     let border = block(
@@ -4792,6 +5048,7 @@ fn save_cache(app: &App) {
 struct Screen {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
     active: bool,
+    mouse: bool,
 }
 impl Screen {
     fn new() -> Result<Self> {
@@ -4811,14 +5068,28 @@ impl Screen {
         Ok(Self {
             terminal,
             active: true,
+            mouse: false,
         })
+    }
+    fn preview_mouse(&mut self, enabled: bool) -> Result<()> {
+        if enabled != self.mouse {
+            if enabled {
+                execute!(self.terminal.backend_mut(), EnableMouseCapture)?;
+            } else {
+                execute!(self.terminal.backend_mut(), DisableMouseCapture)?;
+            }
+            self.mouse = enabled;
+        }
+        Ok(())
     }
     fn suspend(&mut self) -> Result<()> {
         if self.active {
+            let mouse = self.preview_mouse(false);
             self.active = false;
             let raw = terminal::disable_raw_mode();
             let leave = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
             let cursor = self.terminal.show_cursor();
+            mouse?;
             raw?;
             leave?;
             cursor?;
@@ -5061,7 +5332,10 @@ fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender<Reply>) {
         task.execution.target.clone().unwrap_or_else(|| {
             if matches!(
                 task.op,
-                Operation::List { .. } | Operation::ListPage { .. } | Operation::Preview { .. }
+                Operation::List { .. }
+                    | Operation::ListPage { .. }
+                    | Operation::Preview { .. }
+                    | Operation::PreviewPage { .. }
             ) {
                 "<local-files-read>".into()
             } else {
@@ -5111,7 +5385,10 @@ fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender<Reply>) {
                     }
                 };
                 let result = transport::request(&task.execution, task.op.clone());
-                let preview = if matches!(task.op, Operation::Preview { .. }) {
+                let preview = if matches!(
+                    task.op,
+                    Operation::Preview { .. } | Operation::PreviewPage { .. }
+                ) {
                     result.as_ref().ok().map(RichPreview::from_value)
                 } else {
                     None
@@ -5269,6 +5546,10 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     let mut last_refresh = Instant::now();
     let mut last_jobs = Instant::now();
     while !app.quit && !stopping.load(std::sync::atomic::Ordering::Relaxed) {
+        for update in transport::drain_host_updates() {
+            app.host_updated(update);
+            dirty = true;
+        }
         app.start_next_file_action();
         if app.force_update {
             app.force_update = false;
@@ -5480,6 +5761,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             screen.terminal.clear()?;
             dirty = true;
         }
+        screen.preview_mouse(
+            app.pdf_preview_active() && !app.help && app.dialog.is_none() && app.input.is_none(),
+        )?;
         if dirty {
             screen
                 .terminal
@@ -5491,13 +5775,18 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 Event::Key(k) => {
                     last_interaction = Instant::now();
                     app.key(k);
+                    dirty = true;
                 }
                 Event::Resize(_, _) => {
                     native_preview.hide();
+                    dirty = true;
+                }
+                Event::Mouse(mouse) => {
+                    let size = screen.terminal.size()?;
+                    dirty |= app.preview_mouse(mouse, Rect::new(0, 0, size.width, size.height));
                 }
                 _ => {}
             }
-            dirty = true;
         }
         if last_jobs.elapsed() >= Duration::from_secs(2) {
             let active = app
@@ -6803,6 +7092,188 @@ mod tests {
     #[test]
     fn labels_cannot_spoof_rows_or_direction() {
         assert_eq!(safe_label("name\n\t\u{202e}abc"), "name���abc");
+    }
+    #[test]
+    fn maximum_png_preview_is_visible() {
+        use base64::Engine;
+        let image = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            1280,
+            960,
+            image::Rgba([220, 30, 20, 255]),
+        ));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let value = serde_json::json!({"kind":"image", "title":"PNG",
+            "image":{"width":1280,"height":960,"png":base64::engine::general_purpose::STANDARD.encode(png.into_inner())}});
+        assert!(
+            RichPreview::from_value(&value).raster.is_some(),
+            "valid maximum-size preview disappeared"
+        );
+    }
+    #[test]
+    fn pdf_pages_coalesce_keys_and_preserve_last_page_on_failure() {
+        let (mut a, rx) = file_app();
+        let b = a.browser.as_mut().unwrap();
+        b.preview_path = Some("/files/book.pdf".into());
+        b.preview = Some("".into());
+        b.preview_rich = Some(RichPreview::from_value(
+            &serde_json::json!({"kind":"pdf","page":1,"pages":3,"image":{"width":1,"height":1,"rgba":"/////w=="}}),
+        ));
+        a.key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        assert!(matches!(
+            rx.try_recv().unwrap().op,
+            Operation::PreviewPage { page: 2, .. }
+        ));
+        press(&mut a, 'j');
+        press(&mut a, 'j');
+        assert!(
+            rx.try_recv().is_err(),
+            "only one page render may be in flight"
+        );
+        assert_eq!(a.browser.as_ref().unwrap().preview_requested_page, 3);
+        a.apply(Reply {device:0,generation:a.generation,op:Operation::PreviewPage {path:"/files/book.pdf".into(),page:2},preview:None,result:Ok(serde_json::json!({"kind":"pdf","page":2,"pages":3,"text":"","image":{"width":1,"height":1,"rgba":"/////w=="}}))});
+        assert!(matches!(
+            rx.try_recv().unwrap().op,
+            Operation::PreviewPage { page: 3, .. }
+        ));
+        assert_eq!(
+            a.browser
+                .as_ref()
+                .unwrap()
+                .preview_rich
+                .as_ref()
+                .unwrap()
+                .page,
+            1
+        );
+        a.apply(Reply {
+            device: 0,
+            generation: a.generation,
+            op: Operation::PreviewPage {
+                path: "/files/book.pdf".into(),
+                page: 3,
+            },
+            preview: None,
+            result: Err(anyhow::anyhow!("renderer unavailable")),
+        });
+        assert_eq!(
+            a.browser
+                .as_ref()
+                .unwrap()
+                .preview_rich
+                .as_ref()
+                .unwrap()
+                .page,
+            1
+        );
+        assert!(a.browser.as_ref().unwrap().preview_pending_page.is_none());
+        let generation = a.generation;
+        a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        a.apply(Reply {
+            device: 0,
+            generation,
+            op: Operation::PreviewPage {
+                path: "/files/book.pdf".into(),
+                page: 3,
+            },
+            preview: None,
+            result: Ok(serde_json::json!({"kind":"pdf","page":3,"pages":3})),
+        });
+        assert!(a.browser.as_ref().unwrap().preview.is_none());
+    }
+    #[test]
+    fn pdf_mouse_wheel_is_scoped_to_preview() {
+        let (mut a, rx) = file_app();
+        let b = a.browser.as_mut().unwrap();
+        b.preview = Some("".into());
+        b.preview_rich = Some(RichPreview::from_value(
+            &serde_json::json!({"kind":"pdf","page":1,"pages":3,"image":{"width":1,"height":1,"rgba":"/////w=="}}),
+        ));
+        let mut event = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 1,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(!a.preview_mouse(event, Rect::new(0, 0, 80, 24)));
+        assert!(rx.try_recv().is_err());
+        event.column = 40;
+        event.row = 10;
+        assert!(a.preview_mouse(event, Rect::new(0, 0, 80, 24)));
+        assert!(matches!(
+            rx.try_recv().unwrap().op,
+            Operation::PreviewPage { page: 2, .. }
+        ));
+        a.help = true;
+        assert!(!a.preview_mouse(event, Rect::new(0, 0, 80, 24)));
+    }
+    #[test]
+    fn host_update_reloads_metadata_and_preview_without_replaying_work() {
+        let (mut a, rx) = file_app();
+        let mut b = Browser::new(1, "/remote".into());
+        b.preview = Some("".into());
+        b.preview_path = Some("/remote/book.pdf".into());
+        b.preview_requested_page = 2;
+        b.preview_rich = Some(RichPreview::from_value(
+            &serde_json::json!({"kind":"pdf","page":2,"pages":3}),
+        ));
+        a.browser = Some(b);
+        a.host_updated(transport::HostUpdate {
+            target: "laptop".into(),
+            version: "0.1.10".into(),
+        });
+        let tasks = rx.try_iter().collect::<Vec<_>>();
+        assert!(tasks.iter().all(|t| t.device == 1));
+        assert!(tasks.iter().any(|t| matches!(t.op, Operation::Info)));
+        assert!(tasks
+            .iter()
+            .any(|t| matches!(t.op, Operation::PreviewPage { page: 2, .. })));
+        assert!(tasks.iter().all(|t| matches!(
+            t.op,
+            Operation::Info
+                | Operation::Sessions
+                | Operation::TransferJobs
+                | Operation::PreviewPage { .. }
+        )));
+        assert_eq!(a.browser.as_ref().unwrap().path, "/remote");
+        assert!(a.pending_attach.is_none() && !a.creating);
+    }
+    #[test]
+    fn old_helper_page_check_does_not_loop() {
+        let (mut a, rx) = file_app();
+        a.browser = Some(Browser::new(1, "/remote".into()));
+        let b = a.browser.as_mut().unwrap();
+        b.preview = Some("".into());
+        b.preview_requested_page = 2;
+        b.preview_rich = Some(RichPreview::from_value(
+            &serde_json::json!({"kind":"pdf","page":1}),
+        ));
+        a.apply(Reply {
+            device: 1,
+            generation: a.generation,
+            op: Operation::Info,
+            preview: None,
+            result: Ok(serde_json::json!({"version":"0.1.9","capabilities":["codex"]})),
+        });
+        assert!(
+            rx.try_recv().is_err(),
+            "unsupported page capability must not create an Info retry loop"
+        );
+    }
+    #[test]
+    fn pdf_scroll_requests_the_next_page() {
+        let (mut a, rx) = file_app();
+        let b = a.browser.as_mut().unwrap();
+        b.preview = Some("PDF".into());
+        b.preview_rich = Some(RichPreview::from_value(
+            &serde_json::json!({"kind":"pdf","title":"PDF · page 1","page":1,"pages":3}),
+        ));
+        a.key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert!(
+            rx.try_iter()
+                .any(|t| matches!(t.op, Operation::PreviewPage { page: 2, .. })),
+            "PDF scrolling never requests another page"
+        );
     }
     #[test]
     fn rich_preview_rejects_bad_images_and_keeps_transparent_pixels_default() {

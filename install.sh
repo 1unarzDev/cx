@@ -17,7 +17,7 @@ tool_available() {
     }
 }
 CX_MISSING=
-for CX_TOOL in curl openssl ssh tmux pdftoppm ip ping infocmp flock tar gzip stat timeout install mktemp head sed grep; do
+for CX_TOOL in curl openssl ssh tmux pdftoppm pdfinfo ip ping infocmp flock tar gzip stat timeout install mktemp head sed grep; do
     tool_available "$CX_TOOL" || CX_MISSING="$CX_MISSING $CX_TOOL"
 done
 if [ -n "$CX_MISSING" ]; then
@@ -39,7 +39,7 @@ if [ -n "$CX_MISSING" ]; then
     case "$CX_REPLY" in y|Y|yes|YES)
         if [ "$1" = apt-get ]; then sudo apt-get update; fi
         sudo "$@";; *) fail 'dependency installation declined';; esac
-    for CX_TOOL in curl openssl ssh tmux pdftoppm ip ping infocmp flock tar gzip stat timeout install mktemp head sed grep; do
+    for CX_TOOL in curl openssl ssh tmux pdftoppm pdfinfo ip ping infocmp flock tar gzip stat timeout install mktemp head sed grep; do
         tool_available "$CX_TOOL" || fail "required tool still unavailable: $CX_TOOL"
     done
 fi

@@ -6,7 +6,7 @@ set -eu
 PATH="$HOME/.local/bin:$PATH"
 export PATH
 missing=
-for tool in curl openssl ssh tmux pdftoppm ip ping infocmp flock tar gzip stat timeout install mktemp head sed grep; do
+for tool in curl openssl ssh tmux pdftoppm pdfinfo ip ping infocmp flock tar gzip stat timeout install mktemp head sed grep; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         if [ "$tool" != ip ] || { [ ! -x /usr/sbin/ip ] && [ ! -x /sbin/ip ]; }; then
             missing="$missing $tool"

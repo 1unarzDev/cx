@@ -191,6 +191,11 @@ fn list_page(path: &Path, offset: u64, limit: u32) -> Result<Value> {
     )
 }
 fn open_read(path: &Path) -> Result<File> {
+    // Reject special files before opening them: opening a device can itself have
+    // hardware side effects, even if we never read any bytes.
+    if !fs::symlink_metadata(path)?.is_file() {
+        bail!("only regular files are supported; devices and symlinks are not opened");
+    }
     let mut opts = OpenOptions::new();
     opts.read(true);
     #[cfg(unix)]

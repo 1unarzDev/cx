@@ -6,6 +6,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.23
+
+### Features
+- Find files with `/` without hiding or reordering directory entries. Highlight every exact or fuzzy filename match, then use `n`/`N` to move between matching files with wraparound, just like text-preview search.
+- Enter finishes the file search rather than opening a file; Escape clears it. Keep `f` as the separate name filter and show the current match count in the browser footer.
+
 ## v0.1.22
 
 ### Fixes

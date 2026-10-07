@@ -203,3 +203,11 @@ User requested three agents investigate native Codex names and inaccessible term
 - Pending physical wheel/trackpad confirmation remains requested once; no repeat question. Tranquility's unavailable execution rows are preserved; no innovation sessions removed.
 
 Signed0.1.22/source64c41ab/workflow37563927815 PASS; exact public bootstrap PASS. Innovation/server installed0.1.22 with identical signed SHA256590ac5d7e447aacf4e23951de86b961d1d4a6f888953a3cd294cdb6a60cbfafe. Installed names/mouse and host-owned reload checks PASS, six original innovation session identities preserved; server remains agent-free. Tranquility still No route to host, deployment BLOCKED/last verified0.1.16. Final independent review no substantive findings. Physical scrolling confirmation remains pending; no new user question required.
+
+
+## File find — v0.1.23 candidate
+- User requests Yazi-style find rather than filter. `/` keeps visible entries/order, uses text-preview matching/highlighting, Enter finishes input, n/N cycle files with wraparound. f remains a separate filter. Active search owns n; Ctrl+P still offers New session.
+- Marks/clipboard paths remain intact. Search count is per matching file, including repeated occurrences; no-match keeps the listing and selection. Long matching names keep index-aligned highlights and whole-name emphasis for clipped matches.
+- Independent review caught clipped-index and invisible suffix-match issues; both corrected. Tests/release acceptance in VALIDATION.md. No new preference question needed: requested behavior is explicit.
+
+File-find and transfer ecosystem three-size PTYs PASS; preview search palette/monochrome PASS. Optional shortcut question pending: dedicated New session shortcut while n/N own active file search; current behavior follows explicit user request and Ctrl+P remains available.

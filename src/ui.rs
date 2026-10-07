@@ -699,11 +699,43 @@ impl App {
             if let Some(b) = &mut self.browser {
                 b.search = self.text.clone();
                 b.restore_selection = None;
-                b.selected = 0;
+                let rows = browser_entries(b);
+                if !b.search.is_empty() {
+                    let matches = file_search_matches(&rows, &b.search);
+                    if let Some(index) = matches
+                        .iter()
+                        .map(|(i, _)| *i)
+                        .find(|i| *i >= b.selected)
+                        .or_else(|| matches.first().map(|(i, _)| *i))
+                    {
+                        b.selected = index;
+                    }
+                }
             }
         } else {
             self.search = self.text.clone();
             self.selected = 0;
+        }
+    }
+    fn next_file_match(&mut self, direction: isize) {
+        if let Some(b) = &mut self.browser {
+            let matches = file_search_matches(&browser_entries(b), &b.search);
+            let index = if direction > 0 {
+                matches
+                    .iter()
+                    .find(|(i, _)| *i > b.selected)
+                    .or_else(|| matches.first())
+            } else {
+                matches
+                    .iter()
+                    .rev()
+                    .find(|(i, _)| *i < b.selected)
+                    .or_else(|| matches.last())
+            };
+            if let Some((index, _)) = index {
+                b.selected = *index;
+                b.restore_selection = None;
+            }
         }
     }
     fn command_context(&self) -> Option<(usize, String)> {
@@ -2753,6 +2785,12 @@ impl App {
                 }
                 KeyCode::Down if mode == Input::PreviewSearch => self.next_preview_match(1),
                 KeyCode::Up if mode == Input::PreviewSearch => self.next_preview_match(-1),
+                KeyCode::Down if mode == Input::Search && self.view == View::Files => {
+                    self.next_file_match(1)
+                }
+                KeyCode::Up if mode == Input::Search && self.view == View::Files => {
+                    self.next_file_match(-1)
+                }
                 KeyCode::Down if mode == Input::Search => self.move_selection(1),
                 KeyCode::Up if mode == Input::Search => self.move_selection(-1),
                 KeyCode::Down if mode == Input::Filter => self.move_selection(1),
@@ -2797,7 +2835,9 @@ impl App {
                     Input::Search => {
                         self.input = None;
                         self.focus = Focus::Workspace;
-                        self.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                        if self.view != View::Files {
+                            self.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                        }
                     }
                     Input::PreviewSearch => {
                         self.input = None;
@@ -3084,6 +3124,18 @@ impl App {
                     self.network_detail_scroll.saturating_sub(1)
                 };
             }
+            KeyCode::Char('n' | 'N')
+                if self.view == View::Files
+                    && self.focus == Focus::Workspace
+                    && self.browser.as_ref().is_some_and(|b| !b.search.is_empty()) =>
+            {
+                self.finish_visual();
+                self.next_file_match(if key.code == KeyCode::Char('n') {
+                    1
+                } else {
+                    -1
+                });
+            }
             KeyCode::Char('n') => self.execute(Action::New),
             KeyCode::Char('a') if self.view == View::Work && local_only(self) => {
                 self.execute(Action::Add)
@@ -3197,7 +3249,6 @@ impl App {
                                 b.selected = 0;
                             } else if !b.search.is_empty() {
                                 b.search.clear();
-                                b.selected = 0;
                             } else {
                                 self.view = View::Work;
                                 self.generation += 1;
@@ -4698,7 +4749,9 @@ fn render_with_native(
             ("Esc", "Cancel"),
             ("Ctrl U", "Clear"),
         ]
-    } else if app.input == Some(Input::PreviewSearch) {
+    } else if app.input == Some(Input::PreviewSearch)
+        || (app.input == Some(Input::Search) && app.view == View::Files)
+    {
         vec![("↑↓", "Match"), ("Enter", "Done"), ("Esc", "Done")]
     } else if matches!(
         app.input,
@@ -4754,7 +4807,18 @@ fn render_with_native(
             ("Space", "Select"),
             ("c / x", "Copy / cut"),
             ("p / t", "Paste / transfer"),
-            ("n / :", "Session / command"),
+            (
+                if app.browser.as_ref().is_some_and(|b| !b.search.is_empty()) {
+                    "n / N"
+                } else {
+                    "n / :"
+                },
+                if app.browser.as_ref().is_some_and(|b| !b.search.is_empty()) {
+                    "Next / previous"
+                } else {
+                    "Session / command"
+                },
+            ),
             ("r / d", "Rename / delete"),
             ("?", "All keys"),
         ]
@@ -5253,7 +5317,16 @@ fn render_with_native(
             key_row("Tab / Shift+Tab", "Next / previous panel"),
             key_row("/", "Search"),
             key_row("Ctrl+P", "Actions"),
-            key_row("n", "New session in current folder"),
+            key_row(
+                "n",
+                if app.view == View::Files
+                    && app.browser.as_ref().is_some_and(|b| !b.search.is_empty())
+                {
+                    "Next matching file; clear search for New session"
+                } else {
+                    "New session in current folder"
+                },
+            ),
             key_row(":", "Run command in current folder"),
             key_row("Ctrl+C", "Quit cx; work keeps running"),
         ];
@@ -5282,6 +5355,7 @@ fn render_with_native(
                 ("Space", "Select and advance"),
                 ("v · u", "Visual range / clear selection"),
                 (".", "Show / hide hidden files"),
+                ("/ · n / N", "Highlight names / next / previous match"),
                 ("f", "Filter names"),
                 (
                     "c/y · x",
@@ -5871,18 +5945,34 @@ fn render_preview_with_native(
 }
 
 fn browser_entries(b: &Browser) -> Vec<Entry> {
-    let mut rows = b
-        .entries
+    b.entries
         .iter()
-        .enumerate()
-        .filter(|(_, e)| {
+        .filter(|e| {
             (b.show_hidden || !(e.hidden || e.name.starts_with('.')))
                 && e.name.to_lowercase().contains(&b.filter.to_lowercase())
         })
-        .filter_map(|(i, e)| fuzzy_score(&b.search, &e.name).map(|score| (score, i, e.clone())))
-        .collect::<Vec<_>>();
-    rows.sort_by(|(a, i, _), (b, j, _)| b.cmp(a).then_with(|| i.cmp(j)));
-    rows.into_iter().map(|(_, _, e)| e).collect()
+        .cloned()
+        .collect()
+}
+fn file_search_matches(rows: &[Entry], query: &str) -> Vec<(usize, Vec<usize>)> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let lines: Vec<_> = rows
+        .iter()
+        .map(|e| Line::raw(safe_label(&e.name)))
+        .collect();
+    let mut matches: Vec<(usize, Vec<usize>)> = Vec::new();
+    for (row, positions) in preview_matches(&lines, query) {
+        if let Some((_, last_positions)) =
+            matches.last_mut().filter(|(last_row, _)| *last_row == row)
+        {
+            last_positions.extend(positions);
+        } else {
+            matches.push((row, positions));
+        }
+    }
+    matches
 }
 fn compact_path(path: &str, width: usize) -> String {
     let safe = safe_label(path);
@@ -5996,6 +6086,46 @@ fn render_browser(
                 parts[1],
             );
         } else {
+            let matches = file_search_matches(&rows, &b.search);
+            let matched_rows: BTreeSet<_> = matches.iter().map(|(row, _)| *row).collect();
+            let mut names: Vec<_> = rows
+                .iter()
+                .enumerate()
+                .map(|(index, e)| {
+                    let style = if index == b.selected && focused {
+                        accent().add_modifier(Modifier::BOLD)
+                    } else if index == b.selected {
+                        Style::default().add_modifier(Modifier::BOLD)
+                    } else if matched_rows.contains(&index) {
+                        tint(Color::Yellow).add_modifier(Modifier::BOLD)
+                    } else if e.kind == "directory" {
+                        tint(Color::Blue).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+                    Line::from(Span::styled(
+                        if b.search.is_empty() {
+                            compact_path(&e.name, area.width.saturating_sub(18) as usize)
+                        } else {
+                            safe_label(&e.name)
+                        },
+                        style,
+                    ))
+                })
+                .collect();
+            let selected_match = matches
+                .iter()
+                .position(|(i, _)| *i == b.selected)
+                .unwrap_or(usize::MAX);
+            highlight_preview_matches(
+                &mut names,
+                &PreviewFind {
+                    query: b.search.clone(),
+                    matches,
+                    selected: selected_match,
+                    reveal: std::cell::Cell::new(false),
+                },
+            );
             let table_rows = rows
                 .iter()
                 .enumerate()
@@ -6042,16 +6172,15 @@ fn render_browser(
                         .style(accent()),
                         // Keep the cursor attached to its filename instead of a remote rail.
                         // ANSI foreground only: preserve light/dark defaults and transparency.
-                        Cell::from(Line::from(vec![
-                            Span::styled(cursor, if focused { name_style } else { muted() }),
-                            Span::styled(
-                                format!(
-                                    "{} ",
-                                    compact_path(&e.name, area.width.saturating_sub(18) as usize)
-                                ),
-                                name_style,
-                            ),
-                        ])),
+                        Cell::from(Line::from(
+                            vec![Span::styled(
+                                cursor,
+                                if focused { name_style } else { muted() },
+                            )]
+                            .into_iter()
+                            .chain(names[index].spans.clone())
+                            .collect::<Vec<_>>(),
+                        )),
                         Cell::from(if e.kind == "file" {
                             human_size(e.size)
                         } else {
@@ -6094,6 +6223,24 @@ fn render_browser(
             safe_label(&c.source_label),
             if b.filter.is_empty() {
                 " · p paste here".into()
+            } else {
+                format!(" · f {}", safe_label(&b.filter))
+            }
+        )
+    } else if !b.search.is_empty() {
+        let matches = file_search_matches(&browser_entries(b), &b.search);
+        let current = matches
+            .iter()
+            .position(|(i, _)| *i == b.selected)
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        format!(
+            " / {} · {}/{} · n/N matches{}",
+            safe_label(&b.search),
+            current,
+            matches.len(),
+            if b.filter.is_empty() {
+                String::new()
             } else {
                 format!(" · f {}", safe_label(&b.filter))
             }
@@ -9304,6 +9451,102 @@ mod tests {
         }
     }
     #[test]
+    fn long_unicode_file_find_keeps_visible_match_positions() {
+        let (mut a, _tasks) = file_app();
+        a.focus = Focus::Workspace;
+        let b = a.browser.as_mut().unwrap();
+        b.search = "needle".into();
+        b.entries.truncate(1);
+        b.entries[0].name = format!("needle-{}-終.txt", "élong".repeat(30));
+        b.selected = 0;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let found = (0..24).any(|y| {
+            (0..74).any(|x| {
+                (0..6)
+                    .map(|i| buffer[(x + i, y)].symbol())
+                    .collect::<String>()
+                    == "needle"
+                    && (0..6).all(|i| buffer[(x + i, y)].modifier.contains(Modifier::UNDERLINED))
+            })
+        });
+        assert!(
+            found,
+            "visible filename match lost its highlight after clipping"
+        );
+    }
+
+    #[test]
+    fn file_find_highlights_without_filtering_and_wraps_between_files() {
+        let (mut a, _tasks) = file_app();
+        a.focus = Focus::Workspace;
+        let b = a.browser.as_mut().unwrap();
+        b.entries = ["alpha-alpha.txt", "other.txt", "a-long-pha.txt", ".alpha"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| Entry {
+                name: (*name).into(),
+                path: format!("/fixture/{i}"),
+                kind: "file".into(),
+                size: 0,
+                identity: None,
+                hidden: name.starts_with('.'),
+                rename_name: None,
+            })
+            .collect();
+        b.marked.insert("/fixture/1".into());
+        let before: Vec<_> = a.visible_entries().iter().map(|e| e.path.clone()).collect();
+        a.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        for c in "alpha".chars() {
+            a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(
+            a.visible_entries()
+                .iter()
+                .map(|e| e.path.clone())
+                .collect::<Vec<_>>(),
+            before
+        );
+        assert_eq!(file_search_matches(&a.visible_entries(), "alpha").len(), 2);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| render(frame, &a)).unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .filter(|cell| cell.modifier.contains(Modifier::UNDERLINED))
+                .count()
+                >= 10
+        );
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.input.is_none());
+        assert!(a.browser.as_ref().unwrap().preview.is_none());
+        for (key, expected) in [('n', 2), ('n', 0), ('N', 2), ('N', 0)] {
+            a.key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
+            assert_eq!(a.browser.as_ref().unwrap().selected, expected);
+            assert!(!a.creating);
+        }
+        a.browser.as_mut().unwrap().search = "missing".into();
+        a.key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert_eq!(a.visible_entries().len(), 3);
+        assert_eq!(a.browser.as_ref().unwrap().selected, 0);
+        assert!(a.browser.as_ref().unwrap().marked.contains("/fixture/1"));
+        a.browser.as_mut().unwrap().filter = "other".into();
+        assert_eq!(a.visible_entries().len(), 1);
+        a.browser.as_mut().unwrap().filter.clear();
+        a.browser.as_mut().unwrap().show_hidden = true;
+        assert_eq!(
+            file_search_matches(&a.visible_entries(), "missing").len(),
+            0
+        );
+        a.browser.as_mut().unwrap().search = "alpha".into();
+        assert_eq!(file_search_matches(&a.visible_entries(), "alpha").len(), 3);
+    }
+
+    #[test]
     fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
         let mut a = app();
         a.view = View::Files;
@@ -9341,7 +9584,7 @@ mod tests {
         for c in "rcb".chars() {
             a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
-        assert_eq!(a.visible_entries().len(), 2);
+        assert_eq!(a.visible_entries().len(), 3);
         assert_eq!(a.browser.as_ref().unwrap().search, "rcb");
         a.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(a.browser.as_ref().unwrap().selected, 1);

@@ -1,5 +1,7 @@
 mod auth;
 mod files;
+mod markdown_links;
+mod markdown_math;
 mod markdown_tables;
 mod model;
 mod network;

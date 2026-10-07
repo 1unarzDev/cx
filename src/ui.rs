@@ -205,6 +205,8 @@ struct Browser {
     #[serde(skip)]
     preview_viewport: std::cell::Cell<(u16, u16)>,
     #[serde(skip)]
+    preview_link_cells: std::cell::RefCell<Vec<(u16, u16)>>,
+    #[serde(skip)]
     preview_find: PreviewFind,
     #[serde(default)]
     restore_selection: Option<String>,
@@ -234,6 +236,7 @@ impl Browser {
             preview_pending_page: None,
             preview_scroll: std::cell::Cell::new(0),
             preview_viewport: std::cell::Cell::new((0, 0)),
+            preview_link_cells: std::cell::RefCell::new(Vec::new()),
             preview_find: PreviewFind::default(),
             restore_selection: None,
         }
@@ -349,6 +352,7 @@ enum Dialog {
     Provider(usize, Option<String>),
     Matching(usize, String, String, Session),
     Jobs,
+    Links(Vec<crate::markdown_links::Link>),
     Delete(usize, Vec<Entry>),
     StopShell(usize, Session),
     PendingExit(usize),
@@ -516,6 +520,7 @@ impl App {
         }
         if let Some(dialog) = &self.dialog {
             return match dialog {
+                Dialog::Links(_) => "Links",
                 Dialog::Device(_) => "Device picker",
                 Dialog::Provider(..) => "Provider",
                 Dialog::Matching(..) => "Session choice",
@@ -1871,6 +1876,7 @@ impl App {
             }
         }
         let count = match &dialog {
+            Dialog::Links(links) => links.len(),
             Dialog::Device(_) => self.devices.len(),
             Dialog::Provider(d, _) => self.provider_choices(*d).len(),
             Dialog::Matching(..) => 2,
@@ -1899,6 +1905,41 @@ impl App {
                 self.dialog_scroll = 0;
             }
             KeyCode::Enter => match dialog {
+                Dialog::Links(links) => {
+                    if let Some(link) = links.get(self.dialog_selected) {
+                        if !crate::markdown_links::web_target(&link.target) {
+                            self.notice =
+                                "Only HTTP/HTTPS links can open in the viewer browser".into();
+                            return;
+                        }
+                        if std::env::var_os("DISPLAY").is_none()
+                            && std::env::var_os("WAYLAND_DISPLAY").is_none()
+                        {
+                            self.notice =
+                                "No graphical browser on this viewer · URL shown below".into();
+                            return;
+                        }
+                        match std::process::Command::new("xdg-open")
+                            .arg(&link.target)
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn()
+                        {
+                            Ok(mut child) => {
+                                std::thread::spawn(move || {
+                                    let _ = child.wait();
+                                });
+                                self.notice = "Link sent to viewer browser".into();
+                                self.dialog = None;
+                            }
+                            Err(_) => {
+                                self.notice = "Viewer browser unavailable · URL shown below".into()
+                            }
+                        }
+                    }
+                }
+
                 Dialog::Device(purpose) => {
                     if self.dialog_selected < self.devices.len() {
                         self.chosen_device(self.dialog_selected, purpose);
@@ -2945,6 +2986,10 @@ impl App {
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
         {
             match key.code {
+                KeyCode::Char('o') if self.markdown_preview_active() => {
+                    self.show_preview_links();
+                    return;
+                }
                 KeyCode::Char('/') => {
                     if self.text_preview_active() {
                         self.input = Some(Input::PreviewSearch);
@@ -3498,9 +3543,48 @@ impl App {
             }
         }
     }
+    fn markdown_preview_active(&self) -> bool {
+        self.text_preview_active()
+            && self.browser.as_ref().is_some_and(|b| {
+                b.preview_rich
+                    .as_ref()
+                    .is_some_and(|p| p.kind == "markdown")
+            })
+    }
+    fn show_preview_links(&mut self) {
+        let links = self
+            .browser
+            .as_ref()
+            .and_then(|b| b.preview.as_ref())
+            .map(|s| markdown_preview_links(s))
+            .unwrap_or_default();
+        if links.is_empty() {
+            self.notice = "No Markdown links in this preview".into();
+            return;
+        }
+        self.dialog_selected = 0;
+        self.dialog_scroll = 0;
+        self.dialog_detail_focus = false;
+        self.dialog = Some(Dialog::Links(links));
+    }
     fn preview_mouse(&mut self, mouse: MouseEvent, area: Rect) -> bool {
-        if self.help || self.dialog.is_some() || self.input.is_some() || !self.pdf_preview_active()
-        {
+        if self.help || self.dialog.is_some() || self.input.is_some() {
+            return false;
+        }
+        if self.markdown_preview_active() {
+            if matches!(mouse.kind, MouseEventKind::Down(event::MouseButton::Left))
+                && self.browser.as_ref().is_some_and(|b| {
+                    b.preview_link_cells
+                        .borrow()
+                        .contains(&(mouse.column, mouse.row))
+                })
+            {
+                self.show_preview_links();
+                return true;
+            }
+            return false;
+        }
+        if !self.pdf_preview_active() {
             return false;
         }
         if !native_preview_area(self, area)
@@ -4802,6 +4886,9 @@ fn render_with_native(
         if app.text_preview_active() {
             hints.insert(2, ("/", "Search"));
             hints.insert(3, ("n / N", "Next / previous"));
+            if app.markdown_preview_active() {
+                hints[1] = ("o", "Links");
+            }
         }
         hints
     } else if app.view == View::Network && app.focus == Focus::Workspace {
@@ -5021,6 +5108,11 @@ fn render_with_native(
     }
     if let Some(dialog) = &app.dialog {
         let (title, labels, detail) = match dialog {
+            Dialog::Links(links) => (
+                "Links · viewer browser".into(),
+                links.iter().map(|l|safe_label(&l.label)).collect(),
+                links.get(app.dialog_selected).map(|l|safe_text(&l.target)).unwrap_or_default(),
+            ),
             Dialog::Device(purpose) => (
                 match purpose {
                     ChooseDevice::New => "New session · execution device",
@@ -5358,6 +5450,10 @@ fn render_with_native(
                 help.extend([
                     key_row("/", "Search preview text, live fuzzy matches"),
                     key_row("n / N", "Next / previous match, wrap around"),
+                    key_row(
+                        "o / click link",
+                        "Inspect links; Enter opens viewer browser",
+                    ),
                 ]);
             }
         } else if app.view == View::Files {
@@ -5460,7 +5556,191 @@ fn render_with_native(
         );
     }
 }
+fn markdown_preview_links(source: &str) -> Vec<crate::markdown_links::Link> {
+    let safe = safe_text(source);
+    let fences = crate::syntax_preview::fenced_blocks(&safe);
+    let mut links = Vec::new();
+    for (index, line) in source.lines().enumerate() {
+        if fences
+            .iter()
+            .any(|f| index >= f.opening && index <= f.closing.unwrap_or(usize::MAX))
+        {
+            continue;
+        }
+        links.extend(crate::markdown_links::links(line));
+        if links.len() >= 128 {
+            links.truncate(128);
+            break;
+        }
+    }
+    links
+}
+
 fn preview_inline(text: &str) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut at = 0;
+    for link in crate::markdown_links::links(text) {
+        spans.extend(preview_emphasis(&text[at..link.start]));
+        let style = tint(Color::Cyan).add_modifier(Modifier::UNDERLINED);
+        for mut span in preview_emphasis(&link.label) {
+            span.style = span.style.patch(style);
+            spans.push(span);
+        }
+        at = link.end;
+    }
+    spans.extend(preview_emphasis(&text[at..]));
+    spans
+}
+
+// Wrap the body using Ratatui's own Unicode/word layout, then restore the
+// list prefix. Continuation rows have the exact same content starting column.
+fn hanging_lines(line: &Line<'static>, prefix: usize, width: u16) -> Vec<Line<'static>> {
+    if prefix >= usize::from(width) || prefix == 0 {
+        return vec![line.clone()];
+    }
+    let mut leading = Vec::new();
+    let mut body = Vec::new();
+    let mut remaining = prefix;
+    for span in &line.spans {
+        let take = remaining.min(span.content.chars().count());
+        let split = span
+            .content
+            .char_indices()
+            .nth(take)
+            .map(|(i, _)| i)
+            .unwrap_or(span.content.len());
+        if split > 0 {
+            leading.push(Span::styled(span.content[..split].to_owned(), span.style));
+        }
+        if split < span.content.len() {
+            body.push(Span::styled(span.content[split..].to_owned(), span.style));
+        }
+        remaining -= take;
+    }
+    let body_width = width - prefix as u16;
+    let paragraph = Paragraph::new(Line::from(body)).wrap(Wrap { trim: true });
+    let height = paragraph.line_count(body_width).max(1);
+    if height > 8192 {
+        return vec![line.clone()];
+    }
+    let rect = Rect::new(0, 0, body_width, height as u16);
+    let mut buffer = ratatui::buffer::Buffer::empty(rect);
+    ratatui::widgets::Widget::render(paragraph, rect, &mut buffer);
+    (0..height as u16)
+        .map(|y| {
+            let mut spans = if y == 0 {
+                leading.clone()
+            } else {
+                vec![Span::raw(" ".repeat(prefix))]
+            };
+            let mut x = 0;
+            while x < body_width {
+                let cell = &buffer[(x, y)];
+                let symbol = cell.symbol();
+                let step = Span::raw(symbol).width().max(1) as u16;
+                if let Some(last) = spans.last_mut().filter(|s| s.style == cell.style()) {
+                    last.content.to_mut().push_str(symbol);
+                } else {
+                    spans.push(Span::styled(symbol.to_owned(), cell.style()));
+                }
+                x = x.saturating_add(step);
+            }
+            if let Some(last) = spans.last_mut() {
+                last.content = last.content.trim_end().to_owned().into();
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+fn list_prefix(source: &str) -> Option<usize> {
+    let trimmed = source.trim_start_matches(' ');
+    let indent = source.len() - trimmed.len();
+    if ["- ", "* ", "+ "].iter().any(|p| trimmed.starts_with(p)) {
+        return Some(indent + 2);
+    }
+    let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+    if (1..=9).contains(&digits)
+        && (trimmed[digits..].starts_with(". ") || trimmed[digits..].starts_with(") "))
+    {
+        return Some(indent + digits + 2);
+    }
+    None
+}
+
+fn preview_emphasis(text: &str) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut at = 0;
+    let mut plain = 0;
+    while at < text.len() {
+        let rest = &text[at..];
+        if rest.starts_with('`') {
+            let run = rest.bytes().take_while(|b| *b == b'`').count();
+            if let Some(end) = rest[run..].find(&"`".repeat(run)) {
+                at += run + end + run;
+                continue;
+            }
+            break;
+        }
+        let escaped = text[..at].bytes().rev().take_while(|b| *b == b'\\').count() % 2 == 1;
+        let delimiter = if !escaped && rest.starts_with("$$") {
+            Some(("$$", "$$"))
+        } else if !escaped && rest.starts_with('$') {
+            Some(("$", "$"))
+        } else if !escaped && rest.starts_with("\\(") {
+            Some(("\\(", "\\)"))
+        } else if !escaped && rest.starts_with("\\[") {
+            Some(("\\[", "\\]"))
+        } else {
+            None
+        };
+        if let Some((open, close)) = delimiter {
+            let after = &rest[open.len()..];
+            if let Some(end) = after.match_indices(close).find_map(|(end, _)| {
+                (after[..end]
+                    .bytes()
+                    .rev()
+                    .take_while(|b| *b == b'\\')
+                    .count()
+                    % 2
+                    == 0)
+                    .then_some(end)
+            }) {
+                let expression = &after[..end];
+                if end == 0
+                    || (open == "$"
+                        && (expression.starts_with(char::is_whitespace)
+                            || expression.ends_with(char::is_whitespace)
+                            || after[end + close.len()..]
+                                .starts_with(|c: char| c.is_ascii_digit())))
+                {
+                    at += open.len();
+                    continue;
+                }
+                if !ascii() {
+                    if let Some(rendered) = crate::markdown_math::render_math(expression) {
+                        spans.extend(preview_emphasis_only(&text[plain..at]));
+                        spans.push(Span::styled(rendered, tint(Color::Magenta)));
+                        at += open.len() + end + close.len();
+                        plain = at;
+                        continue;
+                    }
+                }
+                // Unsupported math remains literal, including delimiters and scripts.
+                spans.extend(preview_emphasis_only(&text[plain..at]));
+                let length = open.len() + end + close.len();
+                spans.push(Span::raw(rest[..length].to_owned()));
+                at += length;
+                plain = at;
+                continue;
+            }
+        }
+        at += text[at..].chars().next().unwrap().len_utf8();
+    }
+    spans.extend(preview_emphasis_only(&text[plain..]));
+    spans
+}
+
+fn preview_emphasis_only(text: &str) -> Vec<Span<'static>> {
     // A deliberately small prose renderer: no HTML execution, links or image fetches.
     let mut spans = Vec::new();
     let mut rest = text;
@@ -5589,7 +5869,10 @@ fn preview_lines(text: &str, kind: &str) -> Vec<Line<'static>> {
                         accent().add_modifier(Modifier::BOLD),
                     ));
                 }
-                if line.trim_start().starts_with("- ") || line.trim_start().starts_with("* ") {
+                if ["- ", "* ", "+ "]
+                    .iter()
+                    .any(|p| line.trim_start().starts_with(p))
+                {
                     let prefix = line.len() - line.trim_start().len();
                     let mut spans = vec![Span::styled(
                         format!("{}{} ", " ".repeat(prefix), if ascii() { "-" } else { "•" }),
@@ -5826,10 +6109,13 @@ fn markdown_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
     let source: Vec<_> = safe.lines().collect();
     let fences = crate::syntax_preview::fenced_blocks(&safe);
     let mut at = 0;
+    let mut protected = BTreeSet::new();
     let mut fence = fences.iter().peekable();
     while at < source.len() {
         if let Some(block) = fence.peek().filter(|block| block.opening == at) {
-            at = block.closing.map(|i| i + 1).unwrap_or(source.len());
+            let end = block.closing.map(|i| i + 1).unwrap_or(source.len());
+            protected.extend(at..end);
+            at = end;
             fence.next();
             continue;
         }
@@ -5846,6 +6132,7 @@ fn markdown_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
             preview_inline,
         ) {
             if consumed > 0 && rendered.len() == consumed && at + consumed <= lines.len() {
+                protected.extend(at..at + consumed);
                 lines.splice(at..at + consumed, rendered);
                 at += consumed;
                 continue;
@@ -5853,6 +6140,81 @@ fn markdown_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
         }
         at += 1;
     }
+    let mut row = 0;
+    while row < source.len() {
+        let opening = source[row].trim();
+        let closing = match opening {
+            "$$" => Some("$$"),
+            "\\[" => Some("\\]"),
+            _ => None,
+        };
+        if !protected.contains(&row) {
+            if let Some(closing) = closing {
+                if let Some(end) = (row + 1..source.len())
+                    .take(128)
+                    .find(|i| protected.contains(i) || source[*i].trim() == closing)
+                {
+                    if !protected.contains(&end) {
+                        for index in row..=end {
+                            lines[index] = Line::raw(source[index].to_owned());
+                        }
+                        protected.extend(row..=end);
+                        let expression = source[row + 1..end].join(" ");
+                        if let Some(rendered) = (!ascii())
+                            .then(|| crate::markdown_math::render_math(&expression))
+                            .flatten()
+                        {
+                            protected.extend(row..=end);
+                            lines[row] = Line::from(Span::styled(
+                                if ascii() { "Math" } else { "∷ Math" },
+                                muted(),
+                            ));
+                            for line in &mut lines[row + 1..=end] {
+                                *line = Line::raw("");
+                            }
+                            if row + 1 < end {
+                                lines[row + 1] =
+                                    Line::from(Span::styled(rendered, tint(Color::Magenta)));
+                            } else {
+                                lines[row] =
+                                    Line::from(Span::styled(rendered, tint(Color::Magenta)));
+                            }
+                            row = end + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        row += 1;
+    }
+    let mut wrapped = Vec::new();
+    let mut indent = 0;
+    for (index, mut line) in lines.into_iter().enumerate() {
+        let raw = source.get(index).copied().unwrap_or("");
+        if protected.contains(&index)
+            || raw.trim().is_empty()
+            || raw.trim_start().starts_with(['#', '>'])
+        {
+            indent = 0;
+            wrapped.push(line);
+            continue;
+        }
+        if let Some(prefix) = list_prefix(raw) {
+            indent = prefix;
+        } else if indent > 0 {
+            let spaces = raw.len() - raw.trim_start_matches(' ').len();
+            if spaces < indent {
+                line.spans.insert(0, Span::raw(" ".repeat(indent - spaces)));
+            }
+        }
+        wrapped.extend(hanging_lines(
+            &line,
+            indent,
+            if width == 0 { 80 } else { width },
+        ));
+    }
+    let lines = wrapped;
     *browser.markdown_cache.borrow_mut() = Some((
         browser.preview_revision,
         width,
@@ -6082,6 +6444,20 @@ fn render_preview_with_native(
             .scroll((scroll, 0)),
         inner,
     );
+    browser.preview_link_cells.borrow_mut().clear();
+    if rich.is_some_and(|p| p.kind == "markdown") && !markdown_preview_links(text).is_empty() {
+        let mut cells = browser.preview_link_cells.borrow_mut();
+        for y in inner.y..inner.bottom() {
+            for x in inner.x..inner.right() {
+                if frame.buffer_mut()[(x, y)]
+                    .modifier
+                    .contains(Modifier::UNDERLINED)
+                {
+                    cells.push((x, y));
+                }
+            }
+        }
+    }
 }
 
 fn browser_entries(b: &Browser) -> Vec<Entry> {
@@ -7642,7 +8018,10 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             dirty = true;
         }
         screen.preview_mouse(
-            app.pdf_preview_active() && !app.help && app.dialog.is_none() && app.input.is_none(),
+            (app.pdf_preview_active() || app.markdown_preview_active())
+                && !app.help
+                && app.dialog.is_none()
+                && app.input.is_none(),
         )?;
         if dirty {
             screen
@@ -7829,6 +8208,109 @@ mod tests {
             {"address":"192.0.2.22","interface":"eth0","lladdr":"02:11:22:33:44:55","link_state":"STALE","source":"neighbor"}
         ],"internet":{"state":"unknown"}}));
     }
+    #[test]
+    fn markdown_links_math_and_click_picker_are_safe() {
+        let (mut a, _tasks) = file_app();
+        let source = "[Docs](https://example.org/docs) [Bad](javascript:alert(1))\n\n- first second third fourth fifth sixth\n  continued bullet text\n\nInline $x^2 + \\alpha$ and `\\alpha`\n\n$$\n\\frac{a}{b} + \\sqrt{x}\n$$\n\n~~~text\n[code](https://ignored) $x^2$\n~~~";
+        let b = a.browser.as_mut().unwrap();
+        b.preview = Some(source.into());
+        b.preview_rich = Some(RichPreview::from_value(
+            &serde_json::json!({"kind":"markdown", "text":source}),
+        ));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| render(f, &a)).unwrap();
+        let b = a.browser.as_ref().unwrap();
+        assert!(!b.preview_link_cells.borrow().is_empty());
+        let position = b.preview_link_cells.borrow()[0];
+        assert!(a.preview_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(event::MouseButton::Left),
+                column: position.0,
+                row: position.1,
+                modifiers: KeyModifiers::NONE
+            },
+            Rect::new(0, 0, 80, 24)
+        ));
+        assert!(
+            matches!(&a.dialog,Some(Dialog::Links(links)) if links.len()==2 && links[0].target=="https://example.org/docs")
+        );
+        a.dialog_selected = 1;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.notice.contains("Only HTTP/HTTPS"));
+        a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        let b = a.browser.as_ref().unwrap();
+        let display = preview_display_lines(b, source)
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !ascii() {
+            assert!(display.contains("x² + α"), "{display}");
+            assert!(display.contains("√"), "{display}");
+        }
+        assert!(display.contains("[code](https://ignored) $x^2$"));
+        assert!(!display.contains("[Docs]"));
+        assert!(a.browser.as_ref().unwrap().preview.is_some());
+    }
+    #[test]
+    fn markdown_lists_continuations_unicode_and_code_keep_layout() {
+        for width in [12, 20, 40] {
+            let mut b = Browser::new(0, "/fixture".into());
+            let source="1. 漢字 one two three four five six\n   continued words below\n  - nested words one two three four\n\n~~~sh\n- literal code bullet\n~~~";
+            b.preview_rich = Some(RichPreview::from_value(
+                &serde_json::json!({"kind":"markdown","text":source}),
+            ));
+            b.preview_viewport.set((width, 20));
+            let lines = preview_display_lines(&b, source);
+            let contents = lines
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>();
+            assert!(
+                contents.iter().any(|l| l.starts_with("   continued")),
+                "{contents:?}"
+            );
+            assert!(contents.iter().any(|l| l.contains("literal code bullet")));
+            assert!(lines.iter().all(|l| l.width() <= usize::from(width)
+                || l.spans.iter().any(|s| s.content.contains("literal code"))));
+        }
+        let raw = preview_inline(
+            "Unsupported $\\begin{matrix}x_1\\end{matrix}$ and escaped \\$x^2\\$ and `x^2`",
+        );
+        let content = raw.iter().map(|s| s.content.as_ref()).collect::<String>();
+        assert!(content.contains("$\\begin{matrix}x_1\\end{matrix}$"));
+        assert!(content.contains("\\$x^2\\$"));
+    }
+
+    #[test]
+    fn markdown_bullet_wrap_has_hanging_indent() {
+        let mut b = Browser::new(0, "/fixture".into());
+        b.preview_viewport.set((16, 8));
+        let source = "- one two three four five six";
+        b.preview_rich = Some(RichPreview::from_value(
+            &serde_json::json!({"kind":"markdown", "text":source}),
+        ));
+        let lines = preview_display_lines(&b, source);
+        let mut terminal = Terminal::new(TestBackend::new(16, 8)).unwrap();
+        terminal
+            .draw(|f| f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), f.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 1)].symbol(), " ");
+        assert_eq!(buffer[(1, 1)].symbol(), " ");
+        assert_ne!(buffer[(2, 1)].symbol(), " ");
+    }
+
     #[test]
     fn network_observer_tree_preserves_every_distinct_route_without_merging() {
         let (mut a, _rx) = queued_app();

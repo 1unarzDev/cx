@@ -401,6 +401,48 @@ fn current_session_name(prior: &Session, provider: &str, directory: &str) -> Str
     }
 }
 
+fn shell_command_label(command: &str) -> Option<String> {
+    // Command name only: never arguments, shell history or terminal contents.
+    let command = command.trim();
+    if command.is_empty()
+        || command.len() > 64
+        || !command
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
+        || ["fish", "bash", "zsh", "sh", "dash", "tmux", "cx"].contains(&command)
+    {
+        return None;
+    }
+    Some(command.into())
+}
+fn shell_activity(managed: bool, id: &str) -> Option<String> {
+    let current = field(managed, id, "#{pane_current_command}")
+        .ok()
+        .and_then(|name| shell_command_label(&name));
+    if let Some(name) = current {
+        if managed {
+            let mut c = tmux(true).ok()?;
+            c.args(["set-option", "-p", "-t", id, "@cx_recent_command", &name]);
+            // Best effort; this metadata cannot prevent listing a running terminal.
+            let _ = output(c);
+        }
+        return Some(format!("running {name}"));
+    }
+    if managed {
+        if let Some(name) = field(true, id, "#{@cx_last_command}")
+            .ok()
+            .and_then(|name| shell_command_label(&name))
+        {
+            return Some(format!("last: {name}"));
+        }
+        return field(true, id, "#{@cx_recent_command}")
+            .ok()
+            .and_then(|name| shell_command_label(&name))
+            .map(|name| format!("recent: {name}"));
+    }
+    None
+}
+
 fn inspect(managed: bool, id: &str) -> Result<Session> {
     let (host, account, boot_id) = identity();
     let name = field(managed, id, "#{session_name}")?;
@@ -445,12 +487,26 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
         .filter(|_| provider != "shell")
         .and_then(|process| provider_directory(provider, process))
         .unwrap_or(field(managed, id, "#{pane_current_path}")?);
-    Ok(Session {
-        id: if managed { name.clone() } else { id.into() },
-        name: prior
+    let saved_name = prior
+        .as_ref()
+        .map(|s| current_session_name(s, provider, &directory))
+        .unwrap_or_else(|| name.clone());
+    let automatic = prior
+        .as_ref()
+        .is_some_and(|s| s.name == default_session_name(&s.provider, &s.directory));
+    let display_name = if automatic && provider == "shell" {
+        shell_activity(managed, id).unwrap_or(saved_name)
+    } else if automatic {
+        process
             .as_ref()
-            .map(|s| current_session_name(s, provider, &directory))
-            .unwrap_or(name),
+            .and_then(|p| crate::session_titles::native_title(provider, p.pid))
+            .unwrap_or(saved_name)
+    } else {
+        saved_name
+    };
+    Ok(Session {
+        id: if managed { name } else { id.into() },
+        name: display_name,
         directory,
         provider: provider.into(),
         host,
@@ -477,7 +533,8 @@ pub fn list() -> Result<Vec<Session>> {
             }
         }
     }
-    result.sort_by(|a, b| a.name.cmp(&b.name));
+    // Labels change as commands and native names change; identity ordering stays stable.
+    result.sort_by(|a, b| (a.external, &a.id).cmp(&(b.external, &b.id)));
     Ok(result)
 }
 /// Stop only the exact cx-owned shell shown to the user at confirmation time.
@@ -685,6 +742,21 @@ fn provider_available(shell: &str, probe: &str) -> bool {
 // resets restore pane defaults without editing shell config. They are safe only
 // inside managed tmux: on a native viewer terminal they erase its dynamic theme.
 const FISH_VIEWER_PALETTE: &str = r"printf '%b' '\e]104\e\\' '\e]110\e\\' '\e]111\e\\'";
+// Installed only in newly created managed Fish shells; no personal startup file changes.
+// Token parsing happens in-process and persists only a conservative first command name.
+const FISH_COMMAND_LABEL: &str = r#"
+function __cx_command_label --on-event fish_preexec
+    set -l token (string split -m 1 ' ' -- (string trim -- $argv[1]))[1]
+    set -l name (string replace -r '^.*/' '' -- $token)
+    if string match -qr '^[a-zA-Z0-9_][a-zA-Z0-9_.+-]{0,63}$' -- $name
+        switch $name
+            case fish bash zsh sh dash tmux cx
+                return
+        end
+        command timeout 0.2s "$CX_TMUX_BIN" -u -S "$CX_MANAGED_SOCKET" set-option -p -t "$TMUX_PANE" @cx_last_command "$name" >/dev/null 2>&1
+    end
+end
+"#;
 
 fn bounded_provider_check(mut command: Command, timeout: Duration) -> bool {
     use std::os::unix::process::CommandExt;
@@ -864,6 +936,11 @@ pub fn create(request: &CreateSession) -> Result<Session> {
     if !directory.is_dir() {
         bail!("execution location is not a directory");
     }
+    let display_name = if request.name.is_empty() {
+        default_session_name(&request.provider, &directory.to_string_lossy())
+    } else {
+        request.name.clone()
+    };
     let root = state()?;
     let lock = fs::OpenOptions::new()
         .create(true)
@@ -903,7 +980,7 @@ pub fn create(request: &CreateSession) -> Result<Session> {
     let (host, account, boot_id) = identity();
     let pending = Session {
         id: name.clone(),
-        name: request.name.clone(),
+        name: display_name.clone(),
         directory: directory.to_string_lossy().into_owned(),
         provider: request.provider.clone(),
         host,
@@ -931,14 +1008,23 @@ pub fn create(request: &CreateSession) -> Result<Session> {
         .file_name()
         .is_some_and(|name| name == "fish")
     {
-        launcher.extend(["--init-command".into(), FISH_VIEWER_PALETTE.into()]);
+        launcher.extend([
+            "--init-command".into(),
+            format!("{FISH_VIEWER_PALETTE}; {FISH_COMMAND_LABEL}"),
+        ]);
     }
     launcher.extend(["-l".into()]);
     if request.provider != "shell" {
         launcher.extend(["-i".into(), "-c".into(), request.provider.clone()]);
     }
     let command = format!(
-        "exec env CX_VIEWER_THEME=1 {}",
+        "exec env CX_VIEWER_THEME=1 CX_TMUX_BIN={} CX_MANAGED_SOCKET={} {}",
+        quote(
+            tmux_executable()
+                .to_str()
+                .context("tmux path is not UTF-8")?
+        ),
+        quote(socket()?.to_str().context("socket path is not UTF-8")?),
         launcher
             .iter()
             .map(|arg| quote(arg))
@@ -951,7 +1037,7 @@ pub fn create(request: &CreateSession) -> Result<Session> {
         .arg(command);
     output(c)?;
     let mut session = inspect(true, &name)?;
-    session.name = request.name.clone();
+    session.name = display_name;
     session.provider = request.provider.clone();
     let temp = root.join(format!("{name}.tmp"));
     let mut f = fs::OpenOptions::new()
@@ -1389,6 +1475,22 @@ mod tests {
                 "probe child still executing"
             );
             thread::sleep(Duration::from_millis(5));
+        }
+    }
+    #[test]
+    fn shell_labels_never_include_arguments_or_terminal_controls() {
+        assert_eq!(shell_command_label("cargo"), Some("cargo".into()));
+        assert_eq!(shell_command_label("python3"), Some("python3".into()));
+        for name in [
+            "bash",
+            "fish",
+            "curl -H secret",
+            "TOKEN=secret",
+            "evil\x1b[31m",
+            "$(secret)",
+            "",
+        ] {
+            assert!(shell_command_label(name).is_none(), "{name:?}");
         }
     }
     #[test]

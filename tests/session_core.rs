@@ -2,6 +2,8 @@
 mod files;
 #[path = "../src/model.rs"]
 mod model;
+#[path = "../src/session_titles.rs"]
+mod session_titles;
 #[path = "../src/sessions.rs"]
 mod sessions;
 #[path = "../src/store.rs"]

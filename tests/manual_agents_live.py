@@ -9,7 +9,7 @@ with tempfile.TemporaryDirectory(prefix='cx-manual-agent-') as directory:
     socket = str(root/'state/cx/managed.sock')
     for provider in ['claude', 'codex']:
         shutil.copy2(shutil.which('bash'), root/provider)
-    original = json.loads(subprocess.check_output([binary, 'new', '--provider', 'shell', '--directory', str(root), '--key', 'manual-detection'], env=env, universal_newlines=True))
+    original = json.loads(subprocess.check_output([binary, 'new', '--provider', 'shell', '--directory', str(root), '--key', 'manual-detection', '--name', 'shell · '+root.name], env=env, universal_newlines=True))
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
     env['TERM'] = 'xterm-256color'
@@ -40,6 +40,18 @@ with tempfile.TemporaryDirectory(prefix='cx-manual-agent-') as directory:
             value = expect(provider)
             assert value['process']['pid'] != original['pid']
             os.write(master, b'\x03'); expect('shell')
+        # Shell labels retain only observed executable names, never argv secrets.
+        send("sleep 30 # synthetic-secret-not-for-metadata")
+        deadline=time.monotonic()+5
+        while time.monotonic()<deadline:
+            drain();label=current()['name']
+            if label=='running sleep':break
+            time.sleep(.1)
+        assert label=='running sleep', label
+        assert 'synthetic-secret' not in json.dumps(current())
+        os.write(master,b'\x03');time.sleep(.2);drain()
+        assert current()['name']=='recent: sleep', current()['name']
+        for key in ['id','pid','started','boot_id','socket']:assert current()[key]==original[key]
         send("./codex -c 'sleep 30; :' &")
         time.sleep(.2); expect('shell')
         # An unrelated program with a spoofed argv[0] is not a provider.

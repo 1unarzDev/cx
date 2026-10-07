@@ -2,6 +2,7 @@ mod auth;
 mod files;
 mod model;
 mod network;
+mod session_titles;
 mod sessions;
 mod sharing;
 mod store;
@@ -69,8 +70,8 @@ enum Cmd {
         directory: String,
         #[arg(long)]
         key: Option<String>,
-        #[arg(long, default_value = "work")]
-        name: String,
+        #[arg(long)]
+        name: Option<String>,
     },
     Attach {
         id: String,
@@ -567,6 +568,7 @@ fn run() -> Result<()> {
             name,
         }) => {
             let key = key.unwrap_or_else(|| format!("{}-{}", std::process::id(), transport::now()));
+            let name = name.unwrap_or_default();
             println!(
                 "{}",
                 transport::request(

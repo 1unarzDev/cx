@@ -601,10 +601,9 @@ impl App {
             .collect();
         rows.sort_by(|(a, i, x), (b, j, y)| {
             b.cmp(a).then_with(|| {
-                (x.directory.as_str(), *i, x.name.as_str(), x.id.as_str()).cmp(&(
+                (x.directory.as_str(), *i, x.id.as_str()).cmp(&(
                     y.directory.as_str(),
                     *j,
-                    y.name.as_str(),
                     y.id.as_str(),
                 ))
             })
@@ -1650,17 +1649,8 @@ impl App {
     }
     fn create_at(&mut self, d: usize, directory: String, provider: String) {
         let key = unique_key();
-        let location = self
-            .browser
-            .as_ref()
-            .filter(|b| b.device == d && b.path == directory)
-            .map(|b| b.display_path.as_str())
-            .unwrap_or(&directory);
-        let folder = location
-            .rsplit('/')
-            .find(|s| !s.is_empty())
-            .unwrap_or("root");
-        let name = format!("{provider} · {}", safe_label(folder));
+        // Execution helper generates the label after resolving the directory.
+        let name = String::new();
         self.creating = self.send(
             d,
             Operation::Create(CreateSession {
@@ -8374,6 +8364,32 @@ mod tests {
         a.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(a.dialog.is_none() && !a.dialog_detail_focus && rx.try_recv().is_err());
+    }
+    #[test]
+    fn changing_session_labels_preserves_row_order_and_selection() {
+        let (mut a, _) = queued_app();
+        for (id, name) in [("one", "alpha"), ("two", "zeta")] {
+            a.work[0].sessions.push(
+                serde_json::from_value(serde_json::json!({
+                    "id":id,"name":name,"directory":"/tmp","provider":"shell",
+                    "account":a.devices[0].account,"host":a.devices[0].host,
+                    "pid":1,"started":"x","boot_id":"boot","external":false,"socket":null
+                }))
+                .unwrap(),
+            );
+        }
+        a.selected = 1;
+        let before: Vec<_> = a.session_rows().iter().map(|(_, s)| s.id.clone()).collect();
+        a.work[0].sessions[0].name = "running zsh".into();
+        a.work[0].sessions[1].name = "A native task name".into();
+        assert_eq!(
+            before,
+            a.session_rows()
+                .iter()
+                .map(|(_, s)| s.id.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(a.selected_session().unwrap().1.id, "two");
     }
     #[test]
     fn restart_preserves_selected_session_identity_when_devices_reorder() {

@@ -6,6 +6,15 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.19
+
+### Features
+- Identify automatically named shells by the running executable or last observed command, without recording command arguments or history. New managed Fish shells capture short commands too.
+- Display Claude’s native session name when its PID/start record matches. Read Codex’s native name only when a unique writable session handle establishes the conversation identity; unsupported daemon-backed sessions retain their folder label.
+
+### Fixes
+- Preserve explicitly named sessions and stable session ordering as labels change. Resolve default labels on the execution host after canonicalizing the selected folder.
+
 ## v0.1.18
 
 ### Fixes

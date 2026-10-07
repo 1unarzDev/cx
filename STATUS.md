@@ -162,3 +162,10 @@ Final installed innovation/server Network+Update PTYs PASS. Server lacked a save
 - Integrated381 Rust tests pass (one intentionally ignored live/protected case),98 UI tests and120/80/48-column browser PTYs pass. Signed release/deployment next.
 
 Signed v0.1.18/source `aba331d` published; workflow37536873542 PASS (native checks, both static architecture builds and nine distro/architecture fixtures). Clean-HOME exact public bootstrap PASS. Innovation/server signed auto-update PASS; both verify0.1.18/SHA256970a75eca93ddbfea6dad31f880ebd5e5ef25fbbe693469c7664b595208df6a0. Tranquility update BLOCKED by No route to host, still last verified0.1.16. Reopen an older viewer to use the installed selector; no terminal session restarted. Optional visual question pending: whether attached cyan/bold chevron is strong enough without the white background; do not repeat it.
+
+
+## Session readability — implementation milestone
+- Shell command-only labels, new Fish preexec observation, exact native metadata names and stable identity ordering integrated. Custom names remain unchanged; omitted CLI/UI names resolve on the execution helper after canonicalization.
+- Independent review removed unsafe inherited-pane-title fallback and partial FD identity scans; read-only historical rollout handles excluded, fdinfo reads bounded. No provider configuration or personal shell/tmux files modified.
+- Claude2.1.290 live native-name comparison PASS on innovation. Synthetic Codex writer/rename/ambiguity fixture PASS. Real Codex0.160.1 local /rename works but daemon-owned thread association remains BLOCKED; do not claim native naming of those running terminals. Installed versions unchanged pending release. Tranquility remains unreachable.
+- Optional shell-name/detail preference already asked; pending, do not repeat. Conservative executable-only default used. Codex0.160.1 supports additive SessionStart hooks but launch-specific handlers require fresh native /hooks trust review; omitted from the default workflow. No hooks installed or trust changed.

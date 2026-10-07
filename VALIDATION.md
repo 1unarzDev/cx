@@ -420,3 +420,22 @@ Rollback/uninstall: preserve state, jobs and tmux sockets; removing only `~/.loc
 - PASS signed `cx update --json` on innovation/server; both actual version0.1.18 and matching SHA256 `970a75eca93ddbfea6dad31f880ebd5e5ef25fbbe693469c7664b595208df6a0`. `/tmp/cx-v018-innovation-update.json`, `/tmp/cx-v018-server-update.json`.
 - BLOCKED tranquility update: No route to host; last verified0.1.16, no upgrade claimed. `/tmp/cx-v018-tranquility-update.json`. No network/SSH-trust/session mutation attempted to bypass offline state.
 - Rollback: signed bootstrap with CX_VERSION=v0.1.17 and CX_NO_LAUNCH=1 preserves work/session state. This release owns no additional service, socket or network resource; only file selection rendering/spacing and visual capture coverage changed.
+
+
+## Session labels — 2026-10-06
+
+Candidate based on local f840d54/cec7913; supersedes the latter's pane-title fallback. Innovation/tmux3.7c/Fish/Codex0.160.1/Claude2.1.290. Independent review found stale OSC identity, incomplete FD scans, read-only handle association, unresolved-directory labels and oversized fdinfo reads; all corrected. No transcripts/history or command arguments are read for labels, no model summary requests are made, and explicit names remain intact.
+
+PASS — `python3 tests/manual_agents_live.py target/debug/cx`: disposable tmux shell, synthetic providers, observed executable labels, secret-argument exclusion, foreground takeover/return and retained PID/start/boot/socket. `/tmp/cx-manual-agents-final.json`.
+
+PASS — `python3 tests/session_names_live.py target/debug/cx`: real tmux/synthetic ELF provider, exact writable writer identity, metadata rename refresh, ambiguous writer fallback, relative-directory resolution, explicit `--name work` preservation. `/tmp/cx-native-names-final.json`.
+
+PASS — `python3 tests/shell_labels_live.py target/debug/cx`: actual Fish short builtin captured as `last: echo`, synthetic secret argument absent, same terminal identity. `/tmp/cx-fish-label-final.json`.
+
+PASS — read-only live Claude metadata comparison: one eligible native name matched the UI/helper display name; no title values disclosed. BLOCKED — actual disposable Codex local `/rename` updates its native index, but current daemon-backed runtime provides no exact TUI/thread association after removing unsafe OSC fallback. `/tmp/cx-real-codex-final.json`. No inference prompts sent; original test identity preserved; only the disposable session removed. Native naming for this runtime is not verified. Tranquility live checks BLOCKED by No route to host; protected sessions and WARP untouched.
+
+Initial parallel test attempts intermittently failed existing noisy-converter spawn availability; isolated files/network rerun PASS. Final serial integrated run recorded separately below. Current changes are not yet published or installed.
+
+PASS — final integrated `cargo test --all-targets -- --test-threads=1`:223 main +47 files/network +52 session core +54 transfers +20 updater =396 passed, one intentionally ignored protected/live test. `/tmp/cx-label-final-serial-tests.log`. `cargo fmt --check` and `git diff --check` PASS. Version-only manifest change follows this run. New native/shell fixtures added to signed-release checks.
+
+Codex0.160.1 SessionStart command hooks were verified against version-tagged primary source as additive across active config layers, but CLI unmanaged handlers require exact-hash native `/hooks` trust review. A per-launch identity token changes the hash; this integration is intentionally absent from the default workflow. No provider hooks/configuration or existing approvals changed. Findings `/tmp/cx-v160-native-hook-findings.txt`.

@@ -858,6 +858,19 @@ case "$major:$minor" in *[!0-9:]*|:*|*:) exit 1;; esac
     if !supports_terminal_color {
         // Older tmux rejects `terminal`, opening an error pager instead of the shell.
         config = config.replace("fg=terminal,bg=terminal", "fg=default,bg=default");
+        // Old tmux lacks mouse event coordinates in run-shell format expansion.
+        // Preserve native requested mouse input and guarded ordinary scrollback.
+        config = config.lines().map(|line| {
+            if line.starts_with("bind-key -n WheelUpPane ") {
+                "bind-key -n WheelUpPane if-shell -F -t = '#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{!=:#{history_size},0}}}' 'send-keys -M' \"if-shell -F -t = '#{!=:#{history_size},0}' 'copy-mode -e -t = ; send-keys -X -t = scroll-up'\"".to_owned()
+            } else if line.starts_with("bind-key -n WheelDownPane ") {
+                "bind-key -n WheelDownPane if-shell -F -t = '#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{!=:#{history_size},0}}}' 'send-keys -M'".to_owned()
+            } else if line.contains("WheelUpPane") && line.starts_with("bind-key -T copy-mode") {
+                line.split(" if-shell").next().unwrap().to_owned() + " if-shell -F -t = '#{!=:#{history_size},0}' 'send-keys -X -N 5 scroll-up'"
+            } else if line.contains("WheelDownPane") && line.starts_with("bind-key -T copy-mode") {
+                line.split(" if-shell").next().unwrap().to_owned() + " if-shell -F -t = '#{!=:#{history_size},0}' 'send-keys -X -N 5 scroll-down'"
+            } else { line.to_owned() }
+        }).collect::<Vec<_>>().join("\n");
     }
     config
 }
@@ -1076,6 +1089,153 @@ fn set_managed_status(session: &Session) -> Result<()> {
     output(command)?;
     Ok(())
 }
+// Codex can spawn an editor in its own foreground process group. A provider
+// ancestor is not enough: another process on this PTY must retain input.
+// Conservatively reject same-group children even with redirected stdin; they
+// may open /dev/tty independently.
+fn wheel_codex_owner(pane: u32) -> Option<ProcessIdentity> {
+    let (provider, identity) = foreground_provider(pane)?;
+    if provider != "codex" {
+        return None;
+    }
+    let (_, terminal, foreground) = terminal_group(pane)?;
+    let mut queue = std::collections::VecDeque::from([(pane, 0)]);
+    let mut parents = std::collections::HashMap::new();
+    let mut readers = Vec::new();
+    let mut visited = 0;
+    while let Some((pid, depth)) = queue.pop_front() {
+        visited += 1;
+        if visited > 64 || depth > 6 {
+            return None;
+        }
+        if pid != pane
+            && terminal_group(pid)
+                .is_some_and(|(group, tty, _)| group == foreground && tty == terminal)
+            && running_provider(pid) != Some("codex")
+        {
+            readers.push(pid);
+        }
+        let children = fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).ok()?;
+        for child in children.split_whitespace() {
+            let child = child.parse().ok()?;
+            parents.insert(child, pid);
+            queue.push_back((child, depth + 1));
+            if queue.len() > 64 {
+                return None;
+            }
+        }
+    }
+    // Fish/Node launchers waiting above the native provider do not own input.
+    let mut ancestors = std::collections::HashSet::new();
+    let mut pid = identity.pid;
+    while let Some(parent) = parents.get(&pid) {
+        ancestors.insert(*parent);
+        pid = *parent;
+    }
+    if readers.iter().any(|pid| !ancestors.contains(pid)) {
+        return None;
+    }
+    Some(identity)
+}
+
+/// Wheel fallback belongs only to our managed terminal. Never synthesize prompt
+/// history arrows or send mouse input to an unrelated foreground editor/shell.
+pub fn native_wheel(pane: &str, direction: &str, x: u16, y: u16, client: u32) -> Result<()> {
+    if !pane.starts_with('%')
+        || pane.len() > 12
+        || !pane[1..].bytes().all(|c| c.is_ascii_digit())
+        || pane.len() == 1
+        || !matches!(direction, "up" | "down")
+    {
+        bail!("invalid managed wheel event");
+    }
+    let mut command = tmux(true)?;
+    command.args(["display-message", "-p", "-t", pane,
+        "#{session_name} #{pane_pid} #{alternate_on} #{history_size} #{pane_in_mode} #{pane_left} #{pane_top} #{pane_width} #{pane_height} #{mouse_any_flag}"]);
+    let snapshot = output(command)?;
+    let fields: Vec<_> = snapshot.split_whitespace().collect();
+    if fields.len() != 10
+        || fields[0].len() != 67
+        || !fields[0].starts_with("cx-")
+        || !fields[0][3..].bytes().all(|c| c.is_ascii_hexdigit())
+    {
+        return Ok(());
+    }
+    // A fallback tmux subprocess must not bypass the originating viewer's
+    // read-only/no-resize attachment policy. Detached/stale events are discarded.
+    let mut clients = tmux(true)?;
+    clients.args([
+        "list-clients",
+        "-t",
+        fields[0],
+        "-F",
+        "#{client_pid} #{client_readonly}",
+    ]);
+    if !output(clients)?
+        .lines()
+        .any(|line| line == format!("{client} 0"))
+    {
+        return Ok(());
+    }
+    let pid: u32 = fields[1].parse()?;
+    let mode = fields[4] == "1";
+    let history: u32 = fields[3].parse()?;
+    let provider = wheel_codex_owner(pid);
+    if fields[2] == "1" && fields[9] == "0" && provider.is_some() {
+        let left: u16 = fields[5].parse()?;
+        let top: u16 = fields[6].parse()?;
+        let width: u16 = fields[7].parse()?;
+        let height: u16 = fields[8].parse()?;
+        let (Some(column), Some(row)) = (x.checked_sub(left), y.checked_sub(top)) else {
+            return Ok(());
+        };
+        if column >= width || row >= height {
+            return Ok(());
+        }
+        // Recheck the foreground group and start identity immediately before
+        // dispatch. A provider launched inside a shell is still recognized, but
+        // suspended Codex and its foreground editors receive no fabricated input.
+        if wheel_codex_owner(pid).map(|p| (p.pid, p.start_ticks))
+            != provider.map(|p| (p.pid, p.start_ticks))
+        {
+            return Ok(());
+        }
+        if mode {
+            if history > 0 {
+                return Ok(());
+            }
+            let mut cancel = tmux(true)?;
+            cancel.args(["send-keys", "-t", pane, "-X", "cancel"]);
+            output(cancel)?;
+        }
+        let event = format!(
+            "\x1b[<{};{};{}M",
+            if direction == "up" { 64 } else { 65 },
+            column + 1,
+            row + 1
+        );
+        let mut send = tmux(true)?;
+        send.args(["send-keys", "-t", pane, "-l", &event]);
+        output(send)?;
+    } else if direction == "up" && history > 0 && !mode {
+        let mut copy = tmux(true)?;
+        copy.args([
+            "copy-mode",
+            "-e",
+            "-t",
+            pane,
+            ";",
+            "send-keys",
+            "-t",
+            pane,
+            "-X",
+            "scroll-up",
+        ]);
+        output(copy)?;
+    }
+    Ok(())
+}
+
 pub fn refresh_managed_status(id: &str) -> Result<()> {
     let id = id.strip_prefix('=').unwrap_or(id);
     if !id.starts_with("cx-") || id.len() != 67 || !id[3..].bytes().all(|b| b.is_ascii_hexdigit()) {

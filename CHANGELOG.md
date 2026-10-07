@@ -6,6 +6,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.21
+
+### Fixes
+- Scroll fullscreen Codex’s native chat when its startup mouse policy is stale, instead of opening tmux’s empty `0/0` history buffer. Preserve the running process, draft and application-owned keyboard controls.
+- Reject wheel fallback for read-only viewers and foreground editors, and keep empty history from opening copy mode. Older tmux retains guarded ordinary scrollback and requested native mouse input.
+
 ## v0.1.20
 
 ### Features

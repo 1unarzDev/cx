@@ -182,3 +182,9 @@ Optional Codex naming-hook choice is pending: keep seamless startup/folder fallb
 - Independent read-only review loading/resize findings fixed and re-reviewed. Integrated402 Rust tests PASS/one protected live case ignored; source/PDF/search real PTYs PASS. Final optimized checks and signed release/deployment recorded in VALIDATION.md. No new blocking user decision.
 
 Signed0.1.20/source d8a484a published; workflow37560669843 PASS. Exact public bootstrap and installed innovation preview/search PTYs PASS. Innovation/server verify0.1.20 and identical signed SHA256071272225fc9a441ef0d6f7c9ce8bf042392ab5a71890e9dd23549235b836810; six innovation terminal identities preserved. Tranquility deployment BLOCKED by No route to host, last verified0.1.16. Optional physical G/search confirmation pending; do not repeat before an answer. Rollback/deployment evidence in VALIDATION.md.
+
+
+## Codex scroll fallback — v0.1.21 candidate
+- Identified0/0 as empty tmux history while fullscreen Codex retains mouse-off startup policy. Forward genuine wheel bytes only to an unambiguous foreground Codex owner; generic empty histories remain live, native mouse-aware apps retain their input.
+- Read-only and detached viewers cannot dispatch fallback; same-group editors/ambiguous terminal children block it. Existing empty Codex copy mode can recover on wheel. Actual0.160.1 disposable transcript scroll/draft/process test and synthetic regression pass, no inference prompts.
+- tmux2.7 fixture passes guarded ordinary scrolling; event-format fallback supported on3.4+. Reviewer editor/observer findings corrected; final re-review and publication pending. No new blocking decision.

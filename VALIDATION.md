@@ -475,3 +475,18 @@ Signed v0.1.20/source `d8a484a9c67d60fedc6c1fccbc0f857c1bea6a7a` published after
 Innovation/server serialized signed `cx update --json` PASS, both actual0.1.20 and SHA256 `071272225fc9a441ef0d6f7c9ce8bf042392ab5a71890e9dd23549235b836810` (`/tmp/cx-v020-{innovation,server}-update.json`). Installed innovation real preview-search PTYs PASS in color/monochrome (`/tmp/cx-v020-installed-preview-pty.json`); all six original terminal ID/PID/start/boot/socket identities preserved (`local-evidence/preview-search/deployment-identities.json`). Server stays agent-free; no provider/session/network/trust mutation. Tranquility update BLOCKED by No route to host, last verified0.1.16; no upgrade claimed. Physical keyboard/visual confirmation remains pending.
 
 Rollback: signed bootstrap with `CX_VERSION=v0.1.19 CX_NO_LAUNCH=1` preserves session/file state. This release owns no new service/network resources. Reopen an older viewer to load the installed UI.
+
+
+## Codex wheel / empty 0/0 scrollback — 2026-10-06 candidate
+
+Reproduced failure with `python3 tests/mouse_scrollback_pty.py target/debug/cx` after clearing only the disposable alternate-screen history: assertion "wheel entered an empty 0/0 copy buffer instead of scrolling chat" (`/tmp/cx-scroll-zero-red.log`). Read-only live tmux flags found fullscreen Codex panes with history0 and native mouse capture disabled. Version-tagged Codex0.160.1 source `tui/tmux.rs` and owned-transcript handlers explain retained startup mouse policy; toggling tmux mouse does not refresh it. Genuine SGR wheel input scrolls the native transcript despite stale capture.
+
+PASS — actual configured Codex0.160.1 disposable session: native /status UI only, harmless unsent draft, no inference prompt. Wheel opens native "Back to bottom" view; Escape returns live; draft and frontend PID/start identity retained (`/tmp/cx-codex-wheel-live.json`). No original chat inspected or operated. Synthetic fixture passes exact up/down bytes, an existing empty copy buffer, burst ordering, malformed/out-of-pane events, same-group foreground editor, and read-only observer policy (`/tmp/cx-codex-wheel-pty.json`).
+
+Independent review caught same-group child editors and observer input bypass; fixed with bounded conservative terminal-group ownership and originating client/read-only checks, regressions added. Redirected stdin does not hide a same-PTY child. Ambiguous process trees fail closed. Only genuine wheel events are forwarded; no prompt-history arrows or provider control keys are synthesized.
+
+PASS — tmux2.7/Rocky8 isolated fixture with static candidate: normal scrollback, no empty copy-mode, native requested mouse input and original process/Ctrl+] return (`/tmp/cx-wheel-tmux27.json`). First compatibility attempts failed because old run-shell lacks mouse event formats and its numeric `>` condition is unsupported; capability fallback plus string comparison corrected both. Full native Codex fallback requires tmux3.4+, physically available hosts support it. Unknown/older backends preserve guarded scrolling; no unverified native behavior claimed.
+
+Final integrated/release/deployment evidence follows when available; not yet installed.
+
+PASS — final402 integrated Rust tests/one ignored (`/tmp/cx-wheel-acceptance-tests.log`), optimized actual Codex/synthetic/mouse/clipboard PTYs (`/tmp/cx-wheel-acceptance-{live,native,mouse,clipboard}.json`), current static binary mouse/native/live fixtures (`/tmp/cx-wheel-static-{mouse,native,live}.json`). Separate `/dev/tty` reader regression PASS (`/tmp/cx-wheel-devtty-native.json`). `cargo fmt --check` and `git diff --check` PASS. Conservative same-terminal children block fallback even with stdin redirected.

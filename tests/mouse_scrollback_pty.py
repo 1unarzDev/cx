@@ -6,12 +6,16 @@ import fcntl, json, os, pathlib, pty, select, shlex, struct, subprocess, sys, te
 binary = str(pathlib.Path(sys.argv[1]).resolve())
 with tempfile.TemporaryDirectory(prefix='cx-wheel-') as temporary:
     root = pathlib.Path(temporary)
+    (root/'.local/bin').mkdir(parents=True)
+    (root/'.local/bin/cx').symlink_to(binary)
     env = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root/'state'), SHELL='/bin/bash', TERM='xterm-256color')
     env.pop('TMUX', None); env.pop('TMUX_PANE', None)
     socket = str(root/'state/cx/managed.sock')
     session = json.loads(subprocess.check_output([binary, 'new', '--provider', 'shell', '--directory', str(root), '--key', 'scroll-fixture'], env=env))
     def tmux(*args):
         return subprocess.check_output(['tmux', '-S', socket, *args], env=env).decode().strip()
+    tmux('set-environment', '-g', 'HOME', str(root))
+    tmux('set-environment', '-g', 'XDG_STATE_HOME', str(root/'state'))
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
     def tty():
@@ -53,7 +57,7 @@ while True:
         wait(log.exists, 'fixture not ready')
         wait(lambda: state('#{history_size}').isdigit() and int(state('#{history_size}'))>50, 'no scrollback')
         drain()
-        assert b'\x1b[?1000h' in screen or b'\x1b[?1002h' in screen or b'\x1b[?1003h' in screen, 'client did not request mouse reporting'
+        wait(lambda: any(code in screen for code in (b'\x1b[?1000h', b'\x1b[?1002h', b'\x1b[?1003h')), 'client did not request mouse reporting')
         wheel_up=b'\x1b[<64;10;10M'; wheel_down=b'\x1b[<65;10;10M'
         os.write(master,wheel_up)
         wait(lambda: state('#{pane_in_mode}') == '1', 'wheel failed to enter scrollback')
@@ -68,6 +72,7 @@ while True:
         time.sleep(.1); drain()
         os.write(master,b'\x1b')
         wait(lambda: state('#{pane_in_mode}')=='0', 'Escape did not return to live application')
+        time.sleep(.15); drain()
         checks.append('wheel enters retained transcript scrollback without prompt-history input; Escape returns live')
         for keys in ('emacs', 'vi'):
             tmux('set-window-option', '-t', session['id'], 'mode-keys', keys)
@@ -77,13 +82,15 @@ while True:
             # before taking the baseline, or a delayed 'a' looks like wheel input.
             wait(lambda: log.read_bytes()==expected, 'alternate-screen input not acknowledged')
             wait(lambda: state('#{alternate_on}')=='1', 'alternate screen not enabled')
+            tmux('clear-history', '-t', pane)
             before=log.read_bytes()
             os.write(master, wheel_up)
-            wait(lambda: state('#{pane_in_mode}')=='1', 'alternate-screen wheel did not enter scrollback')
+            time.sleep(.15); drain()
+            assert state('#{pane_in_mode}')=='0', 'wheel entered an empty 0/0 copy buffer instead of scrolling chat'
             assert log.read_bytes()==before, 'alternate-screen wheel reached application'
-            os.write(master, b'\x1b')
-            wait(lambda: state('#{pane_in_mode}')=='0', keys+' Escape did not return live')
-        checks.append('alternate-screen/no-mouse scrollback; Escape returns live in emacs/vi copy modes')
+
+            assert state('#{pane_in_mode}')=='0', keys+' empty history must remain live'
+        checks.append('alternate-screen/no-mouse with empty history stays live and receives no fabricated input')
         os.write(master,b'\x1b[A')
         wait(lambda: b'\x1b[A' in log.read_bytes(), 'native Up key intercepted')
         checks.append('native Up key remains application-owned; Ctrl+] works inside scrollback with same PID on reattach')

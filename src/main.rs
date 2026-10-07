@@ -28,6 +28,14 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     #[command(hide = true)]
+    NativeWheel {
+        pane: String,
+        direction: String,
+        x: u16,
+        y: u16,
+        client: u32,
+    },
+    #[command(hide = true)]
     NativeCommand {
         payload: String,
     },
@@ -513,6 +521,13 @@ fn run() -> Result<()> {
             let s: TransferSpec = serde_json::from_reader(f.take(1024 * 1024))?;
             transfers::worker(&s)
         }
+        Some(Cmd::NativeWheel {
+            pane,
+            direction,
+            x,
+            y,
+            client,
+        }) => sessions::native_wheel(&pane, &direction, x, y, client),
         Some(Cmd::NativeAttach { external, args }) => {
             if args.first().map(String::as_str) != Some("attach-session") {
                 bail!("invalid native operation")

@@ -211,3 +211,5 @@ Signed0.1.22/source64c41ab/workflow37563927815 PASS; exact public bootstrap PASS
 - Independent review caught clipped-index and invisible suffix-match issues; both corrected. Tests/release acceptance in VALIDATION.md. No new preference question needed: requested behavior is explicit.
 
 File-find and transfer ecosystem three-size PTYs PASS; preview search palette/monochrome PASS. Optional shortcut question pending: dedicated New session shortcut while n/N own active file search; current behavior follows explicit user request and Ctrl+P remains available.
+
+Resolved: user confirms n/N cycle search matches. Final independent review no substantive findings after monochrome correction. Release retry addresses existing parallel FD/inode-reuse test race; production updater unchanged.

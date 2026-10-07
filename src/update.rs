@@ -1143,7 +1143,10 @@ mod enrollment_tests {
             assert_eq!(binary.version, "0.1.0");
             assert_eq!(binary.arch, arch);
             let path = binary.path();
-            let identity = fs::metadata(&path).unwrap();
+            // Keep the artifact inode alive while testing FD closure. Otherwise
+            // parallel tests may recycle both the numeric FD and its freed inode.
+            let pinned = fs::File::open(&path).unwrap();
+            let identity = pinned.metadata().unwrap();
             assert_eq!(fs::read(&path).unwrap(), b"foreign fixture: never execute");
             assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
             assert_eq!(
@@ -1156,6 +1159,7 @@ mod enrollment_tests {
             // Parallel tests may reuse the numeric FD immediately; it must no longer identify this artifact.
             assert!(fs::metadata(&path).map_or(true, |m| (m.dev(), m.ino())
                 != (identity.dev(), identity.ino())));
+            assert_eq!(pinned.metadata().unwrap().nlink(), 0);
             assert_eq!(fs::read_dir(stages).unwrap().count(), 0);
             assert!(!home
                 .path()

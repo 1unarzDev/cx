@@ -6,6 +6,11 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.24
+
+### Fixes
+- Render underscore Markdown emphasis in previews: `_text_` uses italics and `__text__` uses bold. Keep underscores within identifiers, escaped delimiters and inline code literal. Preserve Markdown emphasis in monochrome previews without adding colors.
+
 ## v0.1.23
 
 ### Features

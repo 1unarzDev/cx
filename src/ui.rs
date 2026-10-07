@@ -5453,7 +5453,28 @@ fn preview_inline(text: &str) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut rest = text;
     while !rest.is_empty() {
-        let found = rest.char_indices().find(|(_, c)| *c == '`' || *c == '*');
+        let offset = text.len() - rest.len();
+        let found = rest.char_indices().find(|(at, c)| {
+            if *c != '_' {
+                return *c == '`' || *c == '*';
+            }
+            let absolute = offset + at;
+            let previous = text[..absolute].chars().next_back();
+            let escaped = text[..absolute]
+                .chars()
+                .rev()
+                .take_while(|c| *c == '\\')
+                .count()
+                % 2
+                == 1;
+            let length = if rest[*at..].starts_with("__") { 2 } else { 1 };
+            !escaped
+                && !previous.is_some_and(|c| c.is_alphanumeric() || c == '_')
+                && rest[*at + length..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| !c.is_whitespace() && c != '_')
+        });
         let Some((at, marker)) = found else {
             spans.push(Span::raw(rest.to_owned()));
             break;
@@ -5465,18 +5486,44 @@ fn preview_inline(text: &str) -> Vec<Span<'static>> {
             "**"
         } else if marker == '*' {
             "*"
+        } else if marker == '_' && rest[at..].starts_with("__") {
+            "__"
+        } else if marker == '_' {
+            "_"
         } else {
             "`"
         };
         let after = &rest[at + token.len()..];
-        if let Some(end) = after.find(token) {
+        let end = if marker == '_' {
+            after.match_indices(token).find_map(|(end, _)| {
+                let before = after[..end].chars().next_back();
+                let next = after[end + token.len()..].chars().next();
+                let escaped = after[..end]
+                    .chars()
+                    .rev()
+                    .take_while(|c| *c == '\\')
+                    .count()
+                    % 2
+                    == 1;
+                (!escaped
+                    && before.is_some_and(|c| !c.is_whitespace() && c != '_')
+                    && !next.is_some_and(|c| c.is_alphanumeric() || c == '_'))
+                .then_some(end)
+            })
+        } else {
+            after.find(token)
+        };
+        if let Some(end) = end {
             let style = match token {
                 "`" => tint(Color::Yellow),
-                "**" => Style::default().add_modifier(Modifier::BOLD),
+                "**" | "__" => Style::default().add_modifier(Modifier::BOLD),
                 _ => Style::default().add_modifier(Modifier::ITALIC),
             };
             spans.push(Span::styled(after[..end].to_owned(), style));
             rest = &after[end + token.len()..];
+        } else if marker == '_' {
+            spans.push(Span::raw(token.to_owned()));
+            rest = after;
         } else {
             spans.push(Span::raw(rest[at..].to_owned()));
             break;
@@ -5738,6 +5785,19 @@ fn preview_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
     if !ascii() && std::env::var_os("NO_COLOR").is_none() {
         rich.and_then(|p| p.styled.clone())
             .unwrap_or_else(|| preview_lines(text, rich.map(|p| p.kind.as_str()).unwrap_or("text")))
+    } else if rich.is_some_and(|p| p.kind == "markdown") {
+        let mut lines = rich
+            .and_then(|p| p.styled.clone())
+            .unwrap_or_else(|| preview_lines(text, "markdown"));
+        for line in &mut lines {
+            line.style.fg = None;
+            line.style.bg = None;
+            for span in &mut line.spans {
+                span.style.fg = None;
+                span.style.bg = None;
+            }
+        }
+        lines
     } else {
         safe_text(text)
             .lines()
@@ -10299,6 +10359,38 @@ mod tests {
         }
         assert!(raster_lines(w, h, &bytes, Rect::new(0, 0, 0, 0)).is_empty());
     }
+    #[test]
+    fn markdown_underscore_emphasis_preserves_identifiers_and_code() {
+        let lines = preview_lines("_italic words_ and __strong words__\nfile_name_here and `_literal_`\n\\_escaped_ and _ unmatched\n_élégant_", "markdown");
+        assert!(lines[0].spans.iter().any(
+            |s| s.content == "italic words" && s.style.add_modifier.contains(Modifier::ITALIC)
+        ));
+        assert!(lines[0]
+            .spans
+            .iter()
+            .any(|s| s.content == "strong words" && s.style.add_modifier.contains(Modifier::BOLD)));
+        assert_eq!(
+            lines[1]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>(),
+            "file_name_here and _literal_"
+        );
+        assert!(!lines[1]
+            .spans
+            .iter()
+            .any(|s| s.style.add_modifier.contains(Modifier::ITALIC)));
+        assert!(!lines[2]
+            .spans
+            .iter()
+            .any(|s| s.style.add_modifier.contains(Modifier::ITALIC)));
+        assert!(lines[3]
+            .spans
+            .iter()
+            .any(|s| s.content == "élégant" && s.style.add_modifier.contains(Modifier::ITALIC)));
+    }
+
     #[test]
     fn markdown_preview_styles_without_controls_or_active_content() {
         let lines=preview_lines("# Heading\n- **strong** and `code`\n```rust\nfn main() {}\n```\n<img src='https://example.test'>\n\x1b[31m", "markdown");

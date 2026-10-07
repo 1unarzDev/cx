@@ -215,3 +215,8 @@ File-find and transfer ecosystem three-size PTYs PASS; preview search palette/mo
 Resolved: user confirms n/N cycle search matches. Final independent review no substantive findings after monochrome correction. Release retry addresses existing parallel FD/inode-reuse test race; production updater unchanged.
 
 Signed v0.1.23/source4c3c3f0/workflow37614097212 PASS. Innovation/server installed0.1.23 with SHA256148945ac75ff67cda8aa75f85c5cccaf1cace695e91c2edf63a840da7e244f5b. Exact clean-HOME public bootstrap and installed three-size find PTYs PASS; three pre-update managed terminal identities preserved. Server remains agent-free. Tranquility SSH unreachable, update BLOCKED/last verified0.1.16. User shortcut decision resolved: n/N cycle active search. Physical GUI feedback optional, no repeated request.
+
+
+## Markdown underscore emphasis — v0.1.24 candidate
+- Report reproduced: _text_ remains plain because the small inline renderer recognizes only stars/backticks. Added underscore italic/bold with UTF-8 boundaries; identifiers, escapes and inline code stay literal.
+- Real PTY also exposed monochrome bypass of Markdown formatting. Preserve Markdown modifiers with foreground/background stripped in NO_COLOR/ASCII. Code previews retain their existing monochrome behavior. No new user decision needed.

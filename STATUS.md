@@ -220,3 +220,5 @@ Signed v0.1.23/source4c3c3f0/workflow37614097212 PASS. Innovation/server install
 ## Markdown underscore emphasis — v0.1.24 candidate
 - Report reproduced: _text_ remains plain because the small inline renderer recognizes only stars/backticks. Added underscore italic/bold with UTF-8 boundaries; identifiers, escapes and inline code stay literal.
 - Real PTY also exposed monochrome bypass of Markdown formatting. Preserve Markdown modifiers with foreground/background stripped in NO_COLOR/ASCII. Code previews retain their existing monochrome behavior. No new user decision needed.
+
+Signed v0.1.24/source5e02398/workflow37615556311 PASS, installed innovation/server with verified SHA256cc7421e484a5c7d5c7cef10ec337626daaa3e492f7178ddfb04808f89084d05c. Exact public bootstrap and installed Markdown italic/bold/default-background PTYs PASS in color+monochrome. Three protected managed session identities preserved; server remains agent-free. Tranquility SSH unavailable, update BLOCKED/last verified0.1.16. No pending user choice.

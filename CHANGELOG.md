@@ -6,6 +6,16 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.26
+
+### Features
+- Format inline Markdown links with underlined labels. Click a link or press o to inspect destinations; Enter opens an HTTP/HTTPS link in the viewing machine's browser. Previewing never opens links or downloads content automatically.
+- Add a bundled, lightweight math preview for common TeX expressions: Greek symbols, operators, scripts, fractions and square roots in dollar or bracket delimiters. Unsupported TeX stays visible as source; no interpreters, TeX packages or network resources are required. ASCII mode retains math source.
+
+### Fixes
+- Align soft-wrapped and explicit list continuation lines under their text, including ordered and nested lists. Preserve Unicode widths, code blocks, search and terminal-default backgrounds.
+- Keep clickable link regions separate from search underlines so clicking an ordinary search match cannot open an unrelated link picker.
+
 ## v0.1.25
 
 ### Features

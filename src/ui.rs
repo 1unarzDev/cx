@@ -5671,17 +5671,19 @@ fn preview_emphasis(text: &str) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut at = 0;
     let mut plain = 0;
+    let mut slashes = 0;
     while at < text.len() {
         let rest = &text[at..];
         if rest.starts_with('`') {
             let run = rest.bytes().take_while(|b| *b == b'`').count();
             if let Some(end) = rest[run..].find(&"`".repeat(run)) {
                 at += run + end + run;
+                slashes = 0;
                 continue;
             }
             break;
         }
-        let escaped = text[..at].bytes().rev().take_while(|b| *b == b'\\').count() % 2 == 1;
+        let escaped = slashes % 2 == 1;
         let delimiter = if !escaped && rest.starts_with("$$") {
             Some(("$$", "$$"))
         } else if !escaped && rest.starts_with('$') {
@@ -5714,6 +5716,7 @@ fn preview_emphasis(text: &str) -> Vec<Span<'static>> {
                                 .starts_with(|c: char| c.is_ascii_digit())))
                 {
                     at += open.len();
+                    slashes = 0;
                     continue;
                 }
                 if !ascii() {
@@ -5722,6 +5725,7 @@ fn preview_emphasis(text: &str) -> Vec<Span<'static>> {
                         spans.push(Span::styled(rendered, tint(Color::Magenta)));
                         at += open.len() + end + close.len();
                         plain = at;
+                        slashes = 0;
                         continue;
                     }
                 }
@@ -5731,10 +5735,13 @@ fn preview_emphasis(text: &str) -> Vec<Span<'static>> {
                 spans.push(Span::raw(rest[..length].to_owned()));
                 at += length;
                 plain = at;
+                slashes = 0;
                 continue;
             }
         }
-        at += text[at..].chars().next().unwrap().len_utf8();
+        let ch = text[at..].chars().next().unwrap();
+        slashes = if ch == '\\' { slashes + 1 } else { 0 };
+        at += ch.len_utf8();
     }
     spans.extend(preview_emphasis_only(&text[plain..]));
     spans
@@ -5864,10 +5871,12 @@ fn preview_lines(text: &str, kind: &str) -> Vec<Line<'static>> {
                 }
                 let hashes = line.chars().take_while(|c| *c == '#').count();
                 if (1..=6).contains(&hashes) && line.as_bytes().get(hashes) == Some(&b' ') {
-                    return Line::from(Span::styled(
-                        line[hashes + 1..].to_owned(),
-                        accent().add_modifier(Modifier::BOLD),
-                    ));
+                    let style = accent().add_modifier(Modifier::BOLD);
+                    let mut spans = preview_inline(&line[hashes + 1..]);
+                    for span in &mut spans {
+                        span.style = style.patch(span.style);
+                    }
+                    return Line::from(spans);
                 }
                 if ["- ", "* ", "+ "]
                     .iter()
@@ -6437,6 +6446,26 @@ fn render_preview_with_native(
         }
     }
     browser.preview_scroll.set(scroll);
+    browser.preview_link_cells.borrow_mut().clear();
+    if rich.is_some_and(|p| p.kind == "markdown") && !markdown_preview_links(text).is_empty() {
+        // Hit-test the unhighlighted presentation. Search underlines are not links.
+        let mut buffer = ratatui::buffer::Buffer::empty(inner);
+        ratatui::widgets::Widget::render(
+            Paragraph::new(lines.clone())
+                .wrap(Wrap { trim: false })
+                .scroll((scroll, 0)),
+            inner,
+            &mut buffer,
+        );
+        let mut cells = browser.preview_link_cells.borrow_mut();
+        for y in inner.y..inner.bottom() {
+            for x in inner.x..inner.right() {
+                if buffer[(x, y)].modifier.contains(Modifier::UNDERLINED) {
+                    cells.push((x, y));
+                }
+            }
+        }
+    }
     highlight_preview_matches(&mut lines, &find);
     frame.render_widget(
         Paragraph::new(lines)
@@ -6444,20 +6473,6 @@ fn render_preview_with_native(
             .scroll((scroll, 0)),
         inner,
     );
-    browser.preview_link_cells.borrow_mut().clear();
-    if rich.is_some_and(|p| p.kind == "markdown") && !markdown_preview_links(text).is_empty() {
-        let mut cells = browser.preview_link_cells.borrow_mut();
-        for y in inner.y..inner.bottom() {
-            for x in inner.x..inner.right() {
-                if frame.buffer_mut()[(x, y)]
-                    .modifier
-                    .contains(Modifier::UNDERLINED)
-                {
-                    cells.push((x, y));
-                }
-            }
-        }
-    }
 }
 
 fn browser_entries(b: &Browser) -> Vec<Entry> {
@@ -8211,7 +8226,7 @@ mod tests {
     #[test]
     fn markdown_links_math_and_click_picker_are_safe() {
         let (mut a, _tasks) = file_app();
-        let source = "[Docs](https://example.org/docs) [Bad](javascript:alert(1))\n\n- first second third fourth fifth sixth\n  continued bullet text\n\nInline $x^2 + \\alpha$ and `\\alpha`\n\n$$\n\\frac{a}{b} + \\sqrt{x}\n$$\n\n~~~text\n[code](https://ignored) $x^2$\n~~~";
+        let source = "# [Docs](https://example.org/docs) [Bad](javascript:alert(1))\n\n- first second third fourth fifth sixth\n  continued bullet text\n\nInline $x^2 + \\alpha$ and `\\alpha`\n\n$$\n\\frac{a}{b} + \\sqrt{x}\n$$\n\n~~~text\n[code](https://ignored) $x^2$\n~~~";
         let b = a.browser.as_mut().unwrap();
         b.preview = Some(source.into());
         b.preview_rich = Some(RichPreview::from_value(
@@ -8256,6 +8271,31 @@ mod tests {
         assert!(display.contains("[code](https://ignored) $x^2$"));
         assert!(!display.contains("[Docs]"));
         assert!(a.browser.as_ref().unwrap().preview.is_some());
+        a.text = "Inline".into();
+        a.update_preview_search();
+        terminal.draw(|f| render(f, &a)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut nonlink = None;
+        for y in 0..24 {
+            for x in 0..80 {
+                if buffer[(x, y)].symbol() == "I"
+                    && buffer[(x, y)].modifier.contains(Modifier::UNDERLINED)
+                {
+                    nonlink = Some((x, y));
+                }
+            }
+        }
+        let (x, y) = nonlink.expect("highlighted ordinary search text");
+        assert!(!a.preview_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(event::MouseButton::Left),
+                column: x,
+                row: y,
+                modifiers: KeyModifiers::NONE
+            },
+            Rect::new(0, 0, 80, 24)
+        ));
+        assert!(a.dialog.is_none());
     }
     #[test]
     fn markdown_lists_continuations_unicode_and_code_keep_layout() {
@@ -8290,6 +8330,13 @@ mod tests {
         let content = raw.iter().map(|s| s.content.as_ref()).collect::<String>();
         assert!(content.contains("$\\begin{matrix}x_1\\end{matrix}$"));
         assert!(content.contains("\\$x^2\\$"));
+        assert_eq!(
+            preview_inline("Costs $5 and $10")
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>(),
+            "Costs $5 and $10"
+        );
     }
 
     #[test]

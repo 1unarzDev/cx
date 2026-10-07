@@ -6,6 +6,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.22
+
+### Fixes
+- Give blank saved session labels the same native-name lookup and execution-folder fallback as automatically named sessions. Preserve explicit names; Codex conversations without a verified terminal identity still use a folder fallback.
+- Reload managed tmux bindings when starting work on an empty persistent server, so updates take effect even after the last session closes. Use a readiness check compatible with older tmux.
+
 ## v0.1.21
 
 ### Fixes

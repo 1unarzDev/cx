@@ -105,6 +105,14 @@ while True:
         os.write(master,b'\x1d'); client.wait(timeout=5)
         assert client.returncode==0 and state('#{pane_dead}')=='0'
         checks.append('Ctrl+] returns without killing original process')
+        # Updates must reload configuration even when the owned server persists
+        # with zero sessions. Otherwise the next shell inherits old bindings.
+        old_bindings=tmux('list-keys','-T','root')
+        tmux('kill-session','-t',session['id'])
+        tmux('bind-key','-n','WheelUpPane','display-message','obsolete-binding')
+        subprocess.check_output([binary,'new','--provider','shell','--directory',str(root),'--key','empty-server-refresh'],env=env)
+        assert tmux('list-keys','-T','root')==old_bindings, 'empty persistent server retained obsolete wheel bindings'
+        checks.append('empty persistent server reloads current owned bindings')
         print(json.dumps(dict(result='PASS',backend=tmux('-V'),checks=checks)))
     finally:
         if client.poll() is None: client.terminate(); client.wait(timeout=5)

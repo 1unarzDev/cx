@@ -392,9 +392,14 @@ fn default_session_name(provider: &str, directory: &str) -> String {
         .collect();
     format!("{provider} · {folder}")
 }
+fn automatically_named(prior: &Session) -> bool {
+    prior.name.trim().is_empty()
+        || prior.name == default_session_name(&prior.provider, &prior.directory)
+}
+
 fn current_session_name(prior: &Session, provider: &str, directory: &str) -> String {
-    // Refresh the exact cx-generated title convention; preserve other names.
-    if prior.name == default_session_name(&prior.provider, &prior.directory) {
+    // Refresh blank or cx-generated labels; preserve explicitly chosen names.
+    if automatically_named(prior) {
         default_session_name(provider, directory)
     } else {
         prior.name.clone()
@@ -491,9 +496,7 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
         .as_ref()
         .map(|s| current_session_name(s, provider, &directory))
         .unwrap_or_else(|| name.clone());
-    let automatic = prior
-        .as_ref()
-        .is_some_and(|s| s.name == default_session_name(&s.provider, &s.directory));
+    let automatic = prior.as_ref().is_some_and(automatically_named);
     let display_name = if automatic && provider == "shell" {
         shell_activity(managed, id).unwrap_or(saved_name)
     } else if automatic {
@@ -884,7 +887,11 @@ pub fn configure_managed() -> Result<()> {
     Ok(())
 }
 fn ensure_server() -> Result<()> {
-    if !ids(true)?.is_empty() {
+    // An owned server may persist after its last session ends. New binaries
+    // must reload its configuration too, rather than reusing old key bindings.
+    let mut existing = tmux(true)?;
+    existing.args(["show-options", "-g"]);
+    if existing.output()?.status.success() {
         return configure_managed();
     }
     let root = state()?;
@@ -920,9 +927,9 @@ fn ensure_server() -> Result<()> {
         // An existing owned service is acceptable if its socket responds.
         for _ in 0..40 {
             let mut c = tmux(true)?;
-            c.args(["show-options", "-g", "exit-empty"]);
+            c.args(["show-options", "-g"]);
             if c.output()?.status.success() {
-                return Ok(());
+                return configure_managed();
             }
             thread::sleep(Duration::from_millis(25));
         }
@@ -1742,6 +1749,13 @@ mod tests {
             current_session_name(&session, "shell", "/projects/new"),
             "shell · new"
         );
+        for blank in ["", "  \t "] {
+            session.name = blank.into();
+            assert_eq!(
+                current_session_name(&session, "codex", "/projects/cx"),
+                "codex · cx"
+            );
+        }
         session.name = "My important work".into();
         assert_eq!(
             current_session_name(&session, "codex", "/projects/cx"),

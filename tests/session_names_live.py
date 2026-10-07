@@ -42,6 +42,11 @@ int main(int argc,char **argv) {
   assert live['name']=='Camera timestamp fix',live['name']
   assert live['directory']==tmp
   for key in ['id','pid','started','boot_id','socket']:assert live[key]==created[key],key
+  record=root/'state/cx'/(created['id']+'.json')
+  saved=json.loads(record.read_text())
+  for blank in ['', '  \t ']:
+   saved['name']=blank;record.write_text(json.dumps(saved))
+   assert next(s for s in sessions() if s['id']==created['id'])['name']=='Camera timestamp fix'
   index.write_text(json.dumps(dict(id=uuid,thread_name='Renamed native task'))+'\n')
   assert next(s for s in sessions() if s['id']==created['id'])['name']=='Renamed native task'
   # Multiple active writer identities must never resolve by recency.
@@ -51,6 +56,6 @@ int main(int argc,char **argv) {
   assert next(s for s in sessions() if s['id']==created['id'])['name']=='codex · '+root.name
   custom=cli('new','--provider','shell','--directory',tmp,'--name','work')
   assert next(s for s in sessions() if s['id']==custom['id'])['name']=='work'
-  results.append(dict(result='PASS',scenario='Codex exact writer association, rename refresh, multiple-writer fallback, same terminal',provider='synthetic ELF executable; no inference'))
+  results.append(dict(result='PASS',scenario='Codex exact writer association, blank saved labels, rename refresh, multiple-writer folder fallback, custom name preservation, same terminal',provider='synthetic ELF executable; no inference'))
  finally:subprocess.run(['tmux','-S',sock,'kill-server'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 print(json.dumps(results))

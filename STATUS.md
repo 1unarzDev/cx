@@ -227,9 +227,11 @@ Signed v0.1.24/source5e02398/workflow37615556311 PASS, installed innovation/serv
 ## Markdown tables and code blocks — v0.1.25 candidate
 - Bounded inert table renderer integrated: Unicode display-width columns, header/separator alignment, escaped/code pipes, inline emphasis, and responsive labeled rows with no discarded cell data. Cache by source/revision/viewport; logical source-line count preserved.
 - Fenced code has muted boundaries/gutter and language label. Bundled grammars handle common aliases; unknown languages stay plain, closing marker/length must match, no interpreter/process execution.
-- Integrated414 Rust tests pass before final inline-cell refinement; refined111 UI plus Markdown/PTY regressions pass. Independent current renderer review pending. Prior reviewer mistakenly worked an unrelated historical file-tree polish in isolated e826927; not integrated/deployed.
+- Final integrated suite: 417 tests PASS, one protected live test ignored. Independent final review found no substantive unresolved findings.
 - Optional preference pending: labeled rows versus horizontal grid scrolling in narrow panes. Labeled rows remain current default after reasonable opportunity to answer; no repeated question.
 
 Both review P2 findings reproduced and corrected with regressions: table/fence boundary and stale search index after resize. Reviewed113 UI tests and palette/monochrome PTYs PASS. Final re-review found no substantive unresolved findings; not published yet.
 
 Release fixture synchronization: two unpublished CI candidates failed partial-frame/input timing checks. Second failure reproduced locally with debug build. Explicit input/frame barriers now PASS debug and optimized actual PTYs, with all assertions retained. No production renderer change in this correction.
+
+Signed v0.1.25/source2b71421/workflow37623525992 PASS; exact clean-HOME public bootstrap PASS. Innovation/server installed0.1.25, matching signed SHA25660c6a121e157cc5220646b0090e60b6650b5efad22428c4b43ba2c306da0d45d. Installed Markdown blocks PTYs PASS color+monochrome; three original managed identities preserved; server remains agent-free. Tranquility No route to host, update BLOCKED/last verified0.1.16. Optional narrow-table preference remains pending, labeled-row default retained.

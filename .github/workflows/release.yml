@@ -26,6 +26,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y shellcheck fish zsh tmux poppler-utils python3-pyte openssh-server
       - run: python3 tests/mouse_scrollback_pty.py target/debug/cx
       - run: python3 tests/codex_wheel_pty.py target/debug/cx
+      - run: python3 tests/codex_wheel_threads_pty.py target/debug/cx
       - run: python3 tests/clipboard_pty.py target/debug/cx
       - run: python3 tests/metadata_reconnect_cli.py target/debug/cx
       - run: python3 tests/jump_routes_cli.py target/debug/cx

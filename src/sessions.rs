@@ -1103,7 +1103,12 @@ fn wheel_codex_owner(pane: u32) -> Option<ProcessIdentity> {
     let mut parents = std::collections::HashMap::new();
     let mut readers = Vec::new();
     let mut visited = 0;
+    let mut seen = std::collections::HashSet::new();
+    let mut tasks = 0;
     while let Some((pid, depth)) = queue.pop_front() {
+        if !seen.insert(pid) {
+            continue;
+        }
         visited += 1;
         if visited > 64 || depth > 6 {
             return None;
@@ -1115,13 +1120,30 @@ fn wheel_codex_owner(pane: u32) -> Option<ProcessIdentity> {
         {
             readers.push(pid);
         }
-        let children = fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).ok()?;
-        for child in children.split_whitespace() {
-            let child = child.parse().ok()?;
-            parents.insert(child, pid);
-            queue.push_back((child, depth + 1));
-            if queue.len() > 64 {
+        // /task/PID/children lists only leader-spawned children. Editors may
+        // be created by a worker thread, so inspect all bounded task lists.
+        use std::io::Read;
+        for task in fs::read_dir(format!("/proc/{pid}/task")).ok()? {
+            tasks += 1;
+            if tasks > 256 {
                 return None;
+            }
+            let mut children = String::new();
+            fs::File::open(task.ok()?.path().join("children"))
+                .ok()?
+                .take(8193)
+                .read_to_string(&mut children)
+                .ok()?;
+            if children.len() > 8192 {
+                return None;
+            }
+            for child in children.split_whitespace() {
+                let child = child.parse().ok()?;
+                parents.insert(child, pid);
+                queue.push_back((child, depth + 1));
+                if queue.len() > 64 {
+                    return None;
+                }
             }
         }
     }

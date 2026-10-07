@@ -422,7 +422,7 @@ fn shell_activity(managed: bool, id: &str) -> Option<String> {
     if let Some(name) = current {
         if managed {
             let mut c = tmux(true).ok()?;
-            c.args(["set-option", "-p", "-t", id, "@cx_recent_command", &name]);
+            c.args(["set-option", "-t", id, "@cx_recent_command", &name]);
             // Best effort; this metadata cannot prevent listing a running terminal.
             let _ = output(c);
         }
@@ -753,7 +753,7 @@ function __cx_command_label --on-event fish_preexec
             case fish bash zsh sh dash tmux cx
                 return
         end
-        command timeout 0.2s "$CX_TMUX_BIN" -u -S "$CX_MANAGED_SOCKET" set-option -p -t "$TMUX_PANE" @cx_last_command "$name" >/dev/null 2>&1
+        command timeout 0.2s "$CX_TMUX_BIN" -u -S "$CX_MANAGED_SOCKET" set-option -t "$CX_MANAGED_SESSION" @cx_last_command "$name" >/dev/null 2>&1
     end
 end
 "#;
@@ -1018,13 +1018,14 @@ pub fn create(request: &CreateSession) -> Result<Session> {
         launcher.extend(["-i".into(), "-c".into(), request.provider.clone()]);
     }
     let command = format!(
-        "exec env CX_VIEWER_THEME=1 CX_TMUX_BIN={} CX_MANAGED_SOCKET={} {}",
+        "exec env CX_VIEWER_THEME=1 CX_TMUX_BIN={} CX_MANAGED_SOCKET={} CX_MANAGED_SESSION={} {}",
         quote(
             tmux_executable()
                 .to_str()
                 .context("tmux path is not UTF-8")?
         ),
         quote(socket()?.to_str().context("socket path is not UTF-8")?),
+        quote(&name),
         launcher
             .iter()
             .map(|arg| quote(arg))

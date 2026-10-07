@@ -14,6 +14,7 @@ No changes queued.
 
 ### Fixes
 - Preserve explicitly named sessions and stable session ordering as labels change. Resolve default labels on the execution host after canonicalizing the selected folder.
+- Remember shell commands with session-scoped metadata compatible with older tmux, including Rocky Linux 8.
 
 ## v0.1.18
 

@@ -29,6 +29,10 @@ for mono in (False, True):
         def read():
             if select.select([master], [], [], .05)[0]:
                 stream.feed(os.read(master, 65536).decode(errors='replace'))
+        def settle():
+            # Key sequences must not race an in-flight frame or Escape decoding.
+            deadline=time.monotonic()+.25
+            while time.monotonic()<deadline: read()
         def wait(predicate):
             deadline = time.monotonic()+12
             while not predicate() and time.monotonic()<deadline: read()
@@ -44,17 +48,21 @@ for mono in (False, True):
             cell=screen.buffer[row][column]
             assert cell.bg=='default'
             assert cell.fg in (('default',) if mono else ('green','00cd00')), cell
-            os.write(master,b'/hello\r')
-            wait(lambda: any('1/1' in line for line in screen.display))
+            os.write(master,b'/hello')
+            wait(lambda: any('Search' in line and '1/1' in line for line in screen.display))
+            os.write(master,b'\r'); settle()
+            wait(lambda: any('j/k' in line and 'Scroll' in line for line in screen.display))
             # Resize into the narrow labeled-row layout without losing the search.
             screen.resize(lines=24,columns=48)
             fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,48,0,0))
             import signal
             os.kill(proc.pid,signal.SIGWINCH)
             wait(lambda: any('Device:' in line for line in screen.display) and any('Count: 42' in line for line in screen.display))
-            os.write(master,b'nG')
+            settle()
+            os.write(master,b'n'); settle()
+            os.write(master,b'G'); settle()
             wait(lambda: any('hello' in line for line in screen.display))
-            os.write(master,b'\x1b')
+            os.write(master,b'\x1b'); settle()
             wait(lambda: not any('Search' in line and '1/1' in line for line in screen.display))
             os.write(master,b'\x1b')
             wait(lambda: any('sample.md' in line for line in screen.display) and not any('print("hello")' in line for line in screen.display))

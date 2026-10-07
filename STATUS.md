@@ -230,4 +230,6 @@ Signed v0.1.24/source5e02398/workflow37615556311 PASS, installed innovation/serv
 - Integrated414 Rust tests pass before final inline-cell refinement; refined111 UI plus Markdown/PTY regressions pass. Independent current renderer review pending. Prior reviewer mistakenly worked an unrelated historical file-tree polish in isolated e826927; not integrated/deployed.
 - Optional preference pending: labeled rows versus horizontal grid scrolling in narrow panes. Labeled rows remain current default after reasonable opportunity to answer; no repeated question.
 
-Both review P2 findings reproduced and corrected with regressions: table/fence boundary and stale search index after resize. Reviewed113 UI tests and palette/monochrome PTYs PASS. Final re-review pending; not published yet.
+Both review P2 findings reproduced and corrected with regressions: table/fence boundary and stale search index after resize. Reviewed113 UI tests and palette/monochrome PTYs PASS. Final re-review found no substantive unresolved findings; not published yet.
+
+Release fixture synchronization: two unpublished CI candidates failed partial-frame/input timing checks. Second failure reproduced locally with debug build. Explicit input/frame barriers now PASS debug and optimized actual PTYs, with all assertions retained. No production renderer change in this correction.

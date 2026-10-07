@@ -1,7 +1,8 @@
 //! Bounded inert inline links. Targets remain data until an explicit viewer action.
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
-/// Resolve a file link lexically on the document's host, without filesystem access.
+/// Join a file link to the document directory without viewer filesystem access.
+/// Preserve parent traversal: only the execution host can resolve symlinks correctly.
 /// Fragments are percent-decoded UTF-8; Unix paths may contain non-UTF-8 bytes.
 pub fn resolve_file_link(
     document: &Path,
@@ -55,24 +56,7 @@ pub fn resolve_file_link(
             .unwrap_or_else(|| Path::new(""))
             .join(path)
     };
-    let mut normalized = PathBuf::new();
-    for component in resolved.components() {
-        match component {
-            Component::CurDir => (),
-            Component::ParentDir => {
-                if matches!(
-                    normalized.components().next_back(),
-                    Some(Component::Normal(_))
-                ) {
-                    normalized.pop();
-                } else if !normalized.has_root() {
-                    normalized.push("..");
-                }
-            }
-            other => normalized.push(other.as_os_str()),
-        }
-    }
-    Ok(Some((normalized, fragment)))
+    Ok(Some((resolved, fragment)))
 }
 
 fn decode_link_component(component: &str) -> anyhow::Result<Vec<u8>> {
@@ -192,14 +176,14 @@ mod tests {
             ("./child.md", "/remote/docs/child.md", None),
             (
                 "../other/./intro.md#heading%20one",
-                "/remote/other/intro.md",
+                "/remote/docs/../other/./intro.md",
                 Some("heading one"),
             ),
-            ("/other/../root.md", "/root.md", None),
+            ("/other/../root.md", "/other/../root.md", None),
             ("#section", "/remote/docs/guide.md", Some("section")),
             ("", "/remote/docs/guide.md", None),
             ("#", "/remote/docs/guide.md", Some("")),
-            ("../../../file.md", "/file.md", None),
+            ("../../../file.md", "/remote/docs/../../../file.md", None),
             ("a%20b%23c%3Fd.md", "/remote/docs/a b#c?d.md", None),
         ] {
             assert_eq!(
@@ -210,8 +194,25 @@ mod tests {
         }
         assert_eq!(
             resolve_file_link(Path::new("docs/guide.md"), "../../intro.md").unwrap(),
-            Some((PathBuf::from("../intro.md"), None))
+            Some((PathBuf::from("docs/../../intro.md"), None))
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parent_traversal_preserves_execution_host_symlink_semantics() {
+        let root = tempfile::tempdir().unwrap();
+        let docs = root.path().join("docs");
+        let elsewhere = root.path().join("elsewhere");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::create_dir_all(elsewhere.join("sub")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.join("sub"), docs.join("jump")).unwrap();
+        std::fs::write(docs.join("page.md"), "wrong").unwrap();
+        std::fs::write(elsewhere.join("page.md"), "right").unwrap();
+        let (path, _) = resolve_file_link(&docs.join("index.md"), "jump/../page.md")
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "right");
     }
 
     #[test]
@@ -263,7 +264,10 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(path.as_os_str().as_bytes(), b"/unmounted/\xff\xfe.md");
+        assert_eq!(
+            path.as_os_str().as_bytes(),
+            b"/unmounted/remote/../\xff\xfe.md"
+        );
         assert_eq!(fragment.as_deref(), Some("café"));
     }
 

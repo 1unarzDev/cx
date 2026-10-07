@@ -8486,7 +8486,7 @@ mod tests {
         ));
         let task = rx.try_recv().unwrap();
         assert_eq!(task.device, 1);
-        assert!(matches!(&task.op,Operation::Preview{path} if path=="/remote/two file.md"));
+        assert!(matches!(&task.op,Operation::Preview{path} if path=="/remote/docs/../two file.md"));
         let linked = "# Section\nLinked destination\n\n# Section";
         a.apply(Reply {
             device: 1,
@@ -8498,7 +8498,7 @@ mod tests {
         assert_eq!(a.browser.as_ref().unwrap().device, 1);
         assert_eq!(
             a.browser.as_ref().unwrap().preview_path.as_deref(),
-            Some("/remote/two file.md")
+            Some("/remote/docs/../two file.md")
         );
         assert_eq!(a.browser.as_ref().unwrap().preview_history.len(), 1);
         assert!(markdown_anchor_scroll(a.browser.as_ref().unwrap(), "section-1").is_some());

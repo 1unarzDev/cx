@@ -70,11 +70,22 @@ for mono in (False, True):
             wait(lambda: any('First destination' in line for line in screen.display)); settle()
             os.write(master,b'\x1b'); settle()
             wait(lambda: any('Parent sentinel' in line for line in screen.display)); settle()
+            # Leaving linked preview via folder navigation discards link history.
+            row = next(i for i,line in enumerate(screen.display) if 'same' in line)
+            column = screen.display[row].index('same')
+            os.write(master, f'\x1b[<16;{column+1};{row+1}M'.encode()); settle()
+            wait(lambda: any('First destination' in line for line in screen.display)); settle()
+            os.write(master,b'h'); settle()
+            wait(lambda: any('files' in line for line in screen.display) and not any('First destination' in line for line in screen.display)); settle()
+            os.write(master,b'l'); settle()
+            wait(lambda: any('sample.md' in line for line in screen.display)); settle()
+            os.write(master,b'\r'); settle()
+            wait(lambda: any('Parent sentinel' in line for line in screen.display)); settle()
             os.write(master,b'\x1b'); settle()
             wait(lambda: any('sample.md' in line for line in screen.display) and not any('Parent sentinel' in line for line in screen.display))
             os.write(master, b'\x03'); proc.wait(timeout=5)
             assert proc.returncode == 0 and termios.tcgetattr(slave) == before
-            checks.append(dict(mode='monochrome' if mono else 'ANSI palette', result='PASS', exact_duplicate_label=True, shift_and_ctrl_click=True, heading_anchor=True, table_link=True, escape_parent_and_termios=True))
+            checks.append(dict(mode='monochrome' if mono else 'ANSI palette', result='PASS', exact_duplicate_label=True, shift_and_ctrl_click=True, heading_anchor=True, table_link=True, escape_parent_and_termios=True, stale_history_cleared=True))
         finally:
             if proc.poll() is None: proc.terminate(); proc.wait(timeout=5)
             os.close(master); os.close(slave)

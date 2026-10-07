@@ -860,6 +860,10 @@ impl App {
         if let Some(mut old) = self.browser.take() {
             old.preview = None;
             old.preview_rich = None;
+            old.preview_history.clear();
+            old.preview_restore = None;
+            old.preview_anchor = None;
+            old.preview_link_cells.borrow_mut().clear();
             self.file_locations.insert(old.device, old.path.clone());
             if self.browser_cache.len() >= 8 {
                 if let Some(key) = self.browser_cache.keys().next().cloned() {
@@ -911,6 +915,10 @@ impl App {
             b.loading = true;
             b.preview = None;
             b.preview_rich = None;
+            b.preview_history.clear();
+            b.preview_restore = None;
+            b.preview_anchor = None;
+            b.preview_link_cells.borrow_mut().clear();
             let device = b.device;
             let path = b.path.clone();
             if !self.send(device, Operation::List { path }) {
@@ -8545,6 +8553,27 @@ mod tests {
         assert!(
             matches!(rx.try_recv().unwrap().op,Operation::Preview{path} if path=="/remote/docs/one.md")
         );
+    }
+
+    #[test]
+    fn leaving_linked_preview_discards_history_even_in_cached_locations() {
+        let (mut a, _rx) = file_app();
+        let b = a.browser.as_mut().unwrap();
+        b.preview_history
+            .push(("/old.md".into(), 5, PreviewFind::default()));
+        b.preview_restore = Some((5, PreviewFind::default()));
+        b.preview_anchor = Some("old".into());
+        a.open_browser(0, "/other".into());
+        let old = a.browser_cache.get(&(0, "/files".into())).unwrap();
+        assert!(old.preview_history.is_empty());
+        assert!(old.preview_restore.is_none());
+        assert!(old.preview_anchor.is_none());
+        a.open_browser(0, "/files".into());
+        let b = a.browser.as_mut().unwrap();
+        b.preview_history
+            .push(("/old.md".into(), 5, PreviewFind::default()));
+        a.refresh_browser();
+        assert!(a.browser.as_ref().unwrap().preview_history.is_empty());
     }
 
     #[test]

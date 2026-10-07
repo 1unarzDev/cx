@@ -35,6 +35,170 @@ pub fn native_title(provider: &str, pid: u32) -> Option<String> {
     }
 }
 
+/// A launch-scoped Codex contract emits only its native thread ID as OSC title.
+/// 0.160.1 truncates UUID36 to its first29 ASCII characters plus three dots.
+/// Match a unique native ID in the complete bounded name index; partial scans
+/// cannot establish uniqueness and therefore return unknown.
+pub fn codex_pane_title(pid: u32, pane_title: &str) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        let start = process_start(pid)?;
+        let prefix = title_id_prefix(pane_title)?;
+        let cmdline = bounded_proc_field(pid, "cmdline")?;
+        if !has_title_contract(&cmdline) {
+            return None;
+        }
+        let environ = bounded_proc_field(pid, "environ")?;
+        let custom = environ
+            .split(|b| *b == 0)
+            .filter_map(|entry| entry.strip_prefix(b"CODEX_HOME="))
+            .collect::<Vec<_>>();
+        if custom.len() > 1 {
+            return None;
+        }
+        let home = match custom.first() {
+            Some(bytes) if !bytes.is_empty() => {
+                PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec()))
+            }
+            Some(_) => return None,
+            None => PathBuf::from(std::env::var_os("HOME")?).join(".codex"),
+        };
+        if !home.is_absolute() {
+            return None;
+        }
+        let file = private_file(&home.join("session_index.jsonl"))?;
+        // A tail scan cannot prove prefix uniqueness across the full index.
+        if file.metadata().ok()?.len() > INDEX_TAIL {
+            return None;
+        }
+        let result = prefix_index_title(
+            BufReader::new(file.take(INDEX_TAIL)),
+            &prefix,
+            Instant::now() + Duration::from_millis(100),
+        );
+        if process_start(pid)? == start {
+            result
+        } else {
+            None
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (pid, pane_title);
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn bounded_proc_field(pid: u32, field: &str) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    File::open(format!("/proc/{pid}/{field}"))
+        .ok()?
+        .take(MAX_RECORD as u64 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > MAX_RECORD {
+        None
+    } else {
+        Some(bytes)
+    }
+}
+
+fn has_title_contract(bytes: &[u8]) -> bool {
+    if !bytes.ends_with(&[0]) {
+        return false;
+    }
+    let args = bytes
+        .split(|b| *b == 0)
+        .skip(1)
+        .take_while(|arg| *arg != b"--")
+        .collect::<Vec<_>>();
+    let exact = b"tui.terminal_title=[\"thread-id\"]";
+    let mut found = false;
+    for (i, arg) in args.iter().enumerate() {
+        if *arg == b"-c" || *arg == b"--config" {
+            let Some(value) = args.get(i + 1) else {
+                return false;
+            };
+            if value.starts_with(b"tui.terminal_title") {
+                if *arg != b"-c" || *value != exact || found {
+                    return false;
+                }
+                found = true;
+            }
+        } else if arg.starts_with(b"--config=tui.terminal_title")
+            || arg.starts_with(b"-ctui.terminal_title")
+        {
+            return false;
+        }
+    }
+    found
+}
+
+fn title_id_prefix(value: &str) -> Option<String> {
+    let value = value.trim();
+    let prefix = if uuid(value) {
+        value
+    } else {
+        let prefix = value.strip_suffix("...")?;
+        if !(24..36).contains(&prefix.len()) {
+            return None;
+        }
+        prefix
+    };
+    if !prefix.bytes().enumerate().all(|(i, b)| {
+        if matches!(i, 8 | 13 | 18 | 23) {
+            b == b'-'
+        } else {
+            b.is_ascii_hexdigit()
+        }
+    }) {
+        return None;
+    }
+    Some(prefix.to_ascii_lowercase())
+}
+
+fn prefix_index_title(mut reader: impl BufRead, prefix: &str, deadline: Instant) -> Option<String> {
+    let mut matching_id: Option<String> = None;
+    let mut result = None;
+    let mut line = Vec::new();
+    loop {
+        if Instant::now() >= deadline {
+            return None;
+        }
+        line.clear();
+        let n = reader
+            .by_ref()
+            .take(MAX_RECORD as u64 + 1)
+            .read_until(b'\n', &mut line)
+            .ok()?;
+        if n == 0 {
+            return result;
+        }
+        if n > MAX_RECORD {
+            return None;
+        }
+        // A malformed record could hide a colliding ID. Reject incomplete indexes.
+        let record: Value = serde_json::from_slice(&line).ok()?;
+        let id = record.get("id")?.as_str()?;
+        if !uuid(id) {
+            return None;
+        }
+        let id = id.to_ascii_lowercase();
+        if id.starts_with(prefix) {
+            if matching_id.as_ref().is_some_and(|prior| prior != &id) {
+                return None;
+            }
+            matching_id = Some(id);
+            result = record
+                .get("thread_name")
+                .and_then(Value::as_str)
+                .and_then(title);
+        }
+    }
+}
+
 fn title(value: &str) -> Option<String> {
     // Remove control sequences, including their printable payload, rather than
     // stripping ESC alone and exposing misleading fragments in the workspace.
@@ -321,6 +485,66 @@ mod tests {
         assert!(
             index_title(huge.as_slice(), ID, Instant::now() + Duration::from_secs(1)).is_none()
         );
+    }
+    #[test]
+    fn pane_title_accepts_only_valid_uuid_prefixes() {
+        assert_eq!(
+            title_id_prefix(&format!("{}...", &ID[..29])).as_deref(),
+            Some(&ID[..29])
+        );
+        assert_eq!(title_id_prefix(ID).as_deref(), Some(ID));
+        for invalid in [
+            "old title",
+            "01a10f4e...",
+            "[ ! ] Action Required",
+            "01a10f4e-85f4-7c00-a244-67a7z...",
+            "01a10f4e-85f4-7c00-a244-67a7892",
+        ] {
+            assert!(title_id_prefix(invalid).is_none());
+        }
+    }
+    #[test]
+    fn pane_identity_requires_exact_launch_contract() {
+        assert!(has_title_contract(
+            b"codex\0-c\0tui.terminal_title=[\"thread-id\"]\0"
+        ));
+        assert!(!has_title_contract(
+            b"codex\0-c\0tui.terminal_title=[\"thread-name\"]\0"
+        ));
+        assert!(!has_title_contract(
+            b"codex\0--\0-c\0tui.terminal_title=[\"thread-id\"]\0"
+        ));
+        assert!(!has_title_contract(b"codex\0-c\0tui.terminal_title=[\"thread-id\"]\0-c\0tui.terminal_title=[\"thread-name\"]\0"));
+    }
+    #[test]
+    fn prefix_requires_unique_id_but_accepts_repeated_name_updates() {
+        let prefix = &ID[..29];
+        let old = format!("{{\"id\":\"{ID}\",\"thread_name\":\"old\"}}\n");
+        let new = format!("{{\"id\":\"{ID}\",\"thread_name\":\"new\"}}\n");
+        let data = format!("{old}{new}");
+        assert_eq!(
+            prefix_index_title(
+                data.as_bytes(),
+                prefix,
+                Instant::now() + Duration::from_secs(1)
+            )
+            .as_deref(),
+            Some("new")
+        );
+        let other = "01a10f4e-85f4-7c00-a244-67a78928c222";
+        let conflict = format!("{old}{{\"id\":\"{other}\",\"thread_name\":\"other\"}}\n");
+        assert!(prefix_index_title(
+            conflict.as_bytes(),
+            prefix,
+            Instant::now() + Duration::from_secs(1)
+        )
+        .is_none());
+        assert!(prefix_index_title(
+            format!("{old}invalid\n").as_bytes(),
+            prefix,
+            Instant::now() + Duration::from_secs(1)
+        )
+        .is_none());
     }
     #[test]
     fn stat_handles_parentheses_in_comm() {

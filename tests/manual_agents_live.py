@@ -20,7 +20,20 @@ with tempfile.TemporaryDirectory(prefix='cx-manual-agent-') as directory:
     def drain():
         while select.select([master], [], [], 0)[0]:
             terminal_output.extend(os.read(master, 65536))
-    time.sleep(.2); drain()
+    # An attached client can still be starting in cooked mode. Wait for its
+    # first rendered status strip and raw PTY before sending application input.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        drain()
+        if b'Return: Ctrl+]' in terminal_output and not (termios.tcgetattr(slave)[3] & termios.ICANON):
+            break
+        if client.poll() is not None:
+            raise AssertionError('tmux client exited before terminal readiness')
+        time.sleep(.05)
+    else:
+        client.terminate(); client.wait(timeout=5)
+        subprocess.run(['tmux', '-S', socket, 'kill-server'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        raise AssertionError('tmux client did not render a ready terminal')
     def run(*args): return subprocess.check_output(['tmux', '-S', socket, *args], universal_newlines=True)
     def send(text): os.write(master, text.encode() + b'\r')
     def current(): return next(s for s in json.loads(subprocess.check_output([binary, 'sessions'], env=env, universal_newlines=True)) if s['id'] == original['id'])
@@ -45,12 +58,13 @@ with tempfile.TemporaryDirectory(prefix='cx-manual-agent-') as directory:
         deadline=time.monotonic()+5
         while time.monotonic()<deadline:
             drain();label=current()['name']
-            if label=='running sleep':break
+            executable=run('display-message','-p','-t',original['id'],'#{pane_current_command}').strip()
+            if executable in ['sleep','coreutils'] and label=='running '+executable:break
             time.sleep(.1)
-        assert label=='running sleep', label
+        assert executable in ['sleep','coreutils'] and label=='running '+executable, label
         assert 'synthetic-secret' not in json.dumps(current())
         os.write(master,b'\x03');time.sleep(.2);drain()
-        assert current()['name']=='recent: sleep', current()['name']
+        assert current()['name']=='recent: '+executable, current()['name']
         for key in ['id','pid','started','boot_id','socket']:assert current()[key]==original[key]
         send("./codex -c 'sleep 30; :' &")
         time.sleep(.2); expect('shell')

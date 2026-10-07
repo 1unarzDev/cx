@@ -6097,7 +6097,7 @@ fn render_browser(
                     } else if index == b.selected {
                         Style::default().add_modifier(Modifier::BOLD)
                     } else if matched_rows.contains(&index) {
-                        tint(Color::Yellow).add_modifier(Modifier::BOLD)
+                        tint(Color::Yellow).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
                     } else if e.kind == "directory" {
                         tint(Color::Blue).add_modifier(Modifier::BOLD)
                     } else {
@@ -9450,6 +9450,39 @@ mod tests {
             assert!(a.browser.as_ref().unwrap().preview.is_none());
         }
     }
+    #[test]
+    fn clipped_directory_find_has_a_distinct_noncolor_modifier() {
+        let (mut a, _tasks) = file_app();
+        a.focus = Focus::Workspace;
+        let b = a.browser.as_mut().unwrap();
+        b.search = "needle".into();
+        b.entries.truncate(1);
+        let matching = b.entries[0].clone();
+        b.entries[0].name = "ordinary".into();
+        b.entries[0].kind = "directory".into();
+        let mut matching = matching;
+        matching.name = format!("visible-{}-needle", "élong".repeat(30));
+        matching.kind = "directory".into();
+        b.entries.push(matching);
+        b.selected = 0;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(frame, &a)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let found = (0..24).any(|y| {
+            (0..72).any(|x| {
+                (0..8)
+                    .map(|i| buffer[(x + i, y)].symbol())
+                    .collect::<String>()
+                    == "visible-"
+                    && (0..8).all(|i| buffer[(x + i, y)].modifier.contains(Modifier::UNDERLINED))
+            })
+        });
+        assert!(
+            found,
+            "clipped directory match must remain visibly distinct without color"
+        );
+    }
+
     #[test]
     fn long_unicode_file_find_keeps_visible_match_positions() {
         let (mut a, _tasks) = file_app();

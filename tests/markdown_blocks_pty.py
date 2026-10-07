@@ -51,8 +51,7 @@ for mono in (False, True):
             fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,48,0,0))
             import signal
             os.kill(proc.pid,signal.SIGWINCH)
-            wait(lambda: any('Device:' in line for line in screen.display))
-            assert any('Count: 42' in line for line in screen.display), '\n'.join(screen.display)
+            wait(lambda: any('Device:' in line for line in screen.display) and any('Count: 42' in line for line in screen.display))
             os.write(master,b'nG')
             wait(lambda: any('hello' in line for line in screen.display))
             os.write(master,b'\x1b')

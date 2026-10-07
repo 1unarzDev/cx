@@ -6,6 +6,16 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.25
+
+### Features
+- Render Markdown tables with aligned columns, bold headers and left/right/center alignment. Preserve Unicode widths, escaped pipes and inline formatting; switch to labeled wrapping rows when the preview is too narrow.
+- Give fenced code blocks clear boundaries and language labels. Use bundled language grammars for syntax highlighting—including common aliases such as python3, JavaScript and shell—without executing code or requiring an interpreter on the device.
+
+### Fixes
+- Match the correct fence marker and length, keeping table-like text inside code literal. Unknown languages and exhausted highlighting budgets degrade to plain code.
+- Cache table layout by viewport/source revision and keep preview search highlights, n/N navigation and scrolling aligned after resizing. Preserve terminal-default backgrounds and monochrome formatting.
+
 ## v0.1.24
 
 ### Fixes

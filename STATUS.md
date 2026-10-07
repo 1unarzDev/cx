@@ -222,3 +222,12 @@ Signed v0.1.23/source4c3c3f0/workflow37614097212 PASS. Innovation/server install
 - Real PTY also exposed monochrome bypass of Markdown formatting. Preserve Markdown modifiers with foreground/background stripped in NO_COLOR/ASCII. Code previews retain their existing monochrome behavior. No new user decision needed.
 
 Signed v0.1.24/source5e02398/workflow37615556311 PASS, installed innovation/server with verified SHA256cc7421e484a5c7d5c7cef10ec337626daaa3e492f7178ddfb04808f89084d05c. Exact public bootstrap and installed Markdown italic/bold/default-background PTYs PASS in color+monochrome. Three protected managed session identities preserved; server remains agent-free. Tranquility SSH unavailable, update BLOCKED/last verified0.1.16. No pending user choice.
+
+
+## Markdown tables and code blocks — v0.1.25 candidate
+- Bounded inert table renderer integrated: Unicode display-width columns, header/separator alignment, escaped/code pipes, inline emphasis, and responsive labeled rows with no discarded cell data. Cache by source/revision/viewport; logical source-line count preserved.
+- Fenced code has muted boundaries/gutter and language label. Bundled grammars handle common aliases; unknown languages stay plain, closing marker/length must match, no interpreter/process execution.
+- Integrated414 Rust tests pass before final inline-cell refinement; refined111 UI plus Markdown/PTY regressions pass. Independent current renderer review pending. Prior reviewer mistakenly worked an unrelated historical file-tree polish in isolated e826927; not integrated/deployed.
+- Optional preference pending: labeled rows versus horizontal grid scrolling in narrow panes. Labeled rows remain current default after reasonable opportunity to answer; no repeated question.
+
+Both review P2 findings reproduced and corrected with regressions: table/fence boundary and stale search index after resize. Reviewed113 UI tests and palette/monochrome PTYs PASS. Final re-review pending; not published yet.

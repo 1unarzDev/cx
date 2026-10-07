@@ -194,6 +194,8 @@ struct Browser {
     #[serde(skip)]
     preview_revision: u64,
     #[serde(skip)]
+    markdown_cache: std::cell::RefCell<Option<(u64, u16, String, Vec<Line<'static>>)>>,
+    #[serde(skip)]
     preview_path: Option<String>,
     #[serde(skip)]
     preview_requested_page: u32,
@@ -226,6 +228,7 @@ impl Browser {
             preview: None,
             preview_rich: None,
             preview_revision: 0,
+            markdown_cache: std::cell::RefCell::new(None),
             preview_path: None,
             preview_requested_page: 1,
             preview_pending_page: None,
@@ -3482,8 +3485,13 @@ impl App {
     }
     fn next_preview_match(&mut self, direction: isize) {
         if let Some(b) = &mut self.browser {
+            b.preview_find.matches = preview_matches(
+                &preview_display_lines(b, b.preview.as_deref().unwrap_or("")),
+                &b.preview_find.query,
+            );
             let count = b.preview_find.matches.len();
             if count > 0 {
+                b.preview_find.selected = b.preview_find.selected.min(count - 1);
                 b.preview_find.selected = (b.preview_find.selected as isize + direction)
                     .rem_euclid(count as isize) as usize;
                 b.preview_find.reveal.set(true);
@@ -4629,13 +4637,17 @@ fn render_with_native(
                     .as_ref()
                     .filter(|b| b.preview.is_some() && app.view == View::Files)
                 {
-                    let count = b.preview_find.matches.len();
+                    let count = preview_matches(
+                        &preview_display_lines(b, b.preview.as_deref().unwrap_or("")),
+                        &b.preview_find.query,
+                    )
+                    .len();
                     format!(
                         "Search · {}/{}",
                         if count == 0 {
                             0
                         } else {
-                            b.preview_find.selected + 1
+                            (b.preview_find.selected + 1).min(count)
                         },
                         count
                     )
@@ -5538,20 +5550,37 @@ fn preview_lines(text: &str, kind: &str) -> Vec<Line<'static>> {
     } else {
         Vec::new()
     };
-    let mut fenced = false;
+    let fences = if kind == "markdown" {
+        crate::syntax_preview::fenced_blocks(&safe)
+    } else {
+        Vec::new()
+    };
+    let openings: HashMap<_, _> = fences.iter().map(|f| (f.opening, f)).collect();
+    let closings: BTreeSet<_> = fences.iter().filter_map(|f| f.closing).collect();
     safe.lines()
         .enumerate()
         .map(|(index, line)| {
             if kind == "markdown" {
                 if let Some(Some(highlighted)) = code.get(index) {
-                    return highlighted.clone();
+                    let mut spans = vec![Span::styled(if ascii() { "| " } else { "│ " }, muted())];
+                    spans.extend(highlighted.spans.clone());
+                    return Line::from(spans);
                 }
-                if line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~") {
-                    fenced = !fenced;
-                    return Line::from(Span::styled(line.to_owned(), muted()));
+                if let Some(fence) = openings.get(&index) {
+                    return Line::from(vec![
+                        Span::styled(if ascii() { "+-- " } else { "┌─ " }, muted()),
+                        Span::styled(
+                            if fence.language.is_empty() {
+                                "code".into()
+                            } else {
+                                fence.language.clone()
+                            },
+                            accent().add_modifier(Modifier::BOLD),
+                        ),
+                    ]);
                 }
-                if fenced {
-                    return Line::from(Span::styled(line.to_owned(), tint(Color::Yellow)));
+                if closings.contains(&index) {
+                    return Line::from(Span::styled(if ascii() { "+--" } else { "└─" }, muted()));
                 }
                 let hashes = line.chars().take_while(|c| *c == '#').count();
                 if (1..=6).contains(&hashes) && line.as_bytes().get(hashes) == Some(&b' ') {
@@ -5780,24 +5809,76 @@ fn confirmation_buttons(
     }
 }
 
+fn markdown_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
+    let width = browser.preview_viewport.get().0;
+    if let Some((revision, cached_width, source, lines)) = browser.markdown_cache.borrow().as_ref()
+    {
+        if *revision == browser.preview_revision && *cached_width == width && source == text {
+            return lines.clone();
+        }
+    }
+    let mut lines = browser
+        .preview_rich
+        .as_ref()
+        .and_then(|p| p.styled.clone())
+        .unwrap_or_else(|| preview_lines(text, "markdown"));
+    let safe = safe_text(text);
+    let source: Vec<_> = safe.lines().collect();
+    let fences = crate::syntax_preview::fenced_blocks(&safe);
+    let mut at = 0;
+    let mut fence = fences.iter().peekable();
+    while at < source.len() {
+        if let Some(block) = fence.peek().filter(|block| block.opening == at) {
+            at = block.closing.map(|i| i + 1).unwrap_or(source.len());
+            fence.next();
+            continue;
+        }
+        // A table body must never consume an upcoming fenced block.
+        let table_end = fence
+            .peek()
+            .map(|block| block.opening)
+            .unwrap_or(source.len());
+        if let Some((consumed, rendered)) = crate::markdown_tables::render_inline(
+            &source[..table_end],
+            at,
+            if width == 0 { 80 } else { usize::from(width) },
+            ascii(),
+            preview_inline,
+        ) {
+            if consumed > 0 && rendered.len() == consumed && at + consumed <= lines.len() {
+                lines.splice(at..at + consumed, rendered);
+                at += consumed;
+                continue;
+            }
+        }
+        at += 1;
+    }
+    *browser.markdown_cache.borrow_mut() = Some((
+        browser.preview_revision,
+        width,
+        text.to_owned(),
+        lines.clone(),
+    ));
+    lines
+}
 fn preview_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
     let rich = browser.preview_rich.as_ref();
-    if !ascii() && std::env::var_os("NO_COLOR").is_none() {
-        rich.and_then(|p| p.styled.clone())
-            .unwrap_or_else(|| preview_lines(text, rich.map(|p| p.kind.as_str()).unwrap_or("text")))
-    } else if rich.is_some_and(|p| p.kind == "markdown") {
-        let mut lines = rich
-            .and_then(|p| p.styled.clone())
-            .unwrap_or_else(|| preview_lines(text, "markdown"));
-        for line in &mut lines {
-            line.style.fg = None;
-            line.style.bg = None;
-            for span in &mut line.spans {
-                span.style.fg = None;
-                span.style.bg = None;
+    if rich.is_some_and(|p| p.kind == "markdown") {
+        let mut lines = markdown_display_lines(browser, text);
+        if ascii() || std::env::var_os("NO_COLOR").is_some() {
+            for line in &mut lines {
+                line.style.fg = None;
+                line.style.bg = None;
+                for span in &mut line.spans {
+                    span.style.fg = None;
+                    span.style.bg = None;
+                }
             }
         }
         lines
+    } else if !ascii() && std::env::var_os("NO_COLOR").is_none() {
+        rich.and_then(|p| p.styled.clone())
+            .unwrap_or_else(|| preview_lines(text, rich.map(|p| p.kind.as_str()).unwrap_or("text")))
     } else {
         safe_text(text)
             .lines()
@@ -5960,7 +6041,6 @@ fn render_preview_with_native(
     } else {
         text
     };
-    let mut lines = preview_display_lines(browser, text);
     if browser
         .preview_viewport
         .replace((inner.width, inner.height))
@@ -5969,14 +6049,14 @@ fn render_preview_with_native(
     {
         browser.preview_find.reveal.set(true);
     }
+    let mut lines = preview_display_lines(browser, text);
+    let mut find = browser.preview_find.clone();
+    find.matches = preview_matches(&lines, &find.query);
+    find.selected = find.selected.min(find.matches.len().saturating_sub(1));
     let max = preview_max_scroll(&lines, inner.width, inner.height);
     let mut scroll = browser.preview_scroll.get().min(max);
     if browser.preview_find.reveal.replace(false) {
-        if let Some((line, positions)) = browser
-            .preview_find
-            .matches
-            .get(browser.preview_find.selected)
-        {
+        if let Some((line, positions)) = find.matches.get(find.selected) {
             let before = Paragraph::new(lines[..*line].to_vec())
                 .wrap(Wrap { trim: false })
                 .line_count(inner.width.max(1));
@@ -5995,7 +6075,7 @@ fn render_preview_with_native(
         }
     }
     browser.preview_scroll.set(scroll);
-    highlight_preview_matches(&mut lines, &browser.preview_find);
+    highlight_preview_matches(&mut lines, &find);
     frame.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
@@ -10359,6 +10439,125 @@ mod tests {
         }
         assert!(raster_lines(w, h, &bytes, Rect::new(0, 0, 0, 0)).is_empty());
     }
+    #[test]
+    fn markdown_table_search_clamps_stored_selection_after_resize() {
+        let (mut a, _tasks) = file_app();
+        let source = "| Key | Note |\n| --- | --- |\n| Key | A |\n| Key | B |";
+        let b = a.browser.as_mut().unwrap();
+        b.preview = Some(source.into());
+        b.preview_rich = Some(RichPreview::from_value(
+            &serde_json::json!({"kind":"markdown", "text":source}),
+        ));
+        b.preview_viewport.set((8, 20));
+        b.preview_find.query = "Key".into();
+        b.preview_find.matches = preview_matches(&preview_display_lines(b, source), "Key");
+        assert_eq!(b.preview_find.matches.len(), 5);
+        b.preview_find.selected = 4;
+        b.preview_viewport.set((80, 20));
+        a.next_preview_match(1);
+        assert_eq!(a.browser.as_ref().unwrap().preview_find.matches.len(), 3);
+        assert_eq!(a.browser.as_ref().unwrap().preview_find.selected, 0);
+        a.browser.as_mut().unwrap().preview_find.selected = 4;
+        a.next_preview_match(-1);
+        assert_eq!(a.browser.as_ref().unwrap().preview_find.selected, 1);
+    }
+
+    #[test]
+    fn table_body_stops_before_a_pipe_in_a_code_fence() {
+        let (mut a, _tasks) = file_app();
+        let source = "| A | B |\n| --- | --- |\n```python | extra\n| literal | value |\n```";
+        let b = a.browser.as_mut().unwrap();
+        b.preview = Some(source.into());
+        b.preview_rich = Some(RichPreview::from_value(
+            &serde_json::json!({"kind":"markdown", "text":source}),
+        ));
+        b.preview_viewport.set((80, 20));
+        let lines = preview_display_lines(b, source);
+        let opening = lines[2]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        let code = lines[3]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(opening.contains("python") && !opening.contains("```"));
+        assert!(code.contains("| literal | value |"));
+    }
+
+    #[test]
+    fn markdown_table_cells_keep_inline_emphasis_and_width() {
+        let (mut a, _tasks) = file_app();
+        let source = "| Name | Note |\n| --- | --- |\n| _italic_ | `a|b` |";
+        let b = a.browser.as_mut().unwrap();
+        b.preview = Some(source.into());
+        b.preview_rich = Some(RichPreview::from_value(
+            &serde_json::json!({"kind":"markdown", "text":source}),
+        ));
+        b.preview_viewport.set((80, 20));
+        let lines = preview_display_lines(b, source);
+        assert!(lines[2]
+            .spans
+            .iter()
+            .any(|s| s.content == "italic" && s.style.add_modifier.contains(Modifier::ITALIC)));
+        let text = lines[2]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("a|b") && !text.contains('`') && !text.contains('_'));
+        b.preview_viewport.set((8, 20));
+        let narrow = preview_display_lines(b, source);
+        assert!(narrow[2]
+            .spans
+            .iter()
+            .any(|s| s.content == "italic" && s.style.add_modifier.contains(Modifier::ITALIC)));
+    }
+
+    #[test]
+    fn markdown_tables_resize_and_code_blocks_remain_literal() {
+        let (mut a, _tasks) = file_app();
+        let source = "| Device | Count |\n| :--- | ---: |\n| workstation | 42 |\n\n~~~python\nprint(\"hello\")\n| not | a table |\n| --- | --- |\n~~~";
+        let b = a.browser.as_mut().unwrap();
+        b.preview = Some(source.into());
+        b.preview_rich = Some(RichPreview::from_value(
+            &serde_json::json!({"kind":"markdown", "text":source}),
+        ));
+        b.preview_viewport.set((80, 20));
+        let wide = preview_display_lines(b, source);
+        assert_eq!(wide.len(), source.lines().count());
+        let rendered = wide
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(!rendered[0].starts_with('|'));
+        assert!(rendered[0].contains("Device") && rendered[2].contains("42"));
+        assert!(rendered[4].contains("python") && !rendered[4].contains("~~~"));
+        assert!(rendered[6].contains("| not | a table |"));
+        b.preview_viewport.set((12, 20));
+        let narrow = preview_display_lines(b, source);
+        let row = narrow[2]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(row.contains("Device: workstation") && row.contains("Count: 42"));
+        assert_eq!(narrow.len(), wide.len());
+        b.preview_find.query = "42".into();
+        b.preview_find.matches = preview_matches(&narrow, "42");
+        b.preview_viewport.set((80, 20));
+        a.next_preview_match(1);
+        assert_eq!(a.browser.as_ref().unwrap().preview_find.matches.len(), 1);
+        assert_eq!(a.browser.as_ref().unwrap().preview_find.matches[0].0, 2);
+    }
+
     #[test]
     fn markdown_underscore_emphasis_preserves_identifiers_and_code() {
         let lines = preview_lines("_italic words_ and __strong words__\nfile_name_here and `_literal_`\n\\_escaped_ and _ unmatched\n_élégant_", "markdown");

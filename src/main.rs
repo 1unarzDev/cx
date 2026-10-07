@@ -1,5 +1,6 @@
 mod auth;
 mod files;
+mod markdown_tables;
 mod model;
 mod network;
 mod session_titles;

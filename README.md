@@ -49,3 +49,5 @@ Development is ongoing: Network observation and SSH jump routes work; sharing, f
 Build: `cargo build --release --locked`. Check: `cargo test --locked`. GitHub workers test builds and installer fixtures across distributions; RHEL itself requires access to a licensed environment, so Rocky Linux supplies the compatible CI fixture.
 
 Release changes: [CHANGELOG.md](CHANGELOG.md). Before tagging a stable version, move its reviewed changes from Unreleased into an exact `vX.Y.Z` section; publication requires these notes.
+
+Markdown previews render aligned tables (labeled wrapping rows in narrow panes) and fenced code with language-aware, bundled syntax highlighting. Previewing code never runs it and does not require a language interpreter. Unknown languages stay plain; `/`, `n`/`N`, `j`/`k`, and `gg`/`G` retain preview navigation.

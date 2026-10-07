@@ -1,6 +1,6 @@
 //! Inert, bounded table presentation; one logical output line per source line.
 use ratatui::{
-    style::{Modifier, Style},
+    style::Modifier,
     text::{Line, Span},
 };
 use std::collections::{HashMap, VecDeque};
@@ -131,8 +131,8 @@ fn alignment(s: &str) -> Option<Align> {
         _ => Align::Left,
     })
 }
-fn cell_width(s: &str) -> usize {
-    Span::raw(s).width()
+fn cell_width(s: &str, inline: fn(&str) -> Vec<Span<'static>>) -> usize {
+    Line::from(inline(s)).width()
 }
 fn row_line(
     row: &[String],
@@ -140,27 +140,27 @@ fn row_line(
     aligns: &[Align],
     header: bool,
     ascii: bool,
+    inline: fn(&str) -> Vec<Span<'static>>,
 ) -> Line<'static> {
     let mut spans = Vec::new();
     for (i, text) in row.iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw(if ascii { " | " } else { " │ " }));
         }
-        let padding = widths[i].saturating_sub(cell_width(text));
+        let padding = widths[i].saturating_sub(cell_width(text, inline));
         let left = match aligns[i] {
             Align::Left => 0,
             Align::Right => padding,
             Align::Center => padding / 2,
         };
         spans.push(Span::raw(" ".repeat(left)));
-        spans.push(Span::styled(
-            text.clone(),
-            if header {
-                Style::default().add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            },
-        ));
+        let mut content = inline(text);
+        if header {
+            for span in &mut content {
+                span.style = span.style.add_modifier(Modifier::BOLD);
+            }
+        }
+        spans.extend(content);
         spans.push(Span::raw(" ".repeat(padding - left)));
     }
     Line::from(spans)
@@ -169,11 +169,23 @@ fn row_line(
 /// Detect a header/separator/body table at `start`. Returns consumed source lines
 /// and equally many logical `Line`s. The caller must wrap lines without truncation.
 /// Malformed or over-budget rows remain ordinary Markdown outside this renderer.
-pub fn render(
+#[cfg(test)]
+fn render(
     source: &[&str],
     start: usize,
     width: usize,
     ascii: bool,
+) -> Option<(usize, Vec<Line<'static>>)> {
+    render_inline(source, start, width, ascii, |text| {
+        vec![Span::raw(text.to_owned())]
+    })
+}
+pub fn render_inline(
+    source: &[&str],
+    start: usize,
+    width: usize,
+    ascii: bool,
+    inline: fn(&str) -> Vec<Span<'static>>,
 ) -> Option<(usize, Vec<Line<'static>>)> {
     let header_line = *source.get(start)?;
     let separator_line = *source.get(start.checked_add(1)?)?;
@@ -209,13 +221,13 @@ pub fn render(
     let mut widths = vec![0; rows[0].len()];
     for row in &rows {
         for (i, text) in row.iter().enumerate() {
-            widths[i] = widths[i].max(cell_width(text));
+            widths[i] = widths[i].max(cell_width(text, inline));
         }
     }
     let wide = widths.iter().sum::<usize>() + widths.len().saturating_sub(1) * 3 <= width.min(4096);
     let mut lines = Vec::with_capacity(consumed);
     if wide {
-        lines.push(row_line(&rows[0], &widths, &aligns, true, ascii));
+        lines.push(row_line(&rows[0], &widths, &aligns, true, ascii, inline));
         lines.push(Line::raw(
             widths
                 .iter()
@@ -232,13 +244,20 @@ pub fn render(
         lines.extend(
             rows.iter()
                 .skip(1)
-                .map(|row| row_line(row, &widths, &aligns, false, ascii)),
+                .map(|row| row_line(row, &widths, &aligns, false, ascii, inline)),
         );
     } else {
-        lines.push(Line::from(Span::styled(
-            rows[0].join(" | "),
-            Style::default().add_modifier(Modifier::BOLD),
-        )));
+        let mut header = Vec::new();
+        for (i, cell) in rows[0].iter().enumerate() {
+            if i > 0 {
+                header.push(Span::raw(" | "));
+            }
+            header.extend(inline(cell).into_iter().map(|mut span| {
+                span.style = span.style.add_modifier(Modifier::BOLD);
+                span
+            }));
+        }
+        lines.push(Line::from(header));
         // Keep a source-index placeholder for the separator without consuming
         // scarce narrow-screen space with a long synthetic rule.
         lines.push(Line::raw(if ascii { "---" } else { "───" }));
@@ -248,11 +267,12 @@ pub fn render(
                 if i > 0 {
                     spans.push(Span::raw("; "));
                 }
-                spans.push(Span::styled(
-                    format!("{}: ", rows[0][i]),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ));
-                spans.push(Span::raw(text.clone()));
+                spans.extend(inline(&rows[0][i]).into_iter().map(|mut span| {
+                    span.style = span.style.add_modifier(Modifier::BOLD);
+                    span
+                }));
+                spans.push(Span::raw(": "));
+                spans.extend(inline(text));
             }
             lines.push(Line::from(spans));
         }
@@ -335,8 +355,8 @@ mod tests {
     }
     #[test]
     fn combining_and_emoji_terminal_cells() {
-        assert_eq!(cell_width("e\u{301}"), 1);
-        assert_eq!(cell_width("💻"), 2);
+        assert_eq!(cell_width("e\u{301}", |s| vec![Span::raw(s.to_owned())]), 1);
+        assert_eq!(cell_width("💻", |s| vec![Span::raw(s.to_owned())]), 2);
         let (_, lines) = render(&["a | b", "--- | ---", "e\u{301} | 💻"], 0, 6, true).unwrap();
         assert_eq!(text(&lines[2]), "e\u{301} | 💻");
         assert_eq!(lines[2].width(), 6);

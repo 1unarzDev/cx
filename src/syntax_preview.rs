@@ -82,12 +82,17 @@ fn highlight_with_budget(text: &str, path: &str, budget: Duration) -> Vec<Line<'
         .collect()
 }
 
-/// Per-line overrides for fenced code; prose remains the UI's inert Markdown renderer.
-pub fn fenced_lines(text: &str) -> Vec<Option<Line<'static>>> {
+#[derive(Debug)]
+pub struct FencedBlock {
+    pub opening: usize,
+    pub closing: Option<usize>,
+    pub language: String,
+}
+/// Identify matching fences once; an unclosed fence owns the remaining source.
+pub fn fenced_blocks(text: &str) -> Vec<FencedBlock> {
     let source = text.lines().collect::<Vec<_>>();
-    let mut result = vec![None; source.len()];
+    let mut result = Vec::new();
     let mut at = 0;
-    let started = Instant::now();
     while at < source.len() {
         let line = source[at].trim_start();
         let marker = line.chars().next().unwrap_or(' ');
@@ -96,9 +101,15 @@ pub fn fenced_lines(text: &str) -> Vec<Option<Line<'static>>> {
             at += 1;
             continue;
         }
-        let language = line[count..].split_whitespace().next().unwrap_or("");
-        let start = at + 1;
-        at = start;
+        let language = line[count..]
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(64)
+            .collect();
+        let opening = at;
+        at += 1;
         while at < source.len() {
             let close = source[at].trim_start();
             let close_count = close.chars().take_while(|c| *c == marker).count();
@@ -107,16 +118,65 @@ pub fn fenced_lines(text: &str) -> Vec<Option<Line<'static>>> {
             }
             at += 1;
         }
-        if started.elapsed() <= Duration::from_millis(1000) {
-            let body = source[start..at].join("\n");
-            let path = format!("fence.{language}");
-            for (index, line) in highlight(&body, &path).into_iter().enumerate() {
-                if start + index < at {
-                    result[start + index] = Some(line);
-                }
+        result.push(FencedBlock {
+            opening,
+            closing: (at < source.len()).then_some(at),
+            language,
+        });
+        at += 1;
+    }
+    result
+}
+fn fence_language(language: &str) -> String {
+    let language = language.to_lowercase();
+    let token = match language.as_str() {
+        "python" | "python3" => "py",
+        "javascript" | "node" | "nodejs" => "js",
+        "typescript" => "ts",
+        "shell" | "bash" | "zsh" | "sh" => "sh",
+        "c++" => "cpp",
+        "c#" | "csharp" => "cs",
+        "yml" => "yaml",
+        "text" | "plaintext" | "console" | "" => "txt",
+        other => other,
+    };
+    if SYNTAXES
+        .find_syntax_by_extension(token)
+        .or_else(|| SYNTAXES.find_syntax_by_token(token))
+        .is_some()
+    {
+        token.to_owned()
+    } else {
+        "txt".into()
+    }
+}
+/// Per-line overrides for fenced code; unknown languages remain literal.
+pub fn fenced_lines(text: &str) -> Vec<Option<Line<'static>>> {
+    let source = text.lines().collect::<Vec<_>>();
+    let mut result = vec![None; source.len()];
+    let started = Instant::now();
+    for block in fenced_blocks(text) {
+        let start = block.opening + 1;
+        let end = block.closing.unwrap_or(source.len());
+        let body = source[start..end].join("\n");
+        let budget = Duration::from_millis(1000)
+            .saturating_sub(started.elapsed())
+            .min(Duration::from_millis(500));
+        let path = format!("fence.{}", fence_language(&block.language));
+        for (index, line) in highlight_with_budget(&body, &path, budget)
+            .into_iter()
+            .enumerate()
+        {
+            if start + index < end {
+                result[start + index] = Some(line);
             }
         }
-        at += 1;
+        // Preserve empty final lines too: syntax conversion must not swallow rows.
+        for index in start..end {
+            if result[index].is_none() {
+                result[index] = Some(Line::raw(source[index].to_owned()));
+            }
+        }
     }
     result
 }
@@ -203,6 +263,31 @@ mod tests {
             .iter()
             .any(|span| span.style.fg == Some(Color::Green)));
     }
+    #[test]
+    fn fence_aliases_mismatched_markers_and_unknown_languages() {
+        let source = "~~~python3\nreturn \"hello\"\n```\n~~~\n````javascript\nconst name = \"world\";\n```\n````\n```not-a-language\nreturn \"literal\"\n```";
+        let blocks = fenced_blocks(source);
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0].closing, Some(3));
+        assert_eq!(blocks[1].closing, Some(7));
+        let lines = fenced_lines(source);
+        for row in [1, 5] {
+            assert!(lines[row]
+                .as_ref()
+                .unwrap()
+                .spans
+                .iter()
+                .any(|s| s.style.fg == Some(Color::Green)));
+        }
+        assert!(lines[9]
+            .as_ref()
+            .unwrap()
+            .spans
+            .iter()
+            .all(|s| s.style.fg.is_none() || s.style.fg == Some(Color::Reset)));
+        assert_eq!(fenced_blocks("```rust\nlet x = 1;\n")[0].closing, None);
+    }
+
     #[test]
     fn fenced_markdown_languages_preserve_prose_and_source() {
         let source = "# Heading\n```rust\nlet name = \"hello\";\n```\nProse\n~~~python\nreturn \"world\"\n~~~";

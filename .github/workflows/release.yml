@@ -41,6 +41,7 @@ jobs:
       - run: python3 tests/markdown_preview_pty.py target/debug/cx
       - run: python3 tests/markdown_blocks_pty.py target/debug/cx
       - run: python3 tests/markdown_prose_pty.py target/debug/cx
+      - run: python3 tests/markdown_relative_pty.py target/debug/cx
       - run: python3 tests/preview_search_pty.py target/debug/cx
       - run: python3 tests/browser_find_pty.py target/debug/cx
       - run: python3 tests/pdf_pages_helper.py target/debug/cx

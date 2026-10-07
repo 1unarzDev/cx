@@ -112,7 +112,9 @@ pub struct Link {
 }
 pub fn web_target(s: &str) -> bool {
     s.len() <= 2048
-        && (s.starts_with("https://") || s.starts_with("http://"))
+        && s.split_once("://").is_some_and(|(scheme, _)| {
+            scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http")
+        })
         && s.split_once("://")
             .is_some_and(|(_, host)| !host.is_empty() && !host.starts_with('/'))
         && !s.chars().any(|c| c.is_control() || c.is_whitespace())

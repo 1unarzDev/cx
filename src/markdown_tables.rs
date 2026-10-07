@@ -131,7 +131,7 @@ fn alignment(s: &str) -> Option<Align> {
         _ => Align::Left,
     })
 }
-fn cell_width(s: &str, inline: fn(&str) -> Vec<Span<'static>>) -> usize {
+fn cell_width(s: &str, inline: impl Fn(&str) -> Vec<Span<'static>> + Copy) -> usize {
     Line::from(inline(s)).width()
 }
 fn row_line(
@@ -140,7 +140,7 @@ fn row_line(
     aligns: &[Align],
     header: bool,
     ascii: bool,
-    inline: fn(&str) -> Vec<Span<'static>>,
+    inline: impl Fn(&str) -> Vec<Span<'static>> + Copy,
 ) -> Line<'static> {
     let mut spans = Vec::new();
     for (i, text) in row.iter().enumerate() {
@@ -185,7 +185,7 @@ pub fn render_inline(
     start: usize,
     width: usize,
     ascii: bool,
-    inline: fn(&str) -> Vec<Span<'static>>,
+    inline: impl Fn(&str) -> Vec<Span<'static>> + Copy,
 ) -> Option<(usize, Vec<Line<'static>>)> {
     let header_line = *source.get(start)?;
     let separator_line = *source.get(start.checked_add(1)?)?;

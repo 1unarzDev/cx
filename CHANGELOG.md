@@ -8,6 +8,10 @@ No changes queued.
 
 ## v0.1.27
 
+### Features
+- Follow relative Markdown file links on the document’s device, including percent-encoded filenames and heading anchors. Escape returns through a bounded preview history without losing the file-tree selection. Links ending in / open the linked directory.
+- Open links directly with Shift+click where the terminal forwards it, or Ctrl+click. Ordinary click and o inspect the exact destination, including repeated labels and table links. Foot reserves Shift for selection by default.
+
 ### Fixes
 - Show fresh unnamed shells as New shell rather than a generated identifier or directory label. Switch to the observed running/last-command label as work starts. Recognize older generated shell names by their creation-key hash; preserve custom names and the same running terminal.
 - Avoid updater failures when a reused filesystem inode collides with an older rollback filename. Allocate a fresh private backup name without overwriting existing backups, retaining atomic replacement and rollback safeguards.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real Markdown links, hanging list layout and inert math previews."""
+"""Relative Markdown links, exact mouse targets, anchors and preview return."""
 import fcntl, json, os, pathlib, pty, select, struct, subprocess, sys, tempfile, termios, time
 import pyte
 binary = str(pathlib.Path(sys.argv[1]).resolve())
@@ -8,7 +8,9 @@ for mono in (False, True):
     with tempfile.TemporaryDirectory(prefix='cx-source-preview-') as temporary:
         root = pathlib.Path(temporary); source = root/'files'; source.mkdir()
         script = source/'sample.md'
-        script.write_text('# [Docs](https://example.org/docs)\n\n- aligned bullet alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november\n  continuation with source indentation\n\nInline $x^2 + \\alpha$\n\n$$\n\\frac{a}{b} + \\sqrt{x}\n$$\n')
+        script.write_text('# Parent\n[same](one.md) [same](two%20file.md#section)\n\nParent sentinel\n\n| Link | Purpose |\n| --- | --- |\n| [table](one.md) | test |\n')
+        (source/'one.md').write_text('# One\nFirst destination\n')
+        (source/'two file.md').write_text('# Intro\nSecond destination\n' + '\n'.join('filler %d' % i for i in range(35)) + '\n# Section\nAnchor destination\n')
         state = root/'state/cx'; state.mkdir(parents=True)
         name = 'viewer-restart-123-789.json'
         snapshot = dict(schema=1, expires_at=int(time.time())+300, device_ids=['local'], device=1,
@@ -39,30 +41,40 @@ for mono in (False, True):
             assert predicate(), '\n'.join(screen.display)
         try:
             wait(lambda: any('sample.md' in line for line in screen.display))
-            os.write(master, b'\r')
-            wait(lambda: any('aligned bullet' in line for line in screen.display))
-            row = next(i for i,line in enumerate(screen.display) if 'aligned bullet' in line)
-            column = screen.display[row].index('aligned bullet')
-            assert screen.display[row+1][column-2:column] == '  ', '\n'.join(screen.display)
-            row = next(i for i,line in enumerate(screen.display) if 'Docs' in line)
-            column = screen.display[row].index('Docs')
-            cell=screen.buffer[row][column]
-            assert cell.underscore and cell.bg=='default', cell
-            wait(lambda: any(('$x^2 + \\alpha$' if mono else 'x² + α') in line for line in screen.display))
-            # Click a rendered underlined link: inspect the destination, never auto-open.
+            settle(); os.write(master, b'\r')
+            wait(lambda: any('Parent sentinel' in line for line in screen.display)); settle()
+            row = next(i for i,line in enumerate(screen.display) if 'same' in line)
+            column = screen.display[row].index('same', screen.display[row].index('same') + 4)
+            cell = screen.buffer[row][column]
+            assert cell.underscore and cell.bg == 'default', cell
             os.write(master, f'\x1b[<0;{column+1};{row+1}M'.encode()); settle()
-            wait(lambda: any('Links' in line for line in screen.display) and any('viewer browser' in line for line in screen.display))
-            wait(lambda: any('https://example.org/docs' in line for line in screen.display))
+            wait(lambda: any('two file.md' in line for line in screen.display))
             os.write(master,b'\x1b'); settle()
-            wait(lambda: any('aligned bullet' in line for line in screen.display))
-            os.write(master,b'o'); settle()
-            wait(lambda: any('Links' in line for line in screen.display) and any('viewer browser' in line for line in screen.display))
+            wait(lambda: any('Parent sentinel' in line for line in screen.display)); settle()
+            # Shift modifier forwarded by this PTY opens the exact second target.
+            os.write(master, f'\x1b[<4;{column+1};{row+1}M'.encode()); settle()
+            wait(lambda: any('Anchor destination' in line for line in screen.display)); settle()
+            assert not any('First destination' in line for line in screen.display)
             os.write(master,b'\x1b'); settle()
+            wait(lambda: any('Parent sentinel' in line for line in screen.display)); settle()
+            row = next(i for i,line in enumerate(screen.display) if 'same' in line)
+            column = screen.display[row].index('same')
+            os.write(master, f'\x1b[<16;{column+1};{row+1}M'.encode()); settle()
+            wait(lambda: any('First destination' in line for line in screen.display)); settle()
             os.write(master,b'\x1b'); settle()
-            wait(lambda: any('sample.md' in line for line in screen.display) and not any('aligned bullet' in line for line in screen.display))
+            wait(lambda: any('Parent sentinel' in line for line in screen.display)); settle()
+            # Links inside the formatted table preserve exact mouse destinations.
+            row = next(i for i,line in enumerate(screen.display) if 'table' in line)
+            column = screen.display[row].index('table')
+            os.write(master, f'\x1b[<16;{column+1};{row+1}M'.encode()); settle()
+            wait(lambda: any('First destination' in line for line in screen.display)); settle()
+            os.write(master,b'\x1b'); settle()
+            wait(lambda: any('Parent sentinel' in line for line in screen.display)); settle()
+            os.write(master,b'\x1b'); settle()
+            wait(lambda: any('sample.md' in line for line in screen.display) and not any('Parent sentinel' in line for line in screen.display))
             os.write(master, b'\x03'); proc.wait(timeout=5)
             assert proc.returncode == 0 and termios.tcgetattr(slave) == before
-            checks.append(dict(mode='monochrome' if mono else 'ANSI palette', result='PASS', link_mouse_and_keyboard=True, hanging_indent=True, inert_math=True, escape_selection_and_termios=True))
+            checks.append(dict(mode='monochrome' if mono else 'ANSI palette', result='PASS', exact_duplicate_label=True, shift_and_ctrl_click=True, heading_anchor=True, table_link=True, escape_parent_and_termios=True))
         finally:
             if proc.poll() is None: proc.terminate(); proc.wait(timeout=5)
             os.close(master); os.close(slave)

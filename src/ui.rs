@@ -25,7 +25,7 @@ use ratatui::{
 };
 use serde_json::Value;
 use std::{
-    collections::{BTreeSet, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     io,
     sync::mpsc,
     thread,
@@ -205,9 +205,19 @@ struct Browser {
     #[serde(skip)]
     preview_viewport: std::cell::Cell<(u16, u16)>,
     #[serde(skip)]
-    preview_link_cells: std::cell::RefCell<Vec<(u16, u16)>>,
+    preview_link_cells: std::cell::RefCell<Vec<(u16, u16, Color)>>,
+    #[serde(skip)]
+    markdown_hit_lines: std::cell::RefCell<Vec<Line<'static>>>,
+    #[serde(skip)]
+    markdown_anchor_rows: std::cell::RefCell<BTreeMap<String, usize>>,
     #[serde(skip)]
     preview_find: PreviewFind,
+    #[serde(skip)]
+    preview_history: Vec<(String, u16, PreviewFind)>,
+    #[serde(skip)]
+    preview_restore: Option<(u16, PreviewFind)>,
+    #[serde(skip)]
+    preview_anchor: Option<String>,
     #[serde(default)]
     restore_selection: Option<String>,
 }
@@ -237,7 +247,12 @@ impl Browser {
             preview_scroll: std::cell::Cell::new(0),
             preview_viewport: std::cell::Cell::new((0, 0)),
             preview_link_cells: std::cell::RefCell::new(Vec::new()),
+            markdown_hit_lines: std::cell::RefCell::new(Vec::new()),
+            markdown_anchor_rows: std::cell::RefCell::new(BTreeMap::new()),
             preview_find: PreviewFind::default(),
+            preview_history: Vec::new(),
+            preview_restore: None,
+            preview_anchor: None,
             restore_selection: None,
         }
     }
@@ -1907,36 +1922,7 @@ impl App {
             KeyCode::Enter => match dialog {
                 Dialog::Links(links) => {
                     if let Some(link) = links.get(self.dialog_selected) {
-                        if !crate::markdown_links::web_target(&link.target) {
-                            self.notice =
-                                "Only HTTP/HTTPS links can open in the viewer browser".into();
-                            return;
-                        }
-                        if std::env::var_os("DISPLAY").is_none()
-                            && std::env::var_os("WAYLAND_DISPLAY").is_none()
-                        {
-                            self.notice =
-                                "No graphical browser on this viewer · URL shown below".into();
-                            return;
-                        }
-                        match std::process::Command::new("xdg-open")
-                            .arg(&link.target)
-                            .stdin(std::process::Stdio::null())
-                            .stdout(std::process::Stdio::null())
-                            .stderr(std::process::Stdio::null())
-                            .spawn()
-                        {
-                            Ok(mut child) => {
-                                std::thread::spawn(move || {
-                                    let _ = child.wait();
-                                });
-                                self.notice = "Link sent to viewer browser".into();
-                                self.dialog = None;
-                            }
-                            Err(_) => {
-                                self.notice = "Viewer browser unavailable · URL shown below".into()
-                            }
-                        }
+                        self.open_markdown_link(link);
                     }
                 }
 
@@ -2672,6 +2658,12 @@ impl App {
                             safe_text(value["text"].as_str().unwrap_or("Preview unavailable"))
                         });
                         b.preview_rich = Some(rich);
+                        let restored = b.preview_restore.take();
+                        let restoring = restored.is_some();
+                        if let Some((scroll, find)) = restored {
+                            b.preview_scroll.set(scroll);
+                            b.preview_find = find;
+                        }
                         b.preview_find.matches = preview_matches(
                             &preview_display_lines(b, b.preview.as_deref().unwrap_or("")),
                             &b.preview_find.query,
@@ -2680,7 +2672,15 @@ impl App {
                             .preview_find
                             .selected
                             .min(b.preview_find.matches.len().saturating_sub(1));
-                        b.preview_find.reveal.set(true);
+                        b.preview_find.reveal.set(!restoring);
+                        if let Some(anchor) = b.preview_anchor.take() {
+                            if let Some(scroll) = markdown_anchor_scroll(b, &anchor) {
+                                b.preview_scroll.set(scroll);
+                                b.preview_find.reveal.set(false);
+                            } else {
+                                self.notice = "Linked file opened · heading not found".into();
+                            }
+                        }
                     }
                 }
                 if next {
@@ -3023,6 +3023,19 @@ impl App {
                         .is_some_and(|b| !b.preview_find.query.is_empty()) =>
                 {
                     self.browser.as_mut().unwrap().preview_find = PreviewFind::default();
+                    return;
+                }
+                KeyCode::Esc
+                    if self
+                        .browser
+                        .as_ref()
+                        .is_some_and(|b| !b.preview_history.is_empty()) =>
+                {
+                    let b = self.browser.as_mut().unwrap();
+                    let device = b.device;
+                    let (path, scroll, find) = b.preview_history.pop().unwrap();
+                    self.open_preview(device, path);
+                    self.browser.as_mut().unwrap().preview_restore = Some((scroll, find));
                     return;
                 }
                 _ => {}
@@ -3447,6 +3460,9 @@ impl App {
         self.generation += 1;
         if let Some(b) = &mut self.browser {
             b.preview_path = Some(path.clone());
+            b.preview_restore = None;
+            b.preview_anchor = None;
+            b.preview_link_cells.borrow_mut().clear();
             b.preview_requested_page = 1;
             b.preview_pending_page = Some(1);
             b.preview_rich = None;
@@ -3551,6 +3567,90 @@ impl App {
                     .is_some_and(|p| p.kind == "markdown")
             })
     }
+    fn open_markdown_link(&mut self, link: &crate::markdown_links::Link) {
+        if crate::markdown_links::web_target(&link.target) {
+            if std::env::var_os("DISPLAY").is_none()
+                && std::env::var_os("WAYLAND_DISPLAY").is_none()
+            {
+                self.notice = "No graphical browser on this viewer · inspect the URL with o".into();
+                return;
+            }
+            match std::process::Command::new("xdg-open")
+                .arg(&link.target)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                Ok(mut child) => {
+                    std::thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                    self.notice = "Link sent to viewer browser".into();
+                    self.dialog = None;
+                }
+                Err(_) => {
+                    self.notice = "Viewer browser unavailable · inspect the URL with o".into()
+                }
+            }
+            return;
+        }
+        let Some(b) = self.browser.as_ref() else {
+            return;
+        };
+        let Some(document) = b.preview_path.as_ref() else {
+            self.notice = "Document path unavailable · reopen this file".into();
+            return;
+        };
+        let resolved = crate::files::decode_path(document)
+            .and_then(|p| crate::markdown_links::resolve_file_link(&p, &link.target));
+        let (path, anchor) = match resolved {
+            Ok(Some(destination)) => destination,
+            Ok(None) => {
+                self.notice = "Only web URLs and file links can open".into();
+                return;
+            }
+            Err(error) => {
+                self.notice = safe_text(&error.to_string());
+                return;
+            }
+        };
+        let device = b.device;
+        let same = crate::files::decode_path(document).ok().as_ref() == Some(&path);
+        if same && anchor.is_some() {
+            self.dialog = None;
+            let b = self.browser.as_mut().unwrap();
+            if let Some(scroll) = markdown_anchor_scroll(b, anchor.as_deref().unwrap()) {
+                b.preview_scroll.set(scroll);
+                b.preview_find.reveal.set(false);
+            } else {
+                self.notice = "Heading not found in this preview".into();
+            }
+            return;
+        }
+        self.dialog = None;
+        if link
+            .target
+            .split('#')
+            .next()
+            .is_some_and(|p| p.ends_with('/'))
+        {
+            self.open_browser(device, crate::files::encode_path(&path));
+            self.notice = "Browsing linked directory on the document's device".into();
+            return;
+        }
+        let b = self.browser.as_mut().unwrap();
+        if let Some(previous) = b.preview_path.clone() {
+            if b.preview_history.len() >= 16 {
+                b.preview_history.remove(0);
+            }
+            b.preview_history
+                .push((previous, b.preview_scroll.get(), b.preview_find.clone()));
+        }
+        self.open_preview(device, crate::files::encode_path(&path));
+        self.browser.as_mut().unwrap().preview_anchor = anchor;
+        self.notice = format!("Opening linked file · {}", identity(&self.devices[device]));
+    }
     fn show_preview_links(&mut self) {
         let links = self
             .browser
@@ -3572,15 +3672,49 @@ impl App {
             return false;
         }
         if self.markdown_preview_active() {
-            if matches!(mouse.kind, MouseEventKind::Down(event::MouseButton::Left))
-                && self.browser.as_ref().is_some_and(|b| {
+            if matches!(mouse.kind, MouseEventKind::Down(event::MouseButton::Left)) {
+                let tag = self.browser.as_ref().and_then(|b| {
                     b.preview_link_cells
                         .borrow()
-                        .contains(&(mouse.column, mouse.row))
-                })
-            {
-                self.show_preview_links();
-                return true;
+                        .iter()
+                        .find(|(x, y, _)| *x == mouse.column && *y == mouse.row)
+                        .map(|(_, _, tag)| *tag)
+                });
+                if let Some(tag) = tag {
+                    let links = self
+                        .browser
+                        .as_ref()
+                        .and_then(|b| b.preview.as_ref())
+                        .map(|s| markdown_preview_links(s))
+                        .unwrap_or_default();
+                    let matches: Vec<_> = links
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, l)| markdown_link_tag(&l.target) == tag)
+                        .collect();
+                    if matches.is_empty() {
+                        return false;
+                    }
+                    let target = matches.first().map(|(_, l)| l.target.as_str());
+                    let unique = target.is_some()
+                        && matches
+                            .iter()
+                            .all(|(_, l)| Some(l.target.as_str()) == target);
+                    if unique
+                        && mouse
+                            .modifiers
+                            .intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL)
+                    {
+                        let link = matches[0].1.clone();
+                        self.open_markdown_link(&link);
+                    } else {
+                        self.show_preview_links();
+                        if unique {
+                            self.dialog_selected = matches[0].0;
+                        }
+                    }
+                    return true;
+                }
             }
             return false;
         }
@@ -5109,9 +5243,12 @@ fn render_with_native(
     if let Some(dialog) = &app.dialog {
         let (title, labels, detail) = match dialog {
             Dialog::Links(links) => (
-                "Links · viewer browser".into(),
+                "Links".into(),
                 links.iter().map(|l|safe_label(&l.label)).collect(),
-                links.get(app.dialog_selected).map(|l|safe_text(&l.target)).unwrap_or_default(),
+                links.get(app.dialog_selected).map(|l|{
+                    if crate::markdown_links::web_target(&l.target) {return format!("Viewer browser\n{}",safe_text(&l.target));}
+                    app.browser.as_ref().and_then(|b|b.preview_path.as_ref().map(|p|(b,p))).and_then(|(b,p)|crate::files::decode_path(p).ok().and_then(|p|crate::markdown_links::resolve_file_link(&p,&l.target).ok().flatten()).map(|(path,_)|format!("Files · {}\n{}",identity(&app.devices[b.device]),safe_label(&path.to_string_lossy())))).unwrap_or_else(||safe_text(&l.target))
+                }).unwrap_or_default(),
             ),
             Dialog::Device(purpose) => (
                 match purpose {
@@ -5556,6 +5693,34 @@ fn render_with_native(
         );
     }
 }
+fn markdown_heading_slug(text: &str) -> String {
+    text.chars()
+        .flat_map(char::to_lowercase)
+        .filter_map(|c| {
+            if c.is_whitespace() {
+                Some('-')
+            } else if c.is_alphanumeric() || c == '_' || c == '-' {
+                Some(c)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+fn markdown_anchor_scroll(browser: &Browser, anchor: &str) -> Option<u16> {
+    let lines = preview_display_lines(browser, browser.preview.as_deref()?);
+    let row = *browser
+        .markdown_anchor_rows
+        .borrow()
+        .get(&markdown_heading_slug(anchor))?;
+    Some(
+        Paragraph::new(lines[..row].to_vec())
+            .wrap(Wrap { trim: false })
+            .line_count(browser.preview_viewport.get().0.max(1))
+            .min(u16::MAX as usize) as u16,
+    )
+}
+
 fn markdown_preview_links(source: &str) -> Vec<crate::markdown_links::Link> {
     let safe = safe_text(source);
     let fences = crate::syntax_preview::fenced_blocks(&safe);
@@ -5576,12 +5741,24 @@ fn markdown_preview_links(source: &str) -> Vec<crate::markdown_links::Link> {
     links
 }
 
+fn markdown_link_tag(target: &str) -> Color {
+    use sha2::Digest;
+    let hash = sha2::Sha256::digest(target.as_bytes());
+    Color::Rgb(hash[0], hash[1], hash[2])
+}
 fn preview_inline(text: &str) -> Vec<Span<'static>> {
+    preview_inline_tagged(text, false)
+}
+fn preview_inline_tagged(text: &str, tagged: bool) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut at = 0;
     for link in crate::markdown_links::links(text) {
         spans.extend(preview_emphasis(&text[at..link.start]));
-        let style = tint(Color::Cyan).add_modifier(Modifier::UNDERLINED);
+        let mut style = tint(Color::Cyan).add_modifier(Modifier::UNDERLINED);
+        // Tags exist only in a private hit-test layout, never the visible frame.
+        if tagged {
+            style.bg = Some(markdown_link_tag(&link.target));
+        }
         for mut span in preview_emphasis(&link.label) {
             span.style = span.style.patch(style);
             spans.push(span);
@@ -5831,6 +6008,9 @@ fn preview_emphasis_only(text: &str) -> Vec<Span<'static>> {
     spans
 }
 fn preview_lines(text: &str, kind: &str) -> Vec<Line<'static>> {
+    preview_lines_tagged(text, kind, false)
+}
+fn preview_lines_tagged(text: &str, kind: &str, tagged: bool) -> Vec<Line<'static>> {
     let safe = safe_text(text);
     let code = if kind == "markdown" {
         crate::syntax_preview::fenced_lines(&safe)
@@ -5872,7 +6052,7 @@ fn preview_lines(text: &str, kind: &str) -> Vec<Line<'static>> {
                 let hashes = line.chars().take_while(|c| *c == '#').count();
                 if (1..=6).contains(&hashes) && line.as_bytes().get(hashes) == Some(&b' ') {
                     let style = accent().add_modifier(Modifier::BOLD);
-                    let mut spans = preview_inline(&line[hashes + 1..]);
+                    let mut spans = preview_inline_tagged(&line[hashes + 1..], tagged);
                     for span in &mut spans {
                         span.style = style.patch(span.style);
                     }
@@ -5887,10 +6067,10 @@ fn preview_lines(text: &str, kind: &str) -> Vec<Line<'static>> {
                         format!("{}{} ", " ".repeat(prefix), if ascii() { "-" } else { "•" }),
                         accent(),
                     )];
-                    spans.extend(preview_inline(&line.trim_start()[2..]));
+                    spans.extend(preview_inline_tagged(&line.trim_start()[2..], tagged));
                     return Line::from(spans);
                 }
-                return Line::from(preview_inline(line));
+                return Line::from(preview_inline_tagged(line, tagged));
             }
             if kind == "code" {
                 let trimmed = line.trim_start();
@@ -6109,11 +6289,27 @@ fn markdown_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
             return lines.clone();
         }
     }
-    let mut lines = browser
-        .preview_rich
-        .as_ref()
-        .and_then(|p| p.styled.clone())
-        .unwrap_or_else(|| preview_lines(text, "markdown"));
+    let lines = markdown_layout_lines(browser, text, false);
+    *browser.markdown_hit_lines.borrow_mut() = markdown_layout_lines(browser, text, true);
+    *browser.markdown_cache.borrow_mut() = Some((
+        browser.preview_revision,
+        width,
+        text.to_owned(),
+        lines.clone(),
+    ));
+    lines
+}
+fn markdown_layout_lines(browser: &Browser, text: &str, tagged: bool) -> Vec<Line<'static>> {
+    let width = browser.preview_viewport.get().0;
+    let mut lines = if tagged {
+        preview_lines_tagged(text, "markdown", true)
+    } else {
+        browser
+            .preview_rich
+            .as_ref()
+            .and_then(|p| p.styled.clone())
+            .unwrap_or_else(|| preview_lines(text, "markdown"))
+    };
     let safe = safe_text(text);
     let source: Vec<_> = safe.lines().collect();
     let fences = crate::syntax_preview::fenced_blocks(&safe);
@@ -6138,7 +6334,7 @@ fn markdown_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
             at,
             if width == 0 { 80 } else { usize::from(width) },
             ascii(),
-            preview_inline,
+            |text| preview_inline_tagged(text, tagged),
         ) {
             if consumed > 0 && rendered.len() == consumed && at + consumed <= lines.len() {
                 protected.extend(at..at + consumed);
@@ -6198,9 +6394,32 @@ fn markdown_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
         row += 1;
     }
     let mut wrapped = Vec::new();
+    let mut anchors = BTreeMap::new();
+    let mut duplicates = HashMap::<String, usize>::new();
     let mut indent = 0;
     for (index, mut line) in lines.into_iter().enumerate() {
         let raw = source.get(index).copied().unwrap_or("");
+        let header = raw.trim_start();
+        let hashes = header.chars().take_while(|c| *c == '#').count();
+        if !protected.contains(&index)
+            && (1..=6).contains(&hashes)
+            && header.as_bytes().get(hashes) == Some(&b' ')
+        {
+            let text = line
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>();
+            let base = markdown_heading_slug(text.trim_end_matches('#').trim());
+            let count = duplicates.entry(base.clone()).or_default();
+            let slug = if *count == 0 {
+                base.clone()
+            } else {
+                format!("{base}-{count}")
+            };
+            anchors.insert(slug, wrapped.len());
+            *count += 1;
+        }
         if protected.contains(&index)
             || raw.trim().is_empty()
             || raw.trim_start().starts_with(['#', '>'])
@@ -6223,14 +6442,10 @@ fn markdown_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
             if width == 0 { 80 } else { width },
         ));
     }
-    let lines = wrapped;
-    *browser.markdown_cache.borrow_mut() = Some((
-        browser.preview_revision,
-        width,
-        text.to_owned(),
-        lines.clone(),
-    ));
-    lines
+    if !tagged {
+        *browser.markdown_anchor_rows.borrow_mut() = anchors;
+    }
+    wrapped
 }
 fn preview_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
     let rich = browser.preview_rich.as_ref();
@@ -6451,7 +6666,7 @@ fn render_preview_with_native(
         // Hit-test the unhighlighted presentation. Search underlines are not links.
         let mut buffer = ratatui::buffer::Buffer::empty(inner);
         ratatui::widgets::Widget::render(
-            Paragraph::new(lines.clone())
+            Paragraph::new(browser.markdown_hit_lines.borrow().clone())
                 .wrap(Wrap { trim: false })
                 .scroll((scroll, 0)),
             inner,
@@ -6460,8 +6675,9 @@ fn render_preview_with_native(
         let mut cells = browser.preview_link_cells.borrow_mut();
         for y in inner.y..inner.bottom() {
             for x in inner.x..inner.right() {
-                if buffer[(x, y)].modifier.contains(Modifier::UNDERLINED) {
-                    cells.push((x, y));
+                let cell = &buffer[(x, y)];
+                if cell.modifier.contains(Modifier::UNDERLINED) {
+                    cells.push((x, y, cell.bg));
                 }
             }
         }
@@ -8224,11 +8440,120 @@ mod tests {
         ],"internet":{"state":"unknown"}}));
     }
     #[test]
+    fn relative_markdown_click_uses_document_host_and_restores_parent() {
+        let (mut a, rx) = file_app();
+        let source = "# Top\n[same](one.md) [same](../two%20file.md#section)\n\nOriginal document";
+        let b = a.browser.as_mut().unwrap();
+        b.device = 1;
+        b.selected = 2;
+        b.preview_path = Some("/remote/docs/index.md".into());
+        b.preview = Some(source.into());
+        b.preview_rich = Some(RichPreview::from_value(
+            &serde_json::json!({"kind":"markdown","text":source}),
+        ));
+        let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        t.draw(|f| render(f, &a)).unwrap();
+        let target = "../two%20file.md#section";
+        let point = *a
+            .browser
+            .as_ref()
+            .unwrap()
+            .preview_link_cells
+            .borrow()
+            .iter()
+            .find(|(_, _, tag)| *tag == markdown_link_tag(target))
+            .unwrap();
+        assert_eq!(
+            t.backend().buffer()[(point.0, point.1)].bg,
+            Color::Reset,
+            "private hit-test tags never reach terminal"
+        );
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(event::MouseButton::Left),
+            column: point.0,
+            row: point.1,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(a.preview_mouse(mouse, Rect::new(0, 0, 80, 24)));
+        assert_eq!(a.dialog_selected, 1);
+        a.dialog = None;
+        assert!(a.preview_mouse(
+            MouseEvent {
+                modifiers: KeyModifiers::SHIFT,
+                ..mouse
+            },
+            Rect::new(0, 0, 80, 24)
+        ));
+        let task = rx.try_recv().unwrap();
+        assert_eq!(task.device, 1);
+        assert!(matches!(&task.op,Operation::Preview{path} if path=="/remote/two file.md"));
+        let linked = "# Section\nLinked destination\n\n# Section";
+        a.apply(Reply {
+            device: 1,
+            generation: a.generation,
+            op: task.op,
+            preview: None,
+            result: Ok(serde_json::json!({"kind":"markdown","text":linked})),
+        });
+        assert_eq!(a.browser.as_ref().unwrap().device, 1);
+        assert_eq!(
+            a.browser.as_ref().unwrap().preview_path.as_deref(),
+            Some("/remote/two file.md")
+        );
+        assert_eq!(a.browser.as_ref().unwrap().preview_history.len(), 1);
+        assert!(markdown_anchor_scroll(a.browser.as_ref().unwrap(), "section-1").is_some());
+        a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        let back = rx.try_recv().unwrap();
+        assert_eq!(back.device, 1);
+        assert!(matches!(&back.op,Operation::Preview{path} if path=="/remote/docs/index.md"));
+        a.apply(Reply {
+            device: 1,
+            generation: a.generation,
+            op: back.op,
+            preview: None,
+            result: Ok(serde_json::json!({"kind":"markdown","text":source})),
+        });
+        assert_eq!(a.browser.as_ref().unwrap().selected, 2);
+        assert!(a
+            .browser
+            .as_ref()
+            .unwrap()
+            .preview
+            .as_deref()
+            .unwrap()
+            .contains("Original document"));
+        assert_eq!(a.browser.as_ref().unwrap().path, "/files");
+        t.draw(|f| render(f, &a)).unwrap();
+        let point = *a
+            .browser
+            .as_ref()
+            .unwrap()
+            .preview_link_cells
+            .borrow()
+            .iter()
+            .find(|(_, _, tag)| *tag == markdown_link_tag("one.md"))
+            .unwrap();
+        assert!(a.preview_mouse(
+            MouseEvent {
+                column: point.0,
+                row: point.1,
+                modifiers: KeyModifiers::CONTROL,
+                ..mouse
+            },
+            Rect::new(0, 0, 80, 24)
+        ));
+        assert!(
+            matches!(rx.try_recv().unwrap().op,Operation::Preview{path} if path=="/remote/docs/one.md")
+        );
+    }
+
+    #[test]
     fn markdown_links_math_and_click_picker_are_safe() {
         let (mut a, _tasks) = file_app();
         let source = "# [Docs](https://example.org/docs) [Bad](javascript:alert(1))\n\n- first second third fourth fifth sixth\n  continued bullet text\n\nInline $x^2 + \\alpha$ and `\\alpha`\n\n$$\n\\frac{a}{b} + \\sqrt{x}\n$$\n\n~~~text\n[code](https://ignored) $x^2$\n~~~";
         let b = a.browser.as_mut().unwrap();
         b.preview = Some(source.into());
+        b.preview_path = Some("/fixture/document.md".into());
         b.preview_rich = Some(RichPreview::from_value(
             &serde_json::json!({"kind":"markdown", "text":source}),
         ));
@@ -8251,7 +8576,7 @@ mod tests {
         );
         a.dialog_selected = 1;
         a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(a.notice.contains("Only HTTP/HTTPS"));
+        assert!(a.notice.contains("unsupported URI scheme"));
         a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         let b = a.browser.as_ref().unwrap();
         let display = preview_display_lines(b, source)

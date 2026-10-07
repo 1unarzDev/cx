@@ -456,3 +456,16 @@ Innovation/server serialized `~/.local/bin/cx update --json` PASS, both return u
 Server installed real Bash/tmux3.4 disposable shell: running/recent sleep labels, secret exclusion and terminal identity PASS (`local-evidence/session-labels/server-shell-labels.json`). First harness attempt FAIL due to using exact-session `=name` syntax with a pane-target send-keys operation, corrected to the complete owned session name; initial evidence retained in `server-shell-labels-first-failure.txt`. Only exact owned disposable sessions/records removed; no AI runtimes installed. Tranquility deployment/live verification BLOCKED by No route to host, last installed version verified0.1.16. No network/trust changes attempted.
 
 Optimized source90c9b10 read-only metadata refresh on innovation, six live sessions/eight samples: p50 76.2ms, p95 87.8ms (`local-evidence/session-labels/final-refresh-performance.json`). This measures a full host metadata refresh, not cached first usable screen/UI frame latency/AI work, and does not claim new RSS or physical emulator acceptance. Existing native terminals and personal tmux configuration remain intact.
+
+
+## Text preview end-motion and live search — 2026-10-06
+
+PASS — reproduced G blank preview before the fix with actual UI key/render regression (`/tmp/cx-preview-G-red.log`); cause was a scroll offset65,535 beyond content. Clamping uses Ratatui wrapped line counts and current viewport, including Unicode and resize. No remote/provider process changes.
+
+PASS — integrated `cargo test --all-targets -- --test-threads=1`:229 main +47 files/network +52 session core +54 transfers +20 updater =402 passed, one intentionally ignored protected/live test (`/tmp/cx-preview-integrated-tests.log`). Focused regressions cover G/gg, wrapped Unicode/resize, search key ownership, syntax/default-background preservation, no matches, refresh and pending loading.
+
+PASS — real disposable PTYs, default ANSI and ASCII/NO_COLOR: G/gg/bottom clamp, live fuzzy highlight attributes, n/N result navigation, Escape search/browser restoration and original termios (`/tmp/cx-preview-search-pty.json`). Existing source preview color/inertness and three-page PDF navigation PTYs PASS (`/tmp/cx-preview-source-pty.json`, `/tmp/cx-preview-pdf-pty.json`). Independent reviewer confirms loading fix and harness coverage; no remaining substantive findings. Tests use synthetic content; no live file contents captured.
+
+Text search applies to the bounded displayed text, including styled source/Markdown, not PDF OCR or image contents. Physical user keyboard/visual acceptance remains unverified. Release/deployment evidence follows after publication; no installation claimed yet.
+
+PASS — final105 UI tests after contextual hint polish (`/tmp/cx-preview-final-ui-tests.log`), optimized live search/PDF PTYs (`/tmp/cx-preview-release-pty.json`, `/tmp/cx-preview-release-pdf-pty.json`), `cargo fmt --check` and `git diff --check`. Native optimized build adds no dependency.

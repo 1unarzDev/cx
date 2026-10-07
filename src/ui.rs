@@ -47,6 +47,7 @@ enum Focus {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Input {
     Search,
+    PreviewSearch,
     Palette,
     Command,
     Mkdir,
@@ -158,6 +159,13 @@ impl RichPreview {
     }
 }
 
+#[derive(Clone, Default)]
+struct PreviewFind {
+    query: String,
+    matches: Vec<(usize, Vec<usize>)>,
+    selected: usize,
+    reveal: std::cell::Cell<bool>,
+}
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Browser {
     device: usize,
@@ -191,7 +199,11 @@ struct Browser {
     preview_requested_page: u32,
     #[serde(skip)]
     preview_pending_page: Option<u32>,
-    preview_scroll: u16,
+    preview_scroll: std::cell::Cell<u16>,
+    #[serde(skip)]
+    preview_viewport: std::cell::Cell<(u16, u16)>,
+    #[serde(skip)]
+    preview_find: PreviewFind,
     #[serde(default)]
     restore_selection: Option<String>,
 }
@@ -217,7 +229,9 @@ impl Browser {
             preview_path: None,
             preview_requested_page: 1,
             preview_pending_page: None,
-            preview_scroll: 0,
+            preview_scroll: std::cell::Cell::new(0),
+            preview_viewport: std::cell::Cell::new((0, 0)),
+            preview_find: PreviewFind::default(),
             restore_selection: None,
         }
     }
@@ -518,7 +532,7 @@ impl App {
         }
         if let Some(input) = self.input {
             return match input {
-                Input::Search => "Search",
+                Input::Search | Input::PreviewSearch => "Search",
                 Input::Palette => "Actions",
                 Input::Command => "Run command",
                 Input::Add => "Add device",
@@ -2570,7 +2584,7 @@ impl App {
                         next = true;
                     } else {
                         b.preview_requested_page = page;
-                        b.preview_scroll = 0;
+                        b.preview_scroll.set(0);
                         b.preview_revision = b.preview_revision.wrapping_add(1);
                         let rich = reply
                             .preview
@@ -2582,6 +2596,15 @@ impl App {
                             safe_text(value["text"].as_str().unwrap_or("Preview unavailable"))
                         });
                         b.preview_rich = Some(rich);
+                        b.preview_find.matches = preview_matches(
+                            &preview_display_lines(b, b.preview.as_deref().unwrap_or("")),
+                            &b.preview_find.query,
+                        );
+                        b.preview_find.selected = b
+                            .preview_find
+                            .selected
+                            .min(b.preview_find.matches.len().saturating_sub(1));
+                        b.preview_find.reveal.set(true);
                     }
                 }
                 if next {
@@ -2728,12 +2751,14 @@ impl App {
                     }
                     self.palette_selected = 0;
                 }
+                KeyCode::Down if mode == Input::PreviewSearch => self.next_preview_match(1),
+                KeyCode::Up if mode == Input::PreviewSearch => self.next_preview_match(-1),
                 KeyCode::Down if mode == Input::Search => self.move_selection(1),
                 KeyCode::Up if mode == Input::Search => self.move_selection(-1),
                 KeyCode::Down if mode == Input::Filter => self.move_selection(1),
                 KeyCode::Up if mode == Input::Filter => self.move_selection(-1),
                 KeyCode::Tab | KeyCode::BackTab
-                    if matches!(mode, Input::Search | Input::Filter) =>
+                    if matches!(mode, Input::Search | Input::PreviewSearch | Input::Filter) =>
                 {
                     self.input = None;
                     self.cycle_focus(
@@ -2773,6 +2798,10 @@ impl App {
                         self.input = None;
                         self.focus = Focus::Workspace;
                         self.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                    }
+                    Input::PreviewSearch => {
+                        self.input = None;
+                        self.focus = Focus::Workspace;
                     }
                     Input::Filter => {
                         self.input = None;
@@ -2847,6 +2876,12 @@ impl App {
             {
                 self.live_search();
             }
+            if mode == Input::PreviewSearch
+                && self.input == Some(Input::PreviewSearch)
+                && self.text != before_text
+            {
+                self.update_preview_search();
+            }
             if mode == Input::Filter
                 && self.input == Some(Input::Filter)
                 && self.text != before_text
@@ -2858,6 +2893,52 @@ impl App {
                 }
             }
             return;
+        }
+        if self.view == View::Files
+            && self.focus == Focus::Workspace
+            && self.browser.as_ref().is_some_and(|b| b.preview.is_some())
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            match key.code {
+                KeyCode::Char('/') => {
+                    if self.text_preview_active() {
+                        self.input = Some(Input::PreviewSearch);
+                        self.text = self.browser.as_ref().unwrap().preview_find.query.clone();
+                    } else {
+                        self.notice = if self
+                            .browser
+                            .as_ref()
+                            .is_some_and(|b| b.preview_pending_page.is_some())
+                        {
+                            "Preview is still loading"
+                        } else {
+                            "Search is available in text previews"
+                        }
+                        .into();
+                    }
+                    return;
+                }
+                KeyCode::Char('n') => {
+                    self.next_preview_match(1);
+                    return;
+                }
+                KeyCode::Char('N') => {
+                    self.next_preview_match(-1);
+                    return;
+                }
+                KeyCode::Esc
+                    if self
+                        .browser
+                        .as_ref()
+                        .is_some_and(|b| !b.preview_find.query.is_empty()) =>
+                {
+                    self.browser.as_mut().unwrap().preview_find = PreviewFind::default();
+                    return;
+                }
+                _ => {}
+            }
         }
         if self.view == View::Files && self.focus == Focus::Workspace {
             if let KeyCode::Char(c @ '0'..='9') = key.code {
@@ -3103,6 +3184,7 @@ impl App {
                 if self.view == View::Files {
                     if let Some(b) = &mut self.browser {
                         b.preview_rich = None;
+                        b.preview_find = PreviewFind::default();
                         b.preview_pending_page = None;
                         b.preview_path = None;
                         if b.preview.take().is_none() {
@@ -3256,6 +3338,7 @@ impl App {
             && self.focus == Focus::Workspace
             && self.browser.as_ref().is_some_and(|b| {
                 b.preview.is_some()
+                    && b.preview_pending_page.is_none()
                     && b.preview_rich
                         .as_ref()
                         .is_some_and(|p| p.kind == "pdf" && p.raster.is_some())
@@ -3268,6 +3351,8 @@ impl App {
             b.preview_requested_page = 1;
             b.preview_pending_page = Some(1);
             b.preview_rich = None;
+            b.preview_scroll.set(0);
+            b.preview_find = PreviewFind::default();
             b.preview = Some("Loading preview…".into());
         }
         if !self.send(device, Operation::Preview { path }) {
@@ -3323,6 +3408,37 @@ impl App {
             self.notice = "Preview queue busy · retry shortly".into();
         }
     }
+    fn text_preview_active(&self) -> bool {
+        self.view == View::Files
+            && self.browser.as_ref().is_some_and(|b| {
+                b.preview.is_some()
+                    && b.preview_pending_page.is_none()
+                    && b.preview_rich
+                        .as_ref()
+                        .is_none_or(|p| p.raster.is_none() && p.kind != "pdf")
+            })
+    }
+    fn update_preview_search(&mut self) {
+        if let Some(b) = &mut self.browser {
+            b.preview_find.query = self.text.clone();
+            b.preview_find.matches = preview_matches(
+                &preview_display_lines(b, b.preview.as_deref().unwrap_or("")),
+                &self.text,
+            );
+            b.preview_find.selected = 0;
+            b.preview_find.reveal.set(true);
+        }
+    }
+    fn next_preview_match(&mut self, direction: isize) {
+        if let Some(b) = &mut self.browser {
+            let count = b.preview_find.matches.len();
+            if count > 0 {
+                b.preview_find.selected = (b.preview_find.selected as isize + direction)
+                    .rem_euclid(count as isize) as usize;
+                b.preview_find.reveal.set(true);
+            }
+        }
+    }
     fn preview_mouse(&mut self, mouse: MouseEvent, area: Rect) -> bool {
         if self.help || self.dialog.is_some() || self.input.is_some() || !self.pdf_preview_active()
         {
@@ -3362,9 +3478,14 @@ impl App {
                         }
                         return;
                     }
-                    b.preview_scroll = b.preview_scroll.saturating_add_signed(
-                        delta.clamp(i16::MIN as isize, i16::MAX as isize) as i16,
+                    let (width, height) = b.preview_viewport.get();
+                    let lines = preview_display_lines(b, b.preview.as_deref().unwrap_or(""));
+                    let max = preview_max_scroll(&lines, width.max(1), height.max(1));
+                    b.preview_scroll.set(
+                        (i64::from(b.preview_scroll.get()) + delta as i64).clamp(0, i64::from(max))
+                            as u16,
                     );
+                    b.preview_find.reveal.set(false);
                     return;
                 }
             }
@@ -3624,20 +3745,26 @@ fn render_with_native(
         );
         return;
     }
-    let query = if app.input == Some(Input::Filter) {
-        app.browser
-            .as_ref()
-            .map(|b| b.filter.as_str())
-            .unwrap_or("")
-    } else if app.view == View::Files {
-        app.browser
-            .as_ref()
-            .map(|b| b.search.as_str())
-            .unwrap_or("")
-    } else {
-        app.search.as_str()
-    };
-    let show_search = matches!(app.input, Some(Input::Search | Input::Filter)) || !query.is_empty();
+    let query =
+        if app.browser.as_ref().is_some_and(|b| b.preview.is_some()) && app.view == View::Files {
+            app.browser.as_ref().unwrap().preview_find.query.as_str()
+        } else if app.input == Some(Input::Filter) {
+            app.browser
+                .as_ref()
+                .map(|b| b.filter.as_str())
+                .unwrap_or("")
+        } else if app.view == View::Files {
+            app.browser
+                .as_ref()
+                .map(|b| b.search.as_str())
+                .unwrap_or("")
+        } else {
+            app.search.as_str()
+        };
+    let show_search = matches!(
+        app.input,
+        Some(Input::Search | Input::PreviewSearch | Input::Filter)
+    ) || !query.is_empty();
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -4100,6 +4227,7 @@ fn render_with_native(
         View::Files => {
             if let Some(b) = &app.browser {
                 if b.preview.is_some()
+                    && b.preview_pending_page.is_none()
                     && b.preview_rich
                         .as_ref()
                         .is_some_and(|p| matches!(p.kind.as_str(), "image" | "pdf"))
@@ -4425,7 +4553,10 @@ fn render_with_native(
         status_sections[2],
     );
     if show_search {
-        let editing = matches!(app.input, Some(Input::Search | Input::Filter));
+        let editing = matches!(
+            app.input,
+            Some(Input::Search | Input::PreviewSearch | Input::Filter)
+        );
         let text = if editing { app.text.as_str() } else { query };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
@@ -4441,11 +4572,25 @@ fn render_with_native(
             ]))
             .block(block(
                 if app.input == Some(Input::Filter) {
-                    "Filter"
+                    "Filter".into()
+                } else if let Some(b) = app
+                    .browser
+                    .as_ref()
+                    .filter(|b| b.preview.is_some() && app.view == View::Files)
+                {
+                    let count = b.preview_find.matches.len();
+                    format!(
+                        "Search · {}/{}",
+                        if count == 0 {
+                            0
+                        } else {
+                            b.preview_find.selected + 1
+                        },
+                        count
+                    )
                 } else {
-                    "Search"
-                }
-                .into(),
+                    "Search".into()
+                },
                 editing,
             )),
             footer[0],
@@ -4553,7 +4698,12 @@ fn render_with_native(
             ("Esc", "Cancel"),
             ("Ctrl U", "Clear"),
         ]
-    } else if matches!(app.input, Some(Input::Search | Input::Filter)) {
+    } else if app.input == Some(Input::PreviewSearch) {
+        vec![("↑↓", "Match"), ("Enter", "Done"), ("Esc", "Done")]
+    } else if matches!(
+        app.input,
+        Some(Input::Search | Input::PreviewSearch | Input::Filter)
+    ) {
         vec![
             ("↑↓", "Select"),
             (
@@ -4571,7 +4721,7 @@ fn render_with_native(
         && app.focus == Focus::Workspace
         && app.browser.as_ref().is_some_and(|b| b.preview.is_some())
     {
-        vec![
+        let mut hints = vec![
             (
                 "j/k",
                 if app.pdf_preview_active() {
@@ -4580,10 +4730,15 @@ fn render_with_native(
                     "Scroll"
                 },
             ),
-            ("PgUpDn", "Page"),
+            ("gg / G", "Top / bottom"),
             ("Esc", "Back"),
             ("?", "Help"),
-        ]
+        ];
+        if app.text_preview_active() {
+            hints.insert(2, ("/", "Search"));
+            hints.insert(3, ("n / N", "Next / previous"));
+        }
+        hints
     } else if app.view == View::Network && app.focus == Focus::Workspace {
         vec![
             ("j/k", "Devices / LAN"),
@@ -4637,7 +4792,12 @@ fn render_with_native(
         ]
     };
     let columns = if footer[key_row].width >= 60 { 3 } else { 2 };
-    if columns == 2 && !matches!(app.input, Some(Input::Search | Input::Filter)) {
+    if columns == 2
+        && !matches!(
+            app.input,
+            Some(Input::Search | Input::PreviewSearch | Input::Filter)
+        )
+    {
         hints.retain(|(_, label)| !matches!(*label, "Search" | "Focus"));
         hints.truncate(4);
         if app.dialog.is_none()
@@ -4678,7 +4838,7 @@ fn render_with_native(
     }
     if let Some(input) = app
         .input
-        .filter(|i| !matches!(*i, Input::Search | Input::Filter))
+        .filter(|i| !matches!(*i, Input::Search | Input::PreviewSearch | Input::Filter))
     {
         let rect = popup(
             area,
@@ -4766,7 +4926,7 @@ fn render_with_native(
                         )
                     } else {
                         match input {
-                            Input::Search => "Search",
+                            Input::Search | Input::PreviewSearch => "Search",
                             Input::Add => "Add device · SSH alias or user@host",
                             Input::Rename => "Rename",
                             Input::Command => "Run command",
@@ -5100,7 +5260,22 @@ fn render_with_native(
         if app.view == View::Work {
             help.push(key_row("d", "Stop selected cx-managed shell · confirm"));
         }
-        if app.view == View::Files {
+        if app.view == View::Files && app.browser.as_ref().is_some_and(|b| b.preview.is_some()) {
+            help.extend([
+                key_row("gg / G", "Preview top / bottom (first/last PDF page)"),
+                key_row("j/k · PgUp/PgDn", "Scroll preview / change PDF page"),
+                key_row(
+                    "Escape",
+                    "Finish search / clear highlights / return to files",
+                ),
+            ]);
+            if app.text_preview_active() {
+                help.extend([
+                    key_row("/", "Search preview text, live fuzzy matches"),
+                    key_row("n / N", "Next / previous match, wrap around"),
+                ]);
+            }
+        } else if app.view == View::Files {
             help.push(Line::from(Span::styled("Files", key_style)));
             for (keys, description) in [
                 ("Left/h · Right/l", "Parent / enter directory"),
@@ -5484,6 +5659,117 @@ fn confirmation_buttons(
     }
 }
 
+fn preview_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
+    let rich = browser.preview_rich.as_ref();
+    if !ascii() && std::env::var_os("NO_COLOR").is_none() {
+        rich.and_then(|p| p.styled.clone())
+            .unwrap_or_else(|| preview_lines(text, rich.map(|p| p.kind.as_str()).unwrap_or("text")))
+    } else {
+        safe_text(text)
+            .lines()
+            .map(|s| Line::raw(s.to_owned()))
+            .collect()
+    }
+}
+fn preview_max_scroll(lines: &[Line<'static>], width: u16, height: u16) -> u16 {
+    Paragraph::new(lines.to_vec())
+        .wrap(Wrap { trim: false })
+        .line_count(width.max(1))
+        .saturating_sub(usize::from(height))
+        .min(u16::MAX as usize) as u16
+}
+fn preview_matches(lines: &[Line<'static>], query: &str) -> Vec<(usize, Vec<usize>)> {
+    let needle: Vec<_> = query.chars().flat_map(char::to_lowercase).collect();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let mut result = Vec::new();
+    for (row, line) in lines.iter().enumerate() {
+        let text: Vec<_> = line
+            .spans
+            .iter()
+            .flat_map(|s| s.content.chars())
+            .enumerate()
+            .flat_map(|(i, c)| c.to_lowercase().map(move |c| (c, i)))
+            .collect();
+        // Prefer every contiguous occurrence; otherwise use one fuzzy subsequence per line.
+        let mut exact = false;
+        for (start, window) in text.windows(needle.len()).enumerate() {
+            if window.iter().map(|(c, _)| *c).eq(needle.iter().copied()) {
+                result.push((
+                    row,
+                    text[start..start + needle.len()]
+                        .iter()
+                        .map(|(_, i)| *i)
+                        .collect(),
+                ));
+                exact = true;
+            }
+        }
+        if !exact {
+            let mut positions = Vec::new();
+            let mut next = 0;
+            for (c, i) in text {
+                if c == needle[next] {
+                    positions.push(i);
+                    next += 1;
+                    if next == needle.len() {
+                        break;
+                    }
+                }
+            }
+            if next == needle.len() {
+                result.push((row, positions));
+            }
+        }
+    }
+    result
+}
+fn highlight_preview_matches(lines: &mut [Line<'static>], find: &PreviewFind) {
+    let mut matches = find.matches.iter().enumerate().peekable();
+    for (row, line) in lines.iter_mut().enumerate() {
+        if !matches.peek().is_some_and(|(_, (r, _))| *r == row) {
+            continue;
+        }
+        let mut flags = vec![0u8; line.spans.iter().map(|s| s.content.chars().count()).sum()];
+        while matches.peek().is_some_and(|(_, (r, _))| *r == row) {
+            let (which, (_, positions)) = matches.next().unwrap();
+            for &position in positions {
+                if let Some(flag) = flags.get_mut(position) {
+                    *flag = (*flag).max(if which == find.selected { 2 } else { 1 });
+                }
+            }
+        }
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut position = 0;
+        for span in std::mem::take(&mut line.spans) {
+            for c in span.content.chars() {
+                let mut style = span.style;
+                if flags[position] > 0 {
+                    style = style.add_modifier(Modifier::UNDERLINED);
+                    if !ascii() && std::env::var_os("NO_COLOR").is_none() {
+                        style = style.fg(if flags[position] == 2 {
+                            Color::Cyan
+                        } else {
+                            Color::Yellow
+                        });
+                    }
+                    if flags[position] == 2 {
+                        style = style.add_modifier(Modifier::BOLD);
+                    }
+                }
+                if let Some(last) = spans.last_mut().filter(|last| last.style == style) {
+                    last.content.to_mut().push(c);
+                } else {
+                    spans.push(Span::styled(c.to_string(), style));
+                }
+                position += 1;
+            }
+        }
+        line.spans = spans;
+    }
+}
+
 fn render_preview(frame: &mut Frame, area: Rect, browser: &Browser, text: &str, focused: bool) {
     render_preview_with_native(frame, area, browser, text, focused, None)
 }
@@ -5540,19 +5826,46 @@ fn render_preview_with_native(
     } else {
         text
     };
+    let mut lines = preview_display_lines(browser, text);
+    if browser
+        .preview_viewport
+        .replace((inner.width, inner.height))
+        != (inner.width, inner.height)
+        && !browser.preview_find.matches.is_empty()
+    {
+        browser.preview_find.reveal.set(true);
+    }
+    let max = preview_max_scroll(&lines, inner.width, inner.height);
+    let mut scroll = browser.preview_scroll.get().min(max);
+    if browser.preview_find.reveal.replace(false) {
+        if let Some((line, positions)) = browser
+            .preview_find
+            .matches
+            .get(browser.preview_find.selected)
+        {
+            let before = Paragraph::new(lines[..*line].to_vec())
+                .wrap(Wrap { trim: false })
+                .line_count(inner.width.max(1));
+            // Prefix line_count uses Ratatui's exact wrapping, including Unicode widths.
+            let prefix: String = lines[*line]
+                .spans
+                .iter()
+                .flat_map(|s| s.content.chars())
+                .take(positions.first().copied().unwrap_or(0) + 1)
+                .collect();
+            let within = Paragraph::new(prefix)
+                .wrap(Wrap { trim: false })
+                .line_count(inner.width.max(1))
+                .saturating_sub(1);
+            scroll = (before + within).min(usize::from(max)) as u16;
+        }
+    }
+    browser.preview_scroll.set(scroll);
+    highlight_preview_matches(&mut lines, &browser.preview_find);
     frame.render_widget(
-        Paragraph::new(if !ascii() && std::env::var_os("NO_COLOR").is_none() {
-            rich.and_then(|p| p.styled.clone()).unwrap_or_else(|| {
-                preview_lines(text, rich.map(|p| p.kind.as_str()).unwrap_or("text"))
-            })
-        } else {
-            safe_text(text)
-                .lines()
-                .map(|line| Line::raw(line.to_owned()))
-                .collect()
-        })
-        .wrap(Wrap { trim: false })
-        .scroll((browser.preview_scroll, 0)),
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0)),
         inner,
     );
 }
@@ -9365,6 +9678,162 @@ mod tests {
             RichPreview::from_value(&value).raster.is_some(),
             "valid maximum-size preview disappeared"
         );
+    }
+    #[test]
+    fn preview_loading_does_not_search_placeholder() {
+        let (mut a, _rx) = file_app();
+        a.focus = Focus::Workspace;
+        let b = a.browser.as_mut().unwrap();
+        b.preview = Some("Loading preview…".into());
+        b.preview_pending_page = Some(1);
+        press(&mut a, '/');
+        assert!(a.input.is_none());
+        assert!(a.notice.contains("loading"));
+        assert!(a.browser.as_ref().unwrap().preview_find.query.is_empty());
+        a.browser.as_mut().unwrap().preview_pending_page = None;
+        press(&mut a, '/');
+        assert!(a.input == Some(Input::PreviewSearch));
+    }
+    #[test]
+    fn preview_search_owns_keys_and_preserves_browser_state() {
+        let (mut a, rx) = file_app();
+        a.focus = Focus::Workspace;
+        let b = a.browser.as_mut().unwrap();
+        b.search = "alpha".into();
+        b.preview = Some("opening\nneedle needle\nlast n e e d l e".into());
+        let _ = capture_app(&a, 80);
+        press(&mut a, '/');
+        for c in "needle".chars() {
+            press(&mut a, c);
+        }
+        let b = a.browser.as_ref().unwrap();
+        assert_eq!(b.preview_find.matches.len(), 3);
+        assert_eq!(b.search, "alpha");
+        assert!(capture_app(&a, 80).contains("Search"));
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.browser.as_ref().unwrap().preview.is_some());
+        press(&mut a, 'n');
+        assert_eq!(a.browser.as_ref().unwrap().preview_find.selected, 1);
+        press(&mut a, 'n');
+        press(&mut a, 'n');
+        assert_eq!(a.browser.as_ref().unwrap().preview_find.selected, 0);
+        press(&mut a, 'N');
+        assert_eq!(a.browser.as_ref().unwrap().preview_find.selected, 2);
+        assert!(
+            rx.try_recv().is_err(),
+            "preview n must not create a session or reopen a file"
+        );
+        a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(a.browser.as_ref().unwrap().preview.is_some());
+        assert!(a.browser.as_ref().unwrap().preview_find.query.is_empty());
+        a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(a.browser.as_ref().unwrap().preview.is_none());
+        assert_eq!(a.browser.as_ref().unwrap().search, "alpha");
+        assert_eq!(a.browser.as_ref().unwrap().selected, 0);
+    }
+    #[test]
+    fn preview_search_unicode_styles_and_missing_matches() {
+        let mut lines = vec![Line::from(vec![
+            Span::styled("東京 ", Style::default()),
+            Span::styled("Café café", Style::default().fg(Color::Green)),
+        ])];
+        let matches = preview_matches(&lines, "CAFÉ");
+        assert_eq!(
+            matches,
+            vec![(0, vec![3, 4, 5, 6]), (0, vec![8, 9, 10, 11])]
+        );
+        let find = PreviewFind {
+            query: "CAFÉ".into(),
+            matches,
+            selected: 1,
+            reveal: std::cell::Cell::new(false),
+        };
+        highlight_preview_matches(&mut lines, &find);
+        assert!(lines[0]
+            .spans
+            .iter()
+            .any(|span| span.style.add_modifier.contains(Modifier::UNDERLINED)));
+        assert!(lines[0].spans.iter().all(|span| span.style.bg.is_none()));
+        assert!(preview_matches(&lines, "unavailable").is_empty());
+        assert!(preview_matches(&lines, "").is_empty());
+        assert_eq!(
+            lines[0]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>(),
+            "東京 Café café"
+        );
+    }
+    #[test]
+    fn preview_g_gg_clamp_wrapping_and_resize() {
+        for width in [48, 80, 120] {
+            let (mut a, _) = file_app();
+            a.focus = Focus::Workspace;
+            a.browser.as_mut().unwrap().preview = Some(
+                "FIRST WRAPPED LINE\n".to_owned()
+                    + &"東京 word ".repeat(300)
+                    + "\nWRAPPED LAST LINE",
+            );
+            let _ = capture_app(&a, width);
+            press(&mut a, 'G');
+            assert!(capture_app(&a, width).contains("WRAPPED LAST LINE"));
+            press(&mut a, 'j');
+            assert!(capture_app(&a, width).contains("WRAPPED LAST LINE"));
+            let _ = capture_app(&a, 120);
+            assert!(capture_app(&a, 120).contains("WRAPPED LAST LINE"));
+            press(&mut a, 'g');
+            press(&mut a, 'g');
+            assert_eq!(a.browser.as_ref().unwrap().preview_scroll.get(), 0);
+            assert!(capture_app(&a, width).contains("FIRST WRAPPED LINE"));
+        }
+    }
+    #[test]
+    fn preview_search_survives_refresh_and_reveals_on_resize() {
+        let (mut a, _) = file_app();
+        a.focus = Focus::Workspace;
+        let b = a.browser.as_mut().unwrap();
+        b.preview_path = Some("/files/alpha.txt".into());
+        b.preview = Some("word ".repeat(350) + "needle");
+        let _ = capture_app(&a, 120);
+        press(&mut a, '/');
+        for c in "needle".chars() {
+            press(&mut a, c);
+        }
+        assert!(capture_app(&a, 120).contains("needle"));
+        assert!(capture_app(&a, 48).contains("needle"));
+        a.browser.as_mut().unwrap().preview_pending_page = Some(1);
+        a.apply(Reply {
+            device: 0,
+            generation: a.generation,
+            op: Operation::Preview {
+                path: "/files/alpha.txt".into(),
+            },
+            preview: None,
+            result: Ok(serde_json::json!({"kind":"text","text":"new needle contents"})),
+        });
+        assert!(a.input == Some(Input::PreviewSearch));
+        assert_eq!(a.browser.as_ref().unwrap().preview_find.query, "needle");
+        assert_eq!(a.browser.as_ref().unwrap().preview_find.matches.len(), 1);
+        assert!(capture_app(&a, 80).contains("new needle contents"));
+    }
+    #[test]
+    fn preview_g_keeps_last_lines_visible() {
+        let (mut a, _) = file_app();
+        a.focus = Focus::Workspace;
+        a.browser.as_mut().unwrap().preview = Some(
+            (0..100)
+                .map(|i| format!("line {i:03}\n"))
+                .collect::<String>()
+                + "FINAL PREVIEW LINE",
+        );
+        assert!(capture_app(&a, 80).contains("line 000"));
+        press(&mut a, 'G');
+        assert!(
+            capture_app(&a, 80).contains("FINAL PREVIEW LINE"),
+            "G must reach visible content rather than a blank preview"
+        );
+        assert_eq!(a.browser.as_ref().unwrap().selected, 0);
     }
     #[test]
     fn pdf_pages_coalesce_keys_and_preserve_last_page_on_failure() {

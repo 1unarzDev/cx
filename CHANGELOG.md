@@ -6,6 +6,15 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.20
+
+### Features
+- Search text previews live with `/`, case-insensitive fuzzy matching and highlighted results. Use `n`/`N` for next/previous matches without losing the file-tree selection or search.
+
+### Fixes
+- Keep `G` within the preview’s actual wrapped content instead of scrolling into a blank screen. Preserve the selected search result after resizing or refreshing a preview.
+- Keep loading placeholders out of content search and preserve terminal-default backgrounds in highlighted previews.
+
 ## v0.1.19
 
 ### Features

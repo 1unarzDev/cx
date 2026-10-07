@@ -469,3 +469,9 @@ PASS — real disposable PTYs, default ANSI and ASCII/NO_COLOR: G/gg/bottom clam
 Text search applies to the bounded displayed text, including styled source/Markdown, not PDF OCR or image contents. Physical user keyboard/visual acceptance remains unverified. Release/deployment evidence follows after publication; no installation claimed yet.
 
 PASS — final105 UI tests after contextual hint polish (`/tmp/cx-preview-final-ui-tests.log`), optimized live search/PDF PTYs (`/tmp/cx-preview-release-pty.json`, `/tmp/cx-preview-release-pdf-pty.json`), `cargo fmt --check` and `git diff --check`. Native optimized build adds no dependency.
+
+Signed v0.1.20/source `d8a484a9c67d60fedc6c1fccbc0f857c1bea6a7a` published after [workflow37560669843](https://github.com/1unarzDev/cx/actions/runs/37560669843) PASS: native checks/new search PTY, both static architectures and nine distro/architecture scenarios. Exact documented public curl bootstrap in clean private HOME PASS (`/tmp/cx-v020-public-install.json`).
+
+Innovation/server serialized signed `cx update --json` PASS, both actual0.1.20 and SHA256 `071272225fc9a441ef0d6f7c9ce8bf042392ab5a71890e9dd23549235b836810` (`/tmp/cx-v020-{innovation,server}-update.json`). Installed innovation real preview-search PTYs PASS in color/monochrome (`/tmp/cx-v020-installed-preview-pty.json`); all six original terminal ID/PID/start/boot/socket identities preserved (`local-evidence/preview-search/deployment-identities.json`). Server stays agent-free; no provider/session/network/trust mutation. Tranquility update BLOCKED by No route to host, last verified0.1.16; no upgrade claimed. Physical keyboard/visual confirmation remains pending.
+
+Rollback: signed bootstrap with `CX_VERSION=v0.1.19 CX_NO_LAUNCH=1` preserves session/file state. This release owns no new service/network resources. Reopen an older viewer to load the installed UI.

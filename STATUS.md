@@ -213,3 +213,5 @@ Signed0.1.22/source64c41ab/workflow37563927815 PASS; exact public bootstrap PASS
 File-find and transfer ecosystem three-size PTYs PASS; preview search palette/monochrome PASS. Optional shortcut question pending: dedicated New session shortcut while n/N own active file search; current behavior follows explicit user request and Ctrl+P remains available.
 
 Resolved: user confirms n/N cycle search matches. Final independent review no substantive findings after monochrome correction. Release retry addresses existing parallel FD/inode-reuse test race; production updater unchanged.
+
+Signed v0.1.23/source4c3c3f0/workflow37614097212 PASS. Innovation/server installed0.1.23 with SHA256148945ac75ff67cda8aa75f85c5cccaf1cace695e91c2edf63a840da7e244f5b. Exact clean-HOME public bootstrap and installed three-size find PTYs PASS; three pre-update managed terminal identities preserved. Server remains agent-free. Tranquility SSH unreachable, update BLOCKED/last verified0.1.16. User shortcut decision resolved: n/N cycle active search. Physical GUI feedback optional, no repeated request.

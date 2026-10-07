@@ -379,9 +379,21 @@ fn source_mismatch_rollback_collision_and_concurrent_locks() {
         .unwrap()
         .join(format!("cx.rollback-{}", p.metadata.source_ino));
     fs::write(&rollback, b"existing").unwrap();
-    assert!(install_with(&p, &f.source).is_err());
+    install_with(&p, &f.source).unwrap();
     assert_eq!(fs::read(&rollback).unwrap(), b"existing");
-    assert_eq!(fs::read(&f.source).unwrap(), b"old executable");
+    assert_ne!(fs::read(&f.source).unwrap(), b"old executable");
+    let backups: Vec<_> = fs::read_dir(f.source.parent().unwrap())
+        .unwrap()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("cx.rollback-")
+        })
+        .filter(|entry| fs::read(entry.path()).unwrap_or_default() == b"old executable")
+        .collect();
+    assert_eq!(backups.len(), 1);
 }
 #[test]
 fn interrupted_stage_is_never_adopted_or_removed() {

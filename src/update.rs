@@ -904,6 +904,34 @@ fn extract(mut compressed: File, dir: &Dir) -> Result<File> {
     );
     Ok(reopened)
 }
+fn new_rollback(bins: &Dir, source_ino: u64) -> Result<(PathBuf, File)> {
+    let base = format!("cx.rollback-{source_ino}");
+    for attempt in 0..32 {
+        let name = if attempt == 0 {
+            base.clone()
+        } else {
+            format!(
+                "{base}-{}-{}-{attempt}",
+                std::process::id(),
+                SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+            )
+        };
+        let path = bins.path(&name);
+        match new_file(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists) =>
+            {
+                ()
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    bail!("cannot allocate private rollback file")
+}
+
 pub fn install(plan: &UpdatePlan) -> Result<PathBuf> {
     install_with(plan, &std::env::current_exe()?)
 }
@@ -982,9 +1010,7 @@ fn install_with(plan: &UpdatePlan, source: &Path) -> Result<PathBuf> {
     replacement.set_permissions(fs::Permissions::from_mode(0o700))?;
     replacement.sync_all()?;
     // Preserve rollback before replacing. Never overwrite an existing rollback file.
-    let rollback_name = format!("cx.rollback-{}", plan.metadata.source_ino);
-    let rollback = bins.path(&rollback_name);
-    let mut backup = new_file(&rollback)?;
+    let (rollback, mut backup) = new_rollback(&bins, plan.metadata.source_ino)?;
     let backup_result = (|| -> Result<()> {
         let reader = old.try_clone()?;
         ensure!(

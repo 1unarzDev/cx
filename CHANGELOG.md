@@ -6,6 +6,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.27
+
+### Fixes
+- Show fresh unnamed shells as New shell rather than a generated identifier or directory label. Switch to the observed running/last-command label as work starts. Recognize older generated shell names by their creation-key hash; preserve custom names and the same running terminal.
+- Avoid updater failures when a reused filesystem inode collides with an older rollback filename. Allocate a fresh private backup name without overwriting existing backups, retaining atomic replacement and rollback safeguards.
+
 ## v0.1.26
 
 ### Features

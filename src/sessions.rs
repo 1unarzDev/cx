@@ -375,7 +375,7 @@ fn provider_directory(provider: &str, process: &ProcessIdentity) -> Option<Strin
     Some(directory.canonicalize().ok()?.to_str()?.to_owned())
 }
 
-fn default_session_name(provider: &str, directory: &str) -> String {
+fn workspace_session_name(provider: &str, directory: &str) -> String {
     let folder = directory
         .rsplit('/')
         .find(|s| !s.is_empty())
@@ -392,9 +392,28 @@ fn default_session_name(provider: &str, directory: &str) -> String {
         .collect();
     format!("{provider} · {folder}")
 }
+fn default_session_name(provider: &str, directory: &str) -> String {
+    if provider == "shell" {
+        "New shell".into()
+    } else {
+        workspace_session_name(provider, directory)
+    }
+}
+
+fn legacy_generated_shell_name(prior: &Session) -> bool {
+    // Older cx UIs sent name="shell-{key}". Verify the creation-key hash;
+    // resemblance to the old shape alone must never override a custom name.
+    prior.provider == "shell"
+        && prior.name.strip_prefix("shell-").is_some_and(|key| {
+            !key.is_empty() && prior.id == format!("cx-{:x}", Sha256::digest(key.as_bytes()))
+        })
+}
+
 fn automatically_named(prior: &Session) -> bool {
     prior.name.trim().is_empty()
         || prior.name == default_session_name(&prior.provider, &prior.directory)
+        || prior.name == workspace_session_name(&prior.provider, &prior.directory)
+        || legacy_generated_shell_name(prior)
 }
 
 fn current_session_name(prior: &Session, provider: &str, directory: &str) -> String {
@@ -1747,7 +1766,7 @@ mod tests {
         );
         assert_eq!(
             current_session_name(&session, "shell", "/projects/new"),
-            "shell · new"
+            "New shell"
         );
         for blank in ["", "  \t "] {
             session.name = blank.into();
@@ -1761,7 +1780,18 @@ mod tests {
             current_session_name(&session, "codex", "/projects/cx"),
             "My important work"
         );
-        assert_eq!(default_session_name("shell", "/"), "shell · root");
+        assert_eq!(default_session_name("shell", "/"), "New shell");
+        session.name = "shell-123456-654321".into();
+        session.id = format!("cx-{:x}", Sha256::digest(b"123456-654321"));
+        assert_eq!(
+            current_session_name(&session, "shell", "/projects/cx"),
+            "New shell"
+        );
+        session.id = "unrelated-id".into();
+        assert_eq!(
+            current_session_name(&session, "shell", "/projects/cx"),
+            "shell-123456-654321"
+        );
     }
 
     #[test]

@@ -8,6 +8,9 @@ with tempfile.TemporaryDirectory(prefix='cx-fish-label-') as tmp:
  try:
   s=json.loads(subprocess.check_output([binary,'new','--directory',tmp],env=env))
   time.sleep(.5)
+  fresh=next(x for x in json.loads(subprocess.check_output([binary,'sessions'],env=env)) if x['id']==s['id'])
+  assert fresh['name']=='New shell',fresh['name']
+  assert s['name']=='New shell',s['name']
   subprocess.check_call(['tmux','-S',sock,'send-keys','-t',s['id'],'echo synthetic-secret-label-test','Enter'],stdout=subprocess.DEVNULL)
   deadline=time.monotonic()+4
   while time.monotonic()<deadline:

@@ -28,7 +28,7 @@ Install as your ordinary user. Missing dependencies require an explicit package-
 | Files: `r`, `d` | Rename, confirm permanent deletion (`y` / `n`) |
 | Files: `M`, `o` | New folder, cycle copy conflict policy |
 
-The current folder uses up to three highlighted path lines, preserving the tail for longer paths. Split panes show the active folder across the workspace above both panes.
+The Selected side panel stacks parent folders above the highlighted current folder, with the selected item beneath it. Older ancestors fold when vertical space is limited. The workspace keeps its space for files; switching split panes updates the side-panel hierarchy.
 
 Select files → `t` → choose device → browse folder → `p`. Or copy/cut, switch devices, and paste. Incoming name conflicts rename by default; overwrite is explicit. Cross-host cuts support regular files; copy supports directories. Delete has no undo. Transfers are not snapshots of growing files.
 

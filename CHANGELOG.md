@@ -6,18 +6,18 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
-## v0.1.36
+## v0.1.37
 
 ### Features
 - After authenticated connection, check Linux x86_64/ARM64 support and install the helper plus a signed, fully static portable tmux when absent; preserve existing tools without OS package or profile changes.
 - Mask passwords in a compact prompt with F2 and clickable Show/Hide controls.
 
 ### Interface
-- Give folder paths up to three high-contrast lines and use the full workspace width for the active folder in split panes.
+- Stack parent folders, the highlighted current folder and selected item in the Selected side panel; remove duplicate workspace path headers and follow the active split pane.
 
 ### Fixes
 - Include the robot shell attachment, public-key-first authentication, viewer-mediated updates and device-aware Ctrl+P improvements from the unpublished v0.1.34 candidate.
-- Drain terminal output during the detach regression check to avoid a CI cleanup deadlock; create the enrollment fixture directory on clean runners.
+- Confirm completed command output through the owned tmux server before the single-key detach regression check, drain terminal cleanup output, and create the enrollment fixture directory on clean runners.
 
 ### Limitations
 - Background robot updates require a connected viewer. Optional PDF converters and coding-agent runtimes remain separate. Internet sharing and full reverse SSH enforcement remain inactive.

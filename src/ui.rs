@@ -4576,28 +4576,8 @@ fn render_with_native(
                 lines.join("\n")
             })
             .unwrap_or_else(|| "No devices or LAN observations".into())
-    } else if let Some(b) = app.browser.as_ref().filter(|_| app.view == View::Files) {
-        let mut lines = vec![
-            format!("Host {}", identity(&app.devices[b.device])),
-            format!("Folder {}", safe_label(&b.display_path)),
-            format!("{} marked · t send", b.marked.len()),
-        ];
-        if let Some(entry) = app.visible_entries().get(b.selected) {
-            lines.insert(2, format!("File {}", safe_label(&entry.name)));
-        }
-        if let Some(other) = &app.other_browser {
-            let (destination, label) = if app.destination_active {
-                (b, "To")
-            } else {
-                (other, "To")
-            };
-            lines.push(format!(
-                "{label} {}",
-                identity(&app.devices[destination.device])
-            ));
-            lines.push(safe_label(&destination.display_path));
-        }
-        lines.join("\n")
+    } else if app.view == View::Files {
+        String::new() // Render the selected file context as styled hierarchy below.
     } else if let Some((i, s)) = app.selected_session() {
         format!(
             "Host {}\nFolder {}\nEnter open · n new",
@@ -4623,8 +4603,39 @@ fn render_with_native(
                 .collect::<Vec<_>>()
                 .join("\n")
         };
+        let selected_content =
+            if let Some(b) = app.browser.as_ref().filter(|_| app.view == View::Files) {
+                let entries = app.visible_entries();
+                let mut lines = file_context_hierarchy(
+                    &app.devices[b.device].name,
+                    &b.display_path,
+                    entries.get(b.selected),
+                    sidebar_width.saturating_sub(2) as usize,
+                    sidebar[2].height.saturating_sub(1) as usize,
+                );
+                if b.marked.len() > 0 {
+                    lines.push(Line::styled(
+                        format!("{} marked · t send", b.marked.len()),
+                        muted(),
+                    ));
+                }
+                if let Some(other) = &app.other_browser {
+                    let destination = if app.destination_active { b } else { other };
+                    lines.push(Line::styled(
+                        format!("To {}", safe_label(&app.devices[destination.device].name)),
+                        muted(),
+                    ));
+                    lines.push(Line::raw(compact_path(
+                        &destination.display_path,
+                        sidebar_width.saturating_sub(2) as usize,
+                    )));
+                }
+                Paragraph::new(lines)
+            } else {
+                Paragraph::new(details)
+            };
         frame.render_widget(
-            Paragraph::new(details).wrap(Wrap { trim: false }).block(
+            selected_content.wrap(Wrap { trim: false }).block(
                 Block::default()
                     .padding(Padding::horizontal(1))
                     .title(Line::from(Span::styled(
@@ -4855,52 +4866,15 @@ fn render_with_native(
                             workspace,
                         ));
                     }
-                    let rows = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([Constraint::Length(1), Constraint::Min(1)])
-                        .split(workspace);
-                    frame.render_widget(
-                        Paragraph::new(Line::from(vec![
-                            Span::styled(
-                                format!(" {} ", identity(&app.devices[b.device])),
-                                accent().add_modifier(Modifier::BOLD),
-                            ),
-                            Span::styled(
-                                fit_label(
-                                    &b.display_path,
-                                    usize::from(rows[0].width.saturating_sub(24)),
-                                ),
-                                muted(),
-                            ),
-                        ])),
-                        rows[0],
-                    );
                     render_preview_with_native(
                         frame,
-                        rows[1],
+                        workspace,
                         b,
                         b.preview.as_deref().unwrap_or(""),
                         app.focus == Focus::Workspace,
                         native,
                     );
                 } else if let Some(other) = &app.other_browser {
-                    let path_height = folder_path_lines(
-                        &b.display_path,
-                        workspace.width.saturating_sub(2) as usize,
-                        if workspace.height >= 16 { 3 } else { 1 },
-                    )
-                    .len()
-                    .max(1) as u16;
-                    let rows = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([Constraint::Length(path_height), Constraint::Min(1)])
-                        .split(workspace);
-                    render_folder_path(
-                        frame,
-                        &b.display_path,
-                        rows[0],
-                        app.focus == Focus::Workspace,
-                    );
                     let panes = Layout::default()
                         .direction(if workspace.width >= 52 {
                             Direction::Horizontal
@@ -4908,7 +4882,7 @@ fn render_with_native(
                             Direction::Vertical
                         })
                         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                        .split(rows[1]);
+                        .split(workspace);
                     app.panels.borrow_mut().extend([
                         (Focus::Workspace, false, panes[0]),
                         (Focus::Workspace, true, panes[1]),
@@ -7141,65 +7115,80 @@ fn compact_path(path: &str, width: usize) -> String {
     }
     format!("…{tail}")
 }
-// Bounded character wrapping keeps the current folder visible without consuming the list.
-fn folder_path_lines(path: &str, width: usize, max_lines: usize) -> Vec<String> {
-    if width == 0 || max_lines == 0 {
-        return Vec::new();
-    }
+// Keep the selected context in traversal order; reserve the deepest two rows
+// before showing ancestors so narrow/short panels never hide the selected item.
+fn file_context_hierarchy(
+    device: &str,
+    path: &str,
+    entry: Option<&Entry>,
+    width: usize,
+    height: usize,
+) -> Vec<Line<'static>> {
     let safe = safe_label(path);
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    let mut used = 0;
-    let mut clipped = false;
-    for c in safe.chars().rev() {
-        let cells = Span::raw(c.to_string()).width();
-        if used + cells > width {
-            lines.push(std::mem::take(&mut line));
-            used = 0;
-            if lines.len() == max_lines {
-                clipped = true;
-                break;
-            }
+    let mut parts: Vec<&str> = safe.split('/').filter(|p| !p.is_empty()).collect();
+    let folder = parts.pop().unwrap_or("/");
+    let required = 2 + usize::from(entry.is_some());
+    let parent_count = height.saturating_sub(required).min(parts.len());
+    let skipped = parts.len().saturating_sub(parent_count);
+    let mut lines = vec![Line::styled(
+        fit_label(device, width),
+        accent().add_modifier(Modifier::BOLD),
+    )];
+    let branch = if width < 16 {
+        if ascii() {
+            ">"
+        } else {
+            "›"
         }
-        if cells <= width {
-            line.insert(0, c);
-            used += cells;
+    } else if ascii() {
+        "+- "
+    } else {
+        "└─ "
+    };
+    if parent_count > 0 {
+        for (depth, parent) in parts.iter().skip(skipped).enumerate() {
+            let prefix = if depth == 0 && skipped > 0 {
+                if ascii() {
+                    ".../"
+                } else {
+                    "…/"
+                }
+            } else {
+                ""
+            };
+            let indent = " ".repeat(depth.min(if width < 16 { 1 } else { 3 }));
+            lines.push(Line::styled(
+                fit_label(&format!("{indent}{prefix}{parent}/"), width),
+                muted(),
+            ));
         }
     }
-    if !line.is_empty() && lines.len() < max_lines {
-        lines.push(line);
-    }
-    lines.reverse();
-    if clipped {
-        if let Some(first) = lines.first_mut() {
-            *first = format!(
-                "…{}",
-                compact_path(first, width.saturating_sub(1)).trim_start_matches('…')
-            );
-        }
+    let indent = " ".repeat(if width < 16 { 0 } else { parent_count.min(3) });
+    lines.push(Line::styled(
+        fit_label(
+            &format!(
+                "{indent}{branch}{folder}{}",
+                if folder == "/" { "" } else { "/" }
+            ),
+            width,
+        ),
+        accent().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+    ));
+    if let Some(entry) = entry {
+        lines.push(Line::styled(
+            fit_label(
+                &format!(
+                    "{indent}{}{branch}{}{}",
+                    if width < 16 { " " } else { "  " },
+                    safe_label(&entry.name),
+                    if entry.kind == "directory" { "/" } else { "" }
+                ),
+                width,
+            ),
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
     }
     lines
-}
-fn render_folder_path(frame: &mut Frame<'_>, path: &str, area: Rect, focused: bool) {
-    let style = if focused {
-        accent().add_modifier(Modifier::REVERSED | Modifier::BOLD)
-    } else {
-        accent()
-    };
-    frame.render_widget(
-        Paragraph::new(
-            folder_path_lines(
-                path,
-                area.width.saturating_sub(2) as usize,
-                area.height as usize,
-            )
-            .into_iter()
-            .map(|line| Line::from(format!(" {line}")))
-            .collect::<Vec<_>>(),
-        )
-        .style(style),
-        area,
-    );
 }
 fn render_browser(
     frame: &mut Frame<'_>,
@@ -7210,18 +7199,10 @@ fn render_browser(
     label: &str,
     clipboard: Option<&Clipboard>,
 ) {
-    let path_height = folder_path_lines(
-        &b.display_path,
-        area.width.saturating_sub(2) as usize,
-        if area.height >= 12 { 3 } else { 1 },
-    )
-    .len()
-    .max(1) as u16;
     let parts = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Length(path_height),
             Constraint::Length(1),
             Constraint::Min(1),
             Constraint::Length(1),
@@ -7234,7 +7215,6 @@ fn render_browser(
         ])),
         parts[0],
     );
-    render_folder_path(frame, &b.display_path, parts[1], focused);
     frame.render_widget(
         Paragraph::new(vec![Line::from(vec![
             Span::styled(
@@ -7280,10 +7260,10 @@ fn render_browser(
                 muted(),
             ),
         ])]),
-        parts[2],
+        parts[1],
     );
     if let Some(preview) = &b.preview {
-        render_preview(frame, parts[3], b, preview, focused);
+        render_preview(frame, parts[2], b, preview, focused);
     } else {
         let rows = browser_entries(b);
         if rows.is_empty() {
@@ -7297,7 +7277,7 @@ fn render_browser(
                 })
                 .style(muted())
                 .block(block("Files".into(), focused)),
-                parts[3],
+                parts[2],
             );
         } else {
             let matches = file_search_matches(&rows, &b.search);
@@ -7422,7 +7402,7 @@ fn render_browser(
                 .column_spacing(1)
                 .block(block(format!("{} items", rows.len()), focused))
                 .row_highlight_style(Style::default()),
-                parts[3],
+                parts[2],
                 &mut state,
             );
         }
@@ -7470,7 +7450,7 @@ fn render_browser(
         } else {
             muted()
         }),
-        parts[4],
+        parts[3],
     );
 }
 fn tint(color: Color) -> Style {
@@ -8582,11 +8562,7 @@ fn native_preview_area(app: &App, area: Rect) -> Option<Rect> {
             }),
         ])
         .split(content[1]);
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1)])
-        .split(workspace[0]);
-    let inner = Block::default().borders(Borders::ALL).inner(rows[1]);
+    let inner = Block::default().borders(Borders::ALL).inner(workspace[0]);
     (inner.width > 0 && inner.height > 0).then_some(inner)
 }
 fn prepare_native_preview(
@@ -11571,7 +11547,7 @@ mod tests {
     fn selected_file_context_follows_focused_pane_and_keeps_destination() {
         let (mut a, _rx) = file_app();
         a.other_browser = Some(Browser::new(1, "/output".into()));
-        for (switch, host) in [(false, "tester"), (true, "peace")] {
+        for (switch, host) in [(false, "workstation"), (true, "laptop")] {
             if switch {
                 a.switch_pane();
             }
@@ -11585,8 +11561,13 @@ mod tests {
                 .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
                 .collect::<Vec<_>>()
                 .join("\n");
-            assert!(text.contains(&format!("Host {host}@")), "{text}");
-            assert!(text.contains("To peace@"), "{text}");
+            let sidebar = text
+                .lines()
+                .map(|line| line.chars().take(20).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(sidebar.contains(host), "{sidebar}");
+            assert!(sidebar.contains("To laptop"), "{sidebar}");
         }
     }
     #[test]
@@ -11728,30 +11709,95 @@ mod tests {
         }
     }
     #[test]
-    fn long_folder_paths_use_three_rows_and_active_split_workspace_width() {
-        let path = "/home/tester/projects/robotics/navigation/recordings/2026/selected-folder";
-        for width in [18, 30, 60] {
-            let lines = folder_path_lines(path, width, 3);
-            assert!(lines.len() <= 3);
-            assert!(lines.iter().all(|line| Span::raw(line).width() <= width));
-            assert!(lines.concat().ends_with("selected-folder"));
+    fn stacked_path_is_only_in_sidebar_and_keeps_current_folder_visible() {
+        for (width, height) in [(48, 24), (80, 24), (120, 40)] {
+            for split in [false, true] {
+                let (mut a, _rx) = file_app();
+                a.browser.as_mut().unwrap().display_path =
+                    "/home/tester/projects/robotics/recordings".into();
+                if split {
+                    a.other_browser = Some(Browser::new(1, "/output".into()));
+                }
+                let mut t = Terminal::new(TestBackend::new(width, height)).unwrap();
+                t.draw(|f| render(f, &a)).unwrap();
+                let sidebar_width = if width < 60 { 14 } else { 21 };
+                let left = t
+                    .backend()
+                    .buffer()
+                    .content
+                    .chunks(width as usize)
+                    .map(|row| {
+                        row[..sidebar_width]
+                            .iter()
+                            .map(|c| c.symbol())
+                            .collect::<String>()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let right = t
+                    .backend()
+                    .buffer()
+                    .content
+                    .chunks(width as usize)
+                    .map(|row| {
+                        row[sidebar_width..]
+                            .iter()
+                            .map(|c| c.symbol())
+                            .collect::<String>()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(left.contains("recordings"), "{width}: {left}");
+                assert!(!right.contains("recordings"), "{right}");
+                assert!(right.contains("alpha.txt"), "file list obscured: {right}");
+                if let Some(dir) = std::env::var_os("CX_HIERARCHY_CAPTURE_DIR") {
+                    let dir = std::path::PathBuf::from(dir);
+                    std::fs::create_dir_all(&dir).unwrap();
+                    let text = t
+                        .backend()
+                        .buffer()
+                        .content
+                        .chunks(width as usize)
+                        .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    std::fs::write(
+                        dir.join(format!(
+                            "{width}x{height}-{}.txt",
+                            if split { "split" } else { "single" }
+                        )),
+                        text,
+                    )
+                    .unwrap();
+                }
+            }
         }
-        for width in [48, 80, 120] {
-            let mut a = app();
-            a.open_browser(0, path.into());
-            a.browser.as_mut().unwrap().loading = false;
-            a.browser.as_mut().unwrap().display_path = path.into();
-            a.other_browser = Some(Browser::new(0, "/other".into()));
-            let mut t = Terminal::new(TestBackend::new(width, 24)).unwrap();
-            t.draw(|f| render(f, &a)).unwrap();
-            let content = t
-                .backend()
-                .buffer()
-                .content
-                .iter()
-                .map(|c| c.symbol())
-                .collect::<String>();
-            assert!(content.contains("selected-folder"), "{width}: {content}");
+    }
+    #[test]
+    fn selected_context_is_a_bounded_folder_and_item_hierarchy() {
+        let entry = Entry {
+            name: "log.bag".into(),
+            path: "/a/b/c/log.bag".into(),
+            kind: "file".into(),
+            size: 0,
+            hidden: false,
+            identity: None,
+            rename_name: None,
+        };
+        for height in [3, 4, 6, 12] {
+            let lines = file_context_hierarchy(
+                "robot",
+                "/home/roboboat/robotics/recordings",
+                Some(&entry),
+                22,
+                height,
+            );
+            let text = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
+            assert!(text.len() <= height);
+            assert!(text[0].contains("robot"));
+            assert!(text[text.len() - 2].contains("recordings/"));
+            assert!(text.last().unwrap().contains("log.bag"));
+            assert!(text.iter().all(|line| Span::raw(line).width() <= 22));
         }
     }
     #[test]
@@ -12911,23 +12957,23 @@ mod tests {
         let screen = Rect::new(0, 0, 80, 24);
         assert_eq!(
             native_preview_area(&a, screen),
-            Some(Rect::new(22, 4, 57, 15))
+            Some(Rect::new(22, 3, 57, 16))
         );
         a.transfer_drawer = true;
         assert_eq!(
             native_preview_area(&a, screen),
-            Some(Rect::new(22, 4, 57, 11))
+            Some(Rect::new(22, 3, 57, 12))
         );
         a.browser.as_mut().unwrap().search = "photo".into();
         assert_eq!(
             native_preview_area(&a, screen),
-            Some(Rect::new(22, 4, 57, 8))
+            Some(Rect::new(22, 3, 57, 9))
         );
         a.transfer_drawer = false;
         a.browser.as_mut().unwrap().search.clear();
         assert_eq!(
             native_preview_area(&a, Rect::new(0, 0, 48, 24)),
-            Some(Rect::new(15, 4, 32, 15))
+            Some(Rect::new(15, 3, 32, 16))
         );
         a.help = true;
         assert!(native_preview_area(&a, screen).is_none());

@@ -499,6 +499,89 @@ fn curl_args(url: &str) -> Vec<String> {
     .map(|v| v.to_string())
     .collect()
 }
+enum ReleaseLookup {
+    Found(String, String),
+    Current,
+    Offline,
+    Unavailable(String),
+}
+fn latest_release(arch: &str, current: Option<&str>, backend: &Backend) -> Result<ReleaseLookup> {
+    supported_arch(arch)?;
+    let out = match backend.run(Tool::Curl, &curl_args(API), None) {
+        Ok(out) => out,
+        Err(e)
+            if e.downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok(ReleaseLookup::Unavailable(
+                "Install system curl to check releases".into(),
+            ))
+        }
+        Err(_) => return Ok(ReleaseLookup::Offline),
+    };
+    let (status, bytes) = match http(out) {
+        Ok(value) => value,
+        Err(_) => return Ok(ReleaseLookup::Offline),
+    };
+    if matches!(status, 403 | 429) {
+        // Shared public egress often exhausts GitHub's unauthenticated REST quota.
+        // Only an official stable-tag redirect may select the signed artifact.
+        let page = format!("https://github.com/{REPO}/releases/latest");
+        let mut args = curl_args(&page);
+        let at = args.iter().position(|a| a == "--write-out").unwrap() + 1;
+        args[at] = "\n%{http_code}\n%{url_effective}".into();
+        args.extend([
+            "--location".into(),
+            "--head".into(),
+            "--output".into(),
+            "/dev/null".into(),
+        ]);
+        let response = backend.run(Tool::Curl, &args, None);
+        let version = response.ok().and_then(|out| release_redirect(&out).ok());
+        let Some(version) = version else {
+            return Ok(ReleaseLookup::Unavailable(format!("GitHub API rejected the check (HTTP {status}); official release-page lookup unavailable. Keeping current cx")));
+        };
+        if let Some(old) = current {
+            if numeric(&version)? <= numeric(old)? {
+                return Ok(ReleaseLookup::Current);
+            }
+        }
+        let url = format!("https://github.com/{REPO}/releases/download/v{version}/cx-v{version}-linux-{arch}.tar.gz");
+        return Ok(ReleaseLookup::Found(version, url));
+    }
+    if status == 404 {
+        return Ok(ReleaseLookup::Unavailable(
+            "No public tagged release is published".into(),
+        ));
+    }
+    if status != 200 {
+        return Ok(ReleaseLookup::Unavailable(format!(
+            "GitHub release metadata returned HTTP {status}; keeping current cx"
+        )));
+    }
+    Ok(match release_for_arch(&bytes, current, arch)? {
+        Some((version, url)) => ReleaseLookup::Found(version, url),
+        None => ReleaseLookup::Current,
+    })
+}
+fn release_redirect(out: &Output) -> Result<String> {
+    ensure!(
+        out.code == 0 && out.bytes.len() <= 4096,
+        "release-page request failed"
+    );
+    let text = std::str::from_utf8(&out.bytes)?;
+    let fields: Vec<_> = text.lines().filter(|line| !line.is_empty()).collect();
+    ensure!(
+        fields.len() == 2 && fields[0] == "200",
+        "release-page request rejected"
+    );
+    let prefix = format!("https://github.com/{REPO}/releases/tag/v");
+    let version = fields[1]
+        .strip_prefix(&prefix)
+        .context("release redirect left the official stable tag path")?;
+    numeric(version)?;
+    Ok(version.into())
+}
 fn http(out: Output) -> Result<(u16, Vec<u8>)> {
     ensure!(out.code == 0, "offline");
     let split = out
@@ -594,32 +677,11 @@ fn prepare(
     root: &Dir,
     backend: &Backend,
 ) -> Result<CheckOutcome> {
-    let out = match backend.run(Tool::Curl, &curl_args(API), None) {
-        Ok(v) => v,
-        Err(e)
-            if e.downcast_ref::<std::io::Error>()
-                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
-        {
-            return Ok(CheckOutcome::Unavailable(
-                "Install system curl to check releases".into(),
-            ))
-        }
-        Err(_) => return Ok(CheckOutcome::Offline),
-    };
-    let (status, bytes) = match http(out) {
-        Ok(v) => v,
-        Err(_) => return Ok(CheckOutcome::Offline),
-    };
-    if status == 404 {
-        return Ok(CheckOutcome::Unavailable(
-            "No public tagged release is published".into(),
-        ));
-    }
-    if status != 200 {
-        return Ok(CheckOutcome::Offline);
-    }
-    let Some((version, url)) = release(&bytes, current)? else {
-        return Ok(CheckOutcome::Current);
+    let (version, url) = match latest_release(ARCH, Some(current), backend)? {
+        ReleaseLookup::Found(version, url) => (version, url),
+        ReleaseLookup::Current => return Ok(CheckOutcome::Current),
+        ReleaseLookup::Offline => return Ok(CheckOutcome::Offline),
+        ReleaseLookup::Unavailable(message) => return Ok(CheckOutcome::Unavailable(message)),
     };
     let (s, binary) = match download_verified(root.child("update", true)?, &url, backend)? {
         ArtifactOutcome::Offline => return Ok(CheckOutcome::Offline),
@@ -800,13 +862,12 @@ fn obtain_enrollment_with(
     backend: &Backend,
 ) -> Result<EnrollmentBinary> {
     supported_arch(arch)?;
-    let (status, bytes) = http(backend.run(Tool::Curl, &curl_args(API), None)?)?;
-    ensure!(
-        status == 200,
-        "Official stable release unavailable (HTTP {status})"
-    );
-    let (version, url) =
-        release_for_arch(&bytes, None, arch)?.context("Official stable release unavailable")?;
+    let (version, url) = match latest_release(arch, None, backend)? {
+        ReleaseLookup::Found(version, url) => (version, url),
+        ReleaseLookup::Current => bail!("Official stable release unavailable"),
+        ReleaseLookup::Offline => bail!("Official stable release request failed"),
+        ReleaseLookup::Unavailable(message) => bail!("{message}"),
+    };
     let root = state_dir(home, state)?;
     let (stage, binary) = match download_verified(root.child("enrollment", true)?, &url, backend)? {
         ArtifactOutcome::Offline => bail!("Enrollment artifact download unavailable"),

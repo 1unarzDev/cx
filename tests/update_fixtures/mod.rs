@@ -115,6 +115,10 @@ impl TestBackend for Mock {
             return out(0, b"\n200");
         }
         match tool {
+            Tool::Curl if args.iter().any(|a| a == "--head") => {
+                assert!(args.contains(&format!("https://github.com/{REPO}/releases/latest")));
+                assert!(args.contains(&"--location".into()));
+            }
             Tool::Curl if args.iter().any(|a| a == "--output") => {
                 assert!(args.contains(&"--max-filesize".into()));
                 let i = args.iter().position(|a| a == "--output").unwrap();
@@ -568,4 +572,62 @@ fn existing_cli_lock_permissions_share_same_inode() {
     drop(held);
     assert!(install_with(&p, &f.source).is_ok());
     assert_eq!(fs::metadata(&lock_path).unwrap().ino(), before);
+}
+
+#[test]
+fn exhausted_api_quota_uses_official_tag_and_keeps_signature_gate() {
+    let f = Fixture::new();
+    let page = format!("\n200\nhttps://github.com/{REPO}/releases/tag/v0.2.0");
+    let b = Mock::new(vec![
+        out(0, b"{}\n403"),
+        out(0, page.as_bytes()),
+        out(0, b"\n200"),
+        out(1, b"bad signature"),
+    ]);
+    assert!(matches!(f.check(true, &b), CheckOutcome::Unavailable(_)));
+    assert_eq!(
+        b.calls.get(),
+        5,
+        "signature must be checked; failed artifact must never be probed"
+    );
+    assert_eq!(fs::read(&f.source).unwrap(), b"old executable");
+    let b = Mock::new(vec![
+        out(0, b"{}\n429"),
+        out(
+            0,
+            format!("\n200\nhttps://github.com/{REPO}/releases/tag/v0.1.0").as_bytes(),
+        ),
+    ]);
+    assert!(matches!(f.check(true, &b), CheckOutcome::Current));
+}
+#[test]
+fn release_page_redirect_rejects_downgrades_prereleases_and_other_origins() {
+    for url in [
+        "https://example.com/releases/tag/v1.2.3",
+        "https://github.com/other/cx/releases/tag/v1.2.3",
+        "https://github.com/1unarzDev/cx/releases/tag/v1.2.3-rc1",
+        "https://github.com/1unarzDev/cx/releases/tag/v1.2.3?x=1",
+    ] {
+        assert!(release_redirect(&Output {
+            code: 0,
+            bytes: format!("\n200\n{url}").into_bytes()
+        })
+        .is_err());
+    }
+    assert!(release_redirect(&Output {
+        code: 0,
+        bytes: b"\n302\nhttps://github.com/1unarzDev/cx/releases/tag/v1.2.3".to_vec()
+    })
+    .is_err());
+    let b = Mock::new(vec![
+        out(0, b"{}\n403"),
+        out(
+            0,
+            b"\n200\nhttps://github.com/1unarzDev/cx/releases/tag/v0.0.1",
+        ),
+    ]);
+    assert!(matches!(
+        latest_release(ARCH, Some("0.1.0"), &Backend::fixture(&b)).unwrap(),
+        ReleaseLookup::Current
+    ));
 }

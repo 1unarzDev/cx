@@ -1039,6 +1039,9 @@ impl App {
         let candidates = self.network_candidates();
         let mut rows = Vec::new();
         for (d, device) in self.devices.iter().enumerate() {
+            if self.device > 0 && self.device != d + 1 {
+                continue;
+            }
             let key = self.peer_key(d);
             let owned: Vec<_> = candidates
                 .iter()
@@ -1051,10 +1054,14 @@ impl App {
             } else {
                 format!("{} · {} LAN", device.name, owned.len())
             };
-            rows.push(serde_json::json!({"_peer":d,"_device":d,"_key":key,"_depth":0,"_label":label,"_branch":in_scope && !owned.is_empty(),"_count":owned.len()}));
-            if in_scope && self.network_expanded.contains(&key) {
+            rows.push(serde_json::json!({"_peer":d,"_device":d,"_key":key,"_depth":0,"_label":label,"_branch":self.device == 0 && !owned.is_empty(),"_count":owned.len()}));
+            if in_scope && (self.device > 0 || self.network_expanded.contains(&key)) {
                 for candidate in owned {
-                    rows.push(self.network_route(candidate, &key, 1));
+                    rows.push(self.network_route(
+                        candidate,
+                        &key,
+                        if self.device == 0 { 1 } else { 0 },
+                    ));
                 }
             }
         }
@@ -1132,7 +1139,15 @@ impl App {
             _ => "not read".into(),
         };
         if row["_peer"].is_u64() {
-            return format!("{} · {}\nRoute found: viewer{arrow}{}\n{} · helper evidence from viewer\nSSH jumps (saved): {hops}\nVia another observer: unknown", safe_label(&observer.name), identity(observer), safe_label(&observer.name), self.peer_status(d));
+            let overview = if self.device > 0 {
+                self.network
+                    .get(&d)
+                    .map(|v| format!("\n\n{}", network_summary(v)))
+                    .unwrap_or_else(|| "\nNetwork observation unavailable · Refresh".into())
+            } else {
+                String::new()
+            };
+            return format!("{} · {}\nRoute found: viewer{arrow}{}\n{} · helper evidence from viewer\nSSH jumps (saved): {hops}\nVia another observer: unknown{overview}", safe_label(&observer.name), identity(observer), safe_label(&observer.name), self.peer_status(d));
         }
         let name = row["_known_peer"]
             .as_u64()
@@ -1425,7 +1440,14 @@ impl App {
                 }
                 self.neighbor_budget = 32;
                 self.neighbor_queue.clear();
+                self.peer_checks
+                    .retain(|d| self.device == 0 || self.device == d + 1);
+                self.network_refresh_queue
+                    .retain(|d| self.device == 0 || self.device == d + 1);
                 for d in 0..self.devices.len() {
+                    if self.device > 0 && self.device != d + 1 {
+                        continue;
+                    }
                     if !self.peer_inflight.contains(&d)
                         && !self.peer_checks.contains(&d)
                         && self
@@ -5195,7 +5217,11 @@ fn render_with_native(
         vec![
             ("j/k", "Devices / LAN"),
             ("Enter", "Open / connect"),
-            ("h / l", "Fold / expand"),
+            if app.device == 0 {
+                ("h / l", "Fold / expand")
+            } else {
+                ("Home", "Host details")
+            },
             ("J / K", "Scroll details"),
             ("Ctrl P", "Actions"),
             ("?", "Help"),
@@ -7498,7 +7524,43 @@ fn network_summary(value: &Value) -> String {
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
             lines.push(format!("  {} · {}", safe_label(name), safe_label(state)));
+            if let Some(addresses) = interface["addr_info"].as_array() {
+                for address in addresses.iter().take(8) {
+                    if let Some(ip) = address["local"].as_str() {
+                        lines.push(format!(
+                            "    {}/{}",
+                            safe_label(ip),
+                            address["prefixlen"]
+                                .as_u64()
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "?".into())
+                        ));
+                    }
+                }
+            }
         }
+    }
+    if let Some(routes) = value["routes"]
+        .as_array()
+        .or_else(|| value["routes"]["data"].as_array())
+    {
+        lines.push("\nRoutes (observed table)".into());
+        for route in routes.iter().take(16) {
+            lines.push(format!(
+                "  {} via {} · {}{}",
+                safe_label(route["dst"].as_str().unwrap_or("default")),
+                safe_label(route["gateway"].as_str().unwrap_or("direct")),
+                safe_label(route["dev"].as_str().unwrap_or("unknown")),
+                route["metric"]
+                    .as_u64()
+                    .map(|m| format!(" · metric {m}"))
+                    .unwrap_or_default()
+            ));
+        }
+        if routes.len() > 16 {
+            lines.push(format!("  +{} more routes", routes.len() - 16));
+        }
+        lines.push("Policy routing / forwarded egress: unverified".into());
     }
     let sharing = value.get("sharing");
     let state = sharing
@@ -9182,9 +9244,9 @@ mod tests {
         a.device = 1;
         a.move_selection(1);
         assert_eq!(
-            a.network_rows()[a.network_selected]["_peer"],
-            0,
-            "scope hides a child and returns to its observer node"
+            a.network_rows()[a.network_selected]["address"],
+            "192.0.2.22",
+            "new observer scope contains only its own neighbors"
         );
     }
     #[test]
@@ -9266,9 +9328,11 @@ mod tests {
         a.device = 1;
         assert!(a.network_candidates().is_empty());
         let rows = a.network_rows();
-        assert_eq!(rows.len(), a.devices.len());
-        assert_eq!(rows[1]["_peer"], 1);
-        a.network_selected = 1;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["_peer"], 0);
+        a.device = 2;
+        assert_eq!(a.network_rows()[0]["_peer"], 1);
+        a.network_selected = 0;
         a.open_neighbor();
         assert!(matches!(a.dialog, Some(Dialog::Peer(1))));
         a.device = 2; // Action identity was captured before scope changed.
@@ -9284,7 +9348,7 @@ mod tests {
     fn network_peer_checks_bounded_cached_offline_and_no_redraw_requests() {
         let (mut a, rx) = queued_app();
         a.view = View::Network;
-        a.device = 1;
+        a.device = 2;
         a.providers.clear();
         for index in 2..7 {
             let mut d = a.devices[1].clone();
@@ -9304,13 +9368,13 @@ mod tests {
                 .iter()
                 .filter(|t| matches!(t.op, Operation::Info))
                 .count(),
-            3
+            1
         );
         assert!(tasks
             .iter()
             .filter(|t| matches!(t.op, Operation::Network | Operation::NetworkCandidates))
-            .all(|t| t.device == 0));
-        assert_eq!(a.peer_inflight.len(), 3);
+            .all(|t| t.device < a.devices.len()));
+        assert_eq!(a.peer_inflight.len(), 1);
         a.apply(Reply {
             device: 1,
             generation: a.generation,
@@ -9318,16 +9382,14 @@ mod tests {
             result: Err(anyhow::anyhow!("offline")),
             preview: None,
         });
-        assert_eq!(a.peer_inflight.len(), 3);
+        assert_eq!(a.peer_inflight.len(), 0);
         assert!(a.peer_status(1).contains("unavailable"));
         let next: Vec<_> = rx.try_iter().collect();
-        assert!(next
-            .iter()
-            .any(|t| t.device == 3 && matches!(t.op, Operation::Info)));
+        assert!(next.is_empty());
         a.peer_evidence
             .insert(1, (transport::now().saturating_sub(100), true));
         assert!(a.peer_status(1).contains("cached helper"));
-        a.network_selected = 1;
+        a.network_selected = 0;
         let text = capture_app(&a, 120);
         assert!(text.contains("laptop"));
         assert!(text.contains("helper evidence from viewer"));
@@ -9428,6 +9490,38 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn focused_network_only_lists_and_refreshes_the_selected_observer() {
+        let (mut a, rx) = queued_app();
+        observer_network_fixture(&mut a);
+        a.device = 2;
+        let rows = a.network_rows();
+        assert!(
+            rows.iter().all(|r| r["_device"] == 1),
+            "focused view leaked other devices"
+        );
+        assert!(
+            rows.iter().any(|r| r["address"] == "192.0.2.22"),
+            "focused neighbors hidden behind collapsed host"
+        );
+        a.refresh();
+        let tasks: Vec<_> = rx.try_iter().collect();
+        assert!(!tasks.is_empty());
+        assert!(
+            tasks.iter().all(|task| task.device == 1),
+            "focused refresh queried another host"
+        );
+        assert!(a.peer_checks.iter().all(|d| *d == 1));
+        a.device = 0;
+        assert_eq!(
+            a.network_rows()
+                .iter()
+                .filter(|r| r["_peer"].is_u64())
+                .count(),
+            a.devices.len()
+        );
+    }
+
     #[test]
     fn network_all_scope_batches_every_host_and_captures_neighbor_owner() {
         let (mut a, rx) = queued_app();

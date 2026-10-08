@@ -6,6 +6,11 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.28
+
+### Fixes
+- Keep external tmux discovery and attachment on the default personal server, even when cx is started inside a managed terminal. Prevent duplicate managed rows with external identities and broken remote attachment paths. Preserve real personal sessions and running processes.
+
 ## v0.1.27
 
 ### Features

@@ -44,6 +44,10 @@ fn tmux(managed: bool) -> Result<Command> {
     c.arg("-u");
     if managed {
         c.arg("-S").arg(socket()?);
+    } else {
+        // An inherited managed client must not redirect external discovery to
+        // the managed socket. Use the same default server as remote helpers.
+        c.env_remove("TMUX").env_remove("TMUX_PANE");
     }
     Ok(c)
 }

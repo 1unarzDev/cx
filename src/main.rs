@@ -543,6 +543,9 @@ fn run() -> Result<()> {
                 std::path::PathBuf::from("tmux")
             });
             c.arg("-u");
+            if external {
+                c.env_remove("TMUX").env_remove("TMUX_PANE");
+            }
             if !external {
                 sessions::configure_managed()?;
                 let target = args

@@ -36,6 +36,7 @@ jobs:
       - run: python3 tests/manual_agents_live.py target/debug/cx
       - run: python3 tests/session_names_live.py target/debug/cx
       - run: python3 tests/shell_labels_live.py target/debug/cx
+      - run: python3 tests/tmux_discovery_live.py target/debug/cx
       - run: python3 tests/preview_helper_live.py target/debug/cx
       - run: python3 tests/source_preview_pty.py target/debug/cx
       - run: python3 tests/markdown_preview_pty.py target/debug/cx

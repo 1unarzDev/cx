@@ -431,6 +431,8 @@ struct App {
     launch_provider: Option<String>,
     submitted: HashMap<String, crate::model::TransferSpec>,
     submitted_clipboards: HashMap<String, String>,
+    pending_transfers: BTreeSet<String>,
+    transfer_frame: usize,
     watched_jobs: BTreeSet<String>,
     browser_cache: HashMap<(usize, String, String), Browser>,
     container_locations: HashMap<(usize, String), String>,
@@ -520,6 +522,8 @@ impl App {
             launch_provider: None,
             submitted: HashMap::new(),
             submitted_clipboards: HashMap::new(),
+            pending_transfers: BTreeSet::new(),
+            transfer_frame: 0,
             watched_jobs: BTreeSet::new(),
             browser_cache: HashMap::new(),
             container_locations: HashMap::new(),
@@ -2346,7 +2350,31 @@ impl App {
             "Request queue busy · retry shortly".into()
         };
     }
+    fn active_transfer_keys(&self) -> BTreeSet<String> {
+        let mut keys = self.pending_transfers.clone();
+        for (_, job) in self.job_rows() {
+            if matches!(
+                job["status"].as_str(),
+                Some("queued" | "running" | "submitting")
+            ) {
+                if let Some(key) = job["key"].as_str() {
+                    keys.insert(key.into());
+                }
+            }
+        }
+        keys
+    }
     fn submit_transfer(&mut self) {
+        if self.browser.as_ref().is_some_and(|b| b.container.is_some())
+            || self
+                .other_browser
+                .as_ref()
+                .is_some_and(|b| b.container.is_some())
+        {
+            self.notice =
+                "Container files are read-only · host transfers cannot use container paths".into();
+            return;
+        }
         let (Some(clip), Some(b)) = (self.clipboard.clone(), self.browser.as_ref()) else {
             return;
         };
@@ -2355,6 +2383,17 @@ impl App {
         };
         let destination = self.devices[b.device].clone();
         let destination_path = b.path.clone();
+        let active = self.active_transfer_keys();
+        if self.submitted.iter().any(|(key, spec)| {
+            active.contains(key)
+                && spec.source.id == self.devices[clip.device].id
+                && spec.destination.id == destination.id
+                && spec.destination_path == destination_path
+                && clip.entries.iter().any(|e| e.path == spec.source_path)
+        }) {
+            self.notice = "Transfer already pending · T shows progress".into();
+            return;
+        }
         let mut actions = Vec::new();
         for entry in &clip.entries {
             let spec = crate::model::TransferSpec {
@@ -2376,6 +2415,7 @@ impl App {
                     self.submitted.remove(&key);
                 }
             }
+            self.pending_transfers.insert(spec.key.clone());
             self.submitted.insert(spec.key.clone(), spec.clone());
             if clip.cut {
                 self.submitted_clipboards
@@ -2991,6 +3031,9 @@ impl App {
         let value = match reply.result {
             Ok(v) => v,
             Err(e) => {
+                if let Operation::Transfer(spec) = &reply.op {
+                    self.pending_transfers.remove(&spec.key);
+                }
                 if let Operation::ProbeCandidate { address, interface } = &reply.op {
                     if let Some(candidates) = self
                         .network
@@ -3204,6 +3247,13 @@ impl App {
                 }
             }
             Operation::Jobs | Operation::TransferJobs => {
+                if let Some(rows) = value["jobs"].as_array() {
+                    for job in rows {
+                        if let Some(key) = job["key"].as_str() {
+                            self.pending_transfers.remove(key);
+                        }
+                    }
+                }
                 let newly_finished = value["jobs"]
                     .as_array()
                     .map(|rows| {
@@ -4181,7 +4231,14 @@ impl App {
                             }
                         }
                         View::Files => {
-                            if let Some(b) = &self.browser {
+                            if self.destination_active
+                                && self.clipboard.is_some()
+                                && self.browser.as_ref().is_some_and(|b| b.preview.is_none())
+                            {
+                                if self.browser.as_ref().is_some_and(|b| !b.loading) {
+                                    self.submit_transfer();
+                                }
+                            } else if let Some(b) = &self.browser {
                                 if let Some(e) = self.visible_entries().get(b.selected).cloned() {
                                     if e.kind == "directory" {
                                         self.open_browser(b.device, e.path);
@@ -5213,7 +5270,24 @@ fn render_with_native(
     let actions = sidebar_actions(app);
     let items = actions
         .iter()
-        .map(|(_, label)| ListItem::new(*label))
+        .map(|(action, label)| {
+            let active = app.active_transfer_keys().len();
+            if *action == Action::Jobs && active > 0 {
+                ListItem::new(Line::styled(
+                    if sidebar_width < 18 {
+                        format!("{} Sending", transfer_spinner(app.transfer_frame, ascii()))
+                    } else {
+                        format!(
+                            "{} Transfers {active}",
+                            transfer_spinner(app.transfer_frame, ascii())
+                        )
+                    },
+                    accent(),
+                ))
+            } else {
+                ListItem::new(*label)
+            }
+        })
         .collect::<Vec<_>>();
     let mut state =
         ratatui::widgets::ListState::default().with_selected(if app.focus == Focus::Actions {
@@ -6151,6 +6225,19 @@ fn render_with_native(
             ("Esc", "Back"),
             ("Ctrl P", "Actions"),
         ]
+    } else if app.view == View::Files
+        && app.focus == Focus::Workspace
+        && app.destination_active
+        && app.clipboard.is_some()
+    {
+        vec![
+            ("Enter", "Transfer here"),
+            ("h / l", "Parent / open"),
+            ("Tab", "Source"),
+            ("o", "Conflict policy"),
+            ("T", "Progress"),
+            ("?", "All keys"),
+        ]
     } else if app.view == View::Files && app.focus == Focus::Workspace {
         vec![
             ("Space", "Select"),
@@ -6231,7 +6318,11 @@ fn render_with_native(
                 .as_ref()
                 .is_some_and(|b| b.preview.is_none() && b.container.is_none())
         {
-            hints[3] = ("t / T", "Send / jobs");
+            hints[3] = if app.destination_active && app.clipboard.is_some() {
+                ("T", "Progress")
+            } else {
+                ("t / T", "Send / jobs")
+            };
         }
     }
     let rows = Layout::default()
@@ -6422,7 +6513,7 @@ fn render_with_native(
                         .as_ref()
                         .map(|c| {
                             format!(
-                                "Source: {} · {}\nChoose device, browse folder, then p Paste here\nEnter choose · Escape cancel",
+                                "Source: {} · {}\nChoose device, browse folder, then Enter to transfer · h/l navigate\nEnter choose · Escape cancel",
                                 identity(&app.devices[c.device]),
                                 format!("{} {} items", if c.cut { "cut" } else { "copy" }, c.entries.len())
                             )
@@ -6780,7 +6871,10 @@ fn render_with_native(
                     "Copy / cut, then choose another folder or device",
                 ),
                 ("p · Y", "Paste here / clear clipboard"),
-                ("t", "Transfer to… choose device, folder, then p"),
+                (
+                    "t",
+                    "Transfer to… choose device, folder, then Enter (h/l navigate)",
+                ),
                 ("T", "Transfer jobs and results"),
                 ("r · d", "Rename / confirm permanent deletion"),
                 ("M · o", "New folder / cycle copy conflict policy"),
@@ -8243,6 +8337,8 @@ fn render_browser(
     }
     let bottom = if b.preview.is_some() {
         " Preview · j/k scroll · Escape back".into()
+    } else if label.starts_with("Destination") && clipboard.is_some() {
+        " Enter transfer here · h/l folders".into()
     } else if let Some(c) = clipboard {
         format!(
             " {} {} · {}{}",
@@ -8309,6 +8405,15 @@ fn human_size(size: u64) -> String {
         format!("{:.1} GiB", size as f64 / (1024.0 * 1024.0 * 1024.0))
     }
 }
+fn transfer_spinner(frame: usize, plain: bool) -> &'static str {
+    let frames: &[&str] = if plain {
+        &["|", "/", "-", "\\"]
+    } else {
+        &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    };
+    frames[frame % frames.len()]
+}
+
 fn transfer_name(job: &Value) -> String {
     let path = job["source_display"]
         .as_str()
@@ -9486,6 +9591,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     let mut wheel_reports = WheelReports::default();
     let mut last_refresh = Instant::now();
     let mut last_jobs = Instant::now();
+    let mut last_transfer_frame = Instant::now();
     while !app.quit && !stopping.load(std::sync::atomic::Ordering::Relaxed) {
         for update in transport::drain_host_updates() {
             app.host_updated(update);
@@ -9704,6 +9810,14 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
         if native_preview.cleanup(&mut io::stdout())? {
             screen.terminal.clear()?;
+            dirty = true;
+        }
+        // Animate only while work is pending; idle keeps its existing bounded redraw.
+        if !app.active_transfer_keys().is_empty()
+            && last_transfer_frame.elapsed() >= Duration::from_millis(160)
+        {
+            app.transfer_frame = app.transfer_frame.wrapping_add(1);
+            last_transfer_frame = Instant::now();
             dirty = true;
         }
         // Capture wheel reports throughout cx so the emulator does not replace
@@ -12359,6 +12473,149 @@ mod tests {
         a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(rx.try_recv().unwrap().op, Operation::Create(_)));
     }
+    fn destination_transfer_fixture() -> (App, mpsc::Receiver<Task>) {
+        let (mut a, rx) = queued_app();
+        a.view = View::Files;
+        a.focus = Focus::Workspace;
+        let mut source = Browser::new(1, "/source".into());
+        source.loading = false;
+        source.entries.push(Entry {
+            name: "sample.txt".into(),
+            path: "/source/sample.txt".into(),
+            kind: "file".into(),
+            size: 12,
+            identity: None,
+            hidden: false,
+            rename_name: None,
+        });
+        a.browser = Some(source);
+        a.execute(Action::Copy);
+        a.other_browser = a.browser.take();
+        let mut destination = Browser::new(0, "/receive".into());
+        destination.loading = false;
+        destination.entries.push(Entry {
+            name: "nested".into(),
+            path: "/receive/nested".into(),
+            kind: "directory".into(),
+            size: 0,
+            identity: None,
+            hidden: false,
+            rename_name: None,
+        });
+        a.browser = Some(destination);
+        a.destination_active = true;
+        (a, rx)
+    }
+    #[test]
+    fn destination_enter_transfers_displayed_folder_once_and_releases_on_failure() {
+        let (mut a, rx) = destination_transfer_fixture();
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let task = rx.try_recv().unwrap();
+        let Operation::Transfer(spec) = &task.op else {
+            panic!("expected transfer")
+        };
+        assert_eq!(spec.destination_path, "/receive");
+        assert_eq!(a.browser.as_ref().unwrap().path, "/receive");
+        assert_eq!(a.active_transfer_keys().len(), 1);
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(rx.try_recv().is_err(), "double Enter must not submit again");
+        a.apply(Reply {
+            preview: None,
+            device: task.device,
+            generation: task.generation,
+            op: task.op,
+            result: Err(anyhow::anyhow!("fixture failure")),
+        });
+        assert!(a.active_transfer_keys().is_empty());
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(rx.try_recv().unwrap().op, Operation::Transfer(_)));
+    }
+    #[test]
+    fn destination_navigation_and_non_destination_enter_keep_their_meaning() {
+        let (mut a, rx) = destination_transfer_fixture();
+        a.key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+        assert_eq!(a.browser.as_ref().unwrap().path, "/receive/nested");
+        assert!(!matches!(rx.try_recv().unwrap().op, Operation::Transfer(_)));
+        while rx.try_recv().is_ok() {}
+        a.browser.as_mut().unwrap().loading = true;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(rx.try_recv().is_err());
+        a.destination_active = false;
+        a.browser.as_mut().unwrap().loading = false;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.pending_transfers.is_empty());
+    }
+    #[test]
+    fn transfer_sidebar_animation_frames_are_transparent_and_fit() {
+        let (mut a, rx) = destination_transfer_fixture();
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let task = rx.try_recv().unwrap();
+        let Operation::Transfer(spec) = &task.op else {
+            panic!()
+        };
+        let key = spec.key.clone();
+        a.apply(Reply {
+            preview: None,
+            device: 0,
+            generation: a.generation,
+            op: Operation::TransferJobs,
+            result: Ok(
+                serde_json::json!({"jobs":[{"key":key,"status":"running","bytes":12,"total":120}]}),
+            ),
+        });
+        assert!(a.pending_transfers.is_empty());
+        assert_eq!(a.active_transfer_keys().len(), 1);
+        for (width, height) in [(48, 24), (80, 24), (120, 40)] {
+            for phase in [0, 3, 6, 9] {
+                a.transfer_frame = phase;
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|f| render(f, &a)).unwrap();
+                let buffer = terminal.backend().buffer();
+                assert!(buffer.content.iter().all(|c| c.bg == Color::Reset));
+                let text = buffer
+                    .content
+                    .chunks(width as usize)
+                    .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(text.contains(transfer_spinner(phase, ascii())), "{text}");
+                assert!(text.contains("Transfers"), "{text}");
+                if let Some(dir) = std::env::var_os("CX_TRANSFER_CAPTURE_DIR") {
+                    let dir = std::path::PathBuf::from(dir);
+                    std::fs::create_dir_all(&dir).unwrap();
+                    let stem = format!("{width}x{height}-frame{phase}");
+                    std::fs::write(dir.join(format!("{stem}.txt")), text).unwrap();
+                    let cells = buffer.content.iter().map(|c| serde_json::json!({
+                        "text":c.symbol(),"fg":format!("{:?}",c.fg),"bg":format!("{:?}",c.bg),
+                        "modifier":format!("{:?}",c.modifier)
+                    })).collect::<Vec<_>>();
+                    std::fs::write(
+                        dir.join(format!("{stem}.json")),
+                        serde_json::to_vec(
+                            &serde_json::json!({"width":width,"height":height,"cells":cells,
+                            "backend":"Ratatui TestBackend fixture; not physical terminal"}),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        a.apply(Reply {
+            preview: None,
+            device: 0,
+            generation: a.generation,
+            op: Operation::TransferJobs,
+            result: Ok(serde_json::json!({"jobs":[{"key":key,"status":"complete"}]})),
+        });
+        assert!(a.active_transfer_keys().is_empty());
+        for plain in [false, true] {
+            let period = if plain { 4 } else { 10 };
+            assert_eq!(transfer_spinner(0, plain), transfer_spinner(period, plain));
+            assert_ne!(transfer_spinner(0, plain), transfer_spinner(1, plain));
+        }
+    }
+
     #[test]
     fn transfer_locations_stay_independent_and_submit_real_spec() {
         let (mut a, rx) = queued_app();

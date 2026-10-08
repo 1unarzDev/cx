@@ -1,63 +1,51 @@
 # cx
 
-A terminal workspace for SSH devices, persistent shells, Claude/Codex sessions and files. Runs on **Linux x86_64 and ARM64**; Ubuntu, RHEL-compatible and Arch distributions share static binaries. No AI runtime is required on viewing devices.
+CX is a lightweight terminal workspace for SSH devices, persistent shells, Claude/Codex sessions, files and network discovery. It runs on **Linux x86_64 and ARM64** and works with existing SSH connections, including devices on a mesh network. Coding agents run on the execution device; viewing devices do not need an AI runtime.
+
+## Get started
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/1unarzDev/cx/main/install.sh | sh
 cx
-cx add user@host                 # existing SSH alias also works
+```
+
+Install as your ordinary user. The installer verifies signed releases and offers to install missing dependencies. See [installation and requirements](docs/installation.md) for supported platforms, optional tools and minimal robot setup.
+
+Add a device using an existing SSH alias or account/address:
+
+```sh
+cx add user@host
 cx add robot@192.168.0.2 --via laptop
 ```
 
-Install as your ordinary user. Missing dependencies require an explicit package-manager confirmation through your terminal; no Rust toolchain is needed. The installer verifies downloads using the pinned [release public key](release-key.pem), stages privately and replaces the binary atomically. Re-running is safe; failed/offline downloads preserve an existing installation. After updating with the installer, reopen an already-running viewer to use the new binary; sessions keep running. The script itself is trusted from GitHub over HTTPS. Builds also carry GitHub provenance.
+You can also select a discovered neighbor in **Network** and press Enter to connect. **Ctrl+P → Add by SSH address** handles aliases and devices discovery cannot reach. Enrollment checks compatibility and installs the helper and missing portable tmux. SSH passwords are masked and not stored.
 
-**Requirements:** Linux; guarded filesystem mutations need kernel 5.6+ and fail safely when unavailable. The installer offers OpenSSH, tmux, curl, OpenSSL, Poppler (PDF previews), iproute2, ping and ncurses/terminfo utilities through apt, dnf/yum or pacman. Image decoding, Markdown and tar/tar.gz previews are bundled; no Yazi or graphics protocol is required. NetworkManager and AI runtimes are optional and are not installed by cx. Transfers use supported detached processes; a working systemd user manager is needed when launched from a service cgroup. Fish, Bash and Zsh work; terminal colors/backgrounds remain yours. Agents and their credentials stay on the execution host. Run the installer on a fresh execution host before `cx add`; enrollment checks its utilities before replacing the helper. Cross-architecture enrollment downloads the matching signed release on the viewer, then transfers it over SSH; the robot need not have internet access. Utilities must already be installed on that execution host.
+## Everyday use
 
-| Keys | Action |
+| Key | Action |
 |---|---|
-| Arrows / `h j k l`, Enter, Escape | Navigate, open, back |
-| `/`, Ctrl+P, `?` | Search, workspace actions, help |
-| `n`, `:` | New session / run command on current device and folder |
-| Tab / Shift+Tab, Ctrl+arrows | Change panel focus |
-| Ctrl+] inside managed terminals | Return; session keeps running |
-| Ctrl+C in cx | Exit viewer; work keeps running |
-| Files: `.`, Space, `v`, `f` | Hidden files, select/advance, range, filter |
-| Files: `gg`, `G`, `5j` / `5k` | First, last, counted movement |
-| Files: `y`/`c`, `x`, `p` | Copy, cut, paste into focused folder |
-| Files: `t`, `T` | Choose destination device/folder, transfer results |
-| Files: `r`, `d` | Rename, confirm permanent deletion (`y` / `n`) |
-| Files: `M`, `o` | New folder, cycle copy conflict policy |
+| Arrows / `h j k l`, Enter, Escape | Navigate, open, go back |
+| Ctrl+P | Open actions and choose a device |
+| `/`, `?` | Search, help |
+| `n` | Start a shell in the device’s home, or the current folder in Files |
+| Tab / Shift+Tab | Change panel focus |
+| Ctrl+] in a managed terminal | Return to CX; the session keeps running |
+| `d` in Sessions | Confirm stopping a CX-managed shell or agent |
+| Ctrl+C in CX | Exit the viewer; sessions keep running |
 
-The Selected side panel stacks parent folders above the highlighted current folder, with the selected item beneath it. Older ancestors fold when vertical space is limited. The workspace keeps its space for files; switching split panes updates the side-panel hierarchy.
+Use **Ctrl+P → New session** to choose a device and start a shell, Codex or Claude. Agents must be installed on that device. Agent sessions offer **Default** permissions or **YOLO** for that launch; YOLO bypasses the agent’s normal approval protections.
 
-Select files → `t` → choose device → browse folder → `p`. Or copy/cut, switch devices, and paste. Incoming name conflicts rename by default; overwrite is explicit. Cross-host cuts support regular files; copy supports directories. Delete has no undo. Transfers are not snapshots of growing files.
+In **Files**, Enter previews a file. To transfer files, select with Space, press `t`, choose the destination device/folder, then press `p`. Incoming conflicts rename by default; overwrite is explicit. See the [user guide](docs/user-guide.md) for file operations, previews, clipboard, scrolling and all controls.
 
-Sessions lists persistent work. New session is the single launch action; file operations live on browser keys. In Files, `/` highlights matching names without hiding or reordering files; Enter finishes typing, `n`/`N` cycle matches, and Escape clears the search. `f` filters names. With no active search, `n` starts a session in that folder; New session remains available through Ctrl+P while searching. `:` opens a command prompt pinned to the execution host/folder and runs it in the native terminal; Ctrl+C interrupts the command; Ctrl+Z offers Resume/Cancel; Enter returns after completion. Fish/Bash/Zsh load interactive wrappers; sh/dash commands use login startup. Shell startup themes should respect `CX_VIEWER_THEME=1` during native commands; cx does not reset the viewing terminal’s palette. Commands are foreground work; cx does not save or retry their text, and do not survive disconnect as managed sessions do.
+**Network → All devices** groups discoveries beneath each observer. Selecting one device shows only its interfaces, routes and neighbors. Devices reachable through another host use saved SSH jump routes. Internet sharing and full reverse-access enforcement are still in development; see [robot mesh sharing](docs/robot-mesh-sharing.md).
 
-Automatically named shells show the running executable, such as `running cargo`; new managed Fish shells remember short commands as `last: git`, while older/Bash/Zsh shells show the most recently observed command as `recent: git`. Arguments and shell history are excluded. Claude native names and Codex names use exact process metadata when available; daemon-backed Codex sessions without a reliable identity retain their folder label. Custom names stay unchanged and label refreshes preserve row order.
+CX checks signed updates in the background. You can also run `cx update --check` or `cx update --device NAME`; existing sessions keep running.
 
-`n` starts a new shell in the selected device’s home, or the current folder in Files. From All devices it asks which device. Ctrl+P opens the action launcher: Files, Network, Sessions, SSH terminal and new sessions always ask for a device; Network and Sessions also offer All devices. New session then offers provider/folder setup. File and command actions show their current device/folder scope. New sessions use the chosen execution host and folder. Agent choices reflect installed launchable runtimes. Watch opens a read-only terminal; ordinary opening gives input. Starting Claude/Codex manually inside a shell updates its badge while the agent owns the terminal; returning to the shell restores it. The original terminal remains attachable. In managed terminals, the wheel reviews retained scrollback unless the application requests native mouse input. Fullscreen Codex with a stale mouse policy receives genuine wheel events through a verified foreground-process fallback; empty terminal history does not open a `0/0` buffer (the Codex fallback requires tmux 3.4+); Escape returns to the live terminal. Up/Down remain application keys. Hold Shift for terminal-native text selection when your emulator supports it. Existing personal tmux sessions retain their bindings.
+## Development
 
-Clipboard: managed sessions forward application copies and tmux selections to the viewing terminal using OSC 52; no Wayland/X11 socket forwarding is needed. Wheel up to scrollback, drag to select and copy, or press Space, extend with arrows, then Enter/y to copy; Escape returns. Shift+drag uses the terminal's own selection when supported, including visible Claude/Codex text. Paste with your terminal's normal paste shortcut (usually Ctrl+Shift+V); in Neovim enter Insert mode first. Terminal clipboard policy must permit OSC 52 writes. Neovim in the synced Arch configuration uses its tmux clipboard provider. Its `"+p` reads can return an older tmux buffer on slow SSH links because the upstream provider waits only 50 ms for a clipboard response. Use normal terminal paste for reliable viewer-to-session paste; terminal policy may also forbid clipboard reads. Personal tmux servers and external sessions retain their configuration.
+```sh
+cargo build --release --locked
+cargo test --locked
+```
 
-Files: Enter previews text, Markdown/code, images and PDF pages; tar/tar.gz archives list entries without extraction. PDFs show a page counter; j/k, arrows, Page Up/Down and each wheel step change pages. Rapid scrolling coalesces renders; Escape returns to the file. Images/PDFs use a larger workspace and optional native graphics in detected compatible terminals (Foot Sixel tested; Kitty/Ghostty physical testing remains unavailable). Unknown terminals and nested tmux use colored-cell fallback; monochrome mode uses text. Translucent images fall back on Sixel to preserve the default background. Source files and Markdown code fences use bundled language grammars and your ANSI palette, without running code or installing interpreters. `j`/`k` scroll text previews; `gg`/`G` go to the start/end. `/` searches text live with case-insensitive fuzzy matching and highlighted results; Enter finishes editing, `n`/`N` select the next/previous match. Escape clears a search, then restores the browser selection. Image/PDF content search is unavailable. `d` deletes files after confirmation; in Work it stops only a cx-managed shell, with confirmation. Agent and external sessions are protected.
-
-Updates check signed stable releases in the background, retain the running version when offline, and restore the viewer when idle. The workspace also checks accessed SSH devices without authentication prompts; their own updater verifies the correct architecture and installs under its maintenance lock. If a remote device cannot download releases, the viewer downloads and verifies the signed artifact for that host architecture and transfers it over the existing SSH route. This supports ARM64 CoreOS and Jetson without replacing OS packages or changing their network. Remote checks run when a viewer accesses the host; a robot does not need its own running viewer or public egress. After a verified helper upgrade, metadata reconnects and previews reload without restarting terminals or jobs. Checks coalesce per host and back off when unavailable. Run `cx update --check` to check explicitly, or `cx update --device NAME` to update an enrolled SSH host. Sessions/jobs keep running independently. A lost metadata connection retries read-only session/device checks once; mutations are never replayed. Cached rows are unconfirmed until a successful Refresh, which removes ended sessions. Connection errors identify SSH access problems separately from terminal state.
-
-Network shows enrolled peers even when the LAN cache is empty, then LAN neighbors beneath their observing devices. All devices uses Right/l to expand and Left/h to fold; each address remains distinct. Selecting one device shows only that observer and its neighbors, already expanded, and Refresh checks only that observer. Select its host row for interface addresses, routes and internet evidence. Expansion is remembered while moving between views. J/K scroll selected route details when they exceed the available space. Selection shows its discovery path/interface and saved SSH jumps rather than a separate Evidence column. Peer access labels reflect recent authenticated checks from the viewer; LAN-port checks reflect the observing device. All devices combines those observations; each row identifies its device/interface. Fresh LAN neighbors receive bounded background SSH-port checks, cached for 90 seconds (up to 32 new checks per refresh). Enter begins connection through the observing device. An open port does not prove SSH authentication or internet access. Internet evidence belongs to the selected observing host and uses recent ICMP checks; neighbor internet access stays unknown until enrolled and observed. No subnet scan or interface changes run automatically. `cx add user@host --via enrolled-device` also works directly, without a prior robot session. Routes reuse OpenSSH host-key checks and existing identities, without copying keys or forwarding an agent. For identical private addresses behind different gateways, use distinct SSH aliases; conflicting enrollment is refused. Connecting a LAN neighbor asks for its SSH account, then uses masked OpenSSH password/key/MFA prompts when needed. New host keys require explicit fingerprint approval; mismatches fail closed. Passwords are not stored, logged or passed in arguments/environment. A private cx-owned SSH connection can remain authenticated for ten idle minutes, including after a failed enrollment; later access may require another unlock or your existing keys. Background checks never prompt. This protects against accidental disclosure, not malicious processes sharing your Unix account or root. IPv6 link-local enrollment is currently unavailable.
-
-Development is ongoing: Network observation and SSH jump routes work; sharing, full trust/revocation and full uninstall are not release-ready. See [validation](VALIDATION.md) for tested behavior and limits. Remove only `~/.local/bin/cx` when no active job needs its helper; preserve state and sessions. No public hostnames or mesh provider are required.
-
-Build: `cargo build --release --locked`. Check: `cargo test --locked`. GitHub workers test builds and installer fixtures across distributions; RHEL itself requires access to a licensed environment, so Rocky Linux supplies the compatible CI fixture.
-
-Release changes: [CHANGELOG.md](CHANGELOG.md). Before tagging a stable version, move its reviewed changes from Unreleased into an exact `vX.Y.Z` section; publication requires these notes.
-
-Markdown previews render aligned tables (labeled wrapping rows in narrow panes) and fenced code with language-aware, bundled syntax highlighting. Previewing code never runs it and does not require a language interpreter. Inline Markdown links use underlined labels; click one or press `o` to inspect targets, then Enter to open an HTTP/HTTPS link in the viewer’s graphical browser. Relative file links resolve from the document’s directory on its device; heading fragments jump within previews and Escape returns to the parent preview. Directory links ending in `/` open the browser. Shift+click opens a link directly where the terminal forwards it; Ctrl+click is the fallback (Foot normally reserves Shift for selection). Other URI schemes are rejected. List continuation rows align under their text. Common TeX math in `$…$`, `$$…$$`, `\(…\)` and `\[…\]` becomes readable Unicode (Greek, operators, scripts, fractions, roots), with no extra installation; unsupported TeX and ASCII-mode math retain their source. This is a bounded text preview, not full TeX typesetting. Unknown languages stay plain; `/`, `n`/`N`, `j`/`k`, and `gg`/`G` retain preview navigation.
-
-Robot enrollment can use `cx add user@host --via enrolled-device --minimal` on an immutable Linux host; it installs the helper and an absent portable tmux without OS package or profile changes. Directed access review and existing-LAN sharing previews are described in [robot mesh sharing](docs/robot-mesh-sharing.md). Sharing previews do not activate networking or establish reverse SSH enforcement.
-
-For a robot reachable through another device, select that observer in Network; its neighbors appear immediately. Resolved hostname hints appear beside addresses. Enter on a neighbor connects through its observer and asks for the SSH account; successful enrollment adds its authenticated hostname to the device list. Discovery and Enter on a Network neighbor are the primary connection path. **Add by SSH address** stays available in Ctrl+P actions for aliases, uncached hosts and networks discovery cannot reach. It uses the selected device as its gateway, shown in the prompt, and can match `.local` names against that observer's discovered addresses. After authentication, enrollment checks Linux x86_64/ARM64 compatibility and installs the helper plus signed portable tmux if absent, using only minimal host utilities. Existing system/user tmux is preserved; a broken one reports an error. Password prompts use dots with F2 or a clickable Show/Hide button. Unsupported platforms are reported before installation. Select an enrolled device and choose **SSH terminal** for an ordinary login without tmux; type `exit` to return. From All devices, the SSH terminal action opens a device picker. `cx terminal --device NAME` provides the same terminal from the CLI. Persistent sessions still require tmux.
-
-New Codex/Claude sessions offer **Default** (existing host permissions) or **YOLO** before launch. YOLO applies only to that session: Codex bypasses approvals and sandboxing; Claude bypasses permission prompts. CLI: `cx new --provider codex --directory ~/cx --yolo` (also supports `--provider claude`). Existing sessions keep their launch permissions. Update remote helpers before selecting YOLO.
-
-In Sessions, `d` stops the selected CX-managed shell, Claude or Codex session after confirmation; Enter initially keeps it, `y` confirms. External tmux sessions are protected. Expanded sessions must be stopped from their terminal.
+See [development](docs/development.md) for contribution and release notes, [validation](VALIDATION.md) for tested behavior and limitations, and [CHANGELOG](CHANGELOG.md) for release changes.

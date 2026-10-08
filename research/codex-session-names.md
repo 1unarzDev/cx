@@ -10,6 +10,9 @@ different build and should not override version-specific evidence.
 
 ## Finding
 
+User confirmed the desired CX label is the **conversation title** (including
+`/rename` updates), not a spawned subagent nickname.
+
 Codex has native names. CX's missing piece is identifying **which current Codex
 thread belongs to a terminal**, especially when multiple terminals use the same
 daemon. Looking up more names cannot repair a missing association.

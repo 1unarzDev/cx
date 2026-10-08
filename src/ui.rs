@@ -3458,7 +3458,6 @@ impl App {
             && self.focus == Focus::Workspace
             && self.browser.as_ref().is_some_and(|b| {
                 b.preview.is_some()
-                    && b.preview_pending_page.is_none()
                     && b.preview_rich
                         .as_ref()
                         .is_some_and(|p| p.kind == "pdf" && p.raster.is_some())
@@ -3679,6 +3678,43 @@ impl App {
         let delta = match mouse.kind {
             MouseEventKind::ScrollDown => 1,
             MouseEventKind::ScrollUp => -1,
+            MouseEventKind::Down(event::MouseButton::Left)
+                if self.view == View::Files
+                    && !self.help
+                    && self.dialog.is_none()
+                    && self.input.is_none() =>
+            {
+                let target = self
+                    .panels
+                    .borrow()
+                    .iter()
+                    .rev()
+                    .find(|(focus, _, rect)| {
+                        *focus == Focus::Workspace
+                            && rect
+                                .contains(ratatui::layout::Position::new(mouse.column, mouse.row))
+                    })
+                    .map(|(_, destination, _)| *destination);
+                let Some(destination) = target else {
+                    return false;
+                };
+                // Click-to-focus applies only to previews, never opens or selects files.
+                let browser =
+                    if self.other_browser.is_some() && destination != self.destination_active {
+                        self.other_browser.as_ref()
+                    } else {
+                        self.browser.as_ref()
+                    };
+                if !browser.is_some_and(|b| b.preview.is_some()) {
+                    return false;
+                }
+                if self.other_browser.is_some() && destination != self.destination_active {
+                    self.switch_pane();
+                }
+                self.focus = Focus::Workspace;
+                self.preview_mouse(mouse, area);
+                return true;
+            }
             _ => return self.preview_mouse(mouse, area),
         };
         if mouse.modifiers != KeyModifiers::NONE {
@@ -4575,7 +4611,6 @@ fn render_with_native(
         View::Files => {
             if let Some(b) = &app.browser {
                 if b.preview.is_some()
-                    && b.preview_pending_page.is_none()
                     && b.preview_rich
                         .as_ref()
                         .is_some_and(|p| matches!(p.kind.as_str(), "image" | "pdf"))
@@ -6739,6 +6774,16 @@ fn render_preview_with_native(
         }
     }
     browser.preview_scroll.set(scroll);
+    if max > 0 {
+        let position = format!(" {}% ", u32::from(scroll) * 100 / u32::from(max));
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(if focused { accent() } else { muted() })
+                .title_bottom(Line::from(Span::styled(position, muted())).right_aligned()),
+            area,
+        );
+    }
     browser.preview_link_cells.borrow_mut().clear();
     if rich.is_some_and(|p| p.kind == "markdown") && !markdown_preview_links(text).is_empty() {
         // Hit-test the unhighlighted presentation. Search underlines are not links.
@@ -11378,6 +11423,47 @@ mod tests {
             rx.try_recv().unwrap().op,
             Operation::PreviewPage { page: 2, .. }
         ));
+    }
+
+    #[test]
+    fn preview_click_focus_and_wheel_keep_file_selection() {
+        let (mut a, _rx) = file_app();
+        a.browser.as_mut().unwrap().preview =
+            Some((0..100).map(|i| format!("line {i}\n")).collect());
+        capture_app(&a, 80);
+        let selected = a.browser.as_ref().unwrap().selected;
+        a.focus = Focus::Devices;
+        let mut mouse = MouseEvent {
+            kind: MouseEventKind::Down(event::MouseButton::Left),
+            column: 40,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(a.mouse(mouse, Rect::new(0, 0, 80, 24)));
+        assert!(a.focus == Focus::Workspace);
+        mouse.kind = MouseEventKind::ScrollDown;
+        assert!(a.mouse(mouse, Rect::new(0, 0, 80, 24)));
+        assert_eq!(a.browser.as_ref().unwrap().preview_scroll.get(), 1);
+        assert_eq!(a.browser.as_ref().unwrap().selected, selected);
+        a.key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        assert!(a.browser.as_ref().unwrap().preview_scroll.get() > 1);
+    }
+
+    #[test]
+    fn pending_pdf_keeps_full_workspace_panel() {
+        let (mut a, _rx) = file_app();
+        a.other_browser = Some(Browser::new(1, "/destination".into()));
+        let b = a.browser.as_mut().unwrap();
+        b.preview = Some("PDF".into());
+        b.preview_rich = Some(RichPreview::from_value(
+            &serde_json::json!({"kind":"pdf","page":1,"pages":3,"image":{"width":1,"height":1,"rgba":"/////w=="}}),
+        ));
+        let before = capture_app(&a, 80);
+        a.browser.as_mut().unwrap().preview_pending_page = Some(2);
+        let pending = capture_app(&a, 80);
+        assert!(!before.contains("NORMAL"));
+        assert!(!pending.contains("NORMAL"), "{pending}");
+        assert!(pending.contains("page 2"));
     }
 
     #[test]

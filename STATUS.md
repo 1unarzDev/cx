@@ -1,6 +1,6 @@
 # CX status
 
-The v0.1.46 scoped container transfers and devcontainer rebuilds have passed local Rust, Docker and UI checks in `worktrees/container-transfers`, branch `feature/container-transfers`. Signed publication is pending.
+The v0.1.47 notification cleanup passed all 172 UI tests in `worktrees/quiet-notifications`, branch `fix/quiet-notifications`. Signed publication is pending.
 
 ## Current behavior
 
@@ -11,7 +11,7 @@ The v0.1.46 scoped container transfers and devcontainer rebuilds have passed loc
 
 ## Remaining integration and acceptance
 
-- Publish/update v0.1.46 after its release checks. This work performs no remote host deployment; computers were powered down at the user's request.
+- Publish/update v0.1.47 after its release checks. This work performs no remote host deployment; computers were powered down at the user's request.
 - Validate the signed container workflow on actual CoreOS Blastoise and Ubuntu20.04 Jetson: ROS help/import, terminal input/detach and preservation of mounts/network/runtime/start times. Local fixtures do not establish ROS messaging, actuator or GPU compute acceptance.
 - Jetson configuration-driven workspace startup/full environment substitutions require the Node Dev Containers CLI. Fresh-hardware enrollment and physical UI/input acceptance remain the user's planned checks.
 - Internet sharing, full reverse SSH/trust/revocation enforcement and full uninstall remain incomplete. No live networking, SSH trust or provider configuration is changed by this UI work. Podman, remote Docker contexts and cross-architecture emulation remain unsupported.

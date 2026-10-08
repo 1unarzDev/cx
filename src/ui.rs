@@ -1096,10 +1096,6 @@ impl App {
             .cloned()
             .unwrap_or_else(|| scope.folder.clone());
         self.open_scoped_browser(device, path, Some(scope));
-        self.set_notice_as(
-            NoticeKind::Warning,
-            "Container files · y copy · x cut · p paste · t transfer".into(),
-        );
     }
     fn open_scoped_browser(&mut self, device: usize, path: String, scope: Option<ContainerScope>) {
         self.device = device + 1;
@@ -2075,8 +2071,15 @@ impl App {
                             container: b.container.clone(),
                         });
                         self.launch_provider = None;
-                        self.set_notice(format!("{} {count} item{} · p pastes here · switch device then p to paste · t chooses a destination",
-                            if action == Action::Cut { "Cut" } else { "Copied" }, if count == 1 { "" } else { "s" }));
+                        self.set_notice(format!(
+                            "{} {count} item{}",
+                            if action == Action::Cut {
+                                "Cut"
+                            } else {
+                                "Copied"
+                            },
+                            if count == 1 { "" } else { "s" }
+                        ));
                         self.finish_visual();
                         if let Some(b) = &mut self.browser {
                             b.marked.clear();
@@ -2945,9 +2948,6 @@ impl App {
                         }
                         self.launch_provider = Some(provider);
                         self.open_browser(d, "~".into());
-                        self.set_notice(
-                            "Browse to a folder · n starts here (Enter opens files)".into(),
-                        );
                     }
                     Dialog::Permissions(d, path, provider) => {
                         let yolo = self.dialog_selected == 1;
@@ -4902,7 +4902,6 @@ impl App {
             .is_some_and(|p| p.ends_with('/'))
         {
             self.open_browser(device, crate::files::encode_path(&path));
-            self.set_notice("Browsing linked directory on the document's device".into());
             return;
         }
         let b = self.browser.as_mut().unwrap();
@@ -4915,10 +4914,6 @@ impl App {
         }
         self.open_preview(device, crate::files::encode_path(&path));
         self.browser.as_mut().unwrap().preview_anchor = anchor;
-        self.set_notice(format!(
-            "Opening linked file · {}",
-            identity(&self.devices[device])
-        ));
     }
     fn show_preview_links(&mut self) {
         let links = self

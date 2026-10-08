@@ -1,5 +1,9 @@
 # Validation record
 
+## Quiet file notifications — v0.1.47 (2026-10-08)
+
+PASS — all 172 existing UI tests passed (`/tmp/cx-quiet-notifications-ui.log`); formatting and diff checks passed. Removed routine container-browser, folder-selection and linked-file navigation notices; copy/cut confirmations retain the item count without keybind instructions. Existing hints, Help, operation progress and error notifications remain available. No host or networking mutations; physical terminal acceptance remains unverified.
+
 ## Scoped container transfers and rebuilds — v0.1.46 (2026-10-08)
 
 PASS — final locked serial Rust suite: 543 passed, one protected live test ignored (`/tmp/cx-container-transfer-final-tests.log`); native debug build, formatting and diff checks passed. All 172 UI tests passed in a separate color-mode run (`/tmp/cx-container-transfer-ui-final.log`), covering pinned source/destination scopes, queued actions across navigation, explicit rebuild confirmation, failure refresh without replay, 48/80/120-column layouts and scrolling long rebuild warnings. Colored and monochrome fixture captures were rendered and visually inspected (`/tmp/cx-container-transfer-{captures,color}`); these are TestBackend renderings, not physical screenshots.

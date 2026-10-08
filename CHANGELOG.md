@@ -6,6 +6,11 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.47
+
+### Fixes
+- Keep routine file navigation quiet and shorten copy/cut confirmations. Keybind help stays in the existing hints and Help panel; notifications report outcomes, progress and errors.
+
 ## v0.1.46
 
 ### Features

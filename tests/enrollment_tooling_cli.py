@@ -4,8 +4,10 @@ SSH is a bounded local fixture; no live host, trust or network configuration cha
 """
 import os, pathlib, shutil, subprocess, sys, tempfile, json
 binary = str(pathlib.Path(sys.argv[1]).resolve())
+base = pathlib.Path.home()/'.cache'
+base.mkdir(exist_ok=True)
 for scenario in ('unsupported', 'existing', 'broken', 'missing-offline'):
-    with tempfile.TemporaryDirectory(prefix='cx-tooling-cli-', dir=pathlib.Path.home()/'.cache') as tmp:
+    with tempfile.TemporaryDirectory(prefix='cx-tooling-cli-', dir=base) as tmp:
         root = pathlib.Path(tmp); home = root/'home'; home.mkdir(mode=0o700); (root/'s').mkdir(mode=0o700)
         tools = root/'tools'; tools.mkdir()
         for name in ('id','mkdir','ip','flock','stat','timeout','mktemp','cat','chmod','mv','rm','sh'):

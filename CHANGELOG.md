@@ -6,7 +6,7 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
-## v0.1.35
+## v0.1.36
 
 ### Features
 - After authenticated connection, check Linux x86_64/ARM64 support and install the helper plus a signed, fully static portable tmux when absent; preserve existing tools without OS package or profile changes.
@@ -17,7 +17,7 @@ No changes queued.
 
 ### Fixes
 - Include the robot shell attachment, public-key-first authentication, viewer-mediated updates and device-aware Ctrl+P improvements from the unpublished v0.1.34 candidate.
-- Drain terminal output during the detach regression check to avoid a CI cleanup deadlock.
+- Drain terminal output during the detach regression check to avoid a CI cleanup deadlock; create the enrollment fixture directory on clean runners.
 
 ### Limitations
 - Background robot updates require a connected viewer. Optional PDF converters and coding-agent runtimes remain separate. Internet sharing and full reverse SSH enforcement remain inactive.

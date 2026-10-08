@@ -41,7 +41,7 @@ Network discovery plus Enter on a neighbor is the primary connection path. Ctrl+
 
 Robot internet sharing and full reverse-access enforcement remain inactive. The CoreOS helper supports files and raster/text previews; PDF previews require optional Poppler converters, which are not installed there. Coding agents likewise require their own installed runtimes. No claim is made that minimal helper enrollment supplies every optional third-party program.
 
-## Portable enrollment from v0.1.35
+## Portable enrollment from v0.1.36
 
 New supported Linux x86_64/ARM64 devices receive an absent tmux from a separate signed `cx-tmux-vVERSION-linux-ARCH.tar.gz` asset containing exactly one regular `tmux` member. The archive shares the pinned CX release signer; it never executes on the viewer. The native musl build statically links tmux3.7c, ncurses6.5 and libevent2.1.12 with fixed upstream source hashes in `scripts/build-portable-tmux.sh`. Both architectures are built and checked in portable CI; distributions exercise this binary through its own disposable tmux socket.
 

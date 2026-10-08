@@ -3733,8 +3733,16 @@ impl App {
             };
             return true;
         }
-        // An open editor/modal owns navigation; a wheel never acts behind it.
-        if self.help || self.dialog.is_some() || self.input.is_some() {
+        // Inline file search/filter keep the browser visible. Wheel motion uses
+        // adjacent rows/lines, not the keyboard's next-match navigation. Preserve
+        // the query without re-running live_search and snapping to a match.
+        let inline_file_input = self.view == View::Files
+            && matches!(
+                self.input,
+                Some(Input::Search | Input::Filter | Input::PreviewSearch)
+            );
+        // Other editors/modals own navigation; a wheel never acts behind them.
+        if self.help || self.dialog.is_some() || (self.input.is_some() && !inline_file_input) {
             self.key(KeyEvent::new(
                 if delta > 0 {
                     KeyCode::Down
@@ -11378,6 +11386,47 @@ mod tests {
         assert!(a.mouse(wheel, Rect::new(0, 0, 80, 24)));
         assert_eq!(a.text, "name");
         assert_eq!(a.browser.as_ref().unwrap().selected, 1);
+    }
+
+    #[test]
+    fn file_search_wheel_moves_adjacent_rows_without_jumping_matches() {
+        let (mut a, _rx) = file_app();
+        let b = a.browser.as_mut().unwrap();
+        b.entries[2].name = "zalpha.txt".into();
+        b.search = "alpha".into();
+        a.input = Some(Input::Search);
+        a.text = "alpha".into();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| render(f, &a)).unwrap();
+        let wheel = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 40,
+            row: 8,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(a.mouse(wheel, Rect::new(0, 0, 80, 24)));
+        assert_eq!(
+            a.browser.as_ref().unwrap().selected,
+            1,
+            "one wheel tick must select beta, even between search matches"
+        );
+        assert_eq!(a.text, "alpha");
+        assert!(a.input == Some(Input::Search));
+        assert_eq!(a.browser.as_ref().unwrap().search, "alpha");
+        assert!(a.mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                ..wheel
+            },
+            Rect::new(0, 0, 80, 24)
+        ));
+        assert_eq!(a.browser.as_ref().unwrap().selected, 0);
+        a.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(
+            a.browser.as_ref().unwrap().selected,
+            2,
+            "search keyboard navigation still selects the next match"
+        );
     }
 
     #[test]

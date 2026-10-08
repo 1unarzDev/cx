@@ -28,8 +28,9 @@ omitting/setting false `includeTurns` avoids full turns. Names are hydrated on
 **not** supply a documented terminal/PID-to-current-thread association. A summary
 still contains `preview`, which the [schema][thread] describes as usually the first
 user message. Thus `includeTurns: false` does not make a response metadata-only.
-CX must not ingest these summaries as a workaround under its no-transcript
-constraint; even suppressing preview in logs would not prevent receiving it.
+A title lookup through this API would receive unnecessary user-message text;
+CX must keep that text out of logs and reports and filter prompt-bearing fields
+at its boundary. This does not solve the missing terminal association.
 
 ## What earlier attempts actually established
 
@@ -63,7 +64,7 @@ when association is proven and a separately preserved user alias.
 | Approach | Benefit | Limitation / suitability |
 | --- | --- | --- |
 | Existing exact writable FD + name index | No hooks; already bounded and covered by fixtures | Works only where the foreground process owns exactly one thread writer; does not solve shared-daemon TUI association |
-| Daemon `thread/list` / `thread/read` | Supported native title API | No documented terminal association; receives prompt preview; cwd, update time, active state, list order and sole apparent match do not establish identity |
+| Daemon `thread/list` / `thread/read` | Supported native title API | No documented terminal association; returns prompt preview; cwd, update time, active state, list order and sole apparent match do not establish identity |
 | Trusted `SessionStart` hook + per-launch marker | Can publish the real thread ID separately from title lookup | Native hook trust review and propagation/timing need a disposable test; applies to instrumented launches, not retroactively to arbitrary existing TUIs |
 | Native terminal-title output | TUI emits the title of its selected thread, avoiding daemon FD association | Requires proven fresh output from the same managed launch; inherited pane titles are insufficient; display output can be truncated and contain progress decoration |
 | Launch with an explicit known thread / client instrumentation | Bind the terminal to the ID returned/selected by that client; strongest association | Native TUI switching, `/new`, resume, fork and reconnect must update the binding; merely parsing initial `codex resume <id>` becomes stale |

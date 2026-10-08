@@ -4,7 +4,8 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
-No changes queued.
+### Fixes
+- Keep wheel navigation adjacent while typing file search: visit unmatched rows instead of jumping or wrapping between matches. Preserve the query and keyboard match navigation.
 
 ## v0.1.30
 

@@ -51,6 +51,19 @@ for view in ['Files','Work']:
    send(f'\x1b[<64;40;{current()[1]+1}M'.encode());assert current()[0]==ordered[5]
    send(b'\x1b[B');assert current()[0]==ordered[6]
    send(b'\x1b[A');assert current()[0]==ordered[5]
+   if view=='Files':
+    # Search stays inline and highlights file00..file09. The wheel must cross
+    # the last match into adjacent nonmatches, rather than wrapping to file00.
+    send(b'/file0')
+    for index in range(6,12):
+     send(f'\x1b[<65;40;{current()[1]+1}M'.encode())
+     assert current()[0]==ordered[index],('search wheel skipped adjacent file',index,current())
+    # Two independently reported ticks in one read must both remain effective.
+    up=f'\x1b[<64;40;{current()[1]+1}M'.encode()
+    send(up+up);assert current()[0]==ordered[9]
+    send(b'\x1b');read(.1)
+    for index in range(8,4,-1):
+     send(f'\x1b[<64;40;{current()[1]+1}M'.encode());assert current()[0]==ordered[index]
    # Header/footer wheel events cannot retarget the current object.
    send(b'\x1b[<65;40;1M');assert current()[0]==ordered[5]
    if view=='Work':

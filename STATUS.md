@@ -272,3 +272,9 @@ User confirms old shell-329185-179126… row disappears after Refresh. No termin
 - Review fixes: register fullscreen two-location PDF mouse target; confirmation wheel scrolls details without arming Delete/Stop/Exit. Release/deployment follows; physical wheel check pending until installation.
 
 Signed v0.1.29/source2cea96e/workflow37708925685 PASS all native/PTY, x86-64/ARM64 and distro installer gates. Exact clean-HOME public bootstrap PASS. Innovation/server installed0.1.29 with matching signed SHA2566f460b7c0b867c2c54f1518b91c0d3ce2487cde70a2301971929469437d6633b. Installed wheel/native handoff PTY PASS; five original innovation managed identities preserved; server agent-free. Tranquility No route to host, update pending/last verified0.1.16. Optional physical wheel check requested once after installation; no answer yet.
+
+
+## Preview panel scrolling — v0.1.30
+- Click previews to focus keyboard scrolling; hover wheel retains content/file-selection ownership. Compact text scroll percentage stays on the border without changing wrapping. PDF panel remains fullscreen during page loading; pending PageUp/Down coalesces one page at a time. Existing one-wheel-step/page preference preserved.
+- Full441 tests PASS, one protected live test ignored; actual text hover-wheel/click-focus/search ANSI+mono, PDF pages/wheel, list/native-handoff PTYs PASS. Independent review CLEAR983a246 after fixing a bottom-corner visual regression.
+- Optional clarification pending once: within-page PDF scrolling versus wheel-does-nothing report. No answer yet; existing page navigation preserved while safe panel fixes proceed. Release/deployment follows.

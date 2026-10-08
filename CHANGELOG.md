@@ -6,6 +6,14 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.30
+
+### Features
+- Click a file preview to focus it for keyboard scrolling. Text previews show a compact scroll percentage on the frame; wheel scrolling follows the panel under the pointer.
+
+### Fixes
+- Keep PDF previews in the full workspace while another page loads, preserving panel geometry and mouse targets. Page Up/Down continues to move one page during loading rather than jumping ten pages; rapid navigation coalesces without extra concurrent requests.
+
 ## v0.1.29
 
 ### Fixes

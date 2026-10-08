@@ -6776,13 +6776,18 @@ fn render_preview_with_native(
     browser.preview_scroll.set(scroll);
     if max > 0 {
         let position = format!(" {}% ", u32::from(scroll) * 100 / u32::from(max));
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::BOTTOM)
-                .border_style(if focused { accent() } else { muted() })
-                .title_bottom(Line::from(Span::styled(position, muted())).right_aligned()),
-            area,
-        );
+        let width = (position.len() as u16).min(area.width.saturating_sub(2));
+        if width > 0 && area.height > 0 {
+            frame.render_widget(
+                Paragraph::new(Span::styled(position, muted())),
+                Rect::new(
+                    area.right().saturating_sub(width + 1),
+                    area.bottom() - 1,
+                    width,
+                    1,
+                ),
+            );
+        }
     }
     browser.preview_link_cells.borrow_mut().clear();
     if rich.is_some_and(|p| p.kind == "markdown") && !markdown_preview_links(text).is_empty() {
@@ -11464,6 +11469,22 @@ mod tests {
         assert!(!before.contains("NORMAL"));
         assert!(!pending.contains("NORMAL"), "{pending}");
         assert!(pending.contains("page 2"));
+    }
+
+    #[test]
+    fn pending_pdf_page_down_remains_single_page() {
+        let (mut a, rx) = file_app();
+        let b = a.browser.as_mut().unwrap();
+        b.preview = Some("PDF".into());
+        b.preview_path = Some("/book.pdf".into());
+        b.preview_requested_page = 2;
+        b.preview_pending_page = Some(2);
+        b.preview_rich = Some(RichPreview::from_value(
+            &serde_json::json!({"kind":"pdf","page":1,"pages":12,"image":{"width":1,"height":1,"rgba":"/////w=="}}),
+        ));
+        a.key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        assert_eq!(a.browser.as_ref().unwrap().preview_requested_page, 3);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

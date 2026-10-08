@@ -1,6 +1,6 @@
 # CX status
 
-The v0.1.42 UI modularity and devcontainer labeling followup has passed local checks in `worktrees/panel-adapters`, branch `refactor/panel-adapters`. Signed publication is pending; the previous v0.1.41 release is published.
+The v0.1.43 bottom-right notification timeout followup has passed local checks in `worktrees/notification-timeout`, branch `fix/notification-timeout`. It includes the v0.1.42 UI modularity and devcontainer labels. Signed publication is pending; v0.1.41 is published.
 
 ## Current behavior
 
@@ -11,7 +11,7 @@ The v0.1.42 UI modularity and devcontainer labeling followup has passed local ch
 
 ## Remaining integration and acceptance
 
-- Publish/update v0.1.42 after its release checks. This work performs no remote host deployment; computers were powered down at the user's request.
+- Publish/update v0.1.43 after its release checks. This work performs no remote host deployment; computers were powered down at the user's request.
 - Validate the signed container workflow on actual CoreOS Blastoise and Ubuntu20.04 Jetson: ROS help/import, terminal input/detach and preservation of mounts/network/runtime/start times. Local fixtures do not establish ROS messaging, actuator or GPU compute acceptance.
 - Jetson configuration-driven workspace startup/full environment substitutions require the Node Dev Containers CLI. Fresh-hardware enrollment and physical UI/input acceptance remain the user's planned checks.
 - Internet sharing, full reverse SSH/trust/revocation enforcement and full uninstall remain incomplete. No live networking, SSH trust or provider configuration is changed by this UI work. Container transfers, Podman, remote Docker contexts and cross-architecture emulation remain unsupported.

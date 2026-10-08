@@ -1,5 +1,9 @@
 # Validation record
 
+## Bottom-right timed notices — v0.1.43 (2026-10-08)
+
+PASS — serial locked Rust suite: 532 passed, one protected live test ignored (`/tmp/cx-notice-full-tests.log`); native build, formatting and diff checks passed. The 162 UI tests cover right alignment at 48/80/120 columns, search/no-search layouts, default background, expiry and renewed deadlines for repeated text (`/tmp/cx-notice-ui-tests.log`). `tests/notification_timeout_pty.py` passed against the actual debug binary: an offline update notice appears at bottom right, disappears after five seconds without input, and navigation/termios remain usable (`/tmp/cx-notice-pty.log`). Before/after decoded terminal captures were rendered and inspected (`/tmp/cx-notice-pty-{visible,expired}.png`); these are PTY renderings, not physical screenshots. No remote host or live network configuration was changed.
+
 ## UI panel adapters and devcontainer labels — v0.1.42 (2026-10-08)
 
 PASS — serial `cargo test --locked -- --test-threads=1`: 531 passed, one protected live test ignored (`/tmp/cx-modular-final-tests.log`). Native debug build, formatting and diff checks passed. Before the requested label change, all 306 baseline UI captures matched after normalizing only elapsed-seconds text; navigation, filters and layout were preserved by the extraction.

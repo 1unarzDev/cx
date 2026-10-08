@@ -1726,7 +1726,7 @@ fn update_notice_capture_matrix_aligns_and_preserves_default_background() {
                     .map(|x| buffer.cell((x, 23)).unwrap().symbol())
                     .collect::<String>();
                 assert!(
-                    row.starts_with(&format!("  {}", a.notice)),
+                    row.ends_with(&format!("{}  ", a.notice)),
                     "{width} {state}: {row}"
                 );
                 assert!(buffer.content.iter().all(|cell| cell.bg == Color::Reset));
@@ -4856,4 +4856,22 @@ fn scoped_session_refresh_requests_inventory_once_for_labels_without_launching()
     assert_eq!(tasks.len(), 1);
     assert!(matches!(tasks[0].op, Operation::Containers));
     assert!(a.pending_attach.is_none() && !a.creating);
+}
+
+#[test]
+fn notices_expire_and_repeated_messages_restart_the_timeout() {
+    let (mut app, _rx) = file_app();
+    app.set_notice("Transfer complete".into());
+    let first = app.notice_deadline.unwrap();
+    assert!(!app.expire_notice(first - Duration::from_millis(1)));
+    // Re-emitting the same text must not inherit the old deadline.
+    app.notice_deadline = Some(Instant::now() - Duration::from_secs(1));
+    app.set_notice("Transfer complete".into());
+    let renewed = app.notice_deadline.unwrap();
+    assert!(!app.expire_notice(renewed - Duration::from_millis(1)));
+    assert!(app.expire_notice(renewed));
+    assert!(app.notice.is_empty());
+    assert!(!app.expire_notice(renewed + Duration::from_secs(10)));
+    app.set_notice(String::new());
+    assert!(app.notice_deadline.is_none());
 }

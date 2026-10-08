@@ -432,6 +432,7 @@ struct App {
     help: bool,
     help_scroll: u16,
     notice: String,
+    notice_deadline: Option<Instant>,
     browser: Option<Browser>,
     other_browser: Option<Browser>,
     destination_active: bool,
@@ -497,6 +498,24 @@ struct App {
     tx: mpsc::SyncSender<Task>,
 }
 impl App {
+    fn set_notice(&mut self, message: String) {
+        self.notice_deadline = if message.is_empty() {
+            None
+        } else {
+            Some(Instant::now() + Duration::from_secs(5))
+        };
+        self.notice = message;
+    }
+    fn expire_notice(&mut self, now: Instant) -> bool {
+        if self.notice_deadline.is_some_and(|deadline| now >= deadline) {
+            self.notice.clear();
+            self.notice_deadline = None;
+            true
+        } else {
+            false
+        }
+    }
+
     fn new(devices: Vec<Device>, tx: mpsc::SyncSender<Task>) -> Self {
         let work = devices
             .iter()
@@ -525,6 +544,7 @@ impl App {
             help: false,
             help_scroll: 0,
             notice: String::new(),
+            notice_deadline: None,
             browser: None,
             other_browser: None,
             destination_active: false,
@@ -706,7 +726,7 @@ impl App {
             if (self.device == 0 || self.device == index + 1) && !self.work[index].loading {
                 self.work[index].loading = self.send(index, Operation::Sessions);
                 if !self.work[index].loading {
-                    self.notice = "Refresh queue busy · retry shortly".into();
+                    self.set_notice("Refresh queue busy · retry shortly".into());
                 }
             }
         }
@@ -816,7 +836,7 @@ impl App {
                     self.file_queue.pop_front();
                     self.file_busy = true;
                 } else {
-                    self.notice = "Request queue busy · file action remains pending".into();
+                    self.set_notice("Request queue busy · file action remains pending".into());
                 }
             }
         }
@@ -1060,8 +1080,9 @@ impl App {
             .cloned()
             .unwrap_or_else(|| scope.folder.clone());
         self.open_scoped_browser(device, path, Some(scope));
-        self.notice =
-            "Container files · read-only · terminal edits stay inside the container".into();
+        self.set_notice(
+            "Container files · read-only · terminal edits stay inside the container".into(),
+        );
     }
     fn open_scoped_browser(&mut self, device: usize, path: String, scope: Option<ContainerScope>) {
         self.device = device + 1;
@@ -1156,7 +1177,7 @@ impl App {
                 if let Some(b) = &mut self.browser {
                     b.loading = false;
                 }
-                self.notice = "Refresh queue busy · retry shortly".into();
+                self.set_notice("Refresh queue busy · retry shortly".into());
             }
         }
     }
@@ -1268,7 +1289,7 @@ impl App {
                 yolo,
             },
         );
-        self.notice = "Starting container session · existing networks are preserved".into();
+        self.set_notice("Starting container session · existing networks are preserved".into());
     }
     fn network_device(&self) -> Option<usize> {
         if self.device > 0 {
@@ -1580,7 +1601,7 @@ impl App {
                 self.connect_neighbor(d as usize, row);
             }
         } else {
-            self.notice = "No devices or observed LAN neighbors".into();
+            self.set_notice("No devices or observed LAN neighbors".into());
         }
     }
     fn pump_network_refresh(&mut self) {
@@ -1619,14 +1640,16 @@ impl App {
     }
     fn connect_neighbor(&mut self, d: usize, candidate: Value) {
         if !neighbor_connectable(&candidate) {
-            self.notice =
-                "Link-local SSH enrollment needs an interface scope · unavailable here".into();
+            self.set_notice(
+                "Link-local SSH enrollment needs an interface scope · unavailable here".into(),
+            );
         } else if let Some(address) = candidate["address"].as_str() {
             self.network_add_target = Some((d, address.into()));
             self.input = Some(Input::Add);
             self.text.clear();
-            self.notice =
-                "Enter SSH account · enrollment checks authentication and helper access".into();
+            self.set_notice(
+                "Enter SSH account · enrollment checks authentication and helper access".into(),
+            );
         }
     }
     fn queue_neighbor_checks(&mut self) {
@@ -1802,7 +1825,7 @@ impl App {
     }
     fn execute(&mut self, action: Action) {
         if self.container_read_only_action(action) {
-            self.notice="Container files are read-only · use its terminal to edit; host transfers are disabled".into();
+            self.set_notice("Container files are read-only · use its terminal to edit; host transfers are disabled".into());
             return;
         }
         if action == Action::New && self.view == View::Containers {
@@ -1887,9 +1910,10 @@ impl App {
                         })
                     {
                         self.check_providers(d);
-                        self.notice =
+                        self.set_notice(
                             "Checking command support on this device · press : again shortly"
-                                .into();
+                                .into(),
+                        );
                         return;
                     }
                     let supported = self.devices[d].target.is_none()
@@ -1899,7 +1923,7 @@ impl App {
                         });
                     if !supported {
                         self.check_providers(d);
-                        self.notice = "Run command needs a current cx helper on this device · update it and retry".into();
+                        self.set_notice("Run command needs a current cx helper on this device · update it and retry".into());
                         return;
                     }
                     self.rename_cursor = 0;
@@ -1907,7 +1931,7 @@ impl App {
                     self.text.clear();
                     self.input = Some(Input::Command);
                 } else {
-                    self.notice = "Select a device or open its files first".into();
+                    self.set_notice("Select a device or open its files first".into());
                 }
             }
             Action::New => {
@@ -1988,7 +2012,7 @@ impl App {
             }
             Action::Conflict => {
                 self.conflict = (self.conflict + 1) % 3;
-                self.notice = format!("Existing files: {}", self.conflict_policy());
+                self.set_notice(format!("Existing files: {}", self.conflict_policy()));
             }
             Action::Jobs => {
                 self.dialog = Some(Dialog::Jobs);
@@ -2017,8 +2041,8 @@ impl App {
                             source_label: identity(&self.devices[b.device]),
                         });
                         self.launch_provider = None;
-                        self.notice = format!("{} {count} item{} · p pastes here · switch device then p to paste · t chooses a destination",
-                            if action == Action::Cut { "Cut" } else { "Copied" }, if count == 1 { "" } else { "s" });
+                        self.set_notice(format!("{} {count} item{} · p pastes here · switch device then p to paste · t chooses a destination",
+                            if action == Action::Cut { "Cut" } else { "Copied" }, if count == 1 { "" } else { "s" }));
                         self.finish_visual();
                         if let Some(b) = &mut self.browser {
                             b.marked.clear();
@@ -2332,7 +2356,7 @@ impl App {
     fn start_at(&mut self, d: usize, directory: String, provider: String) {
         if !self.provider_choices(d).contains(&provider.as_str()) {
             self.check_providers(d);
-            self.notice = "Launch profile unavailable or not yet checked on this device".into();
+            self.set_notice("Launch profile unavailable or not yet checked on this device".into());
             return;
         }
         if let Some(s) = self.work[d]
@@ -2379,11 +2403,11 @@ impl App {
                 Operation::Create(spec)
             },
         );
-        self.notice = if self.creating {
+        self.set_notice(if self.creating {
             format!("Creating {provider} on {}…", identity(&self.devices[d]))
         } else {
             "Request queue busy · retry shortly".into()
-        };
+        });
     }
     fn active_transfer_keys(&self) -> BTreeSet<String> {
         let mut keys = self.pending_transfers.clone();
@@ -2406,8 +2430,9 @@ impl App {
                 .as_ref()
                 .is_some_and(|b| b.container.is_some())
         {
-            self.notice =
-                "Container files are read-only · host transfers cannot use container paths".into();
+            self.set_notice(
+                "Container files are read-only · host transfers cannot use container paths".into(),
+            );
             return;
         }
         let (Some(clip), Some(b)) = (self.clipboard.clone(), self.browser.as_ref()) else {
@@ -2426,7 +2451,7 @@ impl App {
                 && spec.destination_path == destination_path
                 && clip.entries.iter().any(|e| e.path == spec.source_path)
         }) {
-            self.notice = "Transfer already pending · T shows progress".into();
+            self.set_notice("Transfer already pending · T shows progress".into());
             return;
         }
         let mut actions = Vec::new();
@@ -2458,14 +2483,14 @@ impl App {
             }
             actions.push((local, Operation::Transfer(spec)));
         }
-        self.notice = format!(
+        self.set_notice(format!(
             "{} {} items · {} → {} · existing: {}",
             if clip.cut { "Moving" } else { "Copying" },
             clip.entries.len(),
             identity(&self.devices[clip.device]),
             identity(&destination),
             self.conflict_policy()
-        );
+        ));
         self.queue_file_actions(actions);
         self.transfer_drawer = true;
     }
@@ -2670,7 +2695,7 @@ impl App {
         if let Dialog::Provider(device, _) = dialog {
             if key.code == KeyCode::Enter && self.dialog_selected >= count {
                 self.check_providers(device);
-                self.notice = "Agent availability changed · checking before launch".into();
+                self.set_notice("Agent availability changed · checking before launch".into());
                 return;
             }
         }
@@ -2685,242 +2710,245 @@ impl App {
                 self.dialog_selected = shift(self.dialog_selected, -1, count);
                 self.dialog_scroll = 0;
             }
-            KeyCode::Enter => match dialog {
-                Dialog::SessionChooser(d, path) => {
-                    let provider = menus::HOST[self.dialog_selected].provider;
-                    if !self.provider_choices(d).contains(&provider) {
-                        self.check_providers(d);
-                        self.notice = if self.provider_loading.contains(&d) {
+            KeyCode::Enter => {
+                match dialog {
+                    Dialog::SessionChooser(d, path) => {
+                        let provider = menus::HOST[self.dialog_selected].provider;
+                        if !self.provider_choices(d).contains(&provider) {
+                            self.check_providers(d);
+                            self.set_notice(if self.provider_loading.contains(&d) {
                             "Checking availability · choose again when ready".into()
                         } else {
                             format!("{} is unavailable on {} · install its runtime or update the helper", provider, self.devices[d].name)
-                        };
-                        return;
-                    }
-                    self.dialog = None;
-                    if provider == "container" {
-                        self.device = d + 1;
-                        self.open_containers();
-                    } else {
-                        self.start_at(d, path, provider.into());
-                    }
-                }
-
-                Dialog::Links(links) => {
-                    if let Some(link) = links.get(self.dialog_selected) {
-                        self.open_markdown_link(link);
-                    }
-                }
-
-                Dialog::Device(purpose) => {
-                    let choice = self
-                        .device_choices(purpose)
-                        .get(self.dialog_selected)
-                        .copied();
-                    match choice {
-                        Some(Some(d)) => self.chosen_device(d, purpose),
-                        Some(None) if purpose == ChooseDevice::AddGateway => {
-                            self.dialog = None;
-                            self.pending_add_via = None;
-                            self.network_add_target = None;
-                            self.input = Some(Input::Add);
-                            self.text.clear();
+                        });
+                            return;
                         }
-                        Some(None) => {
-                            self.dialog = None;
-                            self.device = 0;
-                            self.view = if purpose == ChooseDevice::Containers {
-                                View::Containers
-                            } else if purpose == ChooseDevice::Network {
-                                View::Network
-                            } else {
-                                View::Work
-                            };
-                            self.focus = Focus::Workspace;
-                            self.network_selected = 0;
-                            self.refresh();
-                        }
-                        None => (),
-                    }
-                }
-                Dialog::DevcontainerUp(d, workspace) => {
-                    self.dialog = None;
-                    if self.dialog_selected == 1 {
-                        self.send(d, Operation::DevcontainerUp { workspace });
-                        self.notice =
-                            "Starting workspace · configuration hooks may run · up to 10 minutes"
-                                .into();
-                    }
-                }
-                Dialog::ContainerActions(d, c) => {
-                    let labels = container_action_labels(&c);
-                    let Some(action) = labels.get(self.dialog_selected) else {
-                        return;
-                    };
-                    let action = *action;
-                    self.dialog = None;
-                    match action {
-                        "Shell" | "Devcontainer terminal" => {
-                            self.start_container_session(d, c.scope(), "shell".into(), false)
-                        }
-                        "Files · read-only" => self.open_container_browser(d, c.scope()),
-                        "Start" | "Stop" | "Enable access" | "Disable access" => {
-                            self.dialog = Some(Dialog::ContainerConfirm(d, c, action.into()));
-                            self.dialog_selected = 0;
-                        }
-                        _ => (),
-                    }
-                }
-                Dialog::ContainerProvider(d, scope) => {
-                    self.dialog = None;
-                    self.start_container_session(d, scope, "shell".into(), false);
-                }
-                Dialog::ContainerConfirm(d, c, action) => {
-                    self.dialog = None;
-                    if self.dialog_selected == 1 {
-                        let op = if action == "Enable access" || action == "Disable access" {
-                            Operation::ContainerAccess {
-                                engine: c.engine,
-                                id: c.id,
-                                enabled: action == "Enable access",
-                            }
-                        } else {
-                            Operation::ContainerLifecycle {
-                                engine: c.engine,
-                                id: c.id,
-                                started_at: c.started_at,
-                                action: action.to_lowercase(),
-                            }
-                        };
-                        self.send(d, op);
-                        self.notice = format!(
-                            "{action} requested for {} · refresh checks the outcome",
-                            c.name
-                        );
-                    }
-                }
-                Dialog::Provider(d, path) => {
-                    let choices = self.provider_choices(d);
-                    let Some(provider) = choices.get(self.dialog_selected) else {
-                        return;
-                    };
-                    let provider = (*provider).to_string();
-                    self.dialog = None;
-                    if provider == "container" {
-                        self.device = d + 1;
-                        self.open_containers();
-                        return;
-                    }
-                    if let Some(directory) = path {
-                        self.start_at(d, directory, provider);
-                        return;
-                    }
-                    self.launch_provider = Some(provider);
-                    self.open_browser(d, "~".into());
-                    self.notice = "Browse to a folder · n starts here (Enter opens files)".into();
-                }
-                Dialog::Permissions(d, path, provider) => {
-                    let yolo = self.dialog_selected == 1;
-                    if yolo
-                        && self.devices[d].target.is_some()
-                        && !self.providers.get(&d).is_some_and(|(caps, checked)| {
-                            transport::now().saturating_sub(*checked) < 60
-                                && caps.iter().any(|c| c == "session-yolo-v1")
-                        })
-                    {
-                        self.check_providers(d);
-                        self.notice = "YOLO needs an updated execution helper · update this device, then retry".into();
-                        return;
-                    }
-                    self.dialog = None;
-                    self.create_permission_session(d, path, provider, yolo);
-                }
-                Dialog::Matching(d, path, provider, session) => {
-                    self.dialog = None;
-                    if self.dialog_selected == 0 {
-                        self.pending_attach = Some((d, session, false));
-                    } else {
-                        self.create_at(d, path, provider);
-                    }
-                }
-                Dialog::Jobs => {
-                    self.dialog_detail_focus = true;
-                }
-                Dialog::Delete(d, entries) => {
-                    self.dialog = None;
-                    if self.dialog_selected == 1 {
-                        self.queue_file_actions(
-                            entries
-                                .into_iter()
-                                .map(|e| {
-                                    (
-                                        d,
-                                        Operation::Remove {
-                                            path: e.path,
-                                            expected_identity: e.identity,
-                                        },
-                                    )
-                                })
-                                .collect(),
-                        );
-                        self.notice = "Deleting confirmed items permanently…".into();
-                    }
-                }
-                Dialog::StopShell(d, session) => {
-                    self.dialog = None;
-                    if self.dialog_selected == 1 {
-                        self.send(
-                            d,
-                            if session.provider == "shell" {
-                                Operation::StopSession {
-                                    id: session.id,
-                                    pid: session.pid,
-                                    started: session.started,
-                                    boot_id: session.boot_id,
-                                }
-                            } else {
-                                Operation::StopAgentSession {
-                                    id: session.id,
-                                    pid: session.pid,
-                                    started: session.started,
-                                    boot_id: session.boot_id,
-                                    provider: session.provider,
-                                }
-                            },
-                        );
-                        self.notice = "Stopping confirmed session…".into();
-                    }
-                }
-                Dialog::Peer(d) => {
-                    self.dialog = None;
-                    match self.dialog_selected {
-                        0 => {
+                        self.dialog = None;
+                        if provider == "container" {
                             self.device = d + 1;
-                            self.view = View::Work;
-                            self.selected = 0;
-                            self.refresh_work();
+                            self.open_containers();
+                        } else {
+                            self.start_at(d, path, provider.into());
                         }
-                        1 => self.open_browser(d, "~".into()),
-                        2 => self.start_at(d, "~".into(), "shell".into()),
-                        4 => self.pending_terminal = Some(self.devices[d].clone()),
-                        _ => {
+                    }
+
+                    Dialog::Links(links) => {
+                        if let Some(link) = links.get(self.dialog_selected) {
+                            self.open_markdown_link(link);
+                        }
+                    }
+
+                    Dialog::Device(purpose) => {
+                        let choice = self
+                            .device_choices(purpose)
+                            .get(self.dialog_selected)
+                            .copied();
+                        match choice {
+                            Some(Some(d)) => self.chosen_device(d, purpose),
+                            Some(None) if purpose == ChooseDevice::AddGateway => {
+                                self.dialog = None;
+                                self.pending_add_via = None;
+                                self.network_add_target = None;
+                                self.input = Some(Input::Add);
+                                self.text.clear();
+                            }
+                            Some(None) => {
+                                self.dialog = None;
+                                self.device = 0;
+                                self.view = if purpose == ChooseDevice::Containers {
+                                    View::Containers
+                                } else if purpose == ChooseDevice::Network {
+                                    View::Network
+                                } else {
+                                    View::Work
+                                };
+                                self.focus = Focus::Workspace;
+                                self.network_selected = 0;
+                                self.refresh();
+                            }
+                            None => (),
+                        }
+                    }
+                    Dialog::DevcontainerUp(d, workspace) => {
+                        self.dialog = None;
+                        if self.dialog_selected == 1 {
+                            self.send(d, Operation::DevcontainerUp { workspace });
+                            self.set_notice("Starting workspace · configuration hooks may run · up to 10 minutes"
+                                .into());
+                        }
+                    }
+                    Dialog::ContainerActions(d, c) => {
+                        let labels = container_action_labels(&c);
+                        let Some(action) = labels.get(self.dialog_selected) else {
+                            return;
+                        };
+                        let action = *action;
+                        self.dialog = None;
+                        match action {
+                            "Shell" | "Devcontainer terminal" => {
+                                self.start_container_session(d, c.scope(), "shell".into(), false)
+                            }
+                            "Files · read-only" => self.open_container_browser(d, c.scope()),
+                            "Start" | "Stop" | "Enable access" | "Disable access" => {
+                                self.dialog = Some(Dialog::ContainerConfirm(d, c, action.into()));
+                                self.dialog_selected = 0;
+                            }
+                            _ => (),
+                        }
+                    }
+                    Dialog::ContainerProvider(d, scope) => {
+                        self.dialog = None;
+                        self.start_container_session(d, scope, "shell".into(), false);
+                    }
+                    Dialog::ContainerConfirm(d, c, action) => {
+                        self.dialog = None;
+                        if self.dialog_selected == 1 {
+                            let op = if action == "Enable access" || action == "Disable access" {
+                                Operation::ContainerAccess {
+                                    engine: c.engine,
+                                    id: c.id,
+                                    enabled: action == "Enable access",
+                                }
+                            } else {
+                                Operation::ContainerLifecycle {
+                                    engine: c.engine,
+                                    id: c.id,
+                                    started_at: c.started_at,
+                                    action: action.to_lowercase(),
+                                }
+                            };
+                            self.send(d, op);
+                            self.set_notice(format!(
+                                "{action} requested for {} · refresh checks the outcome",
+                                c.name
+                            ));
+                        }
+                    }
+                    Dialog::Provider(d, path) => {
+                        let choices = self.provider_choices(d);
+                        let Some(provider) = choices.get(self.dialog_selected) else {
+                            return;
+                        };
+                        let provider = (*provider).to_string();
+                        self.dialog = None;
+                        if provider == "container" {
+                            self.device = d + 1;
+                            self.open_containers();
+                            return;
+                        }
+                        if let Some(directory) = path {
+                            self.start_at(d, directory, provider);
+                            return;
+                        }
+                        self.launch_provider = Some(provider);
+                        self.open_browser(d, "~".into());
+                        self.set_notice(
+                            "Browse to a folder · n starts here (Enter opens files)".into(),
+                        );
+                    }
+                    Dialog::Permissions(d, path, provider) => {
+                        let yolo = self.dialog_selected == 1;
+                        if yolo
+                            && self.devices[d].target.is_some()
+                            && !self.providers.get(&d).is_some_and(|(caps, checked)| {
+                                transport::now().saturating_sub(*checked) < 60
+                                    && caps.iter().any(|c| c == "session-yolo-v1")
+                            })
+                        {
                             self.check_providers(d);
-                            self.dialog = Some(Dialog::Provider(d, None));
-                            self.dialog_selected = 0;
+                            self.set_notice("YOLO needs an updated execution helper · update this device, then retry".into());
+                            return;
+                        }
+                        self.dialog = None;
+                        self.create_permission_session(d, path, provider, yolo);
+                    }
+                    Dialog::Matching(d, path, provider, session) => {
+                        self.dialog = None;
+                        if self.dialog_selected == 0 {
+                            self.pending_attach = Some((d, session, false));
+                        } else {
+                            self.create_at(d, path, provider);
                         }
                     }
-                }
-                Dialog::Neighbor(d, candidate) => {
-                    self.dialog = None;
-                    self.connect_neighbor(d, candidate);
-                }
-                Dialog::PendingExit(_) => {
-                    if self.dialog_selected == 1 {
-                        self.quit = true;
+                    Dialog::Jobs => {
+                        self.dialog_detail_focus = true;
                     }
-                    self.dialog = None;
+                    Dialog::Delete(d, entries) => {
+                        self.dialog = None;
+                        if self.dialog_selected == 1 {
+                            self.queue_file_actions(
+                                entries
+                                    .into_iter()
+                                    .map(|e| {
+                                        (
+                                            d,
+                                            Operation::Remove {
+                                                path: e.path,
+                                                expected_identity: e.identity,
+                                            },
+                                        )
+                                    })
+                                    .collect(),
+                            );
+                            self.set_notice("Deleting confirmed items permanently…".into());
+                        }
+                    }
+                    Dialog::StopShell(d, session) => {
+                        self.dialog = None;
+                        if self.dialog_selected == 1 {
+                            self.send(
+                                d,
+                                if session.provider == "shell" {
+                                    Operation::StopSession {
+                                        id: session.id,
+                                        pid: session.pid,
+                                        started: session.started,
+                                        boot_id: session.boot_id,
+                                    }
+                                } else {
+                                    Operation::StopAgentSession {
+                                        id: session.id,
+                                        pid: session.pid,
+                                        started: session.started,
+                                        boot_id: session.boot_id,
+                                        provider: session.provider,
+                                    }
+                                },
+                            );
+                            self.set_notice("Stopping confirmed session…".into());
+                        }
+                    }
+                    Dialog::Peer(d) => {
+                        self.dialog = None;
+                        match self.dialog_selected {
+                            0 => {
+                                self.device = d + 1;
+                                self.view = View::Work;
+                                self.selected = 0;
+                                self.refresh_work();
+                            }
+                            1 => self.open_browser(d, "~".into()),
+                            2 => self.start_at(d, "~".into(), "shell".into()),
+                            4 => self.pending_terminal = Some(self.devices[d].clone()),
+                            _ => {
+                                self.check_providers(d);
+                                self.dialog = Some(Dialog::Provider(d, None));
+                                self.dialog_selected = 0;
+                            }
+                        }
+                    }
+                    Dialog::Neighbor(d, candidate) => {
+                        self.dialog = None;
+                        self.connect_neighbor(d, candidate);
+                    }
+                    Dialog::PendingExit(_) => {
+                        if self.dialog_selected == 1 {
+                            self.quit = true;
+                        }
+                        self.dialog = None;
+                    }
                 }
-            },
+            }
             KeyCode::Char('c') if matches!(dialog, Dialog::Jobs) => {
                 if let Some((d, job)) = self.job_rows().get(self.dialog_selected).cloned() {
                     if matches!(
@@ -3060,9 +3088,9 @@ impl App {
                 Ok(_) => {
                     self.device = reply.device + 1;
                     self.open_containers();
-                    self.notice = "Workspace started · choose its shell, agent or files".into();
+                    self.set_notice("Workspace started · choose its shell, agent or files".into());
                 }
-                Err(e) => self.notice = format!("{e:#}"),
+                Err(e) => self.set_notice(format!("{e:#}")),
             }
             return;
         }
@@ -3070,10 +3098,10 @@ impl App {
             reply.op,
             Operation::ContainerLifecycle { .. } | Operation::ContainerAccess { .. }
         ) {
-            self.notice = match &reply.result {
+            self.set_notice(match &reply.result {
                 Ok(_) => "Container action complete · network configuration preserved".into(),
                 Err(e) => format!("{e:#}"),
-            };
+            });
             self.refresh_containers();
             return;
         }
@@ -3126,13 +3154,13 @@ impl App {
                         if self.file_errors.len() < 8 {
                             self.file_errors.push(message.clone());
                         }
-                        self.notice = format!(
+                        self.set_notice(format!(
                             "{} file actions failed · {}",
                             self.file_errors.len(),
                             message
-                        );
+                        ));
                     } else {
-                        self.notice = message;
+                        self.set_notice(message);
                     }
                 }
                 if reply.generation == self.generation
@@ -3301,9 +3329,8 @@ impl App {
                         self.work[reply.device].sessions.push(s.clone());
                         self.pending_attach = Some((reply.device, s, false));
                     }
-                    Err(_) => {
-                        self.notice = "Creation response invalid · refresh before retrying".into()
-                    }
+                    Err(_) => self
+                        .set_notice("Creation response invalid · refresh before retrying".into()),
                 }
             }
             Operation::Jobs | Operation::TransferJobs => {
@@ -3373,7 +3400,7 @@ impl App {
                     .last()
                     .filter(|j| self.file_errors.is_empty() || j["status"] == "failed")
                 {
-                    self.notice = format!(
+                    self.set_notice(format!(
                         "{} {} · {}{}",
                         if job["operation"] == "move" {
                             "Move"
@@ -3386,7 +3413,7 @@ impl App {
                             .as_str()
                             .map(|e| format!(" · {}", safe_label(e)))
                             .unwrap_or_default()
-                    );
+                    ));
                 }
                 if let Some((owner, key)) = selected {
                     self.dialog_selected = self
@@ -3402,33 +3429,33 @@ impl App {
             }
             Operation::TransferCancel { .. } => {
                 self.send(reply.device, Operation::TransferJobs);
-                self.notice = "Cancellation requested · waiting for worker".into();
+                self.set_notice("Cancellation requested · waiting for worker".into());
             }
             Operation::Transfer(_) | Operation::TransferRetry { .. } => {
                 if self.file_errors.is_empty() {
-                    self.notice = format!(
+                    self.set_notice(format!(
                         "Transfer {} · {}",
                         safe_label(value["status"].as_str().unwrap_or("queued")),
                         safe_label(value["route"].as_str().unwrap_or("worker host"))
-                    );
+                    ));
                 } else {
-                    self.notice = format!(
+                    self.set_notice(format!(
                         "{} file actions failed · {}",
                         self.file_errors.len(),
                         self.file_errors.last().unwrap()
-                    );
+                    ));
                 }
                 self.send(reply.device, Operation::TransferJobs);
             }
             Operation::Copy { .. } => {
-                self.notice = format!(
+                self.set_notice(format!(
                     "Copy {} on {}",
                     value
                         .get("status")
                         .and_then(Value::as_str)
                         .unwrap_or("status unknown"),
                     identity(&self.devices[reply.device])
-                );
+                ));
                 self.send(reply.device, Operation::Jobs);
             }
             Operation::Network => {
@@ -3545,10 +3572,9 @@ impl App {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    if b.visual_anchor.take().is_some() {
+                    let range_finished = b.visual_anchor.take().is_some();
+                    if range_finished {
                         b.visual_base.clear();
-                        self.notice =
-                            "Directory refreshed · range finished; selected files kept".into();
                     }
                     if b.restore_selection.is_none() && listing_offset > 0 {
                         b.restore_selection = browser_entries(b)
@@ -3586,6 +3612,11 @@ impl App {
                             b.entries.iter().map(|e| e.path.clone()).collect();
                         b.marked.retain(|p| existing.contains(p));
                     }
+                    if range_finished {
+                        self.set_notice(
+                            "Directory refreshed · range finished; selected files kept".into(),
+                        );
+                    }
                 }
                 if let Some(offset) = value["next_offset"].as_u64() {
                     if let Some(b) = &self.browser {
@@ -3601,10 +3632,11 @@ impl App {
                             if let Some(b) = &mut self.browser {
                                 b.loading = true;
                             }
-                            self.notice =
-                                "Loading more directory entries · fuzzy search stays live".into();
+                            self.set_notice(
+                                "Loading more directory entries · fuzzy search stays live".into(),
+                            );
                         } else {
-                            self.notice="10,000 entries loaded · remaining entries require a narrower directory".into();
+                            self.set_notice("10,000 entries loaded · remaining entries require a narrower directory".into());
                         }
                     }
                 }
@@ -3669,7 +3701,7 @@ impl App {
                                 b.preview_scroll.set(scroll);
                                 b.preview_find.reveal.set(false);
                             } else {
-                                self.notice = "Linked file opened · heading not found".into();
+                                self.set_notice("Linked file opened · heading not found".into());
                             }
                         }
                     }
@@ -3679,10 +3711,10 @@ impl App {
                 }
             }
             Operation::StopSession { .. } | Operation::StopAgentSession { .. } => {
-                self.notice = format!(
+                self.set_notice(format!(
                     "Session stopped · {}",
                     identity(&self.devices[reply.device])
-                );
+                ));
                 self.work[reply.device].loading = self.send(reply.device, Operation::Sessions);
             }
             Operation::Mkdir { .. } if reply.generation == self.generation => {
@@ -3690,10 +3722,10 @@ impl App {
             }
             Operation::Rename { path, .. } | Operation::Remove { path, .. } => {
                 if self.file_errors.is_empty() && self.file_queue.is_empty() && !self.file_busy {
-                    self.notice = format!(
+                    self.set_notice(format!(
                         "File action complete · {}",
                         identity(&self.devices[reply.device])
-                    );
+                    ));
                 }
                 self.browser_cache.retain(|(d, _, _), _| *d != reply.device);
                 for b in [&mut self.browser, &mut self.other_browser]
@@ -3901,7 +3933,7 @@ impl App {
                         {
                             if let Some((d, entry)) = self.rename_target.take() {
                                 if entry.rename_name.as_deref() == Some(self.text.as_str()) {
-                                    self.notice = "Name unchanged".into();
+                                    self.set_notice("Name unchanged".into());
                                 } else {
                                     self.queue_file_actions(vec![(
                                         d,
@@ -3915,8 +3947,9 @@ impl App {
                             }
                             self.input = None;
                         } else {
-                            self.notice =
-                                "Enter one filename · existing files are never replaced".into();
+                            self.set_notice(
+                                "Enter one filename · existing files are never replaced".into(),
+                            );
                         }
                     }
                     Input::Add => {
@@ -3934,7 +3967,7 @@ impl App {
                             self.pending_add = Some(target);
                             self.input = None;
                         } else {
-                            self.notice = "Use an SSH alias or user@host".into();
+                            self.set_notice("Use an SSH alias or user@host".into());
                         }
                     }
                     Input::Mkdir => {
@@ -3950,7 +3983,7 @@ impl App {
                             }
                             self.input = None;
                         } else {
-                            self.notice = "Enter a single directory name".into();
+                            self.set_notice("Enter a single directory name".into());
                         }
                     }
                 },
@@ -3993,16 +4026,18 @@ impl App {
                         self.input = Some(Input::PreviewSearch);
                         self.text = self.browser.as_ref().unwrap().preview_find.query.clone();
                     } else {
-                        self.notice = if self
-                            .browser
-                            .as_ref()
-                            .is_some_and(|b| b.preview_pending_page.is_some())
-                        {
-                            "Preview is still loading"
-                        } else {
-                            "Search is available in text previews"
-                        }
-                        .into();
+                        self.set_notice(
+                            if self
+                                .browser
+                                .as_ref()
+                                .is_some_and(|b| b.preview_pending_page.is_some())
+                            {
+                                "Preview is still loading"
+                            } else {
+                                "Search is available in text previews"
+                            }
+                            .into(),
+                        );
                     }
                     return;
                 }
@@ -4096,7 +4131,7 @@ impl App {
                 if session.external
                     || !["shell", "codex", "claude"].contains(&session.provider.as_str())
                 {
-                    self.notice = "Only CX-managed sessions can be stopped here".into();
+                    self.set_notice("Only CX-managed sessions can be stopped here".into());
                 } else if self.devices[device].target.is_some()
                     && !self.providers.get(&device).is_some_and(|(caps, checked)| {
                         transport::now().saturating_sub(*checked) < 60
@@ -4110,7 +4145,9 @@ impl App {
                     })
                 {
                     self.check_providers(device);
-                    self.notice = "Checking session-stop support · press d again when ready".into();
+                    self.set_notice(
+                        "Checking session-stop support · press d again when ready".into(),
+                    );
                 } else {
                     self.dialog_selected = 0;
                     self.dialog_scroll = 0;
@@ -4142,7 +4179,7 @@ impl App {
             };
             if key.code == KeyCode::Char('Y') {
                 self.clipboard = None;
-                self.notice = "Clipboard cleared · files unchanged".into();
+                self.set_notice("Clipboard cleared · files unchanged".into());
                 return;
             }
             if key.code == KeyCode::Char('u') {
@@ -4441,11 +4478,11 @@ impl App {
                     }
                 }
             }
-            self.notice = format!(
+            self.set_notice(format!(
                 "{} · cx {} updated",
                 identity(&self.devices[device]),
                 update.version
-            );
+            ));
         }
     }
     fn pdf_preview_active(&self) -> bool {
@@ -4507,7 +4544,7 @@ impl App {
         {
             self.providers.remove(&device);
             self.check_providers(device);
-            self.notice = "PDF pages need a current device helper · checking update".into();
+            self.set_notice("PDF pages need a current device helper · checking update".into());
             return;
         }
         if self.send(
@@ -4522,7 +4559,7 @@ impl App {
                 b.preview_pending_page = Some(page);
             }
         } else {
-            self.notice = "Preview queue busy · retry shortly".into();
+            self.set_notice("Preview queue busy · retry shortly".into());
         }
     }
     fn text_preview_active(&self) -> bool {
@@ -4574,7 +4611,9 @@ impl App {
             if std::env::var_os("DISPLAY").is_none()
                 && std::env::var_os("WAYLAND_DISPLAY").is_none()
             {
-                self.notice = "No graphical browser on this viewer · inspect the URL with o".into();
+                self.set_notice(
+                    "No graphical browser on this viewer · inspect the URL with o".into(),
+                );
                 return;
             }
             match std::process::Command::new("xdg-open")
@@ -4588,11 +4627,11 @@ impl App {
                     std::thread::spawn(move || {
                         let _ = child.wait();
                     });
-                    self.notice = "Link sent to viewer browser".into();
+                    self.set_notice("Link sent to viewer browser".into());
                     self.dialog = None;
                 }
                 Err(_) => {
-                    self.notice = "Viewer browser unavailable · inspect the URL with o".into()
+                    self.set_notice("Viewer browser unavailable · inspect the URL with o".into())
                 }
             }
             return;
@@ -4601,7 +4640,7 @@ impl App {
             return;
         };
         let Some(document) = b.preview_path.as_ref() else {
-            self.notice = "Document path unavailable · reopen this file".into();
+            self.set_notice("Document path unavailable · reopen this file".into());
             return;
         };
         let resolved = crate::files::decode_path(document)
@@ -4609,11 +4648,11 @@ impl App {
         let (path, anchor) = match resolved {
             Ok(Some(destination)) => destination,
             Ok(None) => {
-                self.notice = "Only web URLs and file links can open".into();
+                self.set_notice("Only web URLs and file links can open".into());
                 return;
             }
             Err(error) => {
-                self.notice = safe_text(&error.to_string());
+                self.set_notice(safe_text(&error.to_string()));
                 return;
             }
         };
@@ -4626,7 +4665,7 @@ impl App {
                 b.preview_scroll.set(scroll);
                 b.preview_find.reveal.set(false);
             } else {
-                self.notice = "Heading not found in this preview".into();
+                self.set_notice("Heading not found in this preview".into());
             }
             return;
         }
@@ -4638,7 +4677,7 @@ impl App {
             .is_some_and(|p| p.ends_with('/'))
         {
             self.open_browser(device, crate::files::encode_path(&path));
-            self.notice = "Browsing linked directory on the document's device".into();
+            self.set_notice("Browsing linked directory on the document's device".into());
             return;
         }
         let b = self.browser.as_mut().unwrap();
@@ -4651,7 +4690,10 @@ impl App {
         }
         self.open_preview(device, crate::files::encode_path(&path));
         self.browser.as_mut().unwrap().preview_anchor = anchor;
-        self.notice = format!("Opening linked file · {}", identity(&self.devices[device]));
+        self.set_notice(format!(
+            "Opening linked file · {}",
+            identity(&self.devices[device])
+        ));
     }
     fn show_preview_links(&mut self) {
         let links = self
@@ -4661,7 +4703,7 @@ impl App {
             .map(|s| markdown_preview_links(s))
             .unwrap_or_default();
         if links.is_empty() {
-            self.notice = "No Markdown links in this preview".into();
+            self.set_notice("No Markdown links in this preview".into());
             return;
         }
         self.dialog_selected = 0;
@@ -7372,8 +7414,7 @@ fn can_restart(app: &App) -> bool {
 fn restart_ready(app: &App, idle: Duration, pending_input: bool) -> bool {
     !pending_input && idle >= Duration::from_secs(3) && can_restart(app)
 }
-// Align notices with the padded footer keys and sidebar text, including narrow
-// layouts. The notice remains on the terminal's default background.
+// Keep right-aligned notices inset from the terminal edge on its default background.
 fn notice_area(area: Rect) -> Rect {
     area.inner(ratatui::layout::Margin::new(2, 0))
 }
@@ -7622,7 +7663,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     load_cache(&mut app);
     if let Some(name) = restore {
         if let Err(error) = restore_restart(&mut app, name) {
-            app.notice = safe_text(&format!("Update restored workspace defaults: {error:#}"));
+            app.set_notice(safe_text(&format!(
+                "Update restored workspace defaults: {error:#}"
+            )));
         }
     }
     if restore.is_some() && app.view == View::Files {
@@ -7659,11 +7702,11 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 start_update_check(&update_tx, true);
                 update_phase = UpdatePhase::Checking;
                 last_update_check = Instant::now();
-                app.notice = version_notice("checking verified releases...");
+                app.set_notice(version_notice("checking verified releases..."));
                 dirty = true;
             } else if matches!(update_phase, UpdatePhase::Checking) {
                 update_report_requested = true;
-                app.notice = version_notice("checking verified releases...");
+                app.set_notice(version_notice("checking verified releases..."));
                 dirty = true;
             }
         }
@@ -7673,16 +7716,16 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     let force = force || std::mem::take(&mut update_report_requested);
                     update_phase = match result {
                         Ok(crate::update::CheckOutcome::Ready(plan)) => {
-                            app.notice = version_notice(&format!(
+                            app.set_notice(version_notice(&format!(
                                 "v{} ready; waiting for idle",
                                 safe_label(&plan.version)
-                            ));
+                            )));
                             dirty = true;
                             UpdatePhase::Ready(plan)
                         }
                         other => {
                             if force {
-                                app.notice = update_check_notice(&other);
+                                app.set_notice(update_check_notice(&other));
                                 dirty = true;
                             }
                             UpdatePhase::Idle
@@ -7693,7 +7736,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     update_phase = match result {
                         Ok(path) => UpdatePhase::Installed(path),
                         Err(_) => {
-                            app.notice = version_notice("update could not install; version kept");
+                            app.set_notice(version_notice(
+                                "update could not install; version kept",
+                            ));
                             dirty = true;
                             UpdatePhase::Idle
                         }
@@ -7717,7 +7762,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     thread::spawn(move || {
                         let _ = tx.send(UpdateEvent::Installed(crate::update::install(&plan)));
                     });
-                    app.notice = version_notice("installing verified update...");
+                    app.set_notice(version_notice("installing verified update..."));
                     dirty = true;
                 }
             } else if let UpdatePhase::Installed(path) = &update_phase {
@@ -7738,13 +7783,14 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                             .exec();
                         let _ = std::fs::remove_file(store::state_dir().join(name));
                         screen.resume()?;
-                        app.notice =
-                            safe_text(&format!("Update installed; reopen cx to use it: {error}"));
+                        app.set_notice(safe_text(&format!(
+                            "Update installed; reopen cx to use it: {error}"
+                        )));
                         dirty = true;
                         update_phase = UpdatePhase::Idle;
                     }
                     Err(_) => {
-                        app.notice="Update installed · workspace too large to restore; reopen cx when convenient".into();
+                        app.set_notice("Update installed · workspace too large to restore; reopen cx when convenient".into());
                         dirty = true;
                         update_phase = UpdatePhase::Idle;
                     }
@@ -7764,7 +7810,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             cleanup_native_preview(&mut screen, &mut native_preview)?;
             let via = app.pending_add_via.take();
             let owned_target = target.clone();
-            app.notice = format!("Connecting to {}", safe_label(&target));
+            app.set_notice(format!("Connecting to {}", safe_label(&target)));
             screen
                 .terminal
                 .draw(|frame| render_with_native(frame, &app, None))?;
@@ -7800,10 +7846,10 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                         })
                         .collect();
                     app.devices = updated;
-                    app.notice = format!("Added {}", safe_label(&target));
+                    app.set_notice(format!("Added {}", safe_label(&target)));
                     app.refresh_work();
                 }
-                Err(e) => app.notice = safe_text(&format!("Enrollment failed: {e:#}")),
+                Err(e) => app.set_notice(safe_text(&format!("Enrollment failed: {e:#}"))),
             }
             dirty = true;
         }
@@ -7813,10 +7859,10 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             let result = sessions::login_terminal(&device);
             screen.resume()?;
             last_interaction = Instant::now();
-            app.notice = match result {
+            app.set_notice(match result {
                 Ok(()) => format!("Returned from {}", identity(&device)),
                 Err(e) => safe_text(&format!("Terminal failed: {e:#}")),
-            };
+            });
             dirty = true;
         }
         if let Some((device, command)) = app.pending_command.take() {
@@ -7825,10 +7871,10 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             let result = sessions::run_command(&device, &command);
             screen.resume()?;
             last_interaction = Instant::now();
-            app.notice = match result {
+            app.set_notice(match result {
                 Ok(()) => format!("Returned from {}", identity(&device)),
                 Err(e) => safe_text(&format!("Command failed: {e:#}")),
-            };
+            });
             if app.view == View::Files {
                 app.refresh();
             }
@@ -7840,13 +7886,13 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             let result = sessions::attach(&app.devices[d], &session, observe);
             screen.resume()?;
             last_interaction = Instant::now();
-            app.notice = match result {
+            app.set_notice(match result {
                 Ok(()) => format!(
                     "Returned from {} · session remains on execution host",
                     identity(&app.devices[d])
                 ),
                 Err(e) => safe_text(&format!("Attachment failed: {e:#}")),
-            };
+            });
             app.refresh_work();
             dirty = true;
         }
@@ -7875,6 +7921,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             last_transfer_frame = Instant::now();
             dirty = true;
         }
+        dirty |= app.expire_notice(Instant::now());
         // Capture wheel reports throughout cx so the emulator does not replace
         // them with accelerated arrow-key bursts. suspend() releases this before
         // handing the terminal to SSH/tmux/native commands.

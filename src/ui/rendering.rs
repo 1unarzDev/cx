@@ -999,7 +999,8 @@ pub(super) fn render_with_native(
                     safe_text(&app.notice)
                 },
             )
-            .style(muted()),
+            .style(muted())
+            .alignment(ratatui::layout::Alignment::Right),
             notice_area(footer[2]),
         );
     }
@@ -1012,7 +1013,8 @@ pub(super) fn render_with_native(
                     safe_text(&app.notice)
                 },
             )
-            .style(muted()),
+            .style(muted())
+            .alignment(ratatui::layout::Alignment::Right),
             notice_area(footer[3]),
         );
     }

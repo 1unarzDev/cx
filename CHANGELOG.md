@@ -6,6 +6,11 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.43
+
+### Fixes
+- Footer notifications align to the bottom right and disappear after five seconds, including while idle. New messages restart the timeout.
+
 ## v0.1.42
 
 ### Features

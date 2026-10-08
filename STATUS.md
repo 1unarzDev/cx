@@ -382,6 +382,8 @@ Physical agent permission acceptance remains to be tested in normal use. Signed 
 
 Published source `8033d79`, workflow37728782211: functional checks, both static architecture builds, both distribution smoke matrices, signing/provenance and publication all passed. Release https://github.com/1unarzDev/cx/releases/tag/v0.1.38 . Innovation and serialized remote updates on tranquility, verybeautifulserver, blastoise-odroid and squirtle-jetson each returned updated038, followed by explicit current038 checks on all five. Baseline session IDs (`/tmp/cx-v038-session-baseline.json`) are all preserved: innovation5, tranquility1, server0, Blastoise1, Jetson0. No live agent inference or user-session termination was used for validation; synthetic agent launch/stop fixtures provide the evidence. Reopen CX to load the new UI if an older viewer is still running.
 
-## Dev Containers integration — v0.1.39 candidate
+## Dev Containers integration — v0.1.40 candidate
 
 Container tree, explicit ordinary-service opt-in, scoped read-only Files, native persistent shells/agents, Default/YOLO, exact scoped process stop and Node CLI up/exec are implemented. The README was shortened and the detailed container guide is docs/containers.md. Local Docker/Node CLI/PTY checks and Rust tests are recorded in VALIDATION.md. Remaining gates: signed dual-architecture release CI and installed robot ROS/terminal checks. Robot networking, provider config and unrelated sessions are preserved. Container transfers, Podman, remote Docker contexts and cross-architecture emulation are outside this release.
+
+v039 release workflow37770669728 was canceled before publication after final review found host launch matching needed to exclude container sessions. v040 preserves the tag and includes that correction; publication and live robot checks remain separate gates.

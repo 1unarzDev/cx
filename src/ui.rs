@@ -2303,7 +2303,7 @@ impl App {
         if let Some(s) = self.work[d]
             .sessions
             .iter()
-            .find(|s| s.directory == directory && s.provider == provider)
+            .find(|s| s.container.is_none() && s.directory == directory && s.provider == provider)
             .cloned()
         {
             self.dialog = Some(Dialog::Matching(d, directory, provider, s));
@@ -12223,6 +12223,18 @@ mod tests {
         a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(rx.try_recv().is_err());
         assert!(a.notice.contains("Container files are read-only"));
+    }
+    #[test]
+    fn host_launch_does_not_offer_to_resume_same_path_container_session() {
+        let (mut a, rx) = queued_app();
+        let mut s:Session=serde_json::from_value(serde_json::json!({"id":"container-proof","name":"fixture","directory":"/workspace","provider":"shell","account":"tester","host":"workstation","pid":123,"started":"proof","boot_id":"boot","external":false,"socket":null})).unwrap();
+        s.container = Some(container_fixture('a', true).scope());
+        a.work[0].sessions = vec![s];
+        a.start_at(0, "/workspace".into(), "shell".into());
+        assert!(!matches!(a.dialog, Some(Dialog::Matching(..))));
+        assert!(rx
+            .try_iter()
+            .any(|t| matches!(t.op,Operation::Create(ref c) if c.directory=="/workspace")));
     }
     #[test]
     fn containers_ui_capture_matrix_and_default_background() {

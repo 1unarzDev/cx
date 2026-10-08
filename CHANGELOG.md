@@ -6,9 +6,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
-## v0.1.39
+## v0.1.40
+
+v0.1.39 was left unpublished after a final host/container resume-scope correction.
 
 ### Features
+- Host launches do not offer to resume a container session with the same path/provider.
 - Enter in a transfer destination pane confirms sending into its displayed folder; h/l still navigates. Pending submissions are protected against duplicates, and the sidebar animates active transfer progress.
 - `w` on a highlighted session opens a read-only watch attachment.
 - Remove the redundant SSH terminal action from the sidebar and Ctrl+P; New shell remains the UI terminal entry point.

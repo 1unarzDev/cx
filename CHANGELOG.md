@@ -6,6 +6,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.33
+
+### Fixes
+- Recover update checks from GitHub API rate limits through the official stable-release page, retaining pinned signature verification and downgrade protection.
+- Focus each device's Network view on its own neighbors and interface/route details; All devices keeps the combined expandable hierarchy and refreshes all observers.
+
 ## v0.1.32
 
 ### Features

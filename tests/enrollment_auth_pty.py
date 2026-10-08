@@ -39,7 +39,7 @@ sys.exit(1)
    while label not in text() and time.monotonic()<deadline:read()
    assert label in text(),text()
   try:
-   read(1);os.write(master,b'a');wait('Add device')
+   read(1);os.write(master,b'a');wait('Add by SSH address')
    assert 'Enter Confirm' not in text() and 'Esc Cancel' not in text() and 'Enter confirm' not in text() and 'Escape cancel' not in text()
    os.write(master,b'fixture@example.test\r');wait('Verify host key' if kind=='host' else 'SSH password')
    if kind=='host':

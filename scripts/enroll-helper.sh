@@ -50,11 +50,25 @@ for path in "$HOME/.local/state/cx/maintenance.lock" "$HOME/.local/bin/cx"; do
 done
 exec 9>>"$HOME/.local/state/cx/maintenance.lock"
 flock -n 9 || exit 75
+if [ -n "${CX_ENROLL_UPDATE_VERSION:-}" ]; then
+    # Viewer already verified the signed artifact. Recheck monotonicity while locked,
+    # including concurrent direct updaters; never replace an equal/newer disk CLI.
+    command -v sort >/dev/null 2>&1 || exit 1
+    case "$CX_ENROLL_UPDATE_VERSION" in *[!0-9.]*|'') exit 1;; esac
+    current=$(timeout 10 "$HOME/.local/bin/cx" --version) || exit 1
+    current=${current#cx }
+    case "$current" in *[!0-9.]*|'') exit 1;; esac
+    newest=$(printf '%s\n%s\n' "$current" "$CX_ENROLL_UPDATE_VERSION" | sort -V | tail -n 1)
+    [ "$newest" = "$CX_ENROLL_UPDATE_VERSION" ] && [ "$current" != "$newest" ] || exit 76
+fi
 tmp=$(mktemp "$HOME/.local/bin/.cx-install.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' HUP TERM
 cat > "$tmp"
 chmod 700 "$tmp"
-timeout 10 "$tmp" --version >/dev/null
+probe=$(timeout 10 "$tmp" --version) || exit 1
+if [ -n "${CX_ENROLL_UPDATE_VERSION:-}" ]; then
+    [ "$probe" = "cx $CX_ENROLL_UPDATE_VERSION" ] || exit 1
+fi
 mv "$tmp" "$HOME/.local/bin/cx"

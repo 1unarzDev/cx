@@ -142,7 +142,7 @@ with tempfile.TemporaryDirectory(prefix="cx-independent-review-") as temporary:
     usability = {}
     os.write(terminal.master, b"\x10add\r")
     output = terminal.read(.15)
-    usability["add_modal_discoverable"] = b"Add device" in output
+    usability["add_modal_discoverable"] = b"Add by SSH address" in output
     os.write(terminal.master, b"\x1b")
     terminal.read(.1)
     os.write(terminal.master, b"\x10Files\r")

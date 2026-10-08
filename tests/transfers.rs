@@ -9,6 +9,8 @@ mod store;
 mod transfers;
 #[path = "../src/transport.rs"]
 mod transport;
+#[path = "../src/update.rs"]
+mod update;
 static MUTATE_SOURCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static MUTATE_DESTINATION: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);

@@ -172,9 +172,9 @@ pub fn valid_target(s: &str) -> bool {
 // ProxyJump inherits -F, but not the outer process's -o options. Put the
 // noninteractive policy before the normal configs so every hop fails closed.
 fn background_ssh_config() -> Result<PathBuf> {
-    const CONFIG: &[u8] = b"Host *\n  BatchMode yes\n  ForwardAgent no\n  ConnectTimeout 6\n  ServerAliveInterval 5\n  ServerAliveCountMax 2\nInclude ~/.ssh/config\nInclude /etc/ssh/ssh_config\n";
+    const CONFIG: &[u8] = b"Host *\n  BatchMode yes\n  ForwardAgent no\n  PreferredAuthentications publickey,gssapi-keyex,gssapi-with-mic,hostbased,keyboard-interactive,password\n  ConnectTimeout 6\n  ServerAliveInterval 5\n  ServerAliveCountMax 2\nInclude ~/.ssh/config\nInclude /etc/ssh/ssh_config\n";
     let dir = ensure()?;
-    let path = dir.join("ssh-background.conf");
+    let path = dir.join("ssh-background-v2.conf");
     match fs::symlink_metadata(&path) {
         Ok(m) => {
             use std::os::unix::fs::MetadataExt;
@@ -194,7 +194,7 @@ fn background_ssh_config() -> Result<PathBuf> {
             use std::io::Write;
             use std::os::unix::fs::OpenOptionsExt;
             let temporary = dir.join(format!(
-                "ssh-background.{}.{}.tmp",
+                "ssh-background-v2.{}.{}.tmp",
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)?
@@ -234,6 +234,8 @@ pub fn ssh(target: &str, interactive: bool) -> Result<std::process::Command> {
         "ServerAliveCountMax=2",
         "-o",
         "ForwardAgent=no",
+        "-o",
+        "PreferredAuthentications=publickey,gssapi-keyex,gssapi-with-mic,hostbased,keyboard-interactive,password",
     ]);
     if !interactive {
         c.args(["-o", "BatchMode=yes"]);

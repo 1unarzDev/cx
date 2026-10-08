@@ -33,6 +33,7 @@ jobs:
       - run: python3 tests/access_routes_cli.py target/debug/cx
       - run: python3 tests/robot_enrollment.py
       - run: python3 tests/login_terminal_pty.py target/debug/cx
+      - run: python3 tests/attach_terminal_pty.py target/debug/cx
       - run: python3 tests/enrollment_auth_pty.py target/debug/cx
       - run: python3 tests/enrollment_ssh.py .
       - run: python3 tests/stop_shell_live.py target/debug/cx

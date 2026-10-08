@@ -861,10 +861,25 @@ fn obtain_enrollment_with(
     state: &Path,
     backend: &Backend,
 ) -> Result<EnrollmentBinary> {
+    obtain_remote_with(arch, None, home, state, backend)?
+        .context("Official stable release unavailable")
+}
+/// No archive is downloaded when the authenticated remote version is already current.
+pub fn obtain_remote_update_binary(arch: &str, current: &str) -> Result<Option<EnrollmentBinary>> {
+    let (home, state) = paths()?;
+    obtain_remote_with(arch, Some(current), &home, &state, &Backend::system())
+}
+fn obtain_remote_with(
+    arch: &str,
+    current: Option<&str>,
+    home: &Path,
+    state: &Path,
+    backend: &Backend,
+) -> Result<Option<EnrollmentBinary>> {
     supported_arch(arch)?;
-    let (version, url) = match latest_release(arch, None, backend)? {
+    let (version, url) = match latest_release(arch, current, backend)? {
         ReleaseLookup::Found(version, url) => (version, url),
-        ReleaseLookup::Current => bail!("Official stable release unavailable"),
+        ReleaseLookup::Current => return Ok(None),
         ReleaseLookup::Offline => bail!("Official stable release request failed"),
         ReleaseLookup::Unavailable(message) => bail!("{message}"),
     };
@@ -879,12 +894,12 @@ fn obtain_enrollment_with(
         "Enrollment artifact must not execute locally"
     );
     binary.sync_all()?;
-    Ok(EnrollmentBinary {
+    Ok(Some(EnrollmentBinary {
         version,
         arch: arch.into(),
         binary,
         _stage: stage,
-    })
+    }))
 }
 
 fn digest(f: &File) -> Result<String> {
@@ -1220,6 +1235,23 @@ mod enrollment_tests {
             &home.join(".local/state/cx"),
             &Backend::fixture(fixture),
         )
+    }
+    #[test]
+    fn current_remote_checks_never_download_or_execute_artifacts() {
+        let home = tempfile::tempdir().unwrap();
+        for current in ["0.1.0", "0.2.0"] {
+            let fixture = SignedFixture::new();
+            assert!(obtain_remote_with(
+                "aarch64",
+                Some(current),
+                home.path(),
+                &home.path().join(".local/state/cx"),
+                &Backend::fixture(&fixture)
+            )
+            .unwrap()
+            .is_none());
+            assert_eq!(*fixture.calls.borrow(), vec!["metadata"]);
+        }
     }
     #[test]
     fn latest_both_architectures_are_fd_pinned_nonexecutable_and_cleaned() {

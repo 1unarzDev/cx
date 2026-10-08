@@ -475,11 +475,117 @@ fn fresh_info(target: &str) -> Result<serde_json::Value> {
     }
     response.result.context("empty update verification")
 }
+/// Explicit CLI update shares the automatic authenticated, architecture-aware path.
+pub fn update_device(device: &Device) -> Result<serde_json::Value> {
+    let target = device
+        .target
+        .as_deref()
+        .context("Use cx update for the local device")?;
+    let before = fresh_info(target)?;
+    let (successful, upgraded) = update_host(target, &before)?;
+    Ok(serde_json::json!({
+        "state": if upgraded.is_some() { "updated" } else if successful { "current" } else { "unavailable" },
+        "version": upgraded.as_deref().or_else(|| before["version"].as_str()).unwrap_or("unknown")
+    }))
+}
 fn update_host(target: &str, before: &serde_json::Value) -> Result<(bool, Option<String>)> {
     let modern = modern_update(before);
     let mut command = ssh(target, false)?;
     command.arg(if modern { UPDATE_MODERN } else { UPDATE_LEGACY });
-    update_host_with(target, before, command, || fresh_info(target))
+    let direct = update_host_with(target, before, command, || fresh_info(target));
+    match direct {
+        Ok((true, version)) => Ok((true, version)),
+        _ => mediated_host_update(target, before),
+    }
+}
+fn mediated_identity(before: &serde_json::Value, after: &serde_json::Value) -> bool {
+    ["machine_id", "account"].iter().all(|field| {
+        before[*field]
+            .as_str()
+            .is_some_and(|v| !v.is_empty() && after[*field].as_str() == Some(v))
+    })
+}
+fn mediated_arch(bytes: &[u8]) -> Result<&'static str> {
+    match std::str::from_utf8(bytes)?.trim() {
+        "Linux aarch64" => Ok("aarch64"),
+        "Linux x86_64" => Ok("x86_64"),
+        _ => bail!("unsupported remote execution platform"),
+    }
+}
+fn mediated_version(before: &serde_json::Value, version: &str) -> Result<bool> {
+    let old = before["version"]
+        .as_str()
+        .and_then(stable_version)
+        .context("remote version unavailable")?;
+    let new = stable_version(version).context("release version unavailable")?;
+    Ok(new > old)
+}
+/// A mesh viewer can supply a verified artifact even when the robot has no public egress.
+/// This never enrolls a new host or changes trust, profiles, packages or network state.
+fn mediated_host_update(
+    target: &str,
+    before: &serde_json::Value,
+) -> Result<(bool, Option<String>)> {
+    let observed = fresh_info(target)?;
+    anyhow::ensure!(
+        mediated_identity(before, &observed),
+        "remote update identity changed"
+    );
+    let mut platform = ssh(target, false)?;
+    platform.arg("uname -sm");
+    let platform = run_bounded_update(platform, std::time::Duration::from_secs(20), 4096)?;
+    anyhow::ensure!(platform.success, "remote platform check failed");
+    let arch = mediated_arch(&platform.stdout)?;
+    let current = observed["version"]
+        .as_str()
+        .context("remote version unavailable")?;
+    let Some(artifact) = crate::update::obtain_remote_update_binary(arch, current)? else {
+        let version = upgraded_version(before, &observed);
+        if version.is_some() {
+            invalidate_metadata(target)?;
+        }
+        return Ok((true, version));
+    };
+    anyhow::ensure!(
+        mediated_version(&observed, &artifact.version)?,
+        "remote update would not advance"
+    );
+    let input = std::fs::File::open(artifact.path())?;
+    let script = include_str!("../scripts/enroll-helper.sh").replace('\'', "'\"'\"'");
+    let mut transfer = ssh(target, false)?;
+    transfer.arg(format!(
+        "CX_ENROLL_MINIMAL=1 CX_ENROLL_UPDATE_VERSION={} sh -c '{script}'",
+        artifact.version
+    ));
+    let installed = run_bounded_update_input(
+        transfer,
+        UPDATE_TIMEOUT,
+        UPDATE_OUTPUT_LIMIT,
+        Stdio::from(input),
+    )?;
+    anyhow::ensure!(installed.success, "verified remote update transfer failed");
+    let after = fresh_info(target)?;
+    anyhow::ensure!(
+        mediated_identity(&observed, &after)
+            && after["version"].as_str() == Some(&artifact.version),
+        "remote update verification failed"
+    );
+    let version = upgraded_version(before, &after).context("remote update did not advance")?;
+    invalidate_metadata(target)?;
+    Ok((true, Some(version)))
+}
+fn invalidate_metadata(target: &str) -> Result<()> {
+    let entry = CONNECTIONS
+        .lock()
+        .map_err(|_| anyhow!("transport lock unavailable"))?
+        .get(target)
+        .cloned();
+    if let Some(entry) = entry {
+        *entry
+            .lock()
+            .map_err(|_| anyhow!("connection lock unavailable"))? = None;
+    }
+    Ok(())
 }
 fn update_host_with(
     target: &str,
@@ -548,9 +654,17 @@ struct UpdateOutput {
 }
 /// Output is never printed, and stderr is discarded rather than retained as evidence.
 fn run_bounded_update(
+    command: Command,
+    timeout: std::time::Duration,
+    limit: usize,
+) -> Result<UpdateOutput> {
+    run_bounded_update_input(command, timeout, limit, Stdio::null())
+}
+fn run_bounded_update_input(
     mut command: Command,
     timeout: std::time::Duration,
     limit: usize,
+    input: Stdio,
 ) -> Result<UpdateOutput> {
     use std::os::unix::process::CommandExt;
     use std::sync::{
@@ -558,7 +672,7 @@ fn run_bounded_update(
         Arc,
     };
     command
-        .stdin(Stdio::null())
+        .stdin(input)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
@@ -864,6 +978,60 @@ mod tests {
             ),
             Some("0.2.0".into())
         );
+    }
+    #[test]
+    fn mediated_artifact_transfer_uses_bounded_file_stdin() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("verified-artifact");
+        std::fs::write(&path, vec![42; 2 * 1024 * 1024]).unwrap();
+        let output = run_bounded_update_input(
+            shell("wc -c"),
+            std::time::Duration::from_secs(2),
+            128,
+            Stdio::from(std::fs::File::open(&path).unwrap()),
+        )
+        .unwrap();
+        assert!(output.success);
+        assert_eq!(
+            std::str::from_utf8(&output.stdout).unwrap().trim(),
+            "2097152"
+        );
+        assert!(run_bounded_update_input(
+            shell("sleep 30"),
+            std::time::Duration::from_millis(80),
+            128,
+            Stdio::from(std::fs::File::open(&path).unwrap()),
+        )
+        .is_err());
+    }
+    #[test]
+    fn mediated_update_requires_same_identity_architecture_and_newer_version() {
+        let before =
+            serde_json::json!({"version":"0.1.32","machine_id":"robot","account":"roboboat"});
+        let mut after = before.clone();
+        after["version"] = "0.1.34".into();
+        assert!(mediated_identity(&before, &before));
+        assert_eq!(mediated_arch(b"Linux aarch64\n").unwrap(), "aarch64");
+        assert_eq!(mediated_arch(b"Linux x86_64\n").unwrap(), "x86_64");
+        for invalid in [
+            b"Darwin arm64".as_slice(),
+            b"Linux armv7l",
+            b"banner\nLinux aarch64",
+        ] {
+            assert!(mediated_arch(invalid).is_err());
+        }
+        assert!(mediated_version(&before, "0.1.34").unwrap());
+        assert!(!mediated_version(&before, "0.1.32").unwrap());
+        assert!(!mediated_version(&before, "0.1.31").unwrap());
+        assert!(mediated_version(&before, "0.1.34-dev").is_err());
+        for field in ["machine_id", "account"] {
+            let mut wrong = before.clone();
+            wrong[field] = "other".into();
+            assert!(!mediated_identity(&before, &wrong));
+            wrong[field] = serde_json::Value::Null;
+            assert!(!mediated_identity(&wrong, &wrong));
+        }
+        assert!(mediated_identity(&before, &after));
     }
     #[test]
     fn update_capability_requires_viewer_version() {

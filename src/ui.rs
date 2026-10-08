@@ -282,6 +282,7 @@ enum Action {
     Terminal,
     Files,
     New,
+    Shell,
     Destination,
     TransferTo,
     Conflict,
@@ -306,18 +307,16 @@ enum Action {
     Quit,
 }
 const ACTIONS: &[(Action, &str)] = &[
-    (Action::Add, "Add device · existing SSH alias / user@host"),
+    (Action::Add, "Add by SSH address · alias / user@host"),
     (
         Action::Terminal,
         "SSH terminal · ordinary login · exit returns",
     ),
-    (
-        Action::Files,
-        "Files · selected session directory / device home",
-    ),
+    (Action::Files, "Files · choose device · browse home"),
+    (Action::Shell, "New shell · choose device · start in home"),
     (
         Action::New,
-        "New session · current folder / choose workspace",
+        "New session · choose device, provider and folder",
     ),
     (
         Action::Destination,
@@ -350,8 +349,8 @@ const ACTIONS: &[(Action, &str)] = &[
     (Action::Visual, "Visual range selection · v"),
     (Action::Paste, "Paste here · copy into this directory"),
     (Action::Mkdir, "Create directory here"),
-    (Action::Network, "Network"),
-    (Action::Work, "Sessions"),
+    (Action::Network, "Network · choose device / All devices"),
+    (Action::Work, "Sessions · choose device / All devices"),
     (Action::Refresh, "Refresh"),
     (Action::Help, "Keyboard help"),
     (
@@ -362,6 +361,10 @@ const ACTIONS: &[(Action, &str)] = &[
 ];
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ChooseDevice {
+    Work,
+    Network,
+    AddGateway,
+    Shell,
     Terminal,
     New,
     Files,
@@ -566,7 +569,7 @@ impl App {
                 Input::Search | Input::PreviewSearch => "Search",
                 Input::Palette => "Actions",
                 Input::Command => "Run command",
-                Input::Add => "Add device",
+                Input::Add => "Add by SSH address",
                 Input::Mkdir => "New folder",
                 Input::Rename => "Rename",
                 Input::Filter => "Filter",
@@ -788,11 +791,46 @@ impl App {
             .iter()
             .copied()
             .filter(|(a, label)| {
-                workspace_action(*a)
-                    && self.action_enabled(*a)
+                (matches!(
+                    a,
+                    Action::Work | Action::Network | Action::Files | Action::Terminal | Action::Add
+                ) || self.action_enabled(*a))
                     && label.to_lowercase().contains(&self.text.to_lowercase())
             })
             .collect()
+    }
+    fn palette_scope(&self) -> String {
+        let Some((action, _)) = self.palette().get(self.palette_selected).copied() else {
+            return "No matching actions · type to filter · Esc cancel".into();
+        };
+        if matches!(
+            action,
+            Action::Work
+                | Action::Network
+                | Action::Files
+                | Action::Terminal
+                | Action::New
+                | Action::Shell
+                | Action::Add
+        ) {
+            return if action == Action::Add {
+                "Next: choose direct SSH or a gateway · Esc cancel".into()
+            } else {
+                "Next: choose device · Esc cancel".into()
+            };
+        }
+        if matches!(action, Action::Update | Action::Jobs | Action::Quit) {
+            return "Scope: this viewer · Enter run · Esc cancel".into();
+        }
+        self.command_context()
+            .map(|(d, path)| {
+                format!(
+                    "Current: {} · {}",
+                    safe_label(&self.devices[d].name),
+                    safe_label(&path)
+                )
+            })
+            .unwrap_or_else(|| "Scope: All devices · Enter run · Esc cancel".into())
     }
     fn provider_choices(&self, device: usize) -> Vec<&'static str> {
         let mut choices = vec!["shell"];
@@ -825,7 +863,7 @@ impl App {
                 .network_rows()
                 .get(self.network_selected)
                 .is_some_and(|r| r["_peer"].is_u64() || r["_known_peer"].is_u64()),
-            Action::New => !self.creating,
+            Action::New | Action::Shell => !self.creating,
             Action::Command => self.command_context().is_some(),
             Action::Network => self.view != View::Network,
             Action::Destination | Action::Conflict => self.clipboard.is_some(),
@@ -1488,6 +1526,7 @@ impl App {
                     self.choose_device(ChooseDevice::Terminal);
                 }
             }
+            Action::Shell => self.start_shell(),
             Action::Update => self.force_update = true,
             Action::Quit => self.request_quit(),
             Action::Add => {
@@ -1730,6 +1769,71 @@ impl App {
             }
         }
     }
+    fn execute_palette(&mut self, action: Action) {
+        let purpose = match action {
+            Action::Work => Some(ChooseDevice::Work),
+            Action::Network => Some(ChooseDevice::Network),
+            Action::Files => Some(ChooseDevice::Files),
+            Action::Terminal => Some(ChooseDevice::Terminal),
+            Action::New => Some(ChooseDevice::New),
+            Action::Shell => Some(ChooseDevice::Shell),
+            Action::Add => Some(ChooseDevice::AddGateway),
+            _ => None,
+        };
+        if let Some(purpose) = purpose {
+            self.input = None;
+            self.text.clear();
+            self.launch_provider = None;
+            self.other_browser = None;
+            self.destination_active = false;
+            let choices = self.device_choices(purpose);
+            self.dialog_selected = choices
+                .iter()
+                .position(|d| *d == self.actual_device())
+                .unwrap_or(0);
+            self.dialog = Some(Dialog::Device(purpose));
+        } else {
+            self.execute(action);
+        }
+    }
+    fn device_choices(&self, purpose: ChooseDevice) -> Vec<Option<usize>> {
+        let mut choices = Vec::new();
+        if matches!(
+            purpose,
+            ChooseDevice::Work | ChooseDevice::Network | ChooseDevice::AddGateway
+        ) {
+            choices.push(None);
+        }
+        choices.extend(
+            (0..self.devices.len())
+                .filter(|d| {
+                    purpose != ChooseDevice::AddGateway || self.devices[*d].target.is_some()
+                })
+                .map(Some),
+        );
+        choices
+    }
+    fn start_shell(&mut self) {
+        if self.creating {
+            return;
+        }
+        let location = if self.view == View::Files {
+            self.browser.as_ref().map(|b| (b.device, b.path.clone()))
+        } else if self.view == View::Network {
+            self.network_action_device().map(|d| (d, "~".into()))
+        } else if self.device > 0 {
+            self.actual_device().map(|d| (d, "~".into()))
+        } else {
+            None
+        };
+        self.launch_provider = None;
+        if let Some((d, path)) = location {
+            self.create_at(d, path, "shell".into());
+        } else {
+            self.dialog = Some(Dialog::Device(ChooseDevice::Shell));
+            self.dialog_selected = 0;
+        }
+    }
     fn choose_device(&mut self, purpose: ChooseDevice) {
         if self.device > 0 && purpose != ChooseDevice::Destination {
             self.chosen_device(self.device - 1, purpose);
@@ -1741,6 +1845,31 @@ impl App {
     fn chosen_device(&mut self, d: usize, purpose: ChooseDevice) {
         self.dialog = None;
         match purpose {
+            ChooseDevice::Work | ChooseDevice::Network => {
+                self.device = d + 1;
+                self.view = if purpose == ChooseDevice::Work {
+                    View::Work
+                } else {
+                    View::Network
+                };
+                self.focus = Focus::Workspace;
+                self.network_selected = 0;
+                self.refresh();
+            }
+            ChooseDevice::AddGateway => {
+                self.pending_add_via = self.devices[d]
+                    .target
+                    .as_ref()
+                    .map(|_| self.devices[d].clone());
+                self.network_add_target = None;
+                self.input = Some(Input::Add);
+                self.text.clear();
+            }
+            ChooseDevice::Shell => {
+                self.device = d + 1;
+                self.view = View::Work;
+                self.create_at(d, "~".into(), "shell".into());
+            }
             ChooseDevice::Terminal => self.pending_terminal = Some(self.devices[d].clone()),
             ChooseDevice::New => {
                 self.check_providers(d);
@@ -1963,7 +2092,7 @@ impl App {
         }
         let count = match &dialog {
             Dialog::Links(links) => links.len(),
-            Dialog::Device(_) => self.devices.len(),
+            Dialog::Device(purpose) => self.device_choices(*purpose).len(),
             Dialog::Provider(d, _) => self.provider_choices(*d).len(),
             Dialog::Matching(..) => 2,
             Dialog::Jobs => self.job_rows().len(),
@@ -1998,8 +2127,32 @@ impl App {
                 }
 
                 Dialog::Device(purpose) => {
-                    if self.dialog_selected < self.devices.len() {
-                        self.chosen_device(self.dialog_selected, purpose);
+                    let choice = self
+                        .device_choices(purpose)
+                        .get(self.dialog_selected)
+                        .copied();
+                    match choice {
+                        Some(Some(d)) => self.chosen_device(d, purpose),
+                        Some(None) if purpose == ChooseDevice::AddGateway => {
+                            self.dialog = None;
+                            self.pending_add_via = None;
+                            self.network_add_target = None;
+                            self.input = Some(Input::Add);
+                            self.text.clear();
+                        }
+                        Some(None) => {
+                            self.dialog = None;
+                            self.device = 0;
+                            self.view = if purpose == ChooseDevice::Network {
+                                View::Network
+                            } else {
+                                View::Work
+                            };
+                            self.focus = Focus::Workspace;
+                            self.network_selected = 0;
+                            self.refresh();
+                        }
+                        None => (),
                     }
                 }
                 Dialog::Provider(d, path) => {
@@ -2932,7 +3085,7 @@ impl App {
                         if let Some((action, _)) =
                             self.palette().get(self.palette_selected).copied()
                         {
-                            self.execute(action);
+                            self.execute_palette(action);
                         }
                     }
                     Input::Command => {
@@ -3271,7 +3424,13 @@ impl App {
                     -1
                 });
             }
-            KeyCode::Char('n') => self.execute(Action::New),
+            KeyCode::Char('n') => {
+                if self.view == View::Files && self.launch_provider.is_some() {
+                    self.execute(Action::New);
+                } else {
+                    self.start_shell();
+                }
+            }
             KeyCode::Char('a') if self.view == View::Work && local_only(self) => {
                 self.execute(Action::Add)
             }
@@ -3349,7 +3508,7 @@ impl App {
                             if let Some((d, s)) = self.selected_session() {
                                 self.pending_attach = Some((d, s, false));
                             } else if empty_work_can_create(self) {
-                                self.execute(Action::New);
+                                self.start_shell();
                             }
                         }
                         View::Files => {
@@ -4172,9 +4331,8 @@ fn sidebar_actions(app: &App) -> Vec<(Action, &'static str)> {
         (Action::Work, "Sessions"),
         (Action::Files, "Files"),
         (Action::Network, "Network"),
-        (Action::New, "New session"),
+        (Action::Shell, "New shell"),
         (Action::Jobs, "Transfers"),
-        (Action::Add, "Add device"),
         (Action::Terminal, "SSH terminal"),
     ];
     actions.retain(|(action, _)| {
@@ -4531,13 +4689,13 @@ fn render_with_native(
                         "No live sessions",
                         Style::default().add_modifier(Modifier::BOLD),
                     )));
-                    lines.push(Line::from("Choose a provider and folder."));
+                    lines.push(Line::from("Start a shell in this device's home."));
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
                         if app.creating {
                             "Creating session…"
                         } else {
-                            "[ Enter / n  New session ]"
+                            "[ Enter / n  New shell ]"
                         },
                         if app.focus == Focus::Workspace && !app.creating {
                             selected_style()
@@ -4549,10 +4707,10 @@ fn render_with_native(
                         lines.push(Line::from(""));
                         lines.push(Line::from("Use this computer now."));
                         lines.push(Line::from(Span::styled(
-                            "a  Add device",
+                            "Network · discover reachable devices",
                             accent().add_modifier(Modifier::BOLD),
                         )));
-                        lines.push(Line::from("Connect an existing SSH target."));
+                        lines.push(Line::from("Ctrl+P · Add by SSH address"));
                     }
                 }
                 frame.render_widget(
@@ -5249,11 +5407,11 @@ fn render_with_native(
         ]
     } else if empty_work_can_create(app) && app.focus == Focus::Workspace {
         vec![
-            ("Enter/n", "New session"),
+            ("Enter/n", "New shell"),
             (
                 if local_only(app) { "a" } else { "/" },
                 if local_only(app) {
-                    "Add device"
+                    "Add by SSH address"
                 } else {
                     "Search"
                 },
@@ -5333,7 +5491,7 @@ fn render_with_native(
             area,
             if input == Input::Add { 64 } else { 76 },
             if input == Input::Palette {
-                16
+                19
             } else if matches!(input, Input::Rename | Input::Command | Input::Add) {
                 3
             } else {
@@ -5344,7 +5502,11 @@ fn render_with_native(
         if input == Input::Palette {
             let parts = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(3), Constraint::Min(1)])
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Min(1),
+                    Constraint::Length(3),
+                ])
                 .split(rect);
             frame.render_widget(
                 Paragraph::new(format!("> {}", safe_text(&app.text)))
@@ -5364,6 +5526,12 @@ fn render_with_native(
                     .highlight_style(selected_style()),
                 parts[1],
                 &mut state,
+            );
+            frame.render_widget(
+                Paragraph::new(app.palette_scope())
+                    .wrap(Wrap { trim: false })
+                    .block(Block::default().borders(Borders::ALL)),
+                parts[2],
             );
         } else {
             let editing = matches!(input, Input::Rename | Input::Command | Input::Add);
@@ -5415,13 +5583,13 @@ fn render_with_native(
                         )
                     } else if input == Input::Add && app.pending_add_via.is_some() {
                         format!(
-                            "Add device via {} · user@host",
+                            "Add by SSH address via {} · user@host",
                             safe_label(&app.pending_add_via.as_ref().unwrap().name)
                         )
                     } else {
                         match input {
                             Input::Search | Input::PreviewSearch => "Search",
-                            Input::Add => "Add device · SSH alias or user@host",
+                            Input::Add => "Add by SSH address · alias or user@host",
                             Input::Rename => "Rename",
                             Input::Command => "Run command",
                             _ => "Directory name",
@@ -5449,16 +5617,21 @@ fn render_with_native(
             ),
             Dialog::Device(purpose) => (
                 match purpose {
+                    ChooseDevice::Work => "Sessions · choose device or All devices",
+                    ChooseDevice::Network => "Network · choose device or All devices",
+                    ChooseDevice::AddGateway => "Add by SSH address · choose gateway",
+                    ChooseDevice::Shell => "New shell · choose device · starts in home",
                     ChooseDevice::New => "New session · execution device",
                     ChooseDevice::Terminal => "SSH terminal · choose device · exit returns",
                     ChooseDevice::Files => "Files · choose device",
                     ChooseDevice::Destination => "Transfer to · destination device",
                 }
                 .to_string(),
-                app.devices
-                    .iter()
-                    .map(|d| format!("{} · {}", safe_label(&d.name), identity(d)))
-                    .collect::<Vec<_>>(),
+                app.device_choices(*purpose).iter().map(|d| match d {
+                    Some(d) => format!("{} · {}", safe_label(&app.devices[*d].name), identity(&app.devices[*d])),
+                    None if *purpose == ChooseDevice::AddGateway => "Direct SSH from this viewer".into(),
+                    None => "All devices".into(),
+                }).collect::<Vec<_>>(),
                 if *purpose == ChooseDevice::Destination {
                     app.clipboard
                         .as_ref()
@@ -9426,7 +9599,7 @@ mod tests {
         let (mut a, _rx) = queued_app();
         a.execute(Action::Add);
         let text = capture_app(&a, 100);
-        assert!(text.contains("Add device"));
+        assert!(text.contains("Add by SSH address"));
         assert!(!text.contains("Enter confirm"));
         assert!(!text.contains("Escape cancel"));
         a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -9488,6 +9661,96 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+    #[test]
+    fn new_shell_shortcut_starts_at_home_without_opening_files() {
+        let (mut a, rx) = queued_app();
+        a.device = 2;
+        a.view = View::Work;
+        press(&mut a, 'n');
+        assert!(a.view == View::Work);
+        assert!(a.dialog.is_none());
+        assert!(a.browser.is_none());
+        assert!(rx.try_iter().any(|task| task.device == 1 && matches!(task.op, Operation::Create(ref c) if c.directory == "~" && c.provider == "shell")));
+    }
+    #[test]
+    fn palette_files_always_asks_for_execution_device() {
+        let (mut a, rx) = queued_app();
+        a.device = 2;
+        a.view = View::Work;
+        a.input = Some(Input::Palette);
+        a.text = "Files".into();
+        a.palette_selected = 0;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            a.dialog,
+            Some(Dialog::Device(ChooseDevice::Files))
+        ));
+        assert!(a.browser.is_none());
+        assert!(rx.try_recv().is_err());
+    }
+    #[test]
+    fn palette_network_picker_includes_all_and_scopes_queries_after_choice() {
+        let (mut a, rx) = queued_app();
+        a.device = 1;
+        a.view = View::Network;
+        a.execute_palette(Action::Network);
+        assert!(matches!(
+            a.dialog,
+            Some(Dialog::Device(ChooseDevice::Network))
+        ));
+        assert_eq!(
+            a.device_choices(ChooseDevice::Network),
+            vec![None, Some(0), Some(1)]
+        );
+        assert!(rx.try_recv().is_err());
+        a.dialog_selected = 2;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(a.device, 2);
+        assert!(a.view == View::Network);
+        assert!(rx.try_iter().all(|task| task.device == 1));
+        a.execute_palette(Action::Network);
+        a.dialog_selected = 0;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(a.device, 0);
+    }
+    #[test]
+    fn palette_add_gateway_and_cancel_keep_the_selected_view() {
+        let (mut a, rx) = queued_app();
+        a.device = 1;
+        a.execute_palette(Action::Files);
+        a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(a.device, 1);
+        assert!(a.browser.is_none());
+        assert!(rx.try_recv().is_err());
+        a.execute_palette(Action::Add);
+        assert_eq!(
+            a.device_choices(ChooseDevice::AddGateway),
+            vec![None, Some(1)]
+        );
+        a.dialog_selected = 1;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(a.pending_add_via.as_ref().unwrap().id, a.devices[1].id);
+        assert!(a.input == Some(Input::Add));
+        a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        a.execute_palette(Action::Add);
+        a.dialog_selected = 0;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.pending_add_via.is_none());
+    }
+    #[test]
+    fn palette_scope_and_device_chooser_render_at_terminal_widths() {
+        for width in [48, 80, 120] {
+            let (mut a, _) = queued_app();
+            a.device = 2;
+            a.input = Some(Input::Palette);
+            a.text = "Network".into();
+            assert!(capture_app(&a, width).contains("Next: choose device"));
+            a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            let text = capture_app(&a, width);
+            assert!(text.contains("All devices"));
+            assert!(text.contains("laptop"));
         }
     }
     #[test]
@@ -10549,9 +10812,17 @@ mod tests {
         let (mut a, _) = queued_app();
         a.view = View::Files;
         a.browser = Some(Browser::new(0, "/project".into()));
-        for (action, _) in sidebar_actions(&a).into_iter().chain(a.palette()) {
+        for (action, _) in sidebar_actions(&a) {
             assert!(workspace_action(action));
         }
+        assert!(a
+            .palette()
+            .iter()
+            .any(|(action, _)| *action == Action::Command));
+        assert!(a
+            .palette()
+            .iter()
+            .any(|(action, _)| *action == Action::Mkdir));
         assert!(sidebar_actions(&a)
             .iter()
             .any(|(_, label)| *label == "Sessions"));
@@ -10566,23 +10837,19 @@ mod tests {
             .palette()
             .iter()
             .any(|(_, label)| label.contains("Start here")));
-        assert!(!a
-            .palette()
-            .iter()
-            .any(|(action, _)| *action == Action::Command));
+        assert!(a.palette_scope().contains("Next:") || a.palette_scope().contains("Current:"));
         press(&mut a, ':');
         assert!(a.input == Some(Input::Command));
     }
     #[test]
-    fn new_shortcut_uses_focused_folder_and_available_providers() {
-        let (mut a, _) = queued_app();
+    fn new_shortcut_uses_focused_folder_and_starts_shell() {
+        let (mut a, rx) = queued_app();
         a.view = View::Files;
         a.browser = Some(Browser::new(1, "/projects/robot".into()));
-        a.device = 1; // deliberately different selector: browser owns execution location
+        a.device = 1;
         press(&mut a, 'n');
-        assert!(
-            matches!(&a.dialog, Some(Dialog::Provider(1, Some(path))) if path == "/projects/robot")
-        );
+        assert!(a.dialog.is_none());
+        assert!(rx.try_iter().any(|task| task.device == 1 && matches!(task.op, Operation::Create(ref c) if c.directory == "/projects/robot" && c.provider == "shell")));
     }
     #[test]
     fn moving_to_client_only_host_drops_unavailable_launch_profile() {
@@ -11133,8 +11400,12 @@ mod tests {
         let (mut a, _rx) = queued_app();
         a.devices.truncate(1);
         a.work.truncate(1);
+        a.device = 0;
         a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(matches!(a.dialog, Some(Dialog::Device(ChooseDevice::New))));
+        assert!(matches!(
+            a.dialog,
+            Some(Dialog::Device(ChooseDevice::Shell))
+        ));
         for state in ["loading", "error", "search", "creating"] {
             let mut a = app();
             match state {
@@ -11288,8 +11559,11 @@ mod tests {
                         assert!(text.contains("live"), "{width}x{height}: {text}");
                     }
                     if state == "first-run" {
-                        assert!(text.contains("New session"), "{width}x{height}: {text}");
-                        assert!(text.contains("Add device"), "{width}x{height}: {text}");
+                        assert!(text.contains("New shell"), "{width}x{height}: {text}");
+                        assert!(
+                            text.contains("Add by SSH address"),
+                            "{width}x{height}: {text}"
+                        );
                     }
                     if let Some(directory) = std::env::var_os("CX_WORKSPACE_CAPTURE_DIR") {
                         let directory = std::path::PathBuf::from(directory);

@@ -45,6 +45,9 @@ enum Cmd {
         payload: String,
     },
     Update {
+        /// Update an enrolled SSH device, using this viewer's internet if needed.
+        #[arg(long, conflicts_with_all = ["check", "automatic"])]
+        device: Option<String>,
         #[arg(long)]
         check: bool,
         #[arg(long, hide = true)]
@@ -551,10 +554,26 @@ fn run() -> Result<()> {
         Some(Cmd::Helper) => helper(),
         Some(Cmd::Restart { state }) => ui::run_restored(Some(&state)),
         Some(Cmd::Update {
+            device: selected,
             check,
             automatic,
             json,
         }) => {
+            if let Some(selected) = selected {
+                let host = device(Some(selected))?;
+                let outcome = transport::update_device(&host)?;
+                if json {
+                    println!("{}", outcome);
+                } else {
+                    println!(
+                        "{} · {} · cx {}",
+                        host.name,
+                        outcome["state"].as_str().unwrap_or("unavailable"),
+                        outcome["version"].as_str().unwrap_or("unknown")
+                    );
+                }
+                return Ok(());
+            }
             let mut version = env!("CARGO_PKG_VERSION").to_string();
             let (state, message, launch) = match update::check(!automatic)? {
                 update::CheckOutcome::Ready(plan) if !check => {
@@ -658,6 +677,9 @@ fn run() -> Result<()> {
                 std::path::PathBuf::from("tmux")
             });
             c.arg("-u");
+            if let Some(terminal) = sessions::attach_terminal()? {
+                c.env("TERM", terminal);
+            }
             if external {
                 c.env_remove("TMUX").env_remove("TMUX_PANE");
             }

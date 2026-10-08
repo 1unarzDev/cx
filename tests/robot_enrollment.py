@@ -61,5 +61,34 @@ with tempfile.TemporaryDirectory(prefix='cx-robot-enroll-', dir=base) as tmp:
     run = subprocess.run(['/bin/sh', str(repo / 'scripts/enroll-helper.sh')], input=b'replace',
         env=dict(env, PATH=str(tools)), capture_output=True, timeout=5)
     assert run.returncode != 0 and binary.read_bytes() == body
+    # Viewer-mediated upgrades preserve optional-tool independence and reject races/downgrades.
+    for name in ('sort', 'tail'):
+        (tools / name).symlink_to(shutil.which(name))
+    def fixture(version):
+        return ('#!/bin/sh\nprintf "cx ' + version + '\\n"\n').encode()
+    tmux = binary.parent / 'tmux'
+    tmux.write_bytes(b'user-installed tmux preserved')
+    tmux.chmod(0o700)
+    binary.write_bytes(fixture('0.1.32'))
+    binary.chmod(0o700)
+    def upgrade(version, content):
+        return subprocess.run(['/bin/sh', str(repo / 'scripts/enroll-helper.sh')], input=content,
+            env=dict(env, PATH=str(tools), CX_ENROLL_MINIMAL='1', CX_ENROLL_UPDATE_VERSION=version),
+            capture_output=True, timeout=5)
+    for version in ('0.1.31', '0.1.32'):
+        assert upgrade(version, fixture(version)).returncode == 76
+        assert binary.read_bytes() == fixture('0.1.32')
+    assert upgrade('0.1.34', fixture('0.1.33')).returncode != 0
+    assert binary.read_bytes() == fixture('0.1.32')
+    assert upgrade('0.1.34', fixture('0.1.34')).returncode == 0
+    assert binary.read_bytes() == fixture('0.1.34')
+    assert upgrade('0.1.33;id', fixture('0.1.35')).returncode != 0
+    assert binary.read_bytes() == fixture('0.1.34')
+    import fcntl
+    with (home / '.local/state/cx/maintenance.lock').open('a') as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert upgrade('0.1.35', fixture('0.1.35')).returncode == 75
+        assert binary.read_bytes() == fixture('0.1.34')
+    assert tmux.read_bytes() == b'user-installed tmux preserved'
 print(json.dumps(dict(result='PASS', public_key_preservation=True, idempotence=True,
-    unsafe_trust_refused=True, minimal_without_optional_tools=True, full_mode_still_checks_tools=True)))
+    unsafe_trust_refused=True, minimal_without_optional_tools=True, full_mode_still_checks_tools=True, mediated_update_monotonic=True, install_lock_preserved=True)))

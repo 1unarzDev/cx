@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory(prefix='cx-jump-') as tmp:
         start=time.monotonic();r=subprocess.run([binary,'sessions','--device','fixture'],env=env,capture_output=True,stdin=subprocess.DEVNULL,timeout=12,start_new_session=True)
         assert r.returncode!=0,'unknown gateway trust must fail closed'
         assert not (root/'asked').exists(),'background jump triggered credential/trust prompt'
-        cfg=state/'ssh-background.conf';assert 'BatchMode yes' in cfg.read_text()
+        cfg=state/'ssh-background-v2.conf';assert 'BatchMode yes' in cfg.read_text()
         # An enrolled endpoint may not silently move to a different gateway.
         gateway_device=dict(id='gateway',name='gateway',target='different-gateway',account='fixture',host='gateway',status='unknown',observed_at=0)
         ds=json.loads((state/'devices.json').read_text());ds.append(gateway_device);(state/'devices.json').write_text(json.dumps(ds))

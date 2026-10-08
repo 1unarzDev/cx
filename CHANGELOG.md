@@ -6,6 +6,23 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.34
+
+### Features
+- Update enrolled SSH hosts through a viewer-verified, architecture-specific release when the host cannot download it; add `cx update --device NAME` for an explicit check and installation.
+- Make Ctrl+P a device chooser for Files, Network, Sessions, SSH terminal and session creation, with visible scope for contextual file/command actions.
+
+### Fixes
+- Start a shell directly with `n`, using home from Sessions/Network or the current folder from Files.
+- Prefer working public keys before GSSAPI, fixing slow robot authentication that exceeded the helper deadline while retaining authentication fallbacks.
+- Fall back to an installed standard terminal type when a robot lacks the viewer's vendor terminfo, preventing immediate shell-attachment failure.
+
+### Interface
+- Keep discovered-neighbor connection primary and retain manual **Add by SSH address** in Ctrl+P, with an explicit gateway choice.
+
+### Limitations
+- Background remote updates require a connected CX viewer; optional tmux/Poppler/agent runtimes are installed separately. Robot internet sharing remains inactive.
+
 ## v0.1.33
 
 ### Fixes

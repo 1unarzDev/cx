@@ -856,6 +856,34 @@ fn bounded_terminfo(mut command: Command) -> bool {
         }
     }
 }
+/// Preserve supported terminal types; older/immutable hosts may lack a viewer's
+/// vendor terminfo. Use an installed standard type without changing OS databases.
+pub fn attach_terminal() -> Result<Option<String>> {
+    let supported = |name: &str| {
+        !name.is_empty()
+            && name.len() <= 128
+            && name.as_bytes()[0].is_ascii_alphanumeric()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-+._".contains(&b))
+            && {
+                let mut c = Command::new("infocmp");
+                c.arg(name);
+                bounded_terminfo(c)
+            }
+    };
+    if std::env::var("TERM")
+        .ok()
+        .is_some_and(|name| supported(&name))
+    {
+        return Ok(None);
+    }
+    ["xterm-256color", "xterm", "screen-256color", "vt100"]
+        .into_iter()
+        .find(|name| supported(name))
+        .map(|name| Some(name.into()))
+        .context("Execution device has no standard terminal description; install terminfo")
+}
 fn managed_config() -> String {
     let terminal = ["tmux-256color", "tmux", "screen-256color"]
         .into_iter()
@@ -1353,6 +1381,9 @@ pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
         c
     } else {
         let mut c = tmux(!session.external)?;
+        if let Some(terminal) = attach_terminal()? {
+            c.env("TERM", terminal);
+        }
         c.args(args);
         c
     };

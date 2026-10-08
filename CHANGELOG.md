@@ -6,6 +6,15 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.41
+
+### Features
+- Container menus offer only shells and read-only files, with no Claude/Codex or agent-permission choices.
+- Devices, sessions, containers, network, transfers and dialogs share `gg`, `G`, numbered row jumps and counted movement. Device and transfer lists support focused search/filter without starting work.
+
+### Fixes
+- Session chooser buttons use rounded, separated borders and a bold selection marker like the confirmation dialogs. Underlines no longer run through all three button rows; full labels remain visible at narrow and standard widths.
+
 ## v0.1.40
 
 v0.1.39 was left unpublished after a final host/container resume-scope correction.

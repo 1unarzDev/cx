@@ -1,10 +1,10 @@
 # Containers and Dev Containers
 
-CX treats containers as execution scopes beneath their enrolled device. They are not new SSH devices. Open **Ctrl+P → Containers**, choose a device or **All devices**, and expand its tree with Right/l. Names use the Docker container name, with **Devcontainer** or **Docker**, state and access status beside it. Enter opens actions; `n` opens a compact Shell/Codex/Claude chooser in a running accessible container. Sessions retain the container name and provider.
+CX treats containers as execution scopes beneath their enrolled device. They are not new SSH devices. Open **Ctrl+P → Containers**, choose a device or **All devices**, and expand its tree with Right/l. Names use the Docker container name, with **Devcontainer** or **Docker**, state and access status beside it. Enter opens actions; `n` opens a compact Shell chooser in a running accessible container. Sessions retain the container name and provider.
 
 ## Attach and browse
 
-Devcontainers are recognized by modern/legacy Dev Containers labels, or a verified devcontainer configuration at a bind-mounted workspace. A name such as `roboboat_dev` alone does not grant access. Running entries offer Shell, Agent session, Files and Stop. Codex/Claude must be installed inside the container; Default/YOLO permissions apply to that launch only. No agents, credentials or packages are automatically installed.
+Devcontainers are recognized by modern/legacy Dev Containers labels, or a verified devcontainer configuration at a bind-mounted workspace. A name such as `roboboat_dev` alone does not grant access. Running entries offer Shell, Files and Stop. Container menus do not offer Claude/Codex sessions or agent permissions. Existing sessions remain attachable. No agents, credentials or packages are automatically installed.
 
 Containers use the device's CX-managed tmux, so inner tmux is unnecessary. Native attachment retains terminal colors/default background, Tab completion, clipboard forwarding, paste and scrolling. Ctrl+] returns without stopping work. `d` in Sessions confirms stopping the exact managed shell or agent, including its owned process tree inside the container. An ordinary login shell inside a container loads its existing initialization; CX also loads an existing selected `/opt/ros/$ROS_DISTRO/setup.sh` when `ros2` is otherwise unavailable. It does not select a different ROS distribution.
 
@@ -26,7 +26,6 @@ Workspace startup requires the [Node Dev Containers CLI](https://code.visualstud
 cx containers --device laptop
 # Use the full ID from discovery in the following commands.
 cx container-new FULL_ID --device laptop
-cx container-new FULL_ID --device laptop --provider codex --yolo
 cx container-files FULL_ID --device laptop --path /workspace
 cx container-start FULL_ID --device laptop
 cx container-stop FULL_ID --device laptop

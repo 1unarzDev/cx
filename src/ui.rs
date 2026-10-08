@@ -45,6 +45,11 @@ enum Focus {
     Actions,
     Workspace,
 }
+enum Navigation {
+    Pending,
+    Move(isize),
+    Row(usize),
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Input {
     Search,
@@ -388,7 +393,6 @@ enum Dialog {
     DevcontainerUp(usize, String),
     ContainerActions(usize, crate::containers::Container),
     ContainerProvider(usize, ContainerScope),
-    ContainerPermissions(usize, ContainerScope, String),
     ContainerConfirm(usize, crate::containers::Container, String),
     Device(ChooseDevice),
     Provider(usize, Option<String>),
@@ -417,6 +421,8 @@ struct App {
     palette_selected: usize,
     motion_count: Option<usize>,
     pending_g: bool,
+    device_filter: String,
+    job_filter: String,
     help: bool,
     help_scroll: u16,
     notice: String,
@@ -428,6 +434,7 @@ struct App {
     dialog_selected: usize,
     dialog_detail_focus: bool,
     dialog_scroll: u16,
+    dialog_scroll_max: std::cell::Cell<u16>,
     launch_provider: Option<String>,
     submitted: HashMap<String, crate::model::TransferSpec>,
     submitted_clipboards: HashMap<String, String>,
@@ -506,6 +513,8 @@ impl App {
             input: None,
             text: String::new(),
             palette_selected: 0,
+            device_filter: String::new(),
+            job_filter: String::new(),
             motion_count: None,
             pending_g: false,
             help: false,
@@ -519,6 +528,7 @@ impl App {
             dialog_selected: 0,
             dialog_detail_focus: false,
             dialog_scroll: 0,
+            dialog_scroll_max: std::cell::Cell::new(4096),
             launch_provider: None,
             submitted: HashMap::new(),
             submitted_clipboards: HashMap::new(),
@@ -584,7 +594,6 @@ impl App {
                 Dialog::DevcontainerUp(..) => "Start devcontainer workspace",
                 Dialog::ContainerActions(..) => "Container actions",
                 Dialog::ContainerProvider(..) => "Container session",
-                Dialog::ContainerPermissions(..) => "Container permissions",
                 Dialog::ContainerConfirm(..) => "Container confirmation",
                 Dialog::Links(_) => "Links",
                 Dialog::Device(_) => "Device picker",
@@ -2115,6 +2124,57 @@ impl App {
             self.execute(action);
         }
     }
+    fn device_rows(&self) -> Vec<usize> {
+        std::iter::once(0)
+            .chain(
+                (0..self.devices.len())
+                    .filter(|d| self.device_matches(*d))
+                    .map(|d| d + 1),
+            )
+            .collect()
+    }
+    fn device_matches(&self, d: usize) -> bool {
+        let device = &self.devices[d];
+        fuzzy_score(
+            &self.device_filter,
+            &format!("{} {} {}", device.name, identity(device), device.host),
+        )
+        .is_some()
+    }
+    fn begin_list_filter(&mut self) {
+        self.input = Some(Input::Filter);
+        self.text = if matches!(self.dialog, Some(Dialog::Jobs)) {
+            self.job_filter.clone()
+        } else if self.focus == Focus::Devices || matches!(self.dialog, Some(Dialog::Device(_))) {
+            self.device_filter.clone()
+        } else {
+            self.search.clone()
+        };
+    }
+    fn update_list_filter(&mut self) {
+        if matches!(self.dialog, Some(Dialog::Jobs)) {
+            self.job_filter = self.text.clone();
+            self.dialog_selected = 0;
+            self.dialog_scroll = 0;
+        } else if self.focus == Focus::Devices || matches!(self.dialog, Some(Dialog::Device(_))) {
+            self.device_filter = self.text.clone();
+            self.dialog_selected = 0;
+            if !self.device_rows().contains(&self.device) {
+                self.device = 0;
+            }
+        } else if self.view == View::Files {
+            if let Some(b) = &mut self.browser {
+                b.filter = self.text.clone();
+                b.selected = 0;
+                b.restore_selection = None;
+            }
+        } else {
+            self.search = self.text.clone();
+            self.selected = 0;
+            self.network_selected = 0;
+            self.container_selected = 0;
+        }
+    }
     fn device_choices(&self, purpose: ChooseDevice) -> Vec<Option<usize>> {
         let mut choices = Vec::new();
         if matches!(
@@ -2129,7 +2189,9 @@ impl App {
         choices.extend(
             (0..self.devices.len())
                 .filter(|d| {
-                    purpose != ChooseDevice::AddGateway || self.devices[*d].target.is_some()
+                    self.device_matches(*d)
+                        && (purpose != ChooseDevice::AddGateway
+                            || self.devices[*d].target.is_some())
                 })
                 .map(Some),
         );
@@ -2157,6 +2219,15 @@ impl App {
                     let mut scope = scope.clone();
                     scope.folder = b.path.clone();
                     self.dialog = Some(Dialog::ContainerProvider(b.device, scope));
+                    self.dialog_selected = 0;
+                    return;
+                }
+            }
+        }
+        if self.focus == Focus::Workspace && self.view == View::Work {
+            if let Some((d, session)) = self.selected_session() {
+                if let Some(scope) = session.container {
+                    self.dialog = Some(Dialog::ContainerProvider(d, scope));
                     self.dialog_selected = 0;
                     return;
                 }
@@ -2456,7 +2527,27 @@ impl App {
                 }
             }
         }
-        let mut rows = unique.into_values().collect::<Vec<_>>();
+        let mut rows = unique
+            .into_values()
+            .filter(|(_, job)| {
+                fuzzy_score(
+                    &self.job_filter,
+                    &format!(
+                        "{} {} {} {} {} {}",
+                        transfer_name(job),
+                        transfer_status(job),
+                        job["source_host"].as_str().unwrap_or(""),
+                        job["destination_host"].as_str().unwrap_or(""),
+                        job["source_display"]
+                            .as_str()
+                            .or(job["source_path"].as_str())
+                            .unwrap_or(""),
+                        transfer_destination(job)
+                    ),
+                )
+                .is_some()
+            })
+            .collect::<Vec<_>>();
         rows.sort_by(|(a, x), (b, y)| {
             y["updated"]
                 .as_u64()
@@ -2466,7 +2557,124 @@ impl App {
         });
         rows
     }
+    fn navigation_motion(
+        &mut self,
+        key: KeyEvent,
+        page: usize,
+        horizontal: bool,
+    ) -> Option<Navigation> {
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            self.motion_count = None;
+            self.pending_g = false;
+            return None;
+        }
+        if let KeyCode::Char(c @ '0'..='9') = key.code {
+            if c != '0' || self.motion_count.is_some() {
+                self.motion_count = Some(
+                    self.motion_count
+                        .unwrap_or(0)
+                        .saturating_mul(10)
+                        .saturating_add((c as u8 - b'0') as usize)
+                        .min(10000),
+                );
+                self.pending_g = false;
+                return Some(Navigation::Pending);
+            }
+        }
+        if key.code == KeyCode::Char('g') {
+            if self.pending_g {
+                self.pending_g = false;
+                return Some(Navigation::Row(
+                    self.motion_count.take().unwrap_or(1).saturating_sub(1),
+                ));
+            }
+            self.pending_g = true;
+            return Some(Navigation::Pending);
+        }
+        self.pending_g = false;
+        let count = self.motion_count.take();
+        let delta = match key.code {
+            KeyCode::Char('G') => {
+                return Some(count.map_or(Navigation::Move(100_000), |n| {
+                    Navigation::Row(n.saturating_sub(1))
+                }))
+            }
+            KeyCode::Home => return Some(Navigation::Row(0)),
+            KeyCode::End => return Some(Navigation::Move(100_000)),
+            KeyCode::Up | KeyCode::Char('k') => -1,
+            KeyCode::Down | KeyCode::Char('j') => 1,
+            KeyCode::Left | KeyCode::Char('h') if horizontal => -1,
+            KeyCode::Right | KeyCode::Char('l') if horizontal => 1,
+            KeyCode::PageUp => -(page as isize),
+            KeyCode::PageDown => page as isize,
+            _ => return None,
+        };
+        Some(Navigation::Move(delta * count.unwrap_or(1) as isize))
+    }
     fn dialog_key(&mut self, key: KeyEvent, dialog: Dialog) {
+        if matches!(dialog, Dialog::Jobs | Dialog::Device(_))
+            && matches!(key.code, KeyCode::Char('/' | 'f'))
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            self.motion_count = None;
+            self.pending_g = false;
+            self.begin_list_filter();
+            return;
+        }
+        let count = match &dialog {
+            Dialog::SessionChooser(..) => 4,
+            Dialog::DevcontainerUp(..) => 2,
+            Dialog::ContainerActions(_, c) => container_action_labels(c).len(),
+            Dialog::ContainerProvider(..) => 1,
+            Dialog::ContainerConfirm(..) => 2,
+            Dialog::Links(links) => links.len(),
+            Dialog::Device(purpose) => self.device_choices(*purpose).len(),
+            Dialog::Provider(d, _) => self.provider_choices(*d).len(),
+            Dialog::Matching(..) | Dialog::Permissions(..) => 2,
+            Dialog::Jobs => self.job_rows().len(),
+            Dialog::Delete(..) | Dialog::StopShell(..) => 2,
+            Dialog::PendingExit(_) => 2,
+            Dialog::Neighbor(..) => 1,
+            Dialog::Peer(_) => 5,
+        };
+        let horizontal = matches!(
+            dialog,
+            Dialog::SessionChooser(..) | Dialog::ContainerProvider(..)
+        );
+        if let Some(motion) = self.navigation_motion(key, 5, horizontal) {
+            let detail = self.dialog_detail_focus
+                || (matches!(key.code, KeyCode::PageDown | KeyCode::PageUp)
+                    && matches!(
+                        dialog,
+                        Dialog::Jobs | Dialog::Delete(..) | Dialog::StopShell(..)
+                    ));
+            match motion {
+                Navigation::Pending => (),
+                Navigation::Row(row) if detail => {
+                    self.dialog_scroll = row.min(usize::from(self.dialog_scroll_max.get())) as u16
+                }
+                Navigation::Move(delta) if detail => {
+                    self.dialog_scroll =
+                        (self.dialog_scroll.min(self.dialog_scroll_max.get()) as isize + delta)
+                            .clamp(0, self.dialog_scroll_max.get() as isize)
+                            as u16
+                }
+                Navigation::Row(row) => {
+                    self.dialog_selected = row.min(count.saturating_sub(1));
+                    self.dialog_scroll = 0;
+                }
+                Navigation::Move(delta) => {
+                    self.dialog_selected = shift(self.dialog_selected, delta, count);
+                    self.dialog_scroll = 0;
+                }
+            }
+            return;
+        }
         if matches!(
             dialog,
             Dialog::SessionChooser(..) | Dialog::ContainerProvider(..)
@@ -2477,7 +2685,7 @@ impl App {
             let count = if matches!(dialog, Dialog::SessionChooser(..)) {
                 4
             } else {
-                3
+                1
             };
             match key.code {
                 KeyCode::Left | KeyCode::Char('h') => {
@@ -2498,8 +2706,6 @@ impl App {
                         }
                     } else {
                         match key.code {
-                            KeyCode::Char('c' | 'C') => Some(2),
-                            KeyCode::Char('x' | 'X') => Some(1),
                             KeyCode::Char('s' | 'S') => Some(0),
                             _ => None,
                         }
@@ -2587,22 +2793,6 @@ impl App {
                 _ => {}
             }
         }
-        let count = match &dialog {
-            Dialog::SessionChooser(..) => 4,
-            Dialog::DevcontainerUp(..) => 2,
-            Dialog::ContainerActions(_, c) => container_action_labels(c).len(),
-            Dialog::ContainerProvider(..) => 3,
-            Dialog::ContainerPermissions(..) | Dialog::ContainerConfirm(..) => 2,
-            Dialog::Links(links) => links.len(),
-            Dialog::Device(purpose) => self.device_choices(*purpose).len(),
-            Dialog::Provider(d, _) => self.provider_choices(*d).len(),
-            Dialog::Matching(..) | Dialog::Permissions(..) => 2,
-            Dialog::Jobs => self.job_rows().len(),
-            Dialog::Delete(..) | Dialog::StopShell(..) => 2,
-            Dialog::PendingExit(_) => 2,
-            Dialog::Neighbor(..) => 1,
-            Dialog::Peer(_) => 5,
-        };
         if let Dialog::Provider(device, _) = dialog {
             if key.code == KeyCode::Enter && self.dialog_selected >= count {
                 self.check_providers(device);
@@ -2699,10 +2889,6 @@ impl App {
                         "Shell" => {
                             self.start_container_session(d, c.scope(), "shell".into(), false)
                         }
-                        "Agent session" => {
-                            self.dialog = Some(Dialog::ContainerProvider(d, c.scope()));
-                            self.dialog_selected = 0;
-                        }
                         "Files · read-only" => self.open_container_browser(d, c.scope()),
                         "Start" | "Stop" | "Enable access" | "Disable access" => {
                             self.dialog = Some(Dialog::ContainerConfirm(d, c, action.into()));
@@ -2712,19 +2898,8 @@ impl App {
                     }
                 }
                 Dialog::ContainerProvider(d, scope) => {
-                    let provider = ["shell", "codex", "claude"][self.dialog_selected].to_string();
                     self.dialog = None;
-                    if provider == "shell" {
-                        self.start_container_session(d, scope, provider, false);
-                    } else {
-                        self.dialog = Some(Dialog::ContainerPermissions(d, scope, provider));
-                        self.dialog_selected = 0;
-                    }
-                }
-                Dialog::ContainerPermissions(d, scope, provider) => {
-                    let yolo = self.dialog_selected == 1;
-                    self.dialog = None;
-                    self.start_container_session(d, scope, provider, yolo);
+                    self.start_container_session(d, scope, "shell".into(), false);
                 }
                 Dialog::ContainerConfirm(d, c, action) => {
                     self.dialog = None;
@@ -3666,24 +3841,22 @@ impl App {
             return;
         }
         if self.help {
-            match key.code {
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.help_scroll = self.help_scroll.saturating_add(1).min(40)
+            if let Some(motion) = self.navigation_motion(key, 8, false) {
+                match motion {
+                    Navigation::Pending => (),
+                    Navigation::Move(delta) => {
+                        self.help_scroll = (self.help_scroll as isize + delta).clamp(0, 40) as u16
+                    }
+                    Navigation::Row(row) => self.help_scroll = row.min(40) as u16,
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.help_scroll = self.help_scroll.saturating_sub(1)
-                }
-                KeyCode::PageDown => self.help_scroll = self.help_scroll.saturating_add(8).min(40),
-                KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(8),
-                KeyCode::Home => self.help_scroll = 0,
-                _ => {}
+                return;
             }
             if matches!(key.code, KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('?')) {
                 self.help = false;
             }
             return;
         }
-        if let Some(dialog) = self.dialog.clone() {
+        if let Some(dialog) = self.dialog.clone().filter(|_| self.input.is_none()) {
             if matches!(key.code, KeyCode::Char('?') | KeyCode::F(1)) {
                 self.help = true;
                 return;
@@ -3693,6 +3866,8 @@ impl App {
         }
         // Input fields own every printable key, including navigation shortcuts.
         if let Some(mode) = self.input {
+            self.motion_count = None;
+            self.pending_g = false;
             let before_text = self.text.clone();
             match key.code {
                 KeyCode::Esc => {
@@ -3772,6 +3947,16 @@ impl App {
                 }
                 KeyCode::Down if mode == Input::Search => self.move_selection(1),
                 KeyCode::Up if mode == Input::Search => self.move_selection(-1),
+                KeyCode::Down if mode == Input::Filter && self.dialog.is_some() => {
+                    if let Some(dialog) = self.dialog.clone() {
+                        self.dialog_key(key, dialog);
+                    }
+                }
+                KeyCode::Up if mode == Input::Filter && self.dialog.is_some() => {
+                    if let Some(dialog) = self.dialog.clone() {
+                        self.dialog_key(key, dialog);
+                    }
+                }
                 KeyCode::Down if mode == Input::Filter => self.move_selection(1),
                 KeyCode::Up if mode == Input::Filter => self.move_selection(-1),
                 KeyCode::Tab | KeyCode::BackTab
@@ -3824,7 +4009,6 @@ impl App {
                     }
                     Input::Filter => {
                         self.input = None;
-                        self.focus = Focus::Workspace;
                     }
                     Input::Rename => {
                         if !self.text.is_empty()
@@ -3906,11 +4090,7 @@ impl App {
                 && self.input == Some(Input::Filter)
                 && self.text != before_text
             {
-                if let Some(b) = &mut self.browser {
-                    b.filter = self.text.clone();
-                    b.selected = 0;
-                    b.restore_selection = None;
-                }
+                self.update_list_filter();
             }
             return;
         }
@@ -3945,11 +4125,19 @@ impl App {
                     return;
                 }
                 KeyCode::Char('n') => {
-                    self.next_preview_match(1);
+                    let count = self.motion_count.take().unwrap_or(1);
+                    self.pending_g = false;
+                    for _ in 0..count {
+                        self.next_preview_match(1);
+                    }
                     return;
                 }
                 KeyCode::Char('N') => {
-                    self.next_preview_match(-1);
+                    let count = self.motion_count.take().unwrap_or(1);
+                    self.pending_g = false;
+                    for _ in 0..count {
+                        self.next_preview_match(-1);
+                    }
                     return;
                 }
                 KeyCode::Esc
@@ -3977,60 +4165,39 @@ impl App {
                 _ => {}
             }
         }
-        if self.view == View::Files && self.focus == Focus::Workspace {
-            if let KeyCode::Char(c @ '0'..='9') = key.code {
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                    && (c != '0' || self.motion_count.is_some())
-                {
-                    self.motion_count = Some(
-                        self.motion_count
-                            .unwrap_or(0)
-                            .saturating_mul(10)
-                            .saturating_add((c as u8 - b'0') as usize)
-                            .min(10000),
-                    );
-                    self.pending_g = false;
-                    return;
-                }
-            }
-            if key.modifiers.is_empty() && key.code == KeyCode::Char('g') {
-                if self.pending_g {
-                    self.move_selection(-100_000);
-                    self.pending_g = false;
-                    self.motion_count = None;
-                } else {
-                    self.pending_g = true;
-                }
-                return;
-            }
+        if self.view == View::Files
+            && self.focus == Focus::Workspace
+            && self.browser.as_ref().is_some_and(|b| !b.search.is_empty())
+            && matches!(key.code, KeyCode::Char('n' | 'N'))
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            let count = self.motion_count.take().unwrap_or(1);
             self.pending_g = false;
-            if key.code == KeyCode::Char('G')
-                && !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-            {
-                self.move_selection(100_000);
-                self.motion_count = None;
-                return;
-            }
-            if matches!(
-                key.code,
-                KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k')
-            ) && key.modifiers.is_empty()
-            {
-                let count = self.motion_count.take().unwrap_or(1) as isize;
-                self.move_selection(if matches!(key.code, KeyCode::Up | KeyCode::Char('k')) {
-                    -count
+            self.finish_visual();
+            for _ in 0..count {
+                self.next_file_match(if key.code == KeyCode::Char('n') {
+                    1
                 } else {
-                    count
+                    -1
                 });
-                return;
             }
+            return;
         }
-        self.motion_count = None;
-        self.pending_g = false;
+        if let Some(motion) =
+            self.navigation_motion(key, if self.pdf_preview_active() { 1 } else { 10 }, false)
+        {
+            match motion {
+                Navigation::Pending => (),
+                Navigation::Move(delta) => self.move_selection(delta),
+                Navigation::Row(row) => {
+                    self.move_selection(-100_000);
+                    self.move_selection(row as isize);
+                }
+            }
+            return;
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('p') => {
@@ -4151,6 +4318,10 @@ impl App {
             KeyCode::Char(':') => self.execute(Action::Command),
             KeyCode::Char('?') | KeyCode::F(1) => self.help = true,
             KeyCode::Char('T') => self.execute(Action::Jobs),
+            KeyCode::Char('f') if self.view != View::Files || self.focus == Focus::Devices => {
+                self.begin_list_filter()
+            }
+            KeyCode::Char('/') if self.focus == Focus::Devices => self.begin_list_filter(),
             KeyCode::Char('/') => {
                 self.finish_visual();
                 self.input = Some(Input::Search);
@@ -4852,7 +5023,9 @@ impl App {
             } else {
                 None
             };
-            self.device = shift(self.device, delta, self.devices.len() + 1);
+            let rows = self.device_rows();
+            let current = rows.iter().position(|d| *d == self.device).unwrap_or(0);
+            self.device = rows[shift(current, delta, rows.len())];
             self.selected = 0;
             if self.view == View::Files {
                 self.select_file_device();
@@ -5099,22 +5272,25 @@ fn render_with_native(
         );
         return;
     }
-    let query =
-        if app.browser.as_ref().is_some_and(|b| b.preview.is_some()) && app.view == View::Files {
-            app.browser.as_ref().unwrap().preview_find.query.as_str()
-        } else if app.input == Some(Input::Filter) {
-            app.browser
-                .as_ref()
-                .map(|b| b.filter.as_str())
-                .unwrap_or("")
-        } else if app.view == View::Files {
-            app.browser
-                .as_ref()
-                .map(|b| b.search.as_str())
-                .unwrap_or("")
-        } else {
-            app.search.as_str()
-        };
+    let query = if matches!(app.dialog, Some(Dialog::Jobs)) {
+        app.job_filter.as_str()
+    } else if app.focus == Focus::Devices || matches!(app.dialog, Some(Dialog::Device(_))) {
+        app.device_filter.as_str()
+    } else if app.browser.as_ref().is_some_and(|b| b.preview.is_some()) && app.view == View::Files {
+        app.browser.as_ref().unwrap().preview_find.query.as_str()
+    } else if app.input == Some(Input::Filter) && app.view == View::Files {
+        app.browser
+            .as_ref()
+            .map(|b| b.filter.as_str())
+            .unwrap_or("")
+    } else if app.view == View::Files {
+        app.browser
+            .as_ref()
+            .map(|b| b.search.as_str())
+            .unwrap_or("")
+    } else {
+        app.search.as_str()
+    };
     let show_search = matches!(
         app.input,
         Some(Input::Search | Input::PreviewSearch | Input::Filter)
@@ -5177,7 +5353,12 @@ fn render_with_native(
         .constraints([Constraint::Length(sidebar_width), Constraint::Min(15)])
         .split(vertical[1]);
     let mut device_items = vec![ListItem::new("All devices")];
-    for (i, d) in app.devices.iter().enumerate() {
+    for (i, d) in app
+        .devices
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| app.device_matches(*i))
+    {
         let status = if app.work[i].loading {
             "checking"
         } else if app.work[i].error.is_some() {
@@ -5251,12 +5432,20 @@ fn render_with_native(
             .borrow_mut()
             .push((Focus::Workspace, app.destination_active, content[1]));
     }
-    let mut state = ratatui::widgets::ListState::default().with_selected(Some(app.device));
+    let mut state = ratatui::widgets::ListState::default()
+        .with_selected(app.device_rows().iter().position(|d| *d == app.device));
     frame.render_stateful_widget(
         List::new(device_items)
             .block(
-                block("Devices".into(), app.focus == Focus::Devices)
-                    .padding(Padding::horizontal(1)),
+                block(
+                    if app.device_filter.is_empty() {
+                        "Devices".into()
+                    } else {
+                        "Devices · filter".into()
+                    },
+                    app.focus == Focus::Devices,
+                )
+                .padding(Padding::horizontal(1)),
             )
             .highlight_style(if app.focus == Focus::Devices {
                 selected_style()
@@ -6486,8 +6675,7 @@ fn render_with_native(
             ),
             Dialog::DevcontainerUp(d,path) => ("Start devcontainer workspace?".into(), vec!["Cancel".into(), "Run configuration · start workspace".into()], format!("{}\n{}\nRequires Node Dev Containers CLI on this device.\nThis may build images, start Compose services and run lifecycle hooks declared by the workspace. Review the configuration first; container network settings come from that configuration.", safe_label(&app.devices[*d].name), safe_label(path))),
             Dialog::ContainerActions(d,c) => (format!("{} · {}",safe_label(&c.name),safe_label(&app.devices[*d].name)),container_action_labels(c).iter().map(|s|(*s).into()).collect(),format!("{}\n{} · {}\nNetwork: {} · ports {}\nUser: {} · folder {}\nExisting networks are preserved; no automatic port forwarding.{}",safe_label(&c.evidence),safe_label(&c.state),safe_label(&c.image),safe_label(&c.network),c.ports.as_object().map(|p|p.len()).unwrap_or(0),safe_label(&c.user),safe_label(&c.folder),if !c.devcontainer&&!c.allowed{"\nOrdinary containers are inspection-only until explicitly enabled."}else{""})),
-            Dialog::ContainerProvider(d,scope)=>(format!("Session · {} / {}",safe_label(&app.devices[*d].name),safe_label(&scope.name)),vec!["Shell · container user".into(),"Codex · installed in container".into(),"Claude · installed in container".into()],"Runtime availability is checked before launch. No packages are installed. Enter choose · Escape cancel".into()),
-            Dialog::ContainerPermissions(_,scope,provider)=>(format!("{} · {} permissions",safe_label(&scope.name),provider),vec!["Default · existing permissions".into(),"YOLO · bypass approvals".into()],"Applies to this new container session. Codex YOLO also disables its sandbox. Container host mounts/network remain accessible according to its existing configuration. Enter starts · Escape cancels".into()),
+            Dialog::ContainerProvider(d,scope)=>(format!("Session · {} / {}",safe_label(&app.devices[*d].name),safe_label(&scope.name)),vec!["Shell · container user".into()],"Runtime availability is checked before launch. No packages are installed. Enter choose · Escape cancel".into()),
             Dialog::ContainerConfirm(d,c,action)=>(format!("{} {}?",action,safe_label(&c.name)),vec!["Cancel · keep current state".into(),format!("{} selected container",action)],format!("{}\n{}\n{}\n{}\nOnly this exact container ID is targeted. No rebuild/removal or network changes.",safe_label(&app.devices[*d].name),safe_label(&c.name),safe_label(&c.id[..12]),if action=="Stop"{"Running work in this container will end."}else if action=="Enable access"{"Enable this container for terminals, read-only files and lifecycle actions on this host account."}else{"Existing image, volumes and ports are preserved."})),
             Dialog::Device(purpose) => (
                 match purpose {
@@ -6675,10 +6863,16 @@ fn render_with_native(
                     Constraint::Length(1),
                 ])
                 .split(inner);
+            let max_scroll = preview_max_scroll(
+                &preview_lines(&detail, "text"),
+                rows[0].width,
+                rows[0].height,
+            );
+            app.dialog_scroll_max.set(max_scroll);
             frame.render_widget(
                 Paragraph::new(detail)
                     .wrap(Wrap { trim: false })
-                    .scroll((app.dialog_scroll, 0)),
+                    .scroll((app.dialog_scroll.min(max_scroll), 0)),
                 rows[0],
             );
             confirmation_buttons(
@@ -6794,10 +6988,16 @@ fn render_with_native(
                     &mut state,
                 );
             }
+            let max_scroll = preview_max_scroll(
+                &preview_lines(&detail, "text"),
+                parts[1].width.saturating_sub(2),
+                parts[1].height.saturating_sub(2),
+            );
+            app.dialog_scroll_max.set(max_scroll);
             frame.render_widget(
                 Paragraph::new(detail)
                     .wrap(Wrap { trim: false })
-                    .scroll((app.dialog_scroll, 0))
+                    .scroll((app.dialog_scroll.min(max_scroll), 0))
                     .block(block("Details · PgUp/PgDn".into(), app.dialog_detail_focus)),
                 parts[1],
             );
@@ -11215,6 +11415,136 @@ mod tests {
             .any(|t| t.device == 0 && matches!(t.op, Operation::List { .. })));
     }
     #[test]
+    fn menu_navigation_counts_edges_and_text_ownership() {
+        let (mut a, _rx) = queued_app();
+        a.focus = Focus::Devices;
+        press(&mut a, '2');
+        press(&mut a, 'j');
+        assert_eq!(a.device, 2);
+        press(&mut a, 'g');
+        press(&mut a, 'g');
+        assert_eq!(a.device, 0);
+        press(&mut a, 'G');
+        assert_eq!(a.device, 2);
+        press(&mut a, '2');
+        press(&mut a, 'G');
+        assert_eq!(a.device, 1);
+        a.focus = Focus::Actions;
+        press(&mut a, '3');
+        press(&mut a, 'j');
+        assert_eq!(a.side_selected, 3);
+        press(&mut a, 'g');
+        press(&mut a, 'g');
+        assert_eq!(a.side_selected, 0);
+        a.focus = Focus::Workspace;
+        a.view = View::Work;
+        a.device = 0;
+        for i in 0..4 {
+            let mut session = disposable_shell();
+            session.id = format!("navigation-{i}");
+            a.work[0].sessions.push(session);
+        }
+        press(&mut a, '3');
+        press(&mut a, 'j');
+        assert_eq!(a.selected, 3);
+        press(&mut a, 'g');
+        press(&mut a, 'g');
+        assert_eq!(a.selected, 0);
+        press(&mut a, 'G');
+        assert_eq!(a.selected, 3);
+        a.focus = Focus::Workspace;
+        a.view = View::Containers;
+        a.containers.insert(
+            0,
+            vec![container_fixture('a', true), container_fixture('b', true)],
+        );
+        press(&mut a, '2');
+        press(&mut a, 'j');
+        assert_eq!(a.container_selected, 2);
+        press(&mut a, 'g');
+        press(&mut a, 'g');
+        assert_eq!(a.container_selected, 0);
+        press(&mut a, 'G');
+        assert_eq!(a.container_selected, a.container_rows().len() - 1);
+        network_fixture(&mut a);
+        press(&mut a, 'G');
+        assert_eq!(a.network_selected, a.network_rows().len() - 1);
+        press(&mut a, 'g');
+        press(&mut a, 'g');
+        assert_eq!(a.network_selected, 0);
+        press(&mut a, '2');
+        press(&mut a, 'j');
+        assert_eq!(a.network_selected, 2.min(a.network_rows().len() - 1));
+        a.dialog = Some(Dialog::SessionChooser(0, "~".into()));
+        a.dialog_selected = 0;
+        press(&mut a, '2');
+        press(&mut a, 'l');
+        assert_eq!(a.dialog_selected, 2);
+        press(&mut a, 'g');
+        press(&mut a, 'g');
+        assert_eq!(a.dialog_selected, 0);
+        press(&mut a, 'G');
+        assert_eq!(a.dialog_selected, 3);
+        a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        a.focus = Focus::Devices;
+        press(&mut a, '5');
+        press(&mut a, 'f');
+        for c in "laptop".chars() {
+            press(&mut a, c);
+        }
+        assert_eq!(a.device_filter, "laptop");
+        assert_eq!(a.device_rows(), vec![0, 2]);
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.focus == Focus::Devices);
+        press(&mut a, 'j');
+        assert_eq!(a.device, 2);
+        a.key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+        a.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        for c in "2gg".chars() {
+            press(&mut a, c);
+        }
+        assert_eq!(a.text, "2gg");
+        assert!(a.motion_count.is_none());
+    }
+    #[test]
+    fn transfer_filter_and_counted_detail_navigation_preserve_job_identity() {
+        let (mut a, rx) = queued_app();
+        a.jobs.insert(0,serde_json::json!({"jobs":[
+            {"key":"a","updated":3,"status":"failed","source_display":"alpha.txt","actual_destinations":["/target/alpha.txt"],"error":"retry later"},
+            {"key":"b","updated":2,"status":"complete","source_display":"beta.txt"},
+            {"key":"c","updated":1,"status":"running","source_display":"gamma.txt"}]}));
+        a.dialog = Some(Dialog::Jobs);
+        press(&mut a, '2');
+        press(&mut a, 'j');
+        assert_eq!(a.dialog_selected, 2);
+        press(&mut a, 'g');
+        press(&mut a, 'g');
+        assert_eq!(a.dialog_selected, 0);
+        press(&mut a, 'G');
+        assert_eq!(a.dialog_selected, 2);
+        press(&mut a, '/');
+        for c in "alpha".chars() {
+            press(&mut a, c);
+        }
+        assert_eq!(a.job_rows().len(), 1);
+        assert_eq!(a.job_rows()[0].1["key"], "a");
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(a.dialog, Some(Dialog::Jobs)));
+        assert!(rx.try_recv().is_err());
+        capture_app(&a, 48);
+        a.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        press(&mut a, 'G');
+        assert_eq!(a.dialog_scroll, a.dialog_scroll_max.get());
+        press(&mut a, 'g');
+        press(&mut a, 'g');
+        assert_eq!(a.dialog_scroll, 0);
+        press(&mut a, '3');
+        press(&mut a, 'j');
+        assert_eq!(a.dialog_scroll, 3.min(a.dialog_scroll_max.get()));
+        assert_eq!(a.dialog_selected, 0);
+        assert!(rx.try_recv().is_err());
+    }
+    #[test]
     fn yazi_motion_counts_and_delete_yes_no_do_not_leak_into_inputs() {
         let (mut a, rx) = file_app();
         press(&mut a, '2');
@@ -12103,9 +12433,13 @@ mod tests {
         assert_eq!(a.container_selected, 2);
     }
     #[test]
-    fn container_shell_and_agent_requests_capture_scope_and_permissions() {
+    fn container_menus_only_launch_shells() {
         let (mut a, rx) = queued_app();
         let c = container_fixture('a', true);
+        assert_eq!(
+            container_action_labels(&c),
+            vec!["Shell", "Files · read-only", "Stop"]
+        );
         a.open_container_browser(0, c.scope());
         let _ = rx.try_iter().collect::<Vec<_>>();
         a.browser.as_mut().unwrap().path = "/workspace/src".into();
@@ -12113,17 +12447,24 @@ mod tests {
         assert!(
             matches!(rx.try_recv().unwrap().op,Operation::ContainerCreate{scope,request,yolo:false} if scope.folder=="/workspace/src"&&request.provider=="shell")
         );
+        a.creating = false;
+        let mut session = disposable_shell();
+        session.container = Some(c.scope());
+        a.work[0].sessions.push(session);
+        a.view = View::Work;
+        a.focus = Focus::Workspace;
+        press(&mut a, 'n');
+        assert!(matches!(a.dialog, Some(Dialog::ContainerProvider(..))));
+        a.dialog = None;
+        a.view = View::Files;
         a.execute(Action::New);
         assert!(matches!(a.dialog, Some(Dialog::ContainerProvider(..))));
-        a.dialog_selected = 1;
-        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        press(&mut a, 'x');
+        press(&mut a, 'c');
+        assert!(rx.try_recv().is_err());
+        press(&mut a, 's');
         assert!(
-            matches!(a.dialog, Some(Dialog::ContainerPermissions(..))) && a.dialog_selected == 0
-        );
-        a.dialog_selected = 1;
-        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(
-            matches!(rx.try_recv().unwrap().op,Operation::ContainerCreate{request,yolo:true,..} if request.provider=="codex")
+            matches!(rx.try_recv().unwrap().op,Operation::ContainerCreate{request,yolo:false,..} if request.provider=="shell")
         );
     }
     #[test]
@@ -12247,8 +12588,14 @@ mod tests {
                 vec![container_fixture('a', true), container_fixture('b', false)],
             );
             a.container_selected = 1;
-            for mode in ["tree", "actions", "files", "chooser"] {
-                if mode == "chooser" {
+            for mode in ["tree", "actions", "files", "chooser", "container-chooser"] {
+                if mode == "container-chooser" {
+                    a.dialog = Some(Dialog::ContainerProvider(
+                        0,
+                        container_fixture('a', true).scope(),
+                    ));
+                    a.dialog_selected = 0;
+                } else if mode == "chooser" {
                     a.dialog = Some(Dialog::SessionChooser(0, "~/robot/workspace".into()));
                     a.dialog_selected = 2;
                 } else if mode == "actions" {
@@ -12297,9 +12644,26 @@ mod tests {
                     .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
                     .collect::<Vec<_>>()
                     .join("\n");
-                if mode == "chooser" {
+                if mode == "container-chooser" {
+                    assert!(text.contains("[s] Shell"));
+                    assert!(
+                        !text.contains("[c] Claude")
+                            && !text.contains("[x] Codex")
+                            && !text.contains("Agent session")
+                    );
+                } else if mode == "chooser" {
                     for label in ["[c] Claude", "[x] Codex", "[s] Shell", "[d] Devcontainer"] {
                         assert!(text.contains(label), "{width}: missing {label}");
+                    }
+                    let rows = if width < 68 { 2 } else { 1 };
+                    let dialog = popup(Rect::new(0, 0, width, height), 78, 7 + rows * 3);
+                    for y in dialog.y..dialog.bottom() {
+                        for x in dialog.x..dialog.right() {
+                            assert!(
+                                !buffer[(x, y)].modifier.contains(Modifier::UNDERLINED),
+                                "chooser must not underline button borders at {width}: {x},{y}"
+                            );
+                        }
                     }
                 } else {
                     assert!(text.contains("roboboat_dev"), "{width} {mode}");
@@ -14568,7 +14932,7 @@ fn container_action_labels(c: &crate::containers::Container) -> Vec<&'static str
         return vec!["Enable access"];
     }
     let mut actions = if c.state == "running" {
-        vec!["Shell", "Agent session", "Files · read-only", "Stop"]
+        vec!["Shell", "Files · read-only", "Stop"]
     } else {
         vec!["Start"]
     };
@@ -14695,11 +15059,7 @@ fn render_session_chooser(
             ("[d] Devcontainer", "container"),
         ]
     } else {
-        vec![
-            ("[s] Shell", "shell"),
-            ("[x] Codex", "codex"),
-            ("[c] Claude", "claude"),
-        ]
+        vec![("[s] Shell", "shell")]
     };
     let columns = if area.width < 68 { 2 } else { choices.len() };
     let rows = choices.len().div_ceil(columns);
@@ -14717,19 +15077,22 @@ fn render_session_chooser(
         Rect::new(inner.x, inner.y, inner.width, 3),
     );
     for (i, (label, provider)) in choices.iter().enumerate() {
-        let cell_width = inner.width / columns as u16;
+        let column = (i % columns) as u16;
+        let start = inner.width * column / columns as u16;
+        let end = inner.width * (column + 1) / columns as u16;
         let cell = Rect::new(
-            inner.x + (i % columns) as u16 * cell_width,
+            inner.x + start,
             inner.y + 3 + (i / columns) as u16 * 3,
-            cell_width,
+            (end - start).saturating_sub(1),
             3,
         );
         let available = match dialog {
             Dialog::SessionChooser(d, _) => app.provider_choices(*d).contains(provider),
             _ => true,
         };
-        let style = if app.dialog_selected == i {
-            selected_style()
+        let active = app.dialog_selected == i;
+        let style = if active {
+            accent().add_modifier(Modifier::BOLD)
         } else if available {
             accent()
         } else {
@@ -14739,11 +15102,31 @@ fn render_session_chooser(
             Paragraph::new(*label)
                 .alignment(ratatui::layout::Alignment::Center)
                 .style(style)
-                .block(Block::default().borders(Borders::ALL).border_style(style)),
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(if active {
+                            if ascii() {
+                                " > "
+                            } else {
+                                " › "
+                            }
+                        } else {
+                            ""
+                        })
+                        .border_type(if ascii() {
+                            BorderType::Plain
+                        } else {
+                            BorderType::Rounded
+                        })
+                        .border_style(if active { style } else { muted() }),
+                ),
             cell,
         );
     }
-    let help = if columns == 2 {
+    let help = if !host {
+        "s shell · Enter start · Esc cancel"
+    } else if columns == 2 {
         "h/l choose · Enter start · Esc cancel"
     } else {
         "c/x/s/d quick pick · h/l choose · Enter · Esc"

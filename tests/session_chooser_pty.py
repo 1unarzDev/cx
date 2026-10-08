@@ -30,6 +30,15 @@ with tempfile.TemporaryDirectory(prefix='cx-session-chooser-') as tmp:
   read(1);send(b'n');wait(lambda:'[d] Devcontainer' in text())
   for label in ['[c] Claude','[x] Codex','[s] Shell']:assert label in text()
   assert not sessions(),'n created a session before a profile choice'
+  def selected(label):
+   for y,line in enumerate(screen.display):
+    x=line.find(label)
+    if x>=0:return screen.buffer[y][x].bold
+   return False
+  send(b'gg');wait(lambda:selected('[c] Claude'))
+  send(b'2l');wait(lambda:selected('[s] Shell'))
+  send(b'G');wait(lambda:selected('[d] Devcontainer'))
+  send(b'2G');wait(lambda:selected('[x] Codex'))
   send(b'l');send(b'\x1b[D');send(b'\x1b[C');send(b'h')
   send(b'\x1b');wait(lambda:'[d] Devcontainer' not in text());assert not sessions()
   send(b'n');wait(lambda:'[s] Shell' in text());send(b's')
@@ -50,4 +59,4 @@ with tempfile.TemporaryDirectory(prefix='cx-session-chooser-') as tmp:
   if proc.poll() is None:proc.kill();proc.wait()
   subprocess.run(['tmux','-S',str(state/'managed.sock'),'kill-server'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
   os.close(master);os.close(slave)
-print(json.dumps(dict(result='PASS',checks='n opens four choices without launching, h/l and arrows, cancel, s quick launch at home, native command, one detach, w read-only watch/input refusal and termios',scope='private CX state/tmux and owned shell')))
+print(json.dumps(dict(result='PASS',checks='n opens four choices without launching, h/l and arrows, gg/G/2l/2G, cancel, s quick launch at home, native command, one detach, w read-only watch/input refusal and termios',scope='private CX state/tmux and owned shell')))

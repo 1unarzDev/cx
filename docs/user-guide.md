@@ -13,11 +13,15 @@ Detailed controls and behavior for sessions, files, terminals, network discovery
 | Ctrl+] inside managed terminals | Return; session keeps running |
 | Ctrl+C in cx | Exit viewer; work keeps running |
 | Files: `.`, Space, `v`, `f` | Hidden files, select/advance, range, filter |
-| Files: `gg`, `G`, `5j` / `5k` | First, last, counted movement |
+| `gg`, `G`, `5j` / `5k`, `5G` | First, last, counted movement, jump to row 5 |
 | Files: `y`/`c`, `x`, `p` | Copy, cut, paste into focused folder |
 | Files: `t`, `T` | Choose destination device/folder, transfer results |
 | Files: `r`, `d` | Rename, confirm permanent deletion (`y` / `n`) |
 | Files: `M`, `o` | New folder, cycle copy conflict policy |
+
+List navigation applies to Devices, Actions, Sessions, Network, Containers, Transfers and their dialogs. Counts work with Up/Down, j/k and PageUp/PageDown; session chooser counts also work with h/l or Left/Right. In transfer details, Tab changes focus so the same keys scroll details rather than select jobs. File search and preview matches support counted n/N. Counts never repeat actions or interpret typed text.
+
+Use `/` to search or `f` to filter the focused device list, device picker or transfer list; Enter finishes filtering without launching or cancelling anything. In Sessions, Network and Containers, `f` filters the workspace list. Clear a filter with `f`, Ctrl+U, Enter. Search, filter, command, password and palette inputs retain ordinary typing; arrows remain available for their existing input navigation. Files retain separate search and filter behavior.
 
 ## Sessions and permissions
 

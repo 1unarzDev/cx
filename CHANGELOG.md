@@ -6,6 +6,23 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.35
+
+### Features
+- After authenticated connection, check Linux x86_64/ARM64 support and install the helper plus a signed, fully static portable tmux when absent; preserve existing tools without OS package or profile changes.
+- Mask passwords in a compact prompt with F2 and clickable Show/Hide controls.
+
+### Interface
+- Give folder paths up to three high-contrast lines and use the full workspace width for the active folder in split panes.
+
+### Fixes
+- Include the robot shell attachment, public-key-first authentication, viewer-mediated updates and device-aware Ctrl+P improvements from the unpublished v0.1.34 candidate.
+- Drain terminal output during the detach regression check to avoid a CI cleanup deadlock.
+
+### Limitations
+- Background robot updates require a connected viewer. Optional PDF converters and coding-agent runtimes remain separate. Internet sharing and full reverse SSH enforcement remain inactive.
+
+
 ## v0.1.34
 
 ### Features

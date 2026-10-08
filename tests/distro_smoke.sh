@@ -3,6 +3,7 @@
 set -eu
 CX_BINARY=$(realpath "${1:?provide a freshly built static cx binary}")
 CX_SOURCE=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
+CX_TMUX=$(realpath "${2:?provide portable tmux}")
 CX_ARCH=$(uname -m)
 for CX_IMAGE in ubuntu:22.04 ubuntu:24.04 rockylinux:8 rockylinux:9 archlinux:latest; do
     # The official Arch image is x86_64 only; do not pretend ARM was tested.
@@ -14,6 +15,7 @@ for CX_IMAGE in ubuntu:22.04 ubuntu:24.04 rockylinux:8 rockylinux:9 archlinux:la
     docker run --rm --security-opt=no-new-privileges \
         --mount "type=bind,src=$CX_SOURCE,dst=/repo,readonly" \
         --mount "type=bind,src=$CX_BINARY,dst=/binary/cx,readonly" \
+        --mount "type=bind,src=$CX_TMUX,dst=/binary/tmux,readonly" \
         "$CX_IMAGE" sh -eu -c '
         if command -v apt-get >/dev/null; then
             apt-get update -qq
@@ -32,6 +34,10 @@ for CX_IMAGE in ubuntu:22.04 ubuntu:24.04 rockylinux:8 rockylinux:9 archlinux:la
         done
         infocmp tmux-256color >/dev/null
         useradd -m -u 10001 cx-test
+        /binary/tmux -V
+        runuser -u cx-test -- /binary/tmux -L cx-portable-fixture new-session -d -s fixture "sleep 30"
+        runuser -u cx-test -- /binary/tmux -L cx-portable-fixture list-sessions
+        runuser -u cx-test -- /binary/tmux -L cx-portable-fixture kill-server
         # Root installer refusal is tested separately from ordinary-user installation.
         if CX_NO_LAUNCH=1 sh /repo/install.sh >/dev/null 2>&1; then
             echo "root installer unexpectedly accepted" >&2; exit 1

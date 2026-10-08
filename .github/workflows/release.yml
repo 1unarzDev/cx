@@ -31,6 +31,7 @@ jobs:
       - run: python3 tests/metadata_reconnect_cli.py target/debug/cx
       - run: python3 tests/jump_routes_cli.py target/debug/cx
       - run: python3 tests/access_routes_cli.py target/debug/cx
+      - run: python3 tests/enrollment_tooling_cli.py target/debug/cx
       - run: python3 tests/robot_enrollment.py
       - run: python3 tests/login_terminal_pty.py target/debug/cx
       - run: python3 tests/attach_terminal_pty.py target/debug/cx
@@ -54,7 +55,7 @@ jobs:
       - run: python3 tests/pdf_pages_pty.py target/debug/cx
       - run: CX_TEST_SHELL=/usr/bin/fish python3 tests/native_command_pty.py target/debug/cx
       - run: CX_TEST_SHELL=/usr/bin/zsh python3 tests/native_command_pty.py target/debug/cx
-      - run: shellcheck install.sh tests/distro_smoke.sh && python3 tests/install_fixture.py
+      - run: shellcheck install.sh tests/distro_smoke.sh scripts/build-portable-tmux.sh scripts/enroll-tmux.sh && python3 tests/install_fixture.py
   portable:
     uses: ./.github/workflows/portable.yml
   publish:
@@ -89,6 +90,13 @@ jobs:
             chmod 755 "$binary"
             asset="dist/cx-$GITHUB_REF_NAME-linux-$arch.tar.gz"
             tar --mtime="@$(git log -1 --format=%ct)" --owner=0 --group=0 --numeric-owner -C "binaries/binary-$arch" -czf "$asset" cx
+            openssl dgst -sha256 -sign "$key" -out "$asset.sig" "$asset"
+            openssl dgst -sha256 -verify release-key.pem -signature "$asset.sig" "$asset"
+            tool="binaries/binary-$arch/tmux"
+            test -f "$tool" && test ! -L "$tool"
+            chmod 755 "$tool"
+            asset="dist/cx-tmux-$GITHUB_REF_NAME-linux-$arch.tar.gz"
+            tar --mtime="@$(git log -1 --format=%ct)" --owner=0 --group=0 --numeric-owner -C "binaries/binary-$arch" -czf "$asset" tmux
             openssl dgst -sha256 -sign "$key" -out "$asset.sig" "$asset"
             openssl dgst -sha256 -verify release-key.pem -signature "$asset.sig" "$asset"
           done

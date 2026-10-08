@@ -90,5 +90,24 @@ with tempfile.TemporaryDirectory(prefix='cx-robot-enroll-', dir=base) as tmp:
         assert upgrade('0.1.35', fixture('0.1.35')).returncode == 75
         assert binary.read_bytes() == fixture('0.1.34')
     assert tmux.read_bytes() == b'user-installed tmux preserved'
+
+    # Portable tool enrollment installs absent tools, rejects bad probes, and preserves existing ones.
+    def install_tool(content):
+        return subprocess.run(['/bin/sh', str(repo / 'scripts/enroll-tmux.sh')], input=content,
+            env=dict(env, PATH=str(tools)), capture_output=True, timeout=5)
+    # A broken existing binary is never overwritten.
+    assert install_tool(b'replace').returncode != 0
+    assert tmux.read_bytes() == b'user-installed tmux preserved'
+    tmux.unlink()
+    good_tool = b'#!/bin/sh\nprintf "tmux 3.7c\\n"\n'
+    assert install_tool(b'#!/bin/sh\nexit 1\n').returncode != 0 and not tmux.exists()
+    assert install_tool(good_tool).returncode == 0 and tmux.read_bytes() == good_tool
+    assert install_tool(b'replace').returncode == 0 and tmux.read_bytes() == good_tool
+    tmux.unlink()
+    tmux.symlink_to(outside)
+    assert install_tool(good_tool).returncode != 0 and outside.read_text() == 'untouched'
+    assert not list(binary.parent.glob('.tmux-install.*'))
+    print('PASS: minimal helper, monotonic updates, absent portable tmux, existing tool and trust preservation')
+
 print(json.dumps(dict(result='PASS', public_key_preservation=True, idempotence=True,
     unsafe_trust_refused=True, minimal_without_optional_tools=True, full_mode_still_checks_tools=True, mediated_update_monotonic=True, install_lock_preserved=True)))

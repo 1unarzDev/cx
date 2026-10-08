@@ -14,7 +14,7 @@ jobs:
       - run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt
       - run: cargo fmt --check && cargo test --locked
       - run: sudo apt-get update && sudo apt-get install -y shellcheck tmux poppler-utils iproute2 iputils-ping ncurses-bin
-      - run: shellcheck install.sh tests/distro_smoke.sh
+      - run: shellcheck install.sh tests/distro_smoke.sh scripts/build-portable-tmux.sh scripts/enroll-tmux.sh
       - run: python3 tests/install_fixture.py
   portable:
     uses: ./.github/workflows/portable.yml

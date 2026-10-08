@@ -4884,6 +4884,23 @@ fn render_with_native(
                         native,
                     );
                 } else if let Some(other) = &app.other_browser {
+                    let path_height = folder_path_lines(
+                        &b.display_path,
+                        workspace.width.saturating_sub(2) as usize,
+                        if workspace.height >= 16 { 3 } else { 1 },
+                    )
+                    .len()
+                    .max(1) as u16;
+                    let rows = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Length(path_height), Constraint::Min(1)])
+                        .split(workspace);
+                    render_folder_path(
+                        frame,
+                        &b.display_path,
+                        rows[0],
+                        app.focus == Focus::Workspace,
+                    );
                     let panes = Layout::default()
                         .direction(if workspace.width >= 52 {
                             Direction::Horizontal
@@ -4891,7 +4908,7 @@ fn render_with_native(
                             Direction::Vertical
                         })
                         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                        .split(workspace);
+                        .split(rows[1]);
                     app.panels.borrow_mut().extend([
                         (Focus::Workspace, false, panes[0]),
                         (Focus::Workspace, true, panes[1]),
@@ -7124,6 +7141,66 @@ fn compact_path(path: &str, width: usize) -> String {
     }
     format!("…{tail}")
 }
+// Bounded character wrapping keeps the current folder visible without consuming the list.
+fn folder_path_lines(path: &str, width: usize, max_lines: usize) -> Vec<String> {
+    if width == 0 || max_lines == 0 {
+        return Vec::new();
+    }
+    let safe = safe_label(path);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut used = 0;
+    let mut clipped = false;
+    for c in safe.chars().rev() {
+        let cells = Span::raw(c.to_string()).width();
+        if used + cells > width {
+            lines.push(std::mem::take(&mut line));
+            used = 0;
+            if lines.len() == max_lines {
+                clipped = true;
+                break;
+            }
+        }
+        if cells <= width {
+            line.insert(0, c);
+            used += cells;
+        }
+    }
+    if !line.is_empty() && lines.len() < max_lines {
+        lines.push(line);
+    }
+    lines.reverse();
+    if clipped {
+        if let Some(first) = lines.first_mut() {
+            *first = format!(
+                "…{}",
+                compact_path(first, width.saturating_sub(1)).trim_start_matches('…')
+            );
+        }
+    }
+    lines
+}
+fn render_folder_path(frame: &mut Frame<'_>, path: &str, area: Rect, focused: bool) {
+    let style = if focused {
+        accent().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+    } else {
+        accent()
+    };
+    frame.render_widget(
+        Paragraph::new(
+            folder_path_lines(
+                path,
+                area.width.saturating_sub(2) as usize,
+                area.height as usize,
+            )
+            .into_iter()
+            .map(|line| Line::from(format!(" {line}")))
+            .collect::<Vec<_>>(),
+        )
+        .style(style),
+        area,
+    );
+}
 fn render_browser(
     frame: &mut Frame<'_>,
     b: &Browser,
@@ -7133,76 +7210,80 @@ fn render_browser(
     label: &str,
     clipboard: Option<&Clipboard>,
 ) {
+    let path_height = folder_path_lines(
+        &b.display_path,
+        area.width.saturating_sub(2) as usize,
+        if area.height >= 12 { 3 } else { 1 },
+    )
+    .len()
+    .max(1) as u16;
     let parts = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Length(path_height),
+            Constraint::Length(1),
             Constraint::Min(1),
             Constraint::Length(1),
         ])
         .split(area);
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled(format!(" {label}  "), accent().add_modifier(Modifier::BOLD)),
-                Span::styled(identity(device), muted()),
-            ]),
-            Line::from(Span::styled(
-                format!(
-                    " {}",
-                    compact_path(&b.display_path, area.width.saturating_sub(2) as usize)
-                ),
-                accent(),
-            )),
-            Line::from(vec![
-                Span::styled(
-                    format!(
-                        " {} ",
-                        if b.visual_anchor.is_some() {
-                            "VISUAL"
-                        } else {
-                            "NORMAL"
-                        }
-                    ),
-                    tint(if b.visual_anchor.is_some() {
-                        Color::Magenta
-                    } else {
-                        Color::Green
-                    })
-                    .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{} selected{}", b.marked.len(), {
-                        let shown = browser_entries(b)
-                            .iter()
-                            .filter(|e| b.marked.contains(&e.path))
-                            .count();
-                        if shown < b.marked.len() {
-                            format!(" ({shown} shown)")
-                        } else {
-                            String::new()
-                        }
-                    }),
-                    if b.marked.is_empty() {
-                        muted()
-                    } else {
-                        tint(Color::Yellow)
-                    },
-                ),
-                Span::styled(
-                    format!(
-                        " · hidden {}{}",
-                        if b.show_hidden { "shown" } else { "off" },
-                        if b.loading { " · loading" } else { "" }
-                    ),
-                    muted(),
-                ),
-            ]),
-        ]),
+        Paragraph::new(Line::from(vec![
+            Span::styled(format!(" {label}  "), accent().add_modifier(Modifier::BOLD)),
+            Span::styled(identity(device), muted()),
+        ])),
         parts[0],
     );
+    render_folder_path(frame, &b.display_path, parts[1], focused);
+    frame.render_widget(
+        Paragraph::new(vec![Line::from(vec![
+            Span::styled(
+                format!(
+                    " {} ",
+                    if b.visual_anchor.is_some() {
+                        "VISUAL"
+                    } else {
+                        "NORMAL"
+                    }
+                ),
+                tint(if b.visual_anchor.is_some() {
+                    Color::Magenta
+                } else {
+                    Color::Green
+                })
+                .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{} selected{}", b.marked.len(), {
+                    let shown = browser_entries(b)
+                        .iter()
+                        .filter(|e| b.marked.contains(&e.path))
+                        .count();
+                    if shown < b.marked.len() {
+                        format!(" ({shown} shown)")
+                    } else {
+                        String::new()
+                    }
+                }),
+                if b.marked.is_empty() {
+                    muted()
+                } else {
+                    tint(Color::Yellow)
+                },
+            ),
+            Span::styled(
+                format!(
+                    " · hidden {}{}",
+                    if b.show_hidden { "shown" } else { "off" },
+                    if b.loading { " · loading" } else { "" }
+                ),
+                muted(),
+            ),
+        ])]),
+        parts[2],
+    );
     if let Some(preview) = &b.preview {
-        render_preview(frame, parts[1], b, preview, focused);
+        render_preview(frame, parts[3], b, preview, focused);
     } else {
         let rows = browser_entries(b);
         if rows.is_empty() {
@@ -7216,7 +7297,7 @@ fn render_browser(
                 })
                 .style(muted())
                 .block(block("Files".into(), focused)),
-                parts[1],
+                parts[3],
             );
         } else {
             let matches = file_search_matches(&rows, &b.search);
@@ -7341,7 +7422,7 @@ fn render_browser(
                 .column_spacing(1)
                 .block(block(format!("{} items", rows.len()), focused))
                 .row_highlight_style(Style::default()),
-                parts[1],
+                parts[3],
                 &mut state,
             );
         }
@@ -7389,7 +7470,7 @@ fn render_browser(
         } else {
             muted()
         }),
-        parts[2],
+        parts[4],
     );
 }
 fn tint(color: Color) -> Style {
@@ -7823,12 +7904,18 @@ fn authentication_modal(
     let started = Instant::now();
     let mut scroll = 0u16;
     let mut reviewed = false;
+    let mut show_secret = false;
+    let mut toggle_hit = None;
     loop {
         if started.elapsed() > Duration::from_secs(240) {
             return Ok(Answer::Cancel);
         }
         screen.terminal.draw(|f| {
-            let area = popup(f.area(), 76, if trust { 13 } else { 7 });
+            let area = popup(
+                f.area(),
+                if trust { 76 } else { 64 },
+                if trust { 13 } else { 7 },
+            );
             f.render_widget(Clear, area);
             let panel = block(title.into(), true).padding(Padding::horizontal(1));
             let inner = panel.inner(area);
@@ -7875,18 +7962,59 @@ fn authentication_modal(
                     footer,
                 );
             } else {
-                let mut lines: Vec<Line> = prompt
-                    .text
-                    .lines()
-                    .take(2)
-                    .map(|line| Line::from(safe_label(line)))
-                    .collect();
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    "*".repeat(secret.0.chars().count().min(inner.width as usize)),
-                    Style::default().fg(Color::Cyan),
-                )));
-                f.render_widget(Paragraph::new(lines), inner);
+                let prompt_area = Rect { height: 1, ..inner };
+                f.render_widget(
+                    Paragraph::new(safe_label(
+                        prompt.text.lines().next().unwrap_or("SSH authentication"),
+                    )),
+                    prompt_area,
+                );
+                let field = Rect {
+                    y: inner.y + 2,
+                    height: 1,
+                    ..inner
+                };
+                let shown = if show_secret {
+                    safe_label(&secret.0)
+                } else {
+                    (if ascii() { "*" } else { "•" }).repeat(
+                        secret
+                            .0
+                            .chars()
+                            .count()
+                            .min(inner.width.saturating_sub(2) as usize),
+                    )
+                };
+                let width = Span::raw(shown.as_str()).width() as u16;
+                f.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::raw("> "),
+                        Span::styled(shown, Style::default().fg(Color::Cyan)),
+                    ])),
+                    field,
+                );
+                f.set_cursor_position((
+                    field.x + (width + 2).min(field.width.saturating_sub(1)),
+                    field.y,
+                ));
+                let footer = Rect {
+                    y: inner.y + inner.height.saturating_sub(1),
+                    height: 1,
+                    ..inner
+                };
+                let controls = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Min(1), Constraint::Length(9)])
+                    .split(footer);
+                f.render_widget(
+                    Paragraph::new("Enter OK · Esc Back").style(muted()),
+                    controls[0],
+                );
+                f.render_widget(
+                    Paragraph::new(if show_secret { "F2 Hide" } else { "F2 Show" }).style(accent()),
+                    controls[1],
+                );
+                toggle_hit = Some(controls[1]);
             }
         })?;
         if !event::poll(Duration::from_millis(100))? {
@@ -7911,6 +8039,7 @@ fn authentication_modal(
                 } else {
                     match key.code {
                         KeyCode::Enter => return Ok(Answer::Submit(std::mem::take(&mut secret.0))),
+                        KeyCode::F(2) => show_secret = !show_secret,
                         KeyCode::Backspace => {
                             if let Some((index, _)) = secret.0.char_indices().last() {
                                 unsafe {
@@ -7932,6 +8061,16 @@ fn authentication_modal(
                         }
                         _ => {}
                     }
+                }
+            }
+            Event::Mouse(mouse)
+                if !trust
+                    && mouse.kind == MouseEventKind::Down(crossterm::event::MouseButton::Left) =>
+            {
+                if toggle_hit
+                    .is_some_and(|rect: Rect| rect.contains((mouse.column, mouse.row).into()))
+                {
+                    show_secret = !show_secret;
                 }
             }
             _ => {}
@@ -11586,6 +11725,33 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+    #[test]
+    fn long_folder_paths_use_three_rows_and_active_split_workspace_width() {
+        let path = "/home/tester/projects/robotics/navigation/recordings/2026/selected-folder";
+        for width in [18, 30, 60] {
+            let lines = folder_path_lines(path, width, 3);
+            assert!(lines.len() <= 3);
+            assert!(lines.iter().all(|line| Span::raw(line).width() <= width));
+            assert!(lines.concat().ends_with("selected-folder"));
+        }
+        for width in [48, 80, 120] {
+            let mut a = app();
+            a.open_browser(0, path.into());
+            a.browser.as_mut().unwrap().loading = false;
+            a.browser.as_mut().unwrap().display_path = path.into();
+            a.other_browser = Some(Browser::new(0, "/other".into()));
+            let mut t = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            t.draw(|f| render(f, &a)).unwrap();
+            let content = t
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            assert!(content.contains("selected-folder"), "{width}: {content}");
         }
     }
     #[test]

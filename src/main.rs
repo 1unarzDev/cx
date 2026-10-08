@@ -460,7 +460,7 @@ fn enrollment_command(
     })
 }
 
-fn enroll_target(target: &str, minimal: bool) -> Result<()> {
+fn enroll_target(target: &str, _minimal: bool) -> Result<()> {
     let mut c = transport::ssh(target, true)?;
     c.arg("uname -sm; id -un");
     let out = enrollment_command(c, None)?;
@@ -492,8 +492,7 @@ fn enroll_target(target: &str, minimal: bool) -> Result<()> {
     let bytes = std::fs::read(binary)?;
     let mut c = transport::ssh(target, true)?;
     let script = include_str!("../scripts/enroll-helper.sh").replace('\'', "'\"'\"'");
-    let mode = if minimal { "CX_ENROLL_MINIMAL=1 " } else { "" };
-    c.arg(format!("{mode}sh -c '{script}'"))
+    c.arg(format!("CX_ENROLL_MINIMAL=1 sh -c '{script}'"))
         .stdin(Stdio::piped());
     if auth::active() {
         c.stdout(Stdio::null()).stderr(Stdio::null());
@@ -501,6 +500,32 @@ fn enroll_target(target: &str, minimal: bool) -> Result<()> {
     if !enrollment_command(c, Some(bytes))?.status.success() {
         bail!("helper installation failed")
     };
+    // Existing system or user tmux is retained; provision only when absent.
+    let mut probe = transport::ssh(target, true)?;
+    probe.arg("PATH=\"$HOME/.local/bin:$PATH\"; export PATH; if command -v tmux >/dev/null 2>&1; then timeout 10 tmux -V; else exit 77; fi");
+    let available = enrollment_command(probe, None)?;
+    if available.status.code() == Some(77) {
+        let version = enrollment
+            .as_ref()
+            .map(|a| a.version.as_str())
+            .unwrap_or(env!("CARGO_PKG_VERSION"));
+        let tool = update::obtain_tmux_binary(remote_arch, version).context(
+            "Helper installed, but portable tmux is unavailable; retry adding this device",
+        )?;
+        let script = include_str!("../scripts/enroll-tmux.sh").replace('\'', "'\"'\"'");
+        let mut install = transport::ssh(target, true)?;
+        install
+            .arg(format!("sh -c '{script}'"))
+            .stdin(Stdio::piped());
+        if !enrollment_command(install, Some(std::fs::read(tool.path())?))?
+            .status
+            .success()
+        {
+            bail!("Helper installed, but tmux installation failed; existing tools were preserved. Retry adding this device")
+        }
+    } else if !available.status.success() || !available.stdout.starts_with(b"tmux ") {
+        bail!("Helper installed, but the existing remote tmux could not run; repair it and retry adding this device")
+    }
     let mut d = Device {
         id: target.into(),
         name: target.into(),

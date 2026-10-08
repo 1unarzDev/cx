@@ -4,7 +4,7 @@ import os,sys,pathlib,tempfile,subprocess,pty,fcntl,termios,struct,time,select,j
 import pyte
 binary=str(pathlib.Path(sys.argv[1]).resolve())
 results=[]
-for width,kind in [(80,'password'),(48,'host'),(80,'cancel')]:
+for width,kind in [(80,'password'),(48,'password_show'),(48,'host'),(80,'cancel')]:
  with tempfile.TemporaryDirectory(prefix='cx-auth-pty-') as tmp:
   root=pathlib.Path(tmp);tools=root/'bin';tools.mkdir()
   ssh=tools/'ssh'
@@ -47,7 +47,14 @@ sys.exit(1)
     os.write(master,b'\x1b[B'*12);read();assert 'Trust fingerprint' in text();os.write(master,b'y')
    elif kind=='cancel':os.write(master,b'\x1b')
    else:
-    os.write(master,b'fixture-secret-937');read();assert 'fixture-secret-937' not in text();assert '********' in text();os.write(master,b'\r')
+    os.write(master,b'fixture-secret-937');read();assert 'fixture-secret-937' not in text();assert '••••••••' in text()
+    if kind=='password_show':
+     os.write(master,b'\x1bOQ');read();assert 'fixture-secret-937' in text();assert 'F2 Hide' in text()
+     # A click on the visible hide control masks it again without submitting.
+     row=next(i for i,line in enumerate(screen.display) if 'F2 Hide' in line)
+     col=screen.display[row].index('F2 Hide')
+     os.write(master,f'\x1b[<0;{col+1};{row+1}M'.encode());read();assert 'fixture-secret-937' not in text();assert 'F2 Show' in text()
+    os.write(master,b'\r')
    if kind=='cancel':
     # Cancellation may kill the owned SSH group before the fixture can acknowledge it.
     wait('authentication cancelled')
@@ -60,7 +67,7 @@ sys.exit(1)
     deadline=time.monotonic()+8
     while not (root/'result').exists() and time.monotonic()<deadline:read()
     assert (root/'result').read_text()=='PASS'
-   assert b'fixture-secret-937' not in output,'secret leaked into terminal output'
+   if kind!='password_show':assert b'fixture-secret-937' not in output,'secret leaked into terminal output'
    read();os.write(master,b'\x03');p.wait(timeout=5)
    assert termios.tcgetattr(slave)==before
    assert not list(pathlib.Path('/tmp').glob(f'cx-askpass-{p.pid}-*'))

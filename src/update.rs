@@ -199,6 +199,7 @@ impl Drop for Stage {
             "signature",
             "release-key.pem",
             "cx",
+            "tmux",
             "metadata",
             "cache.tmp",
         ] {
@@ -736,6 +737,18 @@ enum ArtifactOutcome {
 }
 // Both updater and enrollment share the exact download, pinned signature and bounded extraction path.
 fn download_verified(parent: Dir, url: &str, backend: &Backend) -> Result<ArtifactOutcome> {
+    download_verified_member(parent, url, backend, "cx")
+}
+fn download_verified_member(
+    parent: Dir,
+    url: &str,
+    backend: &Backend,
+    member: &str,
+) -> Result<ArtifactOutcome> {
+    ensure!(
+        matches!(member, "cx" | "tmux"),
+        "unsupported artifact member"
+    );
     let s = stage(parent)?;
     let archive = new_file(&s.dir.path("archive"))?;
     let archive_path = PathBuf::from(format!(
@@ -821,7 +834,7 @@ fn download_verified(parent: Dir, url: &str, backend: &Backend) -> Result<Artifa
     // Hash before/after verification and extraction prevents changing the verified subject.
     // Archive is never executed. Extract only after the exact pinned public key signature passes.
     let archive_copy = archive.try_clone()?;
-    let binary = extract(archive, &s.dir)?;
+    let binary = extract_member(archive, &s.dir, member)?;
     ensure!(
         self::digest(&archive_copy)? == archive_digest,
         "verified archive changed during extraction"
@@ -902,6 +915,31 @@ fn obtain_remote_with(
     }))
 }
 
+/// Separate signed portable tmux artifact. It is never executed on the viewer.
+pub fn obtain_tmux_binary(arch: &str, version: &str) -> Result<EnrollmentBinary> {
+    supported_arch(arch)?;
+    numeric(version)?;
+    let (home, state) = paths()?;
+    let root = state_dir(&home, &state)?;
+    let url = format!("https://github.com/{REPO}/releases/download/v{version}/cx-tmux-v{version}-linux-{arch}.tar.gz");
+    let (stage, binary) = match download_verified_member(root.child("tools", true)?, &url, &Backend::system(), "tmux")? {
+        ArtifactOutcome::Ready(stage, binary) => (stage, binary),
+        ArtifactOutcome::Offline => bail!("Portable tmux download unavailable; retry Add by SSH address when this viewer is online"),
+        ArtifactOutcome::Unavailable(message) => bail!("Portable tmux artifact unavailable: {message}"),
+    };
+    ensure!(
+        binary.metadata()?.mode() & 0o111 == 0,
+        "tool must not execute on the viewer"
+    );
+    binary.sync_all()?;
+    Ok(EnrollmentBinary {
+        version: version.into(),
+        arch: arch.into(),
+        binary,
+        _stage: stage,
+    })
+}
+
 fn digest(f: &File) -> Result<String> {
     use std::os::unix::fs::FileExt;
     let mut hash = Sha256::new();
@@ -918,12 +956,20 @@ fn digest(f: &File) -> Result<String> {
     }
     Ok(format!("{:x}", hash.finalize()))
 }
-fn extract(mut compressed: File, dir: &Dir) -> Result<File> {
+#[cfg(test)]
+fn extract(compressed: File, dir: &Dir) -> Result<File> {
+    extract_member(compressed, dir, "cx")
+}
+fn extract_member(mut compressed: File, dir: &Dir, member: &str) -> Result<File> {
+    ensure!(
+        matches!(member, "cx" | "tmux"),
+        "unsupported artifact member"
+    );
     use std::io::{Seek, SeekFrom};
     compressed.seek(SeekFrom::Start(0))?;
     let decoder = flate2::bufread::GzDecoder::new(std::io::BufReader::new(compressed));
     let mut archive = tar::Archive::new(decoder.take(TAR_LIMIT + 1));
-    let binary = new_file(&dir.path("cx"))?;
+    let binary = new_file(&dir.path(member))?;
     let mut writer = binary.try_clone()?;
     let mut count = 0;
     let mut expected_tar_size = 0;
@@ -933,7 +979,7 @@ fn extract(mut compressed: File, dir: &Dir) -> Result<File> {
         ensure!(
             count == 1
                 && entry.header().entry_type().is_file()
-                && entry.path_bytes().as_ref() == b"cx",
+                && entry.path_bytes().as_ref() == member.as_bytes(),
             "unsafe archive member"
         );
         let size = entry.size();
@@ -970,7 +1016,7 @@ fn extract(mut compressed: File, dir: &Dir) -> Result<File> {
     let expected_digest = digest(&binary)?;
     drop(writer);
     drop(binary);
-    let reopened = private_file(&dir.path("cx"), false)?;
+    let reopened = private_file(&dir.path(member), false)?;
     let m = reopened.metadata()?;
     ensure!(
         m.dev() == original.dev()
@@ -1295,6 +1341,36 @@ mod enrollment_tests {
         }
         assert!(fixture.calls.borrow().is_empty());
         assert!(!home.path().join(".local").exists());
+    }
+    #[test]
+    fn portable_tool_keeps_signature_and_archive_member_boundaries() {
+        for (member, kind, signature, succeeds) in [
+            ("tmux", tar::EntryType::Regular, 0, true),
+            ("cx", tar::EntryType::Regular, 0, false),
+            ("nested/tmux", tar::EntryType::Regular, 0, false),
+            ("tmux", tar::EntryType::Symlink, 0, false),
+            ("tmux", tar::EntryType::Regular, 1, false),
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let mut fixture = SignedFixture::new();
+            fixture.archive = archive(member, kind);
+            fixture.verification = signature;
+            let root = state_dir(home.path(), &home.path().join(".local/state/cx")).unwrap();
+            let result = download_verified_member(root.child("tool-fixture", true).unwrap(),
+                "https://github.com/1unarzDev/cx/releases/download/v0.1.0/cx-tmux-v0.1.0-linux-aarch64.tar.gz",
+                &Backend::fixture(&fixture), "tmux");
+            assert_eq!(
+                matches!(&result, Ok(ArtifactOutcome::Ready(_, _))),
+                succeeds
+            );
+            drop(result);
+            assert_eq!(
+                fs::read_dir(home.path().join(".local/state/cx/tool-fixture"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+        }
     }
     #[test]
     fn signature_rejection_tampering_and_archive_paths_cleanup() {

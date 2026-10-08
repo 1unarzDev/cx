@@ -25,7 +25,11 @@ with tempfile.TemporaryDirectory(prefix='cx-attach-term-') as tmp:
    # Count command echo plus actual output to ensure the shell executed it.
    if output.count(b'CX_TERMINAL_COMMAND_PROOF')>=2:break
   assert output.count(b'CX_TERMINAL_COMMAND_PROOF')>=2,'shell did not execute command'
-  os.write(master,b'\x1d');p.wait(timeout=3)
+  os.write(master,b'\x1d')
+  deadline=time.monotonic()+5
+  while p.poll() is None and time.monotonic()<deadline:
+   if select.select([master],[],[],.05)[0]:os.read(master,8192)
+  assert p.poll()==0,'detach did not return'
   assert p.returncode==0 and before==termios.tcgetattr(slave)
   assert session['id'] in {s['id'] for s in cli('sessions')}
   print(json.dumps(dict(result='PASS',unknown_terminal_fallback=True,interactive_command=True,detach_preserves_shell=True,termios_restored=True)))

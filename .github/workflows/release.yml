@@ -24,6 +24,15 @@ jobs:
       - run: python3 tests/native_command_pty.py target/debug/cx
       - run: CX_TEST_SHELL=/bin/sh python3 tests/native_command_pty.py target/debug/cx
       - run: sudo apt-get update && sudo apt-get install -y shellcheck fish zsh tmux poppler-utils python3-pyte openssh-server
+      - name: Container integration fixtures
+        run: |
+          cargo build --locked
+          docker pull ubuntu:24.04
+          python3 tests/session_chooser_pty.py target/debug/cx
+          python3 tests/containers_live.py target/debug/cx
+          python3 tests/container_agents_live.py target/debug/cx
+          npm install --prefix "$RUNNER_TEMP/cx-devcontainer-cli" @devcontainers/cli@0.89.0 --no-audit --no-fund
+          PATH="$RUNNER_TEMP/cx-devcontainer-cli/node_modules/.bin:$PATH" python3 tests/devcontainer_cli_live.py target/debug/cx
       - run: python3 tests/mouse_scrollback_pty.py target/debug/cx
       - run: python3 tests/codex_wheel_pty.py target/debug/cx
       - run: python3 tests/codex_wheel_threads_pty.py target/debug/cx

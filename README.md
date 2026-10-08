@@ -27,17 +27,20 @@ You can also select a discovered neighbor in **Network** and press Enter to conn
 | Arrows / `h j k l`, Enter, Escape | Navigate, open, go back |
 | Ctrl+P | Open actions and choose a device |
 | `/`, `?` | Search, help |
-| `n` | Start a shell in the device’s home, or the current folder in Files |
+| `n` | Choose Claude, Codex, Shell or Devcontainer for the highlighted device |
 | Tab / Shift+Tab | Change panel focus |
 | Ctrl+] in a managed terminal | Return to CX; the session keeps running |
+| `w` in Sessions | Watch the highlighted session read-only |
 | `d` in Sessions | Confirm stopping a CX-managed shell or agent |
 | Ctrl+C in CX | Exit the viewer; sessions keep running |
 
-Use **Ctrl+P → New session** to choose a device and start a shell, Codex or Claude. Agents must be installed on that device. Agent sessions offer **Default** permissions or **YOLO** for that launch; YOLO bypasses the agent’s normal approval protections.
+Press **n** for a compact chooser: `c` Claude, `x` Codex, `s` Shell, `d` Devcontainer; `h`/`l` or Left/Right move between options. It uses home from Devices and the current folder from Files. Use **Ctrl+P → New session** to choose a device and start a shell, Codex or Claude. Agents must be installed on that device. Agent sessions offer **Default** permissions or **YOLO** for that launch; YOLO bypasses the agent’s normal approval protections.
 
 In **Files**, Enter previews a file. To transfer files, select with Space, press `t`, choose the destination device/folder, then press `p`. Incoming conflicts rename by default; overwrite is explicit. See the [user guide](docs/user-guide.md) for file operations, previews, clipboard, scrolling and all controls.
 
 **Network → All devices** groups discoveries beneath each observer. Selecting one device shows only its interfaces, routes and neighbors. Devices reachable through another host use saved SSH jump routes. Internet sharing and full reverse-access enforcement are still in development; see [robot mesh sharing](docs/robot-mesh-sharing.md).
+
+**Containers** groups Docker containers and devcontainers beneath each device. Start persistent container shells/agents, browse container files, or explicitly start a configured workspace. See the [container guide](docs/containers.md).
 
 CX checks signed updates in the background. You can also run `cx update --check` or `cx update --device NAME`; existing sessions keep running.
 

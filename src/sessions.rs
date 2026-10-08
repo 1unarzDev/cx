@@ -535,7 +535,11 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
     Ok(Session {
         id: if managed { name } else { id.into() },
         name: display_name,
-        directory,
+        directory: prior
+            .as_ref()
+            .and_then(|s| s.container.as_ref())
+            .map(|c| c.folder.clone())
+            .unwrap_or(directory),
         provider: provider.into(),
         host,
         account,
@@ -544,6 +548,7 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
         boot_id,
         external: !managed,
         process,
+        container: prior.as_ref().and_then(|s| s.container.clone()),
         launcher: prior.as_ref().and_then(|s| s.launcher.clone()),
         socket: if managed {
             Some(socket()?.to_string_lossy().into_owned())
@@ -662,6 +667,12 @@ fn stop_managed(
     }
     if provider == "shell" {
         reject_provider_descendants(pid)?;
+    }
+    if let Some(scope) = &record.container {
+        crate::containers::stop_terminal(scope, id)?;
+        if !ids(true)?.iter().any(|session| session == &target) {
+            return Ok(serde_json::json!({"status":"stopped"}));
+        }
     }
     let created = started
         .split_once(':')
@@ -1030,10 +1041,10 @@ fn ensure_server() -> Result<()> {
     Ok(())
 }
 pub fn create(request: &CreateSession) -> Result<Session> {
-    create_with_permissions(request, false)
+    create_with_permissions(request, false, None)
 }
 pub fn create_yolo(request: &CreateSession) -> Result<Session> {
-    create_with_permissions(request, true)
+    create_with_permissions(request, true, None)
 }
 fn provider_command(provider: &str, yolo: bool) -> Result<String> {
     match (provider, yolo) {
@@ -1044,7 +1055,19 @@ fn provider_command(provider: &str, yolo: bool) -> Result<String> {
         _ => bail!("unsupported launch profile"),
     }
 }
-fn create_with_permissions(request: &CreateSession, yolo: bool) -> Result<Session> {
+pub fn create_container(
+    request: &CreateSession,
+    scope: &crate::model::ContainerScope,
+    yolo: bool,
+) -> Result<Session> {
+    crate::containers::prepare(scope, &request.provider)?;
+    create_with_permissions(request, yolo, Some(scope))
+}
+fn create_with_permissions(
+    request: &CreateSession,
+    yolo: bool,
+    container: Option<&crate::model::ContainerScope>,
+) -> Result<Session> {
     let agent_command = provider_command(&request.provider, yolo)?;
     if request.key.is_empty() || request.key.len() > 1024 {
         bail!("creation key must be 1–1024 bytes");
@@ -1052,13 +1075,22 @@ fn create_with_permissions(request: &CreateSession, yolo: bool) -> Result<Sessio
     if !["shell", "claude", "codex"].contains(&request.provider.as_str()) {
         bail!("unsupported launch profile");
     }
-    let directory = fs::canonicalize(crate::files::decode_path(&request.directory)?)
+    let execution_directory = if container.is_some() {
+        std::env::var("HOME").unwrap_or_else(|_| "/".into())
+    } else {
+        request.directory.clone()
+    };
+    let directory = fs::canonicalize(crate::files::decode_path(&execution_directory)?)
         .context("execution directory unavailable")?;
     if !directory.is_dir() {
         bail!("execution location is not a directory");
     }
     let display_name = if request.name.is_empty() {
-        default_session_name(&request.provider, &directory.to_string_lossy())
+        if let Some(scope) = container {
+            format!("{} · {}", scope.name, request.provider)
+        } else {
+            default_session_name(&request.provider, &directory.to_string_lossy())
+        }
     } else {
         request.name.clone()
     };
@@ -1086,13 +1118,19 @@ fn create_with_permissions(request: &CreateSession, yolo: bool) -> Result<Sessio
         if previous != if yolo { "yolo" } else { "default" } {
             bail!("creation key already belongs to a different permission mode; use a new key");
         }
-        return inspect(true, &name);
+        let current = inspect(true, &name)?;
+        anyhow::ensure!(
+            current.container.as_ref() == container,
+            "creation key already belongs to a different execution scope; use a new key"
+        );
+        return Ok(current);
     }
     if root.join(format!("{name}.json")).exists() {
         bail!("original session has ended; use a new creation key to start replacement work");
     }
     let shell = launch_shell()?;
-    if request.provider != "shell"
+    if container.is_none()
+        && request.provider != "shell"
         && !provider_available(
             &shell,
             match request.provider.as_str() {
@@ -1111,7 +1149,9 @@ fn create_with_permissions(request: &CreateSession, yolo: bool) -> Result<Sessio
     let pending = Session {
         id: name.clone(),
         name: display_name.clone(),
-        directory: directory.to_string_lossy().into_owned(),
+        directory: container
+            .map(|s| s.folder.clone())
+            .unwrap_or_else(|| directory.to_string_lossy().into_owned()),
         provider: request.provider.clone(),
         host,
         account,
@@ -1122,6 +1162,7 @@ fn create_with_permissions(request: &CreateSession, yolo: bool) -> Result<Sessio
         socket: Some(socket()?.to_string_lossy().into_owned()),
         launcher: Some(shell.clone()),
         process: None,
+        container: container.cloned(),
     };
     // Persist intent before starting: an interrupted helper response must never lose the launcher identity.
     let mut intent = fs::OpenOptions::new()
@@ -1153,6 +1194,19 @@ fn create_with_permissions(request: &CreateSession, yolo: bool) -> Result<Sessio
     launcher.extend(["-l".into()]);
     if request.provider != "shell" {
         launcher.extend(["-i".into(), "-c".into(), agent_command]);
+    }
+    if let Some(scope) = container {
+        use base64::Engine;
+        let payload = base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(&(
+            scope,
+            &request.provider,
+            yolo,
+        ))?);
+        launcher = vec![
+            std::env::current_exe()?.to_str().context("cx path")?.into(),
+            "container-run".into(),
+            payload,
+        ];
     }
     let command = format!(
         "exec env CX_VIEWER_THEME=1 CX_TMUX_BIN={} CX_MANAGED_SOCKET={} CX_MANAGED_SESSION={} {}",
@@ -1217,7 +1271,7 @@ fn set_managed_status(session: &Session) -> Result<()> {
 // ancestor is not enough: another process on this PTY must retain input.
 // Conservatively reject same-group children even with redirected stdin; they
 // may open /dev/tty independently.
-fn wheel_codex_owner(pane: u32) -> Option<ProcessIdentity> {
+pub(crate) fn wheel_codex_owner(pane: u32) -> Option<ProcessIdentity> {
     let (provider, identity) = foreground_provider(pane)?;
     if provider != "codex" {
         return None;
@@ -1326,7 +1380,19 @@ pub fn native_wheel(pane: &str, direction: &str, x: u16, y: u16, client: u32) ->
     let pid: u32 = fields[1].parse()?;
     let mode = fields[4] == "1";
     let history: u32 = fields[3].parse()?;
-    let provider = wheel_codex_owner(pid);
+    let container_record = fs::read(state()?.join(format!("{}.json", fields[0])))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Session>(&b).ok())
+        .filter(|s| !s.external && s.pid == pid && s.id == fields[0]);
+    let owner = || {
+        wheel_codex_owner(pid).or_else(|| {
+            container_record
+                .as_ref()
+                .and_then(|s| s.container.as_ref())
+                .and_then(|scope| crate::containers::wheel_owner(scope, fields[0]))
+        })
+    };
+    let provider = owner();
     if fields[2] == "1" && fields[9] == "0" && provider.is_some() {
         let left: u16 = fields[5].parse()?;
         let top: u16 = fields[6].parse()?;
@@ -1341,9 +1407,7 @@ pub fn native_wheel(pane: &str, direction: &str, x: u16, y: u16, client: u32) ->
         // Recheck the foreground group and start identity immediately before
         // dispatch. A provider launched inside a shell is still recognized, but
         // suspended Codex and its foreground editors receive no fabricated input.
-        if wheel_codex_owner(pid).map(|p| (p.pid, p.start_ticks))
-            != provider.map(|p| (p.pid, p.start_ticks))
-        {
+        if owner().map(|p| (p.pid, p.start_ticks)) != provider.map(|p| (p.pid, p.start_ticks)) {
             return Ok(());
         }
         if mode {
@@ -1880,6 +1944,7 @@ mod tests {
             socket: None,
             launcher: None,
             process: None,
+            container: None,
         };
         assert_eq!(
             current_session_name(&session, "codex", "/projects/cx"),

@@ -247,6 +247,19 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
     if slot.is_none() {
         *slot = Some(Connection::open(target)?);
     }
+    let response_timeout = if matches!(&op, Operation::DevcontainerUp { .. }) {
+        660
+    } else if matches!(
+        &op,
+        Operation::ContainerFiles { .. }
+            | Operation::ContainerLifecycle { .. }
+            | Operation::ContainerCreate { .. }
+            | Operation::Containers
+    ) {
+        90
+    } else {
+        15
+    };
     let is_info = matches!(&op, Operation::Info);
     let id = format!(
         "{}-{}",
@@ -266,7 +279,7 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
     }
     let response = match conn
         .replies
-        .recv_timeout(std::time::Duration::from_secs(15))
+        .recv_timeout(std::time::Duration::from_secs(response_timeout))
     {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {

@@ -9,6 +9,16 @@ pub struct Device {
     pub status: String,
     pub observed_at: u64,
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContainerScope {
+    #[serde(default)]
+    pub engine: String,
+    pub id: String,
+    pub name: String,
+    pub user: String,
+    pub started_at: String,
+    pub folder: String,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -26,6 +36,8 @@ pub struct Session {
     pub launcher: Option<String>,
     #[serde(default)]
     pub process: Option<ProcessIdentity>,
+    #[serde(default)]
+    pub container: Option<ContainerScope>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RunCommand {
@@ -43,6 +55,33 @@ pub struct CreateSession {
 #[serde(tag = "op", content = "args", rename_all = "snake_case")]
 pub enum Operation {
     Info,
+    Containers,
+    ContainerInspect {
+        id: String,
+    },
+    DevcontainerUp {
+        workspace: String,
+    },
+    ContainerAccess {
+        id: String,
+        engine: String,
+        enabled: bool,
+    },
+    ContainerLifecycle {
+        id: String,
+        engine: String,
+        started_at: String,
+        action: String,
+    },
+    ContainerFiles {
+        scope: ContainerScope,
+        operation: Box<Operation>,
+    },
+    ContainerCreate {
+        scope: ContainerScope,
+        request: CreateSession,
+        yolo: bool,
+    },
     SetLaunchShell {
         shell: String,
     },

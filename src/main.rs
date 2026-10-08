@@ -1,5 +1,6 @@
 mod access;
 mod auth;
+mod containers;
 mod files;
 mod markdown_links;
 mod markdown_math;
@@ -162,6 +163,76 @@ enum Cmd {
     #[command(hide = true)]
     Helper,
     #[command(hide = true)]
+    ContainerRun {
+        payload: String,
+    },
+    #[command(hide = true)]
+    ContainerShell {
+        payload: String,
+    },
+    #[command(hide = true)]
+    ContainerHelper,
+    #[command(hide = true)]
+    ContainerProcessStop {
+        id: String,
+    },
+    #[command(hide = true)]
+    ContainerWheelOwner {
+        id: String,
+    },
+    /// Inspect Docker/devcontainer entries on an enrolled device.
+    Containers {
+        #[arg(long)]
+        device: Option<String>,
+    },
+    /// Start a persistent shell or agent inside a selected container.
+    ContainerNew {
+        id: String,
+        #[arg(long)]
+        device: Option<String>,
+        #[arg(long, default_value = "shell")]
+        provider: String,
+        #[arg(long)]
+        yolo: bool,
+        #[arg(long)]
+        directory: Option<String>,
+    },
+    /// Start a workspace through its Dev Containers configuration and lifecycle hooks.
+    DevcontainerUp {
+        workspace: String,
+        #[arg(long)]
+        device: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    ContainerStart {
+        id: String,
+        #[arg(long)]
+        device: Option<String>,
+    },
+    ContainerStop {
+        id: String,
+        #[arg(long)]
+        device: Option<String>,
+    },
+    /// Explicitly opt a non-devcontainer into terminal/files/lifecycle access.
+    ContainerAccess {
+        id: String,
+        #[arg(long)]
+        device: Option<String>,
+        #[arg(long)]
+        disable: bool,
+    },
+    ContainerFiles {
+        id: String,
+        #[arg(long)]
+        device: Option<String>,
+        #[arg(long, default_value = "/")]
+        path: String,
+        #[arg(long)]
+        preview: bool,
+    },
+    #[command(hide = true)]
     NativeAttach {
         #[arg(long)]
         external: bool,
@@ -194,6 +265,7 @@ fn info() -> Result<serde_json::Value> {
     caps.push("stop-session-v1");
     caps.push("stop-agent-session-v1");
     caps.push("session-yolo-v1");
+    caps.push("containers-v1");
     caps.push("stable-update-v1");
     caps.push("pdf-pages-v1");
     caps.push("network-candidates-v1");
@@ -204,6 +276,28 @@ fn info() -> Result<serde_json::Value> {
 pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
     match op {
         Operation::Info => info(),
+        Operation::Containers => containers::list(),
+        Operation::ContainerInspect { id } => Ok(serde_json::to_value(containers::inspect(&id)?)?),
+        Operation::DevcontainerUp { workspace } => containers::up(&workspace),
+        Operation::ContainerAccess {
+            id,
+            engine,
+            enabled,
+        } => containers::set_access(&id, &engine, enabled),
+        Operation::ContainerLifecycle {
+            id,
+            engine,
+            started_at,
+            action,
+        } => containers::lifecycle(&id, &engine, &started_at, &action),
+        Operation::ContainerFiles { scope, operation } => containers::files(&scope, &operation),
+        Operation::ContainerCreate {
+            scope,
+            request,
+            yolo,
+        } => Ok(serde_json::to_value(sessions::create_container(
+            &request, &scope, yolo,
+        )?)?),
         Operation::SetLaunchShell { shell } => sessions::set_launch_shell(&shell),
         Operation::TransferReachability { destination } => {
             transport::request(&destination, Operation::Info)
@@ -590,6 +684,146 @@ fn run() -> Result<()> {
             sessions::execute_command(&command)
         }
         Some(Cmd::Helper) => helper(),
+        Some(Cmd::ContainerHelper) => {
+            containers::container_home()?;
+            helper()
+        }
+        Some(Cmd::ContainerShell { payload }) => {
+            use base64::Engine;
+            anyhow::ensure!(
+                payload.len() < 65536,
+                "container shell payload exceeds limit"
+            );
+            let (provider, yolo, folder, id): (String, bool, String, String) =
+                serde_json::from_slice(
+                    &base64::engine::general_purpose::STANDARD.decode(payload)?,
+                )?;
+            containers::local_shell(&provider, yolo, &folder, &id)
+        }
+        Some(Cmd::ContainerProcessStop { id }) => {
+            println!("{}", containers::local_stop(&id)?);
+            Ok(())
+        }
+        Some(Cmd::ContainerWheelOwner { id }) => {
+            println!("{}", containers::local_wheel_owner(&id)?);
+            Ok(())
+        }
+        Some(Cmd::ContainerRun { payload }) => {
+            use base64::Engine;
+            anyhow::ensure!(payload.len() < 65536, "container launch exceeds limit");
+            let (scope, provider, yolo): (ContainerScope, String, bool) = serde_json::from_slice(
+                &base64::engine::general_purpose::STANDARD.decode(payload)?,
+            )?;
+            containers::run(&scope, &provider, yolo)
+        }
+        Some(Cmd::Containers { device: d }) => {
+            println!(
+                "{}",
+                transport::request(&device(d)?, Operation::Containers)?
+            );
+            Ok(())
+        }
+        Some(Cmd::DevcontainerUp {
+            workspace,
+            device: d,
+            yes,
+        }) => {
+            anyhow::ensure!(yes, "Workspace startup can run configuration hooks and Compose services. Review its config and pass --yes to continue");
+            println!(
+                "{}",
+                transport::request(&device(d)?, Operation::DevcontainerUp { workspace })?
+            );
+            Ok(())
+        }
+        Some(Cmd::ContainerStart { id, device: d }) => container_lifecycle_cli(id, d, "start"),
+        Some(Cmd::ContainerStop { id, device: d }) => container_lifecycle_cli(id, d, "stop"),
+        Some(Cmd::ContainerAccess {
+            id,
+            device: d,
+            disable,
+        }) => {
+            println!(
+                "{}",
+                transport::request(
+                    &device(d.clone())?,
+                    Operation::ContainerAccess {
+                        engine: serde_json::from_value::<containers::Container>(
+                            transport::request(
+                                &device(d.clone())?,
+                                Operation::ContainerInspect { id: id.clone() }
+                            )?
+                        )?
+                        .engine,
+                        id,
+                        enabled: !disable
+                    }
+                )?
+            );
+            Ok(())
+        }
+        Some(Cmd::ContainerFiles {
+            id,
+            device: d,
+            path,
+            preview,
+        }) => {
+            let d = device(d)?;
+            let c: containers::Container = serde_json::from_value(transport::request(
+                &d,
+                Operation::ContainerInspect { id },
+            )?)?;
+            let op = if preview {
+                Operation::Preview { path }
+            } else {
+                Operation::List { path }
+            };
+            println!(
+                "{}",
+                transport::request(
+                    &d,
+                    Operation::ContainerFiles {
+                        scope: c.scope(),
+                        operation: Box::new(op)
+                    }
+                )?
+            );
+            Ok(())
+        }
+        Some(Cmd::ContainerNew {
+            id,
+            device: d,
+            provider,
+            yolo,
+            directory,
+        }) => {
+            let d = device(d)?;
+            let c: containers::Container = serde_json::from_value(transport::request(
+                &d,
+                Operation::ContainerInspect { id },
+            )?)?;
+            let mut scope = c.scope();
+            if let Some(folder) = directory {
+                scope.folder = folder;
+            }
+            let request = CreateSession {
+                key: format!("container-{}-{}", std::process::id(), transport::now()),
+                directory: scope.folder.clone(),
+                provider,
+                name: String::new(),
+            };
+            println!(
+                "{}",
+                transport::request(
+                    &d,
+                    Operation::ContainerCreate {
+                        scope,
+                        request,
+                        yolo
+                    }
+                )?
+            );
+            Ok(())
+        }
         Some(Cmd::Restart { state }) => ui::run_restored(Some(&state)),
         Some(Cmd::Update {
             device: selected,
@@ -889,4 +1123,25 @@ mod enrollment_tests {
         assert!(result.is_err());
         assert!(started.elapsed() < std::time::Duration::from_secs(3));
     }
+}
+
+fn container_lifecycle_cli(id: String, target: Option<String>, action: &str) -> Result<()> {
+    let device = device(target)?;
+    let c: containers::Container = serde_json::from_value(transport::request(
+        &device,
+        Operation::ContainerInspect { id },
+    )?)?;
+    println!(
+        "{}",
+        transport::request(
+            &device,
+            Operation::ContainerLifecycle {
+                id: c.id,
+                engine: c.engine,
+                started_at: c.started_at,
+                action: action.into()
+            }
+        )?
+    );
+    Ok(())
 }

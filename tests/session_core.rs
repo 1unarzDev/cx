@@ -1,3 +1,5 @@
+#[path = "../src/containers.rs"]
+mod containers;
 #[path = "../src/files.rs"]
 mod files;
 #[path = "../src/model.rs"]
@@ -99,3 +101,21 @@ fn persistent_idempotent_hostile_directory() {
 
 #[path = "../src/auth.rs"]
 mod auth;
+
+mod transport {
+    pub fn read_frame<T: serde::de::DeserializeOwned>(
+        r: &mut impl std::io::BufRead,
+    ) -> anyhow::Result<T> {
+        let mut line = String::new();
+        r.read_line(&mut line)?;
+        let size: usize = line
+            .trim()
+            .strip_prefix("CX1 ")
+            .ok_or_else(|| anyhow::anyhow!("frame"))?
+            .parse()?;
+        anyhow::ensure!(size <= 1024 * 1024, "limit");
+        let mut b = vec![0; size];
+        std::io::Read::read_exact(r, &mut b)?;
+        Ok(serde_json::from_slice(&b)?)
+    }
+}

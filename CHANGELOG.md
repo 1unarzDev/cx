@@ -6,6 +6,21 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.39
+
+### Features
+- `w` on a highlighted session opens a read-only watch attachment.
+- Remove the redundant SSH terminal action from the sidebar and Ctrl+P; New shell remains the UI terminal entry point.
+- `n` opens a compact session chooser on the highlighted device, with c/x/s/d shortcuts and h/l or Left/Right navigation. Device launches use home; Files launches retain the current folder.
+- Containers tree for one device or All devices, with evidence-based devcontainer identification, clean Docker names and individual lifecycle actions. Ordinary service containers remain inspection-only until explicitly enabled.
+- Persistent container shells, Codex and Claude sessions with Default/YOLO permissions, native terminal passthrough and scoped process termination. Host tmux means containers do not need inner tmux.
+- Read-only container files reuse the browser and previews with explicit scope; host transfers and file mutations are disabled there.
+- Explicit Dev Containers CLI workspace startup with configuration/hooks confirmation; existing CLI exec honors environment probing and remoteEnv, with Docker fallback for existing containers.
+- Engine/start/user identity checks reject stale container scopes. Helpers use private versioned tooling without package/network changes.
+
+### Documentation
+- README focuses on getting started and everyday controls; installation, detailed user guidance, development and container details live in linked documents.
+
 ## v0.1.38
 
 ### Features

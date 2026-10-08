@@ -36,6 +36,8 @@ cx devcontainer-up /path/to/workspace --device laptop --yes
 
 ## Platform and network scope
 
+Graphical applications such as RViz2 need a separate display transport; native terminal attachment does not provide one. For the choices between a local ROS viewer and streaming the robot's graphical application, see [RViz2 on tranquility](../research/rviz-remote-display.md). No display forwarding or ROS network changes are activated automatically.
+
 The execution device needs a usable local Docker socket and permission to access it. Docker contexts pointing at remote TCP/SSH daemons are rejected: enroll that host as a CX SSH device instead. Containers need native Linux x86_64 or ARM64 matching the host helper, `/bin/sh`, basic POSIX tools, and writable executable `/tmp`. Read-only/noexec images and different architectures fail with an explanation. Alpine and older glibc images use the static release helper. Docker is the supported engine; Podman and Windows containers are not supported.
 
 Discovery is read-only and never executes in containers or starts them. The helper is copied only when opening files/a session, into a versioned private `/tmp/cx-tools-UID` directory as the selected container user. A future CX version supplies its matching helper without an OS package update. CX performs no automatic port forwarding, host network changes, ROS/GPU reconfiguration or SSH trust changes. Configuration-driven workspace startup uses the network settings declared by that configuration.

@@ -4,7 +4,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+No changes queued.
+
+## v0.1.31
+
 ### Fixes
+- Normalize tightly duplicated physical wheel reports so a detent moves one row in Sessions and Files; preserve separate fast ticks and keyboard input.
 - Keep wheel navigation adjacent while typing file search: visit unmatched rows instead of jumping or wrapping between matches. Preserve the query and keyboard match navigation.
 
 ## v0.1.30

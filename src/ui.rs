@@ -7647,6 +7647,67 @@ fn authentication_modal(
     }
 }
 
+// A physical detent can arrive as identical wheel reports a few microseconds
+// apart (verified by a physical input trace). Normalize only that short burst;
+// direction, coordinates and modifiers distinguish separate input contexts.
+const WHEEL_BURST: Duration = Duration::from_millis(2);
+#[derive(Default)]
+struct WheelReports {
+    last: Option<(MouseEvent, Instant)>,
+}
+fn wheel_report(input: &Event) -> Option<MouseEvent> {
+    match input {
+        Event::Mouse(mouse)
+            if matches!(
+                mouse.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            ) =>
+        {
+            Some(*mouse)
+        }
+        _ => None,
+    }
+}
+impl WheelReports {
+    fn accepts(&mut self, input: &Event, observed: Instant) -> bool {
+        let Some(mouse) = wheel_report(input) else {
+            self.last = None;
+            return true;
+        };
+        if self.last.is_some_and(|(previous, at)| {
+            previous == mouse && observed.saturating_duration_since(at) < WHEEL_BURST
+        }) {
+            return false;
+        }
+        self.last = Some((mouse, observed));
+        true
+    }
+}
+// Timestamp a bounded wheel burst before rendering/backend replies can separate
+// duplicate reports. Stop after the first non-wheel event: never pre-read input
+// intended for a native terminal that an Enter key is about to open.
+fn read_input_batch() -> Result<Vec<(Event, Instant)>> {
+    let first = event::read()?;
+    let wheel = wheel_report(&first).is_some();
+    let mut batch = vec![(first, Instant::now())];
+    if wheel {
+        let deadline = Instant::now() + WHEEL_BURST;
+        for _ in 0..63 {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() || !event::poll(remaining)? {
+                break;
+            }
+            let input = event::read()?;
+            let wheel = wheel_report(&input).is_some();
+            batch.push((input, Instant::now()));
+            if !wheel {
+                break;
+            }
+        }
+    }
+    Ok(batch)
+}
+
 struct Screen {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
     active: bool,
@@ -8174,6 +8235,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     let mut update_report_requested = false;
     let mut last_update_check = Instant::now();
     let mut last_interaction = Instant::now();
+    let mut wheel_reports = WheelReports::default();
     let mut last_refresh = Instant::now();
     let mut last_jobs = Instant::now();
     while !app.quit && !stopping.load(std::sync::atomic::Ordering::Relaxed) {
@@ -8395,25 +8457,30 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             dirty = false;
         }
         if event::poll(Duration::from_millis(100))? {
-            match event::read()? {
-                Event::Key(k) => {
-                    last_interaction = Instant::now();
-                    app.key(k);
-                    dirty = true;
+            for (input, observed) in read_input_batch()? {
+                if !wheel_reports.accepts(&input, observed) {
+                    continue;
                 }
-                Event::Resize(_, _) => {
-                    native_preview.hide();
-                    dirty = true;
-                }
-                Event::Mouse(mouse) => {
-                    let size = screen.terminal.size()?;
-                    let handled = app.mouse(mouse, Rect::new(0, 0, size.width, size.height));
-                    if handled {
+                match input {
+                    Event::Key(k) => {
                         last_interaction = Instant::now();
+                        app.key(k);
                         dirty = true;
                     }
+                    Event::Resize(_, _) => {
+                        native_preview.hide();
+                        dirty = true;
+                    }
+                    Event::Mouse(mouse) => {
+                        let size = screen.terminal.size()?;
+                        let handled = app.mouse(mouse, Rect::new(0, 0, size.width, size.height));
+                        if handled {
+                            last_interaction = Instant::now();
+                            dirty = true;
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
         if last_jobs.elapsed() >= Duration::from_secs(2) {
@@ -11386,6 +11453,130 @@ mod tests {
         assert!(a.mouse(wheel, Rect::new(0, 0, 80, 24)));
         assert_eq!(a.text, "name");
         assert_eq!(a.browser.as_ref().unwrap().selected, 1);
+    }
+
+    #[test]
+    fn wheel_bursts_keep_direction_position_modifiers_and_keyboard_distinct() {
+        let mut reports = WheelReports::default();
+        let start = Instant::now();
+        let down = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 40,
+            row: 8,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(reports.accepts(&Event::Mouse(down), start));
+        assert!(!reports.accepts(&Event::Mouse(down), start + Duration::from_micros(20)));
+        let up = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            ..down
+        };
+        assert!(reports.accepts(&Event::Mouse(up), start + Duration::from_micros(30)));
+        let other = MouseEvent { row: 9, ..up };
+        assert!(reports.accepts(&Event::Mouse(other), start + Duration::from_micros(40)));
+        let modified = MouseEvent {
+            modifiers: KeyModifiers::SHIFT,
+            ..other
+        };
+        assert!(reports.accepts(&Event::Mouse(modified), start + Duration::from_micros(50)));
+        let key = Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert!(reports.accepts(&key, start + Duration::from_micros(60)));
+        assert!(reports.accepts(&Event::Mouse(modified), start + Duration::from_micros(70)));
+        assert!(reports.accepts(
+            &Event::Mouse(modified),
+            start + WHEEL_BURST + Duration::from_micros(70)
+        ));
+        // The cutoff is anchored to the accepted tick, not extended by duplicates.
+        assert!(!reports.accepts(
+            &Event::Mouse(modified),
+            start + WHEEL_BURST + Duration::from_micros(80)
+        ));
+        assert!(reports.accepts(
+            &Event::Mouse(modified),
+            start + 2 * WHEEL_BURST + Duration::from_micros(70)
+        ));
+    }
+
+    #[test]
+    fn physical_wheel_trace_selects_one_adjacent_row_per_tick_in_both_lists() {
+        // User capture: ten physical down ticks produced sixteen reports.
+        let milliseconds = [
+            2259.40, 3031.42, 3031.44, 3675.38, 3675.39, 4445.36, 5156.38, 5156.40, 5878.41,
+            5878.42, 6620.37, 7374.35, 7374.36, 7993.32, 7993.32, 8694.36,
+        ];
+        for view in [View::Files, View::Work] {
+            let (mut a, _rx) = file_app();
+            if view == View::Files {
+                let template = a.browser.as_ref().unwrap().entries[0].clone();
+                a.browser.as_mut().unwrap().entries = (0..24)
+                    .map(|i| {
+                        let mut entry = template.clone();
+                        entry.name = format!("file{i:02}");
+                        entry.path = format!("/files/file{i:02}");
+                        entry
+                    })
+                    .collect();
+            } else {
+                a.view = View::Work;
+                a.work[0].sessions = (0..24)
+                    .map(|i| {
+                        let mut session = disposable_shell();
+                        session.id = format!("wheel-{i:02}");
+                        session.name = session.id.clone();
+                        session
+                    })
+                    .collect();
+            }
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            terminal.draw(|f| render(f, &a)).unwrap();
+            let mut reports = WheelReports::default();
+            let start = Instant::now();
+            let wheel = MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 40,
+                row: 8,
+                modifiers: KeyModifiers::NONE,
+            };
+            for ms in milliseconds {
+                if reports.accepts(
+                    &Event::Mouse(wheel),
+                    start + Duration::from_secs_f64(ms / 1000.0),
+                ) {
+                    a.mouse(wheel, Rect::new(0, 0, 80, 24));
+                }
+            }
+            let selected = if view == View::Files {
+                a.browser.as_ref().unwrap().selected
+            } else {
+                a.selected
+            };
+            assert_eq!(selected, 10, "ten physical ticks must move ten rows");
+            let up_ms = [
+                9492.34, 10121.33, 10706.35, 10706.36, 11295.31, 11936.35, 11936.36, 12548.32,
+                12548.33, 13222.01, 14015.34, 14015.36, 14672.30, 14672.32, 14715.27, 14715.29,
+            ];
+            for ms in up_ms {
+                let up = MouseEvent {
+                    kind: MouseEventKind::ScrollUp,
+                    ..wheel
+                };
+                if reports.accepts(
+                    &Event::Mouse(up),
+                    start + Duration::from_secs_f64(ms / 1000.0),
+                ) {
+                    a.mouse(up, Rect::new(0, 0, 80, 24));
+                }
+            }
+            let selected = if view == View::Files {
+                a.browser.as_ref().unwrap().selected
+            } else {
+                a.selected
+            };
+            assert_eq!(
+                selected, 0,
+                "ten physical up ticks, including 43 ms apart, must return to the first row"
+            );
+        }
     }
 
     #[test]

@@ -58,12 +58,24 @@ for view in ['Files','Work']:
     for index in range(6,12):
      send(f'\x1b[<65;40;{current()[1]+1}M'.encode())
      assert current()[0]==ordered[index],('search wheel skipped adjacent file',index,current())
-    # Two independently reported ticks in one read must both remain effective.
+    # The physical capture contains identical reports in microsecond pairs.
+    # A pair is one detent; two distinct ticks 43 ms apart remain two steps.
     up=f'\x1b[<64;40;{current()[1]+1}M'.encode()
-    send(up+up);assert current()[0]==ordered[9]
+    send(up+up);assert current()[0]==ordered[10]
+    os.write(master,up);read(.043)
+    os.write(master,up);read(.25);assert current()[0]==ordered[8]
     send(b'\x1b');read(.1)
-    for index in range(8,4,-1):
+    for index in range(7,4,-1):
      send(f'\x1b[<64;40;{current()[1]+1}M'.encode());assert current()[0]==ordered[index]
+   if view=='Work':
+    down=f'\x1b[<65;40;{current()[1]+1}M'.encode()
+    send(down+down);assert current()[0]==ordered[6]
+    up=f'\x1b[<64;40;{current()[1]+1}M'.encode()
+    send(up+up);assert current()[0]==ordered[5]
+    os.write(master,down);read(.043)
+    os.write(master,down);read(.25);assert current()[0]==ordered[7]
+    send(up);assert current()[0]==ordered[6]
+    send(up);assert current()[0]==ordered[5]
    # Header/footer wheel events cannot retarget the current object.
    send(b'\x1b[<65;40;1M');assert current()[0]==ordered[5]
    if view=='Work':
@@ -80,7 +92,7 @@ for view in ['Files','Work']:
     assert all(all(by_id[r['id']][key]==r[key] for key in ['pid','started','boot_id','socket']) for r in sessions)
    send(b'\x03');proc.wait(timeout=5);assert proc.returncode==0 and termios.tcgetattr(slave)==before
    read(.1);assert b'\x1b[?1000l' in raw,'mouse reporting disabled on exit'
-   checks.append(dict(view=view,result='PASS',one_item_per_wheel=True,rapid_sequence=True,keyboard_unchanged=True,header_ignored=True,termios_restored=True,native_mouse_handoff=view=='Work'))
+   checks.append(dict(view=view,result='PASS',one_item_per_wheel=True,rapid_sequence=True,duplicate_bursts_normalized=True,ticks_43ms_apart_preserved=True,keyboard_unchanged=True,header_ignored=True,termios_restored=True,native_mouse_handoff=view=='Work'))
   finally:
    if view=='Work':subprocess.run(['tmux','-S',str(state/'managed.sock'),'kill-server'],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
    if proc.poll() is None:proc.terminate();proc.wait(timeout=5)

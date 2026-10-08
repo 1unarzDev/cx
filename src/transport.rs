@@ -132,12 +132,13 @@ impl Connection {
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConnectionFailure {
+pub(crate) enum ConnectionFailure {
     Unreachable,
     Authentication,
     HostKey,
     MissingHelper,
     Closed,
+    Timeout,
 }
 fn classify_connection_failure(stderr: &[u8]) -> ConnectionFailure {
     let text = String::from_utf8_lossy(stderr);
@@ -176,10 +177,16 @@ impl std::fmt::Display for ConnectionFailure {
             Self::HostKey => "SSH host identity could not be verified · review the host key before reconnecting",
             Self::MissingHelper => "cx helper unavailable on device · run cx add to repair enrollment",
             Self::Closed => "Session metadata connection closed · Refresh to reconnect; terminal state is unconfirmed",
+            Self::Timeout => "Device check timed out · Refresh to retry; terminal state is unconfirmed",
         })
     }
 }
 impl std::error::Error for ConnectionFailure {}
+
+/// Typed connection evidence, distinct from an operation rejected by a reachable helper.
+pub(crate) fn is_connection_failure(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<ConnectionFailure>().is_some()
+}
 impl Connection {
     fn failure_reason(&self) -> ConnectionFailure {
         self.failure
@@ -289,7 +296,7 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
         }
         Err(_) => {
             *slot = None;
-            bail!("Device check timed out · Refresh to retry; terminal state is unconfirmed")
+            return Err(ConnectionFailure::Timeout.into());
         }
     };
     if response.version != 1 || response.id != id {

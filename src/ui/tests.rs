@@ -4855,10 +4855,10 @@ fn scoped_sessions_have_evidence_based_devcontainer_labels_at_all_widths() {
     a.containers.insert(0, vec![ordinary]);
     assert_eq!(menus::session_label(&a, 0, &session), "Docker");
     a.containers.clear();
-    assert_eq!(menus::session_label(&a, 0, &session), "Container");
+    assert_eq!(menus::session_label(&a, 0, &session), "container");
     a.containers.insert(0, vec![c]);
     session.container.as_mut().unwrap().engine = "different-engine".into();
-    assert_eq!(menus::session_label(&a, 0, &session), "Container");
+    assert_eq!(menus::session_label(&a, 0, &session), "container");
     session.provider = "codex".into();
     assert_eq!(menus::session_label(&a, 0, &session), "codex");
 }
@@ -4904,10 +4904,10 @@ fn notices_expire_and_repeated_messages_restart_the_timeout() {
 fn floating_notifications_are_typed_bounded_and_restore_the_scene() {
     for width in [48, 80, 120] {
         for (kind, label, color) in [
-            (NoticeKind::Info, "Info", Color::Cyan),
-            (NoticeKind::Success, "Success", Color::Green),
-            (NoticeKind::Warning, "Warning", Color::Yellow),
-            (NoticeKind::Error, "Error", Color::Red),
+            (NoticeKind::Info, "Info", Color::Rgb(80, 200, 210)),
+            (NoticeKind::Success, "Success", Color::Rgb(110, 200, 120)),
+            (NoticeKind::Warning, "Warning", Color::Rgb(220, 180, 70)),
+            (NoticeKind::Error, "Error", Color::Rgb(220, 90, 90)),
         ] {
             let (mut app, _rx) = file_app();
             let baseline = capture_app(&app, width);
@@ -4986,4 +4986,186 @@ fn notification_types_follow_results_and_typed_inputs_keep_ownership() {
     assert_eq!(app.text, "folderd");
     assert!(app.input == Some(Input::Search));
     assert!(capture_app(&app, 80).contains("Still searching"));
+}
+
+#[test]
+fn notification_animation_eases_in_out_and_stops_polling_fast_when_settled() {
+    let start = Instant::now();
+    let end = start + Duration::from_secs(5);
+    let samples = [0, 65, 130, 195, 260, 2500, 4740, 4805, 4870, 4935, 5000];
+    let mut captures = Vec::new();
+    let (mut app, _rx) = file_app();
+    app.set_notice_as(NoticeKind::Success, "Transfer complete".into());
+    app.notice_started = Some(start);
+    app.notice_deadline = Some(end);
+    let baseline = {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        app.notice.clear();
+        terminal
+            .draw(|frame| rendering::render_at(frame, &app, None, start))
+            .unwrap();
+        let b = terminal.backend().buffer().clone();
+        app.notice = "Transfer complete".into();
+        b
+    };
+    for ms in samples {
+        let now = start + Duration::from_millis(ms);
+        let appearance = notifications::appearance(Some(start), Some(end), now);
+        assert!((0.0..=1.0).contains(&appearance.opacity));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| rendering::render_at(frame, &app, None, now))
+            .unwrap();
+        let b = terminal.backend().buffer();
+        if ms == 0 || ms == 5000 {
+            assert_eq!(b, &baseline);
+        }
+        captures.push(b.clone());
+        if let Some(dir) = std::env::var_os("CX_ANIMATION_CAPTURE_DIR") {
+            let dir = std::path::PathBuf::from(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let cells = b.content.iter().map(|c| serde_json::json!({"text":c.symbol(),"fg":format!("{:?}",c.fg),"bg":format!("{:?}",c.bg)})).collect::<Vec<_>>();
+            std::fs::write(
+                dir.join(format!("{ms:04}.json")),
+                serde_json::to_vec(&serde_json::json!({"width":80,"height":24,"cells":cells}))
+                    .unwrap(),
+            )
+            .unwrap();
+        }
+    }
+    assert_ne!(captures[1], captures[2]);
+    assert_ne!(captures[8], captures[9]);
+    assert_eq!(captures[4], captures[5]);
+    assert_eq!(
+        notifications::poll_interval(Some(start), Some(end), start + Duration::from_millis(100)),
+        Duration::from_millis(33)
+    );
+    assert_eq!(
+        notifications::poll_interval(Some(start), Some(end), start + Duration::from_secs(1)),
+        Duration::from_millis(100)
+    );
+    assert!(!notifications::animating(Some(start), Some(end), end));
+    // All phases also stay bounded in a narrow terminal.
+    for ms in samples {
+        let mut terminal = Terminal::new(TestBackend::new(48, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                rendering::render_at(frame, &app, None, start + Duration::from_millis(ms))
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn unreachable_notices_are_once_per_device_until_successful_contact() {
+    let (mut app, _rx) = queued_app();
+    let failure = |op, device, generation| Reply {
+        op,
+        device,
+        generation,
+        preview: None,
+        result: Err(anyhow::Error::new(
+            transport::ConnectionFailure::Unreachable,
+        )),
+    };
+    app.apply(failure(Operation::Sessions, 1, app.generation));
+    assert!(app.notice.contains("unreachable"));
+    assert!(app.work[1].error.is_some());
+    let end = app.notice_deadline.unwrap();
+    app.apply(failure(Operation::Info, 1, app.generation));
+    assert_eq!(app.notice_deadline, Some(end));
+    assert!(app.expire_notice(end));
+    for op in [
+        Operation::Info,
+        Operation::Sessions,
+        Operation::Network,
+        Operation::Containers,
+    ] {
+        app.apply(failure(op, 1, app.generation));
+        assert!(app.notice.is_empty());
+    }
+    assert!(app.container_errors.contains_key(&1));
+    app.apply(failure(Operation::Sessions, 0, app.generation));
+    assert!(app.notice.contains("unreachable"));
+    app.apply(Reply {
+        op: Operation::List {
+            path: "/files".into(),
+        },
+        device: 1,
+        generation: app.generation,
+        preview: None,
+        result: Err(anyhow::anyhow!("Permission denied for this file operation")),
+    });
+    assert!(app.notice.contains("Permission denied"));
+    assert!(app.unavailable_notified.contains(&app.devices[1].id));
+    // A genuinely successful helper response re-arms future outages.
+    app.apply(Reply {
+        op: Operation::Sessions,
+        device: 1,
+        generation: app.generation,
+        preview: None,
+        result: Ok(serde_json::json!([])),
+    });
+    assert!(!app.unavailable_notified.contains(&app.devices[1].id));
+    app.set_notice(String::new());
+    app.apply(failure(Operation::Sessions, 1, app.generation));
+    assert!(app.notice.contains("unreachable"));
+}
+
+#[test]
+fn stale_errors_and_quiet_neighbor_checks_do_not_consume_the_first_device_notice() {
+    let (mut app, _rx) = queued_app();
+    app.generation = 2;
+    for (op, generation) in [
+        (
+            Operation::List {
+                path: "/stale".into(),
+            },
+            1,
+        ),
+        (
+            Operation::ProbeCandidate {
+                address: "192.0.2.1".into(),
+                interface: None,
+            },
+            2,
+        ),
+    ] {
+        app.apply(Reply {
+            op,
+            device: 1,
+            generation,
+            preview: None,
+            result: Err(anyhow::Error::new(transport::ConnectionFailure::Timeout)),
+        });
+        assert!(app.notice.is_empty());
+        assert!(app.unavailable_notified.is_empty());
+    }
+    app.apply(Reply {
+        op: Operation::Info,
+        device: 1,
+        generation: 2,
+        preview: None,
+        result: Err(anyhow::Error::new(transport::ConnectionFailure::Timeout)),
+    });
+    assert!(app.notice.contains("timed out"));
+    let deadline = app.notice_deadline;
+    app.apply(Reply {
+        op: Operation::Sessions,
+        device: 1,
+        generation: 1,
+        preview: None,
+        result: Ok(serde_json::json!([])),
+    });
+    assert!(app.unavailable_notified.contains(&app.devices[1].id));
+    app.apply(Reply {
+        op: Operation::Sessions,
+        device: 1,
+        generation: 2,
+        preview: None,
+        result: Err(anyhow::Error::new(
+            transport::ConnectionFailure::Unreachable,
+        )),
+    });
+    assert_eq!(app.notice_deadline, deadline);
 }

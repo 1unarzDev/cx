@@ -6,6 +6,15 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.45
+
+### Improvements
+- Floating notifications ease in and out with a short slide and fade; fast redraws run only during transitions.
+
+### Fixes
+- Unreachable-device errors notify once per device until a fresh successful helper response, while status and retry behavior remain available.
+- Use lowercase `container` for unclassified container session labels, matching `devcontainer` and host session types.
+
 ## v0.1.44
 
 ### Improvements

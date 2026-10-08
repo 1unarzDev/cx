@@ -1,5 +1,11 @@
 # Validation record
 
+## Animated notifications and outage suppression — v0.1.45 (2026-10-08)
+
+PASS — locked serial Rust suite: 537 passed, one protected live test ignored (`/tmp/cx-animated-full-tests.log`). After RGB endpoint polish, all 167 UI tests passed (`/tmp/cx-animated-ui-final.log`); targeted ASCII/NO_COLOR animation regression also passed. Clean native build, formatting and diff checks passed. Deterministic captures cover eased entry/exit, narrow layouts, stable wrapping, scene restoration, polling rates and independent device alert latches. Rendered animation sequence visually inspected at `/tmp/cx-notice-animation/sequence.png`; this is a fixture rendering, not physical hardware.
+
+PASS — actual terminal `tests/notification_timeout_pty.py` checks motion in both directions, fading, default backgrounds, expiry, navigation and termios (`/tmp/cx-animated-notification-pty-clean.log`). `tests/unreachable_notice_pty.py` exercises the actual viewer/transport with a private fake SSH endpoint and real framed CX helper: one alert per outage, repeated refresh retries without alerts, successful recovery, renewed alert after a later outage and restored termios (`/tmp/cx-unreachable-notice-pty.log`). The fixture separates helper requests from automatic updater requests and terminates only its verified owned helper process groups. Temporary diagnosis traces removed. No remote device, SSH trust, provider or live network changes; physical hardware acceptance remains pending.
+
 ## Typed floating notifications and label casing — v0.1.44 (2026-10-08)
 
 PASS — serial locked Rust suite: 534 passed, one protected live test ignored (`/tmp/cx-floating-full-tests.log`); final UI rerun 164 passed, including result-driven types, wrapped/bounded overlays, restored scene after expiry, native bitmap fallback and lowercase devcontainer labels. Color-mode UI suite also passed164; targeted ASCII/NO_COLOR check passed. Formatting, diff checks and native debug build passed.

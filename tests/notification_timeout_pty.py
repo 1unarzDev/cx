@@ -2,7 +2,7 @@
 """Actual bottom-right notice and idle timeout, using private state and offline transport."""
 import fcntl,json,os,pathlib,pty,select,struct,subprocess,sys,tempfile,termios,time
 import pyte
-binary=str(pathlib.Path(sys.argv[1]).resolve());results=[]
+binary=str(pathlib.Path(sys.argv[1]).resolve());results=[];frames=[];frame_started=time.monotonic()
 with tempfile.TemporaryDirectory(prefix='cx-update-ui-') as directory:
  root=pathlib.Path(directory);state=root/'state/cx';state.mkdir(parents=True)
  env=dict(os.environ,HOME=str(root),XDG_STATE_HOME=str(root/'state'),SHELL='/bin/sh',TERM='xterm-256color',HTTPS_PROXY='http://127.0.0.1:9')
@@ -19,6 +19,8 @@ with tempfile.TemporaryDirectory(prefix='cx-update-ui-') as directory:
     if select.select([master],[],[],.02)[0]:
      try:stream.feed(os.read(master,65536).decode(errors='replace'))
      except OSError:break
+     if len(frames)<160:
+      frames.append({'ms':round((time.monotonic()-frame_started)*1000),'rows':[[{'text':screen.buffer[y][x].data,'fg':screen.buffer[y][x].fg} for x in range(100)] for y in range(24)]})
   def send(keys):os.write(master,keys);read()
   def text():return '\n'.join(screen.display)
   return master,slave,before,proc,read,send,text,screen
@@ -29,11 +31,12 @@ with tempfile.TemporaryDirectory(prefix='cx-update-ui-') as directory:
   deadline=time.monotonic()+5
   while 'update unreachable; retry' not in text() and time.monotonic()<deadline:read(.1)
   assert 'update unreachable; retry' in text(),text()
+  read(.35)
   rows=text().splitlines()
   y=next(i for i,row in enumerate(rows) if 'Warning' in row)
   x=rows[y].index('Warning')
   assert x>45 and 10<y<20,(x,y,text())
-  assert screen.buffer[y][x].fg in ('brown','cdcd00'),screen.buffer[y][x]
+  assert screen.buffer[y][x].fg =='dcb446',screen.buffer[y][x]
   assert all(cell.bg=='default' for row in screen.buffer.values() for cell in row.values())
   assert rows[-1].strip()=='' and 'Ctrl C Quit' in text(),text()
   pathlib.Path('/tmp/cx-notice-pty-visible.json').write_text(json.dumps([
@@ -41,12 +44,24 @@ with tempfile.TemporaryDirectory(prefix='cx-update-ui-') as directory:
   pathlib.Path('/tmp/cx-notice-pty-visible.txt').write_text(text())
   read(5.5)
   assert 'update unreachable; retry' not in text(),text()
+  warning_positions=[];warning_colors=set()
+  for frame in frames:
+   for row in frame['rows']:
+    line=''.join(c['text'] for c in row)
+    if 'Warning' in line:
+     x=line.index('Warning');warning_positions.append(x);warning_colors.add(row[x]['fg'])
+  assert len(set(warning_positions))>=3,warning_positions
+  assert any(a>b for a,b in zip(warning_positions,warning_positions[1:])),warning_positions
+  assert any(a<b for a,b in zip(warning_positions,warning_positions[1:])),warning_positions
+  assert len(warning_colors)>=3,warning_colors
+  pathlib.Path('/tmp/cx-animated-pty-frames.json').write_text(json.dumps(frames))
+
   pathlib.Path('/tmp/cx-notice-pty-expired.txt').write_text(text())
   assert proc.poll() is None
   send(b'\x10');send(b'Files');assert 'Files' in text()
   send(b'\x1b');send(b'\x03');proc.wait(timeout=3)
   assert termios.tcgetattr(slave)==before
-  results.append({'scenario':'floating warning panel/color/default background, idle expiry and preserved workspace/termios','result':'PASS'})
+  results.append({'scenario':'animated floating warning panel/slide/fade/default background, idle expiry and preserved workspace/termios','result':'PASS'})
  finally:
   if proc.poll() is None:proc.terminate();proc.wait(timeout=3)
   os.close(master);os.close(slave)

@@ -179,6 +179,7 @@ pub(super) fn session_label<'a>(app: &App, device: usize, session: &'a super::Se
         if let Some(scope) = &session.container {
             return match container_label(app, device, scope) {
                 "Devcontainer" => "devcontainer",
+                "Container" => "container",
                 other => other,
             };
         }

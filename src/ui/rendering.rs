@@ -3,12 +3,26 @@ use super::*;
 
 #[cfg(test)]
 pub(super) fn render(frame: &mut Frame<'_>, app: &App) {
-    render_with_native(frame, app, None)
+    render_at(
+        frame,
+        app,
+        None,
+        app.notice_started
+            .map_or_else(Instant::now, |start| start + notifications::TRANSITION),
+    )
 }
 pub(super) fn render_with_native(
     frame: &mut Frame<'_>,
     app: &App,
     native: Option<&mut crate::terminal_preview::NativePreview>,
+) {
+    render_at(frame, app, native, Instant::now());
+}
+pub(super) fn render_at(
+    frame: &mut Frame<'_>,
+    app: &App,
+    native: Option<&mut crate::terminal_preview::NativePreview>,
+    now: Instant,
 ) {
     let area = frame.area();
     if area.width < 36 || area.height < 10 {
@@ -1269,7 +1283,13 @@ pub(super) fn render_with_native(
             cells[i % columns],
         );
     }
-    notifications::render(frame, &app.notice, app.notice_kind, workspace);
+    notifications::render(
+        frame,
+        &app.notice,
+        app.notice_kind,
+        workspace,
+        notifications::appearance(app.notice_started, app.notice_deadline, now),
+    );
     if let Some(input) = app
         .input
         .filter(|i| !matches!(*i, Input::Search | Input::PreviewSearch | Input::Filter))

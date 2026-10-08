@@ -435,7 +435,9 @@ struct App {
     help_scroll: u16,
     notice: String,
     notice_kind: NoticeKind,
+    notice_started: Option<Instant>,
     notice_deadline: Option<Instant>,
+    unavailable_notified: BTreeSet<String>,
     browser: Option<Browser>,
     other_browser: Option<Browser>,
     destination_active: bool,
@@ -506,17 +508,17 @@ impl App {
     }
     fn set_notice_as(&mut self, kind: NoticeKind, message: String) {
         self.notice_kind = kind;
-        self.notice_deadline = if message.is_empty() {
-            None
-        } else {
-            Some(Instant::now() + Duration::from_secs(5))
-        };
+        self.notice_started = (!message.is_empty()).then(Instant::now);
+        self.notice_deadline = self
+            .notice_started
+            .map(|start| start + Duration::from_secs(5));
         self.notice = message;
     }
     fn expire_notice(&mut self, now: Instant) -> bool {
         if self.notice_deadline.is_some_and(|deadline| now >= deadline) {
             self.notice.clear();
             self.notice_deadline = None;
+            self.notice_started = None;
             true
         } else {
             false
@@ -552,7 +554,9 @@ impl App {
             help_scroll: 0,
             notice: String::new(),
             notice_kind: NoticeKind::Info,
+            notice_started: None,
             notice_deadline: None,
+            unavailable_notified: BTreeSet::new(),
             browser: None,
             other_browser: None,
             destination_active: false,
@@ -3042,6 +3046,27 @@ impl App {
             self.file_busy = false;
             self.start_next_file_action();
         }
+        let connection_failure = reply
+            .result
+            .as_ref()
+            .err()
+            .is_some_and(transport::is_connection_failure);
+        let notify_error = if reply.result.is_ok() {
+            if reply.generation == self.generation {
+                self.unavailable_notified
+                    .remove(&self.devices[reply.device].id);
+            }
+            true
+        } else if connection_failure {
+            // Quiet neighbor probes and obsolete file replies must not consume the first notice.
+            !matches!(reply.op, Operation::ProbeCandidate { .. })
+                && (reply.generation == self.generation || file_action)
+                && self
+                    .unavailable_notified
+                    .insert(self.devices[reply.device].id.clone())
+        } else {
+            true
+        };
         let listing_offset = match &reply.op {
             Operation::ListPage { offset, .. } => *offset,
             _ => 0,
@@ -3111,6 +3136,12 @@ impl App {
                 Err(e) => {
                     self.container_errors.insert(reply.device, format!("{e:#}"));
                     self.containers.remove(&reply.device);
+                    if connection_failure && notify_error {
+                        self.set_notice_as(
+                            NoticeKind::Error,
+                            safe_text(&format!("{}: {e:#}", identity(&self.devices[reply.device]))),
+                        );
+                    }
                 }
             }
             self.container_selected = self
@@ -3128,7 +3159,8 @@ impl App {
                         "Workspace started · choose its shell, agent or files".into(),
                     );
                 }
-                Err(e) => self.set_notice_as(NoticeKind::Error, format!("{e:#}")),
+                Err(e) if notify_error => self.set_notice_as(NoticeKind::Error, format!("{e:#}")),
+                Err(_) => (),
             }
             return;
         }
@@ -3136,17 +3168,21 @@ impl App {
             reply.op,
             Operation::ContainerLifecycle { .. } | Operation::ContainerAccess { .. }
         ) {
-            self.set_notice_as(
-                if reply.result.is_err() {
-                    NoticeKind::Error
-                } else {
-                    NoticeKind::Success
-                },
-                match &reply.result {
-                    Ok(_) => "Container action complete · network configuration preserved".into(),
-                    Err(e) => format!("{e:#}"),
-                },
-            );
+            if reply.result.is_ok() || notify_error {
+                self.set_notice_as(
+                    if reply.result.is_err() {
+                        NoticeKind::Error
+                    } else {
+                        NoticeKind::Success
+                    },
+                    match &reply.result {
+                        Ok(_) => {
+                            "Container action complete · network configuration preserved".into()
+                        }
+                        Err(e) => format!("{e:#}"),
+                    },
+                );
+            }
             self.refresh_containers();
             return;
         }
@@ -3199,16 +3235,18 @@ impl App {
                         if self.file_errors.len() < 8 {
                             self.file_errors.push(message.clone());
                         }
-                        self.set_notice_as(
-                            NoticeKind::Error,
-                            format!(
-                                "{} file actions failed · {}",
-                                self.file_errors.len(),
-                                message
-                            ),
-                        );
-                    } else {
-                        self.set_notice_as(NoticeKind::Error, message);
+                        if notify_error {
+                            self.set_notice_as(
+                                NoticeKind::Error,
+                                format!(
+                                    "{} file actions failed · {}",
+                                    self.file_errors.len(),
+                                    message
+                                ),
+                            );
+                        }
+                    } else if notify_error {
+                        self.set_notice_as(NoticeKind::Error, message.clone());
                     }
                 }
                 if reply.generation == self.generation
@@ -3221,7 +3259,7 @@ impl App {
                         b.preview_pending_page = None;
                         b.preview_requested_page = b.preview_rich.as_ref().map_or(1, |p| p.page);
                         if b.preview_rich.is_none() {
-                            b.preview = Some(self.notice.clone());
+                            b.preview = Some(message.clone());
                         }
                     }
                 }
@@ -7791,6 +7829,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     let mut last_refresh = Instant::now();
     let mut last_jobs = Instant::now();
     let mut last_transfer_frame = Instant::now();
+    let mut notice_was_animating = false;
     while !app.quit && !stopping.load(std::sync::atomic::Ordering::Relaxed) {
         for update in transport::drain_host_updates() {
             app.host_updated(update);
@@ -8058,6 +8097,10 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             last_transfer_frame = Instant::now();
             dirty = true;
         }
+        let notice_is_animating =
+            notifications::animating(app.notice_started, app.notice_deadline, Instant::now());
+        dirty |= notice_is_animating || notice_was_animating;
+        notice_was_animating = notice_is_animating;
         // Capture wheel reports throughout cx so the emulator does not replace
         // them with accelerated arrow-key bursts. suspend() releases this before
         // handing the terminal to SSH/tmux/native commands.
@@ -8068,7 +8111,11 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 .draw(|frame| render_with_native(frame, &app, Some(&mut native_preview)))?;
             dirty = false;
         }
-        if event::poll(Duration::from_millis(100))? {
+        if event::poll(notifications::poll_interval(
+            app.notice_started,
+            app.notice_deadline,
+            Instant::now(),
+        ))? {
             for (input, observed) in read_input_batch()? {
                 if !wheel_reports.accepts(&input, observed) {
                     continue;

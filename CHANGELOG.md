@@ -9,6 +9,7 @@ No changes queued.
 ## v0.1.39
 
 ### Features
+- Enter in a transfer destination pane confirms sending into its displayed folder; h/l still navigates. Pending submissions are protected against duplicates, and the sidebar animates active transfer progress.
 - `w` on a highlighted session opens a read-only watch attachment.
 - Remove the redundant SSH terminal action from the sidebar and Ctrl+P; New shell remains the UI terminal entry point.
 - `n` opens a compact session chooser on the highlighted device, with c/x/s/d shortcuts and h/l or Left/Right navigation. Device launches use home; Files launches retain the current folder.

@@ -104,8 +104,8 @@ fn engine_identity() -> Result<String> {
 }
 /// Explicit startup may execute workspace hooks and Compose services. Never called by discovery.
 pub fn up(workspace: &str) -> Result<Value> {
-    let workspace =
-        fs::canonicalize(workspace).context("Workspace does not exist on this device")?;
+    let workspace = fs::canonicalize(crate::files::decode_path(workspace)?)
+        .context("Workspace does not exist on this device")?;
     anyhow::ensure!(workspace.is_dir(), "Choose a workspace folder");
     let config = config_at(&workspace)
         .context("No .devcontainer/devcontainer.json or .devcontainer.json in this folder")?;
@@ -590,7 +590,9 @@ fn exec(scope: &ContainerScope, tty: bool) -> Result<Command> {
     if tty {
         c.arg("-t");
     }
-    c.args(["--user", &scope.user, "--workdir", &scope.folder, &scope.id]);
+    c.args(["--user", &scope.user, "--workdir"])
+        .arg(crate::files::decode_path(&scope.folder)?)
+        .arg(&scope.id);
     Ok(c)
 }
 fn helper_location(scope: &ContainerScope) -> Result<String> {
@@ -728,7 +730,7 @@ pub fn prepare(scope: &ContainerScope, provider: &str) -> Result<()> {
         ["shell", "codex", "claude"].contains(&provider),
         "unsupported container session profile"
     );
-    let mut c = terminal_command(&container, scope, false);
+    let mut c = terminal_command(&container, scope, false)?;
     c.args([
         "/bin/sh",
         "-c",
@@ -761,11 +763,11 @@ pub fn run(scope: &ContainerScope, provider: &str, yolo: bool) -> Result<()> {
         &scope.folder,
         &id,
     ))?);
-    let mut command = terminal_command(&container, scope, true);
+    let mut command = terminal_command(&container, scope, true)?;
     command.args([&helper, "container-shell", &payload]);
     Err(command.exec()).context("Container terminal could not start")
 }
-fn terminal_command(container: &Container, scope: &ContainerScope, tty: bool) -> Command {
+fn terminal_command(container: &Container, scope: &ContainerScope, tty: bool) -> Result<Command> {
     if let Some(cli) = cli().filter(|_| container.devcontainer && container.config.is_some()) {
         let mut command = cli_command(&cli);
         command.args([
@@ -783,16 +785,10 @@ fn terminal_command(container: &Container, scope: &ContainerScope, tty: bool) ->
                 command.args(["--remote-env", &format!("{name}={value}")]);
             }
         }
-        command
+        Ok(command)
     } else {
-        let mut command = docker(&[
-            "exec",
-            "-i",
-            "--user",
-            &scope.user,
-            "--workdir",
-            &scope.folder,
-        ]);
+        let mut command = docker(&["exec", "-i", "--user", &scope.user, "--workdir"]);
+        command.arg(crate::files::decode_path(&scope.folder)?);
         if tty {
             command.arg("-t");
         }
@@ -805,7 +801,7 @@ fn terminal_command(container: &Container, scope: &ContainerScope, tty: bool) ->
             }
         }
         command.arg(&scope.id);
-        command
+        Ok(command)
     }
 }
 #[cfg(test)]

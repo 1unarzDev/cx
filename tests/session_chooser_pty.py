@@ -37,9 +37,17 @@ with tempfile.TemporaryDirectory(prefix='cx-session-chooser-') as tmp:
   wait(lambda:'Ctrl+]' in text() or '[s] Shell' not in text());read(1);send(b'printf "chooser-proof" > chooser-proof\n')
   wait(lambda:(root/'chooser-proof').exists());assert (root/'chooser-proof').read_text()=='chooser-proof'
   send(b'\x1d');read(.5);assert proc.poll() is None and len(sessions())==1
+  send(b'\t\tw')
+  def readonly():
+   p=subprocess.run(['tmux','-S',str(state/'managed.sock'),'list-clients','-F','#{client_readonly}'],capture_output=True)
+   return b'1' in p.stdout.splitlines()
+  wait(readonly)
+  send(b'printf changed > chooser-proof\n');read(.5)
+  assert (root/'chooser-proof').read_text()=='chooser-proof','watch mode injected terminal input'
+  send(b'\x1d');read(.5);assert proc.poll() is None
   send(b'\x03');proc.wait(timeout=5);assert proc.returncode==0 and termios.tcgetattr(slave)==before
  finally:
   if proc.poll() is None:proc.kill();proc.wait()
   subprocess.run(['tmux','-S',str(state/'managed.sock'),'kill-server'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
   os.close(master);os.close(slave)
-print(json.dumps(dict(result='PASS',checks='n opens four choices without launching, h/l and arrows, cancel, s quick launch at home, native command, one detach and termios',scope='private CX state/tmux and owned shell')))
+print(json.dumps(dict(result='PASS',checks='n opens four choices without launching, h/l and arrows, cancel, s quick launch at home, native command, one detach, w read-only watch/input refusal and termios',scope='private CX state/tmux and owned shell')))

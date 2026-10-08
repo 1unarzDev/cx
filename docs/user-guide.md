@@ -33,7 +33,7 @@ Automatically named shells show the running executable, such as `running cargo`;
 
 The Selected side panel stacks parent folders above the highlighted current folder, with the selected item beneath it. Older ancestors fold when vertical space is limited. The workspace keeps its space for files; switching split panes updates the side-panel hierarchy.
 
-Select files → `t` → choose device → browse folder → `p`. Or copy/cut, switch devices, and paste. Incoming name conflicts rename by default; overwrite is explicit. Cross-host cuts support regular files; copy supports directories. Delete has no undo. Transfers are not snapshots of growing files.
+Select files → `t` → choose device → browse folder with h/l → Enter confirms transfer into the displayed destination folder. The sidebar animates while submitting or transferring; `T` opens detailed progress. `p` also pastes into the focused folder. Or copy/cut, switch devices, and paste. Incoming name conflicts rename by default; overwrite is explicit. Cross-host cuts support regular files; copy supports directories. Delete has no undo. Transfers are not snapshots of growing files.
 
 ## Search and foreground commands
 

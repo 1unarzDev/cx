@@ -12211,6 +12211,20 @@ mod tests {
             .any(|(action, _)| *action == Action::Terminal));
     }
     #[test]
+    fn destination_enter_never_sends_host_transfer_for_container_paths() {
+        let (mut a, rx) = file_app();
+        a.execute(Action::Copy);
+        assert!(a.clipboard.is_some());
+        a.open_container_browser(0, container_fixture('a', true).scope());
+        let _ = rx.try_iter().collect::<Vec<_>>();
+        a.destination_active = true;
+        a.browser.as_mut().unwrap().loading = false;
+        a.focus = Focus::Workspace;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(rx.try_recv().is_err());
+        assert!(a.notice.contains("Container files are read-only"));
+    }
+    #[test]
     fn containers_ui_capture_matrix_and_default_background() {
         for (width, height) in [(48, 24), (80, 24), (120, 40)] {
             let (mut a, _rx) = queued_app();

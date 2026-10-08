@@ -31,6 +31,9 @@ with tempfile.TemporaryDirectory(prefix='cx-containers-') as tmp:
   listing=cli('container-files',a,'--path','/tmp')
   assert 'context.md' in {e['name'] for e in listing['entries']}
   preview=cli('container-files',a,'--path','/tmp/context.md','--preview');assert 'Container scope' in preview['text']
+  docker('exec',a,'sh','-c',r"mkdir /tmp/$(printf '\377')")
+  raw=next(e for e in cli('container-files',a,'--path','/tmp')['entries'] if e['kind']=='directory' and e['path'].startswith('cx-bytes:'));
+  assert 'entries' in cli('container-files',a,'--path',raw['path'])
   c=info(a);scope=dict(engine=c['engine'],id=c['id'],name=c['name'],user=c['user'],folder=c['folder'],started_at=c['started_at'])
   assert request('container_files',dict(scope=scope,operation=dict(op='remove',args=dict(path='/tmp/context.md',expected_identity=None))))['error']
   nested=dict(op='container_files',args=dict(scope=scope,operation=dict(op='info')))

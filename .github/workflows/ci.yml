@@ -20,6 +20,7 @@ jobs:
           cargo build --locked
           docker pull ubuntu:24.04
           python3 tests/session_chooser_pty.py target/debug/cx
+          python3 tests/transfer_enter_pty.py target/debug/cx
           python3 tests/containers_live.py target/debug/cx
           python3 tests/container_agents_live.py target/debug/cx
           npm install --prefix "$RUNNER_TEMP/cx-devcontainer-cli" @devcontainers/cli@0.89.0 --no-audit --no-fund

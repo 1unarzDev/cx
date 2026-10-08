@@ -374,6 +374,7 @@ enum ChooseDevice {
 enum Dialog {
     Device(ChooseDevice),
     Provider(usize, Option<String>),
+    Permissions(usize, String, String),
     Matching(usize, String, String, Session),
     Jobs,
     Links(Vec<crate::markdown_links::Link>),
@@ -549,6 +550,7 @@ impl App {
                 Dialog::Links(_) => "Links",
                 Dialog::Device(_) => "Device picker",
                 Dialog::Provider(..) => "Provider",
+                Dialog::Permissions(..) => "Session permissions",
                 Dialog::Matching(..) => "Session choice",
                 Dialog::Jobs => {
                     if self.dialog_detail_focus {
@@ -558,7 +560,7 @@ impl App {
                     }
                 }
                 Dialog::Delete(..) => "Delete",
-                Dialog::StopShell(..) => "Stop shell",
+                Dialog::StopShell(..) => "Stop session",
                 Dialog::PendingExit(_) => "Pending actions",
                 Dialog::Neighbor(..) => "Neighbor actions",
                 Dialog::Peer(_) => "Device actions",
@@ -1917,17 +1919,36 @@ impl App {
         }
     }
     fn create_at(&mut self, d: usize, directory: String, provider: String) {
+        if provider != "shell" {
+            self.dialog = Some(Dialog::Permissions(d, directory, provider));
+            self.dialog_selected = 0;
+            return;
+        }
+        self.create_permission_session(d, directory, provider, false);
+    }
+    fn create_permission_session(
+        &mut self,
+        d: usize,
+        directory: String,
+        provider: String,
+        yolo: bool,
+    ) {
         let key = unique_key();
         // Execution helper generates the label after resolving the directory.
         let name = String::new();
+        let spec = CreateSession {
+            key: key.clone(),
+            directory,
+            provider: provider.clone(),
+            name,
+        };
         self.creating = self.send(
             d,
-            Operation::Create(CreateSession {
-                key: key.clone(),
-                directory,
-                provider: provider.clone(),
-                name,
-            }),
+            if yolo {
+                Operation::CreateYolo(spec)
+            } else {
+                Operation::Create(spec)
+            },
         );
         self.notice = if self.creating {
             format!("Creating {provider} on {}…", identity(&self.devices[d]))
@@ -2094,7 +2115,7 @@ impl App {
             Dialog::Links(links) => links.len(),
             Dialog::Device(purpose) => self.device_choices(*purpose).len(),
             Dialog::Provider(d, _) => self.provider_choices(*d).len(),
-            Dialog::Matching(..) => 2,
+            Dialog::Matching(..) | Dialog::Permissions(..) => 2,
             Dialog::Jobs => self.job_rows().len(),
             Dialog::Delete(..) | Dialog::StopShell(..) => 2,
             Dialog::PendingExit(_) => 2,
@@ -2170,6 +2191,22 @@ impl App {
                     self.open_browser(d, "~".into());
                     self.notice = "Browse to a folder · n starts here (Enter opens files)".into();
                 }
+                Dialog::Permissions(d, path, provider) => {
+                    let yolo = self.dialog_selected == 1;
+                    if yolo
+                        && self.devices[d].target.is_some()
+                        && !self.providers.get(&d).is_some_and(|(caps, checked)| {
+                            transport::now().saturating_sub(*checked) < 60
+                                && caps.iter().any(|c| c == "session-yolo-v1")
+                        })
+                    {
+                        self.check_providers(d);
+                        self.notice = "YOLO needs an updated execution helper · update this device, then retry".into();
+                        return;
+                    }
+                    self.dialog = None;
+                    self.create_permission_session(d, path, provider, yolo);
+                }
                 Dialog::Matching(d, path, provider, session) => {
                     self.dialog = None;
                     if self.dialog_selected == 0 {
@@ -2206,14 +2243,24 @@ impl App {
                     if self.dialog_selected == 1 {
                         self.send(
                             d,
-                            Operation::StopSession {
-                                id: session.id,
-                                pid: session.pid,
-                                started: session.started,
-                                boot_id: session.boot_id,
+                            if session.provider == "shell" {
+                                Operation::StopSession {
+                                    id: session.id,
+                                    pid: session.pid,
+                                    started: session.started,
+                                    boot_id: session.boot_id,
+                                }
+                            } else {
+                                Operation::StopAgentSession {
+                                    id: session.id,
+                                    pid: session.pid,
+                                    started: session.started,
+                                    boot_id: session.boot_id,
+                                    provider: session.provider,
+                                }
                             },
                         );
-                        self.notice = "Stopping confirmed shell…".into();
+                        self.notice = "Stopping confirmed session…".into();
                     }
                 }
                 Dialog::Peer(d) => {
@@ -2334,7 +2381,7 @@ impl App {
         if is_sessions {
             self.work[reply.device].loading = false;
         }
-        if matches!(reply.op, Operation::Create(_)) {
+        if matches!(reply.op, Operation::Create(_) | Operation::CreateYolo(_)) {
             self.creating = false;
         }
         let value = match reply.result {
@@ -2470,6 +2517,8 @@ impl App {
                                     "codex",
                                     "native-command-v1",
                                     "stop-session-v1",
+                                    "stop-agent-session-v1",
+                                    "session-yolo-v1",
                                     "pdf-pages-v1",
                                     "stable-update-v1",
                                 ]
@@ -2538,15 +2587,17 @@ impl App {
                     }
                 }
             }
-            Operation::Create(_) => match serde_json::from_value::<Session>(value) {
-                Ok(s) => {
-                    self.work[reply.device].sessions.push(s.clone());
-                    self.pending_attach = Some((reply.device, s, false));
+            Operation::Create(_) | Operation::CreateYolo(_) => {
+                match serde_json::from_value::<Session>(value) {
+                    Ok(s) => {
+                        self.work[reply.device].sessions.push(s.clone());
+                        self.pending_attach = Some((reply.device, s, false));
+                    }
+                    Err(_) => {
+                        self.notice = "Creation response invalid · refresh before retrying".into()
+                    }
                 }
-                Err(_) => {
-                    self.notice = "Creation response invalid · refresh before retrying".into()
-                }
-            },
+            }
             Operation::Jobs | Operation::TransferJobs => {
                 let newly_finished = value["jobs"]
                     .as_array()
@@ -2912,8 +2963,11 @@ impl App {
                     self.start_pdf_page_request();
                 }
             }
-            Operation::StopSession { .. } => {
-                self.notice = format!("Shell stopped · {}", identity(&self.devices[reply.device]));
+            Operation::StopSession { .. } | Operation::StopAgentSession { .. } => {
+                self.notice = format!(
+                    "Session stopped · {}",
+                    identity(&self.devices[reply.device])
+                );
                 self.work[reply.device].loading = self.send(reply.device, Operation::Sessions);
             }
             Operation::Mkdir { .. } if reply.generation == self.generation => {
@@ -3344,16 +3398,24 @@ impl App {
             && key.modifiers.is_empty()
         {
             if let Some((device, session)) = self.selected_session() {
-                if session.external || session.provider != "shell" {
-                    self.notice = "Only cx-managed shell sessions can be stopped here".into();
+                if session.external
+                    || !["shell", "codex", "claude"].contains(&session.provider.as_str())
+                {
+                    self.notice = "Only CX-managed sessions can be stopped here".into();
                 } else if self.devices[device].target.is_some()
                     && !self.providers.get(&device).is_some_and(|(caps, checked)| {
                         transport::now().saturating_sub(*checked) < 60
-                            && caps.iter().any(|c| c == "stop-session-v1")
+                            && caps.iter().any(|c| {
+                                c == if session.provider == "shell" {
+                                    "stop-session-v1"
+                                } else {
+                                    "stop-agent-session-v1"
+                                }
+                            })
                     })
                 {
                     self.check_providers(device);
-                    self.notice = "Checking shell-stop support · press d again when ready".into();
+                    self.notice = "Checking session-stop support · press d again when ready".into();
                 } else {
                     self.dialog_selected = 0;
                     self.dialog_scroll = 0;
@@ -5671,9 +5733,14 @@ fn render_with_native(
                     "Enter choose · next: browse folder, then n to start".into()
                 },
             ),
+            Dialog::Permissions(d, path, provider) => (
+                format!("{} permissions · {}", provider, identity(&app.devices[*d])),
+                vec!["Default · existing host permissions".into(), "YOLO · bypass approvals".into()],
+                format!("{}\nApplies to this new session only.\nYOLO bypasses approval prompts; Codex also disables its sandbox.\nEnter starts · Escape cancels", safe_label(path)),
+            ),
             Dialog::StopShell(d, session) => (
-                "Stop shell?".into(), vec!["Keep shell".into(), "Stop shell".into()],
-                format!("Running commands in this shell will end.\n{}\n{}\n{}", identity(&app.devices[*d]), safe_label(&session.name), safe_label(&session.directory)),
+                format!("Stop {} session?", session.provider), vec!["Keep session".into(), "Stop session".into()],
+                format!("Running work in this session will end.\n{}\n{}\n{}", identity(&app.devices[*d]), safe_label(&session.name), safe_label(&session.directory)),
             ),
             Dialog::Delete(d, entries) => (
                 format!("Delete {} {}?", entries.len(), if entries.len() == 1 { "item" } else { "items" }),
@@ -5934,7 +6001,7 @@ fn render_with_native(
             key_row("Ctrl+C", "Quit cx; work keeps running"),
         ];
         if app.view == View::Work {
-            help.push(key_row("d", "Stop selected cx-managed shell · confirm"));
+            help.push(key_row("d", "Stop selected CX-managed session · confirm"));
         }
         if app.view == View::Files && app.browser.as_ref().is_some_and(|b| b.preview.is_some()) {
             help.extend([
@@ -5994,7 +6061,7 @@ fn render_with_native(
         {
             help.push(key_row(
                 "d",
-                "Stop selected cx-managed shell · confirmation",
+                "Stop selected CX-managed session · confirmation",
             ));
         }
         help.push(Line::raw("Native terminals own their input."));
@@ -6526,7 +6593,7 @@ fn confirmation_buttons(
         if area.width < 38 {
             ["Keep", "Stop"]
         } else {
-            ["Keep shell", "Stop shell"]
+            ["Keep session", "Stop session"]
         }
     } else {
         ["Cancel", "Delete"]
@@ -10154,7 +10221,8 @@ mod tests {
         a.work[0].sessions[0].external = false;
         a.work[0].sessions[0].provider = "codex".into();
         press(&mut a, 'd');
-        assert!(a.dialog.is_none());
+        assert!(matches!(a.dialog, Some(Dialog::StopShell(..))));
+        press(&mut a, 'n');
         assert!(rx.try_recv().is_err());
     }
 
@@ -10903,6 +10971,8 @@ mod tests {
         );
         a.dialog_selected = 2;
         a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(a.dialog, Some(Dialog::Permissions(..))));
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let task = rx.try_recv().unwrap();
         assert_eq!(task.device, 1);
         let Operation::Create(spec) = &task.op else {
@@ -11088,6 +11158,8 @@ mod tests {
         assert!(matches!(list.op, Operation::List { .. }));
         a.browser.as_mut().unwrap().path = "/projects/test".into();
         press(&mut a, 'n');
+        assert!(matches!(a.dialog, Some(Dialog::Permissions(..))));
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let task = rx.try_recv().unwrap();
         assert_eq!(task.device, 1);
         let Operation::Create(spec) = task.op else {
@@ -11095,6 +11167,100 @@ mod tests {
         };
         assert_eq!(spec.provider, "codex");
         assert_eq!(spec.directory, "/projects/test");
+    }
+    #[test]
+    fn agent_permissions_are_per_launch_cancelable_and_yolo_dispatches_distinct_operation() {
+        let (mut a, rx) = queued_app();
+        for provider in ["codex", "claude"] {
+            a.create_at(0, "/folder".into(), provider.into());
+            assert!(matches!(a.dialog, Some(Dialog::Permissions(..))));
+            assert_eq!(a.dialog_selected, 0);
+            a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            assert!(rx.try_recv().is_err());
+            a.create_at(0, "/folder".into(), provider.into());
+            a.dialog_selected = 1;
+            a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            assert!(
+                matches!(rx.try_recv().unwrap().op, Operation::CreateYolo(c) if c.provider == provider && c.directory == "/folder")
+            );
+            a.create_at(0, "/folder".into(), provider.into());
+            assert_eq!(a.dialog_selected, 0);
+            a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            assert!(matches!(rx.try_recv().unwrap().op, Operation::Create(_)));
+        }
+    }
+    #[test]
+    fn permission_dialog_render_sizes_and_old_helper_refusal() {
+        let (mut a, rx) = queued_app();
+        for (width, height) in [(48, 24), (80, 24), (120, 40)] {
+            a.create_at(1, "/robot/networking".into(), "codex".into());
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| render(f, &a)).unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            assert!(text.contains("Default") && text.contains("YOLO"));
+            assert!(text.contains("sandbox"));
+            if let Some(directory) = std::env::var_os("CX_PERMISSIONS_CAPTURE_DIR") {
+                let directory = std::path::PathBuf::from(directory);
+                std::fs::create_dir_all(&directory).unwrap();
+                let buffer = terminal.backend().buffer();
+                let rows = buffer
+                    .content
+                    .chunks(usize::from(width))
+                    .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                std::fs::write(directory.join(format!("{width}x{height}.txt")), rows).unwrap();
+            }
+        }
+        a.providers
+            .insert(1, (vec!["codex".into()], transport::now()));
+        a.dialog_selected = 1;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(a.dialog, Some(Dialog::Permissions(..))));
+        assert!(!rx
+            .try_iter()
+            .any(|t| matches!(t.op, Operation::CreateYolo(_))));
+        a.providers.insert(
+            1,
+            (
+                vec!["codex".into(), "session-yolo-v1".into()],
+                transport::now(),
+            ),
+        );
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            rx.try_recv().unwrap().op,
+            Operation::CreateYolo(_)
+        ));
+    }
+    #[test]
+    fn agent_stop_confirms_exact_provider_and_refuses_old_helper() {
+        let (mut a, rx) = queued_app();
+        a.view = View::Work;
+        a.focus = Focus::Workspace;
+        let mut session = disposable_shell();
+        session.provider = "claude".into();
+        a.work[1].sessions.push(session);
+        a.device = 2;
+        a.providers
+            .insert(1, (vec!["stop-session-v1".into()], transport::now()));
+        press(&mut a, 'd');
+        assert!(a.dialog.is_none());
+        let _ = rx.try_iter().collect::<Vec<_>>();
+        a.providers
+            .insert(1, (vec!["stop-agent-session-v1".into()], transport::now()));
+        press(&mut a, 'd');
+        assert!(matches!(a.dialog, Some(Dialog::StopShell(..))));
+        press(&mut a, 'y');
+        assert!(
+            matches!(rx.try_recv().unwrap().op, Operation::StopAgentSession {provider, ..} if provider == "claude")
+        );
     }
     #[test]
     fn matching_live_session_offers_reuse_and_explicit_new() {
@@ -11105,6 +11271,8 @@ mod tests {
         assert!(matches!(a.dialog, Some(Dialog::Matching(..))));
         assert!(a.pending_attach.is_none());
         a.dialog_selected = 1;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(a.dialog, Some(Dialog::Permissions(..))));
         a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(rx.try_recv().unwrap().op, Operation::Create(_)));
     }
@@ -12771,7 +12939,8 @@ mod tests {
         assert!(a.pending_attach.is_none());
         a.work[0].sessions[0].provider = "codex".into();
         press(&mut a, 'd');
-        assert!(a.dialog.is_none());
+        assert!(matches!(a.dialog, Some(Dialog::StopShell(..))));
+        press(&mut a, 'n');
         a.work[0].sessions[0].provider = "shell".into();
         a.work[0].sessions[0].external = true;
         press(&mut a, 'd');
@@ -12855,7 +13024,7 @@ mod tests {
                         terminal
                             .draw(|frame| {
                                 render(frame, &a);
-                                let detail = if stop {"Running commands in this shell will end.\ntester@workstation\nDisposable shell\n/tmp/cx-disposable"} else {"Deletion cannot be undone.\ntester@workstation\n• alpha.txt"};
+                                let detail = if stop {"Running work in this session will end.\ntester@workstation\nDisposable shell\n/tmp/cx-disposable"} else {"Deletion cannot be undone.\ntester@workstation\n• alpha.txt"};
                             let rect = confirmation_popup(frame.area(), detail);
                                 let inner = Rect::new(
                                     rect.x + 2,
@@ -12885,7 +13054,7 @@ mod tests {
                             .collect::<Vec<_>>()
                             .join("\n");
                         assert!(text.contains(if stop {
-                            "Running commands"
+                            "Running work"
                         } else {
                             "Deletion cannot be"
                         }));
@@ -12895,11 +13064,11 @@ mod tests {
                                 if width < 48 {
                                     "Keep"
                                 } else {
-                                    "Keep shell"
+                                    "Keep session"
                                 }
                             } else {
                                 "Cancel"
-                            }) && text.contains(if stop { "Stop shell" } else { "Delete" })
+                            }) && text.contains(if stop { "Stop session" } else { "Delete" })
                         );
                         if let Some(directory) = std::env::var_os("CX_CONFIRMATION_CAPTURE_DIR") {
                             let directory = std::path::PathBuf::from(directory);

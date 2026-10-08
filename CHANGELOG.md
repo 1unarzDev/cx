@@ -6,6 +6,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.38
+
+### Features
+- New Codex and Claude sessions offer Default or YOLO permissions for that launch; CLI supports `cx new --yolo`. Codex YOLO bypasses approvals and sandboxing, while Claude bypasses permission prompts. Host provider settings remain unchanged.
+- `d` in Sessions now confirms and stops CX-managed Codex and Claude sessions as well as shells, preserving ownership, runtime and single-pane checks. Remote agent-stop and YOLO require updated helpers.
+
 ## v0.1.37
 
 ### Features

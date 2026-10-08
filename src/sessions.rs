@@ -565,9 +565,30 @@ pub fn list() -> Result<Vec<Session>> {
     result.sort_by(|a, b| (a.external, &a.id).cmp(&(b.external, &b.id)));
     Ok(result)
 }
-/// Stop only the exact cx-owned shell shown to the user at confirmation time.
-/// Never target personal/external tmux sessions or silently stop a provider takeover.
+/// Stop the exact CX-owned runtime shown at confirmation; preserve external sessions.
 pub fn stop_shell(id: &str, pid: u32, started: &str, boot_id: &str) -> Result<serde_json::Value> {
+    stop_managed(id, pid, started, boot_id, "shell")
+}
+pub fn stop_agent(
+    id: &str,
+    pid: u32,
+    started: &str,
+    boot_id: &str,
+    provider: &str,
+) -> Result<serde_json::Value> {
+    anyhow::ensure!(
+        ["codex", "claude"].contains(&provider),
+        "unsupported agent stop profile"
+    );
+    stop_managed(id, pid, started, boot_id, provider)
+}
+fn stop_managed(
+    id: &str,
+    pid: u32,
+    started: &str,
+    boot_id: &str,
+    provider: &str,
+) -> Result<serde_json::Value> {
     if id.len() != 67
         || !id.starts_with("cx-")
         || !id[3..].bytes().all(|b| b.is_ascii_hexdigit())
@@ -575,7 +596,7 @@ pub fn stop_shell(id: &str, pid: u32, started: &str, boot_id: &str) -> Result<se
         || started.is_empty()
         || started.contains("unknown")
     {
-        bail!("invalid managed shell identity");
+        bail!("invalid managed session identity");
     }
     let current_boot = identity().2;
     if boot_id.is_empty() || current_boot.is_empty() || boot_id != current_boot {
@@ -593,16 +614,18 @@ pub fn stop_shell(id: &str, pid: u32, started: &str, boot_id: &str) -> Result<se
         bail!("session lock unavailable");
     }
     let record: Session = serde_json::from_slice(
-        &fs::read(root.join(format!("{id}.json"))).context("shell ownership record unavailable")?,
+        &fs::read(root.join(format!("{id}.json")))
+            .context("session ownership record unavailable")?,
     )?;
     if record.id != id
         || record.external
-        || record.provider != "shell"
+        || !["shell", "codex", "claude"].contains(&record.provider.as_str())
+        || (provider == "shell" && record.provider != "shell")
         || record.pid != pid
         || record.started != started
         || record.boot_id != boot_id
     {
-        bail!("shell ownership or runtime identity changed; refresh sessions");
+        bail!("session ownership or runtime identity changed; refresh sessions");
     }
     let mut target = None;
     for session_id in ids(true)? {
@@ -618,24 +641,28 @@ pub fn stop_shell(id: &str, pid: u32, started: &str, boot_id: &str) -> Result<se
     let mut panes = tmux(true)?;
     panes.args(["list-panes", "-s", "-t", &target, "-F", "#{pane_id}"]);
     if output(panes)?.lines().count() != 1 {
-        bail!("shell has multiple panes; stop it from its terminal instead");
+        bail!("session has multiple panes; stop it from its terminal instead");
     }
     let current = inspect(true, &target)?;
     if current.id != id
         || current.pid != pid
         || current.started != started
         || current.boot_id != boot_id
-        || current.provider != "shell"
+        || current.provider != provider
     {
-        bail!("session changed or is running an agent; refresh sessions");
+        bail!("session provider or identity changed; refresh sessions");
     }
-    reject_provider_descendants(pid)?;
+    if provider == "shell" {
+        reject_provider_descendants(pid)?;
+    }
     // Check again immediately before submitting an atomic tmux identity/shape guard.
     let current = inspect(true, &target)?;
-    if current.pid != pid || current.started != started || current.provider != "shell" {
+    if current.pid != pid || current.started != started || current.provider != provider {
         bail!("session changed while confirming; refresh sessions");
     }
-    reject_provider_descendants(pid)?;
+    if provider == "shell" {
+        reject_provider_descendants(pid)?;
+    }
     let created = started
         .split_once(':')
         .context("invalid process start identity")?
@@ -650,6 +677,11 @@ pub fn stop_shell(id: &str, pid: u32, started: &str, boot_id: &str) -> Result<se
     // This narrows (but cannot completely eliminate) concurrent provider-start races.
     let provider_guard =
         "#{&&:#{!=:#{pane_current_command},claude},#{!=:#{pane_current_command},codex}}";
+    let provider_guard = if provider == "shell" {
+        provider_guard
+    } else {
+        "1"
+    };
     let guard = format!(
         "#{{&&:#{{&&:{runtime_guard},{shape_guard}}},#{{&&:{provider_guard},#{{==:#{{session_name}},{id}}}}}}}"
     );
@@ -669,7 +701,7 @@ pub fn stop_shell(id: &str, pid: u32, started: &str, boot_id: &str) -> Result<se
     }
     // Keep the original record as a creation/idempotency tombstone.
     if ids(true)?.iter().any(|session| session == &target) {
-        bail!("shell stop was not confirmed; refresh sessions before retrying");
+        bail!("session stop was not confirmed; refresh sessions before retrying");
     }
     Ok(serde_json::json!({"status": "stopped"}))
 }
@@ -998,6 +1030,22 @@ fn ensure_server() -> Result<()> {
     Ok(())
 }
 pub fn create(request: &CreateSession) -> Result<Session> {
+    create_with_permissions(request, false)
+}
+pub fn create_yolo(request: &CreateSession) -> Result<Session> {
+    create_with_permissions(request, true)
+}
+fn provider_command(provider: &str, yolo: bool) -> Result<String> {
+    match (provider, yolo) {
+        ("codex", true) => Ok("codex --dangerously-bypass-approvals-and-sandbox".into()),
+        ("claude", true) => Ok("claude --dangerously-skip-permissions".into()),
+        ("shell", true) => bail!("YOLO applies only to Codex or Claude sessions"),
+        ("shell" | "codex" | "claude", false) => Ok(provider.into()),
+        _ => bail!("unsupported launch profile"),
+    }
+}
+fn create_with_permissions(request: &CreateSession, yolo: bool) -> Result<Session> {
+    let agent_command = provider_command(&request.provider, yolo)?;
     if request.key.is_empty() || request.key.len() > 1024 {
         bail!("creation key must be 1–1024 bytes");
     }
@@ -1028,7 +1076,16 @@ pub fn create(request: &CreateSession) -> Result<Session> {
     let name = format!("cx-{:x}", Sha256::digest(request.key.as_bytes()));
     let mut exists = tmux(true)?;
     exists.args(["has-session", "-t", &format!("={name}")]);
+    let permissions_file = root.join(format!("{name}.permissions"));
     if exists.output()?.status.success() {
+        let previous = match fs::read_to_string(&permissions_file) {
+            Ok(value) => value,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => "default".into(),
+            Err(error) => return Err(error).context("session permissions unavailable"),
+        };
+        if previous != if yolo { "yolo" } else { "default" } {
+            bail!("creation key already belongs to a different permission mode; use a new key");
+        }
         return inspect(true, &name);
     }
     if root.join(format!("{name}.json")).exists() {
@@ -1074,6 +1131,13 @@ pub fn create(request: &CreateSession) -> Result<Session> {
         .open(root.join(format!("{name}.json")))?;
     intent.write_all(&serde_json::to_vec(&pending)?)?;
     intent.sync_all()?;
+    let mut permissions = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(permissions_file)?;
+    permissions.write_all(if yolo { b"yolo" } else { b"default" })?;
+    permissions.sync_all()?;
     // A single safely quoted shell-command works on tmux 2.7 as well as newer
     // versions; multi-argument new-session and -e were added later.
     let mut launcher = vec![shell.clone()];
@@ -1088,7 +1152,7 @@ pub fn create(request: &CreateSession) -> Result<Session> {
     }
     launcher.extend(["-l".into()]);
     if request.provider != "shell" {
-        launcher.extend(["-i".into(), "-c".into(), request.provider.clone()]);
+        launcher.extend(["-i".into(), "-c".into(), agent_command]);
     }
     let command = format!(
         "exec env CX_VIEWER_THEME=1 CX_TMUX_BIN={} CX_MANAGED_SOCKET={} CX_MANAGED_SESSION={} {}",

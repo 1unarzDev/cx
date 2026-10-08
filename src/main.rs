@@ -114,6 +114,9 @@ enum Cmd {
         key: Option<String>,
         #[arg(long)]
         name: Option<String>,
+        /// Bypass agent approvals (and Codex sandbox) for this new session.
+        #[arg(long)]
+        yolo: bool,
     },
     Attach {
         id: String,
@@ -189,6 +192,8 @@ fn info() -> Result<serde_json::Value> {
     caps.extend(sessions::available_providers()?);
     caps.push("native-command-v1");
     caps.push("stop-session-v1");
+    caps.push("stop-agent-session-v1");
+    caps.push("session-yolo-v1");
     caps.push("stable-update-v1");
     caps.push("pdf-pages-v1");
     caps.push("network-candidates-v1");
@@ -209,6 +214,14 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
         Operation::TransferRetry { key } => transfers::retry(&key),
         Operation::Sessions => Ok(serde_json::to_value(sessions::list()?)?),
         Operation::Create(ref c) => Ok(serde_json::to_value(sessions::create(c)?)?),
+        Operation::CreateYolo(ref c) => Ok(serde_json::to_value(sessions::create_yolo(c)?)?),
+        Operation::StopAgentSession {
+            id,
+            pid,
+            started,
+            boot_id,
+            provider,
+        } => sessions::stop_agent(&id, pid, &started, &boot_id, &provider),
         Operation::StopSession {
             ref id,
             pid,
@@ -802,21 +815,26 @@ fn run() -> Result<()> {
             directory,
             key,
             name,
+            yolo,
         }) => {
             let key = key.unwrap_or_else(|| format!("{}-{}", std::process::id(), transport::now()));
             let name = name.unwrap_or_default();
-            println!(
-                "{}",
-                transport::request(
-                    &device(d)?,
-                    Operation::Create(CreateSession {
-                        key,
-                        directory,
-                        provider,
-                        name
-                    })
-                )?
+            anyhow::ensure!(
+                !yolo || provider != "shell",
+                "YOLO applies only to Codex or Claude sessions"
             );
+            let spec = CreateSession {
+                key,
+                directory,
+                provider,
+                name,
+            };
+            let op = if yolo {
+                Operation::CreateYolo(spec)
+            } else {
+                Operation::Create(spec)
+            };
+            println!("{}", transport::request(&device(d)?, op)?);
             Ok(())
         }
         Some(Cmd::Attach {

@@ -38,6 +38,7 @@ jobs:
       - run: python3 tests/enrollment_auth_pty.py target/debug/cx
       - run: python3 tests/enrollment_ssh.py .
       - run: python3 tests/stop_shell_live.py target/debug/cx
+      - run: python3 tests/session_permissions_live.py target/debug/cx
       - run: python3 tests/manual_agents_live.py target/debug/cx
       - run: python3 tests/session_names_live.py target/debug/cx
       - run: python3 tests/shell_labels_live.py target/debug/cx

@@ -48,6 +48,14 @@ pub enum Operation {
     },
     Sessions,
     Create(CreateSession),
+    CreateYolo(CreateSession),
+    StopAgentSession {
+        id: String,
+        pid: u32,
+        started: String,
+        boot_id: String,
+        provider: String,
+    },
     StopSession {
         id: String,
         pid: u32,

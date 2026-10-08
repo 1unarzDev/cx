@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Discover the same managed/default terminals inside or outside managed tmux."""
-import json, os, pathlib, subprocess, sys, tempfile
+import fcntl, json, os, pathlib, pty, select, struct, subprocess, sys, tempfile, termios, time
 binary = str(pathlib.Path(sys.argv[1]).resolve())
 with tempfile.TemporaryDirectory(prefix='cx-discovery-') as temporary:
     root = pathlib.Path(temporary)
@@ -28,7 +28,32 @@ with tempfile.TemporaryDirectory(prefix='cx-discovery-') as temporary:
         inherited = dict(env, TMUX=default_socket+',123,0', TMUX_PANE='%0')
         rows = json.loads(subprocess.check_output([binary,'sessions'],env=inherited))
         assert [(r['id'],r['external'],r['pid']) for r in rows]==[(r['id'],r['external'],r['pid']) for r in baseline]
-        print(json.dumps({'result':'PASS','checks':['inside/outside same discovery','managed sessions not duplicated as external','real default external retained','all identities and external session unchanged']}))
+        # SSH native helper semantics: inherited managed environment must still
+        # attach the advertised external terminal on the default server.
+        external = next(r for r in rows if r['external'])
+        master, slave = pty.openpty()
+        modes = termios.tcgetattr(slave)
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
+        def controlling_terminal():
+            os.setsid(); fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+        client = subprocess.Popen([binary,'native-attach','--external','attach-session','-t',external['id']],
+            env=inside,stdin=slave,stdout=slave,stderr=slave,preexec_fn=controlling_terminal)
+        try:
+            deadline = time.monotonic()+5
+            while time.monotonic()<deadline:
+                if select.select([master],[],[],.05)[0]: os.read(master,65536)
+                names = tmux('-L','default','list-clients','-F','#{session_name}').splitlines()
+                if names==['external-fixture']: break
+                if client.poll() is not None: raise AssertionError('external attach exited '+str(client.returncode))
+            else: raise AssertionError('native helper did not enter default external fixture')
+            assert not tmux('-S',socket,'list-clients','-F','#{session_name}')
+            tmux('-L','default','detach-client','-t',os.ttyname(slave))
+            client.wait(timeout=5)
+            assert client.returncode==0 and termios.tcgetattr(slave)==modes
+        finally:
+            if client.poll() is None:client.terminate();client.wait(timeout=5)
+            os.close(master);os.close(slave)
+        print(json.dumps({'result':'PASS','checks':['inside/outside same discovery','managed sessions not duplicated as external','real default external retained','all identities and external session unchanged','native external attach selects default server and restores terminal']}))
     finally:
         subprocess.run(['tmux','-S',socket,'kill-server'],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         subprocess.run(['tmux','-L','default','kill-server'],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)

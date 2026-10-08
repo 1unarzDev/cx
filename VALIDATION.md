@@ -1,5 +1,13 @@
 # Validation record
 
+## UI panel adapters and devcontainer labels — v0.1.42 (2026-10-08)
+
+PASS — serial `cargo test --locked -- --test-threads=1`: 531 passed, one protected live test ignored (`/tmp/cx-modular-final-tests.log`). Native debug build, formatting and diff checks passed. Before the requested label change, all 306 baseline UI captures matched after normalizing only elapsed-seconds text; navigation, filters and layout were preserved by the extraction.
+
+PASS — evidence-based labels distinguish Devcontainer, Docker and unknown/stale Container scopes without changing session providers or the protocol. Narrow/wide label fixtures passed; 48- and 80-column rendered fixture PNGs were inspected (`/tmp/cx-devcontainer-label-captures`). These are synthetic captures, not physical screenshots.
+
+PASS — actual private-state PTYs: `tests/session_chooser_pty.py` covered chooser/counts, home shell, read-only watch, detach and termios; `tests/transfer_enter_pty.py` covered destination Enter and durable copied contents. `tests/containers_live.py` passed owned network-none Docker classification, scoped files, lifecycle guards and native paste, Tab, OSC52, RGB/default background, wheel, detach and shell termination. Logs: `/tmp/cx-modular-{chooser-pty,transfer-pty,containers}.log`. Owned Docker fixture cleanup verified. No remote devices were contacted; robot ROS and physical input acceptance remain pending. No live networking, SSH trust or provider configuration was changed.
+
 ## Offline updater and workspace restoration (2026-10-06)
 
 PASS — integrated `cargo test --locked --quiet`: 78 unit, 20 files/network, 16 session, 15 transfer and 15 update fixture tests; one session test ignored. Log `/tmp/cx-update-integrated-tests.log`. DNS/timeout fixtures preserve the binary, suppress repeated checks within backoff, and permit explicit recovery. Provenance in fixtures is synthetic, not live verification.

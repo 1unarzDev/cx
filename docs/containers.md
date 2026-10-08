@@ -1,6 +1,6 @@
 # Containers and Dev Containers
 
-CX treats containers as execution scopes beneath their enrolled device. They are not new SSH devices. Open **Ctrl+P → Containers**, choose a device or **All devices**, and expand its tree with Right/l. Names use the Docker container name, with **Devcontainer** or **Docker**, state and access status beside it. Enter opens actions; `n` opens a compact Shell chooser in a running accessible container. Sessions retain the container name and provider.
+CX treats containers as execution scopes beneath their enrolled device. They are not new SSH devices. Open **Ctrl+P → Containers**, choose a device or **All devices**, and expand its tree with Right/l. Names use the Docker container name, with **Devcontainer** or **Docker**, state and access status beside it. Enter opens actions; `n` opens a compact terminal chooser in a running accessible container. Devcontainers are labeled **Devcontainer** in the chooser and session list; ordinary Docker and unclassified containers have distinct labels. The underlying terminal remains a shell.
 
 ## Attach and browse
 

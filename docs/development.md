@@ -15,6 +15,21 @@ GitHub workers test builds and installer fixtures across distributions. Rocky Li
 
 Record changes in [CHANGELOG.md](../CHANGELOG.md). Before tagging a stable version, move its reviewed changes from Unreleased into an exact `vX.Y.Z` section; publication requires these notes.
 
+## UI maintenance
+
+`src/ui.rs` owns state, action dispatch, task replies and native attachment. Private modules under `src/ui/` keep changes local:
+
+| Module | Responsibility |
+|---|---|
+| `navigation.rs` | Counted key motions and the `Target` interface; no requests or rendering |
+| `panels.rs` | List, device and file adapters, including refresh/selection effects |
+| `filters.rs` | Scoped filter state, device identity mapping and fuzzy matching |
+| `menus.rs` | Session choices shared by labels/shortcuts/dispatch; container display labels |
+| `rendering.rs` | Layout and rendering; no request dispatch |
+| `tests.rs` | Existing UI and cross-panel regression fixtures |
+
+Reuse a navigation target when adding a panel; keep panel-specific side effects in its adapter. Change session choices in `menus.rs` rather than maintaining parallel label/key/provider arrays. Rendering never changes the session provider: devcontainer identity is a display scope, while shell/agent behavior stays in the session runtime. Preserve typed-input ownership and the existing host/container scope guards. Verify UI changes with the capture matrices and native PTY fixtures in `tests/`.
+
 ## Architecture and current limits
 
 Network observation and SSH jump routes work. Internet sharing, full trust/revocation and full uninstall are not release-ready. No public hostnames or mesh provider are required. See [robot mesh sharing](robot-mesh-sharing.md) for access policy, sharing previews and their acceptance requirements, and [robot execution and updates](robot-tools.md) for platform-specific tooling.

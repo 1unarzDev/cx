@@ -6,6 +6,13 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.42
+
+### Features
+- Shared navigation, panel adapters, scoped filters, session menus and rendering live in focused UI modules. Menu labels, shortcuts and dispatch use one choice definition.
+- Devcontainer terminals have explicit labels in session rows, selected details and the shell chooser. Classification uses discovery evidence; ordinary Docker and unknown containers remain distinct.
+- Keep current status concise and archive historical milestone notes; add a short developer map of the UI modules.
+
 ## v0.1.41
 
 ### Features

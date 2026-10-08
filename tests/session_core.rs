@@ -103,6 +103,14 @@ fn persistent_idempotent_hostile_directory() {
 mod auth;
 
 mod transport {
+    pub fn owned_helper_request(
+        _key: &str,
+        _command: impl FnOnce() -> anyhow::Result<std::process::Command>,
+        _op: crate::model::Operation,
+    ) -> anyhow::Result<serde_json::Value> {
+        anyhow::bail!("container transport unavailable in session fixture")
+    }
+
     pub fn read_frame<T: serde::de::DeserializeOwned>(
         r: &mut impl std::io::BufRead,
     ) -> anyhow::Result<T> {

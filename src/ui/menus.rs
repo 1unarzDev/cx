@@ -55,12 +55,15 @@ pub(super) fn container_action_labels(c: &crate::containers::Container) -> Vec<&
             } else {
                 "Shell"
             },
-            "Files · read-only",
+            "Files",
             "Stop",
         ]
     } else {
         vec!["Start"]
     };
+    if c.devcontainer && c.workspace.is_some() && c.config.is_some() {
+        actions.push("Rebuild");
+    }
     if !c.devcontainer {
         actions.push("Disable access");
     }

@@ -1598,6 +1598,7 @@ fn restart_restores_browser_host_search_focus_and_copy_without_preview_content()
         rename_name: None,
     });
     a.clipboard = Some(Clipboard {
+        container: None,
         id: "fixture".into(),
         device: 1,
         entries: vec![browser.entries[0].clone()],
@@ -2233,27 +2234,49 @@ fn container_fixture(tag: char, dev: bool) -> crate::containers::Container {
     serde_json::from_value(serde_json::json!({"engine":"fixture","id":tag.to_string().repeat(64),"name":if dev{"roboboat_dev"}else{"server_service"},"image":"fixture:latest","state":"running","started_at":"fingerprint","devcontainer":dev,"evidence":if dev{"Dev Containers labels"}else{"Docker container"},"user":"robot","folder":"/workspace","workspace":null,"config":null,"network":"host","networks":["host"],"ports":{},"allowed":false})).unwrap()
 }
 #[test]
-fn container_browser_never_dispatches_host_mutations_or_commands() {
+fn container_mutations_pin_scope_while_commands_stay_in_terminal() {
     let (mut a, rx) = file_app();
-    a.open_container_browser(0, container_fixture('a', true).scope());
+    let scope = container_fixture('a', true).scope();
+    a.open_container_browser(0, scope.clone());
     let _ = rx.try_iter().collect::<Vec<_>>();
-    for action in [
-        Action::Copy,
-        Action::Cut,
-        Action::Paste,
-        Action::Delete,
-        Action::Rename,
-        Action::TransferTo,
-        Action::Destination,
-        Action::Mkdir,
-        Action::Command,
-    ] {
-        assert!(!a.action_enabled(action));
-        a.execute(action);
-        assert!(rx.try_recv().is_err());
-    }
+    assert!(!a.action_enabled(Action::Command));
     assert!(a.command_context().is_none());
-    assert!(a.notice.contains("read-only"));
+    a.send(
+        0,
+        Operation::Mkdir {
+            path: "/workspace/new".into(),
+        },
+    );
+    assert!(
+        matches!(rx.try_recv().unwrap().op, Operation::ContainerFileAction { scope: c, .. } if c == scope)
+    );
+    a.queue_file_actions(vec![
+        (
+            0,
+            Operation::Remove {
+                path: "/workspace/a".into(),
+                expected_identity: Some("proof".into()),
+            },
+        ),
+        (
+            0,
+            Operation::Rename {
+                path: "/workspace/b".into(),
+                name: "c".into(),
+                expected_identity: Some("proof".into()),
+            },
+        ),
+    ]);
+    assert!(
+        matches!(rx.try_recv().unwrap().op, Operation::ContainerFileAction { scope: c, .. } if c == scope)
+    );
+    a.open_host_browser(0, "/workspace".into());
+    let _ = rx.try_iter().collect::<Vec<_>>();
+    a.file_busy = false;
+    a.start_next_file_action();
+    assert!(
+        matches!(rx.try_recv().unwrap().op, Operation::ContainerFileAction { scope: c, .. } if c == scope)
+    );
 }
 #[test]
 fn identical_host_and_container_paths_use_independent_locations_and_cache() {
@@ -2336,7 +2359,7 @@ fn container_menus_only_launch_shells() {
     let c = container_fixture('a', true);
     assert_eq!(
         container_action_labels(&c),
-        vec!["Devcontainer terminal", "Files · read-only", "Stop"]
+        vec!["Devcontainer terminal", "Files", "Stop"]
     );
     a.open_container_browser(0, c.scope());
     let _ = rx.try_iter().collect::<Vec<_>>();
@@ -2448,20 +2471,6 @@ fn watch_key_attaches_highlighted_session_read_only_and_is_contextual() {
     assert!(!sidebar_actions(&a)
         .iter()
         .any(|(action, _)| *action == Action::Terminal));
-}
-#[test]
-fn destination_enter_never_sends_host_transfer_for_container_paths() {
-    let (mut a, rx) = file_app();
-    a.execute(Action::Copy);
-    assert!(a.clipboard.is_some());
-    a.open_container_browser(0, container_fixture('a', true).scope());
-    let _ = rx.try_iter().collect::<Vec<_>>();
-    a.destination_active = true;
-    a.browser.as_mut().unwrap().loading = false;
-    a.focus = Focus::Workspace;
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(rx.try_recv().is_err());
-    assert!(a.notice.contains("Container files are read-only"));
 }
 #[test]
 fn host_launch_does_not_offer_to_resume_same_path_container_session() {
@@ -2966,6 +2975,8 @@ fn transfer_locations_stay_independent_and_submit_real_spec() {
 fn jobs_cancel_owner_and_retry_same_idempotency_spec() {
     let (mut a, rx) = queued_app();
     let spec = crate::model::TransferSpec {
+        source_container: None,
+        destination_container: None,
         cut: false,
         source_identity: None,
         source: a.devices[1].clone(),
@@ -5168,4 +5179,187 @@ fn stale_errors_and_quiet_neighbor_checks_do_not_consume_the_first_device_notice
         )),
     });
     assert_eq!(app.notice_deadline, deadline);
+}
+
+#[test]
+fn container_clipboard_survives_navigation_and_submits_both_scopes() {
+    for cut in [false, true] {
+        let (mut a, rx) = file_app();
+        let source = container_fixture('a', true).scope();
+        let destination = container_fixture('b', true).scope();
+        a.browser.as_mut().unwrap().container = Some(source.clone());
+        a.execute(if cut { Action::Cut } else { Action::Copy });
+        assert_eq!(
+            a.clipboard.as_ref().unwrap().container.as_ref(),
+            Some(&source)
+        );
+        assert!(a
+            .clipboard
+            .as_ref()
+            .unwrap()
+            .source_label
+            .contains("roboboat_dev"));
+        a.open_scoped_browser(1, "/files".into(), Some(destination.clone()));
+        let _ = rx.try_iter().collect::<Vec<_>>();
+        a.browser.as_mut().unwrap().loading = false;
+        a.destination_active = true;
+        a.focus = Focus::Workspace;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let task = rx.try_recv().unwrap();
+        let Operation::ScopedTransfer(spec) = task.op else {
+            panic!("container paths must use the scoped protocol")
+        };
+        assert_eq!(spec.source_container, Some(source));
+        assert_eq!(spec.destination_container, Some(destination));
+        assert_eq!(spec.source_path, "/files/alpha.txt");
+        assert_eq!(spec.destination_path, "/files");
+        assert_eq!(spec.cut, cut);
+        assert_eq!(spec.source_identity.is_some(), cut);
+        assert_eq!(task.device, 0, "viewer owns relay submission");
+        assert!(a.transfer_drawer);
+    }
+}
+#[test]
+fn destination_picker_separates_host_from_allowed_running_containers() {
+    let (mut a, rx) = file_app();
+    a.execute(Action::Copy);
+    let a_container = container_fixture('a', true);
+    let ordinary = container_fixture('b', false);
+    let mut stopped = container_fixture('c', true);
+    stopped.state = "exited".into();
+    a.containers
+        .insert(1, vec![stopped, ordinary, a_container.clone()]);
+    a.chosen_device(1, ChooseDevice::Destination);
+    assert!(matches!(a.dialog, Some(Dialog::DestinationScope(1, _))));
+    assert_eq!(a.destination_containers(1).len(), 1);
+    a.dialog_selected = 1;
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(a.destination_active && a.other_browser.is_some());
+    assert_eq!(
+        a.browser.as_ref().unwrap().container,
+        Some(a_container.scope())
+    );
+    assert!(a.clipboard.is_some());
+    assert!(rx
+        .try_iter()
+        .any(|t| matches!(t.op, Operation::ContainerFiles { .. })));
+}
+#[test]
+fn scoped_mutation_failure_releases_queue_after_navigation_and_preserves_clipboard() {
+    let (mut a, rx) = file_app();
+    a.execute(Action::Copy);
+    let scope = container_fixture('a', true).scope();
+    a.browser.as_mut().unwrap().container = Some(scope.clone());
+    a.queue_file_actions(vec![(
+        0,
+        Operation::Remove {
+            path: "/files/alpha.txt".into(),
+            expected_identity: Some("original".into()),
+        },
+    )]);
+    let task = rx.try_recv().unwrap();
+    a.open_host_browser(1, "/output".into());
+    a.apply(Reply {
+        device: task.device,
+        generation: task.generation,
+        op: task.op,
+        preview: None,
+        result: Err(anyhow::anyhow!("Permission denied inside container")),
+    });
+    assert!(!a.file_busy);
+    assert!(a.notice.contains("Permission denied"));
+    assert!(a.clipboard.is_some());
+    assert!(a.browser.as_ref().unwrap().container.is_none());
+}
+#[test]
+fn rebuild_is_devcontainer_only_explicit_and_refreshes_after_failure() {
+    let (mut a, rx) = queued_app();
+    let mut c = container_fixture('a', true);
+    c.workspace = Some("/robot/project".into());
+    c.config = Some("/robot/project/.devcontainer/devcontainer.json".into());
+    assert!(container_action_labels(&c).contains(&"Rebuild"));
+    assert!(!container_action_labels(&container_fixture('b', false)).contains(&"Rebuild"));
+    a.dialog = Some(Dialog::ContainerConfirm(0, c.clone(), "Rebuild".into()));
+    a.dialog_selected = 0;
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(rx.try_recv().is_err());
+    a.dialog = Some(Dialog::ContainerConfirm(0, c, "Rebuild".into()));
+    a.dialog_selected = 1;
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let task = rx.try_recv().unwrap();
+    assert!(matches!(task.op, Operation::DevcontainerRebuild { .. }));
+    a.apply(Reply {
+        device: task.device,
+        generation: task.generation,
+        op: task.op,
+        preview: None,
+        result: Err(anyhow::anyhow!("CLI build failed")),
+    });
+    assert!(a.notice.contains("CLI build failed"));
+    assert!(
+        rx.try_iter()
+            .all(|t| !matches!(t.op, Operation::DevcontainerRebuild { .. })),
+        "failure must not replay rebuild"
+    );
+}
+#[test]
+fn container_transfer_and_rebuild_layouts_are_bounded_at_supported_widths() {
+    for width in [48, 80, 120] {
+        let (mut a, _) = file_app();
+        let mut c = container_fixture('a', true);
+        c.workspace = Some("/robot/project".into());
+        c.config = Some("/robot/project/.devcontainer/devcontainer.json".into());
+        a.containers.insert(0, vec![c.clone()]);
+        for (name, dialog) in [
+            ("destination", Dialog::DestinationScope(0, vec![c.clone()])),
+            (
+                "rebuild",
+                Dialog::ContainerConfirm(0, c.clone(), "Rebuild".into()),
+            ),
+        ] {
+            a.dialog = Some(dialog);
+            let text = capture_app(&a, width);
+            assert!(text
+                .lines()
+                .all(|line| Line::from(line).width() <= width as usize));
+            assert!(text.contains(if name == "destination" {
+                "Host files"
+            } else {
+                "Rebuild"
+            }));
+            if let Some(dir) = std::env::var_os("CX_CONTAINER_TRANSFER_CAPTURE_DIR") {
+                let dir = std::path::PathBuf::from(dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join(format!("{name}-{width}.txt")), text).unwrap();
+                let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+                terminal.draw(|frame| render(frame, &a)).unwrap();
+                let cells = terminal.backend().buffer().content.iter().map(|c| serde_json::json!({"text":c.symbol(),"fg":format!("{:?}",c.fg),"bg":format!("{:?}",c.bg)})).collect::<Vec<_>>();
+                std::fs::write(
+                    dir.join(format!("{name}-{width}.json")),
+                    serde_json::to_vec(
+                        &serde_json::json!({"width":width,"height":24,"cells":cells}),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn narrow_rebuild_details_scroll_without_changing_confirmation() {
+    let (mut a, _) = queued_app();
+    a.dialog = Some(Dialog::ContainerConfirm(
+        0,
+        container_fixture('a', true),
+        "Rebuild".into(),
+    ));
+    let initial = capture_app(&a, 48);
+    assert!(a.dialog_scroll_max.get() > 0);
+    a.key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+    assert!(a.dialog_scroll > 0);
+    assert_eq!(a.dialog_selected, 0);
+    let scrolled = capture_app(&a, 48);
+    assert_ne!(scrolled, initial);
 }

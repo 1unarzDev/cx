@@ -6,6 +6,17 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.46
+
+### Features
+- Copy, paste and cut between device files and devcontainers, including container-to-container transfers. Chunks stream through existing authenticated helpers; resumable staging stays at the destination.
+- The transfer destination picker distinguishes host files from running containers. Container files support selection, mkdir, rename and guarded delete, with explicit device/container labels in progress.
+- Rebuild a devcontainer through its workspace configuration using an explicit confirmation or `devcontainer-rebuild --yes`. Workspace identity must match exactly one container; errors refresh discovery without replaying the rebuild.
+
+### Fixes
+- Pin queued file actions to their original host/container scope across navigation. Older helpers reject scoped transfer requests rather than applying container paths to host files.
+- Verify complete destination trees before cross-container cut cleanup. Cleanup removes only verified entries and empty directories, retaining new or changed source files.
+
 ## v0.1.45
 
 ### Improvements

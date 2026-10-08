@@ -27,8 +27,27 @@ with tempfile.TemporaryDirectory(prefix='cx-cli-workspace-') as tmp:
    time.sleep(.1)
   assert proof==b'configuration honored',proof
   assert 'entries' in cli('container-files',id,'--path','/tmp')
+  # Rebuild replaces only this workspace container through the real pinned Node CLI.
+  pathlib.Path(work/'preserved.txt').write_text('mounted workspace survives')
+  subprocess.check_call(['docker','exec',id,'sh','-c','printf disposable > /tmp/cx-layer-only'])
+  refused=subprocess.run([binary,'devcontainer-rebuild',id],env=env,capture_output=True)
+  assert refused.returncode!=0 and b'--yes' in refused.stderr
+  before=id
+  rebuilt=cli('devcontainer-rebuild',id,'--yes');id=rebuilt['id']
+  assert id!=before and rebuilt['devcontainer'] and rebuilt['network']=='none'
+  assert pathlib.Path(work/'preserved.txt').read_text()=='mounted workspace survives'
+  assert subprocess.check_output(['docker','exec',id,'cat','/tmp/cx-hook-proof'])==b'hook-proof'
+  assert subprocess.run(['docker','exec',id,'test','-e','/tmp/cx-layer-only'],capture_output=True).returncode!=0
+  assert subprocess.run(['docker','inspect',before],capture_output=True).returncode!=0
+  # Invalid configuration fails before removal and preserves the current container.
+  config=work/'.devcontainer/devcontainer.json';valid=config.read_text();config.write_text('{broken')
+  failed=subprocess.run([binary,'devcontainer-rebuild',id,'--yes'],env=env,capture_output=True)
+  assert failed.returncode!=0
+  assert subprocess.run(['docker','inspect',id],capture_output=True).returncode==0
+  config.write_text(valid)
+
  finally:
   subprocess.run(['tmux','-S',tmp+'/state/cx/managed.sock','kill-server'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
   # Name is unique and owned even if up times out before returning the ID.
-  subprocess.run(['docker','rm','-f',id or name],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-print(json.dumps(dict(result='PASS',checks='explicit confirmation, real Node CLI up/hooks, devcontainer evidence, CLI exec remoteEnv, native shell and scoped files',scope='owned network-none workspace')))
+  subprocess.run(['docker','rm','-f',*([id] if id else []),name],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+print(json.dumps(dict(result='PASS',checks='explicit confirmation, real Node CLI up/hooks, devcontainer evidence, CLI exec remoteEnv, native shell/scoped files, explicit rebuild/new ID/hooks/mounted-data preservation, invalid-config refusal',scope='owned network-none workspace')))

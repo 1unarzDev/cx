@@ -39,4 +39,6 @@ Network observation and SSH jump routes work. Internet sharing, full trust/revoc
 
 For session naming research, see [Codex session identity](../research/codex-session-names.md).
 
+Container transfers use optional source/destination `ContainerScope` fields on `TransferSpec`, dispatched with `scoped_transfer` whenever either field is present. The transfer adapter routes file I/O through `container_file_action`; ordinary `transfer` rejects scopes. Container I/O reuses private framed helper channels, with engine/user/lifecycle validation before and after each request. Container state/checkpoints stay under the selected user's private tools directory; queued UI mutations capture their scope at enqueue time. Rebuild uses the Node CLI with unique selected workspace labels and requires `devcontainer-rebuild-v1` on remote hosts.
+
 [Back to README](../README.md)

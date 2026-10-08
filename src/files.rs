@@ -106,6 +106,9 @@ pub fn handle(op: &Operation) -> Result<Value> {
             path,
             expected_identity,
         } => remove_entry(&decode_path(path)?, expected_identity.as_deref()),
+        Operation::RemoveEmptyDirectory { path, identity } => {
+            remove_empty_directory(&decode_path(path)?, identity)
+        }
         Operation::Move {
             path,
             destination,
@@ -1007,6 +1010,48 @@ fn move_entry(path: &Path, destination: &Path, expected: Option<&str>) -> Result
     source.dir.sync_all()?;
     target.dir.sync_all()?;
     Ok(json!({"path":encode_path(&destination),"moved":true}))
+}
+/// Tree moves remove only an empty directory with the original device/inode.
+/// Child deletion changes directory timestamps, so the full selection identity is inappropriate here.
+fn remove_empty_directory(path: &Path, expected: &str) -> Result<Value> {
+    let path = absolute(path)?;
+    let anchor = Anchor::parent(&path)?;
+    protected_mutation(&path, &anchor)?;
+    let original: Identity = serde_json::from_str(expected)?;
+    let initial = mutation_stat(&anchor, &anchor.name)?;
+    anyhow::ensure!(
+        initial.st_mode & libc::S_IFMT == libc::S_IFDIR
+            && initial.st_dev == original.device
+            && initial.st_ino == original.inode,
+        "Move directory changed; remaining source retained"
+    );
+    let quarantine = std::ffi::OsString::from(format!(
+        ".cx-empty-{}-{}",
+        std::process::id(),
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+    ));
+    rename_noreplace(&anchor, &anchor.name, &quarantine)?;
+    let claimed = mutation_stat(&anchor, &quarantine)?;
+    let same = claimed.st_dev == initial.st_dev
+        && claimed.st_ino == initial.st_ino
+        && claimed.st_mode & libc::S_IFMT == libc::S_IFDIR;
+    let name = Anchor::cstr(&quarantine)?;
+    let removed = same
+        && unsafe { libc::unlinkat(anchor.dir.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) }
+            == 0;
+    if !removed {
+        let restored = rename_noreplace(&anchor, &quarantine, &anchor.name);
+        bail!(
+            "Move directory is changed, busy or nonempty; source retained (restore: {})",
+            if restored.is_ok() {
+                "complete"
+            } else {
+                "inspect hidden .cx-empty entry"
+            }
+        );
+    }
+    anchor.dir.sync_all()?;
+    Ok(json!({"path":encode_path(&path),"removed":true}))
 }
 fn remove_entry(path: &Path, expected: Option<&str>) -> Result<Value> {
     let path = absolute(path)?;

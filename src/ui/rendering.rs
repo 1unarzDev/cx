@@ -345,9 +345,9 @@ pub(super) fn render_at(
                         Line::styled(
                             fit_label(
                                 if width < 16 {
-                                    "Container · RO"
+                                    "Container"
                                 } else {
-                                    "Container · read-only"
+                                    "Container files"
                                 },
                                 width,
                             ),
@@ -1146,18 +1146,6 @@ pub(super) fn render_at(
         ]
     } else if app.view == View::Files
         && app.focus == Focus::Workspace
-        && app.browser.as_ref().is_some_and(|b| b.container.is_some())
-    {
-        vec![
-            ("Enter", "Open / preview"),
-            ("n", "New session"),
-            ("f / .", "Filter / hidden"),
-            ("/", "Find"),
-            ("Esc", "Back"),
-            ("Ctrl P", "Actions"),
-        ]
-    } else if app.view == View::Files
-        && app.focus == Focus::Workspace
         && app.destination_active
         && app.clipboard.is_some()
     {
@@ -1244,10 +1232,7 @@ pub(super) fn render_at(
             && app.input.is_none()
             && !app.help
             && app.view == View::Files
-            && app
-                .browser
-                .as_ref()
-                .is_some_and(|b| b.preview.is_none() && b.container.is_none())
+            && app.browser.as_ref().is_some_and(|b| b.preview.is_none())
         {
             hints[3] = if app.destination_active && app.clipboard.is_some() {
                 ("T", "Progress")
@@ -1424,8 +1409,13 @@ pub(super) fn render_at(
             ),
             Dialog::DevcontainerUp(d,path) => ("Start devcontainer workspace?".into(), vec!["Cancel".into(), "Run configuration · start workspace".into()], format!("{}\n{}\nRequires Node Dev Containers CLI on this device.\nThis may build images, start Compose services and run lifecycle hooks declared by the workspace. Review the configuration first; container network settings come from that configuration.", safe_label(&app.devices[*d].name), safe_label(path))),
             Dialog::ContainerActions(d,c) => (format!("{} · {}",safe_label(&c.name),safe_label(&app.devices[*d].name)),container_action_labels(c).iter().map(|s|(*s).into()).collect(),format!("{}\n{} · {}\nNetwork: {} · ports {}\nUser: {} · folder {}\nExisting networks are preserved; no automatic port forwarding.{}",safe_label(&c.evidence),safe_label(&c.state),safe_label(&c.image),safe_label(&c.network),c.ports.as_object().map(|p|p.len()).unwrap_or(0),safe_label(&c.user),safe_label(&c.folder),if !c.devcontainer&&!c.allowed{"\nOrdinary containers are inspection-only until explicitly enabled."}else{""})),
+            Dialog::DestinationScope(d, containers) => (
+                format!("Transfer to · {}", safe_label(&app.devices[*d].name)),
+                std::iter::once("Host files".into()).chain(containers.iter().map(|c| format!("{} · {} · {}", if c.devcontainer { "devcontainer" } else { "container" }, safe_label(&c.name), &c.id[..12]))).collect(),
+                format!("Choose the host or a running container, then browse to a folder and press Enter to transfer.{}", if app.containers_loading.contains(d) { "\nChecking containers…" } else if app.container_errors.contains_key(d) { "\nContainer discovery failed · Escape, refresh the device and retry. Host files remain available." } else { "" }),
+            ),
             Dialog::ContainerProvider(d,scope)=>(format!("Session · {} / {}",safe_label(&app.devices[*d].name),safe_label(&scope.name)),vec!["Shell · container user".into()],"Runtime availability is checked before launch. No packages are installed. Enter choose · Escape cancel".into()),
-            Dialog::ContainerConfirm(d,c,action)=>(format!("{} {}?",action,safe_label(&c.name)),vec!["Cancel · keep current state".into(),format!("{} selected container",action)],format!("{}\n{}\n{}\n{}\nOnly this exact container ID is targeted. No rebuild/removal or network changes.",safe_label(&app.devices[*d].name),safe_label(&c.name),safe_label(&c.id[..12]),if action=="Stop"{"Running work in this container will end."}else if action=="Enable access"{"Enable this container for terminals, read-only files and lifecycle actions on this host account."}else{"Existing image, volumes and ports are preserved."})),
+            Dialog::ContainerConfirm(d,c,action)=>(format!("{} {}?",action,safe_label(&c.name)),vec!["Cancel · keep current state".into(),format!("{} selected container",action)],format!("{}\n{}\n{}\n{}\n{}",safe_label(&app.devices[*d].name),safe_label(&c.name),safe_label(&c.id[..12]),if action=="Rebuild"{"The CLI replaces the container and its writable layer and ends sessions/transfers using it. Back up container-only files first. Workspace hooks may run and Compose services may restart. Mounted data follows the workspace configuration; no volume removal flag is used. Allow up to 10 minutes."}else if action=="Stop"{"Running work in this container will end."}else if action=="Enable access"{"Enable this container for terminals, files, transfers and lifecycle actions on this host account."}else{"Existing image, volumes and ports are preserved."},if action=="Rebuild"{"The selected workspace must uniquely match this container. Rebuild follows its declared configuration."}else{"Only this exact container ID is targeted. No rebuild/removal or network changes."})),
             Dialog::Device(purpose) => (
                 match purpose {
                     ChooseDevice::Containers => "Containers · choose device or All devices",
@@ -1955,7 +1945,17 @@ fn render_containers(frame: &mut Frame<'_>, app: &App, area: Rect) {
                         ),
                         muted(),
                     ),
-                    Span::styled(format!(" · {}", safe_label(&c.state)), tint(state)),
+                    Span::styled(
+                        format!(
+                            " · {}",
+                            if app.rebuilding.contains(&(*d, c.id.clone())) {
+                                "rebuilding…".into()
+                            } else {
+                                safe_label(&c.state)
+                            }
+                        ),
+                        tint(state),
+                    ),
                     Span::styled(
                         if !c.devcontainer && !c.allowed {
                             " · inspect only"

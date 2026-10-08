@@ -62,6 +62,9 @@ pub enum Operation {
     DevcontainerUp {
         workspace: String,
     },
+    DevcontainerRebuild {
+        scope: ContainerScope,
+    },
     ContainerAccess {
         id: String,
         engine: String,
@@ -74,6 +77,10 @@ pub enum Operation {
         action: String,
     },
     ContainerFiles {
+        scope: ContainerScope,
+        operation: Box<Operation>,
+    },
+    ContainerFileAction {
         scope: ContainerScope,
         operation: Box<Operation>,
     },
@@ -122,6 +129,10 @@ pub enum Operation {
     Remove {
         path: String,
         expected_identity: Option<String>,
+    },
+    RemoveEmptyDirectory {
+        path: String,
+        identity: String,
     },
     Move {
         path: String,
@@ -184,6 +195,7 @@ pub enum Operation {
         destination: Device,
     },
     Transfer(TransferSpec),
+    ScopedTransfer(TransferSpec),
     TransferJobs,
     TransferCancel {
         key: String,
@@ -215,8 +227,12 @@ pub struct Response {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransferSpec {
     pub source: Device,
+    #[serde(default)]
+    pub source_container: Option<ContainerScope>,
     pub source_path: String,
     pub destination: Device,
+    #[serde(default)]
+    pub destination_container: Option<ContainerScope>,
     pub destination_path: String,
     pub conflict: String,
     pub key: String,
@@ -231,4 +247,14 @@ pub struct ProcessIdentity {
     pub pid: u32,
     pub start_ticks: String,
     pub native_id: Option<String>,
+}
+
+impl TransferSpec {
+    pub fn operation(self) -> Operation {
+        if self.source_container.is_some() || self.destination_container.is_some() {
+            Operation::ScopedTransfer(self)
+        } else {
+            Operation::Transfer(self)
+        }
+    }
 }

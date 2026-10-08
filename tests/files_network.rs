@@ -23,6 +23,44 @@ mod actions {
             .into()
     }
     #[test]
+    fn tree_move_directory_cleanup_is_empty_only_and_inode_guarded() {
+        let t = tempdir().unwrap();
+        let dir = t.path().join("tree");
+        fs::create_dir(&dir).unwrap();
+        let original = token(&dir);
+        fs::write(dir.join("new-unverified-file"), b"retain").unwrap();
+        let op = Operation::RemoveEmptyDirectory {
+            path: files::encode_path(&dir),
+            identity: original.clone(),
+        };
+        assert!(files::handle(&op).is_err());
+        assert_eq!(
+            fs::read(dir.join("new-unverified-file")).unwrap(),
+            b"retain"
+        );
+        fs::remove_file(dir.join("new-unverified-file")).unwrap();
+        files::handle(&op).unwrap();
+        assert!(!dir.exists());
+        let link = t.path().join("link");
+        symlink(t.path(), &link).unwrap();
+        assert!(files::handle(&Operation::RemoveEmptyDirectory {
+            path: files::encode_path(&link),
+            identity: token(&link)
+        })
+        .is_err());
+        assert!(link.is_symlink());
+        fs::create_dir(&dir).unwrap();
+        let replacement = t.path().join("replacement");
+        fs::create_dir(&replacement).unwrap();
+        let wrong = token(&replacement);
+        assert!(files::handle(&Operation::RemoveEmptyDirectory {
+            path: files::encode_path(&dir),
+            identity: wrong
+        })
+        .is_err());
+        assert!(dir.is_dir());
+    }
+    #[test]
     fn rename_never_overwrites_and_rejects_changed_selection() {
         let t = tempdir().unwrap();
         let a = t.path().join("a");

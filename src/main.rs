@@ -140,8 +140,14 @@ enum Cmd {
         destination: String,
         #[arg(long)]
         source_device: Option<String>,
+        /// Full container ID on the source device.
+        #[arg(long)]
+        source_container: Option<String>,
         #[arg(long)]
         destination_device: Option<String>,
+        /// Full container ID on the destination device.
+        #[arg(long)]
+        destination_container: Option<String>,
         #[arg(
             long,
             help = "Move source after verified copy; atomic on the same filesystem"
@@ -200,6 +206,14 @@ enum Cmd {
     /// Start a workspace through its Dev Containers configuration and lifecycle hooks.
     DevcontainerUp {
         workspace: String,
+        #[arg(long)]
+        device: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Recreate a devcontainer using its host workspace configuration.
+    DevcontainerRebuild {
+        id: String,
         #[arg(long)]
         device: Option<String>,
         #[arg(long)]
@@ -266,6 +280,8 @@ fn info() -> Result<serde_json::Value> {
     caps.push("stop-agent-session-v1");
     caps.push("session-yolo-v1");
     caps.push("containers-v1");
+    caps.push("container-transfers-v1");
+    caps.push("devcontainer-rebuild-v1");
     caps.push("stable-update-v1");
     caps.push("pdf-pages-v1");
     caps.push("network-candidates-v1");
@@ -279,6 +295,7 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
         Operation::Containers => containers::list(),
         Operation::ContainerInspect { id } => Ok(serde_json::to_value(containers::inspect(&id)?)?),
         Operation::DevcontainerUp { workspace } => containers::up(&workspace),
+        Operation::DevcontainerRebuild { scope } => containers::rebuild(&scope),
         Operation::ContainerAccess {
             id,
             engine,
@@ -291,6 +308,9 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
             action,
         } => containers::lifecycle(&id, &engine, &started_at, &action),
         Operation::ContainerFiles { scope, operation } => containers::files(&scope, &operation),
+        Operation::ContainerFileAction { scope, operation } => {
+            containers::file_action(&scope, &operation)
+        }
         Operation::ContainerCreate {
             scope,
             request,
@@ -302,7 +322,14 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
         Operation::TransferReachability { destination } => {
             transport::request(&destination, Operation::Info)
         }
-        Operation::Transfer(spec) => transfers::start(&spec),
+        Operation::Transfer(spec) => {
+            anyhow::ensure!(
+                spec.source_container.is_none() && spec.destination_container.is_none(),
+                "Container transfer requires scoped_transfer; update the submitting CX helper"
+            );
+            transfers::start(&spec)
+        }
+        Operation::ScopedTransfer(spec) => transfers::start(&spec),
         Operation::TransferJobs => transfers::jobs(),
         Operation::TransferCancel { key } => transfers::cancel(&key),
         Operation::TransferRetry { key } => transfers::retry(&key),
@@ -333,6 +360,8 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
             conflict,
             key,
         } => transfers::start(&TransferSpec {
+            source_container: None,
+            destination_container: None,
             source: store::local_device(),
             source_path: source,
             destination: store::local_device(),
@@ -735,6 +764,19 @@ fn run() -> Result<()> {
             );
             Ok(())
         }
+        Some(Cmd::DevcontainerRebuild { id, device: d, yes }) => {
+            anyhow::ensure!(yes, "Rebuild replaces the container and its writable layer, ends its sessions, and runs workspace hooks. Back up container-only files, then pass --yes to proceed");
+            let d = device(d)?;
+            let c: containers::Container = serde_json::from_value(transport::request(
+                &d,
+                Operation::ContainerInspect { id },
+            )?)?;
+            println!(
+                "{}",
+                transport::request(&d, Operation::DevcontainerRebuild { scope: c.scope() })?
+            );
+            Ok(())
+        }
         Some(Cmd::ContainerStart { id, device: d }) => container_lifecycle_cli(id, d, "start"),
         Some(Cmd::ContainerStop { id, device: d }) => container_lifecycle_cli(id, d, "stop"),
         Some(Cmd::ContainerAccess {
@@ -894,14 +936,32 @@ fn run() -> Result<()> {
             destination,
             source_device,
             destination_device,
+            source_container,
+            destination_container,
             cut,
             conflict,
             key,
         }) => {
+            let source_device = device(source_device)?;
+            let destination_device = device(destination_device)?;
+            let resolve_scope = |device: &model::Device,
+                                 id: Option<String>|
+             -> Result<Option<model::ContainerScope>> {
+                id.map(|id| {
+                    let c: containers::Container = serde_json::from_value(transport::request(
+                        device,
+                        Operation::ContainerInspect { id },
+                    )?)?;
+                    Ok(c.scope())
+                })
+                .transpose()
+            };
             let spec = TransferSpec {
-                source: device(source_device)?,
+                source_container: resolve_scope(&source_device, source_container)?,
+                destination_container: resolve_scope(&destination_device, destination_container)?,
+                source: source_device,
                 source_path: source,
-                destination: device(destination_device)?,
+                destination: destination_device,
                 destination_path: destination,
                 cut,
                 source_identity: None,

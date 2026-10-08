@@ -62,6 +62,8 @@ fn integrated_tree_and_resume() {
     std::fs::create_dir(&destination).unwrap();
     let device = store::local_device();
     let spec = model::TransferSpec {
+        source_container: None,
+        destination_container: None,
         source: device.clone(),
         source_path: source.to_str().unwrap().into(),
         destination: device,

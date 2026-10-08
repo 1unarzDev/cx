@@ -1,6 +1,6 @@
 //! Containers belong to enrolled hosts. Discovery never executes inside a container.
 //! Exact IDs and lifecycle checks keep ordinary service containers opt-in.
-use crate::model::{ContainerScope, Operation, Request, Response};
+use crate::model::{ContainerScope, Operation};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -104,11 +104,36 @@ fn engine_identity() -> Result<String> {
 }
 /// Explicit startup may execute workspace hooks and Compose services. Never called by discovery.
 pub fn up(workspace: &str) -> Result<Value> {
+    workspace_up(workspace, None)
+}
+pub fn rebuild(scope: &ContainerScope) -> Result<Value> {
+    let c = inspect(&scope.id)?;
+    anyhow::ensure!(
+        c.devcontainer,
+        "Rebuild is available only for devcontainers; ordinary containers are preserved"
+    );
+    anyhow::ensure!(
+        c.engine == scope.engine && c.started_at == scope.started_at && c.user == scope.user,
+        "Container identity changed; refresh before rebuilding"
+    );
+    let workspace = c.workspace.as_deref().context("No host workspace associated with this container; open its workspace in Files and start it with the Dev Containers CLI")?;
+    workspace_up(workspace, Some(&c))
+}
+fn workspace_up(workspace: &str, rebuild: Option<&Container>) -> Result<Value> {
     let workspace = fs::canonicalize(crate::files::decode_path(workspace)?)
         .context("Workspace does not exist on this device")?;
     anyhow::ensure!(workspace.is_dir(), "Choose a workspace folder");
-    let config = config_at(&workspace)
-        .context("No .devcontainer/devcontainer.json or .devcontainer.json in this folder")?;
+    let config = if let Some(c) = rebuild {
+        fs::canonicalize(
+            c.config
+                .as_ref()
+                .context("Devcontainer configuration unavailable; refresh before rebuilding")?,
+        )
+        .context("Devcontainer configuration no longer exists on this device")?
+    } else {
+        config_at(&workspace)
+            .context("No .devcontainer/devcontainer.json or .devcontainer.json in this folder")?
+    };
     read_config(&config)?;
     let cli = cli().context("Install the Node Dev Containers CLI on this device to start a workspace; existing containers still support Docker attachment")?;
     let engine = engine_identity()?;
@@ -118,7 +143,56 @@ pub fn up(workspace: &str) -> Result<Value> {
         .arg(&workspace)
         .arg("--config")
         .arg(&config);
-    let bytes = bounded(command, None, 600, 1024 * 1024)?;
+    if let Some(c) = rebuild {
+        let current = inspect(&c.id)?;
+        anyhow::ensure!(
+            current.engine == engine
+                && current.started_at == c.started_at
+                && current.workspace == c.workspace
+                && current.config == c.config,
+            "Workspace or container changed; refresh before rebuilding"
+        );
+        // CLI up has no --container-id. Supply the selected container's actual identity
+        // labels and refuse ambiguous workspace matches before authorizing replacement.
+        let bytes = bounded(
+            docker(&[
+                "inspect",
+                "--format",
+                r#"{"workspace":{{json (index .Config.Labels "devcontainer.local_folder")}},"config":{{json (index .Config.Labels "devcontainer.config_file")}},"legacy":{{json (index .Config.Labels "vsch.local.folder")}}}"#,
+                &c.id,
+            ]),
+            None,
+            10,
+            65536,
+        )?;
+        let labels: Value = serde_json::from_slice(&bytes)?;
+        let mut identity_labels = Vec::new();
+        if let Some(path) = labels["workspace"].as_str().filter(|v| !v.is_empty()) {
+            identity_labels.push(format!("devcontainer.local_folder={path}"));
+            if let Some(path) = labels["config"].as_str().filter(|v| !v.is_empty()) {
+                identity_labels.push(format!("devcontainer.config_file={path}"));
+            }
+        } else if let Some(path) = labels["legacy"].as_str().filter(|v| !v.is_empty()) {
+            identity_labels.push(format!("vsch.local.folder={path}"));
+        }
+        anyhow::ensure!(!identity_labels.is_empty(), "This devcontainer has no CLI workspace identity labels; open its host workspace to rebuild explicitly");
+        let mut query = docker(&["ps", "-a", "--no-trunc", "--format", "{{.ID}}"]);
+        for label in &identity_labels {
+            query.args(["--filter", &format!("label={label}")]);
+        }
+        let matches = text(bounded(query, None, 10, 65536)?)?;
+        anyhow::ensure!(
+            matches.lines().collect::<Vec<_>>() == vec![c.id.as_str()],
+            "Multiple or changed containers match this workspace; refusing an ambiguous rebuild"
+        );
+        for label in identity_labels {
+            command.args(["--id-label", &label]);
+        }
+        command.args(["--expect-existing-container", "--remove-existing-container"]);
+    }
+    let bytes = bounded(command, None, 600, 1024 * 1024).with_context(|| if rebuild.is_some() {
+        "Devcontainer rebuild failed. The CLI may have replaced the old container; refresh to inspect its state. Check the workspace configuration, Docker access and available disk space before retrying"
+    } else { "Workspace startup failed; refresh to inspect its state" })?;
     let result: Value = bytes
         .split(|b| *b == b'\n')
         .rev()
@@ -171,7 +245,7 @@ fn bounded(
             ));
         }
         match child.try_wait() {
-            Ok(Some(status)) => break Ok(status.success()),
+            Ok(Some(status)) => break Ok(status),
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
             Err(e) => break Err(e.into()),
         }
@@ -181,7 +255,8 @@ fn bounded(
     }
     let _ = child.kill();
     let _ = child.wait();
-    anyhow::ensure!(result?,"Container command failed. Check Docker access, container state and tooling on this device; command output is kept private");
+    let status = result?;
+    anyhow::ensure!(status.success(), "Container command failed (exit {}). Check Docker access, container state and tooling on this device; command output is kept private", status.code().map(|v| v.to_string()).unwrap_or_else(|| "signal".into()));
     out.seek(SeekFrom::Start(0))?;
     let mut bytes = Vec::new();
     out.take(cap + 1).read_to_end(&mut bytes)?;
@@ -190,12 +265,6 @@ fn bounded(
         "container command output exceeded limit"
     );
     Ok(bytes)
-}
-fn input(bytes: &[u8]) -> Result<fs::File> {
-    let mut f = memfile()?;
-    f.write_all(bytes)?;
-    f.seek(SeekFrom::Start(0))?;
-    Ok(f)
 }
 fn docker(args: &[&str]) -> Command {
     let mut c = Command::new("docker");
@@ -642,34 +711,96 @@ fn ensure_helper(scope: &ContainerScope) -> Result<String> {
     Ok(path)
 }
 pub fn files(scope: &ContainerScope, operation: &Operation) -> Result<Value> {
-    anyhow::ensure!(matches!(operation,Operation::List{..}|Operation::ListPage{..}|Operation::Preview{..}|Operation::PreviewPage{..}|Operation::FileInfo{..}),"Container file browser is read-only; host mutations and transfers are never applied to container paths");
-    let helper = ensure_helper(scope)?;
-    check(scope)?;
-    let mut bytes = vec![];
-    let request = Request {
-        version: 1,
-        id: "container-file".into(),
-        op: operation.clone(),
-    };
-    let json = serde_json::to_vec(&request)?;
-    anyhow::ensure!(json.len() <= 1024 * 1024, "request exceeds limit");
-    write!(&mut bytes, "CX1 {}\n", json.len())?;
-    bytes.extend_from_slice(&json);
-    let mut c = exec(scope, false)?;
-    c.args([&helper, "container-helper"]);
-    let output = bounded(c, Some(input(&bytes)?), 20, 1024 * 1024 + 16384)?;
-    let response: Response =
-        crate::transport::read_frame(&mut std::io::BufReader::new(output.as_slice()))?;
+    anyhow::ensure!(matches!(operation,Operation::List{..}|Operation::ListPage{..}|Operation::Preview{..}|Operation::PreviewPage{..}|Operation::FileInfo{..}),"Use a scoped container file action for mutations or transfers; host paths are never substituted");
+    invoke_file(scope, operation)
+}
+/// Scoped transfer and file actions run as the selected container user. Never translate to host paths.
+pub fn file_action(scope: &ContainerScope, operation: &Operation) -> Result<Value> {
     anyhow::ensure!(
-        response.version == 1 && response.id == request.id,
-        "container helper response identity mismatch"
+        matches!(
+            operation,
+            Operation::FileInfo { .. }
+                | Operation::ListPage { .. }
+                | Operation::ReadChunk { .. }
+                | Operation::ReceivePrepare { .. }
+                | Operation::ReceiveChunk { .. }
+                | Operation::ReceiveFinalize { .. }
+                | Operation::ReceiveSymlink { .. }
+                | Operation::RemoveEmptyDirectory { .. }
+                | Operation::Mkdir { .. }
+                | Operation::SetPermissions { .. }
+                | Operation::Move {
+                    expected_identity: Some(_),
+                    ..
+                }
+                | Operation::Rename {
+                    expected_identity: Some(_),
+                    ..
+                }
+                | Operation::Remove {
+                    expected_identity: Some(_),
+                    ..
+                }
+        ),
+        "Unsupported or unguarded container file action"
+    );
+    invoke_file(scope, operation)
+}
+fn invoke_file(scope: &ContainerScope, operation: &Operation) -> Result<Value> {
+    check(scope)?;
+    // File helpers must still work after a workspace folder is moved or deleted.
+    // Resolve relative paths against the selected folder, then execute from container root.
+    let mut operation = operation.clone();
+    let normalize = |path: &mut String| -> Result<()> {
+        if path == "~" || path.starts_with("~/") {
+            return Ok(());
+        }
+        let decoded = crate::files::decode_path(path)?;
+        if !decoded.is_absolute() {
+            *path =
+                crate::files::encode_path(&crate::files::decode_path(&scope.folder)?.join(decoded));
+        }
+        Ok(())
+    };
+    match &mut operation {
+        Operation::List { path }
+        | Operation::ListPage { path, .. }
+        | Operation::Preview { path }
+        | Operation::PreviewPage { path, .. }
+        | Operation::FileInfo { path }
+        | Operation::ReadChunk { path, .. }
+        | Operation::ReceivePrepare { path, .. }
+        | Operation::ReceiveSymlink { path, .. }
+        | Operation::Mkdir { path }
+        | Operation::Remove { path, .. }
+        | Operation::RemoveEmptyDirectory { path, .. }
+        | Operation::Rename { path, .. }
+        | Operation::SetPermissions { path, .. } => normalize(path)?,
+        Operation::Move {
+            path, destination, ..
+        } => {
+            normalize(path)?;
+            normalize(destination)?;
+        }
+        _ => (),
+    }
+    let mut execution = scope.clone();
+    execution.folder = "/".into();
+    let key = serde_json::to_string(scope)?;
+    let result = crate::transport::owned_helper_request(
+        &key,
+        || {
+            let helper = ensure_helper(&execution)?;
+            let mut command = exec(&execution, false)?;
+            command.args([&helper, "container-helper"]);
+            Ok(command)
+        },
+        operation,
     );
     check(scope)?;
-    if let Some(e) = response.error {
-        bail!("{e}");
-    }
-    response.result.context("empty container helper response")
+    result
 }
+
 fn cli() -> Option<PathBuf> {
     for p in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
         let p = p.join("devcontainer");
@@ -845,7 +976,7 @@ mod tests {
         )
         .unwrap_err()
         .to_string()
-        .contains("read-only"));
+        .contains("scoped container file action"));
     }
     #[test]
     fn bounded_commands_timeout_and_limit_output() {

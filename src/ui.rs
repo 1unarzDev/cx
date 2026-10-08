@@ -92,6 +92,8 @@ struct Clipboard {
     cut: bool,
     #[serde(default)]
     source_label: String,
+    #[serde(default)]
+    container: Option<ContainerScope>,
 }
 #[derive(Clone)]
 struct RichPreview {
@@ -402,6 +404,7 @@ enum Dialog {
     DevcontainerUp(usize, String),
     ContainerActions(usize, crate::containers::Container),
     ContainerProvider(usize, ContainerScope),
+    DestinationScope(usize, Vec<crate::containers::Container>),
     ContainerConfirm(usize, crate::containers::Container, String),
     Device(ChooseDevice),
     Provider(usize, Option<String>),
@@ -458,6 +461,7 @@ struct App {
     containers: HashMap<usize, Vec<crate::containers::Container>>,
     container_errors: HashMap<usize, String>,
     containers_loading: BTreeSet<usize>,
+    rebuilding: BTreeSet<(usize, String)>,
     container_selected: usize,
     container_collapsed: BTreeSet<usize>,
     file_locations: HashMap<usize, String>,
@@ -577,6 +581,7 @@ impl App {
             containers: HashMap::new(),
             container_errors: HashMap::new(),
             containers_loading: BTreeSet::new(),
+            rebuilding: BTreeSet::new(),
             container_selected: 0,
             container_collapsed: BTreeSet::new(),
             file_locations: HashMap::new(),
@@ -631,6 +636,7 @@ impl App {
                 Dialog::DevcontainerUp(..) => "Start devcontainer workspace",
                 Dialog::ContainerActions(..) => "Container actions",
                 Dialog::ContainerProvider(..) => "Container session",
+                Dialog::DestinationScope(..) => "Transfer destination",
                 Dialog::ContainerConfirm(..) => "Container confirmation",
                 Dialog::Links(_) => "Links",
                 Dialog::Device(_) => "Device picker",
@@ -681,8 +687,8 @@ impl App {
             },
         }
     }
-    fn send(&self, device: usize, op: Operation) -> bool {
-        let op = if let Some(scope) = self
+    fn scoped_file_operation(&self, device: usize, op: Operation) -> Operation {
+        if let Some(scope) = self
             .browser
             .as_ref()
             .filter(|b| self.view == View::Files && b.device == device)
@@ -696,29 +702,31 @@ impl App {
                     | Operation::PreviewPage { .. }
                     | Operation::FileInfo { .. }
             ) {
-                Operation::ContainerFiles {
+                return Operation::ContainerFiles {
                     scope: scope.clone(),
                     operation: Box::new(op),
-                }
-            } else if matches!(
+                };
+            }
+            if matches!(
                 op,
                 Operation::Mkdir { .. }
                     | Operation::Remove { .. }
                     | Operation::Rename { .. }
                     | Operation::Move { .. }
-                    | Operation::Copy { .. }
                     | Operation::SetPermissions { .. }
-                    | Operation::Transfer(_)
-                    | Operation::ReadChunk { .. }
-                    | Operation::ReceivePrepare { .. }
             ) {
-                return false;
-            } else {
-                op
+                return Operation::ContainerFileAction {
+                    scope: scope.clone(),
+                    operation: Box::new(op),
+                };
             }
-        } else {
-            op
-        };
+        }
+        op
+    }
+    fn send(&self, device: usize, op: Operation) -> bool {
+        self.send_explicit(device, self.scoped_file_operation(device, op))
+    }
+    fn send_explicit(&self, device: usize, op: Operation) -> bool {
         let sent = self
             .tx
             .try_send(Task {
@@ -841,13 +849,17 @@ impl App {
                 self.watched_jobs.insert(key.clone());
             }
         }
+        let actions = actions
+            .into_iter()
+            .map(|(d, op)| (d, self.scoped_file_operation(d, op)))
+            .collect::<Vec<_>>();
         self.file_queue.extend(actions);
         self.start_next_file_action();
     }
     fn start_next_file_action(&mut self) {
         if !self.file_busy {
             if let Some((d, op)) = self.file_queue.front().cloned() {
-                if self.send(d, op) {
+                if self.send_explicit(d, op) {
                     self.file_queue.pop_front();
                     self.file_busy = true;
                 } else {
@@ -1009,21 +1021,7 @@ impl App {
     fn container_read_only_action(&self, action: Action) -> bool {
         self.view == View::Files
             && self.browser.as_ref().is_some_and(|b| b.container.is_some())
-            && matches!(
-                action,
-                Action::Command
-                    | Action::Destination
-                    | Action::TransferTo
-                    | Action::Conflict
-                    | Action::Copy
-                    | Action::Cut
-                    | Action::Rename
-                    | Action::Delete
-                    | Action::Paste
-                    | Action::Mkdir
-                    | Action::Select
-                    | Action::Visual
-            )
+            && action == Action::Command
     }
     fn action_enabled(&self, action: Action) -> bool {
         if self.container_read_only_action(action) {
@@ -1100,7 +1098,7 @@ impl App {
         self.open_scoped_browser(device, path, Some(scope));
         self.set_notice_as(
             NoticeKind::Warning,
-            "Container files · read-only · terminal edits stay inside the container".into(),
+            "Container files · y copy · x cut · p paste · t transfer".into(),
         );
     }
     fn open_scoped_browser(&mut self, device: usize, path: String, scope: Option<ContainerScope>) {
@@ -1851,7 +1849,10 @@ impl App {
     }
     fn execute(&mut self, action: Action) {
         if self.container_read_only_action(action) {
-            self.set_notice_as(NoticeKind::Warning, "Container files are read-only · use its terminal to edit; host transfers are disabled".into());
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "Open the container terminal to run commands".into(),
+            );
             return;
         }
         if action == Action::New && self.view == View::Containers {
@@ -2067,7 +2068,11 @@ impl App {
                             device: b.device,
                             entries,
                             cut: action == Action::Cut,
-                            source_label: identity(&self.devices[b.device]),
+                            source_label: file_endpoint_label(
+                                &self.devices[b.device],
+                                &b.container,
+                            ),
+                            container: b.container.clone(),
                         });
                         self.launch_provider = None;
                         self.set_notice(format!("{} {count} item{} · p pastes here · switch device then p to paste · t chooses a destination",
@@ -2375,9 +2380,27 @@ impl App {
                     self.other_browser = self.browser.take();
                     self.destination_active = true;
                 }
-                self.open_browser(d, "~".into());
+                if self
+                    .providers
+                    .get(&d)
+                    .is_some_and(|(caps, _)| caps.iter().any(|v| v == "containers-v1"))
+                    || self.containers.contains_key(&d)
+                {
+                    self.send(d, Operation::Containers);
+                    self.containers_loading.insert(d);
+                    self.dialog = Some(Dialog::DestinationScope(d, self.destination_containers(d)));
+                    self.dialog_selected = 0;
+                } else {
+                    self.open_host_browser(d, "~".into());
+                }
             }
         }
+    }
+    fn destination_containers(&self, device: usize) -> Vec<crate::containers::Container> {
+        let mut containers = self.containers.get(&device).cloned().unwrap_or_default();
+        containers.retain(|c| c.state == "running" && (c.devcontainer || c.allowed));
+        containers.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+        containers
     }
     fn conflict_policy(&self) -> &'static str {
         ["skip", "overwrite", "rename"][self.conflict]
@@ -2459,18 +2482,6 @@ impl App {
         keys
     }
     fn submit_transfer(&mut self) {
-        if self.browser.as_ref().is_some_and(|b| b.container.is_some())
-            || self
-                .other_browser
-                .as_ref()
-                .is_some_and(|b| b.container.is_some())
-        {
-            self.set_notice_as(
-                NoticeKind::Warning,
-                "Container files are read-only · host transfers cannot use container paths".into(),
-            );
-            return;
-        }
         let (Some(clip), Some(b)) = (self.clipboard.clone(), self.browser.as_ref()) else {
             return;
         };
@@ -2479,11 +2490,14 @@ impl App {
         };
         let destination = self.devices[b.device].clone();
         let destination_path = b.path.clone();
+        let destination_container = b.container.clone();
         let active = self.active_transfer_keys();
         if self.submitted.iter().any(|(key, spec)| {
             active.contains(key)
                 && spec.source.id == self.devices[clip.device].id
                 && spec.destination.id == destination.id
+                && spec.source_container == clip.container
+                && spec.destination_container == destination_container
                 && spec.destination_path == destination_path
                 && clip.entries.iter().any(|e| e.path == spec.source_path)
         }) {
@@ -2496,6 +2510,8 @@ impl App {
         let mut actions = Vec::new();
         for entry in &clip.entries {
             let spec = crate::model::TransferSpec {
+                source_container: clip.container.clone(),
+                destination_container: destination_container.clone(),
                 source: self.devices[clip.device].clone(),
                 source_path: entry.path.clone(),
                 destination: destination.clone(),
@@ -2520,14 +2536,14 @@ impl App {
                 self.submitted_clipboards
                     .insert(spec.key.clone(), clip.id.clone());
             }
-            actions.push((local, Operation::Transfer(spec)));
+            actions.push((local, spec.operation()));
         }
         self.set_notice(format!(
             "{} {} items · {} → {} · existing: {}",
             if clip.cut { "Moving" } else { "Copying" },
             clip.entries.len(),
-            identity(&self.devices[clip.device]),
-            identity(&destination),
+            file_endpoint_label(&self.devices[clip.device], &clip.container),
+            file_endpoint_label(&destination, &destination_container),
             self.conflict_policy()
         ));
         self.queue_file_actions(actions);
@@ -2601,6 +2617,7 @@ impl App {
             Dialog::DevcontainerUp(..) => 2,
             Dialog::ContainerActions(_, c) => container_action_labels(c).len(),
             Dialog::ContainerProvider(..) => menus::CONTAINER.len(),
+            Dialog::DestinationScope(_, containers) => 1 + containers.len(),
             Dialog::ContainerConfirm(..) => 2,
             Dialog::Links(links) => links.len(),
             Dialog::Device(purpose) => self.device_choices(*purpose).len(),
@@ -2619,10 +2636,7 @@ impl App {
         if let Some(motion) = self.navigation.read(key, 5, horizontal) {
             let detail = self.dialog_detail_focus
                 || (matches!(key.code, KeyCode::PageDown | KeyCode::PageUp)
-                    && matches!(
-                        dialog,
-                        Dialog::Jobs | Dialog::Delete(..) | Dialog::StopShell(..)
-                    ));
+                    && self.dialog_scroll_max.get() > 0);
             if detail {
                 navigation::Scroll {
                     offset: &mut self.dialog_scroll,
@@ -2689,7 +2703,11 @@ impl App {
         }
         if matches!(
             dialog,
-            Dialog::Jobs | Dialog::Delete(..) | Dialog::StopShell(..)
+            Dialog::Jobs
+                | Dialog::Delete(..)
+                | Dialog::StopShell(..)
+                | Dialog::ContainerConfirm(..)
+                | Dialog::DestinationScope(..)
         ) {
             match key.code {
                 KeyCode::Tab | KeyCode::BackTab => {
@@ -2827,12 +2845,21 @@ impl App {
                             "Shell" | "Devcontainer terminal" => {
                                 self.start_container_session(d, c.scope(), "shell".into(), false)
                             }
-                            "Files · read-only" => self.open_container_browser(d, c.scope()),
-                            "Start" | "Stop" | "Enable access" | "Disable access" => {
+                            "Files" => self.open_container_browser(d, c.scope()),
+                            "Start" | "Stop" | "Rebuild" | "Enable access" | "Disable access" => {
                                 self.dialog = Some(Dialog::ContainerConfirm(d, c, action.into()));
                                 self.dialog_selected = 0;
                             }
                             _ => (),
+                        }
+                    }
+                    Dialog::DestinationScope(d, containers) => {
+                        if self.dialog_selected == 0 {
+                            self.dialog = None;
+                            self.open_host_browser(d, "~".into());
+                        } else if let Some(c) = containers.get(self.dialog_selected - 1).cloned() {
+                            self.dialog = None;
+                            self.open_scoped_browser(d, c.folder.clone(), Some(c.scope()));
                         }
                     }
                     Dialog::ContainerProvider(d, scope) => {
@@ -2842,7 +2869,21 @@ impl App {
                     Dialog::ContainerConfirm(d, c, action) => {
                         self.dialog = None;
                         if self.dialog_selected == 1 {
-                            let op = if action == "Enable access" || action == "Disable access" {
+                            let op = if action == "Rebuild" {
+                                if self.devices[d].target.is_some()
+                                    && !self.providers.get(&d).is_some_and(|(caps, _)| {
+                                        caps.iter().any(|v| v == "devcontainer-rebuild-v1")
+                                    })
+                                {
+                                    self.set_notice_as(
+                                        NoticeKind::Warning,
+                                        "Update CX on this device before rebuilding devcontainers"
+                                            .into(),
+                                    );
+                                    return;
+                                }
+                                Operation::DevcontainerRebuild { scope: c.scope() }
+                            } else if action == "Enable access" || action == "Disable access" {
                                 Operation::ContainerAccess {
                                     engine: c.engine,
                                     id: c.id,
@@ -2856,7 +2897,30 @@ impl App {
                                     action: action.to_lowercase(),
                                 }
                             };
-                            self.send(d, op);
+                            if let Operation::DevcontainerRebuild { scope } = &op {
+                                let key = (d, scope.id.clone());
+                                if self.rebuilding.contains(&key) {
+                                    self.set_notice_as(
+                                        NoticeKind::Warning,
+                                        "Rebuild already running · wait for its result".into(),
+                                    );
+                                    return;
+                                }
+                                if !self.send(d, op.clone()) {
+                                    self.set_notice_as(
+                                        NoticeKind::Warning,
+                                        "Request queue busy · rebuild was not started".into(),
+                                    );
+                                    return;
+                                }
+                                self.rebuilding.insert(key);
+                            } else if !self.send(d, op) {
+                                self.set_notice_as(
+                                    NoticeKind::Warning,
+                                    "Request queue busy · action was not started".into(),
+                                );
+                                return;
+                            }
                             self.set_notice(format!(
                                 "{action} requested for {} · refresh checks the outcome",
                                 c.name
@@ -3035,11 +3099,16 @@ impl App {
             }
             reply.op = *operation.clone();
         }
+        if let Operation::ContainerFileAction { operation, .. } = &reply.op {
+            // Mutation replies release the serialized queue even after navigating away.
+            reply.op = *operation.clone();
+        }
         let file_action = matches!(
             reply.op,
             Operation::Remove { .. }
                 | Operation::Rename { .. }
                 | Operation::Transfer(_)
+                | Operation::ScopedTransfer(_)
                 | Operation::TransferRetry { .. }
         );
         if file_action {
@@ -3144,22 +3213,48 @@ impl App {
                     }
                 }
             }
+            if let Some(Dialog::DestinationScope(d, choices)) = &self.dialog {
+                if *d == reply.device && choices.is_empty() && reply.result.is_ok() {
+                    // The initial scan fills an empty picker; once populated, choices
+                    // stay pinned so refresh cannot silently select a different container.
+                    self.dialog = Some(Dialog::DestinationScope(
+                        *d,
+                        self.destination_containers(*d),
+                    ));
+                }
+            }
             self.container_selected = self
                 .container_selected
                 .min(self.container_rows().len().saturating_sub(1));
             return;
         }
-        if matches!(reply.op, Operation::DevcontainerUp { .. }) {
+        if matches!(
+            reply.op,
+            Operation::DevcontainerUp { .. } | Operation::DevcontainerRebuild { .. }
+        ) {
+            let rebuild = if let Operation::DevcontainerRebuild { scope } = &reply.op {
+                self.rebuilding.remove(&(reply.device, scope.id.clone()));
+                true
+            } else {
+                false
+            };
+            self.send(reply.device, Operation::Containers);
+            self.containers_loading.insert(reply.device);
             match &reply.result {
                 Ok(_) => {
-                    self.device = reply.device + 1;
-                    self.open_containers();
+                    if !rebuild {
+                        self.device = reply.device + 1;
+                        self.open_containers();
+                    }
                     self.set_notice_as(
                         NoticeKind::Success,
-                        "Workspace started · choose its shell, agent or files".into(),
+                        "Workspace ready · choose its terminal or files".into(),
                     );
                 }
-                Err(e) if notify_error => self.set_notice_as(NoticeKind::Error, format!("{e:#}")),
+                Err(e) if notify_error => self.set_notice_as(
+                    NoticeKind::Error,
+                    format!("{e:#} · refresh checks workspace state"),
+                ),
                 Err(_) => (),
             }
             return;
@@ -3189,7 +3284,7 @@ impl App {
         let value = match reply.result {
             Ok(v) => v,
             Err(e) => {
-                if let Operation::Transfer(spec) = &reply.op {
+                if let Operation::Transfer(spec) | Operation::ScopedTransfer(spec) = &reply.op {
                     self.pending_transfers.remove(&spec.key);
                 }
                 if let Operation::ProbeCandidate { address, interface } = &reply.op {
@@ -3278,7 +3373,7 @@ impl App {
                 return;
             }
         };
-        if let Operation::Transfer(spec) = &reply.op {
+        if let Operation::Transfer(spec) | Operation::ScopedTransfer(spec) = &reply.op {
             if spec.cut
                 && matches!(
                     value["status"].as_str(),
@@ -3527,7 +3622,9 @@ impl App {
                 self.send(reply.device, Operation::TransferJobs);
                 self.set_notice("Cancellation requested · waiting for worker".into());
             }
-            Operation::Transfer(_) | Operation::TransferRetry { .. } => {
+            Operation::Transfer(_)
+            | Operation::ScopedTransfer(_)
+            | Operation::TransferRetry { .. } => {
                 if self.file_errors.is_empty() {
                     self.set_notice(format!(
                         "Transfer {} · {}",
@@ -6480,9 +6577,11 @@ fn render_browser(
                 .iter()
                 .enumerate()
                 .map(|(index, e)| {
-                    let clip = clipboard.filter(|_| b.container.is_none()).filter(|c| {
-                        c.device == b.device && c.entries.iter().any(|x| x.path == e.path)
-                    });
+                    let clip = clipboard
+                        .filter(|c| c.container == b.container)
+                        .filter(|c| {
+                            c.device == b.device && c.entries.iter().any(|x| x.path == e.path)
+                        });
                     let (marker, style) = if b.marked.contains(&e.path) {
                         (if ascii() { "*" } else { "●" }, tint(Color::Yellow))
                     } else if let Some(c) = clip {
@@ -8202,4 +8301,12 @@ fn browser_scope_key(scope: Option<&ContainerScope>) -> String {
     scope
         .map(|s| format!("{}:{}:{}:{}", s.engine, s.id, s.started_at, s.user))
         .unwrap_or_default()
+}
+
+fn file_endpoint_label(device: &Device, scope: &Option<ContainerScope>) -> String {
+    let host = identity(device);
+    scope
+        .as_ref()
+        .map(|c| format!("{host} / {}", safe_label(&c.name)))
+        .unwrap_or(host)
 }

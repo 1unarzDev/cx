@@ -254,7 +254,10 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
     if slot.is_none() {
         *slot = Some(Connection::open(target)?);
     }
-    let response_timeout = if matches!(&op, Operation::DevcontainerUp { .. }) {
+    let response_timeout = if matches!(
+        &op,
+        Operation::DevcontainerUp { .. } | Operation::DevcontainerRebuild { .. }
+    ) {
         660
     } else if matches!(
         &op,
@@ -262,12 +265,54 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
             | Operation::ContainerLifecycle { .. }
             | Operation::ContainerCreate { .. }
             | Operation::Containers
+            | Operation::ContainerFileAction { .. }
     ) {
         90
     } else {
         15
     };
     let is_info = matches!(&op, Operation::Info);
+    let result = exchange(&mut slot, op, response_timeout)?;
+    drop(slot);
+    if is_info {
+        schedule_host_update(target, &result);
+    }
+    Ok(result)
+}
+/// Reuse a private framed helper channel. Callers validate their execution scope before every request.
+pub(crate) fn owned_helper_request(
+    key: &str,
+    command: impl FnOnce() -> Result<Command>,
+    op: Operation,
+) -> Result<serde_json::Value> {
+    static OWNED: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<String, Option<Connection>>>,
+    > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut channels = OWNED
+        .lock()
+        .map_err(|_| anyhow!("owned helper lock unavailable"))?;
+    if !channels.contains_key(key) && channels.len() >= 32 {
+        if let Some(old) = channels.keys().next().cloned() {
+            channels.remove(&old);
+        }
+    }
+    let slot = channels.entry(key.into()).or_default();
+    if slot
+        .as_mut()
+        .is_some_and(|c| !matches!(c.child.try_wait(), Ok(None)))
+    {
+        *slot = None;
+    }
+    if slot.is_none() {
+        *slot = Some(Connection::from_command(command()?)?);
+    }
+    exchange(slot, op, 20)
+}
+fn exchange(
+    slot: &mut Option<Connection>,
+    op: Operation,
+    response_timeout: u64,
+) -> Result<serde_json::Value> {
     let id = format!(
         "{}-{}",
         std::process::id(),
@@ -278,7 +323,7 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
         id: id.clone(),
         op,
     };
-    let conn = slot.as_mut().unwrap();
+    let conn = slot.as_mut().context("helper channel unavailable")?;
     if let Err(error) = frame(&mut conn.input, &req) {
         let reason = conn.failure_reason();
         *slot = None;
@@ -306,14 +351,9 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
     if let Some(e) = response.error {
         bail!("{e}")
     }
-    let result = response
+    response
         .result
-        .ok_or_else(|| anyhow!("empty helper response"))?;
-    drop(slot);
-    if is_info {
-        schedule_host_update(target, &result);
-    }
-    Ok(result)
+        .ok_or_else(|| anyhow!("empty helper response"))
 }
 /// A verified helper replacement; consumers refresh observations, never replay mutations.
 #[derive(Debug, Clone, PartialEq, Eq)]

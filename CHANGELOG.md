@@ -6,6 +6,21 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.32
+
+### Features
+- Resolve bounded neighbor hostname hints on each observing host and display names beside addresses in Network.
+- Add an ordinary SSH terminal from device actions and All devices, without requiring tmux; exit returns to CX.
+- Support minimal immutable-host enrollment and directed access/sharing previews. Sharing previews do not activate networking.
+
+### Fixes
+- Preserve the selected gateway for manual Add device; match `.local` names against the observer's discovered addresses before authenticated enrollment.
+- Label newly enrolled user@address devices with their authenticated hostname, and explain missing tmux when persistent sessions are unavailable.
+
+### Limitations
+- Discovered names are hints, not SSH identity evidence. Reverse lookup may be unavailable; IPv6 link-local name resolution/enrollment needs interface support.
+- Robot internet sharing and complete reverse SSH enforcement remain unfinished and inactive.
+
 ## v0.1.31
 
 ### Fixes

@@ -70,6 +70,11 @@ enum Cmd {
         minimal: bool,
     },
     Devices,
+    /// Open an ordinary login terminal; exit returns without requiring tmux.
+    Terminal {
+        #[arg(long)]
+        device: Option<String>,
+    },
     /// Preview preserving robot-LAN sharing; never applies networking changes.
     SharePlan {
         id: String,
@@ -277,12 +282,26 @@ fn add(target: &str) -> Result<()> {
     add_via(target, None)
 }
 fn add_via(target: &str, via: Option<&Device>) -> Result<()> {
-    add_via_mode(target, via, false)
+    add_via_mode(target, via, true)
 }
 fn add_via_mode(target: &str, via: Option<&Device>, minimal: bool) -> Result<()> {
     if !transport::valid_target(target) {
         bail!("invalid SSH target")
     };
+    let resolved = if let Some(gateway) = via {
+        if target
+            .rsplit_once('@')
+            .is_some_and(|(_, host)| host.parse::<std::net::IpAddr>().is_err())
+        {
+            let candidates = transport::request(gateway, Operation::NetworkCandidates)?;
+            candidate_target(target, &candidates)?.unwrap_or_else(|| target.into())
+        } else {
+            target.into()
+        }
+    } else {
+        target.into()
+    };
+    let target = resolved.as_str();
     let _maintenance = update::maintenance_lock()?;
     let previous = store::route(target)?;
     let next = if let Some(via) = via {
@@ -300,6 +319,71 @@ fn add_via_mode(target: &str, via: Option<&Device>, minimal: bool) -> Result<()>
         store::set_route(target, &previous)?;
     }
     result
+}
+// A name is a routing hint on the selected observer, not SSH identity evidence.
+fn candidate_target(target: &str, snapshot: &serde_json::Value) -> Result<Option<String>> {
+    let Some((account, host)) = target.rsplit_once('@') else {
+        return Ok(None);
+    };
+    let normalized = |name: &str| {
+        name.trim_end_matches('.')
+            .trim_end_matches(".local")
+            .to_ascii_lowercase()
+    };
+    let Some(rows) = snapshot["candidates"].as_array() else {
+        return Ok(None);
+    };
+    let mut matches: Vec<_> = rows
+        .iter()
+        .filter(|row| {
+            row["hostname"]
+                .as_str()
+                .is_some_and(|name| normalized(name) == normalized(host))
+        })
+        .filter_map(|row| {
+            let address = row["address"].as_str()?.parse::<std::net::IpAddr>().ok()?;
+            if matches!(address, std::net::IpAddr::V6(ip) if ip.is_unicast_link_local()) {
+                return None;
+            }
+            Some((address, row["lladdr"].as_str()))
+        })
+        .collect();
+    matches.sort_by_key(|(ip, _)| (!ip.is_ipv4(), *ip));
+    matches.dedup_by_key(|(ip, _)| *ip);
+    if matches.len() > 1 {
+        let mac = matches[0].1;
+        anyhow::ensure!(mac.is_some() && matches.iter().all(|(_, other)| *other == mac),
+            "This hostname matches multiple devices. Select its address under the gateway in Network.");
+    }
+    Ok(matches.first().map(|(ip, _)| format!("{account}@{ip}")))
+}
+#[cfg(test)]
+mod robot_target_tests {
+    use super::*;
+    #[test]
+    fn observer_names_choose_numeric_ipv4_without_granting_ssh_identity() {
+        let mut rows = serde_json::json!({"candidates":[
+            {"hostname":"blastoise-odroid.local","address":"192.168.0.152","lladdr":"same"},
+            {"hostname":"blastoise-odroid.local","address":"192.168.0.147","lladdr":"same"}
+        ]});
+        assert_eq!(
+            candidate_target("roboboat@blastoise-odroid.local", &rows)
+                .unwrap()
+                .as_deref(),
+            Some("roboboat@192.168.0.147")
+        );
+        assert_eq!(
+            candidate_target("roboboat@blastoise-odroid", &rows)
+                .unwrap()
+                .as_deref(),
+            Some("roboboat@192.168.0.147")
+        );
+        rows["candidates"][1]["lladdr"] = serde_json::json!("different");
+        assert!(candidate_target("roboboat@blastoise-odroid.local", &rows).is_err());
+        assert!(candidate_target("roboboat@unknown", &rows)
+            .unwrap()
+            .is_none());
+    }
 }
 // Bound enrollment I/O even if a remote host stops consuming the binary.
 fn enrollment_command(
@@ -426,6 +510,9 @@ fn enroll_target(target: &str, minimal: bool) -> Result<()> {
     let value = transport::request(&d, Operation::Info)?;
     d.account = value["account"].as_str().unwrap_or("unknown").into();
     d.host = value["host"].as_str().unwrap_or(target).into();
+    if target.contains('@') {
+        d.name = d.host.clone();
+    }
     d.id = format!(
         "{}:{}",
         value["machine_id"].as_str().unwrap_or(&d.host),
@@ -653,6 +740,7 @@ fn run() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&connection)?);
             Ok(())
         }
+        Some(Cmd::Terminal { device: d }) => sessions::login_terminal(&device(d)?),
         Some(Cmd::Devices) => {
             println!("{}", serde_json::to_string_pretty(&store::devices()?)?);
             Ok(())

@@ -305,3 +305,11 @@ Outstanding requirements:
 - Tranquility privilege is unavailable; production owned transaction/watchdog, recovery, DNS/route trials and live acceptance remain to implement and validate before sharing activation.
 - Squirtle-odroid address/identity is unresolved; squirtle-jetson is not substituted.
 - Mesh-wide policy/trust distribution and measured direction labels are not yet integrated into the UI; graph review/installation currently operates per viewer.
+
+## Robot Network UI correction (2026-10-07)
+
+Reproduced installed tranquility helper returning null names for both robots while its own Avahi resolved `.147`/`.152` to blastoise-odroid.local and `.153` to squirtle-jetson.local. Reproduced installed blastoise session listing with raw os-error-2; its absent tmux caused the failure. Red render regression caught hostname omission. New observer-side name hints are validated, time-bounded, cached for 90 seconds by address/interface/MAC and capped at 32 lookups/eight concurrent workers; unknown names remain numeric and no name grants identity/trust. Live staging helper resolved all three robot addresses in 1.26 seconds; no other names were found in that snapshot.
+
+Manual Add retains its selected gateway, shows it in the prompt and resolves matching observer name hints to numeric IPv4 addresses before SSH verification; ambiguous different-device names fail closed. Graphical enrollment uses minimal prerequisites, authenticated hostnames label user@address devices, and the new SSH terminal action/CLI uses ordinary login without requiring tmux. Persistent-session errors explain the tmux requirement. Native login PTY passed exit/termios restoration, and masked enrollment PTY passed password/host-key/cancel scenarios. Locked suite456 passed/one protected ignored. Existing sharing limitations remain unchanged.
+
+Squirtle-jetson's owner-held SSH directory had mode0777 and no authorized_keys. Narrowly changed it to0700 and enrolled inbound CX public keys for innovation/tranquility/server, preserving unrelated entries and installing no reverse keys. Existing hostname trust on tranquility verified its numeric-address pin on innovation. No robot networking/router/WARP changes.

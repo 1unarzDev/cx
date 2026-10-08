@@ -93,7 +93,9 @@ fn identity() -> (String, String, String) {
 fn ids(managed: bool) -> Result<Vec<String>> {
     let mut c = tmux(managed)?;
     c.args(["list-sessions", "-F", "#{session_id}"]);
-    let out = c.output()?;
+    let out = c.output().context(
+        "Persistent sessions require tmux on the execution device; use SSH terminal or Files",
+    )?;
     if !out.status.success() {
         let e = String::from_utf8_lossy(&out.stderr);
         let e = e.trim();
@@ -1357,6 +1359,26 @@ pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
     let result = c.status().context("native terminal attachment failed")?;
     if !result.success() {
         bail!("native terminal attachment ended with {result}");
+    }
+    Ok(())
+}
+
+/// Open an ordinary login terminal without requiring tmux or the CX helper.
+/// Exiting the shell restores the viewer through the existing native handoff.
+pub fn login_terminal(device: &Device) -> Result<()> {
+    let mut command = if let Some(target) = &device.target {
+        let routed = crate::store::ssh(target, true)?;
+        let mut command = Command::new("ssh");
+        command.arg("-tt").args(routed.get_args());
+        command
+    } else {
+        let mut command = Command::new(launch_shell()?);
+        command.arg("-l");
+        command
+    };
+    let status = foreground_command(&mut command)?;
+    if !status.success() {
+        bail!("Login terminal ended with {status}; connection was not retried");
     }
     Ok(())
 }

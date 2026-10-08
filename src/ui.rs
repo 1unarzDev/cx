@@ -279,6 +279,7 @@ struct Reply {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
     Add,
+    Terminal,
     Files,
     New,
     Destination,
@@ -306,6 +307,10 @@ enum Action {
 }
 const ACTIONS: &[(Action, &str)] = &[
     (Action::Add, "Add device · existing SSH alias / user@host"),
+    (
+        Action::Terminal,
+        "SSH terminal · ordinary login · exit returns",
+    ),
     (
         Action::Files,
         "Files · selected session directory / device home",
@@ -357,6 +362,7 @@ const ACTIONS: &[(Action, &str)] = &[
 ];
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ChooseDevice {
+    Terminal,
     New,
     Files,
     Destination,
@@ -439,6 +445,7 @@ struct App {
     pending_attach: Option<(usize, Session, bool)>,
     command_target: Option<(usize, String)>,
     pending_command: Option<(Device, RunCommand)>,
+    pending_terminal: Option<Device>,
     pending_add: Option<String>,
     quit: bool,
     force_update: bool,
@@ -521,6 +528,7 @@ impl App {
             pending_attach: None,
             command_target: None,
             pending_command: None,
+            pending_terminal: None,
             pending_add: None,
             quit: false,
             force_update: false,
@@ -813,6 +821,10 @@ impl App {
     fn action_enabled(&self, action: Action) -> bool {
         match action {
             Action::Work => self.view != View::Work,
+            Action::Terminal if self.view == View::Network => self
+                .network_rows()
+                .get(self.network_selected)
+                .is_some_and(|r| r["_peer"].is_u64() || r["_known_peer"].is_u64()),
             Action::New => !self.creating,
             Action::Command => self.command_context().is_some(),
             Action::Network => self.view != View::Network,
@@ -1146,7 +1158,16 @@ impl App {
                 }
             )
         };
-        format!("{name}Discovery: {} · {} · {age}\nRoute found: viewer{arrow}{}{arrow}{} / {}\nSSH jumps to observer (saved): {hops}\nSSH {} · authentication unknown\nInternet unknown · source {} · link {}", safe_label(&observer.name), safe_label(row["source"].as_str().unwrap_or("unknown")), safe_label(&observer.name), safe_label(row["address"].as_str().unwrap_or("unknown")), safe_label(row["interface"].as_str().unwrap_or("unknown")), neighbor_ssh(row), safe_label(row["source"].as_str().unwrap_or("unknown")), safe_label(row["link_state"].as_str().unwrap_or("unknown")))
+        let hostname = row["hostname"]
+            .as_str()
+            .map(|h| {
+                format!(
+                    "Host hint: {} · name lookup, SSH identity unchecked\n",
+                    safe_label(h)
+                )
+            })
+            .unwrap_or_default();
+        format!("{name}{hostname}Enter: connect via observer and add to All devices\nDiscovery: {} · {} · {age}\nRoute found: viewer{arrow}{}{arrow}{} / {}\nSSH jumps to observer (saved): {hops}\nSSH {} · authentication unknown\nInternet unknown · source {} · link {}", safe_label(&observer.name), safe_label(row["source"].as_str().unwrap_or("unknown")), safe_label(&observer.name), safe_label(row["address"].as_str().unwrap_or("unknown")), safe_label(row["interface"].as_str().unwrap_or("unknown")), neighbor_ssh(row), safe_label(row["source"].as_str().unwrap_or("unknown")), safe_label(row["link_state"].as_str().unwrap_or("unknown")))
     }
     fn network_action_device(&self) -> Option<usize> {
         self.network_rows()
@@ -1432,11 +1453,30 @@ impl App {
         self.input = None;
         self.text.clear();
         match action {
+            Action::Terminal => {
+                if self.view == View::Network {
+                    if let Some(d) = self
+                        .network_rows()
+                        .get(self.network_selected)
+                        .and_then(|r| r["_peer"].as_u64().or_else(|| r["_known_peer"].as_u64()))
+                    {
+                        self.pending_terminal = Some(self.devices[d as usize].clone());
+                    }
+                } else {
+                    self.choose_device(ChooseDevice::Terminal);
+                }
+            }
             Action::Update => self.force_update = true,
             Action::Quit => self.request_quit(),
             Action::Add => {
                 self.network_add_target = None;
-                self.pending_add_via = None;
+                self.pending_add_via = if self.view == View::Network {
+                    self.network_action_device()
+                        .map(|d| self.devices[d].clone())
+                } else {
+                    self.actual_device().map(|d| self.devices[d].clone())
+                }
+                .filter(|d| d.target.is_some());
                 self.input = Some(Input::Add);
                 self.text.clear();
             }
@@ -1679,6 +1719,7 @@ impl App {
     fn chosen_device(&mut self, d: usize, purpose: ChooseDevice) {
         self.dialog = None;
         match purpose {
+            ChooseDevice::Terminal => self.pending_terminal = Some(self.devices[d].clone()),
             ChooseDevice::New => {
                 self.check_providers(d);
                 self.work[d].loading = self.send(d, Operation::Sessions);
@@ -1907,7 +1948,7 @@ impl App {
             Dialog::Delete(..) | Dialog::StopShell(..) => 2,
             Dialog::PendingExit(_) => 2,
             Dialog::Neighbor(..) => 1,
-            Dialog::Peer(_) => 4,
+            Dialog::Peer(_) => 5,
         };
         if let Dialog::Provider(device, _) = dialog {
             if key.code == KeyCode::Enter && self.dialog_selected >= count {
@@ -2011,6 +2052,7 @@ impl App {
                         }
                         1 => self.open_browser(d, "~".into()),
                         2 => self.start_at(d, "~".into(), "shell".into()),
+                        4 => self.pending_terminal = Some(self.devices[d].clone()),
                         _ => {
                             self.check_providers(d);
                             self.dialog = Some(Dialog::Provider(d, None));
@@ -2775,6 +2817,7 @@ impl App {
                     self.rename_target = None;
                     self.command_target = None;
                     self.network_add_target = None;
+                    self.pending_add_via = None;
                 }
                 KeyCode::Backspace => {
                     if matches!(mode, Input::Rename | Input::Command) {
@@ -2936,7 +2979,8 @@ impl App {
                             self.pending_add_via = self
                                 .network_add_target
                                 .take()
-                                .map(|(d, _)| self.devices[d].clone());
+                                .map(|(d, _)| self.devices[d].clone())
+                                .or_else(|| self.pending_add_via.take());
                             self.pending_add = Some(target);
                             self.input = None;
                         } else {
@@ -4109,6 +4153,7 @@ fn sidebar_actions(app: &App) -> Vec<(Action, &'static str)> {
         (Action::New, "New session"),
         (Action::Jobs, "Transfers"),
         (Action::Add, "Add device"),
+        (Action::Terminal, "SSH terminal"),
     ];
     actions.retain(|(action, _)| {
         app.action_enabled(*action) && !(*action == Action::Files && app.view == View::Files)
@@ -5083,7 +5128,7 @@ fn render_with_native(
             vec![("↑↓", "Choose"), ("Enter", "Confirm"), ("Esc", "Cancel")]
         }
     } else if app.input == Some(Input::Add) {
-        vec![("Ctrl U", "Clear")]
+        vec![("Enter", "Connect"), ("Esc", "Cancel"), ("Ctrl U", "Clear")]
     } else if matches!(
         app.input,
         Some(Input::Rename | Input::Mkdir | Input::Palette | Input::Command)
@@ -5342,6 +5387,11 @@ fn render_with_native(
                             safe_label(address),
                             safe_label(&app.devices[*d].name)
                         )
+                    } else if input == Input::Add && app.pending_add_via.is_some() {
+                        format!(
+                            "Add device via {} · user@host",
+                            safe_label(&app.pending_add_via.as_ref().unwrap().name)
+                        )
                     } else {
                         match input {
                             Input::Search | Input::PreviewSearch => "Search",
@@ -5374,6 +5424,7 @@ fn render_with_native(
             Dialog::Device(purpose) => (
                 match purpose {
                     ChooseDevice::New => "New session · execution device",
+                    ChooseDevice::Terminal => "SSH terminal · choose device · exit returns",
                     ChooseDevice::Files => "Files · choose device",
                     ChooseDevice::Destination => "Transfer to · destination device",
                 }
@@ -5456,7 +5507,7 @@ fn render_with_native(
             ),
             Dialog::Peer(d) => (
                 format!("Device · {}", safe_label(&app.devices[*d].name)),
-                vec!["Open sessions".into(), "Browse files".into(), "New shell".into(), "New session".into()],
+                vec!["Open sessions".into(), "Browse files".into(), "New persistent shell · tmux".into(), "New session".into(), "SSH terminal · exit returns".into()],
                 format!("{}\n{}\nFrom viewer · helper evidence\nVia selected device: unknown", identity(&app.devices[*d]), app.peer_status(*d)),
             ),
             Dialog::Neighbor(d, candidate) => (
@@ -7338,6 +7389,12 @@ fn render_network(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 safe_label(&app.devices[d as usize].name),
                 safe_label(row["address"].as_str().unwrap_or("unknown"))
             )
+        } else if let Some(name) = row["hostname"].as_str() {
+            format!(
+                "{} · {}",
+                safe_label(name),
+                safe_label(row["address"].as_str().unwrap_or("unknown"))
+            )
         } else {
             safe_label(row["address"].as_str().unwrap_or("unknown"))
         };
@@ -8398,6 +8455,18 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             }
             dirty = true;
         }
+        if let Some(device) = app.pending_terminal.take() {
+            cleanup_native_preview(&mut screen, &mut native_preview)?;
+            screen.suspend()?;
+            let result = sessions::login_terminal(&device);
+            screen.resume()?;
+            last_interaction = Instant::now();
+            app.notice = match result {
+                Ok(()) => format!("Returned from {}", identity(&device)),
+                Err(e) => safe_text(&format!("Terminal failed: {e:#}")),
+            };
+            dirty = true;
+        }
         if let Some((device, command)) = app.pending_command.take() {
             cleanup_native_preview(&mut screen, &mut native_preview)?;
             screen.suspend()?;
@@ -8998,6 +9067,53 @@ mod tests {
         stale["_snapshot"] = serde_json::json!(transport::now().saturating_sub(91));
         assert_eq!(a.known_neighbor(&stale), None);
     }
+    #[test]
+    fn network_device_has_direct_terminal_without_creating_a_tmux_session() {
+        let (mut a, rx) = queued_app();
+        observer_network_fixture(&mut a);
+        a.dialog = Some(Dialog::Peer(1));
+        a.dialog_selected = 4;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            a.pending_terminal.as_ref().map(|d| d.id.as_str()),
+            Some("remote")
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn named_neighbors_are_visible_and_manual_add_preserves_selected_observer() {
+        let (mut a, _rx) = queued_app();
+        observer_network_fixture(&mut a);
+        a.network.get_mut(&1).unwrap()["candidates"][0]["hostname"] =
+            serde_json::json!("blastoise-odroid.local");
+        expand_network_observers(&mut a);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|f| render(f, &a)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(
+            text.contains("blastoise-odroid.local"),
+            "hostname missing from network rows"
+        );
+        a.device = 2;
+        select_network_peer(&mut a, 1);
+        a.execute(Action::Add);
+        for c in "roboboat@blastoise-odroid.local".chars() {
+            press(&mut a, c);
+        }
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            a.pending_add_via.as_ref().map(|d| d.id.as_str()),
+            Some("remote")
+        );
+    }
+
     #[test]
     fn network_tree_keys_expand_collapse_and_capture_exact_child_route() {
         let (mut a, rx) = queued_app();

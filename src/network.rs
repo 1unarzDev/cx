@@ -309,13 +309,114 @@ fn candidate_snapshot() -> Result<Vec<Candidate>> {
         parse_candidates(&addresses, &neighbors, &routes)
     }
 }
-/// Passive neighbor-cache hints. Names are absent because discovery does not perform DNS.
+/// Neighbor-cache hints with bounded, cached name lookups on the observing host.
 /// Identity is (numeric address, interface); an address may occur on several links.
 pub fn candidates() -> Result<Value> {
     let rows = candidate_snapshot()?;
-    Ok(
-        json!({"observed_at":timestamp(),"candidates":rows.iter().map(Candidate::value).collect::<Vec<_>>()}),
-    )
+    Ok(json!({"observed_at":timestamp(),"candidates":named_candidates(&rows)}))
+}
+// Names are display hints, never authentication or automatic SSH trust.
+type NameKey = (std::net::IpAddr, String, Option<String>);
+type NameCache = std::collections::BTreeMap<NameKey, (u64, Option<(String, String)>)>;
+static NAMES: std::sync::LazyLock<std::sync::Mutex<NameCache>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(Default::default()));
+fn valid_hostname(name: &str) -> bool {
+    let name = name.trim_end_matches('.');
+    !name.is_empty()
+        && name.len() <= 253
+        && name.split('.').all(|part| {
+            !part.is_empty()
+                && part.len() <= 63
+                && !part.starts_with('-')
+                && !part.ends_with('-')
+                && part.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        })
+}
+fn parse_name(output: &str, address: std::net::IpAddr) -> Option<String> {
+    output.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let ip = fields.next()?.parse::<std::net::IpAddr>().ok()?;
+        let name = fields.next()?;
+        (ip == address && valid_hostname(name)).then(|| name.trim_end_matches('.').to_owned())
+    })
+}
+fn lookup_name(row: &Candidate) -> Option<(String, String)> {
+    // Link-local IPv6 needs a resolver interface scope; don't invent one.
+    if matches!(row.address, std::net::IpAddr::V6(ip) if ip.is_unicast_link_local()) {
+        return None;
+    }
+    let address = row.address.to_string();
+    let family = if row.address.is_ipv4() { "-4" } else { "-6" };
+    for (program, args, source) in [
+        (
+            "timeout",
+            vec!["0.4", "avahi-resolve-address", family, &address],
+            "mdns_reverse",
+        ),
+        (
+            "timeout",
+            vec!["0.4", "getent", "hosts", &address],
+            "nss_reverse",
+        ),
+    ] {
+        if let Ok(output) = bounded_command(program, &args) {
+            if let Some(name) = parse_name(&output, row.address) {
+                return Some((name, source.into()));
+            }
+        }
+    }
+    None
+}
+fn named_candidates(rows: &[Candidate]) -> Vec<Value> {
+    let now = timestamp();
+    let keys: Vec<_> = rows
+        .iter()
+        .map(|r| (r.address, r.interface.clone(), r.lladdr.clone()))
+        .collect();
+    let mut hints = vec![None; rows.len()];
+    if let Ok(mut cache) = NAMES.lock() {
+        cache.retain(|_, (at, _)| now >= *at && now - *at <= 90);
+        for (i, key) in keys.iter().enumerate() {
+            if let Some((_, name)) = cache.get(key) {
+                hints[i] = Some(name.clone());
+            }
+        }
+    }
+    // Up to 32 fresh lookups in batches of eight. Cache negative results too.
+    let missing: Vec<_> = (0..rows.len())
+        .filter(|i| hints[*i].is_none())
+        .take(32)
+        .collect();
+    for batch in missing.chunks(8) {
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = batch
+                .iter()
+                .map(|i| (*i, scope.spawn(|| lookup_name(&rows[*i]))))
+                .collect();
+            for (i, worker) in workers {
+                let hint = worker.join().unwrap_or(None);
+                hints[i] = Some(hint.clone());
+                if let Ok(mut cache) = NAMES.lock() {
+                    if cache.len() >= 1024 {
+                        cache.clear();
+                    }
+                    cache.insert(keys[i].clone(), (now, hint));
+                }
+            }
+        });
+    }
+    rows.iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let mut value = row.value();
+            if let Some(Some((name, source))) = &hints[i] {
+                value["hostname"] = json!(name);
+                value["hostname_source"] = json!(source);
+                value["hostname_authenticated"] = json!(false);
+            }
+            value
+        })
+        .collect()
 }
 fn select_candidate(
     rows: &[Candidate],
@@ -870,6 +971,18 @@ mod candidate_tests {
         .unwrap();
         assert_eq!(rows[0].value()["lladdr"], "aa:bb:cc:dd:ee:ff");
         assert!(rows[1..].iter().all(|r| r.value()["lladdr"].is_null()));
+    }
+    #[test]
+    fn resolver_output_is_only_a_valid_name_for_the_requested_address() {
+        let ip = "192.168.0.147".parse().unwrap();
+        assert_eq!(
+            parse_name("192.168.0.147\tblastoise-odroid.local\n", ip).as_deref(),
+            Some("blastoise-odroid.local")
+        );
+        assert!(parse_name("192.168.0.153 squirtle-jetson.local", ip).is_none());
+        assert!(parse_name("192.168.0.147 bad;command", ip).is_none());
+        assert!(parse_name("192.168.0.147 -option", ip).is_none());
+        assert!(!valid_hostname(&"x".repeat(254)));
     }
     #[test]
     fn candidates_are_numeric_sorted_deduplicated_and_unknown() {

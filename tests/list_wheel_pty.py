@@ -10,15 +10,18 @@ for view in ['Files','Work']:
   state=root/'state/cx';state.mkdir(parents=True)
   env=dict(os.environ,HOME=str(root),XDG_STATE_HOME=str(root/'state'),TMUX_TMPDIR=str(root),SHELL='/bin/sh',TERM='xterm-256color',HTTPS_PROXY='http://127.0.0.1:9')
   for key in ['TMUX','TMUX_PANE','NO_COLOR','CX_ASCII']:env.pop(key,None)
+  sessions=[]
   if view=='Work':
-   for i in range(12):subprocess.check_output([binary,'new','--directory',str(source),'--name',f'wheel-{i:02}','--key',f'wheel-{i}'],env=env)
+   for i in range(12):sessions.append(json.loads(subprocess.check_output([binary,'new','--directory',str(source),'--name',f'wheel-{i:02}','--key',f'wheel-{i}'],env=env)))
   name='viewer-restart-123-789.json'
   snapshot=dict(schema=1,expires_at=int(time.time())+300,device_ids=['local'],device=1,focus='Workspace',view=view,selected=0,side_selected=0,search='',browser=dict(device=0,path=str(source),display_path=str(source),parent=str(root),entries=[],selected=0,search='',preview_scroll=0,restore_selection=None) if view=='Files' else None,other_browser=None,destination_active=False,conflict=2,launch_provider=None,clipboard=None,submitted={})
   path=state/name;path.write_text(json.dumps(snapshot));path.chmod(0o600)
   master,slave=pty.openpty();before=termios.tcgetattr(slave);fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',40,120,0,0))
   def tty():os.setsid();fcntl.ioctl(slave,termios.TIOCSCTTY,0)
   proc=subprocess.Popen([binary,'restart',name],env=env,stdin=slave,stdout=slave,stderr=slave,preexec_fn=tty)
-  screen=pyte.Screen(120,40);stream=pyte.Stream(screen);raw=bytearray()
+  class FixtureScreen(pyte.Screen):
+   def report_device_status(self,*args,**kwargs):pass
+  screen=FixtureScreen(120,40);stream=pyte.Stream(screen);raw=bytearray()
   pattern=r'file\d{2}\.txt' if view=='Files' else r'\bwheel-\d{2}\b'
   def read(duration=.2):
    end=time.monotonic()+duration
@@ -50,11 +53,23 @@ for view in ['Files','Work']:
    send(b'\x1b[A');assert current()[0]==ordered[5]
    # Header/footer wheel events cannot retarget the current object.
    send(b'\x1b[<65;40;1M');assert current()[0]==ordered[5]
+   if view=='Work':
+    socket=str(state/'managed.sock')
+    before_native=len(raw);send(b'\r')
+    target=next(r['id'] for r in sessions if r['name']==ordered[5])
+    def clients():return subprocess.check_output(['tmux','-S',socket,'list-clients','-F','#{session_name}'],env=env,text=True).splitlines()
+    wait(lambda:clients()==[target] and b'Return: Ctrl+]' in raw[before_native:])
+    assert b'\x1b[?1000l' in raw[before_native:],'cx releases mouse before native terminal'
+    back_start=len(raw);send(b'\x1d')
+    wait(lambda:clients()==[] and current() is not None and b'\x1b[?1000h' in raw[back_start:])
+    assert current()[0]==ordered[5]
+    restored=json.loads(subprocess.check_output([binary,'sessions'],env=env));by_id={r['id']:r for r in restored}
+    assert all(all(by_id[r['id']][key]==r[key] for key in ['pid','started','boot_id','socket']) for r in sessions)
    send(b'\x03');proc.wait(timeout=5);assert proc.returncode==0 and termios.tcgetattr(slave)==before
    read(.1);assert b'\x1b[?1000l' in raw,'mouse reporting disabled on exit'
-   checks.append(dict(view=view,result='PASS',one_item_per_wheel=True,rapid_sequence=True,keyboard_unchanged=True,header_ignored=True,termios_restored=True))
+   checks.append(dict(view=view,result='PASS',one_item_per_wheel=True,rapid_sequence=True,keyboard_unchanged=True,header_ignored=True,termios_restored=True,native_mouse_handoff=view=='Work'))
   finally:
+   if view=='Work':subprocess.run(['tmux','-S',str(state/'managed.sock'),'kill-server'],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
    if proc.poll() is None:proc.terminate();proc.wait(timeout=5)
    os.close(master);os.close(slave)
-   if view=='Work':subprocess.run(['tmux','-S',str(state/'managed.sock'),'kill-server'],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 print(json.dumps(dict(result='PASS',checks=checks)))

@@ -4567,6 +4567,13 @@ fn render_with_native(
                         .as_ref()
                         .is_some_and(|p| matches!(p.kind.as_str(), "image" | "pdf"))
                 {
+                    if app.other_browser.is_some() {
+                        app.panels.borrow_mut().push((
+                            Focus::Workspace,
+                            app.destination_active,
+                            workspace,
+                        ));
+                    }
                     let rows = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([Constraint::Length(1), Constraint::Min(1)])
@@ -11308,6 +11315,32 @@ mod tests {
         assert!(a.mouse(wheel, Rect::new(0, 0, 80, 24)));
         assert_eq!(a.text, "name");
         assert_eq!(a.browser.as_ref().unwrap().selected, 1);
+    }
+
+    #[test]
+    fn fullscreen_pdf_from_two_locations_has_mouse_target() {
+        let (mut a, rx) = file_app();
+        a.other_browser = Some(Browser::new(1, "/destination".into()));
+        let b = a.browser.as_mut().unwrap();
+        b.preview = Some("".into());
+        b.preview_rich = Some(RichPreview::from_value(
+            &serde_json::json!({"kind":"pdf","page":1,"pages":3,"image":{"width":1,"height":1,"rgba":"/////w=="}}),
+        ));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| render(f, &a)).unwrap();
+        assert!(a.mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 40,
+                row: 10,
+                modifiers: KeyModifiers::NONE
+            },
+            Rect::new(0, 0, 80, 24)
+        ));
+        assert!(matches!(
+            rx.try_recv().unwrap().op,
+            Operation::PreviewPage { page: 2, .. }
+        ));
     }
 
     #[test]

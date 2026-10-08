@@ -6,6 +6,14 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.44
+
+### Improvements
+- Notices appear in a floating bottom-right panel with colored Info, Success, Warning and Error types. Panels wrap text, preserve search/footer/transfer controls and disappear after five seconds.
+
+### Fixes
+- Use lowercase `devcontainer` session labels alongside `shell`, `claude` and `codex`.
+
 ## v0.1.43
 
 ### Fixes

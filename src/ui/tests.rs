@@ -1700,7 +1700,10 @@ fn update_menu_and_notices_identify_the_running_binary() {
     }
     assert!(update_check_notice(&Ok(crate::update::CheckOutcome::Offline)).contains("retry"));
     assert!(update_check_notice(&Ok(crate::update::CheckOutcome::Current)).contains("up to date"));
-    assert_eq!(notice_area(Rect::new(0, 0, 2, 1)).width, 0);
+    assert_eq!(
+        notifications::area("notice", Rect::new(0, 0, 2, 1)).width,
+        0
+    );
 }
 #[test]
 fn update_notice_capture_matrix_aligns_and_preserves_default_background() {
@@ -1718,17 +1721,34 @@ fn update_notice_capture_matrix_aligns_and_preserves_default_background() {
                 } else {
                     String::new()
                 };
-                a.notice = update_check_notice(&result);
+                a.set_notice_as(update_notice_kind(&result), update_check_notice(&result));
                 let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
                 terminal.draw(|frame| render(frame, &a)).unwrap();
                 let buffer = terminal.backend().buffer();
-                let row = (0..width)
-                    .map(|x| buffer.cell((x, 23)).unwrap().symbol())
-                    .collect::<String>();
+                let text = buffer
+                    .content
+                    .chunks(width as usize)
+                    .map(|cells| cells.iter().map(|cell| cell.symbol()).collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 assert!(
-                    row.ends_with(&format!("{}  ", a.notice)),
-                    "{width} {state}: {row}"
+                    text.contains(if state == "current" {
+                        "up to date"
+                    } else {
+                        "retry"
+                    }),
+                    "{width} {state}: {text}"
                 );
+                assert!(text.contains(if state == "current" {
+                    "Success"
+                } else {
+                    "Warning"
+                }));
+                let available = Rect::new(17, 2, width - 17, if search { 15 } else { 18 });
+                let popup = notifications::area(&a.notice, available);
+                assert_eq!(popup.right(), width - 1);
+                assert_eq!(popup.bottom(), available.bottom() - 1);
+                assert!(text.lines().last().unwrap().trim().is_empty());
                 assert!(buffer.content.iter().all(|cell| cell.bg == Color::Reset));
                 if let Some(directory) = std::env::var_os("CX_UPDATE_CAPTURE_DIR") {
                     let directory = std::path::PathBuf::from(directory);
@@ -2882,6 +2902,7 @@ fn transfer_sidebar_animation_frames_are_transparent_and_fit() {
         result: Ok(serde_json::json!({"jobs":[{"key":key,"status":"complete"}]})),
     });
     assert!(a.active_transfer_keys().is_empty());
+    assert_eq!(a.notice_kind, NoticeKind::Success);
     for plain in [false, true] {
         let period = if plain { 4 } else { 10 };
         assert_eq!(transfer_spinner(0, plain), transfer_spinner(period, plain));
@@ -4741,6 +4762,9 @@ fn native_bitmap_geometry_tracks_workspace_and_suppresses_overlays() {
         native_preview_area(&a, screen),
         Some(Rect::new(22, 3, 57, 16))
     );
+    a.set_notice("Preview notification".into());
+    assert!(native_preview_area(&a, screen).is_none());
+    assert!(a.expire_notice(a.notice_deadline.unwrap()));
     a.transfer_drawer = true;
     assert_eq!(
         native_preview_area(&a, screen),
@@ -4822,7 +4846,7 @@ fn scoped_sessions_have_evidence_based_devcontainer_labels_at_all_widths() {
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join(format!("{width}-sessions.txt")), &text).unwrap();
         }
-        assert!(text.contains("Devcontainer"), "{width}: {text}");
+        assert!(text.contains("devcontainer"), "{width}: {text}");
         assert!(!text.contains("[shell]"));
     }
     assert_eq!(session.provider, "shell");
@@ -4874,4 +4898,92 @@ fn notices_expire_and_repeated_messages_restart_the_timeout() {
     assert!(!app.expire_notice(renewed + Duration::from_secs(10)));
     app.set_notice(String::new());
     assert!(app.notice_deadline.is_none());
+}
+
+#[test]
+fn floating_notifications_are_typed_bounded_and_restore_the_scene() {
+    for width in [48, 80, 120] {
+        for (kind, label, color) in [
+            (NoticeKind::Info, "Info", Color::Cyan),
+            (NoticeKind::Success, "Success", Color::Green),
+            (NoticeKind::Warning, "Warning", Color::Yellow),
+            (NoticeKind::Error, "Error", Color::Red),
+        ] {
+            let (mut app, _rx) = file_app();
+            let baseline = capture_app(&app, width);
+            app.set_notice_as(kind, "A notification with a clear type".into());
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let text = capture_app(&app, width);
+            assert!(text.contains(label));
+            assert!(text.contains("notification") && text.contains("type"));
+            assert!(buffer.content.iter().all(|cell| cell.bg == Color::Reset));
+            if std::env::var_os("NO_COLOR").is_none() {
+                assert!(buffer.content.iter().any(|cell| cell.fg == color));
+            }
+            if let Some(dir) = std::env::var_os("CX_NOTIFICATION_CAPTURE_DIR") {
+                let dir = std::path::PathBuf::from(dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join(format!("{width}-{label}.txt")), &text).unwrap();
+                let cells = buffer.content.iter().map(|cell| serde_json::json!({
+                    "text": cell.symbol(), "fg": format!("{:?}", cell.fg),
+                    "bg": format!("{:?}", cell.bg), "modifier": format!("{:?}", cell.modifier)
+                })).collect::<Vec<_>>();
+                std::fs::write(
+                    dir.join(format!("{width}-{label}.json")),
+                    serde_json::to_vec(
+                        &serde_json::json!({"width": width, "height": 24, "cells": cells}),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            }
+            assert!(app.expire_notice(app.notice_deadline.unwrap()));
+            assert_eq!(capture_app(&app, width), baseline);
+        }
+    }
+    for size in [(2, 1), (36, 10), (48, 24), (120, 40)] {
+        let available = Rect::new(5, 3, size.0, size.1);
+        let text = "測試 robot_error_no_spaces_".repeat(100);
+        let rect = notifications::area(&text, available);
+        if !rect.is_empty() {
+            assert!(rect.x >= available.x && rect.y >= available.y);
+            assert!(rect.right() <= available.right() && rect.bottom() <= available.bottom());
+            assert!(rect.height <= 8 && rect.width <= 60);
+        }
+    }
+}
+#[test]
+fn notification_types_follow_results_and_typed_inputs_keep_ownership() {
+    assert_eq!(
+        update_notice_kind(&Ok(crate::update::CheckOutcome::Offline)),
+        NoticeKind::Warning
+    );
+    assert_eq!(
+        update_notice_kind(&Ok(crate::update::CheckOutcome::Current)),
+        NoticeKind::Success
+    );
+    assert_eq!(
+        update_notice_kind(&Err(anyhow::anyhow!("fixture"))),
+        NoticeKind::Error
+    );
+    let (mut app, _rx) = file_app();
+    app.apply(Reply {
+        device: 0,
+        generation: app.generation,
+        preview: None,
+        op: Operation::List {
+            path: "/files".into(),
+        },
+        result: Err(anyhow::anyhow!("fixture file request failed")),
+    });
+    assert_eq!(app.notice_kind, NoticeKind::Error);
+    app.input = Some(Input::Search);
+    app.text = "folder".into();
+    app.set_notice_as(NoticeKind::Warning, "Still searching".into());
+    press(&mut app, 'd');
+    assert_eq!(app.text, "folderd");
+    assert!(app.input == Some(Input::Search));
+    assert!(capture_app(&app, 80).contains("Still searching"));
 }

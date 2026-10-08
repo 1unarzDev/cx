@@ -1,5 +1,11 @@
 # Validation record
 
+## Typed floating notifications and label casing — v0.1.44 (2026-10-08)
+
+PASS — serial locked Rust suite: 534 passed, one protected live test ignored (`/tmp/cx-floating-full-tests.log`); final UI rerun 164 passed, including result-driven types, wrapped/bounded overlays, restored scene after expiry, native bitmap fallback and lowercase devcontainer labels. Color-mode UI suite also passed164; targeted ASCII/NO_COLOR check passed. Formatting, diff checks and native debug build passed.
+
+PASS — genuine `tests/notification_timeout_pty.py` against the debug binary verifies a floating Warning panel, its yellow foreground/default background, expiry without input, preserved navigation and termios (`/tmp/cx-floating-notification-pty.log`). Four typed panel styles and narrow layout were rendered from TestBackend cells and visually inspected (`/tmp/cx-floating-color`); actual decoded PTY capture inspected at `/tmp/cx-floating-pty-visible.png`. These are rendered captures, not physical screenshots. Panels stay above the footer/transfer drawer and below modals; expiration restores the underlying scene. No protocol, provider, robot or live network changes; physical input acceptance remains unclaimed.
+
 ## Bottom-right timed notices — v0.1.43 (2026-10-08)
 
 PASS — serial locked Rust suite: 532 passed, one protected live test ignored (`/tmp/cx-notice-full-tests.log`); native build, formatting and diff checks passed. The 162 UI tests cover right alignment at 48/80/120 columns, search/no-search layouts, default background, expiry and renewed deadlines for repeated text (`/tmp/cx-notice-ui-tests.log`). `tests/notification_timeout_pty.py` passed against the actual debug binary: an offline update notice appears at bottom right, disappears after five seconds without input, and navigation/termios remain usable (`/tmp/cx-notice-pty.log`). Before/after decoded terminal captures were rendered and inspected (`/tmp/cx-notice-pty-{visible,expired}.png`); these are PTY renderings, not physical screenshots. No remote host or live network configuration was changed.

@@ -10,10 +10,12 @@ use rendering::render;
 use rendering::render_with_native;
 mod menus;
 mod navigation;
+mod notifications;
 mod panels;
 use filters::score as fuzzy_score;
 use menus::{container_action_labels, render_session_chooser};
 use navigation::{Motion as Navigation, Target};
+use notifications::Kind as NoticeKind;
 
 use anyhow::{Context, Result};
 use crossterm::{
@@ -432,6 +434,7 @@ struct App {
     help: bool,
     help_scroll: u16,
     notice: String,
+    notice_kind: NoticeKind,
     notice_deadline: Option<Instant>,
     browser: Option<Browser>,
     other_browser: Option<Browser>,
@@ -499,6 +502,10 @@ struct App {
 }
 impl App {
     fn set_notice(&mut self, message: String) {
+        self.set_notice_as(NoticeKind::Info, message);
+    }
+    fn set_notice_as(&mut self, kind: NoticeKind, message: String) {
+        self.notice_kind = kind;
         self.notice_deadline = if message.is_empty() {
             None
         } else {
@@ -544,6 +551,7 @@ impl App {
             help: false,
             help_scroll: 0,
             notice: String::new(),
+            notice_kind: NoticeKind::Info,
             notice_deadline: None,
             browser: None,
             other_browser: None,
@@ -726,7 +734,10 @@ impl App {
             if (self.device == 0 || self.device == index + 1) && !self.work[index].loading {
                 self.work[index].loading = self.send(index, Operation::Sessions);
                 if !self.work[index].loading {
-                    self.set_notice("Refresh queue busy · retry shortly".into());
+                    self.set_notice_as(
+                        NoticeKind::Warning,
+                        "Refresh queue busy · retry shortly".into(),
+                    );
                 }
             }
         }
@@ -836,7 +847,10 @@ impl App {
                     self.file_queue.pop_front();
                     self.file_busy = true;
                 } else {
-                    self.set_notice("Request queue busy · file action remains pending".into());
+                    self.set_notice_as(
+                        NoticeKind::Warning,
+                        "Request queue busy · file action remains pending".into(),
+                    );
                 }
             }
         }
@@ -1080,7 +1094,8 @@ impl App {
             .cloned()
             .unwrap_or_else(|| scope.folder.clone());
         self.open_scoped_browser(device, path, Some(scope));
-        self.set_notice(
+        self.set_notice_as(
+            NoticeKind::Warning,
             "Container files · read-only · terminal edits stay inside the container".into(),
         );
     }
@@ -1177,7 +1192,10 @@ impl App {
                 if let Some(b) = &mut self.browser {
                     b.loading = false;
                 }
-                self.set_notice("Refresh queue busy · retry shortly".into());
+                self.set_notice_as(
+                    NoticeKind::Warning,
+                    "Refresh queue busy · retry shortly".into(),
+                );
             }
         }
     }
@@ -1601,7 +1619,10 @@ impl App {
                 self.connect_neighbor(d as usize, row);
             }
         } else {
-            self.set_notice("No devices or observed LAN neighbors".into());
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "No devices or observed LAN neighbors".into(),
+            );
         }
     }
     fn pump_network_refresh(&mut self) {
@@ -1640,7 +1661,8 @@ impl App {
     }
     fn connect_neighbor(&mut self, d: usize, candidate: Value) {
         if !neighbor_connectable(&candidate) {
-            self.set_notice(
+            self.set_notice_as(
+                NoticeKind::Warning,
                 "Link-local SSH enrollment needs an interface scope · unavailable here".into(),
             );
         } else if let Some(address) = candidate["address"].as_str() {
@@ -1825,7 +1847,7 @@ impl App {
     }
     fn execute(&mut self, action: Action) {
         if self.container_read_only_action(action) {
-            self.set_notice("Container files are read-only · use its terminal to edit; host transfers are disabled".into());
+            self.set_notice_as(NoticeKind::Warning, "Container files are read-only · use its terminal to edit; host transfers are disabled".into());
             return;
         }
         if action == Action::New && self.view == View::Containers {
@@ -1923,7 +1945,7 @@ impl App {
                         });
                     if !supported {
                         self.check_providers(d);
-                        self.set_notice("Run command needs a current cx helper on this device · update it and retry".into());
+                        self.set_notice_as(NoticeKind::Warning, "Run command needs a current cx helper on this device · update it and retry".into());
                         return;
                     }
                     self.rename_cursor = 0;
@@ -1931,7 +1953,10 @@ impl App {
                     self.text.clear();
                     self.input = Some(Input::Command);
                 } else {
-                    self.set_notice("Select a device or open its files first".into());
+                    self.set_notice_as(
+                        NoticeKind::Warning,
+                        "Select a device or open its files first".into(),
+                    );
                 }
             }
             Action::New => {
@@ -2356,7 +2381,10 @@ impl App {
     fn start_at(&mut self, d: usize, directory: String, provider: String) {
         if !self.provider_choices(d).contains(&provider.as_str()) {
             self.check_providers(d);
-            self.set_notice("Launch profile unavailable or not yet checked on this device".into());
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "Launch profile unavailable or not yet checked on this device".into(),
+            );
             return;
         }
         if let Some(s) = self.work[d]
@@ -2403,11 +2431,14 @@ impl App {
                 Operation::Create(spec)
             },
         );
-        self.set_notice(if self.creating {
-            format!("Creating {provider} on {}…", identity(&self.devices[d]))
-        } else {
-            "Request queue busy · retry shortly".into()
-        });
+        self.set_notice_as(
+            NoticeKind::Warning,
+            if self.creating {
+                format!("Creating {provider} on {}…", identity(&self.devices[d]))
+            } else {
+                "Request queue busy · retry shortly".into()
+            },
+        );
     }
     fn active_transfer_keys(&self) -> BTreeSet<String> {
         let mut keys = self.pending_transfers.clone();
@@ -2430,7 +2461,8 @@ impl App {
                 .as_ref()
                 .is_some_and(|b| b.container.is_some())
         {
-            self.set_notice(
+            self.set_notice_as(
+                NoticeKind::Warning,
                 "Container files are read-only · host transfers cannot use container paths".into(),
             );
             return;
@@ -2451,7 +2483,10 @@ impl App {
                 && spec.destination_path == destination_path
                 && clip.entries.iter().any(|e| e.path == spec.source_path)
         }) {
-            self.set_notice("Transfer already pending · T shows progress".into());
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "Transfer already pending · T shows progress".into(),
+            );
             return;
         }
         let mut actions = Vec::new();
@@ -2716,7 +2751,7 @@ impl App {
                         let provider = menus::HOST[self.dialog_selected].provider;
                         if !self.provider_choices(d).contains(&provider) {
                             self.check_providers(d);
-                            self.set_notice(if self.provider_loading.contains(&d) {
+                            self.set_notice_as(NoticeKind::Warning, if self.provider_loading.contains(&d) {
                             "Checking availability · choose again when ready".into()
                         } else {
                             format!("{} is unavailable on {} · install its runtime or update the helper", provider, self.devices[d].name)
@@ -2856,7 +2891,7 @@ impl App {
                             })
                         {
                             self.check_providers(d);
-                            self.set_notice("YOLO needs an updated execution helper · update this device, then retry".into());
+                            self.set_notice_as(NoticeKind::Warning, "YOLO needs an updated execution helper · update this device, then retry".into());
                             return;
                         }
                         self.dialog = None;
@@ -3088,9 +3123,12 @@ impl App {
                 Ok(_) => {
                     self.device = reply.device + 1;
                     self.open_containers();
-                    self.set_notice("Workspace started · choose its shell, agent or files".into());
+                    self.set_notice_as(
+                        NoticeKind::Success,
+                        "Workspace started · choose its shell, agent or files".into(),
+                    );
                 }
-                Err(e) => self.set_notice(format!("{e:#}")),
+                Err(e) => self.set_notice_as(NoticeKind::Error, format!("{e:#}")),
             }
             return;
         }
@@ -3098,10 +3136,17 @@ impl App {
             reply.op,
             Operation::ContainerLifecycle { .. } | Operation::ContainerAccess { .. }
         ) {
-            self.set_notice(match &reply.result {
-                Ok(_) => "Container action complete · network configuration preserved".into(),
-                Err(e) => format!("{e:#}"),
-            });
+            self.set_notice_as(
+                if reply.result.is_err() {
+                    NoticeKind::Error
+                } else {
+                    NoticeKind::Success
+                },
+                match &reply.result {
+                    Ok(_) => "Container action complete · network configuration preserved".into(),
+                    Err(e) => format!("{e:#}"),
+                },
+            );
             self.refresh_containers();
             return;
         }
@@ -3154,13 +3199,16 @@ impl App {
                         if self.file_errors.len() < 8 {
                             self.file_errors.push(message.clone());
                         }
-                        self.set_notice(format!(
-                            "{} file actions failed · {}",
-                            self.file_errors.len(),
-                            message
-                        ));
+                        self.set_notice_as(
+                            NoticeKind::Error,
+                            format!(
+                                "{} file actions failed · {}",
+                                self.file_errors.len(),
+                                message
+                            ),
+                        );
                     } else {
-                        self.set_notice(message);
+                        self.set_notice_as(NoticeKind::Error, message);
                     }
                 }
                 if reply.generation == self.generation
@@ -3329,8 +3377,10 @@ impl App {
                         self.work[reply.device].sessions.push(s.clone());
                         self.pending_attach = Some((reply.device, s, false));
                     }
-                    Err(_) => self
-                        .set_notice("Creation response invalid · refresh before retrying".into()),
+                    Err(_) => self.set_notice_as(
+                        NoticeKind::Error,
+                        "Creation response invalid · refresh before retrying".into(),
+                    ),
                 }
             }
             Operation::Jobs | Operation::TransferJobs => {
@@ -3400,20 +3450,28 @@ impl App {
                     .last()
                     .filter(|j| self.file_errors.is_empty() || j["status"] == "failed")
                 {
-                    self.set_notice(format!(
-                        "{} {} · {}{}",
-                        if job["operation"] == "move" {
-                            "Move"
-                        } else {
-                            "Copy"
+                    self.set_notice_as(
+                        match job["status"].as_str() {
+                            Some("complete") => NoticeKind::Success,
+                            Some("failed") => NoticeKind::Error,
+                            Some("cancelled") => NoticeKind::Warning,
+                            _ => NoticeKind::Info,
                         },
-                        transfer_status(job),
-                        transfer_name(job),
-                        job["error"]
-                            .as_str()
-                            .map(|e| format!(" · {}", safe_label(e)))
-                            .unwrap_or_default()
-                    ));
+                        format!(
+                            "{} {} · {}{}",
+                            if job["operation"] == "move" {
+                                "Move"
+                            } else {
+                                "Copy"
+                            },
+                            transfer_status(job),
+                            transfer_name(job),
+                            job["error"]
+                                .as_str()
+                                .map(|e| format!(" · {}", safe_label(e)))
+                                .unwrap_or_default()
+                        ),
+                    );
                 }
                 if let Some((owner, key)) = selected {
                     self.dialog_selected = self
@@ -3439,11 +3497,14 @@ impl App {
                         safe_label(value["route"].as_str().unwrap_or("worker host"))
                     ));
                 } else {
-                    self.set_notice(format!(
-                        "{} file actions failed · {}",
-                        self.file_errors.len(),
-                        self.file_errors.last().unwrap()
-                    ));
+                    self.set_notice_as(
+                        NoticeKind::Error,
+                        format!(
+                            "{} file actions failed · {}",
+                            self.file_errors.len(),
+                            self.file_errors.last().unwrap()
+                        ),
+                    );
                 }
                 self.send(reply.device, Operation::TransferJobs);
             }
@@ -3701,7 +3762,10 @@ impl App {
                                 b.preview_scroll.set(scroll);
                                 b.preview_find.reveal.set(false);
                             } else {
-                                self.set_notice("Linked file opened · heading not found".into());
+                                self.set_notice_as(
+                                    NoticeKind::Warning,
+                                    "Linked file opened · heading not found".into(),
+                                );
                             }
                         }
                     }
@@ -3933,7 +3997,10 @@ impl App {
                         {
                             if let Some((d, entry)) = self.rename_target.take() {
                                 if entry.rename_name.as_deref() == Some(self.text.as_str()) {
-                                    self.set_notice("Name unchanged".into());
+                                    self.set_notice_as(
+                                        NoticeKind::Warning,
+                                        "Name unchanged".into(),
+                                    );
                                 } else {
                                     self.queue_file_actions(vec![(
                                         d,
@@ -3967,7 +4034,10 @@ impl App {
                             self.pending_add = Some(target);
                             self.input = None;
                         } else {
-                            self.set_notice("Use an SSH alias or user@host".into());
+                            self.set_notice_as(
+                                NoticeKind::Warning,
+                                "Use an SSH alias or user@host".into(),
+                            );
                         }
                     }
                     Input::Mkdir => {
@@ -3983,7 +4053,10 @@ impl App {
                             }
                             self.input = None;
                         } else {
-                            self.set_notice("Enter a single directory name".into());
+                            self.set_notice_as(
+                                NoticeKind::Warning,
+                                "Enter a single directory name".into(),
+                            );
                         }
                     }
                 },
@@ -4131,7 +4204,10 @@ impl App {
                 if session.external
                     || !["shell", "codex", "claude"].contains(&session.provider.as_str())
                 {
-                    self.set_notice("Only CX-managed sessions can be stopped here".into());
+                    self.set_notice_as(
+                        NoticeKind::Warning,
+                        "Only CX-managed sessions can be stopped here".into(),
+                    );
                 } else if self.devices[device].target.is_some()
                     && !self.providers.get(&device).is_some_and(|(caps, checked)| {
                         transport::now().saturating_sub(*checked) < 60
@@ -4559,7 +4635,10 @@ impl App {
                 b.preview_pending_page = Some(page);
             }
         } else {
-            self.set_notice("Preview queue busy · retry shortly".into());
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "Preview queue busy · retry shortly".into(),
+            );
         }
     }
     fn text_preview_active(&self) -> bool {
@@ -4611,7 +4690,8 @@ impl App {
             if std::env::var_os("DISPLAY").is_none()
                 && std::env::var_os("WAYLAND_DISPLAY").is_none()
             {
-                self.set_notice(
+                self.set_notice_as(
+                    NoticeKind::Warning,
                     "No graphical browser on this viewer · inspect the URL with o".into(),
                 );
                 return;
@@ -4627,12 +4707,13 @@ impl App {
                     std::thread::spawn(move || {
                         let _ = child.wait();
                     });
-                    self.set_notice("Link sent to viewer browser".into());
+                    self.set_notice_as(NoticeKind::Success, "Link sent to viewer browser".into());
                     self.dialog = None;
                 }
-                Err(_) => {
-                    self.set_notice("Viewer browser unavailable · inspect the URL with o".into())
-                }
+                Err(_) => self.set_notice_as(
+                    NoticeKind::Warning,
+                    "Viewer browser unavailable · inspect the URL with o".into(),
+                ),
             }
             return;
         }
@@ -4640,7 +4721,10 @@ impl App {
             return;
         };
         let Some(document) = b.preview_path.as_ref() else {
-            self.set_notice("Document path unavailable · reopen this file".into());
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "Document path unavailable · reopen this file".into(),
+            );
             return;
         };
         let resolved = crate::files::decode_path(document)
@@ -4648,11 +4732,14 @@ impl App {
         let (path, anchor) = match resolved {
             Ok(Some(destination)) => destination,
             Ok(None) => {
-                self.set_notice("Only web URLs and file links can open".into());
+                self.set_notice_as(
+                    NoticeKind::Warning,
+                    "Only web URLs and file links can open".into(),
+                );
                 return;
             }
             Err(error) => {
-                self.set_notice(safe_text(&error.to_string()));
+                self.set_notice_as(NoticeKind::Error, safe_text(&error.to_string()));
                 return;
             }
         };
@@ -4665,7 +4752,10 @@ impl App {
                 b.preview_scroll.set(scroll);
                 b.preview_find.reveal.set(false);
             } else {
-                self.set_notice("Heading not found in this preview".into());
+                self.set_notice_as(
+                    NoticeKind::Warning,
+                    "Heading not found in this preview".into(),
+                );
             }
             return;
         }
@@ -4703,7 +4793,10 @@ impl App {
             .map(|s| markdown_preview_links(s))
             .unwrap_or_default();
         if links.is_empty() {
-            self.set_notice("No Markdown links in this preview".into());
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "No Markdown links in this preview".into(),
+            );
             return;
         }
         self.dialog_selected = 0;
@@ -7414,10 +7507,6 @@ fn can_restart(app: &App) -> bool {
 fn restart_ready(app: &App, idle: Duration, pending_input: bool) -> bool {
     !pending_input && idle >= Duration::from_secs(3) && can_restart(app)
 }
-// Keep right-aligned notices inset from the terminal edge on its default background.
-fn notice_area(area: Rect) -> Rect {
-    area.inner(ratatui::layout::Margin::new(2, 0))
-}
 fn version_notice(message: &str) -> String {
     format!(
         "cx v{} {} {}",
@@ -7438,6 +7527,17 @@ fn update_check_notice(result: &Result<crate::update::CheckOutcome>) -> String {
         }
         Err(_) => "update unavailable; version kept".into(),
     })
+}
+
+fn update_notice_kind(result: &Result<crate::update::CheckOutcome>) -> NoticeKind {
+    use crate::update::CheckOutcome;
+    match result {
+        Ok(CheckOutcome::Current | CheckOutcome::Ready(_)) => NoticeKind::Success,
+        Ok(CheckOutcome::Offline | CheckOutcome::Unavailable(_) | CheckOutcome::Skipped) => {
+            NoticeKind::Warning
+        }
+        Err(_) => NoticeKind::Error,
+    }
 }
 
 enum UpdatePhase {
@@ -7565,6 +7665,7 @@ fn native_preview_area(app: &App, area: Rect) -> Option<Rect> {
         || app.help
         || app.dialog.is_some()
         || app.input.is_some()
+        || notifications::visible(&app.notice)
     {
         return None;
     }
@@ -7716,16 +7817,22 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     let force = force || std::mem::take(&mut update_report_requested);
                     update_phase = match result {
                         Ok(crate::update::CheckOutcome::Ready(plan)) => {
-                            app.set_notice(version_notice(&format!(
-                                "v{} ready; waiting for idle",
-                                safe_label(&plan.version)
-                            )));
+                            app.set_notice_as(
+                                NoticeKind::Success,
+                                version_notice(&format!(
+                                    "v{} ready; waiting for idle",
+                                    safe_label(&plan.version)
+                                )),
+                            );
                             dirty = true;
                             UpdatePhase::Ready(plan)
                         }
                         other => {
                             if force {
-                                app.set_notice(update_check_notice(&other));
+                                app.set_notice_as(
+                                    update_notice_kind(&other),
+                                    update_check_notice(&other),
+                                );
                                 dirty = true;
                             }
                             UpdatePhase::Idle
@@ -7736,9 +7843,10 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     update_phase = match result {
                         Ok(path) => UpdatePhase::Installed(path),
                         Err(_) => {
-                            app.set_notice(version_notice(
-                                "update could not install; version kept",
-                            ));
+                            app.set_notice_as(
+                                NoticeKind::Error,
+                                version_notice("update could not install; version kept"),
+                            );
                             dirty = true;
                             UpdatePhase::Idle
                         }
@@ -7783,14 +7891,15 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                             .exec();
                         let _ = std::fs::remove_file(store::state_dir().join(name));
                         screen.resume()?;
-                        app.set_notice(safe_text(&format!(
-                            "Update installed; reopen cx to use it: {error}"
-                        )));
+                        app.set_notice_as(
+                            NoticeKind::Warning,
+                            safe_text(&format!("Update installed; reopen cx to use it: {error}")),
+                        );
                         dirty = true;
                         update_phase = UpdatePhase::Idle;
                     }
                     Err(_) => {
-                        app.set_notice("Update installed · workspace too large to restore; reopen cx when convenient".into());
+                        app.set_notice_as(NoticeKind::Warning, "Update installed · workspace too large to restore; reopen cx when convenient".into());
                         dirty = true;
                         update_phase = UpdatePhase::Idle;
                     }
@@ -7846,10 +7955,16 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                         })
                         .collect();
                     app.devices = updated;
-                    app.set_notice(format!("Added {}", safe_label(&target)));
+                    app.set_notice_as(
+                        NoticeKind::Success,
+                        format!("Added {}", safe_label(&target)),
+                    );
                     app.refresh_work();
                 }
-                Err(e) => app.set_notice(safe_text(&format!("Enrollment failed: {e:#}"))),
+                Err(e) => app.set_notice_as(
+                    NoticeKind::Error,
+                    safe_text(&format!("Enrollment failed: {e:#}")),
+                ),
             }
             dirty = true;
         }
@@ -7859,10 +7974,17 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             let result = sessions::login_terminal(&device);
             screen.resume()?;
             last_interaction = Instant::now();
-            app.set_notice(match result {
-                Ok(()) => format!("Returned from {}", identity(&device)),
-                Err(e) => safe_text(&format!("Terminal failed: {e:#}")),
-            });
+            app.set_notice_as(
+                if result.is_err() {
+                    NoticeKind::Error
+                } else {
+                    NoticeKind::Info
+                },
+                match result {
+                    Ok(()) => format!("Returned from {}", identity(&device)),
+                    Err(e) => safe_text(&format!("Terminal failed: {e:#}")),
+                },
+            );
             dirty = true;
         }
         if let Some((device, command)) = app.pending_command.take() {
@@ -7871,10 +7993,17 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             let result = sessions::run_command(&device, &command);
             screen.resume()?;
             last_interaction = Instant::now();
-            app.set_notice(match result {
-                Ok(()) => format!("Returned from {}", identity(&device)),
-                Err(e) => safe_text(&format!("Command failed: {e:#}")),
-            });
+            app.set_notice_as(
+                if result.is_err() {
+                    NoticeKind::Error
+                } else {
+                    NoticeKind::Info
+                },
+                match result {
+                    Ok(()) => format!("Returned from {}", identity(&device)),
+                    Err(e) => safe_text(&format!("Command failed: {e:#}")),
+                },
+            );
             if app.view == View::Files {
                 app.refresh();
             }
@@ -7886,16 +8015,24 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             let result = sessions::attach(&app.devices[d], &session, observe);
             screen.resume()?;
             last_interaction = Instant::now();
-            app.set_notice(match result {
-                Ok(()) => format!(
-                    "Returned from {} · session remains on execution host",
-                    identity(&app.devices[d])
-                ),
-                Err(e) => safe_text(&format!("Attachment failed: {e:#}")),
-            });
+            app.set_notice_as(
+                if result.is_err() {
+                    NoticeKind::Error
+                } else {
+                    NoticeKind::Info
+                },
+                match result {
+                    Ok(()) => format!(
+                        "Returned from {} · session remains on execution host",
+                        identity(&app.devices[d])
+                    ),
+                    Err(e) => safe_text(&format!("Attachment failed: {e:#}")),
+                },
+            );
             app.refresh_work();
             dirty = true;
         }
+        dirty |= app.expire_notice(Instant::now());
         let was_encoding = native_preview.pending();
         let size = screen.terminal.size()?;
         prepare_native_preview(
@@ -7921,7 +8058,6 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             last_transfer_frame = Instant::now();
             dirty = true;
         }
-        dirty |= app.expire_notice(Instant::now());
         // Capture wheel reports throughout cx so the emulator does not replace
         // them with accelerated arrow-key bursts. suspend() releases this before
         // handing the terminal to SSH/tmux/native commands.

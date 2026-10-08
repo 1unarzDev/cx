@@ -276,7 +276,7 @@ pub(super) fn render_with_native(
             format!(
                 "Host {}\n{} {}\nFolder {}\nEnter open · n new",
                 identity(&app.devices[i]),
-                menus::container_label(app, i, scope),
+                menus::session_label(app, i, &s),
                 safe_label(&scope.name),
                 safe_label(&s.directory)
             )
@@ -525,7 +525,7 @@ pub(super) fn render_with_native(
                         Cell::from(if compact && s.container.is_some() {
                             format!(
                                 "{} · {}",
-                                menus::container_label(app, *i, s.container.as_ref().unwrap()),
+                                menus::session_label(app, *i, s),
                                 safe_label(&s.name)
                             )
                         } else {
@@ -990,33 +990,6 @@ pub(super) fn render_with_native(
                 footer[0].y + 1,
             ));
         }
-    } else {
-        frame.render_widget(
-            Paragraph::new(
-                if app.view == View::Network && app.notice == "Ctrl+P actions · ? help" {
-                    String::new()
-                } else {
-                    safe_text(&app.notice)
-                },
-            )
-            .style(muted())
-            .alignment(ratatui::layout::Alignment::Right),
-            notice_area(footer[2]),
-        );
-    }
-    if show_search {
-        frame.render_widget(
-            Paragraph::new(
-                if app.view == View::Network && app.notice == "Ctrl+P actions · ? help" {
-                    String::new()
-                } else {
-                    safe_text(&app.notice)
-                },
-            )
-            .style(muted())
-            .alignment(ratatui::layout::Alignment::Right),
-            notice_area(footer[3]),
-        );
     }
     let mut hints = if app.help {
         vec![("↑↓", "Scroll"), ("PgUpDn", "Page"), ("Esc", "Close")]
@@ -1296,6 +1269,7 @@ pub(super) fn render_with_native(
             cells[i % columns],
         );
     }
+    notifications::render(frame, &app.notice, app.notice_kind, workspace);
     if let Some(input) = app
         .input
         .filter(|i| !matches!(*i, Input::Search | Input::PreviewSearch | Input::Filter))

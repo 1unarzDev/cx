@@ -6,7 +6,13 @@ set -eu
 PATH="$HOME/.local/bin:$PATH"
 export PATH
 missing=
-for tool in curl openssl ssh tmux pdftoppm pdfinfo ip ping infocmp flock tar gzip stat timeout install mktemp head sed grep; do
+tools='curl openssl ssh tmux pdftoppm pdfinfo ip ping infocmp flock tar gzip stat timeout install mktemp head sed grep'
+if [ "${CX_ENROLL_MINIMAL:-0}" = 1 ]; then
+    # The signed helper is downloaded/verified by the viewer, never by the robot.
+    # Missing optional runtimes remain unavailable; no packages/profile changes.
+    tools='id mkdir ssh ip flock stat timeout mktemp cat chmod mv rm'
+fi
+for tool in $tools; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         if [ "$tool" != ip ] || { [ ! -x /usr/sbin/ip ] && [ ! -x /sbin/ip ]; }; then
             missing="$missing $tool"

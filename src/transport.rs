@@ -62,6 +62,7 @@ struct Connection {
     input: std::process::ChildStdin,
     replies: std::sync::mpsc::Receiver<Result<Response>>,
     failure: std::sync::mpsc::Receiver<ConnectionFailure>,
+    route: Vec<String>,
 }
 impl Drop for Connection {
     fn drop(&mut self) {
@@ -74,9 +75,16 @@ impl Drop for Connection {
 }
 impl Connection {
     fn open(target: &str) -> Result<Self> {
+        let route = crate::store::route(target)?;
         let mut c = ssh(target, false)?;
+        anyhow::ensure!(
+            crate::store::route(target)? == route,
+            "SSH route changed during connection setup"
+        );
         c.arg("exec ~/.local/bin/cx helper");
-        Self::from_command(c)
+        let mut connection = Self::from_command(c)?;
+        connection.route = route;
+        Ok(connection)
     }
     fn from_command(mut c: Command) -> Result<Self> {
         use std::os::unix::process::CommandExt;
@@ -119,6 +127,7 @@ impl Connection {
             input,
             replies,
             failure,
+            route: Vec::new(),
         })
     }
 }
@@ -223,6 +232,12 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
     let mut slot = entry
         .lock()
         .map_err(|_| anyhow!("connection lock unavailable"))?;
+    let route = crate::store::route(target)?;
+    if slot.as_ref().is_some_and(|c| c.route != route) {
+        // Future requests must not reuse a channel opened through an old gateway.
+        // This does not terminate separately attached interactive sessions.
+        *slot = None;
+    }
     if slot
         .as_mut()
         .is_some_and(|c| !matches!(c.child.try_wait(), Ok(None)))

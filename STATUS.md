@@ -292,3 +292,16 @@ Signed v0.1.30/sourcee63af24/workflow37710007003 PASS; clean-HOME public bootstr
 
 
 Signed v0.1.31/source `dfeb9ef` published after [workflow37714527079](https://github.com/1unarzDev/cx/actions/runs/37714527079) PASS: all native/PTY checks, x86-64/ARM64 static builds and nine distro/architecture installer cases. Innovation/server signed updater PASS. Tranquility's old0.1.25 updater failed safely with File exists; existing alias re-enrollment deployed the already signature-verified innovation binary atomically, preserving old updater backups. All three verified0.1.31/SHA2564f95260370bc58144ada1dc10b994f6684fc8e0874ba661da12436058e8ccfb2. Actual installed Files/Work wheel/native-handoff PTY PASS; original five innovation and one tranquility session identities unchanged (`local-evidence/wheel-v031/{before,after,deployment}.json`, `/tmp/cx-wheel-v031-installed-pty.json`). Existing viewers need reopening; physical post-update confirmation remains unclaimed. No naming runtime implementation, provider configuration, SSH-trust or network mutation. Rollback uses signed v0.1.30 bootstrap with state/jobs/sessions preserved.
+
+## Robot mesh milestone (2026-10-07)
+
+Worktree `robot-mesh-sharing`, branch `feature/robot-mesh-sharing`: minimal immutable-host enrollment, bounded directed graph review/approved route installation, route-aware helper cache invalidation, managed inbound public-key enrollment and preserved-LAN sharing preview. [Architecture and observed limits](docs/robot-mesh-sharing.md) records the implementation contract and acceptance gates. No networking activation or completed reverse-access enforcement is claimed.
+
+Blastoise: existing host identity verified; inbound keys for all three mesh viewers installed with unrelated entries preserved; innovation -> tranquility -> blastoise authentication and signed ARM64 minimal helper enrollment succeeded. Numeric `.147` trust was added only after verification; other trust was preserved. Read-only network helper responds; robot addresses/default/profile unchanged. `.153` is confirmed squirtle-jetson, not squirtle-odroid.
+
+Validation: final locked Rust suite 451 passed/one protected ignored; enrollment fixture PASS; actual OpenSSH jump fixture PASS; isolated nft lifecycle/preservation PASS; actual three-node namespace packets PASS for source NAT, IPv4 TCP/22 reverse denial, mesh initiation/replies and rollback. Live robot internet/IPv6/all-path reverse denial remain unverified.
+
+Outstanding requirements:
+- Tranquility privilege is unavailable; production owned transaction/watchdog, recovery, DNS/route trials and live acceptance remain to implement and validate before sharing activation.
+- Squirtle-odroid address/identity is unresolved; squirtle-jetson is not substituted.
+- Mesh-wide policy/trust distribution and measured direction labels are not yet integrated into the UI; graph review/installation currently operates per viewer.

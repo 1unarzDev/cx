@@ -1,3 +1,4 @@
+mod access;
 mod auth;
 mod files;
 mod markdown_links;
@@ -8,6 +9,7 @@ mod network;
 mod session_titles;
 mod sessions;
 mod sharing;
+mod sharing_lan;
 mod store;
 mod syntax_preview;
 mod terminal_preview;
@@ -61,8 +63,29 @@ enum Cmd {
             help = "Connect through an enrolled device using OpenSSH ProxyJump"
         )]
         via: Option<String>,
+        #[arg(
+            long,
+            help = "Enroll an immutable/minimal Linux host without requiring optional terminal/PDF utilities"
+        )]
+        minimal: bool,
     },
     Devices,
+    /// Preview preserving robot-LAN sharing; never applies networking changes.
+    SharePlan {
+        id: String,
+        #[arg(long)]
+        observation: std::path::PathBuf,
+    },
+    /// Review directed access policy and an approved recursive SSH path.
+    Access {
+        from: String,
+        to: String,
+        #[arg(long)]
+        graph: std::path::PathBuf,
+        /// Install this approved path for an already enrolled destination.
+        #[arg(long)]
+        install_route: bool,
+    },
     LaunchShell {
         shell: String,
         #[arg(long)]
@@ -254,6 +277,9 @@ fn add(target: &str) -> Result<()> {
     add_via(target, None)
 }
 fn add_via(target: &str, via: Option<&Device>) -> Result<()> {
+    add_via_mode(target, via, false)
+}
+fn add_via_mode(target: &str, via: Option<&Device>, minimal: bool) -> Result<()> {
     if !transport::valid_target(target) {
         bail!("invalid SSH target")
     };
@@ -269,7 +295,7 @@ fn add_via(target: &str, via: Option<&Device>) -> Result<()> {
         "This target is already enrolled through another route. Use distinct SSH aliases for devices on overlapping networks; the existing device was not changed."
     );
     store::set_route(target, &next)?;
-    let result = enroll_target(target);
+    let result = enroll_target(target, minimal);
     if result.is_err() {
         store::set_route(target, &previous)?;
     }
@@ -347,7 +373,7 @@ fn enrollment_command(
     })
 }
 
-fn enroll_target(target: &str) -> Result<()> {
+fn enroll_target(target: &str, minimal: bool) -> Result<()> {
     let mut c = transport::ssh(target, true)?;
     c.arg("uname -sm; id -un");
     let out = enrollment_command(c, None)?;
@@ -379,7 +405,9 @@ fn enroll_target(target: &str) -> Result<()> {
     let bytes = std::fs::read(binary)?;
     let mut c = transport::ssh(target, true)?;
     let script = include_str!("../scripts/enroll-helper.sh").replace('\'', "'\"'\"'");
-    c.arg(format!("sh -c '{script}'")).stdin(Stdio::piped());
+    let mode = if minimal { "CX_ENROLL_MINIMAL=1 " } else { "" };
+    c.arg(format!("{mode}sh -c '{script}'"))
+        .stdin(Stdio::piped());
     if auth::active() {
         c.stdout(Stdio::null()).stderr(Stdio::null());
     }
@@ -562,15 +590,67 @@ fn run() -> Result<()> {
             };
             Ok(())
         }
-        Some(Cmd::Add { target, via }) => {
+        Some(Cmd::Add {
+            target,
+            via,
+            minimal,
+        }) => {
             let gateway = via.map(|name| device(Some(name))).transpose()?;
-            add_via(&target, gateway.as_ref())
+            add_via_mode(&target, gateway.as_ref(), minimal)
         }
         Some(Cmd::LaunchShell { shell, device: d }) => {
             println!(
                 "{}",
                 transport::request(&device(d)?, Operation::SetLaunchShell { shell })?
             );
+            Ok(())
+        }
+        Some(Cmd::SharePlan { id, observation }) => {
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            std::fs::File::open(observation)?
+                .take(256 * 1024 + 1)
+                .read_to_end(&mut bytes)?;
+            anyhow::ensure!(
+                bytes.len() <= 256 * 1024,
+                "sharing observation exceeds limit"
+            );
+            let observation: sharing_lan::Observation = serde_json::from_slice(&bytes)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&sharing_lan::preview(
+                    &id,
+                    observation,
+                    transport::now()
+                )?)?
+            );
+            Ok(())
+        }
+        Some(Cmd::Access {
+            from,
+            to,
+            graph,
+            install_route,
+        }) => {
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            std::fs::File::open(graph)?
+                .take(256 * 1024 + 1)
+                .read_to_end(&mut bytes)?;
+            anyhow::ensure!(bytes.len() <= 256 * 1024, "access policy exceeds limit");
+            let graph: access::Graph = serde_json::from_slice(&bytes)?;
+            let connection = graph.connection(&from, &to, transport::now())?;
+            if install_route {
+                let _maintenance = update::maintenance_lock()?;
+                anyhow::ensure!(
+                    store::devices()?
+                        .iter()
+                        .any(|d| d.target.as_deref() == Some(&connection.target)),
+                    "enroll and verify destination identity before installing its route"
+                );
+                store::set_route(&connection.target, &connection.jumps)?;
+            }
+            println!("{}", serde_json::to_string_pretty(&connection)?);
             Ok(())
         }
         Some(Cmd::Devices) => {

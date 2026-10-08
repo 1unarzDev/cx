@@ -3684,6 +3684,19 @@ impl App {
         if mouse.modifiers != KeyModifiers::NONE {
             return false;
         }
+        // Wheel motion reviews confirmation details; it cannot select the
+        // destructive/exit choice and leave a subsequent Enter armed.
+        if matches!(
+            self.dialog,
+            Some(Dialog::Delete(..) | Dialog::StopShell(..) | Dialog::PendingExit(..))
+        ) {
+            self.dialog_scroll = if delta > 0 {
+                self.dialog_scroll.saturating_add(1).min(4096)
+            } else {
+                self.dialog_scroll.saturating_sub(1)
+            };
+            return true;
+        }
         // An open editor/modal owns navigation; a wheel never acts behind it.
         if self.help || self.dialog.is_some() || self.input.is_some() {
             self.key(KeyEvent::new(
@@ -11315,6 +11328,30 @@ mod tests {
         assert!(a.mouse(wheel, Rect::new(0, 0, 80, 24)));
         assert_eq!(a.text, "name");
         assert_eq!(a.browser.as_ref().unwrap().selected, 1);
+    }
+
+    #[test]
+    fn confirmation_wheel_does_not_arm_delete_or_navigate_files() {
+        let (mut a, rx) = file_app();
+        a.execute(Action::Delete);
+        assert_eq!(a.dialog_selected, 0);
+        assert!(a.mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 40,
+                row: 10,
+                modifiers: KeyModifiers::NONE
+            },
+            Rect::new(0, 0, 80, 24)
+        ));
+        assert_eq!(a.dialog_selected, 0);
+        assert_eq!(a.browser.as_ref().unwrap().selected, 0);
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.dialog.is_none());
+        assert!(
+            rx.try_recv().is_err(),
+            "wheel plus Enter must retain default Cancel"
+        );
     }
 
     #[test]

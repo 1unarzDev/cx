@@ -6,6 +6,11 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 No changes queued.
 
+## v0.1.29
+
+### Fixes
+- Handle mouse-wheel navigation directly throughout the workspace, moving one item per reported step in session and file lists. Avoid terminal fallback that turns a wheel step into accelerated arrow-key bursts. Scroll the panel under the pointer, retain modal/input ownership, and release mouse handling when entering native shells and agents.
+
 ## v0.1.28
 
 ### Fixes

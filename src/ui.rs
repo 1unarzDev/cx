@@ -3675,6 +3675,56 @@ impl App {
         self.dialog_detail_focus = false;
         self.dialog = Some(Dialog::Links(links));
     }
+    fn mouse(&mut self, mouse: MouseEvent, area: Rect) -> bool {
+        let delta = match mouse.kind {
+            MouseEventKind::ScrollDown => 1,
+            MouseEventKind::ScrollUp => -1,
+            _ => return self.preview_mouse(mouse, area),
+        };
+        if mouse.modifiers != KeyModifiers::NONE {
+            return false;
+        }
+        // An open editor/modal owns navigation; a wheel never acts behind it.
+        if self.help || self.dialog.is_some() || self.input.is_some() {
+            self.key(KeyEvent::new(
+                if delta > 0 {
+                    KeyCode::Down
+                } else {
+                    KeyCode::Up
+                },
+                KeyModifiers::NONE,
+            ));
+            return true;
+        }
+        if area.width < 36 || area.height < 10 {
+            return false;
+        }
+        let target = self
+            .panels
+            .borrow()
+            .iter()
+            .rev()
+            .find(|(_, _, rect)| {
+                rect.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
+            })
+            .map(|(focus, destination, _)| (*focus, *destination));
+        let Some((focus, destination)) = target else {
+            return false;
+        };
+        if focus == Focus::Workspace
+            && self.other_browser.is_some()
+            && destination != self.destination_active
+        {
+            self.switch_pane();
+        }
+        self.focus = focus;
+        if focus == Focus::Workspace && self.preview_mouse(mouse, area) {
+            return true;
+        }
+        self.move_selection(delta);
+        true
+    }
+
     fn preview_mouse(&mut self, mouse: MouseEvent, area: Rect) -> bool {
         if self.help || self.dialog.is_some() || self.input.is_some() {
             return false;
@@ -7545,7 +7595,7 @@ impl Screen {
             mouse: false,
         })
     }
-    fn preview_mouse(&mut self, enabled: bool) -> Result<()> {
+    fn mouse_capture(&mut self, enabled: bool) -> Result<()> {
         if enabled != self.mouse {
             if enabled {
                 execute!(self.terminal.backend_mut(), EnableMouseCapture)?;
@@ -7558,7 +7608,7 @@ impl Screen {
     }
     fn suspend(&mut self) -> Result<()> {
         if self.active {
-            let mouse = self.preview_mouse(false);
+            let mouse = self.mouse_capture(false);
             self.active = false;
             let raw = terminal::disable_raw_mode();
             let leave = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
@@ -8256,12 +8306,10 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             screen.terminal.clear()?;
             dirty = true;
         }
-        screen.preview_mouse(
-            (app.pdf_preview_active() || app.markdown_preview_active())
-                && !app.help
-                && app.dialog.is_none()
-                && app.input.is_none(),
-        )?;
+        // Capture wheel reports throughout cx so the emulator does not replace
+        // them with accelerated arrow-key bursts. suspend() releases this before
+        // handing the terminal to SSH/tmux/native commands.
+        screen.mouse_capture(true)?;
         if dirty {
             screen
                 .terminal
@@ -8281,7 +8329,11 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 }
                 Event::Mouse(mouse) => {
                     let size = screen.terminal.size()?;
-                    dirty |= app.preview_mouse(mouse, Rect::new(0, 0, size.width, size.height));
+                    let handled = app.mouse(mouse, Rect::new(0, 0, size.width, size.height));
+                    if handled {
+                        last_interaction = Instant::now();
+                        dirty = true;
+                    }
                 }
                 _ => {}
             }
@@ -11205,6 +11257,59 @@ mod tests {
         });
         assert!(a.browser.as_ref().unwrap().preview.is_none());
     }
+    #[test]
+    fn key_release_does_not_advance_selection_twice() {
+        let (mut a, _rx) = file_app();
+        a.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(a.browser.as_ref().unwrap().selected, 1);
+        a.key(KeyEvent::new_with_kind(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+            event::KeyEventKind::Release,
+        ));
+        assert_eq!(a.browser.as_ref().unwrap().selected, 1);
+        a.key(KeyEvent::new_with_kind(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+            event::KeyEventKind::Repeat,
+        ));
+        assert_eq!(a.browser.as_ref().unwrap().selected, 2);
+    }
+
+    #[test]
+    fn list_mouse_navigation_uses_panel_and_modal_ownership() {
+        let (mut a, _rx) = file_app();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| render(f, &a)).unwrap();
+        let wheel = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 40,
+            row: 8,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(a.mouse(wheel, Rect::new(0, 0, 80, 24)));
+        assert_eq!(a.browser.as_ref().unwrap().selected, 1);
+        assert!(!a.mouse(MouseEvent { row: 0, ..wheel }, Rect::new(0, 0, 80, 24)));
+        assert_eq!(a.browser.as_ref().unwrap().selected, 1);
+        assert!(!a.mouse(
+            MouseEvent {
+                modifiers: KeyModifiers::CONTROL,
+                ..wheel
+            },
+            Rect::new(0, 0, 80, 24)
+        ));
+        a.help = true;
+        assert!(a.mouse(wheel, Rect::new(0, 0, 80, 24)));
+        assert_eq!(a.help_scroll, 1);
+        assert_eq!(a.browser.as_ref().unwrap().selected, 1);
+        a.help = false;
+        a.input = Some(Input::Rename);
+        a.text = "name".into();
+        assert!(a.mouse(wheel, Rect::new(0, 0, 80, 24)));
+        assert_eq!(a.text, "name");
+        assert_eq!(a.browser.as_ref().unwrap().selected, 1);
+    }
+
     #[test]
     fn pdf_mouse_wheel_is_scoped_to_preview() {
         let (mut a, rx) = file_app();

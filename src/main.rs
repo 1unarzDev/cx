@@ -19,7 +19,7 @@ mod transport;
 mod ui;
 mod update;
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use model::*;
 use std::{
     io::{BufReader, Write},
@@ -74,6 +74,11 @@ enum Cmd {
         minimal: bool,
     },
     Devices,
+    /// Change a locally approved device access posture or availability hint.
+    Device {
+        #[command(subcommand)]
+        command: DeviceCommand,
+    },
     /// Open an ordinary login terminal; exit returns without requiring tmux.
     Terminal {
         #[arg(long)]
@@ -254,6 +259,28 @@ enum Cmd {
         args: Vec<String>,
     },
 }
+
+#[derive(Subcommand)]
+enum DeviceCommand {
+    /// Promote an enrolled device to the core network posture.
+    Promote { name: String },
+    /// Demote an enrolled device to viewer-to-device access.
+    Demote { name: String },
+    /// Set whether refreshes should expect this device to be online.
+    Availability {
+        name: String,
+        #[arg(value_enum)]
+        state: AvailabilityState,
+    },
+    /// Show the effective access and availability policy for a device.
+    Policy { name: String },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum AvailabilityState {
+    Up,
+    Down,
+}
 fn info() -> Result<serde_json::Value> {
     let d = store::local_device();
     let machine = std::fs::read_to_string("/etc/machine-id").unwrap_or_default();
@@ -416,6 +443,22 @@ fn device(name: Option<String>) -> Result<Device> {
     } else {
         Ok(store::local_device())
     }
+}
+
+fn enrolled_device(name: &str) -> Result<Device> {
+    device(Some(name.to_owned()))
+}
+
+fn device_policy_report(name: &str) -> Result<serde_json::Value> {
+    let device = enrolled_device(name)?;
+    let policy = store::policy(&device)?;
+    Ok(serde_json::json!({
+        "id": device.id,
+        "name": device.name,
+        "target": device.target,
+        "access": policy.access,
+        "availability": policy.availability,
+    }))
 }
 fn add(target: &str) -> Result<()> {
     add_via(target, None)
@@ -1095,6 +1138,60 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Terminal { device: d }) => sessions::login_terminal(&device(d)?),
+        Some(Cmd::Device { command }) => {
+            match command {
+                DeviceCommand::Promote { name } => {
+                    let device = enrolled_device(&name)?;
+                    let policy = store::set_access(&device, store::AccessMode::Core)?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "device": device.name,
+                            "access": policy.access,
+                            "availability": policy.availability,
+                            "bidirectional": true,
+                        }))?
+                    );
+                }
+                DeviceCommand::Demote { name } => {
+                    let device = enrolled_device(&name)?;
+                    let policy = store::set_access(&device, store::AccessMode::Directed)?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "device": device.name,
+                            "access": policy.access,
+                            "availability": policy.availability,
+                            "bidirectional": false,
+                        }))?
+                    );
+                }
+                DeviceCommand::Availability { name, state } => {
+                    let device = enrolled_device(&name)?;
+                    let availability = match state {
+                        AvailabilityState::Up => store::Availability::UsuallyUp,
+                        AvailabilityState::Down => store::Availability::UsuallyDown,
+                    };
+                    let policy = store::set_availability(&device, availability)?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "device": device.name,
+                            "access": policy.access,
+                            "availability": policy.availability,
+                            "automatic_refresh": policy.availability == store::Availability::UsuallyUp,
+                        }))?
+                    );
+                }
+                DeviceCommand::Policy { name } => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&device_policy_report(&name)?)?
+                    );
+                }
+            }
+            Ok(())
+        }
         Some(Cmd::Devices) => {
             println!("{}", serde_json::to_string_pretty(&store::devices()?)?);
             Ok(())

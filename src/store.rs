@@ -1,7 +1,45 @@
 use crate::model::Device;
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::os::unix::fs::PermissionsExt;
 use std::{fs, path::PathBuf};
+
+/// A device's access posture is a local enrollment decision. It is kept out of
+/// `Device` so the wire and persisted device schema remains compatible with
+/// older helpers. Core devices are approved for bidirectional access; directed
+/// devices retain the default viewer-to-device posture.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessMode {
+    #[default]
+    Directed,
+    Core,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Availability {
+    #[default]
+    UsuallyUp,
+    UsuallyDown,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DevicePolicy {
+    #[serde(default)]
+    pub access: AccessMode,
+    #[serde(default)]
+    pub availability: Availability,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct PolicyFile {
+    #[serde(default)]
+    devices: std::collections::BTreeMap<String, DevicePolicy>,
+}
+
+const POLICY_LIMIT: usize = 128;
+const POLICY_BYTES: u64 = 64 * 1024;
 pub fn state_dir() -> PathBuf {
     std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
@@ -56,6 +94,113 @@ pub fn save_devices(d: &[Device]) -> Result<()> {
     fs::write(&tmp, serde_json::to_vec_pretty(d)?)?;
     fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
     fs::rename(tmp, p).context("save enrolled devices")
+}
+
+fn policy_path() -> PathBuf {
+    state_dir().join("device-policies.json")
+}
+
+fn read_policies() -> Result<PolicyFile> {
+    let path = policy_path();
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(PolicyFile::default())
+        }
+        Err(error) => return Err(error.into()),
+    };
+    use std::os::unix::fs::MetadataExt;
+    anyhow::ensure!(
+        metadata.is_file()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o077 == 0
+            && metadata.len() <= POLICY_BYTES,
+        "unsafe device policy store"
+    );
+    let policies: PolicyFile = serde_json::from_slice(&fs::read(path)?)?;
+    anyhow::ensure!(
+        policies.devices.len() <= POLICY_LIMIT,
+        "too many device policies"
+    );
+    Ok(policies)
+}
+
+fn write_policies(policies: &PolicyFile) -> Result<()> {
+    anyhow::ensure!(
+        policies.devices.len() <= POLICY_LIMIT,
+        "too many device policies"
+    );
+    let dir = ensure()?;
+    let path = policy_path();
+    let temporary = dir.join(format!(
+        "device-policies.{}.{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)?;
+    let result = (|| -> Result<()> {
+        let bytes = serde_json::to_vec_pretty(policies)?;
+        anyhow::ensure!(
+            bytes.len() <= POLICY_BYTES as usize,
+            "device policy store is too large"
+        );
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        fs::rename(&temporary, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
+}
+
+/// Return the effective policy. The local execution device is always core;
+/// remote devices default to one-way/direct access for safe migration.
+pub fn policy(device: &Device) -> Result<DevicePolicy> {
+    if device.target.is_none() {
+        return Ok(DevicePolicy {
+            access: AccessMode::Core,
+            availability: Availability::UsuallyUp,
+        });
+    }
+    Ok(read_policies()?
+        .devices
+        .get(&device.id)
+        .copied()
+        .unwrap_or_default())
+}
+
+pub fn set_access(device: &Device, access: AccessMode) -> Result<DevicePolicy> {
+    anyhow::ensure!(device.target.is_some(), "the local device is always core");
+    let mut policies = read_policies()?;
+    let entry = policies.devices.entry(device.id.clone()).or_default();
+    entry.access = access;
+    let updated = *entry;
+    write_policies(&policies)?;
+    Ok(updated)
+}
+
+pub fn set_availability(device: &Device, availability: Availability) -> Result<DevicePolicy> {
+    anyhow::ensure!(
+        device.target.is_some(),
+        "the local device is always available"
+    );
+    let mut policies = read_policies()?;
+    let entry = policies.devices.entry(device.id.clone()).or_default();
+    entry.availability = availability;
+    let updated = *entry;
+    write_policies(&policies)?;
+    Ok(updated)
 }
 
 // Transport routes are local enrollment decisions, separate from peer observations.

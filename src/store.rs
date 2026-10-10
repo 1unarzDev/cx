@@ -96,6 +96,27 @@ pub fn save_devices(d: &[Device]) -> Result<()> {
     fs::rename(tmp, p).context("save enrolled devices")
 }
 
+/// Remove an enrolled remote device and its local policy/route records.
+/// The local execution device is never removable.
+pub fn remove_device(name: &str) -> Result<Device> {
+    let mut devices = devices()?;
+    let index = devices
+        .iter()
+        .position(|d| {
+            d.target.is_some()
+                && (d.name == name || d.id == name || d.target.as_deref() == Some(name))
+        })
+        .context("device not enrolled")?;
+    let removed = devices.remove(index);
+    save_devices(&devices)?;
+
+    let mut policies = read_policies()?;
+    policies.devices.remove(&removed.id);
+    write_policies(&policies)?;
+    let _ = remove_route(removed.target.as_deref().unwrap_or_default());
+    Ok(removed)
+}
+
 fn policy_path() -> PathBuf {
     state_dir().join("device-policies.json")
 }
@@ -280,6 +301,13 @@ pub fn set_route(target: &str, hops: &[String]) -> Result<()> {
         let _ = fs::remove_file(temporary);
     }
     result
+}
+
+fn remove_route(target: &str) -> Result<()> {
+    if target.is_empty() || !valid_target(target) {
+        return Ok(());
+    }
+    set_route(target, &[])
 }
 pub fn route_via(target: &str, via: &Device) -> Result<Vec<String>> {
     let Some(gateway) = &via.target else {

@@ -4,6 +4,13 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.50
+
+### Improvements
+- Remote devices can be removed from the local CX registry with confirmation (`x` in the Devices panel or `cx device remove NAME`). Removal also clears the saved local policy and SSH jump route.
+- Mark a device down with `d` or up with `u`. Down devices show a muted marker, skip background helper/network/provider checks, and do not generate repeated unreachable notices.
+- Newly enrolled devices are recorded as bidirectional mesh peers; `b` still toggles an enrolled device back to viewer-only access.
+
 ## v0.1.49
 
 ### Improvements

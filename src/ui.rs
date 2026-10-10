@@ -418,6 +418,7 @@ enum Dialog {
     PendingExit(usize),
     Neighbor(usize, Value),
     Peer(usize),
+    RemoveDevice(usize),
 }
 
 struct App {
@@ -637,6 +638,11 @@ impl App {
     fn device_policy(&self, device: usize) -> store::DevicePolicy {
         self.policies.get(device).copied().unwrap_or_default()
     }
+    fn background_checks_enabled(&self, device: usize) -> bool {
+        device < self.devices.len()
+            && (self.devices[device].target.is_none()
+                || self.device_policy(device).availability == store::Availability::UsuallyUp)
+    }
     fn toggle_access(&mut self) {
         let Some(device) = self.device.checked_sub(1) else {
             self.set_notice_as(
@@ -670,6 +676,70 @@ impl App {
             ),
         }
     }
+    fn set_availability(&mut self, availability: store::Availability) {
+        let Some(device) = self.device.checked_sub(1) else {
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "The local device is always available".into(),
+            );
+            return;
+        };
+        match store::set_availability(&self.devices[device], availability) {
+            Ok(policy) => {
+                if let Some(slot) = self.policies.get_mut(device) {
+                    *slot = policy;
+                }
+                let message = if availability == store::Availability::UsuallyDown {
+                    "Device marked down · background checks paused"
+                } else {
+                    "Device marked up · background checks enabled"
+                };
+                self.set_notice_as(
+                    NoticeKind::Success,
+                    format!("{message} · {}", identity(&self.devices[device])),
+                );
+            }
+            Err(error) => self.set_notice_as(
+                NoticeKind::Error,
+                safe_text(&format!("Availability unchanged: {error:#}")),
+            ),
+        }
+    }
+    fn remove_selected_device(&mut self) {
+        let Some(index) = self.device.checked_sub(1) else {
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "The local device cannot be removed".into(),
+            );
+            return;
+        };
+        let device = self.devices[index].clone();
+        match store::remove_device(&device.id) {
+            Ok(_) => {
+                self.browser = None;
+                self.other_browser = None;
+                self.destination_active = false;
+                self.devices.remove(index);
+                self.policies.remove(index);
+                self.work.remove(index);
+                self.providers.clear();
+                self.network.clear();
+                self.peer_evidence.clear();
+                self.peer_checks.clear();
+                self.device = self.device.min(self.devices.len());
+                self.view = View::Work;
+                self.focus = Focus::Devices;
+                self.set_notice_as(
+                    NoticeKind::Success,
+                    format!("Removed {} from this CX viewer", safe_label(&device.name)),
+                );
+            }
+            Err(error) => self.set_notice_as(
+                NoticeKind::Error,
+                safe_text(&format!("Device was not removed: {error:#}")),
+            ),
+        }
+    }
     fn focus_label(&self) -> &'static str {
         if self.help {
             return "Help";
@@ -700,6 +770,7 @@ impl App {
                 Dialog::PendingExit(_) => "Pending actions",
                 Dialog::Neighbor(..) => "Neighbor actions",
                 Dialog::Peer(_) => "Device actions",
+                Dialog::RemoveDevice(_) => "Remove device",
             };
         }
         if let Some(input) = self.input {
@@ -787,7 +858,10 @@ impl App {
     }
     fn refresh_work(&mut self) {
         for index in 0..self.devices.len() {
-            if (self.device == 0 || self.device == index + 1) && !self.work[index].loading {
+            if self.background_checks_enabled(index)
+                && (self.device == 0 || self.device == index + 1)
+                && !self.work[index].loading
+            {
                 self.work[index].loading = self.send(index, Operation::Sessions);
                 if !self.work[index].loading {
                     self.set_notice_as(
@@ -798,7 +872,9 @@ impl App {
             }
         }
         for index in 0..self.devices.len() {
-            self.check_providers(index);
+            if self.background_checks_enabled(index) {
+                self.check_providers(index);
+            }
         }
     }
     fn actual_device(&self) -> Option<usize> {
@@ -1052,6 +1128,9 @@ impl App {
         choices
     }
     fn check_providers(&mut self, device: usize) {
+        if !self.background_checks_enabled(device) {
+            return;
+        }
         if !self.provider_loading.contains(&device)
             && self
                 .providers
@@ -1251,7 +1330,8 @@ impl App {
     }
     fn refresh_containers(&mut self) {
         for d in 0..self.devices.len() {
-            if (self.device == 0 || self.device == d + 1)
+            if self.background_checks_enabled(d)
+                && (self.device == 0 || self.device == d + 1)
                 && !self.containers_loading.contains(&d)
                 && self.send(d, Operation::Containers)
             {
@@ -1642,6 +1722,9 @@ impl App {
             let Some(d) = self.peer_checks.pop_front() else {
                 break;
             };
+            if !self.background_checks_enabled(d) {
+                continue;
+            }
             if self.provider_loading.contains(&d) {
                 continue;
             }
@@ -1862,6 +1945,9 @@ impl App {
                 self.network_refresh_queue
                     .retain(|d| self.device == 0 || self.device == d + 1);
                 for d in 0..self.devices.len() {
+                    if !self.background_checks_enabled(d) {
+                        continue;
+                    }
                     if self.device > 0 && self.device != d + 1 {
                         continue;
                     }
@@ -1876,7 +1962,8 @@ impl App {
                     }
                 }
                 for d in 0..self.devices.len() {
-                    if (self.device == 0 || self.device == d + 1)
+                    if self.background_checks_enabled(d)
+                        && (self.device == 0 || self.device == d + 1)
                         && !self.network_inflight.contains(&d)
                         && !self.network_candidates_inflight.contains(&d)
                         && !self.network_refresh_queue.contains(&d)
@@ -2686,6 +2773,7 @@ impl App {
             Dialog::PendingExit(_) => 2,
             Dialog::Neighbor(..) => 1,
             Dialog::Peer(_) => 5,
+            Dialog::RemoveDevice(_) => 2,
         };
         let horizontal = matches!(
             dialog,
@@ -3103,6 +3191,14 @@ impl App {
                                 self.dialog = Some(Dialog::Provider(d, None));
                                 self.dialog_selected = 0;
                             }
+                        }
+                    }
+                    Dialog::RemoveDevice(_) => {
+                        if self.dialog_selected == 1 {
+                            self.dialog = None;
+                            self.remove_selected_device();
+                        } else {
+                            self.dialog = None;
                         }
                     }
                     Dialog::Neighbor(d, candidate) => {
@@ -4495,6 +4591,16 @@ impl App {
                 });
             }
             KeyCode::Char('b' | 'B') if self.focus == Focus::Devices => self.toggle_access(),
+            KeyCode::Char('d') if self.focus == Focus::Devices && self.device > 0 => {
+                self.set_availability(store::Availability::UsuallyDown)
+            }
+            KeyCode::Char('u') if self.focus == Focus::Devices && self.device > 0 => {
+                self.set_availability(store::Availability::UsuallyUp)
+            }
+            KeyCode::Char('x' | 'X') if self.focus == Focus::Devices && self.device > 0 => {
+                self.dialog_selected = 0;
+                self.dialog = Some(Dialog::RemoveDevice(self.device - 1));
+            }
             KeyCode::Char('n') => self.session_shortcut(),
             KeyCode::Char('w') if self.view == View::Work && self.focus == Focus::Workspace => {
                 self.execute(Action::Observe)

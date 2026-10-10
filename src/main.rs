@@ -262,6 +262,8 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum DeviceCommand {
+    /// Remove an enrolled device from this viewer.
+    Remove { name: String },
     /// Promote an enrolled device to the core network posture.
     Promote { name: String },
     /// Demote an enrolled device to viewer-to-device access.
@@ -737,6 +739,9 @@ fn enroll_target(target: &str, _minimal: bool) -> Result<()> {
         ds.push(d.clone())
     };
     store::save_devices(&ds)?;
+    // Newly enrolled devices are trusted as full mesh peers. Users can demote
+    // them later with `cx device demote` or the device-panel toggle.
+    let _ = store::set_access(&d, store::AccessMode::Core)?;
     if !auth::active() {
         println!(
             "Added {} · {}@{} · {}",
@@ -1151,6 +1156,16 @@ fn run() -> Result<()> {
                             "access": policy.access,
                             "availability": policy.availability,
                             "bidirectional": true,
+                        }))?
+                    );
+                }
+                DeviceCommand::Remove { name } => {
+                    let removed = store::remove_device(&name)?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "removed": removed.name,
+                            "id": removed.id,
                         }))?
                     );
                 }

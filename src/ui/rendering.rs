@@ -102,7 +102,9 @@ pub(super) fn render_at(
         .enumerate()
         .filter(|(i, _)| app.device_matches(*i))
     {
-        let status = if app.work[i].loading {
+        let status = if app.device_policy(i).availability == store::Availability::UsuallyDown {
+            "down"
+        } else if app.work[i].loading {
             "checking"
         } else if app.work[i].error.is_some() {
             "unavailable"
@@ -135,6 +137,13 @@ pub(super) fn render_at(
                     "○"
                 }
             }
+            "down" => {
+                if ascii() {
+                    "-"
+                } else {
+                    "↓"
+                }
+            }
             _ => "?",
         };
         let dot_style = if std::env::var_os("NO_COLOR").is_some() {
@@ -144,6 +153,7 @@ pub(super) fn render_at(
                 "ready" => Color::Green,
                 "checking" => Color::Cyan,
                 "unavailable" => Color::Yellow,
+                "down" => Color::DarkGray,
                 _ => Color::Reset,
             })
         };
@@ -1538,6 +1548,11 @@ pub(super) fn render_at(
                 vec!["Open sessions".into(), "Browse files".into(), "New persistent shell · tmux".into(), "New session".into(), "SSH terminal · exit returns".into()],
                 format!("{}\n{}\nFrom viewer · helper evidence\nVia selected device: unknown", identity(&app.devices[*d]), app.peer_status(*d)),
             ),
+            Dialog::RemoveDevice(d) => (
+                format!("Remove {}?", safe_label(&app.devices[*d].name)),
+                vec!["Keep device".into(), "Remove from CX".into()],
+                format!("This removes the device from this viewer's registry and clears its local policy and saved route.\n{}\nRemote files and sessions are not changed.", identity(&app.devices[*d])),
+            ),
             Dialog::Neighbor(d, candidate) => (
                 format!("Neighbor · {}", safe_label(candidate["address"].as_str().unwrap_or("unknown"))),
                 vec![if neighbor_connectable(candidate) { "Connect via this device".into() } else { "Connect unavailable · link-local scope".into() }],
@@ -1583,7 +1598,10 @@ pub(super) fn render_at(
             Dialog::SessionChooser(..) | Dialog::ContainerProvider(..)
         ) {
             render_session_chooser(frame, app, area, dialog, &title, &detail);
-        } else if matches!(dialog, Dialog::Delete(..) | Dialog::StopShell(..)) {
+        } else if matches!(
+            dialog,
+            Dialog::Delete(..) | Dialog::StopShell(..) | Dialog::RemoveDevice(..)
+        ) {
             let stop = matches!(dialog, Dialog::StopShell(..));
             let rect = confirmation_popup(area, &detail);
             frame.render_widget(Clear, rect);

@@ -1,5 +1,9 @@
 # CX status
 
+## Device lifecycle and availability (v0.1.50 candidate)
+
+Remote devices now support confirmed removal from the local registry, explicit up/down availability hints, muted down markers, and background probe suppression for devices marked down. Enrollment records bidirectional access by default; local posture can still be demoted. The requested `verybeautifulserver` enrollment was removed from this viewer's state; no remote host configuration was changed.
+
 ## Native agent resume (v0.1.49 candidate)
 
 Implemented and locally verified in `worktrees/access-deploy`: Codex and Claude launch dialogs distinguish fresh sessions from native resume. Codex uses `codex resume --last`; Claude uses `claude --continue`; YOLO variants retain their provider-specific bypass flags. Existing CX session attach remains a separate choice. Full release and signed fleet deployment follow the locked test gate below.

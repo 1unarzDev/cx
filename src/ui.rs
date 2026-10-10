@@ -421,6 +421,7 @@ enum Dialog {
 
 struct App {
     devices: Vec<Device>,
+    policies: Vec<store::DevicePolicy>,
     device: usize,
     focus: Focus,
     view: View,
@@ -530,6 +531,10 @@ impl App {
     }
 
     fn new(devices: Vec<Device>, tx: mpsc::SyncSender<Task>) -> Self {
+        let policies = devices
+            .iter()
+            .map(|device| store::policy(device).unwrap_or_default())
+            .collect();
         let work = devices
             .iter()
             .map(|_| Cached {
@@ -541,6 +546,7 @@ impl App {
             .collect();
         Self {
             devices,
+            policies,
             device: 0,
             focus: Focus::Workspace,
             view: View::Work,
@@ -625,6 +631,42 @@ impl App {
             pending_requests: std::cell::Cell::new(0),
             panels: std::cell::RefCell::new(Vec::new()),
             tx,
+        }
+    }
+    fn device_policy(&self, device: usize) -> store::DevicePolicy {
+        self.policies.get(device).copied().unwrap_or_default()
+    }
+    fn toggle_access(&mut self) {
+        let Some(device) = self.device.checked_sub(1) else {
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "Select one remote device before changing its access posture".into(),
+            );
+            return;
+        };
+        let current = self.device_policy(device);
+        let next = match current.access {
+            store::AccessMode::Core => store::AccessMode::Directed,
+            store::AccessMode::Directed => store::AccessMode::Core,
+        };
+        match store::set_access(&self.devices[device], next) {
+            Ok(policy) => {
+                if let Some(slot) = self.policies.get_mut(device) {
+                    *slot = policy;
+                }
+                let message = match next {
+                    store::AccessMode::Core => "Bidirectional access enabled",
+                    store::AccessMode::Directed => "Viewer-to-device access only",
+                };
+                self.set_notice_as(
+                    NoticeKind::Success,
+                    format!("{message} · {}", identity(&self.devices[device])),
+                );
+            }
+            Err(error) => self.set_notice_as(
+                NoticeKind::Error,
+                safe_text(&format!("Access posture unchanged: {error:#}")),
+            ),
         }
     }
     fn focus_label(&self) -> &'static str {
@@ -4429,6 +4471,7 @@ impl App {
                     -1
                 });
             }
+            KeyCode::Char('b' | 'B') if self.focus == Focus::Devices => self.toggle_access(),
             KeyCode::Char('n') => self.session_shortcut(),
             KeyCode::Char('w') if self.view == View::Work && self.focus == Focus::Workspace => {
                 self.execute(Action::Observe)
@@ -8088,6 +8131,11 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                         })
                         .collect();
                     app.devices = updated;
+                    app.policies = app
+                        .devices
+                        .iter()
+                        .map(|device| store::policy(device).unwrap_or_default())
+                        .collect();
                     app.set_notice_as(
                         NoticeKind::Success,
                         format!("Added {}", safe_label(&target)),

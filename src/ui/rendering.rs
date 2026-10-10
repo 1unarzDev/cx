@@ -147,9 +147,18 @@ pub(super) fn render_at(
                 _ => Color::Reset,
             })
         };
+        let access_marker = match app.device_policy(i).access {
+            store::AccessMode::Core if ascii() => "<->",
+            store::AccessMode::Core => "↔",
+            store::AccessMode::Directed if ascii() => "->",
+            store::AccessMode::Directed => "→",
+        };
         device_items.push(ListItem::new(Line::from(vec![
             Span::styled(format!("{indicator} "), dot_style),
-            Span::raw(fit_label(&d.name, sidebar_width.saturating_sub(8) as usize)),
+            Span::raw(fit_label(
+                &format!("{access_marker} {}", d.name),
+                sidebar_width.saturating_sub(8) as usize,
+            )),
         ])));
     }
     let sidebar = Layout::default()
@@ -1776,6 +1785,12 @@ pub(super) fn render_at(
         if app.view == View::Work {
             help.push(key_row("d", "Stop selected CX-managed session · confirm"));
             help.push(key_row("w", "Watch selected session · read-only"));
+        }
+        if app.focus == Focus::Devices {
+            help.push(key_row(
+                "b",
+                "Toggle selected remote device: ↔ bidirectional / → viewer-to-device",
+            ));
         }
         if app.view == View::Files && app.browser.as_ref().is_some_and(|b| b.preview.is_some()) {
             help.extend([

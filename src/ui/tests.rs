@@ -54,6 +54,25 @@ fn file_app() -> (App, mpsc::Receiver<Task>) {
 fn press(a: &mut App, c: char) {
     a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
 }
+
+#[test]
+fn device_access_marker_and_toggle_guard_are_clear() {
+    let (mut a, _) = queued_app();
+    a.policies[1].access = store::AccessMode::Core;
+    let mut terminal = ratatui::Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| render(frame, &a)).unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(rendered.contains(if ascii() { "<->" } else { "↔" }));
+    a.focus = Focus::Devices;
+    press(&mut a, 'b');
+    assert!(a.notice.contains("Select one remote device"));
+}
 fn expand_network_observers(a: &mut App) {
     for d in 0..a.devices.len() {
         a.network_expanded.insert(a.peer_key(d));

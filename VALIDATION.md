@@ -1,5 +1,9 @@
 # Validation record
 
+## Device access posture UI — v0.1.48 (2026-10-10)
+
+PASS — full locked Rust suite passed (`/tmp/cx-access-deployed-full.log`), including the UI marker/toggle guard test. The TestBackend capture verifies `↔` (or `<->` in ASCII mode) for bidirectional access; `→` (or `->`) marks viewer-to-device access. The `b` binding is active only when the device list has focus and refuses the local device/All devices selection. `tests/device_policy_cli.py` passed promotion, demotion, availability persistence and bounded owner-checked policy storage (`/tmp/cx-access-deployed-policy.log`).
+
 ## Quiet file notifications — v0.1.47 (2026-10-08)
 
 PASS — all 172 existing UI tests passed (`/tmp/cx-quiet-notifications-ui.log`); formatting and diff checks passed. Removed routine container-browser, folder-selection and linked-file navigation notices; copy/cut confirmations retain the item count without keybind instructions. Existing hints, Help, operation progress and error notifications remain available. No host or networking mutations; physical terminal acceptance remains unverified.

@@ -18,6 +18,8 @@ cx add user@host
 cx add robot@192.168.0.2 --via laptop
 ```
 
+On the device list, `↔` means bidirectional access and `→` means viewer-to-device access; focus a remote device and press `b` to toggle the locally stored posture. The local device cannot be demoted.
+
 You can also select a discovered neighbor in **Network** and press Enter to connect. **Ctrl+P → Add by SSH address** handles aliases and devices discovery cannot reach. Enrollment checks compatibility and installs the helper and missing portable tmux. SSH passwords are masked and not stored.
 
 ## Everyday use
@@ -31,6 +33,7 @@ You can also select a discovered neighbor in **Network** and press Enter to conn
 | Tab / Shift+Tab | Change panel focus |
 | Ctrl+] in a managed terminal | Return to CX; the session keeps running |
 | `w` in Sessions | Watch the highlighted session read-only |
+| `b` on a device | Toggle remote access: bidirectional or viewer-to-device |
 | `d` in Sessions | Confirm stopping a CX-managed shell or agent |
 | Ctrl+C in CX | Exit the viewer; sessions keep running |
 

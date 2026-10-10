@@ -4,6 +4,15 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.48
+
+### Features
+- Device list rows show clear `↔` (bidirectional) and `→` (viewer-to-device) access markers. Press `b` while a remote device is selected to toggle its local access posture; the local device is protected.
+
+### Fixes
+- Integrated the bounded device policy store and CLI promotion/demotion commands into the current release line.
+
+
 No changes queued.
 
 ## v0.1.47

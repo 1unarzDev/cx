@@ -37,7 +37,7 @@ You can also select a discovered neighbor in **Network** and press Enter to conn
 | `d` in Sessions | Confirm stopping a CX-managed shell or agent |
 | Ctrl+C in CX | Exit the viewer; sessions keep running |
 
-Press **n** for a compact chooser: `c` Claude, `x` Codex, `s` Shell, `d` Devcontainer; `h`/`l` or Left/Right move between options. It uses home from Devices and the current folder from Files. Use **Ctrl+P → New session** to choose a device and start a shell, Codex or Claude. Agents must be installed on that device. Agent sessions offer **Default** permissions or **YOLO** for that launch; YOLO bypasses the agent’s normal approval protections.
+Press **n** for a compact chooser: `c` Claude, `x` Codex, `s` Shell, `d` Devcontainer; `h`/`l` or Left/Right move between options. It uses home from Devices and the current folder from Files. Use **Ctrl+P → New session** to choose a device and start a shell, Codex or Claude. Agents must be installed on that device. Agent sessions offer a **Fresh session** or **Resume latest session** choice, followed by **Default** permissions or **YOLO** for that launch. Resume opens the provider’s native control panel (`codex resume --last` or `claude --continue`); YOLO bypasses the agent’s normal approval protections.
 
 In **Files**, Enter previews a file. To transfer files, select with Space, press `t`, choose the destination device/folder, then press Enter to confirm. Incoming conflicts rename by default; overwrite is explicit. See the [user guide](docs/user-guide.md) for file operations, previews, clipboard, scrolling and all controls.
 

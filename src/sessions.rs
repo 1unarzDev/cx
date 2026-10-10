@@ -1046,12 +1046,19 @@ pub fn create(request: &CreateSession) -> Result<Session> {
 pub fn create_yolo(request: &CreateSession) -> Result<Session> {
     create_with_permissions(request, true, None)
 }
-fn provider_command(provider: &str, yolo: bool) -> Result<String> {
-    match (provider, yolo) {
-        ("codex", true) => Ok("codex --dangerously-bypass-approvals-and-sandbox".into()),
-        ("claude", true) => Ok("claude --dangerously-skip-permissions".into()),
-        ("shell", true) => bail!("YOLO applies only to Codex or Claude sessions"),
-        ("shell" | "codex" | "claude", false) => Ok(provider.into()),
+fn provider_command(provider: &str, yolo: bool, resume: bool) -> Result<String> {
+    match (provider, yolo, resume) {
+        ("codex", true, true) => {
+            Ok("codex resume --last --dangerously-bypass-approvals-and-sandbox".into())
+        }
+        ("codex", false, true) => Ok("codex resume --last".into()),
+        ("claude", true, true) => Ok("claude --continue --dangerously-skip-permissions".into()),
+        ("claude", false, true) => Ok("claude --continue".into()),
+        ("shell", _, true) => bail!("resume is available only for Codex or Claude sessions"),
+        ("codex", true, false) => Ok("codex --dangerously-bypass-approvals-and-sandbox".into()),
+        ("claude", true, false) => Ok("claude --dangerously-skip-permissions".into()),
+        ("shell", true, false) => bail!("YOLO applies only to Codex or Claude sessions"),
+        ("shell" | "codex" | "claude", false, false) => Ok(provider.into()),
         _ => bail!("unsupported launch profile"),
     }
 }
@@ -1068,7 +1075,7 @@ fn create_with_permissions(
     yolo: bool,
     container: Option<&crate::model::ContainerScope>,
 ) -> Result<Session> {
-    let agent_command = provider_command(&request.provider, yolo)?;
+    let agent_command = provider_command(&request.provider, yolo, request.resume)?;
     if request.key.is_empty() || request.key.len() > 1024 {
         bail!("creation key must be 1–1024 bytes");
     }
@@ -1849,6 +1856,29 @@ fn stopped_command_choice(fd: i32, pid: libc::pid_t) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_commands_distinguish_fresh_and_native_resume() {
+        assert_eq!(provider_command("codex", false, false).unwrap(), "codex");
+        assert_eq!(
+            provider_command("codex", false, true).unwrap(),
+            "codex resume --last"
+        );
+        assert_eq!(
+            provider_command("codex", true, true).unwrap(),
+            "codex resume --last --dangerously-bypass-approvals-and-sandbox"
+        );
+        assert_eq!(provider_command("claude", false, false).unwrap(), "claude");
+        assert_eq!(
+            provider_command("claude", false, true).unwrap(),
+            "claude --continue"
+        );
+        assert_eq!(
+            provider_command("claude", true, true).unwrap(),
+            "claude --continue --dangerously-skip-permissions"
+        );
+        assert!(provider_command("shell", false, true).is_err());
+    }
     fn assert_probe_child_stopped(pid: &str) {
         let deadline = std::time::Instant::now() + Duration::from_millis(250);
         loop {

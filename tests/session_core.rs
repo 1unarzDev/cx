@@ -35,6 +35,7 @@ fn persistent_idempotent_hostile_directory() {
         directory: dir.to_string_lossy().into_owned(),
         provider: "shell".into(),
         name: "disposable fixture".into(),
+        resume: false,
     };
     let result = std::panic::catch_unwind(|| {
         let first = sessions::create(&request).unwrap();

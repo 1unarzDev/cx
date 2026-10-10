@@ -1,5 +1,9 @@
 # CX status
 
+## Native agent resume (v0.1.49 candidate)
+
+Implemented and locally verified in `worktrees/access-deploy`: Codex and Claude launch dialogs distinguish fresh sessions from native resume. Codex uses `codex resume --last`; Claude uses `claude --continue`; YOLO variants retain their provider-specific bypass flags. Existing CX session attach remains a separate choice. Full release and signed fleet deployment follow the locked test gate below.
+
 The v0.1.48 device access posture UI passed the full locked Rust suite and policy CLI checks in `worktrees/access-deploy`, branch `feat/access-deploy`. Signed publication is pending.
 
 ## Current behavior

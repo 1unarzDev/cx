@@ -4,6 +4,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.49
+
+### Improvements
+- Codex and Claude session launchers now offer a fresh session or the provider-native latest-session resume flow. Resume keeps the selected Default/YOLO permission mode and invokes `codex resume --last` or `claude --continue` directly.
+- Existing live CX sessions can still be attached separately, while choosing a fresh session always starts a new conversation.
+
 ## v0.1.48
 
 ### Features

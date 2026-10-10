@@ -50,6 +50,8 @@ pub struct CreateSession {
     pub directory: String,
     pub provider: String,
     pub name: String,
+    #[serde(default)]
+    pub resume: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", content = "args", rename_all = "snake_case")]

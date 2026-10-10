@@ -408,7 +408,8 @@ enum Dialog {
     ContainerConfirm(usize, crate::containers::Container, String),
     Device(ChooseDevice),
     Provider(usize, Option<String>),
-    Permissions(usize, String, String),
+    Permissions(usize, String, String, bool),
+    AgentStart(usize, String, String),
     Matching(usize, String, String, Session),
     Jobs,
     Links(Vec<crate::markdown_links::Link>),
@@ -685,6 +686,7 @@ impl App {
                 Dialog::SessionChooser(..) => "New session",
                 Dialog::Provider(..) => "Provider",
                 Dialog::Permissions(..) => "Session permissions",
+                Dialog::AgentStart(..) => "Agent session",
                 Dialog::Matching(..) => "Session choice",
                 Dialog::Jobs => {
                     if self.dialog_detail_focus {
@@ -1338,6 +1340,7 @@ impl App {
             directory: scope.folder.clone(),
             provider,
             name: String::new(),
+            resume: false,
         };
         self.creating = self.send(
             d,
@@ -2467,17 +2470,24 @@ impl App {
         {
             self.dialog = Some(Dialog::Matching(d, directory, provider, s));
             self.dialog_selected = 0;
+        } else if provider == "codex" || provider == "claude" {
+            self.dialog = Some(Dialog::AgentStart(d, directory, provider));
+            self.dialog_selected = 0;
         } else {
             self.create_at(d, directory, provider);
         }
     }
+    fn resume_at(&mut self, d: usize, directory: String, provider: String) {
+        self.dialog = Some(Dialog::Permissions(d, directory, provider, true));
+        self.dialog_selected = 0;
+    }
     fn create_at(&mut self, d: usize, directory: String, provider: String) {
         if provider != "shell" {
-            self.dialog = Some(Dialog::Permissions(d, directory, provider));
+            self.dialog = Some(Dialog::Permissions(d, directory, provider, false));
             self.dialog_selected = 0;
             return;
         }
-        self.create_permission_session(d, directory, provider, false);
+        self.create_permission_session(d, directory, provider, false, false);
     }
     fn create_permission_session(
         &mut self,
@@ -2485,6 +2495,7 @@ impl App {
         directory: String,
         provider: String,
         yolo: bool,
+        resume: bool,
     ) {
         let key = unique_key();
         // Execution helper generates the label after resolving the directory.
@@ -2494,6 +2505,7 @@ impl App {
             directory,
             provider: provider.clone(),
             name,
+            resume,
         };
         self.creating = self.send(
             d,
@@ -2667,7 +2679,8 @@ impl App {
             Dialog::Links(links) => links.len(),
             Dialog::Device(purpose) => self.device_choices(*purpose).len(),
             Dialog::Provider(d, _) => self.provider_choices(*d).len(),
-            Dialog::Matching(..) | Dialog::Permissions(..) => 2,
+            Dialog::AgentStart(..) | Dialog::Permissions(..) => 2,
+            Dialog::Matching(..) => 3,
             Dialog::Jobs => self.job_rows().len(),
             Dialog::Delete(..) | Dialog::StopShell(..) => 2,
             Dialog::PendingExit(_) => 2,
@@ -2991,7 +3004,15 @@ impl App {
                         self.launch_provider = Some(provider);
                         self.open_browser(d, "~".into());
                     }
-                    Dialog::Permissions(d, path, provider) => {
+                    Dialog::AgentStart(d, path, provider) => {
+                        self.dialog = None;
+                        if self.dialog_selected == 0 {
+                            self.create_at(d, path, provider);
+                        } else {
+                            self.resume_at(d, path, provider);
+                        }
+                    }
+                    Dialog::Permissions(d, path, provider, resume) => {
                         let yolo = self.dialog_selected == 1;
                         if yolo
                             && self.devices[d].target.is_some()
@@ -3005,12 +3026,14 @@ impl App {
                             return;
                         }
                         self.dialog = None;
-                        self.create_permission_session(d, path, provider, yolo);
+                        self.create_permission_session(d, path, provider, yolo, resume);
                     }
                     Dialog::Matching(d, path, provider, session) => {
                         self.dialog = None;
                         if self.dialog_selected == 0 {
                             self.pending_attach = Some((d, session, false));
+                        } else if self.dialog_selected == 1 {
+                            self.resume_at(d, path, provider);
                         } else {
                             self.create_at(d, path, provider);
                         }

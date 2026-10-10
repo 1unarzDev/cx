@@ -895,6 +895,7 @@ fn run() -> Result<()> {
                 directory: scope.folder.clone(),
                 provider,
                 name: String::new(),
+                resume: false,
             };
             println!(
                 "{}",
@@ -1219,6 +1220,7 @@ fn run() -> Result<()> {
                 directory,
                 provider,
                 name,
+                resume: false,
             };
             let op = if yolo {
                 Operation::CreateYolo(spec)

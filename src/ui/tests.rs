@@ -2118,6 +2118,8 @@ fn new_from_files_starts_current_execution_location_and_attaches_on_reply() {
     );
     a.dialog_selected = 2;
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(a.dialog, Some(Dialog::AgentStart(..))));
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(matches!(a.dialog, Some(Dialog::Permissions(..))));
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let task = rx.try_recv().unwrap();
@@ -2446,8 +2448,10 @@ fn session_chooser_device_focus_never_inherits_other_browser_or_search() {
     press(&mut a, 'h');
     assert_eq!(a.dialog_selected, 0);
     press(&mut a, 'x');
+    assert!(matches!(a.dialog, Some(Dialog::AgentStart(..))));
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(
-        matches!(&a.dialog,Some(Dialog::Permissions(1,path,provider)) if path=="~" && provider=="codex")
+        matches!(&a.dialog,Some(Dialog::Permissions(1,path,provider, _)) if path=="~" && provider=="codex")
     );
 }
 #[test]
@@ -2670,6 +2674,8 @@ fn new_session_from_all_explicitly_selects_execution_provider_directory() {
     press(&mut a, 'n');
     assert!(matches!(a.dialog, Some(Dialog::SessionChooser(..))));
     press(&mut a, 'x');
+    assert!(matches!(a.dialog, Some(Dialog::AgentStart(..))));
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(matches!(a.dialog, Some(Dialog::Permissions(..))));
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let task = rx.try_recv().unwrap();
@@ -2784,9 +2790,25 @@ fn matching_live_session_offers_reuse_and_explicit_new() {
     assert!(a.pending_attach.is_none());
     a.dialog_selected = 1;
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(matches!(a.dialog, Some(Dialog::Permissions(..))));
+    assert!(matches!(a.dialog, Some(Dialog::Permissions(_, _, _, true))));
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(matches!(rx.try_recv().unwrap().op, Operation::Create(_)));
+    let Operation::Create(resume) = rx.try_recv().unwrap().op else {
+        panic!("expected native resume create")
+    };
+    assert!(resume.resume);
+
+    a.start_at(1, "/project".into(), "codex".into());
+    a.dialog_selected = 2;
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(
+        a.dialog,
+        Some(Dialog::Permissions(_, _, _, false))
+    ));
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let Operation::Create(fresh) = rx.try_recv().unwrap().op else {
+        panic!("expected fresh create")
+    };
+    assert!(!fresh.resume);
 }
 fn destination_transfer_fixture() -> (App, mpsc::Receiver<Task>) {
     let (mut a, rx) = queued_app();

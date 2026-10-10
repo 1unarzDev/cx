@@ -874,6 +874,7 @@ mod tests {
                 directory: "/tmp".into(),
                 provider: "shell".into(),
                 name: "fixture".into(),
+                resume: false,
             }),
             Operation::StopSession {
                 id: "fixture".into(),

@@ -1498,10 +1498,15 @@ pub(super) fn render_at(
                     "Enter choose · next: browse folder, then n to start".into()
                 },
             ),
-            Dialog::Permissions(d, path, provider) => (
+            Dialog::Permissions(d, path, provider, resume) => (
                 format!("{} permissions · {}", provider, identity(&app.devices[*d])),
                 vec!["Default · existing host permissions".into(), "YOLO · bypass approvals".into()],
-                format!("{}\nApplies to this new session only.\nYOLO bypasses approval prompts; Codex also disables its sandbox.\nEnter starts · Escape cancels", safe_label(path)),
+                format!("{}\n{}Applies to this session only.\nYOLO bypasses approval prompts; Codex also disables its sandbox.\nEnter starts · Escape cancels", safe_label(path), if *resume { "Native resume: " } else { "Fresh session: " }),
+            ),
+            Dialog::AgentStart(d, path, provider) => (
+                format!("{} session · {}", provider, identity(&app.devices[*d])),
+                vec!["Fresh session".into(), "Resume latest session".into()],
+                format!("{}\nFresh starts a new conversation. Resume uses the provider's native {} resume command in this folder.\nEnter chooses · Escape cancels", safe_label(path), if provider == "codex" { "Codex" } else { "Claude" }),
             ),
             Dialog::StopShell(d, session) => (
                 format!("Stop {} session?", session.provider), vec!["Keep session".into(), "Stop session".into()],
@@ -1523,9 +1528,10 @@ pub(super) fn render_at(
                 format!("Matching {provider} · {}", identity(&app.devices[*d])),
                 vec![
                     format!("Open existing · {}", safe_label(&s.name)),
-                    "Create another session".into(),
+                    "Resume latest session".into(),
+                    "Create fresh session".into(),
                 ],
-                safe_label(path),
+                format!("{}\nResume uses the provider's native command in this folder; fresh starts a new conversation.", safe_label(path)),
             ),
             Dialog::Peer(d) => (
                 format!("Device · {}", safe_label(&app.devices[*d].name)),

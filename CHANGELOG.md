@@ -4,6 +4,11 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.60
+
+### Fixes
+- Make portable tmux source downloads retry transient DNS/network failures and reuse validated per-architecture CI cache entries.
+
 ## v0.1.59
 
 ### Fixes

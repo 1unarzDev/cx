@@ -18,7 +18,7 @@ cx add user@host
 cx add robot@192.168.0.2 --via laptop
 ```
 
-On the device list, `↔` means bidirectional access and `→` means viewer-to-device access; focus a remote device and press `b` to toggle the locally stored posture. New enrollments start as bidirectional. Press `d` to mark a known-offline device down, `u` to resume background checks, or `x` to remove it from this CX viewer. The local device cannot be demoted or removed.
+On the device list, `⟷` means bidirectional access and `⟶` means viewer-to-device access; focus a remote device and press `b` to toggle the locally stored posture. New enrollments start as bidirectional. Press `d` to mark a known-offline device down, `u` to resume background checks, or `x` to remove it from this CX viewer. The local device cannot be demoted or removed.
 
 You can also select a discovered neighbor in **Network** and press Enter to connect. **Ctrl+P → Add by SSH address** handles aliases and devices discovery cannot reach. Enrollment checks compatibility and installs the helper and missing portable tmux. SSH passwords are masked and not stored.
 

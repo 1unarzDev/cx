@@ -4,6 +4,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.51
+
+### Fixes
+- Widen and space device access arrows so bidirectional and viewer-only posture markers remain legible in the sidebar.
+- Remove the persistent unavailable-device count from the footer; connection failures continue through the floating typed notification panel.
+
 ## v0.1.50
 
 ### Improvements

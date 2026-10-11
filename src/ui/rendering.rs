@@ -158,15 +158,15 @@ pub(super) fn render_at(
             })
         };
         let access_marker = match app.device_policy(i).access {
-            store::AccessMode::Core if ascii() => "<->",
-            store::AccessMode::Core => "↔",
-            store::AccessMode::Directed if ascii() => "->",
-            store::AccessMode::Directed => "→",
+            store::AccessMode::Core if ascii() => "<-->",
+            store::AccessMode::Core => "⟷",
+            store::AccessMode::Directed if ascii() => "-->",
+            store::AccessMode::Directed => "⟶",
         };
         device_items.push(ListItem::new(Line::from(vec![
             Span::styled(format!("{indicator} "), dot_style),
             Span::raw(fit_label(
-                &format!("{access_marker} {}", d.name),
+                &format!("{access_marker}  {}", d.name),
                 sidebar_width.saturating_sub(8) as usize,
             )),
         ])));
@@ -902,18 +902,11 @@ pub(super) fn render_at(
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
-            if errors > 0 {
-                format!(
-                    " {} {errors} unavailable  ",
-                    if ascii() { "!" } else { "◆" }
-                )
-            } else {
-                format!(
-                    " {} {ready}/{} devices  ",
-                    if ascii() { "+" } else { "●" },
-                    app.devices.len()
-                )
-            },
+            format!(
+                " {} {ready}/{} devices  ",
+                if ascii() { "+" } else { "●" },
+                app.devices.len()
+            ),
             if errors > 0 {
                 warning
             } else if ready == 0 {
@@ -1813,7 +1806,7 @@ pub(super) fn render_at(
         if app.focus == Focus::Devices {
             help.push(key_row(
                 "b",
-                "Toggle selected remote device: ↔ bidirectional / → viewer-to-device",
+                "Toggle selected remote device: ⟷ bidirectional / ⟶ viewer-to-device",
             ));
         }
         if app.view == View::Files && app.browser.as_ref().is_some_and(|b| b.preview.is_some()) {

@@ -1,5 +1,9 @@
 # CX status
 
+## Device marker and footer polish (v0.1.51 candidate)
+
+Sidebar posture markers now use spaced long arrows (`⟷` / `⟶`, ASCII fallbacks `<-->` / `-->`). The footer no longer displays an unavailable error count; errors use the existing timed notification panel instead.
+
 ## Device lifecycle and availability (v0.1.50 candidate)
 
 Remote devices now support confirmed removal from the local registry, explicit up/down availability hints, muted down markers, and background probe suppression for devices marked down. Enrollment records bidirectional access by default; local posture can still be demoted. The requested `verybeautifulserver` enrollment was removed from this viewer's state; no remote host configuration was changed.

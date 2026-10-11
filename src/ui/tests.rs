@@ -68,7 +68,7 @@ fn device_access_marker_and_toggle_guard_are_clear() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(rendered.contains(if ascii() { "<->" } else { "↔" }));
+    assert!(rendered.contains(if ascii() { "<-->" } else { "⟷" }));
     a.focus = Focus::Devices;
     press(&mut a, 'b');
     assert!(a.notice.contains("Select one remote device"));

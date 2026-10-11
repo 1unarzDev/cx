@@ -4,6 +4,11 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.54
+
+### Fixes
+- Use the single-cell stacked opposing-arrow glyph `⇄` for bidirectional device posture, retaining `<->` in ASCII mode.
+
 ## v0.1.53
 
 ### Features

@@ -1,5 +1,9 @@
 # CX status
 
+## Bidirectional marker glyph (v0.1.54 candidate)
+
+The bidirectional posture marker is now the single-cell stacked opposing-arrow glyph `⇄`, with `<->` retained for ASCII terminals. Viewer-only access remains `⟶`/`-->`.
+
 ## Device editing and robot silence (v0.1.53 candidate)
 
 The Devices panel `e` menu edits an enrolled SSH target without changing identity or posture and routes removal through confirmation. `creation` now uses its mesh SSH alias instead of the timed-out public address. Devices explicitly marked down, including Squirtle, suppress all connection-failure notifications until brought up with `u`.

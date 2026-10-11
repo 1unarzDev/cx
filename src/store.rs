@@ -121,7 +121,7 @@ pub fn remove_device(name: &str) -> Result<Device> {
 /// posture and remote configuration remain unchanged.
 pub fn update_target(device: &Device, target: &str) -> Result<Device> {
     anyhow::ensure!(device.target.is_some(), "the local device cannot be edited");
-    anyhow::ensure!(crate::transport::valid_target(target), "invalid SSH target");
+    anyhow::ensure!(valid_target(target), "invalid SSH target");
     let mut devices = devices()?;
     anyhow::ensure!(
         !devices

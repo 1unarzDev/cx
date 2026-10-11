@@ -4,6 +4,11 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.55
+
+### Fixes
+- Keep SSH target validation local to the store so the full integration-test fixtures and portable builds compile correctly.
+
 ## v0.1.54
 
 ### Fixes

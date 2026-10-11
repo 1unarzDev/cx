@@ -6,11 +6,11 @@ Only single-direction devices have an access marker: a leading `*`, kept visible
 
 ## Device editing and robot silence (v0.1.53 candidate)
 
-The Devices panel `e` menu edits an enrolled SSH target without changing identity or posture and routes removal through confirmation. `creation` now uses its mesh SSH alias instead of the timed-out public address. Devices explicitly marked down, including Squirtle, suppress all connection-failure notifications until brought up with `u`.
+The Devices panel `e` menu edits an enrolled SSH target without changing identity or posture and routes removal through confirmation. `creation` now uses its mesh SSH alias instead of the timed-out public address. Reachability is automatic; passive failures are quiet and later refreshes retry the device.
 
 ## Device state marker and posture controls (v0.1.52 candidate)
 
-The down marker is the empty circle (`○`, `o` in ASCII), while access uses compact `↔` / `→` markers. `b` toggles remote bidirectional/viewer-only access; `d` and `u` control background availability. Passive connection failures remain quiet and are represented by device state; the local device is guarded from all posture changes.
+The empty-circle state marker reflects the latest reachability evidence. `b` toggles remote bidirectional/viewer-only access; there is no manual down/up mode. Passive connection failures remain quiet and are retried automatically; the local device is guarded from all posture changes.
 
 ## Device marker and footer polish (v0.1.51 candidate)
 

@@ -643,8 +643,6 @@ impl App {
     }
     fn background_checks_enabled(&self, device: usize) -> bool {
         device < self.devices.len()
-            && (self.devices[device].target.is_none()
-                || self.device_policy(device).availability == store::Availability::UsuallyUp)
     }
     fn toggle_access(&mut self) {
         let Some(device) = self.device.checked_sub(1) else {
@@ -4686,12 +4684,6 @@ impl App {
                 });
             }
             KeyCode::Char('b' | 'B') if self.focus == Focus::Devices => self.toggle_access(),
-            KeyCode::Char('d') if self.focus == Focus::Devices && self.device > 0 => {
-                self.set_availability(store::Availability::UsuallyDown)
-            }
-            KeyCode::Char('u') if self.focus == Focus::Devices && self.device > 0 => {
-                self.set_availability(store::Availability::UsuallyUp)
-            }
             KeyCode::Char('x' | 'X') if self.focus == Focus::Devices && self.device > 0 => {
                 self.dialog_selected = 0;
                 self.dialog = Some(Dialog::RemoveDevice(self.device - 1));

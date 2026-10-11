@@ -102,9 +102,7 @@ pub(super) fn render_at(
         .enumerate()
         .filter(|(i, _)| app.device_matches(*i))
     {
-        let status = if app.device_policy(i).availability == store::Availability::UsuallyDown {
-            "down"
-        } else if app.work[i].loading {
+        let status = if app.work[i].loading {
             "checking"
         } else if app.work[i].error.is_some() {
             "unavailable"

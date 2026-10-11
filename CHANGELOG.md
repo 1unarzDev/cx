@@ -4,6 +4,11 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.61
+
+### Changes
+- Remove manual device down/up controls; reachability now retries automatically and recovers after successful contact.
+
 ## v0.1.60
 
 ### Fixes

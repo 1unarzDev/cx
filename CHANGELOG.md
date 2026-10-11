@@ -4,6 +4,11 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.58
+
+### Fixes
+- Update the PTY session chooser fixture to follow capability-aware profile filtering, preventing stale expectations from failing push checks.
+
 ## v0.1.57
 
 ### Changes

@@ -68,7 +68,10 @@ fn device_access_marker_and_toggle_guard_are_clear() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(rendered.contains(if ascii() { "<->" } else { "↔" }));
+    assert!(rendered.contains("laptop"));
+    assert!(!rendered.contains("laptop *"));
+    a.policies[1].access = store::AccessMode::Directed;
+    assert!(capture_app(&a, 80).contains("laptop *"));
     a.focus = Focus::Devices;
     press(&mut a, 'b');
     assert!(a.notice.contains("Select one remote device"));
@@ -77,10 +80,16 @@ fn device_access_marker_and_toggle_guard_are_clear() {
 #[test]
 fn device_edit_menu_is_remote_only_and_offers_address_or_remove() {
     let (mut app, _) = queued_app();
+    app.policies[1].access = store::AccessMode::Core;
     app.focus = Focus::Devices;
     app.device = 2;
     press(&mut app, 'e');
     assert!(matches!(app.dialog, Some(Dialog::EditDevice(1))));
+    assert!(capture_app(&app, 120).contains("Access: bidirectional"));
+    app.policies[1].access = store::AccessMode::Directed;
+    assert!(capture_app(&app, 120).contains("Access: single-direction"));
+    press(&mut app, 'G');
+    assert_eq!(app.dialog_selected, 3);
     app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.device = 0;
     press(&mut app, 'e');

@@ -2791,7 +2791,7 @@ impl App {
             Dialog::Neighbor(..) => 1,
             Dialog::Peer(_) => 5,
             Dialog::RemoveDevice(_) => 2,
-            Dialog::EditDevice(_) => 3,
+            Dialog::EditDevice(_) => 4,
         };
         let horizontal = matches!(
             dialog,
@@ -3238,6 +3238,10 @@ impl App {
                             self.text = self.devices[d].target.clone().unwrap_or_default();
                         }
                         1 => {
+                            self.device = d + 1;
+                            self.toggle_access();
+                        }
+                        2 => {
                             self.dialog = Some(Dialog::RemoveDevice(d));
                             self.dialog_selected = 0;
                         }

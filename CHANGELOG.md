@@ -4,6 +4,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.57
+
+### Changes
+- Replace device access arrows with a subtle `*` only on single-direction devices.
+- Add the access toggle to the device edit menu with its current state and next action.
+
 ## v0.1.56
 
 ### Fixes

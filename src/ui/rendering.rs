@@ -158,15 +158,13 @@ pub(super) fn render_at(
             })
         };
         let access_marker = match app.device_policy(i).access {
-            store::AccessMode::Core if ascii() => "<->",
-            store::AccessMode::Core => "↔",
-            store::AccessMode::Directed if ascii() => "->",
-            store::AccessMode::Directed => "→",
+            store::AccessMode::Core => "",
+            store::AccessMode::Directed => " *",
         };
         device_items.push(ListItem::new(Line::from(vec![
             Span::styled(format!("{indicator} "), dot_style),
             Span::raw(fit_label(
-                &format!("{access_marker}  {}", d.name),
+                &format!("{}{access_marker}", d.name),
                 sidebar_width.saturating_sub(8) as usize,
             )),
         ])));
@@ -1548,7 +1546,10 @@ pub(super) fn render_at(
             ),
             Dialog::EditDevice(d) => (
                 format!("Edit {}", safe_label(&app.devices[*d].name)),
-                vec!["SSH address".into(), "Remove device".into(), "Cancel".into()],
+                vec!["SSH address".into(), match app.device_policy(*d).access {
+                    store::AccessMode::Core => "Access: bidirectional · switch to single-direction".into(),
+                    store::AccessMode::Directed => "Access: single-direction · switch to bidirectional".into(),
+                }, "Remove device".into(), "Cancel".into()],
                 format!("Current target: {}\nEdit the SSH alias or user@host. The device identity and posture stay unchanged.", safe_label(app.devices[*d].target.as_deref().unwrap_or("unknown"))),
             ),
             Dialog::Neighbor(d, candidate) => (
@@ -1811,7 +1812,7 @@ pub(super) fn render_at(
         if app.focus == Focus::Devices {
             help.push(key_row(
                 "b",
-                "Toggle selected remote device: ↔ bidirectional / → viewer-to-device",
+                "Toggle selected remote device access · * means single-direction",
             ));
         }
         if app.view == View::Files && app.browser.as_ref().is_some_and(|b| b.preview.is_some()) {

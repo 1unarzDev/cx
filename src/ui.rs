@@ -2800,6 +2800,18 @@ impl App {
             dialog,
             Dialog::SessionChooser(..) | Dialog::ContainerProvider(..)
         );
+        // A left arrow is an explicit back action in the new-session menus. Keep
+        // it separate from list navigation so it never skips a provider choice.
+        if matches!(dialog, Dialog::SessionChooser(..) | Dialog::Provider(..))
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && key.code == KeyCode::Left
+        {
+            self.dialog = None;
+            self.dialog_detail_focus = false;
+            return;
+        }
         if let Some(motion) = self.navigation.read(key, 5, horizontal) {
             let detail = self.dialog_detail_focus
                 || (matches!(key.code, KeyCode::PageDown | KeyCode::PageUp)

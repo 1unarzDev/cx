@@ -419,6 +419,7 @@ enum Dialog {
     Neighbor(usize, Value),
     Peer(usize),
     RemoveDevice(usize),
+    EditDevice(usize),
 }
 
 struct App {
@@ -490,6 +491,7 @@ struct App {
     neighbor_budget: usize,
     network_add_target: Option<(usize, String)>,
     pending_add_via: Option<Device>,
+    pending_edit: Option<usize>,
     clipboard: Option<Clipboard>,
     rename_target: Option<(usize, Entry)>,
     rename_cursor: usize,
@@ -615,6 +617,7 @@ impl App {
             neighbor_budget: 32,
             network_add_target: None,
             pending_add_via: None,
+            pending_edit: None,
             clipboard: None,
             rename_target: None,
             rename_cursor: 0,
@@ -771,6 +774,7 @@ impl App {
                 Dialog::Neighbor(..) => "Neighbor actions",
                 Dialog::Peer(_) => "Device actions",
                 Dialog::RemoveDevice(_) => "Remove device",
+                Dialog::EditDevice(_) => "Edit device",
             };
         }
         if let Some(input) = self.input {
@@ -778,7 +782,13 @@ impl App {
                 Input::Search | Input::PreviewSearch => "Search",
                 Input::Palette => "Actions",
                 Input::Command => "Run command",
-                Input::Add => "Add by SSH address",
+                Input::Add => {
+                    if self.pending_edit.is_some() {
+                        "Edit SSH address"
+                    } else {
+                        "Add by SSH address"
+                    }
+                }
                 Input::Mkdir => "New folder",
                 Input::Rename => "Rename",
                 Input::Filter => "Filter",
@@ -2774,6 +2784,7 @@ impl App {
             Dialog::Neighbor(..) => 1,
             Dialog::Peer(_) => 5,
             Dialog::RemoveDevice(_) => 2,
+            Dialog::EditDevice(_) => 3,
         };
         let horizontal = matches!(
             dialog,
@@ -3201,6 +3212,19 @@ impl App {
                             self.dialog = None;
                         }
                     }
+                    Dialog::EditDevice(d) => match self.dialog_selected {
+                        0 => {
+                            self.dialog = None;
+                            self.pending_edit = Some(d);
+                            self.input = Some(Input::Add);
+                            self.text = self.devices[d].target.clone().unwrap_or_default();
+                        }
+                        1 => {
+                            self.dialog = Some(Dialog::RemoveDevice(d));
+                            self.dialog_selected = 0;
+                        }
+                        _ => self.dialog = None,
+                    },
                     Dialog::Neighbor(d, candidate) => {
                         self.dialog = None;
                         self.connect_neighbor(d, candidate);
@@ -3290,13 +3314,17 @@ impl App {
                 | Operation::Containers
                 | Operation::ProbeCandidate { .. }
         );
+        let known_down = self
+            .devices
+            .get(reply.device)
+            .is_some_and(|_| !self.background_checks_enabled(reply.device));
         let notify_error = if reply.result.is_ok() {
             if reply.generation == self.generation {
                 self.unavailable_notified
                     .remove(&self.devices[reply.device].id);
             }
             true
-        } else if connection_failure && passive_connection_check {
+        } else if connection_failure && (passive_connection_check || known_down) {
             // The sidebar's empty-circle state is the passive reachability signal.
             false
         } else if connection_failure {
@@ -4161,6 +4189,7 @@ impl App {
                     self.command_target = None;
                     self.network_add_target = None;
                     self.pending_add_via = None;
+                    self.pending_edit = None;
                 }
                 KeyCode::Backspace => {
                     if matches!(mode, Input::Rename | Input::Command) {
@@ -4332,6 +4361,26 @@ impl App {
                             self.text.clone()
                         };
                         if transport::valid_target(&target) {
+                            if let Some(device) = self.pending_edit.take() {
+                                match store::update_target(&self.devices[device], &target) {
+                                    Ok(updated) => {
+                                        self.devices[device] = updated;
+                                        self.providers.remove(&device);
+                                        self.work[device].error = None;
+                                        self.work[device].fetched = 0;
+                                        self.set_notice_as(
+                                            NoticeKind::Success,
+                                            "SSH address updated · refresh to verify the connection".into(),
+                                        );
+                                    }
+                                    Err(error) => self.set_notice_as(
+                                        NoticeKind::Error,
+                                        safe_text(&format!("SSH address unchanged: {error:#}")),
+                                    ),
+                                }
+                                self.input = None;
+                                return;
+                            }
                             self.pending_add_via = self
                                 .network_add_target
                                 .take()
@@ -4610,6 +4659,10 @@ impl App {
             KeyCode::Char('x' | 'X') if self.focus == Focus::Devices && self.device > 0 => {
                 self.dialog_selected = 0;
                 self.dialog = Some(Dialog::RemoveDevice(self.device - 1));
+            }
+            KeyCode::Char('e' | 'E') if self.focus == Focus::Devices && self.device > 0 => {
+                self.dialog_selected = 0;
+                self.dialog = Some(Dialog::EditDevice(self.device - 1));
             }
             KeyCode::Char('n') => self.session_shortcut(),
             KeyCode::Char('w') if self.view == View::Work && self.focus == Focus::Workspace => {

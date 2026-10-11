@@ -73,6 +73,19 @@ fn device_access_marker_and_toggle_guard_are_clear() {
     press(&mut a, 'b');
     assert!(a.notice.contains("Select one remote device"));
 }
+
+#[test]
+fn device_edit_menu_is_remote_only_and_offers_address_or_remove() {
+    let (mut app, _) = queued_app();
+    app.focus = Focus::Devices;
+    app.device = 2;
+    press(&mut app, 'e');
+    assert!(matches!(app.dialog, Some(Dialog::EditDevice(1))));
+    app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.device = 0;
+    press(&mut app, 'e');
+    assert!(app.dialog.is_none());
+}
 fn expand_network_observers(a: &mut App) {
     for d in 0..a.devices.len() {
         a.network_expanded.insert(a.peer_key(d));

@@ -4,6 +4,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.53
+
+### Features
+- Add an `e` device edit menu for changing an enrolled SSH alias/address or opening the existing removal confirmation. Address edits preserve machine identity and posture while clearing stale reachability state and old saved routes.
+- Quiet all connection failures for devices explicitly marked down, including direct actions, so a powered-off robot cannot produce repeated error notices.
+
 ## v0.1.52
 
 ### Fixes

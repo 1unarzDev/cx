@@ -1546,6 +1546,11 @@ pub(super) fn render_at(
                 vec!["Keep device".into(), "Remove from CX".into()],
                 format!("This removes the device from this viewer's registry and clears its local policy and saved route.\n{}\nRemote files and sessions are not changed.", identity(&app.devices[*d])),
             ),
+            Dialog::EditDevice(d) => (
+                format!("Edit {}", safe_label(&app.devices[*d].name)),
+                vec!["SSH address".into(), "Remove device".into(), "Cancel".into()],
+                format!("Current target: {}\nEdit the SSH alias or user@host. The device identity and posture stay unchanged.", safe_label(app.devices[*d].target.as_deref().unwrap_or("unknown"))),
+            ),
             Dialog::Neighbor(d, candidate) => (
                 format!("Neighbor · {}", safe_label(candidate["address"].as_str().unwrap_or("unknown"))),
                 vec![if neighbor_connectable(candidate) { "Connect via this device".into() } else { "Connect unavailable · link-local scope".into() }],

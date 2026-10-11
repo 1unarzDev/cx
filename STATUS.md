@@ -1,5 +1,9 @@
 # CX status
 
+## Device editing and robot silence (v0.1.53 candidate)
+
+The Devices panel `e` menu edits an enrolled SSH target without changing identity or posture and routes removal through confirmation. `creation` now uses its mesh SSH alias instead of the timed-out public address. Devices explicitly marked down, including Squirtle, suppress all connection-failure notifications until brought up with `u`.
+
 ## Device state marker and posture controls (v0.1.52 candidate)
 
 The down marker is the empty circle (`○`, `o` in ASCII), while bidirectional access uses a spaced `←→` marker. `b` toggles remote bidirectional/viewer-only access; `d` and `u` control background availability. Passive connection failures remain quiet and are represented by device state; the local device is guarded from all posture changes.

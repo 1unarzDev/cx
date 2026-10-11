@@ -117,6 +117,36 @@ pub fn remove_device(name: &str) -> Result<Device> {
     Ok(removed)
 }
 
+/// Change only the SSH target for an enrolled device. Its stable machine id,
+/// posture and remote configuration remain unchanged.
+pub fn update_target(device: &Device, target: &str) -> Result<Device> {
+    anyhow::ensure!(device.target.is_some(), "the local device cannot be edited");
+    anyhow::ensure!(crate::transport::valid_target(target), "invalid SSH target");
+    let mut devices = devices()?;
+    anyhow::ensure!(
+        !devices
+            .iter()
+            .any(|d| d.id != device.id && d.target.as_deref() == Some(target)),
+        "SSH target is already enrolled for another device"
+    );
+    let entry = devices
+        .iter_mut()
+        .find(|d| d.id == device.id)
+        .context("device not enrolled")?;
+    let previous = entry.target.clone();
+    entry.target = Some(target.to_owned());
+    entry.status = "unknown".into();
+    entry.observed_at = 0;
+    let updated = entry.clone();
+    save_devices(&devices)?;
+    if previous.as_deref() != Some(target) {
+        if let Some(previous) = previous {
+            let _ = remove_route(&previous);
+        }
+    }
+    Ok(updated)
+}
+
 fn policy_path() -> PathBuf {
     state_dir().join("device-policies.json")
 }

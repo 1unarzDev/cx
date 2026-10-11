@@ -262,6 +262,8 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum DeviceCommand {
+    /// Change the enrolled SSH alias or user@host without changing identity or posture.
+    Edit { name: String, target: String },
     /// Remove an enrolled device from this viewer.
     Remove { name: String },
     /// Promote an enrolled device to the core network posture.
@@ -1146,6 +1148,11 @@ fn run() -> Result<()> {
         Some(Cmd::Terminal { device: d }) => sessions::login_terminal(&device(d)?),
         Some(Cmd::Device { command }) => {
             match command {
+                DeviceCommand::Edit { name, target } => {
+                    let device = enrolled_device(&name)?;
+                    let updated = store::update_target(&device, &target)?;
+                    println!("{}", serde_json::to_string_pretty(&updated)?);
+                }
                 DeviceCommand::Promote { name } => {
                     let device = enrolled_device(&name)?;
                     let policy = store::set_access(&device, store::AccessMode::Core)?;

@@ -148,7 +148,7 @@ impl RichPreview {
                 .ok()?;
             (bytes.len() == w * h * 4).then_some((w, h, bytes))
         })();
-        Self {
+        let app = Self {
             kind: value["kind"].as_str().unwrap_or("text").to_owned(),
             title: safe_label(value["title"].as_str().unwrap_or("Preview")),
             raster,
@@ -172,7 +172,8 @@ impl RichPreview {
                 )),
                 _ => None,
             },
-        }
+        };
+        app
     }
 }
 
@@ -548,7 +549,7 @@ impl App {
                 fetched: 0,
             })
             .collect();
-        Self {
+        let mut app = Self {
             devices,
             policies,
             device: 0,
@@ -636,7 +637,11 @@ impl App {
             pending_requests: std::cell::Cell::new(0),
             panels: std::cell::RefCell::new(Vec::new()),
             tx,
+        };
+        if let Ok(message) = std::env::var("CX_STARTUP_NOTICE") {
+            app.set_notice_as(NoticeKind::Info, safe_text(&message));
         }
+        app
     }
     fn device_policy(&self, device: usize) -> store::DevicePolicy {
         self.policies.get(device).copied().unwrap_or_default()

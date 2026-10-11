@@ -951,7 +951,13 @@ fn run() -> Result<()> {
                     ("ready", format!("Verified cx {} ready", version), None)
                 }
                 update::CheckOutcome::Current => {
-                    ("current", format!("cx {} is current", version), None)
+                    // Keep the interactive command consistent with the update path:
+                    // after reporting the result, return to the normal workspace.
+                    (
+                        "current",
+                        format!("cx {} is current", version),
+                        Some(std::env::current_exe()?),
+                    )
                 }
                 update::CheckOutcome::Offline => (
                     "offline",
@@ -976,6 +982,12 @@ fn run() -> Result<()> {
             }
             if !json && !automatic && unsafe { libc::isatty(libc::STDIN_FILENO) } != 0 {
                 if let Some(path) = launch {
+                    if state == "current" {
+                        std::env::set_var(
+                            "CX_STARTUP_NOTICE",
+                            format!("cx {} is already up to date", version),
+                        );
+                    }
                     use std::os::unix::process::CommandExt;
                     return Err(Command::new(path).exec().into());
                 }

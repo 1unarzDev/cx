@@ -1,8 +1,8 @@
 # CX status
 
-## Bidirectional marker glyph (v0.1.54 candidate)
+## Device markers and session choices (v0.1.56)
 
-The bidirectional posture marker is now the single-cell stacked opposing-arrow glyph `⇄`, with `<->` retained for ASCII terminals. Viewer-only access remains `⟶`/`-->`.
+Access uses compact `↔` / `→` markers (`<->` / `->` in ASCII mode). New-session buttons, movement and shortcuts use the selected device’s fresh capability evidence; unknown or unavailable agents are hidden.
 
 ## Device editing and robot silence (v0.1.53 candidate)
 
@@ -10,11 +10,11 @@ The Devices panel `e` menu edits an enrolled SSH target without changing identit
 
 ## Device state marker and posture controls (v0.1.52 candidate)
 
-The down marker is the empty circle (`○`, `o` in ASCII), while bidirectional access uses a spaced `←→` marker. `b` toggles remote bidirectional/viewer-only access; `d` and `u` control background availability. Passive connection failures remain quiet and are represented by device state; the local device is guarded from all posture changes.
+The down marker is the empty circle (`○`, `o` in ASCII), while access uses compact `↔` / `→` markers. `b` toggles remote bidirectional/viewer-only access; `d` and `u` control background availability. Passive connection failures remain quiet and are represented by device state; the local device is guarded from all posture changes.
 
 ## Device marker and footer polish (v0.1.51 candidate)
 
-Sidebar posture markers now use spaced long arrows (`⟷` / `⟶`, ASCII fallbacks `<-->` / `-->`). The footer no longer displays an unavailable error count; errors use the existing timed notification panel instead.
+The footer no longer displays an unavailable error count; errors use the existing timed notification panel instead.
 
 ## Device lifecycle and availability (v0.1.50 candidate)
 

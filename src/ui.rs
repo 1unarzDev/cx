@@ -1137,6 +1137,13 @@ impl App {
         }
         choices
     }
+    pub(super) fn host_session_choices(&self, device: usize) -> Vec<&'static menus::SessionChoice> {
+        let available = self.provider_choices(device);
+        menus::HOST
+            .iter()
+            .filter(|choice| available.contains(&choice.provider))
+            .collect()
+    }
     fn check_providers(&mut self, device: usize) {
         if !self.background_checks_enabled(device) {
             return;
@@ -2767,7 +2774,7 @@ impl App {
             return;
         }
         let count = match &dialog {
-            Dialog::SessionChooser(..) => menus::HOST.len(),
+            Dialog::SessionChooser(d, _) => self.host_session_choices(*d).len(),
             Dialog::DevcontainerUp(..) => 2,
             Dialog::ContainerActions(_, c) => container_action_labels(c).len(),
             Dialog::ContainerProvider(..) => menus::CONTAINER.len(),
@@ -2810,7 +2817,11 @@ impl App {
             }
             return;
         }
-        if let Some(choices) = menus::session_choices(&dialog) {
+        let session_choices = match &dialog {
+            Dialog::SessionChooser(d, _) => Some(self.host_session_choices(*d)),
+            _ => menus::session_choices(&dialog).map(|choices| choices.iter().collect()),
+        };
+        if let Some(choices) = session_choices {
             if !key
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -2927,7 +2938,14 @@ impl App {
             KeyCode::Enter => {
                 match dialog {
                     Dialog::SessionChooser(d, path) => {
-                        let provider = menus::HOST[self.dialog_selected].provider;
+                        let Some(choice) = self
+                            .host_session_choices(d)
+                            .get(self.dialog_selected)
+                            .copied()
+                        else {
+                            return;
+                        };
+                        let provider = choice.provider;
                         if !self.provider_choices(d).contains(&provider) {
                             self.check_providers(d);
                             self.set_notice_as(NoticeKind::Warning, if self.provider_loading.contains(&d) {
@@ -3595,8 +3613,12 @@ impl App {
         // Session caches remain useful across view changes; navigation responses do not.
         match reply.op {
             Operation::Info => {
-                let previous = if matches!(self.dialog, Some(Dialog::Provider(d, _)) if d == reply.device)
+                let previous = if matches!(self.dialog, Some(Dialog::SessionChooser(d, _)) if d == reply.device)
                 {
+                    self.host_session_choices(reply.device)
+                        .get(self.dialog_selected)
+                        .map(|choice| choice.provider.to_string())
+                } else if matches!(self.dialog, Some(Dialog::Provider(d, _)) if d == reply.device) {
                     let mut choices = vec!["shell".to_string()];
                     if let Some((available, _)) = self.providers.get(&reply.device) {
                         choices.extend(
@@ -3635,6 +3657,16 @@ impl App {
                     .unwrap_or_default();
                 self.providers
                     .insert(reply.device, (available, transport::now()));
+                if matches!(self.dialog, Some(Dialog::SessionChooser(d, _)) if d == reply.device) {
+                    self.dialog_selected = previous
+                        .as_ref()
+                        .and_then(|provider| {
+                            self.host_session_choices(reply.device)
+                                .iter()
+                                .position(|choice| choice.provider == provider)
+                        })
+                        .unwrap_or(0);
+                }
                 if matches!(self.dialog, Some(Dialog::Provider(d, _)) if d == reply.device) {
                     self.dialog_selected = previous
                         .and_then(|provider| {

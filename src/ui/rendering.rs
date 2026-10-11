@@ -159,9 +159,9 @@ pub(super) fn render_at(
         };
         let access_marker = match app.device_policy(i).access {
             store::AccessMode::Core if ascii() => "<->",
-            store::AccessMode::Core => "⇄",
-            store::AccessMode::Directed if ascii() => "-->",
-            store::AccessMode::Directed => "⟶",
+            store::AccessMode::Core => "↔",
+            store::AccessMode::Directed if ascii() => "->",
+            store::AccessMode::Directed => "→",
         };
         device_items.push(ListItem::new(Line::from(vec![
             Span::styled(format!("{indicator} "), dot_style),
@@ -1464,7 +1464,7 @@ pub(super) fn render_at(
             ),
             Dialog::SessionChooser(d,path) => (
                 format!("New session · {}",safe_label(&app.devices[*d].name)),
-                menus::HOST.iter().map(|choice|choice.label.into()).collect(),
+                app.host_session_choices(*d).iter().map(|choice|choice.label.into()).collect(),
                 format!("{}\n{}", safe_label(path), if app.provider_loading.contains(d) { "Checking installed agents…" } else { "Agent permissions are chosen next; devcontainer opens its tree." }),
             ),
             Dialog::Provider(d, path) => (
@@ -1811,7 +1811,7 @@ pub(super) fn render_at(
         if app.focus == Focus::Devices {
             help.push(key_row(
                 "b",
-                "Toggle selected remote device: ⇄ bidirectional / ⟶ viewer-to-device",
+                "Toggle selected remote device: ↔ bidirectional / → viewer-to-device",
             ));
         }
         if app.view == View::Files && app.browser.as_ref().is_some_and(|b| b.preview.is_some()) {

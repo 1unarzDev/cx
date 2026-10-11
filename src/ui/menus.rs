@@ -78,7 +78,13 @@ pub(super) fn render_session_chooser(
     detail: &str,
 ) {
     let host = matches!(dialog, Dialog::SessionChooser(..));
-    let choices = session_choices(dialog).expect("session chooser dialog");
+    let choices = match dialog {
+        Dialog::SessionChooser(d, _) => app.host_session_choices(*d),
+        _ => session_choices(dialog)
+            .expect("session chooser dialog")
+            .iter()
+            .collect(),
+    };
     let columns = if area.width < 68 { 2 } else { choices.len() };
     let rows = choices.len().div_ceil(columns);
     let rect = popup(area, 78, (7 + rows * 3) as u16);

@@ -4,6 +4,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.56
+
+### Fixes
+- Use subtle `↔` / `→` device access markers with ASCII fallbacks.
+- Show only available session profiles in the new-session panel, with matching navigation and shortcuts.
+
 ## v0.1.55
 
 ### Fixes

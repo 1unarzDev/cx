@@ -18,7 +18,7 @@ cx add user@host
 cx add robot@192.168.0.2 --via laptop
 ```
 
-On the device list, `⇄` means bidirectional access and `⟶` means viewer-to-device access; focus a remote device and press `b` to toggle the locally stored posture. New enrollments start as bidirectional. Press `d` to mark a known-offline device down, `u` to resume background checks, `e` to edit its SSH alias/address or open removal, or `x` to remove it directly. The local device is always bidirectional and available; its posture cannot be changed or removed. Passive connection failures use the device marker and do not create error notifications.
+On the device list, `↔` means bidirectional access and `→` means viewer-to-device access; focus a remote device and press `b` to toggle the locally stored posture. New enrollments start as bidirectional. Press `d` to mark a known-offline device down, `u` to resume background checks, `e` to edit its SSH alias/address or open removal, or `x` to remove it directly. The local device is always bidirectional and available; its posture cannot be changed or removed. Passive connection failures use the device marker and do not create error notifications.
 
 You can also select a discovered neighbor in **Network** and press Enter to connect. **Ctrl+P → Add by SSH address** handles aliases and devices discovery cannot reach. Enrollment checks compatibility and installs the helper and missing portable tmux. SSH passwords are masked and not stored.
 
@@ -37,7 +37,7 @@ You can also select a discovered neighbor in **Network** and press Enter to conn
 | `d` in Sessions | Confirm stopping a CX-managed shell or agent |
 | Ctrl+C in CX | Exit the viewer; sessions keep running |
 
-Press **n** for a compact chooser: `c` Claude, `x` Codex, `s` Shell, `d` Devcontainer; `h`/`l` or Left/Right move between options. It uses home from Devices and the current folder from Files. Use **Ctrl+P → New session** to choose a device and start a shell, Codex or Claude. Agents must be installed on that device. Agent sessions offer a **Fresh session** or **Resume latest session** choice, followed by **Default** permissions or **YOLO** for that launch. Resume opens the provider’s native control panel (`codex resume --last` or `claude --continue`); YOLO bypasses the agent’s normal approval protections.
+Press **n** for a compact chooser. It shows Shell, Devcontainer, and only the Claude or Codex profiles currently available on the selected device; `h`/`l` or Left/Right move between options. It uses home from Devices and the current folder from Files. Use **Ctrl+P → New session** to choose a device and start a supported profile. Agent sessions offer a **Fresh session** or **Resume latest session** choice, followed by **Default** permissions or **YOLO** for that launch. Resume opens the provider’s native control panel (`codex resume --last` or `claude --continue`); YOLO bypasses the agent’s normal approval protections.
 
 In **Files**, Enter previews a file. To transfer files, select with Space, press `t`, choose the destination device/folder, then press Enter to confirm. Incoming conflicts rename by default; overwrite is explicit. See the [user guide](docs/user-guide.md) for file operations, previews, clipboard, scrolling and all controls.
 

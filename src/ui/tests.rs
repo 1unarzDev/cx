@@ -68,7 +68,7 @@ fn device_access_marker_and_toggle_guard_are_clear() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(rendered.contains(if ascii() { "<->" } else { "⇄" }));
+    assert!(rendered.contains(if ascii() { "<->" } else { "↔" }));
     a.focus = Focus::Devices;
     press(&mut a, 'b');
     assert!(a.notice.contains("Select one remote device"));
@@ -1391,6 +1391,13 @@ fn menu_navigation_counts_edges_and_text_ownership() {
     press(&mut a, '2');
     press(&mut a, 'j');
     assert_eq!(a.network_selected, 2.min(a.network_rows().len() - 1));
+    a.providers.insert(
+        0,
+        (
+            vec!["claude".into(), "codex".into(), "containers-v1".into()],
+            transport::now(),
+        ),
+    );
     a.dialog = Some(Dialog::SessionChooser(0, "~".into()));
     a.dialog_selected = 0;
     press(&mut a, '2');
@@ -2485,6 +2492,36 @@ fn session_chooser_missing_provider_stays_open_and_devcontainer_routes_to_tree()
         .any(|t| t.device == 1 && matches!(t.op, Operation::Containers)));
 }
 #[test]
+fn session_chooser_hides_unavailable_profiles_and_preserves_selection_on_check() {
+    let (mut a, rx) = queued_app();
+    a.device = 2;
+    a.focus = Focus::Devices;
+    a.providers.remove(&1);
+    press(&mut a, 'n');
+    assert!(matches!(rx.try_recv().unwrap().op, Operation::Info));
+    let text = capture_app(&a, 100);
+    assert!(text.contains("[s] Shell"));
+    assert!(!text.contains("[c] Claude") && !text.contains("[x] Codex"));
+    a.apply(Reply {
+        device: 1,
+        generation: a.generation,
+        preview: None,
+        op: Operation::Info,
+        result: Ok(serde_json::json!({"capabilities":["codex","containers-v1"]})),
+    });
+    assert_eq!(
+        a.host_session_choices(1)[a.dialog_selected].provider,
+        "shell"
+    );
+    let text = capture_app(&a, 100);
+    assert!(text.contains("[x] Codex") && text.contains("[d] Devcontainer"));
+    assert!(!text.contains("[c] Claude"));
+    press(&mut a, 'c');
+    assert!(matches!(a.dialog, Some(Dialog::SessionChooser(..))));
+    press(&mut a, 'x');
+    assert!(matches!(a.dialog, Some(Dialog::AgentStart(_, _, ref p)) if p == "codex"));
+}
+#[test]
 fn watch_key_attaches_highlighted_session_read_only_and_is_contextual() {
     let (mut a, _rx) = queued_app();
     a.device = 2;
@@ -2539,6 +2576,11 @@ fn containers_ui_capture_matrix_and_default_background() {
                 ));
                 a.dialog_selected = 0;
             } else if mode == "chooser" {
+                a.providers
+                    .get_mut(&0)
+                    .unwrap()
+                    .0
+                    .push("containers-v1".into());
                 a.dialog = Some(Dialog::SessionChooser(0, "~/robot/workspace".into()));
                 a.dialog_selected = 2;
             } else if mode == "actions" {

@@ -69,9 +69,11 @@ fn device_access_marker_and_toggle_guard_are_clear() {
         .map(|cell| cell.symbol())
         .collect::<String>();
     assert!(rendered.contains("laptop"));
-    assert!(!rendered.contains("laptop *"));
+    assert!(!rendered.contains("* laptop"));
     a.policies[1].access = store::AccessMode::Directed;
-    assert!(capture_app(&a, 80).contains("laptop *"));
+    assert!(capture_app(&a, 80).contains("* laptop"));
+    a.devices[1].name = "blastoise-odroid-with-a-very-long-hostname".into();
+    assert!(capture_app(&a, 40).contains("* "));
     a.focus = Focus::Devices;
     press(&mut a, 'b');
     assert!(a.notice.contains("Select one remote device"));

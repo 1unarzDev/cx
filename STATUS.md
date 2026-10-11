@@ -2,7 +2,7 @@
 
 ## Device markers and session choices (v0.1.56)
 
-Only single-direction devices have an access marker: `*` after their name. The edit menu includes the access toggle. New-session buttons, movement and shortcuts use the selected device’s fresh capability evidence; unknown or unavailable agents are hidden.
+Only single-direction devices have an access marker: a leading `*`, kept visible before long names are truncated. The edit menu includes the access toggle. New-session buttons, movement and shortcuts use the selected device’s fresh capability evidence; unknown or unavailable agents are hidden.
 
 ## Device editing and robot silence (v0.1.53 candidate)
 

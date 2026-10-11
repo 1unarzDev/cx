@@ -164,7 +164,7 @@ pub(super) fn render_at(
         device_items.push(ListItem::new(Line::from(vec![
             Span::styled(format!("{indicator} "), dot_style),
             Span::raw(fit_label(
-                &format!("{}{access_marker}", d.name),
+                &format!("{access_marker} {}", d.name),
                 sidebar_width.saturating_sub(8) as usize,
             )),
         ])));

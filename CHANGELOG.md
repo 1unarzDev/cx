@@ -4,6 +4,11 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.59
+
+### Fixes
+- Keep the single-direction marker visible by placing it before long device names.
+
 ## v0.1.58
 
 ### Fixes

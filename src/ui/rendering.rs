@@ -139,9 +139,9 @@ pub(super) fn render_at(
             }
             "down" => {
                 if ascii() {
-                    "-"
+                    "o"
                 } else {
-                    "↓"
+                    "○"
                 }
             }
             _ => "?",
@@ -158,8 +158,8 @@ pub(super) fn render_at(
             })
         };
         let access_marker = match app.device_policy(i).access {
-            store::AccessMode::Core if ascii() => "<-->",
-            store::AccessMode::Core => "⟷",
+            store::AccessMode::Core if ascii() => "<->",
+            store::AccessMode::Core => "←→",
             store::AccessMode::Directed if ascii() => "-->",
             store::AccessMode::Directed => "⟶",
         };
@@ -1806,7 +1806,7 @@ pub(super) fn render_at(
         if app.focus == Focus::Devices {
             help.push(key_row(
                 "b",
-                "Toggle selected remote device: ⟷ bidirectional / ⟶ viewer-to-device",
+                "Toggle selected remote device: ←→ bidirectional / ⟶ viewer-to-device",
             ));
         }
         if app.view == View::Files && app.browser.as_ref().is_some_and(|b| b.preview.is_some()) {

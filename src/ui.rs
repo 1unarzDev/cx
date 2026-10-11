@@ -3281,16 +3281,26 @@ impl App {
             .as_ref()
             .err()
             .is_some_and(transport::is_connection_failure);
+        let passive_connection_check = matches!(
+            reply.op,
+            Operation::Info
+                | Operation::Sessions
+                | Operation::Network
+                | Operation::NetworkCandidates
+                | Operation::Containers
+                | Operation::ProbeCandidate { .. }
+        );
         let notify_error = if reply.result.is_ok() {
             if reply.generation == self.generation {
                 self.unavailable_notified
                     .remove(&self.devices[reply.device].id);
             }
             true
+        } else if connection_failure && passive_connection_check {
+            // The sidebar's empty-circle state is the passive reachability signal.
+            false
         } else if connection_failure {
-            // Quiet neighbor probes and obsolete file replies must not consume the first notice.
-            !matches!(reply.op, Operation::ProbeCandidate { .. })
-                && (reply.generation == self.generation || file_action)
+            (reply.generation == self.generation || file_action)
                 && self
                     .unavailable_notified
                     .insert(self.devices[reply.device].id.clone())

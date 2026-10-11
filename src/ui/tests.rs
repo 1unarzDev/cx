@@ -68,7 +68,7 @@ fn device_access_marker_and_toggle_guard_are_clear() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(rendered.contains(if ascii() { "<-->" } else { "⟷" }));
+    assert!(rendered.contains(if ascii() { "<->" } else { "←→" }));
     a.focus = Focus::Devices;
     press(&mut a, 'b');
     assert!(a.notice.contains("Select one remote device"));
@@ -5121,12 +5121,10 @@ fn unreachable_notices_are_once_per_device_until_successful_contact() {
         )),
     };
     app.apply(failure(Operation::Sessions, 1, app.generation));
-    assert!(app.notice.contains("unreachable"));
+    assert!(app.notice.is_empty());
     assert!(app.work[1].error.is_some());
-    let end = app.notice_deadline.unwrap();
     app.apply(failure(Operation::Info, 1, app.generation));
-    assert_eq!(app.notice_deadline, Some(end));
-    assert!(app.expire_notice(end));
+    assert!(app.notice.is_empty());
     for op in [
         Operation::Info,
         Operation::Sessions,
@@ -5138,7 +5136,7 @@ fn unreachable_notices_are_once_per_device_until_successful_contact() {
     }
     assert!(app.container_errors.contains_key(&1));
     app.apply(failure(Operation::Sessions, 0, app.generation));
-    assert!(app.notice.contains("unreachable"));
+    assert!(app.notice.is_empty());
     app.apply(Reply {
         op: Operation::List {
             path: "/files".into(),
@@ -5149,8 +5147,8 @@ fn unreachable_notices_are_once_per_device_until_successful_contact() {
         result: Err(anyhow::anyhow!("Permission denied for this file operation")),
     });
     assert!(app.notice.contains("Permission denied"));
-    assert!(app.unavailable_notified.contains(&app.devices[1].id));
-    // A genuinely successful helper response re-arms future outages.
+    assert!(app.unavailable_notified.is_empty());
+    // A genuinely successful helper response clears the cached passive error.
     app.apply(Reply {
         op: Operation::Sessions,
         device: 1,
@@ -5161,7 +5159,7 @@ fn unreachable_notices_are_once_per_device_until_successful_contact() {
     assert!(!app.unavailable_notified.contains(&app.devices[1].id));
     app.set_notice(String::new());
     app.apply(failure(Operation::Sessions, 1, app.generation));
-    assert!(app.notice.contains("unreachable"));
+    assert!(app.notice.is_empty());
 }
 
 #[test]
@@ -5200,7 +5198,7 @@ fn stale_errors_and_quiet_neighbor_checks_do_not_consume_the_first_device_notice
         preview: None,
         result: Err(anyhow::Error::new(transport::ConnectionFailure::Timeout)),
     });
-    assert!(app.notice.contains("timed out"));
+    assert!(app.notice.is_empty());
     let deadline = app.notice_deadline;
     app.apply(Reply {
         op: Operation::Sessions,
@@ -5209,7 +5207,7 @@ fn stale_errors_and_quiet_neighbor_checks_do_not_consume_the_first_device_notice
         preview: None,
         result: Ok(serde_json::json!([])),
     });
-    assert!(app.unavailable_notified.contains(&app.devices[1].id));
+    assert!(app.unavailable_notified.is_empty());
     app.apply(Reply {
         op: Operation::Sessions,
         device: 1,

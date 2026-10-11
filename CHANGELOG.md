@@ -4,6 +4,13 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.52
+
+### Fixes
+- Use the empty-circle down marker again and widen the bidirectional posture marker to `←→` so both states remain legible.
+- Passive reachability failures now update the device state without producing an error notification; actionable operation failures still use notifications.
+- Document the posture controls and keep the local device protected from access or availability changes.
+
 ## v0.1.51
 
 ### Fixes

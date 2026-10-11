@@ -1,5 +1,9 @@
 # CX status
 
+## Device state marker and posture controls (v0.1.52 candidate)
+
+The down marker is the empty circle (`○`, `o` in ASCII), while bidirectional access uses a spaced `←→` marker. `b` toggles remote bidirectional/viewer-only access; `d` and `u` control background availability. Passive connection failures remain quiet and are represented by device state; the local device is guarded from all posture changes.
+
 ## Device marker and footer polish (v0.1.51 candidate)
 
 Sidebar posture markers now use spaced long arrows (`⟷` / `⟶`, ASCII fallbacks `<-->` / `-->`). The footer no longer displays an unavailable error count; errors use the existing timed notification panel instead.

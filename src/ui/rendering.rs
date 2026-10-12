@@ -1550,6 +1550,11 @@ pub(super) fn render_at(
                 }, "Remove device".into(), "Cancel".into()],
                 format!("Current target: {}\nEdit the SSH alias or user@host. The device identity and posture stay unchanged.", safe_label(app.devices[*d].target.as_deref().unwrap_or("unknown"))),
             ),
+            Dialog::Reset => (
+                "Reset managed sessions?".into(),
+                vec!["Cancel · keep running sessions".into(), "Reset tmux and agents".into()],
+                "This forcefully terminates all CX-managed tmux sessions on this execution device, including Claude and Codex processes running inside them. External tmux sessions are untouched.\nEnter confirms · Escape cancels".into(),
+            ),
             Dialog::Neighbor(d, candidate) => (
                 format!("Neighbor · {}", safe_label(candidate["address"].as_str().unwrap_or("unknown"))),
                 vec![if neighbor_connectable(candidate) { "Connect via this device".into() } else { "Connect unavailable · link-local scope".into() }],
@@ -1597,7 +1602,7 @@ pub(super) fn render_at(
             render_session_chooser(frame, app, area, dialog, &title, &detail);
         } else if matches!(
             dialog,
-            Dialog::Delete(..) | Dialog::StopShell(..) | Dialog::RemoveDevice(..)
+            Dialog::Delete(..) | Dialog::StopShell(..) | Dialog::RemoveDevice(..) | Dialog::Reset
         ) {
             let stop = matches!(dialog, Dialog::StopShell(..));
             let rect = confirmation_popup(area, &detail);

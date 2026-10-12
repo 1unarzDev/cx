@@ -327,6 +327,7 @@ enum Action {
     Mkdir,
     Help,
     Update,
+    Reset,
     Quit,
 }
 const ACTIONS: &[(Action, &str)] = &[
@@ -384,6 +385,10 @@ const ACTIONS: &[(Action, &str)] = &[
         Action::Update,
         concat!("Update cx v", env!("CARGO_PKG_VERSION"), ": check releases"),
     ),
+    (
+        Action::Reset,
+        "Reset managed tmux / agent sessions · confirm",
+    ),
     (Action::Quit, "Quit workspace"),
 ];
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -421,6 +426,7 @@ enum Dialog {
     Peer(usize),
     RemoveDevice(usize),
     EditDevice(usize),
+    Reset,
 }
 
 struct App {
@@ -778,6 +784,7 @@ impl App {
                 Dialog::Peer(_) => "Device actions",
                 Dialog::RemoveDevice(_) => "Remove device",
                 Dialog::EditDevice(_) => "Edit device",
+                Dialog::Reset => "Reset managed sessions",
             };
         }
         if let Some(input) = self.input {
@@ -2054,6 +2061,10 @@ impl App {
             }
             Action::Shell => self.start_shell(),
             Action::Update => self.force_update = true,
+            Action::Reset => {
+                self.dialog = Some(Dialog::Reset);
+                self.dialog_selected = 0;
+            }
             Action::Quit => self.request_quit(),
             Action::Add => {
                 self.network_add_target = None;
@@ -2795,6 +2806,7 @@ impl App {
             Dialog::Peer(_) => 5,
             Dialog::RemoveDevice(_) => 2,
             Dialog::EditDevice(_) => 4,
+            Dialog::Reset => 2,
         };
         let horizontal = matches!(
             dialog,
@@ -3262,6 +3274,24 @@ impl App {
                         }
                         _ => self.dialog = None,
                     },
+                    Dialog::Reset => {
+                        self.dialog = None;
+                        if self.dialog_selected == 1 {
+                            match crate::sessions::reset() {
+                                Ok(report) => self.set_notice_as(
+                                    NoticeKind::Success,
+                                    format!(
+                                        "Managed tmux reset · {} sessions terminated",
+                                        report["managed_sessions"].as_u64().unwrap_or(0)
+                                    ),
+                                ),
+                                Err(error) => self.set_notice_as(
+                                    NoticeKind::Error,
+                                    format!("Managed session reset failed: {error:#}"),
+                                ),
+                            }
+                        }
+                    }
                     Dialog::Neighbor(d, candidate) => {
                         self.dialog = None;
                         self.connect_neighbor(d, candidate);

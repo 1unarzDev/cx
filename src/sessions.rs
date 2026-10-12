@@ -588,6 +588,7 @@ pub fn reset() -> Result<serde_json::Value> {
     }
     ensure_server()?;
     configure_managed()?;
+    refresh_provider_environment()?;
     Ok(serde_json::json!({
         "status": "reset",
         "managed_sessions": sessions.len(),
@@ -1008,6 +1009,33 @@ pub fn configure_managed() -> Result<()> {
     output(c)?;
     Ok(())
 }
+
+/// Refresh the allowlisted Anthropic variables in tmux's server environment.
+/// Tmux keeps a server-wide snapshot, which otherwise survives shell reloads.
+pub fn refresh_provider_environment() -> Result<()> {
+    const VARS: &[&str] = &[
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_CUSTOM_HEADERS",
+    ];
+    for name in VARS {
+        let mut command = tmux(true)?;
+        command.args(["set-environment", "-g"]);
+        match std::env::var(name) {
+            Ok(value) => {
+                command.arg(*name).arg(value);
+            }
+            Err(_) => {
+                command.args(["-u", *name]);
+            }
+        };
+        command
+            .status()
+            .with_context(|| format!("refreshing managed tmux variable {name}"))?;
+    }
+    Ok(())
+}
 fn ensure_server() -> Result<()> {
     // An owned server may persist after its last session ends. New binaries
     // must reload its configuration too, rather than reusing old key bindings.
@@ -1178,6 +1206,7 @@ fn create_with_permissions(
         );
     }
     ensure_server()?;
+    refresh_provider_environment()?;
     let (host, account, boot_id) = identity();
     let pending = Session {
         id: name.clone(),

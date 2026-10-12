@@ -570,6 +570,32 @@ pub fn list() -> Result<Vec<Session>> {
     result.sort_by(|a, b| (a.external, &a.id).cmp(&(b.external, &b.id)));
     Ok(result)
 }
+
+/// Restart CX's managed tmux server and its child provider processes.
+///
+/// The default tmux server and any externally-created sessions are deliberately
+/// untouched. Killing the managed server is the safe provider reset boundary:
+/// Claude and Codex launched inside its panes are descendants of that server.
+pub fn reset() -> Result<serde_json::Value> {
+    let sessions = ids(true)?;
+    let mut kill = tmux(true)?;
+    kill.arg("kill-server");
+    let status = kill
+        .status()
+        .context("managed tmux reset failed; tmux is unavailable")?;
+    if !status.success() && !sessions.is_empty() {
+        bail!("managed tmux reset failed")
+    }
+    ensure_server()?;
+    configure_managed()?;
+    Ok(serde_json::json!({
+        "status": "reset",
+        "managed_sessions": sessions.len(),
+        "provider_processes": "restarted with managed tmux",
+        "external_tmux": "untouched"
+    }))
+}
+
 /// Stop the exact CX-owned runtime shown at confirmation; preserve external sessions.
 pub fn stop_shell(id: &str, pid: u32, started: &str, boot_id: &str) -> Result<serde_json::Value> {
     stop_managed(id, pid, started, boot_id, "shell")

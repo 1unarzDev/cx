@@ -56,6 +56,8 @@ enum Cmd {
         #[arg(long, hide = true)]
         json: bool,
     },
+    /// Restart CX's managed tmux server and provider sessions on this device.
+    Reset,
     #[command(hide = true)]
     Restart {
         state: String,
@@ -992,6 +994,10 @@ fn run() -> Result<()> {
                     return Err(Command::new(path).exec().into());
                 }
             }
+            Ok(())
+        }
+        Some(Cmd::Reset) => {
+            println!("{}", serde_json::to_string_pretty(&sessions::reset()?)?);
             Ok(())
         }
         Some(Cmd::Copy {

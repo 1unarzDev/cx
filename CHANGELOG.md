@@ -4,6 +4,11 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.65
+
+### Features
+- Add fresh-evidence upstream selection for internet sharing, preferring measured throughput and using latency as a tie-breaker.
+
 ## v0.1.64
 
 ### Fixes

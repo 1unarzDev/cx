@@ -4796,7 +4796,13 @@ fn boxed_confirmation_variant_captures() {
                                     ])
                                     .split(inner);
                                 confirmation_buttons(
-                                    frame, rows[2], stop, selected, false, variant,
+                                    frame,
+                                    rows[2],
+                                    stop,
+                                    selected,
+                                    false,
+                                    variant,
+                                    if stop { ["Keep session", "Stop session"] } else { ["Cancel", "Delete"] },
                                 );
                             })
                             .unwrap();

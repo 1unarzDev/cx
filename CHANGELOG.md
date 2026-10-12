@@ -4,6 +4,11 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.64
+
+### Fixes
+- Repair device-removal confirmation controls so arrow keys, h/l, Enter, and clear button labels work consistently.
+
 ## v0.1.63
 
 ### Features

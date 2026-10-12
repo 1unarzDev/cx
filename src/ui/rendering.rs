@@ -1032,7 +1032,10 @@ pub(super) fn render_at(
                     },
                 ),
             ]
-        } else if matches!(dialog, Dialog::Delete(..) | Dialog::StopShell(..)) {
+        } else if matches!(
+            dialog,
+            Dialog::Delete(..) | Dialog::StopShell(..) | Dialog::RemoveDevice(..) | Dialog::Reset
+        ) {
             vec![
                 (
                     "↑↓",
@@ -1054,6 +1057,10 @@ pub(super) fn render_at(
                     "y / n",
                     if matches!(dialog, Dialog::StopShell(..)) {
                         "Stop / keep"
+                    } else if matches!(dialog, Dialog::RemoveDevice(..)) {
+                        "Remove / keep"
+                    } else if matches!(dialog, Dialog::Reset) {
+                        "Reset / cancel"
                     } else {
                         "Delete / cancel"
                     },
@@ -1605,6 +1612,15 @@ pub(super) fn render_at(
             Dialog::Delete(..) | Dialog::StopShell(..) | Dialog::RemoveDevice(..) | Dialog::Reset
         ) {
             let stop = matches!(dialog, Dialog::StopShell(..));
+            let labels = if stop {
+                ["Keep session", "Stop session"]
+            } else if matches!(dialog, Dialog::RemoveDevice(..)) {
+                ["Keep device", "Remove device"]
+            } else if matches!(dialog, Dialog::Reset) {
+                ["Cancel", "Reset"]
+            } else {
+                ["Cancel", "Delete"]
+            };
             let rect = confirmation_popup(area, &detail);
             frame.render_widget(Clear, rect);
             frame.render_widget(
@@ -1656,6 +1672,7 @@ pub(super) fn render_at(
                 app.dialog_selected,
                 app.dialog_detail_focus,
                 ConfirmationLayout::Separate,
+                labels,
             );
         } else {
             let mut rect = popup(

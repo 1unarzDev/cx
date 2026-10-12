@@ -2866,10 +2866,12 @@ impl App {
                 }
             }
         }
-        if matches!(dialog, Dialog::Delete(..) | Dialog::StopShell(..))
-            && !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        if matches!(
+            dialog,
+            Dialog::Delete(..) | Dialog::StopShell(..) | Dialog::RemoveDevice(..) | Dialog::Reset
+        ) && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
         {
             match key.code {
                 KeyCode::Char('n' | 'N') => {
@@ -2901,6 +2903,8 @@ impl App {
             Dialog::Jobs
                 | Dialog::Delete(..)
                 | Dialog::StopShell(..)
+                | Dialog::RemoveDevice(..)
+                | Dialog::Reset
                 | Dialog::ContainerConfirm(..)
                 | Dialog::DestinationScope(..)
         ) {
@@ -2931,7 +2935,13 @@ impl App {
                 }
                 KeyCode::Esc
                     if self.dialog_detail_focus
-                        && matches!(dialog, Dialog::Delete(..) | Dialog::StopShell(..)) =>
+                        && matches!(
+                            dialog,
+                            Dialog::Delete(..)
+                                | Dialog::StopShell(..)
+                                | Dialog::RemoveDevice(..)
+                                | Dialog::Reset
+                        ) =>
                 {
                     self.dialog_detail_focus = false;
                     self.dialog = None;
@@ -6055,16 +6065,13 @@ fn confirmation_buttons(
     selected: usize,
     detail_focus: bool,
     layout: ConfirmationLayout,
+    labels: [&str; 2],
 ) {
     frame.render_widget(Clear, area);
-    let labels = if stop {
-        if area.width < 38 {
-            ["Keep", "Stop"]
-        } else {
-            ["Keep session", "Stop session"]
-        }
+    let labels = if stop && area.width < 38 {
+        ["Keep", "Stop"]
     } else {
-        ["Cancel", "Delete"]
+        labels
     };
     let columns = Layout::default()
         .direction(Direction::Horizontal)

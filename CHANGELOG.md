@@ -4,6 +4,16 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.63
+
+### Features
+- Add `cx reset` for the local CX-managed tmux server, and a confirmation action in the workspace. Reset ends managed sessions; external tmux servers remain untouched.
+
+### Fixes
+- Open the workspace after an interactive update finds the current version, with a temporary up-to-date notification.
+- Allow Left Arrow to cancel the session/provider chooser.
+- Refresh Anthropic environment variables from the execution process before creating managed sessions and after reset.
+
 ## v0.1.62
 
 ### Fixes

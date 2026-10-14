@@ -104,6 +104,14 @@ pub enum Operation {
         boot_id: String,
         provider: String,
     },
+    ChangeAgentPermissions {
+        id: String,
+        pid: u32,
+        started: String,
+        boot_id: String,
+        provider: String,
+        yolo: Option<bool>,
+    },
     StopSession {
         id: String,
         pid: u32,

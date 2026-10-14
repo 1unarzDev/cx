@@ -614,6 +614,55 @@ pub fn stop_agent(
     );
     stop_managed(id, pid, started, boot_id, provider)
 }
+
+/// Restart the provider inside the existing CX-owned tmux pane with the
+/// opposite approval mode. The provider's native conversation resume command
+/// keeps the conversation identity while the pane and permission marker stay
+/// under the same CX session id.
+pub fn change_agent_permissions(
+    id: &str,
+    pid: u32,
+    started: &str,
+    boot_id: &str,
+    provider: &str,
+    requested: Option<bool>,
+) -> Result<serde_json::Value> {
+    anyhow::ensure!(
+        ["codex", "claude"].contains(&provider),
+        "unsupported agent permission profile"
+    );
+    let root = state()?;
+    let record: Session = serde_json::from_slice(&fs::read(root.join(format!("{id}.json")))?)?;
+    anyhow::ensure!(
+        record.id == id
+            && record.pid == pid
+            && record.started == started
+            && record.boot_id == boot_id,
+        "session identity changed; refresh sessions"
+    );
+    let target = ids(true)?
+        .into_iter()
+        .find(|s| field(true, s, "#{session_name}").ok().as_deref() == Some(id))
+        .context("managed session is no longer running")?;
+    let permissions_path = root.join(format!("{id}.permissions"));
+    let current_yolo = fs::read_to_string(&permissions_path)
+        .unwrap_or_default()
+        .trim()
+        == "yolo";
+    let yolo = requested.unwrap_or(!current_yolo);
+    let command = provider_command(provider, yolo, true)?;
+    let mut restart = tmux(true)?;
+    restart.args(["send-keys", "-t", &target, "C-c"]);
+    output(restart)?;
+    let mut send = tmux(true)?;
+    send.args(["send-keys", "-t", &target, "-l", &command]);
+    output(send)?;
+    let mut enter = tmux(true)?;
+    enter.args(["send-keys", "-t", &target, "Enter"]);
+    output(enter)?;
+    fs::write(permissions_path, if yolo { "yolo" } else { "default" })?;
+    Ok(serde_json::json!({"status":"restarted", "permission": if yolo {"yolo"} else {"default"}}))
+}
 fn stop_managed(
     id: &str,
     pid: u32,

@@ -4679,6 +4679,36 @@ impl App {
             }
             return;
         }
+        if self.view == View::Work
+            && self.focus == Focus::Workspace
+            && key.code == KeyCode::Char('p')
+            && key.modifiers.is_empty()
+        {
+            if let Some((device, session)) = self.selected_session() {
+                if ["claude", "codex"].contains(&session.provider.as_str()) && !session.external {
+                    let sent = self.send(
+                        device,
+                        Operation::ChangeAgentPermissions {
+                            id: session.id.clone(),
+                            pid: session.pid,
+                            started: session.started.clone(),
+                            boot_id: session.boot_id.clone(),
+                            provider: session.provider.clone(),
+                            yolo: None,
+                        },
+                    );
+                    if sent {
+                        self.set_notice("Restarting agent with toggled permissions…".into());
+                    }
+                } else {
+                    self.set_notice_as(
+                        NoticeKind::Warning,
+                        "Permission toggle is available for managed Claude/Codex sessions".into(),
+                    );
+                }
+            }
+            return;
+        }
         if self.view == View::Files
             && self.focus == Focus::Workspace
             && self.browser.as_ref().is_some_and(|b| b.preview.is_none())
@@ -8225,6 +8255,12 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     for d in 0..app.devices.len() {
         app.check_providers(d);
         app.send(d, Operation::TransferJobs);
+        // Reconcile container state during startup as well as when opening the
+        // Containers view. This removes cached entries for containers that no
+        // longer exist before they can be offered as session/file targets.
+        if app.send(d, Operation::Containers) {
+            app.containers_loading.insert(d);
+        }
     }
     let mut screen = Screen::new().context("open terminal workspace")?;
     // Drop ordering cleans owned bitmaps before Screen restores the original terminal.

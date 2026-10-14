@@ -376,6 +376,14 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
             boot_id,
             provider,
         } => sessions::stop_agent(&id, pid, &started, &boot_id, &provider),
+        Operation::ChangeAgentPermissions {
+            id,
+            pid,
+            started,
+            boot_id,
+            provider,
+            yolo,
+        } => sessions::change_agent_permissions(&id, pid, &started, &boot_id, &provider, yolo),
         Operation::StopSession {
             ref id,
             pid,

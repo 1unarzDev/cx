@@ -4,6 +4,11 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.66
+
+### Fixes
+- Prevent verbose Dev Container CLI build progress from exhausting the result output limit and falsely reporting a failed rebuild. CLI exit status and machine-readable success checks remain enforced.
+
 ## v0.1.65
 
 ### Features

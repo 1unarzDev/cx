@@ -190,7 +190,7 @@ fn workspace_up(workspace: &str, rebuild: Option<&Container>) -> Result<Value> {
         }
         command.args(["--expect-existing-container", "--remove-existing-container"]);
     }
-    let bytes = bounded(command, None, 600, 1024 * 1024).with_context(|| if rebuild.is_some() {
+    let bytes = bounded_workspace(command, 600, 1024 * 1024).with_context(|| if rebuild.is_some() {
         "Devcontainer rebuild failed. The CLI may have replaced the old container; refresh to inspect its state. Check the workspace configuration, Docker access and available disk space before retrying"
     } else { "Workspace startup failed; refresh to inspect its state" })?;
     let result: Value = bytes
@@ -218,11 +218,21 @@ fn memfile() -> Result<fs::File> {
     anyhow::ensure!(fd >= 0, "bounded container I/O storage unavailable");
     Ok(unsafe { fs::File::from_raw_fd(fd) })
 }
-fn bounded(
+// Dev Containers writes build/lifecycle progress to stderr and its machine
+// result to stdout. Progress is not protocol data and must not exhaust the
+// result budget (or an unbounded temporary file) during a successful rebuild.
+fn bounded_workspace(command: Command, timeout: u64, cap: u64) -> Result<Vec<u8>> {
+    bounded_output(command, None, timeout, cap, false)
+}
+fn bounded(command: Command, input: Option<fs::File>, timeout: u64, cap: u64) -> Result<Vec<u8>> {
+    bounded_output(command, input, timeout, cap, true)
+}
+fn bounded_output(
     mut command: Command,
     input: Option<fs::File>,
     timeout: u64,
     cap: u64,
+    capture_stderr: bool,
 ) -> Result<Vec<u8>> {
     let mut out = memfile()?;
     let err = memfile()?;
@@ -230,7 +240,11 @@ fn bounded(
         .process_group(0)
         .stdin(input.map(Stdio::from).unwrap_or_else(Stdio::null))
         .stdout(out.try_clone()?)
-        .stderr(err.try_clone()?);
+        .stderr(if capture_stderr {
+            Stdio::from(err.try_clone()?)
+        } else {
+            Stdio::null()
+        });
     let mut child = command
         .spawn()
         .context("Container engine/tool unavailable on this device")?;
@@ -938,6 +952,18 @@ fn terminal_command(container: &Container, scope: &ContainerScope, tty: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn workspace_progress_does_not_exhaust_result_budget() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "head -c 2097152 /dev/zero >&2; printf '%s\\n' '{\"outcome\":\"success\",\"containerId\":\"fixture\"}'"]);
+        let result = bounded_workspace(command, 5, 1024).unwrap();
+        let value: Value = serde_json::from_slice(&result).unwrap();
+        assert_eq!(value["outcome"], "success");
+        let mut failure = Command::new("sh");
+        failure.args(["-c", "echo '{\"outcome\":\"success\"}'; exit 1"]);
+        assert!(bounded_workspace(failure, 5, 1024).is_err());
+    }
+
     #[test]
     fn jsonc_preserves_strings_and_accepts_comments_and_trailing_commas() {
         assert_eq!(

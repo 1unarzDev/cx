@@ -200,6 +200,7 @@ fn relative_markdown_click_uses_document_host_and_restores_parent() {
     let linked = "# Section\nLinked destination\n\n# Section";
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 1,
         generation: a.generation,
         op: task.op,
@@ -219,6 +220,7 @@ fn relative_markdown_click_uses_document_host_and_restores_parent() {
     assert!(matches!(&back.op,Operation::Preview{path} if path=="/remote/docs/index.md"));
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 1,
         generation: a.generation,
         op: back.op,
@@ -468,6 +470,7 @@ fn network_friendly_names_require_unique_fresh_authenticated_mac_and_ip() {
     let authenticated = serde_json::json!({"interfaces":{"data":[{"address":"02:11:22:33:44:55","addr_info":[{"local":"192.0.2.20"},{"local":"2001:db8::20"}]}]},"internet":{"state":"unknown"}});
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 1,
         generation: a.generation,
         op: Operation::Network,
@@ -490,6 +493,7 @@ fn network_friendly_names_require_unique_fresh_authenticated_mac_and_ip() {
     assert!(a.network_rows().iter().any(|r| r["_known_peer"] == 1));
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 0,
         generation: a.generation,
         op: Operation::Network,
@@ -604,6 +608,7 @@ fn network_refresh_preserves_observer_expansion_and_selection_identity() {
     candidates.reverse();
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 0,
         generation: a.generation,
         op: Operation::NetworkCandidates,
@@ -759,6 +764,7 @@ fn network_peer_checks_bounded_cached_offline_and_no_redraw_requests() {
     assert_eq!(a.peer_inflight.len(), 1);
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 1,
         generation: a.generation,
         op: Operation::Info,
@@ -786,6 +792,7 @@ fn network_peer_selection_survives_lan_reordering_and_actions_target_peer() {
     select_network_peer(&mut a, 1);
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 0,
         generation: a.generation,
         op: Operation::NetworkCandidates,
@@ -1014,6 +1021,7 @@ fn network_all_scope_batches_every_host_and_captures_neighbor_owner() {
     for op in [Operation::Network, Operation::NetworkCandidates] {
         a.apply(Reply {
             device_id: None,
+            execution_target: None,
             device: 0,
             generation: a.generation,
             op,
@@ -1042,7 +1050,7 @@ fn network_fleet_reply_preserves_selected_owner_at_duplicate_address() {
     network_fixture(&mut a);
     a.network.insert(1, serde_json::json!({"candidates":[{"address":"192.0.2.1","interface":"eth0","source":"neighbor"}]}));
     select_network_route(&mut a, 1, "192.0.2.1");
-    a.apply(Reply { device_id: None,device:0, generation:a.generation, op:Operation::NetworkCandidates, result:Ok(serde_json::json!({"candidates":[{"address":"192.0.2.0","interface":"eth0","source":"neighbor"}]})), preview:None});
+    a.apply(Reply { device_id: None, execution_target: None,device:0, generation:a.generation, op:Operation::NetworkCandidates, result:Ok(serde_json::json!({"candidates":[{"address":"192.0.2.0","interface":"eth0","source":"neighbor"}]})), preview:None});
     assert_eq!(a.network_rows()[a.network_selected]["address"], "192.0.2.1");
     assert_eq!(a.network_device(), Some(1));
 }
@@ -1079,6 +1087,7 @@ fn network_auto_ssh_is_bounded_cached_and_scoped_without_redraw_work() {
     let snapshot = serde_json::json!({"observed_at":transport::now(), "candidates":candidates});
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 0,
         generation: a.generation,
         op: Operation::NetworkCandidates,
@@ -1103,6 +1112,7 @@ fn network_auto_ssh_is_bounded_cached_and_scoped_without_redraw_work() {
     let evidence = serde_json::json!({"address":address, "interface":interface, "observed_at":transport::now(), "ssh":{"state":"tcp_reachable"}});
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 0,
         generation: a.generation,
         op: task.op.clone(),
@@ -1114,6 +1124,7 @@ fn network_auto_ssh_is_bounded_cached_and_scoped_without_redraw_work() {
     a.device = 2;
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 0,
         generation: a.generation + 1,
         op: tasks[1].op.clone(),
@@ -1128,6 +1139,7 @@ fn network_auto_ssh_is_bounded_cached_and_scoped_without_redraw_work() {
     a.neighbor_budget = 32;
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 0,
         generation: a.generation,
         op: Operation::NetworkCandidates,
@@ -1146,8 +1158,8 @@ fn network_auto_ssh_is_bounded_cached_and_scoped_without_redraw_work() {
 fn network_auto_ssh_ignores_stale_unnumeric_and_missing_interface() {
     let (mut a, rx) = queued_app();
     a.view = View::Network;
-    a.apply(Reply { device_id: None,device:0, generation:a.generation, op:Operation::NetworkCandidates, result:Ok(serde_json::json!({"observed_at":transport::now().saturating_sub(91),"candidates":[{"address":"192.0.2.1","interface":"eth0"}]})), preview:None});
-    a.apply(Reply { device_id: None,device:0, generation:a.generation, op:Operation::NetworkCandidates, result:Ok(serde_json::json!({"observed_at":transport::now(),"candidates":[{"address":"example.test","interface":"eth0"},{"address":"192.0.2.2"},{"address":"192.0.2.3","interface":"bad iface"}]})), preview:None});
+    a.apply(Reply { device_id: None, execution_target: None,device:0, generation:a.generation, op:Operation::NetworkCandidates, result:Ok(serde_json::json!({"observed_at":transport::now().saturating_sub(91),"candidates":[{"address":"192.0.2.1","interface":"eth0"}]})), preview:None});
+    a.apply(Reply { device_id: None, execution_target: None,device:0, generation:a.generation, op:Operation::NetworkCandidates, result:Ok(serde_json::json!({"observed_at":transport::now(),"candidates":[{"address":"example.test","interface":"eth0"},{"address":"192.0.2.2"},{"address":"192.0.2.3","interface":"bad iface"}]})), preview:None});
     assert!(rx.try_recv().is_err());
     assert!(a.neighbor_probes.is_empty());
 }
@@ -1193,6 +1205,7 @@ fn network_offline_invalidates_previous_evidence_and_scope_does_not_block() {
         .any(|t| t.device == 1 && matches!(t.op, Operation::Network)));
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 0,
         generation: a.generation + 1,
         op: Operation::Network,
@@ -1221,6 +1234,7 @@ fn failed_cached_session_keeps_refresh_visible_at_small_widths() {
     }
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 0,
         op: Operation::Sessions,
         generation: a.generation,
@@ -1336,7 +1350,7 @@ fn escape_clearing_selection_does_not_discard_inflight_directory_listing() {
     b.marked.insert("/files/alpha.txt".into());
     let generation = a.generation;
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    a.apply(Reply { device_id: None, preview:None, device: 0, op: Operation::List { path: "/files".into() }, generation,
+    a.apply(Reply { device_id: None, execution_target: None, preview:None, device: 0, op: Operation::List { path: "/files".into() }, generation,
             result: Ok(serde_json::json!({"path":"/files", "entries":[{"name":"fresh.txt","path":"/files/fresh.txt","kind":"file","size":1}]})) });
     assert!(!a.browser.as_ref().unwrap().loading);
     assert_eq!(a.visible_entries()[0].name, "fresh.txt");
@@ -1617,6 +1631,7 @@ fn copy_batch_stays_in_folder_and_paste_is_nonmodal_and_serialized() {
     assert!(a.transfer_drawer && a.dialog.is_none());
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         preview: None,
         device: 0,
         op: first.op,
@@ -1695,6 +1710,7 @@ fn rejected_cut_retains_clipboard_and_late_mutation_errors_remain_visible() {
     a.generation += 1;
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         preview: None,
         device: 0,
         op: task.op,
@@ -1712,6 +1728,7 @@ fn rejected_cut_retains_clipboard_and_late_mutation_errors_remain_visible() {
     a.generation += 1;
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         preview: None,
         device: 0,
         op: Operation::Rename {
@@ -1969,6 +1986,7 @@ fn restored_file_identity_survives_page_one_clamping() {
         let entries=(offset..end).map(|i|serde_json::json!({"name":format!("f{i:04}"),"path":format!("/recordings/f{i:04}"),"kind":"file","size":1})).collect::<Vec<_>>();
         restored.apply(Reply {
             device_id: None,
+            execution_target: None,
             preview: None,
             device: 0,
             op: Operation::ListPage {
@@ -2022,7 +2040,7 @@ fn later_directory_pages_cannot_retarget_the_selected_file() {
     a.browser = Some(browser);
     a.view = View::Files;
     for (offset, name, next) in [(0, "z", Some(1)), (1, "a", None)] {
-        a.apply(Reply { device_id: None,preview:None,device:0,op:Operation::ListPage{path:"/files".into(),offset,limit:1},generation:0,result:Ok(serde_json::json!({"path":"/files","entries":[{"name":name,"path":format!("/files/{name}"),"kind":"file","size":1}],"next_offset":next}))});
+        a.apply(Reply { device_id: None, execution_target: None,preview:None,device:0,op:Operation::ListPage{path:"/files".into(),offset,limit:1},generation:0,result:Ok(serde_json::json!({"path":"/files","entries":[{"name":name,"path":format!("/files/{name}"),"kind":"file","size":1}],"next_offset":next}))});
     }
     let browser = a.browser.as_ref().unwrap();
     assert_eq!(browser.entries[browser.selected].path, "/files/z");
@@ -2056,6 +2074,7 @@ fn progress_reordering_preserves_job_cancellation_identity() {
     assert_eq!(a.job_rows()[a.dialog_selected].1["key"], "a");
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         preview: None,
         device: 0,
         op: Operation::TransferJobs,
@@ -2075,6 +2094,7 @@ fn obsolete_network_reply_releases_loading_on_success_and_error() {
         a.network_loading = true;
         a.apply(Reply {
             device_id: None,
+            execution_target: None,
             preview: None,
             device: 1,
             op: Operation::Network,
@@ -2102,6 +2122,7 @@ fn expired_agent_selection_cannot_turn_into_shell_launch() {
     assert!(matches!(rx.try_recv().unwrap().op, Operation::Info));
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         preview: None,
         device: 1,
         op: Operation::Info,
@@ -2142,6 +2163,7 @@ fn provider_results_survive_navigation_but_failed_checks_hide_agents() {
     a.generation = 8;
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         preview: None,
         device: 1,
         op: Operation::Info,
@@ -2151,6 +2173,7 @@ fn provider_results_survive_navigation_but_failed_checks_hide_agents() {
     assert_eq!(a.provider_choices(1), vec!["shell", "codex"]);
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         preview: None,
         device: 1,
         op: Operation::Info,
@@ -2186,6 +2209,7 @@ fn new_from_files_starts_current_execution_location_and_attaches_on_reply() {
     let session = serde_json::json!({"id":"new","name":"Codex","directory":"/project/remote","provider":"codex","account":"peace","host":"laptop","pid":1,"started":"x","boot_id":"boot","external":false,"socket":null});
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         preview: None,
         device: 1,
         op: task.op,
@@ -2385,6 +2409,7 @@ fn stale_container_reply_cannot_replace_current_scope_even_with_same_generation(
     a.open_container_browser(0, sb.clone());
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         preview: None,
         device: 0,
         generation: a.generation,
@@ -2540,6 +2565,7 @@ fn session_chooser_hides_unavailable_profiles_and_preserves_selection_on_check()
     assert!(!text.contains("[c] Claude") && !text.contains("[x] Codex"));
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 1,
         generation: a.generation,
         preview: None,
@@ -2710,7 +2736,7 @@ fn real_info_response_retains_native_command_capability() {
     let (mut a, _) = queued_app();
     a.view = View::Files;
     a.browser = Some(Browser::new(1, "/remote/folder".into()));
-    a.apply(Reply { device_id: None, preview:None, device: 1, op: Operation::Info, generation: a.generation,
+    a.apply(Reply { device_id: None, execution_target: None, preview:None, device: 1, op: Operation::Info, generation: a.generation,
             result: Ok(serde_json::json!({"capabilities": ["shell", "tmux", "native-command-v1", "unrecognized"]})) });
     assert_eq!(a.provider_choices(1), vec!["shell"]);
     assert_eq!(a.providers[&1].0, vec!["native-command-v1"]);
@@ -2950,6 +2976,7 @@ fn destination_enter_transfers_displayed_folder_once_and_releases_on_failure() {
     assert!(rx.try_recv().is_err(), "double Enter must not submit again");
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         preview: None,
         device: task.device,
         generation: task.generation,
@@ -2986,6 +3013,7 @@ fn transfer_sidebar_animation_frames_are_transparent_and_fit() {
     let key = spec.key.clone();
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         preview: None,
         device: 0,
         generation: a.generation,
@@ -3040,6 +3068,7 @@ fn transfer_sidebar_animation_frames_are_transparent_and_fit() {
     }
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         preview: None,
         device: 0,
         generation: a.generation,
@@ -3450,6 +3479,7 @@ fn stale_directory_reply_cannot_retarget_browser() {
     a.generation = 2;
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         preview: None,
         device: 0,
         op: Operation::List {
@@ -3949,6 +3979,7 @@ fn preview_search_survives_refresh_and_reveals_on_resize() {
     a.browser.as_mut().unwrap().preview_pending_page = Some(1);
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 0,
         generation: a.generation,
         op: Operation::Preview {
@@ -4001,7 +4032,7 @@ fn pdf_pages_coalesce_keys_and_preserve_last_page_on_failure() {
         "only one page render may be in flight"
     );
     assert_eq!(a.browser.as_ref().unwrap().preview_requested_page, 3);
-    a.apply(Reply { device_id: None,device:0,generation:a.generation,op:Operation::PreviewPage {path:"/files/book.pdf".into(),page:2},preview:None,result:Ok(serde_json::json!({"kind":"pdf","page":2,"pages":3,"text":"","image":{"width":1,"height":1,"rgba":"/////w=="}}))});
+    a.apply(Reply { device_id: None, execution_target: None,device:0,generation:a.generation,op:Operation::PreviewPage {path:"/files/book.pdf".into(),page:2},preview:None,result:Ok(serde_json::json!({"kind":"pdf","page":2,"pages":3,"text":"","image":{"width":1,"height":1,"rgba":"/////w=="}}))});
     assert!(matches!(
         rx.try_recv().unwrap().op,
         Operation::PreviewPage { page: 3, .. }
@@ -4018,6 +4049,7 @@ fn pdf_pages_coalesce_keys_and_preserve_last_page_on_failure() {
     );
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 0,
         generation: a.generation,
         op: Operation::PreviewPage {
@@ -4042,6 +4074,7 @@ fn pdf_pages_coalesce_keys_and_preserve_last_page_on_failure() {
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 0,
         generation,
         op: Operation::PreviewPage {
@@ -4446,6 +4479,7 @@ fn old_helper_page_check_does_not_loop() {
     ));
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 1,
         generation: a.generation,
         op: Operation::Info,
@@ -4672,6 +4706,7 @@ fn preview_reply_is_scoped_and_content_is_not_serialized() {
     let reply = || serde_json::json!({"text":"# Safe","kind":"markdown","title":"Heading"});
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         preview: None,
         device: 1,
         op: Operation::Preview {
@@ -4683,6 +4718,7 @@ fn preview_reply_is_scoped_and_content_is_not_serialized() {
     assert!(a.browser.as_ref().unwrap().preview.is_none());
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         preview: None,
         device: 0,
         op: Operation::Preview {
@@ -4698,6 +4734,7 @@ fn preview_reply_is_scoped_and_content_is_not_serialized() {
     assert!(a.browser.as_ref().unwrap().preview_rich.is_none());
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         preview: None,
         device: 0,
         op: Operation::Preview {
@@ -4965,6 +5002,7 @@ fn accepted_preview_responses_change_native_identity_even_when_metadata_matches(
     for revision in [1, 2] {
         a.apply(Reply {
             device_id: None,
+            execution_target: None,
             device: 0,
             op: Operation::Preview {
                 path: "/files/alpha.txt".into(),
@@ -4980,6 +5018,7 @@ fn accepted_preview_responses_change_native_identity_even_when_metadata_matches(
     let before = a.browser.as_ref().unwrap().preview_revision;
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 1,
         op: Operation::Preview {
             path: "/remote".into(),
@@ -5033,6 +5072,7 @@ fn scoped_session_refresh_requests_inventory_once_for_labels_without_launching()
     for _ in 0..2 {
         a.apply(Reply {
             device_id: None,
+            execution_target: None,
             device: 0,
             op: Operation::Sessions,
             generation: a.generation,
@@ -5135,6 +5175,7 @@ fn notification_types_follow_results_and_typed_inputs_keep_ownership() {
     let (mut app, _rx) = file_app();
     app.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 0,
         generation: app.generation,
         preview: None,
@@ -5226,6 +5267,7 @@ fn unreachable_notices_are_once_per_device_until_successful_contact() {
     let (mut app, _rx) = queued_app();
     let failure = |op, device, generation| Reply {
         device_id: None,
+        execution_target: None,
         op,
         device,
         generation,
@@ -5253,6 +5295,7 @@ fn unreachable_notices_are_once_per_device_until_successful_contact() {
     assert!(app.notice.is_empty());
     app.apply(Reply {
         device_id: None,
+        execution_target: None,
         op: Operation::List {
             path: "/files".into(),
         },
@@ -5266,6 +5309,7 @@ fn unreachable_notices_are_once_per_device_until_successful_contact() {
     // A genuinely successful helper response clears the cached passive error.
     app.apply(Reply {
         device_id: None,
+        execution_target: None,
         op: Operation::Sessions,
         device: 1,
         generation: app.generation,
@@ -5299,6 +5343,7 @@ fn stale_errors_and_quiet_neighbor_checks_do_not_consume_the_first_device_notice
     ] {
         app.apply(Reply {
             device_id: None,
+            execution_target: None,
             op,
             device: 1,
             generation,
@@ -5310,6 +5355,7 @@ fn stale_errors_and_quiet_neighbor_checks_do_not_consume_the_first_device_notice
     }
     app.apply(Reply {
         device_id: None,
+        execution_target: None,
         op: Operation::Info,
         device: 1,
         generation: 2,
@@ -5320,6 +5366,7 @@ fn stale_errors_and_quiet_neighbor_checks_do_not_consume_the_first_device_notice
     let deadline = app.notice_deadline;
     app.apply(Reply {
         device_id: None,
+        execution_target: None,
         op: Operation::Sessions,
         device: 1,
         generation: 1,
@@ -5329,6 +5376,7 @@ fn stale_errors_and_quiet_neighbor_checks_do_not_consume_the_first_device_notice
     assert!(app.unavailable_notified.is_empty());
     app.apply(Reply {
         device_id: None,
+        execution_target: None,
         op: Operation::Sessions,
         device: 1,
         generation: 2,
@@ -5420,6 +5468,7 @@ fn scoped_mutation_failure_releases_queue_after_navigation_and_preserves_clipboa
     a.open_host_browser(1, "/output".into());
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: task.device,
         generation: task.generation,
         op: task.op,
@@ -5450,6 +5499,7 @@ fn rebuild_is_devcontainer_only_explicit_and_refreshes_after_failure() {
     assert!(matches!(task.op, Operation::DevcontainerRebuild { .. }));
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: task.device,
         generation: task.generation,
         op: task.op,
@@ -5532,6 +5582,7 @@ fn failed_session_refresh_discards_unattachable_cache() {
     a.work[1].fetched = transport::now();
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 1,
         op: Operation::Sessions,
         generation: a.generation,
@@ -5582,6 +5633,7 @@ fn complete_container_scan_prunes_stopped_missing_and_restarted_sessions() {
     }
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 1,
         op: Operation::Containers,
         generation: a.generation,
@@ -5620,6 +5672,7 @@ fn incomplete_container_scan_preserves_unverified_sessions() {
     for complete in [false, true] {
         a.apply(Reply {
             device_id: None,
+            execution_target: None,
             device: 1,
             op: Operation::Containers,
             generation: a.generation,
@@ -5639,6 +5692,7 @@ fn reply_for_removed_device_is_ignored_and_reordered_reply_tracks_identity() {
     a.policies.remove(1);
     a.apply(Reply {
         device_id: Some(remote.id.clone()),
+        execution_target: None,
         device: 1,
         op: Operation::Sessions,
         generation: a.generation,
@@ -5652,6 +5706,7 @@ fn reply_for_removed_device_is_ignored_and_reordered_reply_tracks_identity() {
     a.policies.swap(0, 1);
     a.apply(Reply {
         device_id: Some(remote.id),
+        execution_target: None,
         device: 1,
         op: Operation::Sessions,
         generation: a.generation,
@@ -5695,6 +5750,7 @@ fn container_pruning_preserves_selected_session_identity() {
     assert_eq!(a.selected_session().unwrap().1.id, "b-selected");
     a.apply(Reply {
         device_id: None,
+        execution_target: None,
         device: 1,
         op: Operation::Containers,
         generation: a.generation,
@@ -5764,6 +5820,7 @@ fn agent_task_dialog_tracks_refresh_and_closes_when_session_disappears() {
     });
     a.apply(Reply {
         device_id: Some(a.devices[0].id.clone()),
+        execution_target: None,
         device: 0,
         op: Operation::Sessions,
         generation: a.generation,
@@ -5773,6 +5830,7 @@ fn agent_task_dialog_tracks_refresh_and_closes_when_session_disappears() {
     assert!(matches!(&a.dialog, Some(Dialog::AgentTasks(_,s)) if s.agent_tasks.len()==1));
     a.apply(Reply {
         device_id: Some(a.devices[0].id.clone()),
+        execution_target: None,
         device: 0,
         op: Operation::Sessions,
         generation: a.generation,
@@ -5794,4 +5852,130 @@ fn stale_activity_does_not_keep_a_session_spinning() {
     let capture = capture_app(&a, 120);
     assert!(capture.contains("? state"));
     assert!(!capture.contains("running"));
+}
+
+#[test]
+fn replies_from_previous_ssh_target_cannot_restore_old_sessions_or_containers() {
+    let (mut a, _) = queued_app();
+    let prior = a.devices[1].clone();
+    a.work[1].sessions.push(disposable_shell());
+    a.containers.insert(1, vec![container_fixture('a', true)]);
+    let mut updated = prior.clone();
+    updated.target = Some("replacement-host".into());
+    a.replace_device_endpoint(1, updated);
+    assert!(a.work[1].sessions.is_empty() && a.containers.is_empty());
+    for (op, result) in [
+        (Operation::Sessions, serde_json::json!([disposable_shell()])),
+        (
+            Operation::Containers,
+            serde_json::json!({"containers":[container_fixture('a', true)],"complete":true}),
+        ),
+    ] {
+        a.apply(Reply {
+            device_id: Some(prior.id.clone()),
+            execution_target: Some(prior.target.clone()),
+            device: 1,
+            op,
+            generation: a.generation,
+            preview: None,
+            result: Ok(result),
+        });
+    }
+    assert!(a.work[1].sessions.is_empty());
+    assert!(!a.containers.contains_key(&1));
+    a.apply(Reply {
+        device_id: Some(prior.id),
+        execution_target: Some(Some("replacement-host".into())),
+        device: 1,
+        op: Operation::Sessions,
+        generation: a.generation,
+        preview: None,
+        result: Ok(serde_json::json!([disposable_shell()])),
+    });
+    assert_eq!(a.work[1].sessions.len(), 1);
+}
+
+#[test]
+fn endpoint_or_device_index_changes_clear_all_host_scoped_views_and_loading() {
+    let (mut a, _) = queued_app();
+    let c = container_fixture('a', true);
+    a.containers.insert(1, vec![c.clone()]);
+    a.container_errors.insert(1, "old host".into());
+    a.containers_loading.insert(1);
+    a.container_locations
+        .insert((1, c.id.clone()), "/old".into());
+    a.rebuilding.insert((1, c.id));
+    a.container_collapsed.insert(1);
+    a.file_locations.insert(1, "/old".into());
+    a.browser_cache.insert(
+        (1, "/old".into(), String::new()),
+        Browser::new(1, "/old".into()),
+    );
+    a.provider_loading.insert(1);
+    a.peer_inflight.insert(1);
+    a.network_inflight.insert(1);
+    a.network_candidates_inflight.insert(1);
+    a.network_refresh_queue.push_back(1);
+    a.jobs.insert(1, serde_json::json!({"jobs":[]}));
+    a.work[1].loading = true;
+    let generation = a.generation;
+    a.invalidate_device_views();
+    assert!(
+        a.containers.is_empty() && a.container_errors.is_empty() && a.containers_loading.is_empty()
+    );
+    assert!(
+        a.container_locations.is_empty()
+            && a.rebuilding.is_empty()
+            && a.container_collapsed.is_empty()
+    );
+    assert!(a.file_locations.is_empty() && a.browser_cache.is_empty());
+    assert!(a.provider_loading.is_empty() && a.peer_inflight.is_empty());
+    assert!(
+        a.network_inflight.is_empty()
+            && a.network_candidates_inflight.is_empty()
+            && a.network_refresh_queue.is_empty()
+    );
+    assert!(a.jobs.is_empty() && !a.work[1].loading);
+    assert!(a.generation > generation);
+}
+
+#[test]
+fn removal_reindexes_queued_actions_and_never_inherits_old_container_views() {
+    let (mut a, _) = queued_app();
+    let mut third = a.devices[1].clone();
+    third.id = "third".into();
+    third.target = Some("third-host".into());
+    a.devices.push(third);
+    a.policies.push(store::DevicePolicy::default());
+    a.work.push(Cached {
+        sessions: vec![],
+        loading: true,
+        error: None,
+        fetched: 0,
+    });
+    a.containers.insert(1, vec![container_fixture('a', true)]);
+    a.containers.insert(2, vec![container_fixture('b', true)]);
+    a.containers_loading.insert(2);
+    a.file_queue.push_back((
+        1,
+        Operation::Mkdir {
+            path: "/removed".into(),
+        },
+    ));
+    a.file_queue.push_back((
+        2,
+        Operation::Mkdir {
+            path: "/third".into(),
+        },
+    ));
+    a.device = 2;
+    a.remove_device_state(1);
+    assert_eq!(a.devices[1].id, "third");
+    assert!(a.containers.is_empty() && a.containers_loading.is_empty());
+    assert!(!a.work[1].loading);
+    assert_eq!(a.file_queue.len(), 1);
+    assert_eq!(a.file_queue.front().unwrap().0, 1);
+    assert!(
+        matches!(&a.file_queue.front().unwrap().1, Operation::Mkdir { path } if path == "/third")
+    );
 }

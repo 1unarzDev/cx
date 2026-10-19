@@ -292,6 +292,7 @@ struct Task {
 }
 struct Reply {
     device_id: Option<String>,
+    execution_target: Option<Option<String>>,
     preview: Option<RichPreview>,
     device: usize,
     op: Operation,
@@ -719,6 +720,74 @@ impl App {
             ),
         }
     }
+    // These collections use device vector indices. Clear them as one unit
+    // whenever an endpoint changes or removing a device shifts those indices.
+    fn invalidate_device_views(&mut self) {
+        self.browser = None;
+        self.other_browser = None;
+        self.destination_active = false;
+        self.browser_cache.clear();
+        self.container_locations.clear();
+        self.containers.clear();
+        self.container_errors.clear();
+        self.containers_loading.clear();
+        self.rebuilding.clear();
+        self.container_collapsed.clear();
+        self.container_selected = 0;
+        self.file_locations.clear();
+        self.providers.clear();
+        self.provider_loading.clear();
+        self.network.clear();
+        self.peer_evidence.clear();
+        self.peer_checks.clear();
+        self.peer_inflight.clear();
+        self.network_inflight.clear();
+        self.network_candidates_inflight.clear();
+        self.network_refresh_queue.clear();
+        self.network_jump_routes.clear();
+        self.network_loading = false;
+        self.neighbor_probes.clear();
+        self.neighbor_queue.clear();
+        self.neighbor_evidence.clear();
+        self.jobs.clear();
+        self.pending_attach = None;
+        self.dialog = None;
+        self.command_target = None;
+        self.rename_target = None;
+        self.network_add_target = None;
+        self.generation += 1;
+        for work in &mut self.work {
+            work.loading = false;
+        }
+    }
+
+    fn replace_device_endpoint(&mut self, device: usize, updated: Device) {
+        self.devices[device] = updated;
+        self.invalidate_device_views();
+        self.work[device] = Cached {
+            sessions: vec![],
+            loading: false,
+            error: None,
+            fetched: 0,
+        };
+        self.file_queue.retain(|(d, _)| *d != device);
+    }
+    fn remove_device_state(&mut self, index: usize) {
+        self.devices.remove(index);
+        self.policies.remove(index);
+        self.work.remove(index);
+        self.invalidate_device_views();
+        self.file_queue.retain(|(d, _)| *d != index);
+        for (d, _) in &mut self.file_queue {
+            if *d > index {
+                *d -= 1;
+            }
+        }
+        self.device = self.device.min(self.devices.len());
+        self.view = View::Work;
+        self.focus = Focus::Devices;
+    }
+
     fn remove_selected_device(&mut self) {
         let Some(index) = self.device.checked_sub(1) else {
             self.set_notice_as(
@@ -730,19 +799,7 @@ impl App {
         let device = self.devices[index].clone();
         match store::remove_device(&device.id) {
             Ok(_) => {
-                self.browser = None;
-                self.other_browser = None;
-                self.destination_active = false;
-                self.devices.remove(index);
-                self.policies.remove(index);
-                self.work.remove(index);
-                self.providers.clear();
-                self.network.clear();
-                self.peer_evidence.clear();
-                self.peer_checks.clear();
-                self.device = self.device.min(self.devices.len());
-                self.view = View::Work;
-                self.focus = Focus::Devices;
+                self.remove_device_state(index);
                 self.set_notice_as(
                     NoticeKind::Success,
                     format!("Removed {} from this CX viewer", safe_label(&device.name)),
@@ -3389,6 +3446,13 @@ impl App {
             let Some(device) = self.devices.iter().position(|d| &d.id == id) else {
                 return; // Device removed while this request was in flight.
             };
+            if reply
+                .execution_target
+                .as_ref()
+                .is_some_and(|target| target != &self.devices[device].target)
+            {
+                return; // Reply belongs to an SSH address that has since changed.
+            }
             reply.device = device;
         }
         if reply.device >= self.devices.len() || reply.device >= self.work.len() {
@@ -4510,10 +4574,7 @@ impl App {
                             if let Some(device) = self.pending_edit.take() {
                                 match store::update_target(&self.devices[device], &target) {
                                     Ok(updated) => {
-                                        self.devices[device] = updated;
-                                        self.providers.remove(&device);
-                                        self.work[device].error = None;
-                                        self.work[device].fetched = 0;
+                                        self.replace_device_endpoint(device, updated);
                                         self.set_notice_as(
                                             NoticeKind::Success,
                                             "SSH address updated · refresh to verify the connection".into(),
@@ -8179,6 +8240,7 @@ fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender<Reply>) {
                 let delivered = replies
                     .send(Reply {
                         device_id: Some(task.execution.id.clone()),
+                        execution_target: Some(task.execution.target.clone()),
                         preview,
                         device: task.device,
                         op: task.op,

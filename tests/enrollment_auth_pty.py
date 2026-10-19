@@ -39,8 +39,17 @@ sys.exit(1)
    while label not in text() and time.monotonic()<deadline:read()
    assert label in text(),text()
   try:
-   read(1);os.write(master,b'a');wait('Add by SSH address')
-   assert 'Enter Confirm' not in text() and 'Esc Cancel' not in text() and 'Enter confirm' not in text() and 'Escape cancel' not in text()
+   read(1);os.write(master,b'\x10');wait('Actions')
+   os.write(master,b'Add by SSH address');read()
+   os.write(master,b'\r');wait('Direct SSH from this viewer')
+   read(.5);os.write(master,b'\r')
+   deadline=time.monotonic()+8
+   while ('Direct SSH from this viewer' in text() or 'Escape cancel' in text()) and time.monotonic()<deadline:read()
+   wait('Add by SSH address')
+   # Check the compact prompt itself; the Files footer correctly offers keys.
+   prompt_row=next(i for i,line in enumerate(screen.display) if 'Add by SSH address' in line)
+   prompt='\n'.join(screen.display[prompt_row:prompt_row+3])
+   assert all(label not in prompt for label in ['Enter Confirm','Esc Cancel','Enter confirm','Escape cancel']),prompt
    os.write(master,b'fixture@example.test\r');wait('Verify host key' if kind=='host' else 'SSH password')
    if kind=='host':
     # Fingerprint wrapping at 48 columns; scroll to inspect remaining text.

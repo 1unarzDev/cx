@@ -6,9 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 type NativeNames = BTreeMap<String, Option<String>>;
-use std::time::{Duration, Instant};
 
 const MAX_RECORD: usize = 64 * 1024;
 const INDEX_TAIL: u64 = 8 * 1024 * 1024;

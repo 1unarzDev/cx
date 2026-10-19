@@ -849,3 +849,21 @@ helpers to expose the new metadata/reconciliation behavior. Unsupported native
 schemas, missing SQLite and ambiguous names fail closed. Silent model/network
 waits and silent inner-container commands remain unknown rather than busy.
 No local or fleet deployment/restart was performed.
+
+
+## v0.1.68 — Files-startup enrollment fixture correction
+
+v0.1.67 release run 39210279146 blocked publication on an older enrollment PTY
+that pressed the Sessions-only `a` key at startup. Both portable builds and both
+distribution smoke matrices passed. The separate checks run 39210279040 passed.
+All new container/native/contrast fixtures passed in release CI before the old
+fixture failure.
+
+The enrollment fixture now uses Ctrl+P → Add by SSH address → Direct SSH and
+limits its redundant-instructions assertion to the compact prompt; the Files
+footer correctly retains its key guidance. PASS against the v0.1.68 binary in
+80-column password/cancel and 48-column show/hide/host-trust scenarios, including
+masked input, cancellation cleanup and termios restoration:
+`/tmp/cx-final-enrollment_auth_pty.log`. Locked build and formatting pass. Runtime
+behavior is unchanged from the 595-test v0.1.67 source; v0.1.68 supersedes the
+unpublished tag without rewriting it. No installed binaries or sessions changed.

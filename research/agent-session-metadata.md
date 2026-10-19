@@ -25,10 +25,12 @@ and transcripts are never used. Unassigned tasks are honestly labeled `Task N`.
 Completed tasks remain visible. These are task assignments, not proof that every
 owner is a currently running OS process.
 
-Codex retains the existing strict association: exactly one writable open thread
-lock or rollout UUID owned by this same live process. It rejects ambiguous shared
-daemons and read-only historical handles; no folder/recency guessing. Once that
-UUID is proven, an optional read-only `sqlite3` subprocess selects ONLY `name`,
+Codex associates writable open thread-lock or rollout UUIDs owned by the same
+live process. A singleton identifies that exact thread. With multiple owned
+writers, the actual spawn-edge graph must prove exactly one owned root is an
+ancestor of every other owned writer. Independent roots, cycles and incomplete
+traversals remain unavailable. Read-only historical handles are excluded; no
+folder/recency guessing. Once the root UUID is proven, an optional read-only `sqlite3` subprocess selects ONLY `name`,
 `cwd`, child IDs, nicknames, roles and spawn-edge status from `state_5.sqlite`.
 `title`, `preview`, `first_user_message`, rollouts and turns are excluded. In this
 schema `title` may contain initial user content, so it is intentionally never a
@@ -42,16 +44,22 @@ Missing executable, schema change, unreadable database, timeout or bad records
 produce unavailable optional metadata. The compatibility query is version
 sensitive, not a public stable provider API. Process-start identity is rechecked
 after collection. Reads/records are capped; SQLite is killed after 150 ms and
-output capped at 256 KiB. Every task/metadata file rejects symlinks, nonregular
+output capped at 256 KiB. Multiple-writer ancestry resolution has a separate
+150 ms subprocess budget, at most 64 owned writers, depth eight and 8192 rows.
+SQLite startup commands are disabled with `-init /dev/null`; the user
+`.sqliterc` is never sourced. The native rename index is collected first using
+a fresh 100 ms budget, preserving its precedence even if SQLite is slow. Every task/metadata file rejects symlinks, nonregular
 files and different file owners. Display strings remove terminal/bidi controls.
 
 ## Evidence and remaining limits
 
-Eleven targeted Rust tests cover PID reuse, no-name directory/activity metadata,
+Fourteen targeted Rust tests cover PID reuse, no-name directory/activity metadata,
 exact renames, writer ambiguity, control sanitization, record/time limits, task
 ID mismatch/symlink/oversize rejection, prompt-field exclusion, and an actual
 read-only SQLite fixture with parent, child, grandchild and unrelated same-cwd
-thread. The SQLite fixture confirms unrelated threads never enter the tree.
+thread. The SQLite fixtures confirm unrelated threads never enter the tree,
+parent/child/grandchild writers select one root, unrelated roots/cycles fail
+closed, oversized ancestry is rejected and `.sqliterc` output is suppressed.
 
 The official [Codex App Server documentation](https://developers.openai.com/codex/app-server/)
 was fetched on the investigation date. It documents thread reads, names and
@@ -70,3 +78,12 @@ was sent to manufacture evidence. No end-to-end interactive provider-switch
 validation is claimed by this module. A durable shared-daemon identity bridge
 still needs trusted native hooks or upstream client registration; see the earlier
 [identity research](codex-session-names.md).
+
+The owned-writer graph is structural identity, not proof of TUI selection
+lifecycle. No read-only observation can establish that switching the interactive
+TUI to another thread releases the old root's writer. A disposable idle
+`--no-daemon` TUI folder/thread-switch test is still required before claiming
+end-to-end current-directory tracking. Multiple unrelated writers safely become
+unavailable. A shared daemon owning a single tree cannot independently identify
+which child a particular TUI selected; separate managed processes avoid the
+shared-client association problem but do not replace that lifecycle test.

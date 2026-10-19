@@ -278,9 +278,11 @@ fn uuid(s: &str) -> bool {
         })
 }
 
-/// Only a single exact open writer-lock or rollout ID identifies a process.
-/// Daemons can own multiple threads, so ambiguous sets are intentionally rejected.
-fn codex_identity(paths: impl IntoIterator<Item = PathBuf>) -> Option<(PathBuf, String)> {
+/// Collect exact owned writer IDs. Multiple writers require a separate proven
+/// ancestry root; independent daemon roots remain deliberately ambiguous.
+fn codex_identities(
+    paths: impl IntoIterator<Item = PathBuf>,
+) -> Option<(PathBuf, BTreeSet<String>)> {
     let mut ids = BTreeSet::new();
     for path in paths {
         let parent = path.parent()?;
@@ -307,8 +309,21 @@ fn codex_identity(paths: impl IntoIterator<Item = PathBuf>) -> Option<(PathBuf, 
             }
         }
     }
+    if ids.is_empty() || ids.len() > 64 {
+        return None;
+    }
+    let home = ids.iter().next()?.0.clone();
+    if ids.iter().any(|(candidate, _)| *candidate != home) {
+        return None;
+    }
+    Some((home, ids.into_iter().map(|(_, id)| id).collect()))
+}
+
+#[cfg(test)]
+fn codex_identity(paths: impl IntoIterator<Item = PathBuf>) -> Option<(PathBuf, String)> {
+    let (home, ids) = codex_identities(paths)?;
     if ids.len() == 1 {
-        ids.into_iter().next()
+        Some((home, ids.into_iter().next()?))
     } else {
         None
     }
@@ -347,14 +362,21 @@ fn codex_metadata(pid: u32) -> Option<NativeMetadata> {
             paths.push(path);
         }
     }
-    let (home, id) = codex_identity(paths)?;
+    let (home, ids) = codex_identities(paths)?;
+    let id = if ids.len() == 1 {
+        ids.iter().next()?.clone()
+    } else {
+        codex_root(&home, &ids)?
+    };
+    // Read the rename index first, with its own budget, so a slow optional
+    // database query cannot suppress a fresh /rename update.
+    let native_name = private_file(&home.join("session_index.jsonl"))
+        .and_then(|file| index_file_title(file, &id, Instant::now() + Duration::from_millis(100)));
     let mut metadata = codex_database(&home, &id).unwrap_or_default();
-    if let Some(file) = private_file(&home.join("session_index.jsonl")) {
-        // The append-only native rename index takes precedence over database lag.
-        if let Some(name) = index_file_title(file, &id, deadline) {
-            metadata.title = Some(name);
-        }
+    if let Some(name) = native_name {
+        metadata.title = Some(name);
     }
+
     Some(metadata)
 }
 
@@ -381,13 +403,9 @@ fn index_file_title(mut file: File, id: &str, deadline: Instant) -> Option<Strin
 /// metadata columns: `title`, `preview`, and `first_user_message` are excluded.
 #[cfg(target_os = "linux")]
 fn codex_database(home: &Path, id: &str) -> Option<NativeMetadata> {
-    use std::os::fd::AsRawFd;
-    use std::process::{Command, Stdio};
     if !uuid(id) {
         return None;
     }
-    let path = home.join("state_5.sqlite");
-    let _file = private_file(&path)?;
     let query = format!(
         "WITH RECURSIVE family(id,depth) AS (\
          SELECT child_thread_id,1 FROM thread_spawn_edges WHERE parent_thread_id='{id}' \
@@ -399,15 +417,71 @@ fn codex_database(home: &Path, id: &str) -> Option<NativeMetadata> {
          JOIN family f ON f.id=t.id JOIN thread_spawn_edges e ON e.child_thread_id=t.id \
          GROUP BY t.id LIMIT 129;"
     );
-    let mut child = Command::new("sqlite3")
-        .args(["-readonly", "-batch", "-noheader"])
-        .arg(&path)
-        .arg(query)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+    let output = sqlite_metadata(home, &query)?;
+    codex_database_records(&output, id)
+}
+
+/// Find exactly one owned writer that is a proven ancestor of every other
+/// owned writer. Independent TUIs sharing a daemon have unrelated roots and
+/// remain deliberately unassociated. Traversal truncation fails closed.
+#[cfg(target_os = "linux")]
+fn codex_root(home: &Path, owned: &BTreeSet<String>) -> Option<String> {
+    if owned.len() < 2 || owned.len() > 64 || owned.iter().any(|id| !uuid(id)) {
+        return None;
+    }
+    let seeds = owned
+        .iter()
+        .map(|id| format!("('{id}','{id}',0)"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let query = format!(
+        "WITH RECURSIVE ancestry(root,id,depth) AS (VALUES {seeds} \
+        UNION SELECT a.root,e.child_thread_id,a.depth+1 FROM ancestry a \
+        JOIN thread_spawn_edges e ON e.parent_thread_id=a.id WHERE a.depth<8 LIMIT 8193) \
+        SELECT json_object('root',root,'id',id) FROM ancestry LIMIT 8193;"
+    );
+    let output = sqlite_metadata(home, &query)?;
+    codex_root_records(&output, owned)
+}
+
+fn codex_root_records(output: &[u8], owned: &BTreeSet<String>) -> Option<String> {
+    let mut descendants = std::collections::BTreeMap::<String, BTreeSet<String>>::new();
+    for (count, line) in output
+        .split(|b| *b == b'\n')
+        .filter(|l| !l.is_empty())
+        .enumerate()
+    {
+        if count >= 8192 || line.len() > 1024 {
+            return None;
+        }
+        let record: Value = serde_json::from_slice(line).ok()?;
+        let root = record.get("root")?.as_str()?;
+        let id = record.get("id")?.as_str()?;
+        if !owned.contains(root) || !uuid(id) {
+            return None;
+        }
+        descendants
+            .entry(root.to_owned())
+            .or_default()
+            .insert(id.to_owned());
+    }
+    let roots: Vec<_> = owned
+        .iter()
+        .filter(|id| descendants.get(*id).is_some_and(|set| owned.is_subset(set)))
+        .collect();
+    if roots.len() == 1 {
+        Some(roots[0].clone())
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn sqlite_metadata(home: &Path, query: &str) -> Option<Vec<u8>> {
+    use std::os::fd::AsRawFd;
+    let path = home.join("state_5.sqlite");
+    let _file = private_file(&path)?;
+    let mut child = sqlite_command(&path, query).spawn().ok()?;
     let mut stdout = child.stdout.take()?;
     let fd = stdout.as_raw_fd();
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -447,7 +521,21 @@ fn codex_database(home: &Path, id: &str) -> Option<NativeMetadata> {
     if !success {
         return None;
     }
-    codex_database_records(&output, id)
+    Some(output)
+}
+
+#[cfg(target_os = "linux")]
+fn sqlite_command(path: &Path, query: &str) -> std::process::Command {
+    use std::process::{Command, Stdio};
+    let mut command = Command::new("sqlite3");
+    command
+        .args(["-init", "/dev/null", "-readonly", "-batch", "-noheader"])
+        .arg(path)
+        .arg(query)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    command
 }
 
 fn codex_database_records(output: &[u8], id: &str) -> Option<NativeMetadata> {
@@ -717,6 +805,73 @@ mod tests {
             .agents
             .iter()
             .any(|agent| agent.name == "Grace" && agent.status == "closed"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sqlite_metadata_ignores_user_startup_commands() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join(".sqliterc"),
+            ".print UNEXPECTED_STARTUP_OUTPUT\n",
+        )
+        .unwrap();
+        let output = match sqlite_command(Path::new(":memory:"), "SELECT 7;")
+            .env("HOME", temp.path())
+            .output()
+        {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => panic!("{error}"),
+        };
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "7\n");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn codex_multiple_writers_resolve_only_proven_unique_root() {
+        use std::process::Command;
+        let temp = tempfile::tempdir().unwrap();
+        let child = "01a10f4e-85f4-7c00-a244-67a78928c222";
+        let grandchild = "01a10f4e-85f4-7c00-a244-67a78928c223";
+        let other = "01a10f4e-85f4-7c00-a244-67a78928c224";
+        let sql = format!("CREATE TABLE thread_spawn_edges(parent_thread_id TEXT,child_thread_id TEXT,status TEXT); \
+            INSERT INTO thread_spawn_edges VALUES('{ID}','{child}','open'),('{child}','{grandchild}','open');");
+        let result = Command::new("sqlite3")
+            .args(["-init", "/dev/null"])
+            .arg(temp.path().join("state_5.sqlite"))
+            .arg(sql)
+            .status();
+        match result {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            result => assert!(result.unwrap().success()),
+        }
+        let owned = [ID, child, grandchild]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(codex_root(temp.path(), &owned).as_deref(), Some(ID));
+        let independent = [ID, other].into_iter().map(str::to_owned).collect();
+        assert!(codex_root(temp.path(), &independent).is_none());
+        let cycles =
+            format!("INSERT INTO thread_spawn_edges VALUES('{grandchild}','{ID}','open');");
+        assert!(Command::new("sqlite3")
+            .args(["-init", "/dev/null"])
+            .arg(temp.path().join("state_5.sqlite"))
+            .arg(cycles)
+            .status()
+            .unwrap()
+            .success());
+        assert!(codex_root(temp.path(), &owned).is_none());
+    }
+
+    #[test]
+    fn codex_root_traversal_fails_closed_on_bad_or_truncated_output() {
+        let owned = [ID.to_owned()].into_iter().collect();
+        let row = format!("{}\n", serde_json::json!({"root":ID,"id":ID}));
+        assert!(codex_root_records(row.repeat(8193).as_bytes(), &owned).is_none());
+        assert!(codex_root_records(b"{bad json}\n", &owned).is_none());
     }
 
     #[test]

@@ -291,6 +291,7 @@ struct Task {
     generation: u64,
 }
 struct Reply {
+    device_id: Option<String>,
     preview: Option<RichPreview>,
     device: usize,
     op: Operation,
@@ -418,6 +419,7 @@ enum Dialog {
     AgentStart(usize, String, String),
     Matching(usize, String, String, Session),
     Jobs,
+    AgentTasks(String, Session),
     Links(Vec<crate::markdown_links::Link>),
     Delete(usize, Vec<Entry>),
     StopShell(usize, Session),
@@ -777,6 +779,7 @@ impl App {
                         "Transfers"
                     }
                 }
+                Dialog::AgentTasks(..) => "Agent tasks",
                 Dialog::Delete(..) => "Delete",
                 Dialog::StopShell(..) => "Stop session",
                 Dialog::PendingExit(_) => "Pending actions",
@@ -878,10 +881,7 @@ impl App {
     }
     fn refresh_work(&mut self) {
         for index in 0..self.devices.len() {
-            if self.background_checks_enabled(index)
-                && (self.device == 0 || self.device == index + 1)
-                && !self.work[index].loading
-            {
+            if self.background_checks_enabled(index) && !self.work[index].loading {
                 self.work[index].loading = self.send(index, Operation::Sessions);
                 if !self.work[index].loading {
                     self.set_notice_as(
@@ -895,6 +895,12 @@ impl App {
             if self.background_checks_enabled(index) {
                 self.check_providers(index);
             }
+        }
+    }
+    fn open_startup_directory(&mut self, directory: std::path::PathBuf) {
+        if let Some(local) = self.devices.iter().position(|d| d.target.is_none()) {
+            self.device = local + 1;
+            self.open_host_browser(local, crate::files::encode_path(&directory));
         }
     }
     fn actual_device(&self) -> Option<usize> {
@@ -911,7 +917,9 @@ impl App {
             .work
             .iter()
             .enumerate()
-            .filter(|(i, _)| self.device == 0 || self.device == i + 1)
+            .filter(|(i, _)| {
+                (self.device == 0 || self.device == i + 1) && self.background_checks_enabled(*i)
+            })
             .flat_map(|(i, c)| c.sessions.iter().map(move |s| (i, s)))
             .filter_map(|(i, s)| {
                 fuzzy_score(
@@ -939,6 +947,32 @@ impl App {
             })
         });
         rows.into_iter().map(|(_, i, s)| (i, s)).collect()
+    }
+    fn reconcile_session_selection(&mut self, identity: Option<(usize, String)>) {
+        self.selected = identity
+            .and_then(|(device, id)| {
+                self.session_rows()
+                    .iter()
+                    .position(|(d, s)| *d == device && s.id == id)
+            })
+            .unwrap_or_else(|| {
+                self.selected
+                    .min(self.session_rows().len().saturating_sub(1))
+            });
+        if let Some(Dialog::AgentTasks(device_id, session)) = &self.dialog {
+            let updated = self
+                .devices
+                .iter()
+                .position(|d| &d.id == device_id)
+                .and_then(|d| self.work[d].sessions.iter().find(|s| s.id == session.id))
+                .cloned();
+            self.dialog = updated.map(|session| Dialog::AgentTasks(device_id.clone(), session));
+            let count = match &self.dialog {
+                Some(Dialog::AgentTasks(_, s)) => s.agent_tasks.len(),
+                _ => 0,
+            };
+            self.dialog_selected = self.dialog_selected.min(count.saturating_sub(1));
+        }
     }
     fn selected_session(&self) -> Option<(usize, Session)> {
         self.session_rows()
@@ -1358,7 +1392,6 @@ impl App {
     fn refresh_containers(&mut self) {
         for d in 0..self.devices.len() {
             if self.background_checks_enabled(d)
-                && (self.device == 0 || self.device == d + 1)
                 && !self.containers_loading.contains(&d)
                 && self.send(d, Operation::Containers)
             {
@@ -2800,6 +2833,7 @@ impl App {
             Dialog::AgentStart(..) | Dialog::Permissions(..) => 2,
             Dialog::Matching(..) => 3,
             Dialog::Jobs => self.job_rows().len(),
+            Dialog::AgentTasks(_, session) => session.agent_tasks.len(),
             Dialog::Delete(..) | Dialog::StopShell(..) => 2,
             Dialog::PendingExit(_) => 2,
             Dialog::Neighbor(..) => 1,
@@ -2901,6 +2935,7 @@ impl App {
         if matches!(
             dialog,
             Dialog::Jobs
+                | Dialog::AgentTasks(..)
                 | Dialog::Delete(..)
                 | Dialog::StopShell(..)
                 | Dialog::RemoveDevice(..)
@@ -3192,7 +3227,7 @@ impl App {
                             self.create_at(d, path, provider);
                         }
                     }
-                    Dialog::Jobs => {
+                    Dialog::Jobs | Dialog::AgentTasks(..) => {
                         self.dialog_detail_focus = true;
                     }
                     Dialog::Delete(d, entries) => {
@@ -3350,6 +3385,15 @@ impl App {
     fn apply(&mut self, mut reply: Reply) {
         self.pending_requests
             .set(self.pending_requests.get().saturating_sub(1));
+        if let Some(id) = &reply.device_id {
+            let Some(device) = self.devices.iter().position(|d| &d.id == id) else {
+                return; // Device removed while this request was in flight.
+            };
+            reply.device = device;
+        }
+        if reply.device >= self.devices.len() || reply.device >= self.work.len() {
+            return;
+        }
         if let Operation::ContainerFiles { scope, operation } = &reply.op {
             if self
                 .browser
@@ -3467,6 +3511,20 @@ impl App {
                         v["containers"].clone(),
                     ) {
                         Ok(items) => {
+                            if v["complete"] == true && v["truncated"] != true {
+                                let selected = self.selected_session().map(|(d, s)| (d, s.id));
+                                self.work[reply.device].sessions.retain(|session| {
+                                    session.container.as_ref().is_none_or(|scope| {
+                                        items.iter().any(|c| {
+                                            c.id == scope.id
+                                                && c.engine == scope.engine
+                                                && c.state == "running"
+                                                && c.started_at == scope.started_at
+                                        })
+                                    })
+                                });
+                                self.reconcile_session_selection(selected);
+                            }
                             self.containers.insert(reply.device, items);
                             self.container_errors.remove(&reply.device);
                         }
@@ -3599,7 +3657,12 @@ impl App {
                     self.providers.remove(&reply.device);
                 }
                 if is_sessions {
+                    // Failed contact is not evidence that a cached terminal is attachable.
+                    let selected = self.selected_session().map(|(d, s)| (d, s.id));
+                    self.work[reply.device].sessions.clear();
+                    self.work[reply.device].fetched = 0;
                     self.work[reply.device].error = Some(message.clone());
+                    self.reconcile_session_selection(selected);
                 }
                 if reply.generation == self.generation || file_action {
                     if file_action {
@@ -3775,22 +3838,14 @@ impl App {
                         {
                             self.containers_loading.insert(reply.device);
                         }
-                        if let Some((device, id)) = selected_identity {
-                            if let Some(index) = self
-                                .session_rows()
-                                .iter()
-                                .position(|(d, s)| *d == device && s.id == id)
-                            {
-                                self.selected = index;
-                            } else {
-                                self.selected = self
-                                    .selected
-                                    .min(self.session_rows().len().saturating_sub(1));
-                            }
-                        }
+                        self.reconcile_session_selection(selected_identity);
                     }
                     Err(_) => {
-                        self.work[reply.device].error = Some("Invalid session metadata".into())
+                        let selected = self.selected_session().map(|(d, s)| (d, s.id));
+                        self.work[reply.device].sessions.clear();
+                        self.work[reply.device].fetched = 0;
+                        self.work[reply.device].error = Some("Invalid session metadata".into());
+                        self.reconcile_session_selection(selected);
                     }
                 }
             }
@@ -4719,6 +4774,15 @@ impl App {
             }
         }
         match key.code {
+            KeyCode::Char('s') if self.view == View::Work && self.focus == Focus::Workspace => {
+                if let Some((device, session)) = self.selected_session() {
+                    self.dialog =
+                        Some(Dialog::AgentTasks(self.devices[device].id.clone(), session));
+                    self.dialog_selected = 0;
+                    self.dialog_scroll = 0;
+                    self.dialog_detail_focus = false;
+                }
+            }
             KeyCode::Char('J') | KeyCode::Char('K')
                 if self.view == View::Network && self.focus == Focus::Workspace =>
             {
@@ -7394,6 +7458,18 @@ fn network_summary(value: &Value) -> String {
     ));
     lines.join("\n")
 }
+fn session_activity_current(cache: &Cached) -> bool {
+    cache.error.is_none()
+        && cache.fetched > 0
+        && transport::now().saturating_sub(cache.fetched) <= 5
+}
+fn session_busy(session: &Session) -> bool {
+    matches!(
+        session.activity.as_deref(),
+        Some("running" | "working" | "busy" | "output")
+    )
+}
+
 fn load_cache(app: &mut App) {
     let path = store::state_dir().join("ui-sessions.json");
     if std::fs::metadata(&path).map_or(true, |m| m.len() > 1024 * 1024) {
@@ -7410,12 +7486,25 @@ fn load_cache(app: &mut App) {
     }
 }
 fn save_cache(app: &App) {
-    // Only launch metadata is retained; no prompts, transcripts, environment or provider secrets.
+    // Retain session labels and launch identity, excluding transient activity/task metadata.
+    // No prompts, transcripts, environment or provider secrets enter this cache.
     let cache: HashMap<_, _> = app
         .devices
         .iter()
         .zip(&app.work)
-        .map(|(d, w)| (d.id.clone(), w.sessions.clone()))
+        .map(|(d, w)| {
+            let sessions = w
+                .sessions
+                .iter()
+                .cloned()
+                .map(|mut s| {
+                    s.activity = None;
+                    s.agent_tasks.clear();
+                    s
+                })
+                .collect::<Vec<_>>();
+            (d.id.clone(), sessions)
+        })
         .collect();
     if let Ok(data) = serde_json::to_vec(&cache) {
         if data.len() > 1024 * 1024 {
@@ -8089,6 +8178,7 @@ fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender<Reply>) {
                 };
                 let delivered = replies
                     .send(Reply {
+                        device_id: Some(task.execution.id.clone()),
                         preview,
                         device: task.device,
                         op: task.op,
@@ -8221,7 +8311,11 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     if restore.is_some() && app.view == View::Files {
         app.refresh_browser();
     }
+    if restore.is_none() {
+        app.open_startup_directory(std::env::current_dir()?);
+    }
     app.refresh_work();
+    app.refresh_containers();
     for d in 0..app.devices.len() {
         app.check_providers(d);
         app.send(d, Operation::TransferJobs);
@@ -8238,6 +8332,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     let mut last_interaction = Instant::now();
     let mut wheel_reports = WheelReports::default();
     let mut last_refresh = Instant::now();
+    let mut last_session_refresh = Instant::now();
     let mut last_jobs = Instant::now();
     let mut last_transfer_frame = Instant::now();
     let mut notice_was_animating = false;
@@ -8358,7 +8453,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
         let mut cache_changed = false;
         while let Ok(reply) = result_rx.try_recv() {
-            cache_changed |= matches!(reply.op, Operation::Sessions) && reply.result.is_ok();
+            cache_changed |= matches!(reply.op, Operation::Sessions | Operation::Containers);
             app.apply(reply);
             dirty = true;
         }
@@ -8506,7 +8601,12 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             dirty = true;
         }
         // Animate only while work is pending; idle keeps its existing bounded redraw.
-        if !app.active_transfer_keys().is_empty()
+        if (!app.active_transfer_keys().is_empty()
+            || (app.view == View::Work
+                && app
+                    .session_rows()
+                    .iter()
+                    .any(|(d, s)| session_activity_current(&app.work[*d]) && session_busy(s))))
             && last_transfer_frame.elapsed() >= Duration::from_millis(160)
         {
             app.transfer_frame = app.transfer_frame.wrapping_add(1);
@@ -8584,6 +8684,18 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             update_phase = UpdatePhase::Checking;
             last_update_check = Instant::now();
         }
+        if app.view == View::Work && last_session_refresh.elapsed() >= Duration::from_secs(3) {
+            for d in 0..app.devices.len() {
+                if app.background_checks_enabled(d)
+                    && (app.device == 0 || app.device == d + 1)
+                    && !app.work[d].loading
+                {
+                    app.work[d].loading = app.send(d, Operation::Sessions);
+                }
+            }
+            last_session_refresh = Instant::now();
+        }
+        // Session and container caches are reconciled even while browsing files.
         // Bounded fleet refresh; idle does not continuously redraw.
         if last_refresh.elapsed() >= Duration::from_secs(30) {
             if let Some(browser) = &app.browser {
@@ -8594,9 +8706,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             {
                 app.check_providers(device);
             }
-            if app.view == View::Work {
-                app.refresh_work();
-            } else if app.view == View::Network || app.view == View::Containers {
+            app.refresh_work();
+            app.refresh_containers();
+            if app.view == View::Network {
                 app.refresh();
             }
             if app.browser.is_some() {

@@ -510,6 +510,11 @@ pub(super) fn render_at(
                     workspace
                 };
                 let compact = workspace.width < 50;
+                let state_width = if rows.iter().any(|(_, s)| s.activity.is_some()) {
+                    10
+                } else {
+                    8
+                };
                 let mut display_rows = Vec::new();
                 let mut selected_row = 0;
                 let mut last_project = None;
@@ -541,6 +546,11 @@ pub(super) fn render_at(
                         && transport::now().saturating_sub(app.work[*i].fetched) <= 60
                         && app.work[*i].error.is_none();
                     let badge = format!("[{}]", safe_label(menus::session_label(app, *i, s)));
+                    let name = if s.agent_tasks.is_empty() {
+                        safe_label(&s.name)
+                    } else {
+                        format!("{} · {} tasks", safe_label(&s.name), s.agent_tasks.len())
+                    };
                     let cells = vec![
                         Cell::from(badge).style(if std::env::var_os("NO_COLOR").is_some() {
                             Style::default()
@@ -552,28 +562,39 @@ pub(super) fn render_at(
                             })
                         }),
                         Cell::from(if compact && s.container.is_some() {
-                            format!(
-                                "{} · {}",
-                                menus::session_label(app, *i, s),
-                                safe_label(&s.name)
-                            )
+                            format!("{} · {}", menus::session_label(app, *i, s), name)
                         } else {
-                            safe_label(&s.name)
+                            name
                         }),
                         Cell::from(identity(&app.devices[*i])),
                         Cell::from(if !fresh {
-                            "? cached"
+                            "? cached".to_string()
+                        } else if s.activity.is_some() && !session_activity_current(&app.work[*i]) {
+                            "? state".into()
+                        } else if session_busy(s) {
+                            let frames = if ascii() {
+                                ["|", "/", "-", "\\"]
+                            } else {
+                                ["◐", "◓", "◑", "◒"]
+                            };
+                            format!(
+                                "{} {}",
+                                frames[app.transfer_frame % frames.len()],
+                                s.activity.as_deref().unwrap_or("")
+                            )
+                        } else if let Some(activity) = &s.activity {
+                            safe_label(activity)
                         } else if s.external {
                             if ascii() {
-                                "+ ext"
+                                "+ ext".into()
                             } else {
-                                "● ext"
+                                "● ext".into()
                             }
                         } else {
                             if ascii() {
-                                "+ live"
+                                "+ live".into()
                             } else {
-                                "● live"
+                                "● live".into()
                             }
                         })
                         .style(if !fresh { muted() } else { accent() }),
@@ -588,7 +609,7 @@ pub(super) fn render_at(
                 let table = Table::new(
                     display_rows,
                     if compact {
-                        vec![Constraint::Min(10), Constraint::Length(8)]
+                        vec![Constraint::Min(10), Constraint::Length(state_width)]
                     } else {
                         vec![
                             Constraint::Length(
@@ -600,7 +621,7 @@ pub(super) fn render_at(
                             ),
                             Constraint::Min(10),
                             Constraint::Length(if workspace.width > 65 { 24 } else { 18 }),
-                            Constraint::Length(8),
+                            Constraint::Length(state_width),
                         ]
                     },
                 )
@@ -1016,7 +1037,15 @@ pub(super) fn render_at(
     let mut hints = if app.help {
         vec![("↑↓", "Scroll"), ("PgUpDn", "Page"), ("Esc", "Close")]
     } else if let Some(dialog) = &app.dialog {
-        if matches!(dialog, Dialog::Jobs) {
+        if matches!(dialog, Dialog::AgentTasks(..)) {
+            vec![
+                ("↑↓", "Choose"),
+                ("Enter", "Details"),
+                ("Tab", "Focus"),
+                ("PgUpDn", "Scroll"),
+                ("Esc", "Close"),
+            ]
+        } else if matches!(dialog, Dialog::Jobs) {
             vec![
                 ("c", "Cancel job"),
                 ("r", "Retry job"),
@@ -1213,6 +1242,7 @@ pub(super) fn render_at(
             ("Enter", "Open"),
             ("n", "New session"),
             ("w", "Watch · read-only"),
+            ("s", "Agent tasks"),
             ("d", "Stop · confirm"),
             ("Ctrl P", "Actions"),
             ("?", "Help"),
@@ -1465,6 +1495,17 @@ pub(super) fn render_at(
                     "Enter choose · Escape cancel".to_string()
                 },
             ),
+            Dialog::AgentTasks(_, session) => {
+                let selected = session.agent_tasks.get(app.dialog_selected);
+                (
+                    format!("Agent tasks · {}", safe_label(&session.name)),
+                    session.agent_tasks.iter().map(|task| format!("{} · {}", safe_label(&task.name), safe_label(&task.status))).collect(),
+                    selected.map(|task| format!("{}\n{}\n{}\n\nTask status comes from the provider. Open does not imply busy.",
+                        safe_label(&task.name), safe_label(&task.status),
+                        task.task.as_deref().map(safe_text).unwrap_or_else(|| "Task description unavailable".into())))
+                    .unwrap_or_else(|| "No task details reported for this session.".into()),
+                )
+            },
             Dialog::SessionChooser(d,path) => (
                 format!("New session · {}",safe_label(&app.devices[*d].name)),
                 app.host_session_choices(*d).iter().map(|choice|choice.label.into()).collect(),
@@ -1828,6 +1869,10 @@ pub(super) fn render_at(
         if app.view == View::Work {
             help.push(key_row("d", "Stop selected CX-managed session · confirm"));
             help.push(key_row("w", "Watch selected session · read-only"));
+            help.push(key_row(
+                "s",
+                "Inspect selected session's tasks and subagents",
+            ));
         }
         if app.focus == Focus::Devices {
             help.push(key_row(

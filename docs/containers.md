@@ -55,6 +55,19 @@ Discovery is read-only and never executes in containers or starts them. The help
 
 ## Implementation and verification
 
+Each discovery response reports `observed_at`, `complete`, and `failed_inspections`.
+An inspection failure, scan deadline, or entry limit marks the scan incomplete
+(`truncated: true`); consumers must not treat a partial scan as proof that an
+unobserved instance has ended. Fresh stopped entries remain in Containers for
+explicit Start; deleting a stale session cache never deletes a Docker container.
+Devcontainer workspace labels remain available even when their host configuration
+is temporarily missing. When present, the explicit `devcontainer.config_file`
+label takes precedence over a neighboring default configuration.
+
+`python3 tests/container_discovery_fixtures.py target/debug/cx` checks these
+discovery contracts against a private fake Docker executable, without contacting
+a Docker daemon or changing any live container.
+
 Execution/file scopes carry device, Docker-engine fingerprint, full container ID, start timestamp and selected user. Restarted containers or changed engines require refresh. File caches, replies, remembered folders and viewer restoration distinguish host/container scopes. Scoped file requests use the existing bounded CX1 protocol without a TTY. Terminal processes have private PID/start-time ownership records; stopping the Docker client alone would leave the container shell alive, so termination checks exact inner process identities too. Transfer specifications, receive checkpoints and retry paths carry the container scope throughout.
 
 Local fixtures use owned `--network none` containers and private CX/tmux state. They cover evidence-based classification, ordinary opt-in/revocation, read-only image refusal, scoped files/Markdown, engine/restart rejection, exact resume, native paste/Tab/OSC52/RGB/default background/wheel/detach/termios, scoped shell/agent termination, synthetic Codex/Claude permissions, and real Node CLI startup/hooks/remoteEnv. UI fixtures cover 48×24, 80×24 and 120×40 layouts; these are rendered fixtures, not physical terminal screenshots. Actual robot ROS/GPU/mount checks are recorded separately in [validation](../VALIDATION.md).

@@ -499,19 +499,24 @@ fn inspect_on(id: &str, engine: &str) -> Result<Container> {
         c.evidence = "Dev Containers labels".into();
     }
     let mut configs = vec![];
-    if let Some(s) = label_workspace {
-        let p = PathBuf::from(s);
-        if p.is_absolute() {
-            if let Some(config) = config_at(&p) {
-                configs.push((p, config, None));
-            }
-        }
-    }
+    // The label identifies the configuration actually used to start this instance.
+    // A default config beside it may describe a different user or workspace.
     if let Some(s) = v["config"].as_str() {
         let p = PathBuf::from(s);
         if p.is_absolute() && p.is_file() {
-            if let Some(w) = label_workspace {
+            if let Some(w) = label_workspace.filter(|w| Path::new(w).is_absolute()) {
                 configs.push((PathBuf::from(w), p, None));
+            }
+        }
+    }
+    if let Some(s) = label_workspace {
+        let p = PathBuf::from(s);
+        if p.is_absolute() {
+            // Labels remain useful recovery evidence even when the workspace's
+            // host mount/configuration is temporarily unavailable after reboot.
+            c.workspace = Some(s.to_owned());
+            if let Some(config) = config_at(&p) {
+                configs.push((p, config, None));
             }
         }
     }
@@ -597,14 +602,21 @@ pub fn list() -> Result<Value> {
     let engine = engine_identity()?;
     let deadline = Instant::now() + Duration::from_secs(40);
     let mut truncated = ids.lines().count() > 256;
+    let mut failed_inspections = 0usize;
     let mut items = vec![];
     for id in ids.lines().take(256) {
         if Instant::now() >= deadline {
             truncated = true;
             break;
         }
-        if let Ok(c) = inspect_on(id, &engine) {
-            items.push(c);
+        match inspect_on(id, &engine) {
+            Ok(c) => items.push(c),
+            Err(_) => {
+                // An instance may disappear between ps and inspect, or the
+                // engine may become unavailable. Neither proves a full scan.
+                failed_inspections += 1;
+                truncated = true;
+            }
         }
     }
     anyhow::ensure!(
@@ -613,7 +625,10 @@ pub fn list() -> Result<Value> {
     );
     items.sort_by(|a, b| (!a.devcontainer, &a.name).cmp(&(!b.devcontainer, &b.name)));
     Ok(
-        json!({"containers":items,"truncated":truncated,"engine":"docker","network_policy":"Existing networks and ports are preserved; no automatic forwarding"}),
+        json!({"containers":items,"truncated":truncated,"complete":!truncated,
+            "failed_inspections":failed_inspections,"observed_at":std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+            "engine":"docker","network_policy":"Existing networks and ports are preserved; no automatic forwarding"}),
     )
 }
 fn check(scope: &ContainerScope) -> Result<Container> {

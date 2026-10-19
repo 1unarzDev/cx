@@ -473,8 +473,21 @@ fn shell_activity(managed: bool, id: &str) -> Option<String> {
     None
 }
 
+fn normalized_activity(status: Option<&str>) -> Option<&'static str> {
+    match status? {
+        "running" | "working" | "busy" => Some("running"),
+        "waiting" | "waiting_for_input" => Some("waiting"),
+        "idle" => Some("idle"),
+        "output" => Some("output"),
+        _ => None,
+    }
+}
+
 fn inspect(managed: bool, id: &str) -> Result<Session> {
-    anyhow::ensure!(field(managed, id, "#{pane_dead}")? == "0", "session terminal has exited; refresh sessions");
+    anyhow::ensure!(
+        field(managed, id, "#{pane_dead}")? == "0",
+        "session terminal has exited; refresh sessions"
+    );
     let (host, account, boot_id) = identity();
     let name = field(managed, id, "#{session_name}")?;
     let record = state()?.join(format!("{name}.json"));
@@ -513,10 +526,21 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
     let process = detected
         .map(|(_, process)| process)
         .or_else(|| process_identity(pid, original_provider));
-    let directory = process
+    // Native metadata follows the live provider thread when its control panel
+    // switches projects; argv and process cwd retain only the launch location.
+    let native = process
         .as_ref()
         .filter(|_| provider != "shell")
-        .and_then(|process| provider_directory(provider, process))
+        .and_then(|p| crate::session_titles::native_metadata(provider, p.pid));
+    let directory = native
+        .as_ref()
+        .and_then(|m| m.directory.clone())
+        .or_else(|| {
+            process
+                .as_ref()
+                .filter(|_| provider != "shell")
+                .and_then(|process| provider_directory(provider, process))
+        })
         .unwrap_or(field(managed, id, "#{pane_current_path}")?);
     let saved_name = prior
         .as_ref()
@@ -526,13 +550,45 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
     let display_name = if automatic && provider == "shell" {
         shell_activity(managed, id).unwrap_or(saved_name)
     } else if automatic {
-        process
+        native
             .as_ref()
-            .and_then(|p| crate::session_titles::native_title(provider, p.pid))
+            .and_then(|m| m.title.clone())
             .unwrap_or(saved_name)
     } else {
         saved_name
     };
+    let native_activity = native.as_ref().and_then(|m| m.activity.as_deref());
+    let activity = normalized_activity(native_activity)
+        .map(str::to_owned)
+        .or_else(|| {
+            if provider == "shell" && prior.as_ref().and_then(|s| s.container.as_ref()).is_none() {
+                field(managed, id, "#{pane_current_command}")
+                    .ok()
+                    .map(|command| {
+                        if shell_command_label(&command).is_some() {
+                            "running"
+                        } else {
+                            "idle"
+                        }
+                        .into()
+                    })
+            } else {
+                None
+            }
+        });
+    let agent_tasks = native
+        .map(|m| {
+            m.agents
+                .into_iter()
+                .map(|a| crate::model::AgentTask {
+                    id: a.id,
+                    name: a.name,
+                    task: a.task,
+                    status: a.status,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(Session {
         id: if managed { name } else { id.into() },
         name: display_name,
@@ -549,6 +605,8 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
         boot_id,
         external: !managed,
         process,
+        activity,
+        agent_tasks,
         container: prior.as_ref().and_then(|s| s.container.clone()),
         launcher: prior.as_ref().and_then(|s| s.launcher.clone()),
         socket: if managed {
@@ -558,12 +616,169 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
         },
     })
 }
+// Parse only the Docker exec invocation prefix; never inspect its command or
+// arguments. Unknown daemon/context options fail closed rather than associating
+// a terminal with a different engine's similarly named container.
+fn docker_exec_target(args: &[Vec<u8>]) -> Option<String> {
+    let mut args = args.iter().skip(1);
+    if args.next()?.as_slice() != b"exec" {
+        return None;
+    }
+    while let Some(arg) = args.next() {
+        if arg == b"--" {
+            return docker_target_name(args.next()?);
+        }
+        if [
+            b"-u".as_slice(),
+            b"--user",
+            b"-w",
+            b"--workdir",
+            b"-e",
+            b"--env",
+            b"--env-file",
+            b"--detach-keys",
+        ]
+        .contains(&arg.as_slice())
+        {
+            args.next()?;
+        } else if [
+            b"-i".as_slice(),
+            b"-t",
+            b"-it",
+            b"-ti",
+            b"--interactive",
+            b"--tty",
+            b"--privileged",
+        ]
+        .contains(&arg.as_slice())
+        {
+        } else if [
+            b"--user=".as_slice(),
+            b"--workdir=",
+            b"--env=",
+            b"--env-file=",
+            b"--detach-keys=",
+        ]
+        .iter()
+        .any(|prefix| arg.starts_with(prefix))
+        {
+        } else if arg.starts_with(b"-") {
+            return None;
+        } else {
+            return docker_target_name(arg);
+        }
+    }
+    None
+}
+fn docker_target_name(arg: &[u8]) -> Option<String> {
+    let value = std::str::from_utf8(arg).ok()?;
+    if value.is_empty()
+        || value.len() > 256
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+    {
+        return None;
+    }
+    Some(value.into())
+}
+fn foreground_container(pane: u32) -> Option<String> {
+    use std::io::Read;
+    let (_, terminal, foreground) = terminal_group(pane)?;
+    let mut queue = std::collections::VecDeque::from([(pane, 0)]);
+    let mut seen = std::collections::HashSet::new();
+    while let Some((pid, depth)) = queue.pop_front() {
+        if !seen.insert(pid) {
+            continue;
+        }
+        if seen.len() > 64 {
+            return None;
+        }
+        if terminal_group(pid).is_some_and(|(group, tty, _)| group == foreground && tty == terminal)
+            && fs::read_link(format!("/proc/{pid}/exe"))
+                .ok()
+                .is_some_and(|exe| exe.file_name().is_some_and(|name| name == "docker"))
+        {
+            let mut bytes = Vec::new();
+            fs::File::open(format!("/proc/{pid}/cmdline"))
+                .ok()?
+                .take(4097)
+                .read_to_end(&mut bytes)
+                .ok()?;
+            if bytes.len() > 4096 || bytes.last() != Some(&0) {
+                return None;
+            }
+            let args = bytes[..bytes.len() - 1]
+                .split(|b| *b == 0)
+                .take(64)
+                .map(<[u8]>::to_vec)
+                .collect::<Vec<_>>();
+            return docker_exec_target(&args);
+        }
+        if depth < 6 {
+            if let Ok(children) = fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")) {
+                for child in children.split_whitespace().take(16) {
+                    if let Ok(child) = child.parse() {
+                        queue.push_back((child, depth + 1));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+fn recovered_container(
+    target: &str,
+    inventory: &[crate::containers::Container],
+) -> Option<crate::model::ContainerScope> {
+    let mut matches = inventory.iter().filter(|c| {
+        c.state == "running"
+            && (c.devcontainer || c.allowed)
+            && (c.id == target || c.name == target)
+    });
+    let candidate = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(candidate.scope())
+}
+
 pub fn list() -> Result<Vec<Session>> {
     let mut result = vec![];
     for managed in [true, false] {
         for id in ids(managed)? {
             if let Ok(s) = inspect(managed, &id) {
                 result.push(s);
+            }
+        }
+    }
+    // Inventory is queried only when a live foreground Docker exec is observed.
+    // Exact names/full IDs are revalidated against a fresh engine observation;
+    // no helper deployment, execution inside containers or process reparenting.
+    let candidates: Vec<_> = result
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.container.is_none())
+        .filter_map(|(index, s)| foreground_container(s.pid).map(|target| (index, target)))
+        .collect();
+    if !candidates.is_empty() {
+        if let Ok(value) = crate::containers::list() {
+            if let Ok(inventory) = serde_json::from_value::<Vec<crate::containers::Container>>(
+                value["containers"].clone(),
+            ) {
+                for (index, target) in candidates {
+                    let session = &mut result[index];
+                    if foreground_container(session.pid).as_deref() != Some(&target) {
+                        continue;
+                    }
+                    if let Some(scope) = recovered_container(&target, &inventory) {
+                        session.directory = scope.folder.clone();
+                        session.container = Some(scope);
+                        // Docker's attached client alone does not prove an inner
+                        // command is busy; preserve unknown instead of spinning.
+                        session.activity = None;
+                    }
+                }
             }
         }
     }
@@ -817,6 +1032,15 @@ pub fn available_providers() -> Result<Vec<&'static str>> {
         }
     }
     Ok(available)
+}
+
+/// Probe in the same selected login shell as the eventual launcher. Never
+/// assume version support or edit provider configuration; older CLIs fall back.
+fn codex_supports_no_daemon(shell: &str) -> bool {
+    provider_available(
+        shell,
+        "codex --help 2>/dev/null | command head -c 65536 | command grep -Fq -- '  --no-daemon'",
+    )
 }
 
 fn provider_available(shell: &str, probe: &str) -> bool {
@@ -1130,7 +1354,7 @@ fn create_with_permissions(
     yolo: bool,
     container: Option<&crate::model::ContainerScope>,
 ) -> Result<Session> {
-    let agent_command = provider_command(&request.provider, yolo, request.resume)?;
+    let mut agent_command = provider_command(&request.provider, yolo, request.resume)?;
     if request.key.is_empty() || request.key.len() > 1024 {
         bail!("creation key must be 1–1024 bytes");
     }
@@ -1206,6 +1430,9 @@ fn create_with_permissions(
             request.provider
         );
     }
+    if container.is_none() && request.provider == "codex" && codex_supports_no_daemon(&shell) {
+        agent_command.push_str(" --no-daemon");
+    }
     ensure_server()?;
     refresh_provider_environment()?;
     let (host, account, boot_id) = identity();
@@ -1225,6 +1452,8 @@ fn create_with_permissions(
         socket: Some(socket()?.to_string_lossy().into_owned()),
         launcher: Some(shell.clone()),
         process: None,
+        activity: None,
+        agent_tasks: vec![],
         container: container.cloned(),
     };
     // Persist intent before starting: an interrupted helper response must never lose the launcher identity.
@@ -1914,6 +2143,78 @@ mod tests {
     use super::*;
 
     #[test]
+    fn docker_exec_recovery_reads_only_exact_invocation_prefix() {
+        let parse = |args: &[&str]| {
+            docker_exec_target(
+                &args
+                    .iter()
+                    .map(|s| s.as_bytes().to_vec())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(
+            parse(&[
+                "docker",
+                "exec",
+                "-it",
+                "--user",
+                "dev",
+                "--workdir=/projects/cx",
+                "workspace",
+                "bash",
+                "secret prompt"
+            ]),
+            Some("workspace".into())
+        );
+        assert_eq!(
+            parse(&["docker", "exec", "--", "workspace", "sh"]),
+            Some("workspace".into())
+        );
+        for args in [
+            vec!["docker", "--context", "other", "exec", "workspace", "sh"],
+            vec!["docker", "exec", "--future-option", "workspace", "sh"],
+            vec!["docker", "exec", "-d", "workspace", "sh"],
+            vec!["docker", "exec", "--user"],
+            vec!["docker", "exec", "evil;command", "sh"],
+        ] {
+            assert_eq!(parse(&args), None);
+        }
+    }
+    #[test]
+    fn activity_requires_known_native_status() {
+        for status in ["working", "busy", "running"] {
+            assert_eq!(normalized_activity(Some(status)), Some("running"));
+        }
+        assert_eq!(
+            normalized_activity(Some("waiting_for_input")),
+            Some("waiting")
+        );
+        assert_eq!(normalized_activity(Some("idle")), Some("idle"));
+        assert_eq!(normalized_activity(None), None);
+        assert_eq!(normalized_activity(Some("unrecognized")), None);
+    }
+    #[test]
+    fn recovered_container_requires_running_allowed_exact_unique_identity() {
+        let id = "a".repeat(64);
+        let c: crate::containers::Container = serde_json::from_value(serde_json::json!({
+            "engine":"fixture", "id":id, "name":"workspace", "image":"fixture", "state":"running",
+            "started_at":"one", "devcontainer":true,"evidence":"label", "user":"dev", "folder":"/workspace", "workspace":null,
+            "config":null,"network":"bridge", "networks":[],"ports":{},"allowed":true
+        })).unwrap();
+        assert!(recovered_container("workspace", &[c.clone()]).is_some());
+        assert!(recovered_container(&id, &[c.clone()]).is_some());
+        assert!(recovered_container(&id[..12], &[c.clone()]).is_none());
+        assert!(recovered_container("workspace", &[c.clone(), c.clone()]).is_none());
+        let mut stopped = c.clone();
+        stopped.state = "exited".into();
+        assert!(recovered_container("workspace", &[stopped]).is_none());
+        let mut service = c;
+        service.devcontainer = false;
+        service.allowed = false;
+        assert!(recovered_container("workspace", &[service]).is_none());
+    }
+
+    #[test]
     fn provider_commands_distinguish_fresh_and_native_resume() {
         assert_eq!(provider_command("codex", false, false).unwrap(), "codex");
         assert_eq!(
@@ -2030,6 +2331,8 @@ mod tests {
             socket: None,
             launcher: None,
             process: None,
+            activity: None,
+            agent_tasks: vec![],
             container: None,
         };
         assert_eq!(

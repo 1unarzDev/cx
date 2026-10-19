@@ -1642,7 +1642,6 @@ fn create_with_permissions(
     f.write_all(&serde_json::to_vec(&session)?)?;
     f.sync_all()?;
     fs::rename(temp, root.join(format!("{name}.json")))?;
-    set_managed_contrast(&session).context("terminal unavailable during startup")?;
     set_managed_status(&session).context("terminal unavailable during startup")?;
     wait_for_first_screen(&name).context("terminal unavailable during startup")?;
     Ok(session)

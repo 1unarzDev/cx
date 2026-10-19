@@ -1,6 +1,6 @@
 # CX status
 
-## Terminal startup — v0.1.70
+## Terminal startup — v0.1.71
 
 New terminals initialize detached while CX animates a loader, then hand off at
 first visible content. Silent programs remain attachable after five seconds;

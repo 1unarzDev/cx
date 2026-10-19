@@ -2,13 +2,18 @@
 
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
-## v0.1.70
+## v0.1.71
 
 ### Features
 - Keep CX visible with an animated loader while a new terminal starts in the background. Hand off once the first screen has content, with a five-second fallback for intentionally silent programs.
 
 ### Fixes
 - Report terminal startup exits in the panel instead of attempting to attach to an ended terminal.
+
+## v0.1.70
+
+### Validation
+- Publication was blocked by a tmux 2.7 compatibility check. Superseded by v0.1.71, which keeps attachment styling out of shell creation.
 
 ## v0.1.69
 

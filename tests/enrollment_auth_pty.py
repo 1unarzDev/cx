@@ -16,7 +16,9 @@ prompt="fixture@host's password: " if kind!='host' else "The authenticity of hos
 r=subprocess.run([os.environ['SSH_ASKPASS'],prompt],capture_output=True)
 expected=b'yes\\n' if kind=='host' else b'fixture-secret-937\\n'
 passed=(r.returncode!=0 and not r.stdout) if kind=='cancel' else r.stdout==expected
-open(os.environ['CX_FIXTURE_RESULT'],'w').write('PASS' if passed else 'FAIL')
+result=os.environ['CX_FIXTURE_RESULT']
+with open(result+'.tmp','w') as output:output.write('PASS' if passed else 'FAIL')
+os.replace(result+'.tmp',result)
 sys.exit(1)
 ''');ssh.chmod(0o700)
   master,slave=pty.openpty();before=termios.tcgetattr(slave)

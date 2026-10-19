@@ -919,3 +919,25 @@ SSH trust or networking mutations. Fixtures own their sockets/state/containers.
 Remote devices require updated helpers; physical remote/terminal acceptance
 remains distinct from automated PTY checks. Readiness means visible content,
 not a provider-specific ready prompt or completed authentication.
+
+
+## v0.1.71 — startup compatibility and fixture durability
+
+v0.1.70 publication was blocked by distro smoke checks: calling the existing
+attachment-contrast function during creation introduced an unsupported global
+window-style query on tmux 2.7. That unnecessary call is removed; styling remains
+in the existing attachment path. The readiness fixture now wraps tmux to reject
+attachment-style options, proving new shell creation has no such dependency.
+Delayed-screen/timeout/exit behavior is retained.
+
+The same run's enrollment cancellation fixture could be killed between opening
+and flushing its result file. The synthetic fixture now writes and closes a
+temporary result before atomically replacing the final path; assertions still
+check the process exits, credentials do not leak and terminal state is restored.
+No enrollment runtime or trust behavior changed.
+
+Final local build, readiness/legacy-option regression, loader PTY and all four
+enrollment PTY scenarios PASS; `/tmp/cx-loader-{build,readiness,after,enrollment}.log`.
+The 596-test Rust suite remains the full feature validation; this correction
+removes one attachment-only call and changes fixture result publication.
+v0.1.70 remains an unpublished tag; no installed binary or session was replaced.

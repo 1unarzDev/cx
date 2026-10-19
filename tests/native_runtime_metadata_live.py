@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory(prefix='cx-native-metadata-') as t:
     write(second,'waiting_for_input','Second project')
     row=expect(lambda s:s['directory']==str(second) and s.get('activity')=='waiting' and s['name']=='Second project','Claude control-panel project switch kept stale workspace/title')
     record.unlink()
-    expect(lambda s:s.get('activity') is None and s['name']!='Second project','removed native metadata remained cached')
+    expect(lambda s:s.get('activity') not in ['running','waiting'] and s['name']!='Second project','removed native metadata remained cached')
    else:
     home=root/'.codex';rollout=home/'sessions/2026/10/19'/f'rollout-fixture-{ID}.jsonl';rollout.parent.mkdir(parents=True);rollout.touch()
     db=sqlite3.connect(home/'state_5.sqlite')
@@ -47,7 +47,8 @@ with tempfile.TemporaryDirectory(prefix='cx-native-metadata-') as t:
     expect(lambda s:s['provider']=='codex' and s['directory']==str(first) and len(s.get('agent_tasks',[]))==1,'Codex exact writer metadata unavailable')
     db.execute('UPDATE threads SET cwd=?,name=? WHERE id=?',(str(second),'Second native project',ID));db.commit()
     row=expect(lambda s:s['directory']==str(second) and s['name']=='Second native project','Codex project switch kept stale launch directory/title')
-    assert row.get('activity') is None,'provider presence incorrectly marked as working'
+    assert row.get('activity') in [None,'output'],'provider presence incorrectly marked as working'
+    expect(lambda s:s.get('activity') is None,'recent output indicator did not expire')
     assert row['agent_tasks'][0]['id']==CHILD
     db.close()
    for key in ['pid','started','boot_id','socket']:assert row[key]==s[key],key+' changed during native switch'

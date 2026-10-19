@@ -483,6 +483,11 @@ fn normalized_activity(status: Option<&str>) -> Option<&'static str> {
     }
 }
 
+fn recent_terminal_output(timestamp: &str, now: u64) -> Option<String> {
+    let observed = timestamp.parse::<u64>().ok()?;
+    (observed > 0 && observed <= now && now - observed <= 2).then(|| "output".into())
+}
+
 fn inspect(managed: bool, id: &str) -> Result<Session> {
     anyhow::ensure!(
         field(managed, id, "#{pane_dead}")? == "0",
@@ -576,6 +581,19 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
                 None
             }
         });
+    // This indicates recent terminal output, never inferred model work. Native
+    // waiting/idle/running status is stronger evidence and takes precedence.
+    let activity = activity.or_else(|| {
+        if provider != "shell" || prior.as_ref().and_then(|s| s.container.as_ref()).is_some() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_secs();
+            recent_terminal_output(&field(managed, id, "#{window_activity}").ok()?, now)
+        } else {
+            None
+        }
+    });
     let agent_tasks = native
         .map(|m| {
             m.agents
@@ -743,6 +761,24 @@ fn recovered_container(
     Some(candidate.scope())
 }
 
+fn container_scope_current(
+    scope: &crate::model::ContainerScope,
+    inventory: &[crate::containers::Container],
+    complete: bool,
+) -> bool {
+    match inventory.iter().find(|c| c.id == scope.id) {
+        Some(c) => {
+            c.engine == scope.engine
+                && c.started_at == scope.started_at
+                && c.state == "running"
+                && c.user == scope.user
+                && (c.devcontainer || c.allowed)
+        }
+        // A partial observation never establishes that a missing instance died.
+        None => !complete,
+    }
+}
+
 pub fn list() -> Result<Vec<Session>> {
     let mut result = vec![];
     for managed in [true, false] {
@@ -752,31 +788,45 @@ pub fn list() -> Result<Vec<Session>> {
             }
         }
     }
-    // Inventory is queried only when a live foreground Docker exec is observed.
+    // Reconcile saved container scopes on every listing, even without a newly
+    // observed Docker exec. Otherwise stale JSON records resurrect removed rows.
+    // Inventory is also queried when a live foreground Docker exec is observed.
     // Exact names/full IDs are revalidated against a fresh engine observation;
     // no helper deployment, execution inside containers or process reparenting.
-    let candidates: Vec<_> = result
+    let candidates = result
         .iter()
-        .enumerate()
-        .filter(|(_, s)| s.container.is_none())
-        .filter_map(|(index, s)| foreground_container(s.pid).map(|target| (index, target)))
-        .collect();
-    if !candidates.is_empty() {
+        .filter(|s| s.container.is_none())
+        .any(|s| foreground_container(s.pid).is_some());
+    if candidates || result.iter().any(|s| s.container.is_some()) {
         if let Ok(value) = crate::containers::list() {
             if let Ok(inventory) = serde_json::from_value::<Vec<crate::containers::Container>>(
                 value["containers"].clone(),
             ) {
-                for (index, target) in candidates {
-                    let session = &mut result[index];
-                    if foreground_container(session.pid).as_deref() != Some(&target) {
+                let complete = value["complete"].as_bool() == Some(true)
+                    && value["truncated"].as_bool() != Some(true);
+                result.retain(|s| {
+                    s.container
+                        .as_ref()
+                        .is_none_or(|scope| container_scope_current(scope, &inventory, complete))
+                });
+                for session in result.iter_mut().filter(|s| s.container.is_none()) {
+                    let Some(target) = foreground_container(session.pid) else {
                         continue;
-                    }
+                    };
                     if let Some(scope) = recovered_container(&target, &inventory) {
                         session.directory = scope.folder.clone();
                         session.container = Some(scope);
                         // Docker's attached client alone does not prove an inner
                         // command is busy; preserve unknown instead of spinning.
-                        session.activity = None;
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        session.activity = recent_terminal_output(
+                            &field(!session.external, &session.id, "#{window_activity}")
+                                .unwrap_or_default(),
+                            now,
+                        );
                     }
                 }
             }
@@ -2141,6 +2191,53 @@ fn stopped_command_choice(fd: i32, pid: libc::pid_t) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_output_indicator_expires_and_rejects_future_or_invalid_time() {
+        assert_eq!(
+            recent_terminal_output("100", 102).as_deref(),
+            Some("output")
+        );
+        assert_eq!(recent_terminal_output("100", 103), None);
+        assert_eq!(recent_terminal_output("104", 103), None);
+        assert_eq!(recent_terminal_output("0", 1), None);
+        assert_eq!(recent_terminal_output("unknown", 103), None);
+    }
+    #[test]
+    fn saved_container_scope_reconciles_explicit_evidence_and_complete_absence() {
+        let c: crate::containers::Container = serde_json::from_value(serde_json::json!({
+            "engine":"fixture", "id":"a".repeat(64), "name":"workspace", "image":"fixture", "state":"running",
+            "started_at":"one", "devcontainer":true,"evidence":"label", "user":"dev", "folder":"/workspace", "workspace":null,
+            "config":null,"network":"bridge", "networks":[],"ports":{},"allowed":true
+        })).unwrap();
+        let scope = c.scope();
+        assert!(container_scope_current(&scope, &[c.clone()], true));
+        assert!(
+            container_scope_current(&scope, &[], false),
+            "partial absence must preserve uncertainty"
+        );
+        assert!(
+            !container_scope_current(&scope, &[], true),
+            "complete absence must prune"
+        );
+        for change in ["stopped", "restart", "engine", "user", "access"] {
+            let mut changed = c.clone();
+            match change {
+                "stopped" => changed.state = "exited".into(),
+                "restart" => changed.started_at = "two".into(),
+                "engine" => changed.engine = "different".into(),
+                "user" => changed.user = "other".into(),
+                _ => {
+                    changed.devcontainer = false;
+                    changed.allowed = false;
+                }
+            }
+            assert!(
+                !container_scope_current(&scope, &[changed], false),
+                "explicit {change} evidence must prune even partial discovery"
+            );
+        }
+    }
 
     #[test]
     fn docker_exec_recovery_reads_only_exact_invocation_prefix() {

@@ -867,3 +867,23 @@ masked input, cancellation cleanup and termios restoration:
 `/tmp/cx-final-enrollment_auth_pty.log`. Locked build and formatting pass. Runtime
 behavior is unchanged from the 595-test v0.1.67 source; v0.1.68 supersedes the
 unpublished tag without rewriting it. No installed binaries or sessions changed.
+
+
+## v0.1.69 — ambiguous-writer acceptance correction
+
+v0.1.68 release run 39211126206 passed corrected enrollment, both portable builds
+and both distribution smoke matrices, then blocked publication on the legacy
+native-name fixture's expected launch-folder fallback. The fixture now asserts
+both `codex · directory unavailable` and an empty directory for ambiguous writers.
+Runtime behavior is unchanged; v0.1.69 preserves both unpublished tags.
+
+PASS final local follow-through: session_names_live, shell_labels_live,
+tmux_discovery_live, preview_helper_live, source_preview_pty, markdown_preview_pty,
+markdown_blocks_pty, markdown_prose_pty, markdown_relative_pty, preview_search_pty,
+browser_find_pty, list_wheel_pty, pdf_pages_helper and pdf_pages_pty. Logs:
+`/tmp/cx-final-<fixture>.log`. Final locked build/format/diff checks pass.
+
+The separate v0.1.68 checks run encountered ETXTBSY (`Text file busy`) executing
+a temporary updater fixture on x86_64. The same test passed in release jobs;
+failed jobs were retried without source changes. This is recorded separately
+from the two corrected acceptance expectations.

@@ -1,6 +1,6 @@
 # CX status
 
-## Session reliability — v0.1.68
+## Session reliability — v0.1.69
 
 Implemented startup-folder navigation, background cache reconciliation, dead-shell
 filtering, exact container lifecycle checks and rediscovery of existing tmux-backed

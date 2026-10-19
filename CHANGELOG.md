@@ -2,7 +2,7 @@
 
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
-## v0.1.68
+## v0.1.69
 
 ### Features
 - Open the invocation folder in Files on startup; restore prior workspace on update restart.
@@ -16,6 +16,11 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 - Keep session selection stable during pruning and route in-flight replies by device identity across removal/reorder.
 - Bound and isolate optional native metadata reads, including exact Codex parent/subagent writer trees.
 - Improve Claude question-description contrast with solid default-cell backgrounds while preserving text colors and explicit highlights.
+
+## v0.1.68
+
+### Validation
+- Publication was blocked by an older native-name fixture expecting a launch-folder fallback for ambiguous writer identities. Superseded by v0.1.69, which validates an unavailable directory instead.
 
 ## v0.1.67
 

@@ -2,10 +2,12 @@
 //! Claude exposes a PID/start-tick record; Codex uses exact open writer IDs.
 //! Metadata is optional and version-sensitive. Unknown association returns `None`.
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+
+type NativeNames = BTreeMap<String, Option<String>>;
 use std::time::{Duration, Instant};
 
 const MAX_RECORD: usize = 64 * 1024;
@@ -19,6 +21,7 @@ pub struct NativeMetadata {
     pub directory: Option<String>,
     pub activity: Option<String>,
     pub agents: Vec<NativeAgentTask>,
+    pub current_thread_unknown: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -29,21 +32,18 @@ pub struct NativeAgentTask {
     pub status: String,
 }
 
-pub fn native_title(provider: &str, pid: u32) -> Option<String> {
-    native_metadata(provider, pid)?.title
-}
-
-pub fn native_directory(provider: &str, pid: u32) -> Option<String> {
-    native_metadata(provider, pid)?.directory
-}
-
-pub fn native_metadata(provider: &str, pid: u32) -> Option<NativeMetadata> {
+/// A title is accepted only from a launch with the controlled native title template.
+pub fn native_metadata_with_title(
+    provider: &str,
+    pid: u32,
+    selected_title: Option<&str>,
+) -> Option<NativeMetadata> {
     #[cfg(target_os = "linux")]
     {
         let start = process_start(pid)?;
         let result = match provider {
             "claude" => claude_metadata(pid, start),
-            "codex" => codex_metadata(pid),
+            "codex" => codex_metadata(pid, selected_title),
             _ => None,
         };
         // Discard a result if the PID disappeared or was reused while reading metadata.
@@ -55,7 +55,7 @@ pub fn native_metadata(provider: &str, pid: u32) -> Option<NativeMetadata> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (provider, pid);
+        let _ = (provider, pid, selected_title);
         None
     }
 }
@@ -203,6 +203,7 @@ fn claude_record_metadata(record: &Value, pid: u32, start: u64) -> Option<Native
             })
             .map(str::to_owned),
         agents: Vec::new(),
+        current_thread_unknown: false,
     })
 }
 
@@ -330,7 +331,7 @@ fn codex_identity(paths: impl IntoIterator<Item = PathBuf>) -> Option<(PathBuf, 
 }
 
 #[cfg(target_os = "linux")]
-fn codex_metadata(pid: u32) -> Option<NativeMetadata> {
+fn codex_metadata(pid: u32, selected_title: Option<&str>) -> Option<NativeMetadata> {
     let deadline = Instant::now() + Duration::from_millis(100);
     let mut paths = Vec::new();
     for (count, entry) in fs::read_dir(format!("/proc/{pid}/fd")).ok()?.enumerate() {
@@ -363,10 +364,21 @@ fn codex_metadata(pid: u32) -> Option<NativeMetadata> {
         }
     }
     let (home, ids) = codex_identities(paths)?;
-    let id = if ids.len() == 1 {
+    let id = if ids.len() == 1 && selected_title.is_none() {
         ids.iter().next()?.clone()
     } else {
-        codex_root(&home, &ids)?
+        let selected = if let Some(selected_title) = selected_title {
+            codex_title_identity(&home, &ids, selected_title)
+        } else {
+            codex_root(&home, &ids)
+        };
+        let Some(selected) = selected else {
+            return Some(NativeMetadata {
+                current_thread_unknown: true,
+                ..Default::default()
+            });
+        };
+        selected
     };
     // Read the rename index first, with its own budget, so a slow optional
     // database query cannot suppress a fresh /rename update.
@@ -380,9 +392,83 @@ fn codex_metadata(pid: u32) -> Option<NativeMetadata> {
     Some(metadata)
 }
 
-fn index_file_title(mut file: File, id: &str, deadline: Instant) -> Option<String> {
-    let size = file.metadata().ok()?.len();
-    let offset = size.saturating_sub(INDEX_TAIL);
+/// Match a fresh native selection against explicit names of this process's
+/// owned threads. Duplicate, truncated, absent and unsupported names fail closed.
+#[cfg(target_os = "linux")]
+fn codex_title_identity(home: &Path, ids: &BTreeSet<String>, selected: &str) -> Option<String> {
+    if selected.is_empty() || selected.len() > 512 || ids.iter().any(|id| !uuid(id)) {
+        return None;
+    }
+    let filter = ids
+        .iter()
+        .map(|id| format!("'{id}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let query = format!(
+        "SELECT json_object('id',id,'name',name) FROM threads WHERE id IN ({filter}) LIMIT 65;"
+    );
+    let output = sqlite_metadata(home, &query);
+    let output = output?;
+    let mut names = std::collections::BTreeMap::new();
+    for line in output
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+        .take(65)
+    {
+        if line.len() > MAX_RECORD {
+            return None;
+        }
+        let value: Value = serde_json::from_slice(line).ok()?;
+        let id = value["id"].as_str()?;
+        if !ids.contains(id) || names.contains_key(id) {
+            return None;
+        }
+        names.insert(id.to_owned(), value["name"].as_str().map(str::to_owned));
+    }
+    if names.len() != ids.len() {
+        return None;
+    }
+    if let Some(file) = private_file(&home.join("session_index.jsonl")) {
+        names.extend(index_file_names(
+            file,
+            ids,
+            Instant::now() + Duration::from_millis(100),
+        )?);
+    }
+    unique_native_title(&names, selected)
+}
+
+fn unique_native_title(names: &NativeNames, selected: &str) -> Option<String> {
+    // Every candidate must be explicit and lossless. Otherwise its fallback or
+    // truncated title could collide with an apparently unique shorter name.
+    if names.values().any(|name| {
+        !name
+            .as_deref()
+            .is_some_and(|name| name.chars().count() <= 48 && title(name).as_deref() == Some(name))
+    }) {
+        return None;
+    }
+    let mut matches = names
+        .iter()
+        .filter(|(_, name)| name.as_deref() == Some(selected));
+    let id = matches.next()?.0.clone();
+    matches.next().is_none().then_some(id)
+}
+
+fn index_file_title(file: File, id: &str, deadline: Instant) -> Option<String> {
+    index_file_names(file, &BTreeSet::from([id.to_owned()]), deadline)?
+        .remove(id)
+        .flatten()
+        .as_deref()
+        .and_then(title)
+}
+
+fn index_file_names(
+    mut file: File,
+    ids: &BTreeSet<String>,
+    deadline: Instant,
+) -> Option<NativeNames> {
+    let offset = file.metadata().ok()?.len().saturating_sub(INDEX_TAIL);
     file.seek(SeekFrom::Start(offset)).ok()?;
     let mut reader = BufReader::new(file.take(INDEX_TAIL));
     if offset > 0 {
@@ -396,7 +482,7 @@ fn index_file_title(mut file: File, id: &str, deadline: Instant) -> Option<Strin
             return None;
         }
     }
-    index_title(reader, id, deadline)
+    index_names(reader, ids, deadline)
 }
 
 /// Optional compatibility path for Codex 0.163 state_5 schema. Only select
@@ -590,22 +676,34 @@ fn codex_database_records(output: &[u8], id: &str) -> Option<NativeMetadata> {
     found.then_some(metadata)
 }
 
-fn index_title(mut reader: impl BufRead, id: &str, deadline: Instant) -> Option<String> {
-    let mut result = None;
+#[cfg(test)]
+fn index_title(reader: impl BufRead, id: &str, deadline: Instant) -> Option<String> {
+    index_names(reader, &BTreeSet::from([id.to_owned()]), deadline)?
+        .remove(id)
+        .flatten()
+        .as_deref()
+        .and_then(title)
+}
+
+fn index_names(
+    mut reader: impl BufRead,
+    ids: &BTreeSet<String>,
+    deadline: Instant,
+) -> Option<NativeNames> {
+    let mut result = NativeNames::new();
     let mut line = Vec::new();
     loop {
         if Instant::now() >= deadline {
             return None;
         }
         line.clear();
-        // Bounded line read; never deserialize a rollout or arbitrary transcript.
         let n = reader
             .by_ref()
             .take(MAX_RECORD as u64 + 1)
             .read_until(b'\n', &mut line)
             .ok()?;
         if n == 0 {
-            return result;
+            return Some(result);
         }
         if n > MAX_RECORD {
             return None;
@@ -613,15 +711,12 @@ fn index_title(mut reader: impl BufRead, id: &str, deadline: Instant) -> Option<
         let Ok(record) = serde_json::from_slice::<Value>(&line) else {
             continue;
         };
-        if record
-            .get("id")
-            .and_then(Value::as_str)
-            .is_some_and(|v| v.eq_ignore_ascii_case(id))
+        if let Some(id) = record["id"]
+            .as_str()
+            .map(str::to_ascii_lowercase)
+            .filter(|id| ids.contains(id))
         {
-            result = record
-                .get("thread_name")
-                .and_then(Value::as_str)
-                .and_then(title);
+            result.insert(id, record["thread_name"].as_str().map(str::to_owned));
         }
     }
 }
@@ -630,6 +725,33 @@ fn index_title(mut reader: impl BufRead, id: &str, deadline: Instant) -> Option<
 mod tests {
     use super::*;
     const ID: &str = "01a10f4e-85f4-7c00-a244-67a78928c221";
+    #[test]
+    fn native_selection_requires_exact_unique_untruncated_explicit_name() {
+        let mut names = std::collections::BTreeMap::from([
+            ("first".into(), Some("First project".into())),
+            ("second".into(), Some("Second project".into())),
+        ]);
+        assert_eq!(
+            unique_native_title(&names, "Second project").as_deref(),
+            Some("second")
+        );
+        assert!(unique_native_title(&names, "Second").is_none());
+        names.insert("duplicate".into(), Some("Second project".into()));
+        assert!(unique_native_title(&names, "Second project").is_none());
+        names.clear();
+        names.insert("long".into(), Some("x".repeat(49)));
+        assert!(unique_native_title(&names, &"x".repeat(48)).is_none());
+        assert!(unique_native_title(&names, &"x".repeat(49)).is_none());
+        names.insert("short".into(), Some("x".repeat(48)));
+        assert!(unique_native_title(&names, &"x".repeat(48)).is_none());
+        names.clear();
+        names.insert("short".into(), Some("Name".into()));
+        names.insert("missing".into(), None);
+        assert!(unique_native_title(&names, "Name").is_none());
+        names.insert("control".into(), Some("\x1b[31mName".into()));
+        assert!(unique_native_title(&names, "Name").is_none());
+    }
+
     #[test]
     fn claude_requires_same_pid_start_and_session_identity() {
         let mut record =

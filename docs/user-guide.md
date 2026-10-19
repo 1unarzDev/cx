@@ -2,6 +2,8 @@
 
 Detailed controls and behavior for sessions, files, terminals, network discovery and updates. For installation and dependencies, see [installation](installation.md).
 
+Plain `cx` opens the current folder in Files on the invocation device. An update restart restores the existing workspace instead.
+
 ## Controls
 
 | Keys | Action |
@@ -33,6 +35,14 @@ In Sessions, `d` stops the selected CX-managed shell, Claude or Codex session af
 
 Automatically named shells show the running executable, such as `running cargo`; new managed Fish shells remember short commands as `last: git`, while older/Bash/Zsh shells show the most recently observed command as `recent: git`. Arguments and shell history are excluded. Claude native names and Codex names use exact process metadata when available; daemon-backed Codex sessions without a reliable identity retain their folder label. Custom names stay unchanged and label refreshes preserve row order.
 
+Session rows refresh while Files and other panels are open. Failed device checks discard unattachable cached rows; successful checks recover existing managed/default tmux terminals, including recognized Docker exec terminals in running devcontainers. Stopped, restarted or missing container runtimes disappear from Sessions after authoritative checks. The Containers inventory retains actual stopped containers for an explicit Start; cache cleanup never deletes Docker objects or reattaches arbitrary orphaned PTYs.
+
+The Sessions state column animates for observed foreground commands, known native agent work, or recent terminal output. `output` means the terminal emitted output; it does not prove a model is reasoning or a silent command is running. Stale observations expire. Press `s` to inspect the selected session's provider-reported tasks/subagents and task text. Open/closed child records are task states, not busy indicators. The dialog follows refreshed metadata and closes when the session disappears.
+
+Exact native names and project directories follow provider metadata without changing terminal identity. Custom CX names stay unchanged. New host Codex launches use a separate process (`--no-daemon`) when supported, improving current-thread tracking at the cost of additional memory; older versions fall back. Existing sessions are not restarted. New supported host launches also set Codex’s native thread-name terminal title per launch to identify idle thread switches. This requires explicit, unique names of at most 48 characters among owned threads; otherwise CX shows “Directory unavailable” and avoids using the launch folder for contextual commands. Saved provider configuration is unchanged. Codex database metadata additionally needs the optional `sqlite3` executable; unsupported identities omit optional metadata. No transcripts are read.
+
+Claude attachments use a solid light or dark background for default terminal cells, following the host Claude theme. This improves small question-description contrast in transparent terminals while preserving provider text colors and explicit highlights. Reattaching as a shell restores the terminal background. External tmux sessions and terminal/provider configuration are unchanged.
+
 ## Files and transfers
 
 The Selected side panel stacks parent folders above the highlighted current folder, with the selected item beneath it. Older ancestors fold when vertical space is limited. The workspace keeps its space for files; switching split panes updates the side-panel hierarchy.
@@ -61,6 +71,6 @@ For a robot reachable through another device, select that observer in Network; i
 
 ## Updates and reconnection
 
-Updates check signed stable releases in the background, retain the running version when offline, and restore the viewer when idle. The workspace also checks accessed SSH devices without authentication prompts; their own updater verifies the correct architecture and installs under its maintenance lock. If a remote device cannot download releases, the viewer downloads and verifies the signed artifact for that host architecture and transfers it over the existing SSH route. This supports ARM64 CoreOS and Jetson without replacing OS packages or changing their network. Remote checks run when a viewer accesses the host; a robot does not need its own running viewer or public egress. After a verified helper upgrade, metadata reconnects and previews reload without restarting terminals or jobs. Checks coalesce per host and back off when unavailable. Run `cx update --check` to check explicitly, or `cx update --device NAME` to update an enrolled SSH host. Sessions/jobs keep running independently. A lost metadata connection retries read-only session/device checks once; mutations are never replayed. Cached rows are unconfirmed until a successful Refresh, which removes ended sessions. Connection errors identify SSH access problems separately from terminal state.
+Updates check signed stable releases in the background, retain the running version when offline, and restore the viewer when idle. The workspace also checks accessed SSH devices without authentication prompts; their own updater verifies the correct architecture and installs under its maintenance lock. If a remote device cannot download releases, the viewer downloads and verifies the signed artifact for that host architecture and transfers it over the existing SSH route. This supports ARM64 CoreOS and Jetson without replacing OS packages or changing their network. Remote checks run when a viewer accesses the host; a robot does not need its own running viewer or public egress. After a verified helper upgrade, metadata reconnects and previews reload without restarting terminals or jobs. Checks coalesce per host and back off when unavailable. Run `cx update --check` to check explicitly, or `cx update --device NAME` to update an enrolled SSH host. Sessions/jobs keep running independently. A lost metadata connection retries read-only session/device checks once; mutations are never replayed. Cached rows are unconfirmed until a successful refresh, which removes ended sessions; failed refreshes discard cached rows for that device. Connection errors identify SSH access problems separately from terminal state.
 
 [Back to README](../README.md)

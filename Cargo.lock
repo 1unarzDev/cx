@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "cx"
-version = "0.1.66"
+version = "0.1.67"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

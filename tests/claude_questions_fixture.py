@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import signal
 import shutil
 import subprocess
 import tempfile
@@ -20,6 +21,7 @@ import time
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--cx", type=Path, help="use an actual private CX managed session")
     parser.add_argument("--claude", default=shutil.which("claude"))
     parser.add_argument("--theme", choices=["dark", "light", "dark-ansi", "light-ansi",
                         "dark-daltonized", "light-daltonized"], default="dark")
@@ -117,7 +119,18 @@ def main():
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_AUTOUPDATER": "1",
             "DISABLE_TELEMETRY": "1", "DISABLE_ERROR_REPORTING": "1",
             "TERM": "tmux-256color", "COLORTERM": "truecolor", "LANG": "C.UTF-8"}
+        session = "fixture"
         socket = root / "fixture.sock"
+        if args.cx:
+            args.cx = args.cx.resolve()
+            socket = root / "state/cx/managed.sock"
+            socket.parent.mkdir(parents=True, mode=0o700)
+            subprocess.run(["tmux", "-S", str(socket), "-f", str(args.tmux_config.resolve()),
+                "new-session", "-d", "-s", "bootstrap", "sleep 60"], env=env, check=True)
+            created = json.loads(subprocess.check_output([str(args.cx), "new", "--directory", tmp,
+                "--key", "claude-question-fixture"], env=env, text=True, timeout=10))
+            session = created["id"]
+            subprocess.run(["tmux", "-S", str(socket), "kill-session", "-t", "bootstrap"], env=env, check=True)
         def tmux(*command, check=True):
             return subprocess.run(["tmux", "-S", str(socket), *command], env=env,
                 capture_output=True, text=True, timeout=5, check=check).stdout
@@ -128,28 +141,49 @@ def main():
         command = "exec " + shlex.join(launch)
         if fish:
             command = shlex.join([fish, "--no-config", "-c", command])
+        pane_pid = None
+        pane_start = None
         try:
-            tmux("-f", str(args.tmux_config.resolve()), "new-session", "-d", "-s", "fixture", "-x", "110", "-y", "38", "-c", tmp, command)
+            if args.cx:
+                tmux("send-keys", "-t", session, "-l", "exec " + command)
+                tmux("send-keys", "-t", session, "Enter")
+            else:
+                tmux("-f", str(args.tmux_config.resolve()), "new-session", "-d", "-s", "fixture", "-x", "110", "-y", "38", "-c", tmp, command)
             deadline = time.monotonic() + 35
             pane = ""
             while time.monotonic() < deadline:
-                pane = tmux("capture-pane", "-e", "-p", "-t", "fixture")
+                pane = tmux("capture-pane", "-e", "-p", "-t", session)
                 if "CX fixture: choose a project color." in pane:
                     break
                 time.sleep(0.1)
+            pane_pid = int(tmux("display-message", "-p", "-t", session, "#{pane_pid}").strip())
+            pane_start = Path(f"/proc/{pane_pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
             (args.artifacts / "question-first.ansi").write_text(pane)
             if "CX fixture: choose a project color." not in pane:
                 raise RuntimeError(f"Question UI not reached; private synthetic capture saved; API calls={len(calls)}")
-            tmux("send-keys", "-t", "fixture", "Enter")
+            tmux("send-keys", "-t", session, "Enter")
             time.sleep(0.4)
-            (args.artifacts / "question-next.ansi").write_text(tmux("capture-pane", "-e", "-p", "-t", "fixture"))
+            (args.artifacts / "question-next.ansi").write_text(tmux("capture-pane", "-e", "-p", "-t", session))
             print(json.dumps({"result": "question UI reached", "theme": args.theme,
-                              "api_calls": len(calls), "private_socket": str(socket),
+                              "api_calls": len(calls), "private_socket": str(socket), "session": session,
                               "artifacts": str(args.artifacts)}), flush=True)
             if args.hold_seconds:
                 time.sleep(args.hold_seconds)
         finally:
             tmux("kill-server", check=False)
+            # Claude may finish asynchronous config writes after tmux exits.
+            # Revalidate the exact fixture-owned PID before stopping it.
+            for sig in [signal.SIGTERM, signal.SIGKILL]:
+                try:
+                    stat = Path(f"/proc/{pane_pid}/stat").read_text().rsplit(")", 1)[1].split()
+                    if stat[19] != pane_start or stat[0] == "Z":
+                        break
+                    os.kill(pane_pid, sig)
+                    deadline = time.monotonic()+1
+                    while time.monotonic()<deadline and Path(f"/proc/{pane_pid}").exists():
+                        time.sleep(.02)
+                except (FileNotFoundError, ProcessLookupError):
+                    break
             server.shutdown()
             server.server_close()
 

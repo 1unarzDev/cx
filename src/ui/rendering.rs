@@ -307,13 +307,13 @@ pub(super) fn render_at(
                 identity(&app.devices[i]),
                 menus::session_label(app, i, &s),
                 safe_label(&scope.name),
-                safe_label(&s.directory)
+                session_folder_label(&s.directory)
             )
         } else {
             format!(
                 "Host {}\nFolder {}\nEnter open · n new",
                 identity(&app.devices[i]),
-                safe_label(&s.directory)
+                session_folder_label(&s.directory)
             )
         }
     } else if let Some(i) = app.actual_device() {
@@ -525,11 +525,14 @@ pub(super) fn render_at(
                         }
                         display_rows.push(
                             Row::new(if compact {
-                                vec![Cell::from(safe_label(&s.directory)), Cell::from("")]
+                                vec![
+                                    Cell::from(session_folder_label(&s.directory)),
+                                    Cell::from(""),
+                                ]
                             } else {
                                 vec![
                                     Cell::from(""),
-                                    Cell::from(safe_label(&s.directory)),
+                                    Cell::from(session_folder_label(&s.directory)),
                                     Cell::from(""),
                                     Cell::from(""),
                                 ]
@@ -1557,7 +1560,7 @@ pub(super) fn render_at(
             ),
             Dialog::StopShell(d, session) => (
                 format!("Stop {} session?", session.provider), vec!["Keep session".into(), "Stop session".into()],
-                format!("Running work in this session will end.\n{}\n{}\n{}", identity(&app.devices[*d]), safe_label(&session.name), safe_label(&session.directory)),
+                format!("Running work in this session will end.\n{}\n{}\n{}", identity(&app.devices[*d]), safe_label(&session.name), session_folder_label(&session.directory)),
             ),
             Dialog::Delete(d, entries) => (
                 format!("Delete {} {}?", entries.len(), if entries.len() == 1 { "item" } else { "items" }),

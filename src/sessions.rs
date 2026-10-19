@@ -336,6 +336,37 @@ fn codex_directory_arg(args: &[Vec<u8>]) -> Option<PathBuf> {
     directory
 }
 
+fn launch_native_title(managed: bool, id: &str, process: &ProcessIdentity) -> Option<String> {
+    use std::io::Read;
+    if !managed {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(format!("/proc/{}/environ", process.pid))
+        .ok()?
+        .take(65537)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > 65536 || bytes.last() != Some(&0) {
+        return None;
+    }
+    let expected = format!("CX_MANAGED_SESSION={id}");
+    let entries = bytes.split(|b| *b == 0).collect::<Vec<_>>();
+    if !entries.contains(&b"CX_CODEX_TITLE=thread-name-v1".as_slice())
+        || !entries.contains(&expected.as_bytes())
+    {
+        return None;
+    }
+    // The launcher clears inherited titles before Codex starts. A missing or
+    // pending native title must not enable the older ancestry fallback.
+    let title = field(managed, id, "#{pane_title}").unwrap_or_default();
+    Some(if title == "CX awaiting native title" {
+        String::new()
+    } else {
+        title
+    })
+}
+
 fn provider_directory(provider: &str, process: &ProcessIdentity) -> Option<String> {
     use std::io::Read;
     // Guard PID reuse; never retarget a session to a replacement process.
@@ -533,20 +564,39 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
         .or_else(|| process_identity(pid, original_provider));
     // Native metadata follows the live provider thread when its control panel
     // switches projects; argv and process cwd retain only the launch location.
+    let tracked_title = process
+        .as_ref()
+        .filter(|_| provider == "codex")
+        .and_then(|p| launch_native_title(managed, &name, p));
     let native = process
         .as_ref()
         .filter(|_| provider != "shell")
-        .and_then(|p| crate::session_titles::native_metadata(provider, p.pid));
-    let directory = native
-        .as_ref()
-        .and_then(|m| m.directory.clone())
-        .or_else(|| {
-            process
-                .as_ref()
-                .filter(|_| provider != "shell")
-                .and_then(|process| provider_directory(provider, process))
-        })
-        .unwrap_or(field(managed, id, "#{pane_current_path}")?);
+        .and_then(|p| {
+            crate::session_titles::native_metadata_with_title(
+                provider,
+                p.pid,
+                tracked_title.as_deref(),
+            )
+        });
+    // A controlled launch must prove the selected thread and its directory.
+    // Missing SQLite, scan races or a pending title cannot revive launch cwd.
+    let current_thread_unknown = native.as_ref().is_some_and(|m| m.current_thread_unknown)
+        || (tracked_title.is_some()
+            && native.as_ref().and_then(|m| m.directory.as_ref()).is_none());
+    let directory = if current_thread_unknown {
+        String::new()
+    } else {
+        native
+            .as_ref()
+            .and_then(|m| m.directory.clone())
+            .or_else(|| {
+                process
+                    .as_ref()
+                    .filter(|_| provider != "shell")
+                    .and_then(|process| provider_directory(provider, process))
+            })
+            .unwrap_or(field(managed, id, "#{pane_current_path}")?)
+    };
     let saved_name = prior
         .as_ref()
         .map(|s| current_session_name(s, provider, &directory))
@@ -554,6 +604,8 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
     let automatic = prior.as_ref().is_some_and(automatically_named);
     let display_name = if automatic && provider == "shell" {
         shell_activity(managed, id).unwrap_or(saved_name)
+    } else if automatic && current_thread_unknown {
+        format!("{provider} · directory unavailable")
     } else if automatic {
         native
             .as_ref()
@@ -1481,7 +1533,7 @@ fn create_with_permissions(
         );
     }
     if container.is_none() && request.provider == "codex" && codex_supports_no_daemon(&shell) {
-        agent_command.push_str(" --no-daemon");
+        agent_command.push_str(" --no-daemon --config 'tui.terminal_title=[\"thread-name\"]'");
     }
     ensure_server()?;
     refresh_provider_environment()?;
@@ -1550,8 +1602,15 @@ fn create_with_permissions(
             payload,
         ];
     }
+    let title_tracking = container.is_none()
+        && request.provider == "codex"
+        && launcher
+            .iter()
+            .any(|arg| arg.contains("tui.terminal_title="));
     let command = format!(
-        "exec env CX_VIEWER_THEME=1 CX_TMUX_BIN={} CX_MANAGED_SOCKET={} CX_MANAGED_SESSION={} {}",
+        "{}exec env {}CX_VIEWER_THEME=1 CX_TMUX_BIN={} CX_MANAGED_SOCKET={} CX_MANAGED_SESSION={} {}",
+        if title_tracking { "printf '\\033]0;CX awaiting native title\\007'; " } else { "" },
+        if title_tracking { "CX_CODEX_TITLE=thread-name-v1 " } else { "" },
         quote(
             tmux_executable()
                 .to_str()
@@ -1586,6 +1645,59 @@ fn create_with_permissions(
     set_managed_status(&session)?;
     Ok(session)
 }
+fn claude_background() -> &'static str {
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+    let config = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()));
+    let theme = (|| -> Option<String> {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(config.join(".claude.json"))
+            .ok()?;
+        let meta = file.metadata().ok()?;
+        if !meta.is_file() || meta.uid() != unsafe { libc::geteuid() } || meta.len() > 1024 * 1024 {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        file.take(1024 * 1024 + 1).read_to_end(&mut bytes).ok()?;
+        if bytes.len() > 1024 * 1024 {
+            return None;
+        }
+        let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        value["theme"].as_str().map(str::to_owned)
+    })();
+    if theme
+        .as_deref()
+        .is_some_and(|theme| theme.starts_with("light"))
+    {
+        "#f5f5f5"
+    } else {
+        "#181818"
+    }
+}
+
+fn set_managed_contrast(session: &Session) -> Result<()> {
+    // Override only default-background cells, preserving Claude's explicit
+    // colors and the viewer's foreground palette. Never touch external servers.
+    for option in ["window-style", "window-active-style"] {
+        let mut query = tmux(true)?;
+        query.args(["show-options", "-g", "-v", option]);
+        let default = output(query)?;
+        let style = if session.provider == "claude" {
+            format!("{},bg={}", default.trim(), claude_background())
+        } else {
+            default.trim().to_owned()
+        };
+        let mut command = tmux(true)?;
+        command.args(["set-option", "-w", "-t", &session.id, option, &style]);
+        output(command)?;
+    }
+    Ok(())
+}
+
 fn set_managed_status(session: &Session) -> Result<()> {
     let safe = |value: &str| {
         value
@@ -1793,7 +1905,9 @@ pub fn refresh_managed_status(id: &str) -> Result<()> {
     if !id.starts_with("cx-") || id.len() != 67 || !id[3..].bytes().all(|b| b.is_ascii_hexdigit()) {
         bail!("invalid managed session identity");
     }
-    set_managed_status(&inspect(true, id)?)
+    let session = inspect(true, id)?;
+    set_managed_contrast(&session)?;
+    set_managed_status(&session)
 }
 
 fn quote(s: &str) -> String {

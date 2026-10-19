@@ -5979,3 +5979,62 @@ fn removal_reindexes_queued_actions_and_never_inherits_old_container_views() {
         matches!(&a.file_queue.front().unwrap().1, Operation::Mkdir { path } if path == "/third")
     );
 }
+
+#[test]
+fn rejected_old_host_file_reply_releases_queue_and_endpoint_changes_drop_clipboard() {
+    let (mut a, rx) = queued_app();
+    let prior = a.devices[1].clone();
+    let mut updated = prior.clone();
+    updated.target = Some("replacement-host".into());
+    a.clipboard = Some(Clipboard {
+        container: None,
+        id: "old-host".into(),
+        device: 1,
+        entries: vec![],
+        cut: true,
+        source_label: "old-host".into(),
+    });
+    a.file_busy = true;
+    a.replace_device_endpoint(1, updated);
+    assert!(a.clipboard.is_none());
+    a.file_queue.push_back((
+        0,
+        Operation::Remove {
+            path: "/synthetic-fixture".into(),
+            expected_identity: None,
+        },
+    ));
+    a.apply(Reply {
+        device_id: Some(prior.id),
+        execution_target: Some(prior.target),
+        preview: None,
+        device: 1,
+        op: Operation::Remove {
+            path: "/old-synthetic-fixture".into(),
+            expected_identity: None,
+        },
+        generation: a.generation,
+        result: Ok(serde_json::json!({})),
+    });
+    let next = rx.try_recv().unwrap();
+    assert_eq!(next.device, 0);
+    assert!(a.file_queue.is_empty());
+    assert!(a.file_busy);
+}
+
+#[test]
+fn unknown_native_folder_never_becomes_a_command_or_new_session_path() {
+    let (mut a, rx) = queued_app();
+    let mut session = disposable_shell();
+    session.provider = "codex".into();
+    session.directory.clear();
+    a.work[0].sessions.push(session);
+    a.device = 1;
+    a.view = View::Work;
+    a.focus = Focus::Workspace;
+    assert!(a.command_context().is_none());
+    assert!(capture_app(&a, 120).contains("Directory unavailable"));
+    a.execute(Action::New);
+    assert!(matches!(a.dialog, Some(Dialog::Provider(0, None))));
+    assert!(!rx.try_iter().any(|t| matches!(t.op, Operation::Create(_))));
+}

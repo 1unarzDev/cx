@@ -2,7 +2,20 @@
 
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
-## Unreleased
+## v0.1.67
+
+### Features
+- Open the invocation folder in Files on startup; restore prior workspace on update restart.
+- Show observed command/agent activity and recent terminal output in Sessions. Press `s` for native task/subagent details.
+- Track native project/name changes and launch new Codex terminals with `--no-daemon` and a native thread-name title option when supported. Ambiguous selection shows an unavailable directory; existing sessions remain running.
+
+### Fixes
+- Reconcile session/container caches in every view; discard unreachable cached shells and dead tmux panes, and revalidate saved container lifecycles on every listing.
+- Recover existing tmux-backed Docker exec terminals from fresh devcontainer evidence without reparenting processes or changing containers.
+- Report incomplete container discovery honestly, retain labeled workspace identity, and prefer explicit devcontainer configuration paths.
+- Keep session selection stable during pruning and route in-flight replies by device identity across removal/reorder.
+- Bound and isolate optional native metadata reads, including exact Codex parent/subagent writer trees.
+- Improve Claude question-description contrast with solid default-cell backgrounds while preserving text colors and explicit highlights.
 
 ## v0.1.66
 

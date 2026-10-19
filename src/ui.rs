@@ -751,6 +751,10 @@ impl App {
         self.neighbor_evidence.clear();
         self.jobs.clear();
         self.pending_attach = None;
+        self.pending_command = None;
+        self.pending_terminal = None;
+        self.clipboard = None;
+        self.creating = false;
         self.dialog = None;
         self.command_target = None;
         self.rename_target = None;
@@ -1168,7 +1172,7 @@ impl App {
         }
         if self.view == View::Work {
             if let Some((d, session)) = self.selected_session() {
-                if session.container.is_some() {
+                if session.container.is_some() || session.directory.is_empty() {
                     return None;
                 }
                 return Some((d, session.directory));
@@ -2251,7 +2255,10 @@ impl App {
                             return;
                         }
                         self.check_providers(d);
-                        self.dialog = Some(Dialog::Provider(d, Some(session.directory)));
+                        self.dialog = Some(Dialog::Provider(
+                            d,
+                            (!session.directory.is_empty()).then_some(session.directory),
+                        ));
                         self.dialog_selected = 0;
                         return;
                     }
@@ -2274,7 +2281,14 @@ impl App {
                     if let Some(scope) = session.container {
                         self.open_container_browser(d, scope);
                     } else {
-                        self.open_host_browser(d, session.directory);
+                        self.open_host_browser(
+                            d,
+                            if session.directory.is_empty() {
+                                "~".into()
+                            } else {
+                                session.directory
+                            },
+                        );
                     }
                 } else {
                     self.choose_device(ChooseDevice::Files);
@@ -3442,6 +3456,21 @@ impl App {
     fn apply(&mut self, mut reply: Reply) {
         self.pending_requests
             .set(self.pending_requests.get().saturating_sub(1));
+        let file_action = matches!(
+            match &reply.op {
+                Operation::ContainerFileAction { operation, .. } => operation.as_ref(),
+                other => other,
+            },
+            Operation::Remove { .. }
+                | Operation::Rename { .. }
+                | Operation::Transfer(_)
+                | Operation::ScopedTransfer(_)
+                | Operation::TransferRetry { .. }
+        );
+        if file_action {
+            self.file_busy = false;
+            self.start_next_file_action();
+        }
         if let Some(id) = &reply.device_id {
             let Some(device) = self.devices.iter().position(|d| &d.id == id) else {
                 return; // Device removed while this request was in flight.
@@ -3472,18 +3501,6 @@ impl App {
         if let Operation::ContainerFileAction { operation, .. } = &reply.op {
             // Mutation replies release the serialized queue even after navigating away.
             reply.op = *operation.clone();
-        }
-        let file_action = matches!(
-            reply.op,
-            Operation::Remove { .. }
-                | Operation::Rename { .. }
-                | Operation::Transfer(_)
-                | Operation::ScopedTransfer(_)
-                | Operation::TransferRetry { .. }
-        );
-        if file_action {
-            self.file_busy = false;
-            self.start_next_file_action();
         }
         let connection_failure = reply
             .result
@@ -8792,6 +8809,14 @@ fn browser_scope_key(scope: Option<&ContainerScope>) -> String {
     scope
         .map(|s| format!("{}:{}:{}:{}", s.engine, s.id, s.started_at, s.user))
         .unwrap_or_default()
+}
+
+fn session_folder_label(path: &str) -> String {
+    if path.is_empty() {
+        "Directory unavailable".into()
+    } else {
+        safe_label(path)
+    }
 }
 
 fn file_endpoint_label(device: &Device, scope: &Option<ContainerScope>) -> String {

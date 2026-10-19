@@ -803,3 +803,49 @@ PASS: `cargo test --locked --bin cx containers_ui_capture_matrix_and_default_bac
 Removed container-menu agent options and permissions, retaining Shell, read-only Files and lifecycle controls. Existing protocol/runtime support remains for compatibility with existing sessions/older clients; new UI container launches are shell-only. `n` on a highlighted container session retains its container scope. Shared navigation covers Devices/Actions/Sessions/Network/Containers/Files, chooser/device/provider/transfer dialogs and help: gg/G, counted j/k/arrows/pages, numbered row jumps and horizontal chooser motion. File/preview n/N supports counts. Counts are bounded, reset at actions/input boundaries and never repeat mutations. Transfer details scroll within wrapped content bounds. Device and transfer filters map visible rows to stable device/job identities; typing and finishing filters cannot launch or cancel work.
 
 PASS: locked serial suite529 passed/one protected live test ignored, `/tmp/cx-v041-rust.log`. Final UI rerun after help/scope/indicator changes321 passed, `/tmp/cx-v041-final-ui.log`; regression checks cover list edges/counts, filtered devices, typed prefixes, job identity/detail scrolling and shell-only container paths. PASS: rebuilt debug binary and extended actual chooser/watch PTY checks including gg/G/2l/2G, `/tmp/cx-v041-chooser-pty.log`. PASS: actual owned Docker passthrough/scoped files/lifecycle/inner-shell stop, `/tmp/cx-v041-containers.log`; destination Enter copy/completion/termios, `/tmp/cx-v041-transfer-pty.log`. Final container capture matrix includes the shell-only chooser at48/80/120 columns (`/tmp/cx-v041-container-captures`); inspected80-column shell-only render. No physical UI or powered-down robot acceptance is claimed. Signed release/local update is a separate gate; no remote deployment in this followup.
+
+
+## v0.1.67 — session reliability and native project selection (2026-10-19)
+
+Integrated in isolated `worktrees/session-reliability`, based on v0.1.66.
+The original conflicted checkout, installed CX binary and active provider sessions
+were preserved. Root serialized fixture host mutations; all tmux/Docker writes
+were limited to owned fixtures.
+
+- PASS: `cargo fmt --check`, locked build and locked Rust suite with one test
+  thread: **595 passed, 1 ignored** (370 binary, 49 files/network, 72 session core,
+  80 transfers, 24 updater). `/tmp/cx-release-final-tests.log` and
+  `/tmp/cx-release-final-build.log`. Existing unused-code warnings remain.
+- PASS: actual Codex **0.163.0**, production helper create/resume path, private
+  configuration and rejecting loopback API. Idle `/resume` → another project →
+  “Use session directory” updates exact name and folder with stable terminal
+  identity and no inference during switching. Pending/contradictory native title
+  also clears a singleton writer's stale directory. Evidence:
+  `/tmp/cx-native-switch-final.log`, `/tmp/cx-native-switch-final/`.
+- PASS: actual Claude **2.1.303** synthetic AskUserQuestion fixture in foot.
+  Before/after same-screen captures `/tmp/cx-claude-comparison/{before,after}.png`
+  were visually compared: opaque default cells improve gray descriptions,
+  preserving text colors and explicit question highlights. Consecutive questions
+  showed no background leak. Native attach fixtures verify light/dark themes,
+  preserved foregrounds and restoration on shell attachment.
+- PASS: earlier PTY/CLI integration covered session creation/chooser, attach,
+  Fish/native commands, exact native names/directories, manual agents, external
+  tmux discovery, RGB preservation, background device refresh and transfer Enter.
+  Actual owned network-none Docker fixtures covered container creation, agent
+  terminals and scoped transfers. See `/tmp/cx-<fixture filename>.log`.
+
+Final-binary repeats all PASS: `native_runtime_metadata_live`,
+`codex_process_mode_live`, `claude_contrast_live`,
+`devcontainer_terminal_recovery_live`, `container_session_reconcile_live`,
+`session_activity_timestamp_live`, and `startup_directory_pty` (via `uv --with pyte`).
+Logs: `/tmp/cx-final-<fixture>.log`. Actual Codex idle-switch acceptance also PASS
+as detailed above. The controlled native title template is per launch; deferred
+lifecycle hooks were investigated but are not shipped. No saved provider config,
+credentials, SSH trust, personal tmux sessions, WARP or live networking changed.
+
+Blastoise and Squirtle failed bounded read-only SSH probes (exit 255), so physical
+remote reconnect/attach acceptance remains unavailable. Devices need updated
+helpers to expose the new metadata/reconciliation behavior. Unsupported native
+schemas, missing SQLite and ambiguous names fail closed. Silent model/network
+waits and silent inner-container commands remain unknown rather than busy.
+No local or fleet deployment/restart was performed.

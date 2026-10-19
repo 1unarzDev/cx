@@ -9,6 +9,8 @@ curl -fsSL https://raw.githubusercontent.com/1unarzDev/cx/main/install.sh | sh
 cx
 ```
 
+Running `cx` opens Files in the folder you launched it from on that device. Update restarts restore your previous workspace.
+
 Install as your ordinary user. The installer verifies signed releases and offers to install missing dependencies. See [installation and requirements](docs/installation.md) for supported platforms, optional tools and minimal robot setup.
 
 Add a device using an existing SSH alias or account/address:
@@ -33,6 +35,7 @@ You can also select a discovered neighbor in **Network** and press Enter to conn
 | Tab / Shift+Tab | Change panel focus |
 | Ctrl+] in a managed terminal | Return to CX; the session keeps running |
 | `w` in Sessions | Watch the highlighted session read-only |
+| `s` in Sessions | Inspect the selected agent's tasks and subagents |
 | `b` on a device | Toggle remote access: bidirectional or viewer-to-device |
 | `d` in Sessions | Confirm stopping a CX-managed shell or agent |
 | Ctrl+C in CX | Exit the viewer; sessions keep running |

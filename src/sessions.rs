@@ -474,6 +474,7 @@ fn shell_activity(managed: bool, id: &str) -> Option<String> {
 }
 
 fn inspect(managed: bool, id: &str) -> Result<Session> {
+    anyhow::ensure!(field(managed, id, "#{pane_dead}")? == "0", "session terminal has exited; refresh sessions");
     let (host, account, boot_id) = identity();
     let name = field(managed, id, "#{session_name}")?;
     let record = state()?.join(format!("{name}.json"));

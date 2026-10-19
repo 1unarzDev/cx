@@ -38,6 +38,19 @@ pub struct Session {
     pub process: Option<ProcessIdentity>,
     #[serde(default)]
     pub container: Option<ContainerScope>,
+    /// Observed activity, never inferred from a cached liveness label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_tasks: Vec<AgentTask>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AgentTask {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    pub status: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RunCommand {

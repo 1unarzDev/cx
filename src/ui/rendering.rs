@@ -1316,13 +1316,34 @@ pub(super) fn render_at(
             cells[i % columns],
         );
     }
-    notifications::render(
-        frame,
-        &app.notice,
-        app.notice_kind,
-        workspace,
-        notifications::appearance(app.notice_started, app.notice_deadline, now),
-    );
+    if app.creating && app.dialog.is_none() && app.input.is_none() {
+        let rect = popup(workspace, 44, 5);
+        frame.render_widget(Clear, rect);
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    format!(
+                        "{} Starting terminal",
+                        transfer_spinner(app.transfer_frame, ascii())
+                    ),
+                    accent().add_modifier(Modifier::BOLD),
+                )),
+                Line::from("Preparing the first screen…"),
+            ])
+            .alignment(ratatui::layout::Alignment::Center)
+            .block(block("New session".into(), true)),
+            rect,
+        );
+    }
+    if !app.creating {
+        notifications::render(
+            frame,
+            &app.notice,
+            app.notice_kind,
+            workspace,
+            notifications::appearance(app.notice_started, app.notice_deadline, now),
+        );
+    }
     if let Some(input) = app
         .input
         .filter(|i| !matches!(*i, Input::Search | Input::PreviewSearch | Input::Filter))

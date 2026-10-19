@@ -6038,3 +6038,41 @@ fn unknown_native_folder_never_becomes_a_command_or_new_session_path() {
     assert!(matches!(a.dialog, Some(Dialog::Provider(0, None))));
     assert!(!rx.try_iter().any(|t| matches!(t.op, Operation::Create(_))));
 }
+
+#[test]
+fn terminal_startup_loader_animates_in_files_and_sessions_and_clears_on_failure() {
+    let (mut a, _) = queued_app();
+    a.creating = true;
+    a.set_notice("Creating shell on workstation…".into());
+    for view in [View::Files, View::Work] {
+        a.view = view;
+        for width in [48, 80, 120] {
+            a.transfer_frame = 0;
+            let first = capture_app(&a, width);
+            assert!(first.contains("Starting terminal"), "{first}");
+            assert!(!first.contains("Creating shell on workstation"));
+            a.transfer_frame = 1;
+            assert_ne!(first, capture_app(&a, width));
+        }
+    }
+    a.apply(Reply {
+        device_id: None,
+        execution_target: None,
+        preview: None,
+        device: 0,
+        op: Operation::Create(CreateSession {
+            key: "loader-failure".into(),
+            directory: "~".into(),
+            provider: "shell".into(),
+            name: String::new(),
+            resume: false,
+        }),
+        generation: a.generation,
+        result: Err(anyhow::anyhow!("terminal exited during startup")),
+    });
+    assert!(!a.creating);
+    assert!(a.pending_attach.is_none());
+    let screen = capture_app(&a, 120);
+    assert!(!screen.contains("Starting terminal"));
+    assert!(screen.contains("terminal exited during startup"));
+}

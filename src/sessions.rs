@@ -1629,7 +1629,7 @@ fn create_with_permissions(
         .arg(directory)
         .arg(command);
     output(c)?;
-    let mut session = inspect(true, &name)?;
+    let mut session = inspect(true, &name).context("terminal unavailable during startup")?;
     session.name = display_name;
     session.provider = request.provider.clone();
     let temp = root.join(format!("{name}.tmp"));
@@ -1642,9 +1642,37 @@ fn create_with_permissions(
     f.write_all(&serde_json::to_vec(&session)?)?;
     f.sync_all()?;
     fs::rename(temp, root.join(format!("{name}.json")))?;
-    set_managed_status(&session)?;
+    set_managed_contrast(&session).context("terminal unavailable during startup")?;
+    set_managed_status(&session).context("terminal unavailable during startup")?;
+    wait_for_first_screen(&name).context("terminal unavailable during startup")?;
     Ok(session)
 }
+
+/// Creation already runs on the helper worker. Keep the viewer visible while
+/// the detached terminal initializes, without sending input or guessing prompts.
+/// Silent programs must remain attachable, so this is a bounded presentation wait.
+fn wait_for_first_screen(id: &str) -> Result<()> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if field(true, id, "#{pane_dead}")? == "1" {
+            bail!("terminal exited during startup; inspect the session before retrying");
+        }
+        let mut capture = tmux(true)?;
+        // Only inspect the first 40 visible rows, never history. The text is
+        // discarded immediately and never stored, logged or used as metadata.
+        capture.args(["capture-pane", "-p", "-t", id, "-S", "0", "-E", "39"]);
+        let visible = output(capture)?;
+        if visible
+            .chars()
+            .any(|c| !c.is_whitespace() && !c.is_control())
+            || std::time::Instant::now() >= deadline
+        {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(80));
+    }
+}
+
 fn claude_background() -> &'static str {
     use std::io::Read;
     use std::os::unix::fs::MetadataExt;

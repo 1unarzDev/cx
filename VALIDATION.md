@@ -887,3 +887,35 @@ The separate v0.1.68 checks run encountered ETXTBSY (`Text file busy`) executing
 a temporary updater fixture on x86_64. The same test passed in release jobs;
 failed jobs were retried without source changes. This is recorded separately
 from the two corrected acceptance expectations.
+
+
+## v0.1.70 — background terminal startup and loader
+
+Reproduced against v0.1.69 with an isolated delayed-shell PTY fixture:
+`uv run --with pyte python tests/terminal_startup_loader_pty.py <binary>` failed
+because the first-screen wait/animated loader was absent (`/tmp/cx-loader-before.log`).
+New tmux sessions already start detached; creation previously returned before
+visible terminal content, letting the viewer suspend too early. Creation now
+waits on the helper worker for visible content, at most five seconds. Only the
+first 40 visible rows are inspected and immediately discarded; no history,
+screen text or credentials are stored/logged, and no input is synthesized.
+Existing attachments do not acquire this wait.
+
+PASS locked Rust suite: **596 passed, 1 ignored** (371 binary, 49 files/network,
+72 session core, 80 transfers, 24 updater), `/tmp/cx-loader-all-tests.log`.
+PASS locked build, formatting/diff checks. The loader regression covers Files
+and Sessions at 48/80/120 columns, animation changes and removal on failure.
+Live readiness checks cover delayed content/no premature native client, a usable
+single handoff and restored termios, silent-program timeout and startup exit.
+Evidence `/tmp/cx-loader-after.log`, `/tmp/cx-loader-readiness.log` and final
+fixture logs `/tmp/cx-loader-<fixture>.log`. Final-binary repeats PASS:
+session_chooser_pty, terminal_startup_loader_pty, terminal_startup_readiness_live,
+claude_contrast_live, codex_process_mode_live and container_agents_live (owned
+network-none container, both providers in Default/YOLO modes, native input,
+detach/termios and scoped termination).
+
+No installed binary replacement, unrelated tmux/session changes, provider config,
+SSH trust or networking mutations. Fixtures own their sockets/state/containers.
+Remote devices require updated helpers; physical remote/terminal acceptance
+remains distinct from automated PTY checks. Readiness means visible content,
+not a provider-specific ready prompt or completed authentication.

@@ -30,6 +30,8 @@ jobs:
           docker pull ubuntu:24.04
           python3 tests/session_chooser_pty.py target/debug/cx
           python3 tests/startup_directory_pty.py target/debug/cx
+          python3 tests/terminal_startup_loader_pty.py target/debug/cx
+          python3 tests/terminal_startup_readiness_live.py target/debug/cx
           python3 tests/session_runtime_live.py target/debug/cx
           python3 tests/container_discovery_fixtures.py target/debug/cx
           python3 tests/container_session_reconcile_live.py target/debug/cx

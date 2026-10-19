@@ -1,5 +1,12 @@
 # CX status
 
+## Terminal startup — v0.1.70
+
+New terminals initialize detached while CX animates a loader, then hand off at
+first visible content. Silent programs remain attachable after five seconds;
+startup exits report an error in the panel. Remote readiness needs updated helpers.
+Installed binaries and active sessions were left untouched.
+
 ## Session reliability — v0.1.69
 
 Implemented startup-folder navigation, background cache reconciliation, dead-shell

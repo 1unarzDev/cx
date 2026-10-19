@@ -8680,7 +8680,8 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             dirty = true;
         }
         // Animate only while work is pending; idle keeps its existing bounded redraw.
-        if (!app.active_transfer_keys().is_empty()
+        if (app.creating
+            || !app.active_transfer_keys().is_empty()
             || (app.view == View::Work
                 && app
                     .session_rows()

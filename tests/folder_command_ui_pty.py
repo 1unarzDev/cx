@@ -54,8 +54,8 @@ for shell in sys.argv[2:] or ['/bin/bash']:
             wait('MARKDONE')
             assert os.tcgetpgrp(master)==process.pid, 'CX was suspended for the command'
             # Input typed while the panel is focused reaches the command; the
-            # panel footer flips to the finished hint once it exits.
-            send(b'world\r'); wait('full screen')
+            # finish notice (rendered as a block) reports the exit status.
+            send(b'world\r'); wait('Command exited with status 4')
             assert (folder/'proof.txt').read_text() == 'GOTworld\n'
             for code in (b'\x1b]4;', b'\x1b]104', b'\x1b]110', b'\x1b]111'):
                 assert code not in output, 'command panel changed viewer palette: '+repr(code)
@@ -67,8 +67,8 @@ for shell in sys.argv[2:] or ['/bin/bash']:
             send(b':'); wait('Run command')
             os.write(master,b"printf 'READY%s\\n' NOW; sleep 30\r")
             wait('READYNOW'); time.sleep(.3); send(b'\x03')
-            # The panel footer flips to the finished hint once the command ends.
-            wait('full screen'); assert process.poll() is None, 'Ctrl+C killed viewer'
+            # Ctrl+C ends the command; the finish notice confirms CX survived.
+            wait('Command'); assert process.poll() is None, 'Ctrl+C killed viewer'
             send(b'\x1b'); time.sleep(.3); read(); assert process.poll() is None
             send(b'\x03'); process.wait(timeout=5)
             assert process.returncode==0

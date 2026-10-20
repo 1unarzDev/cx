@@ -352,8 +352,12 @@ fn info() -> Result<serde_json::Value> {
     if relay.is_ok() {
         caps.push("adopt-reptyr-v1");
     }
+    let (needs_sudo, unavailable) = match &relay {
+        Ok(r) => (r.privilege == adoption::Privilege::Sudo, None),
+        Err(e) => (false, Some(*e)),
+    };
     Ok(
-        serde_json::json!({"host":d.host,"account":d.account,"machine_id":machine.trim(),"capabilities":caps,"protocol":1,"persistent_channel":true,"version":env!("CARGO_PKG_VERSION"),"adoption_unavailable":relay.err()}),
+        serde_json::json!({"host":d.host,"account":d.account,"machine_id":machine.trim(),"capabilities":caps,"protocol":1,"persistent_channel":true,"version":env!("CARGO_PKG_VERSION"),"adoption_unavailable":unavailable,"adoption_needs_password":needs_sudo}),
     )
 }
 pub fn dispatch(op: Operation) -> Result<serde_json::Value> {

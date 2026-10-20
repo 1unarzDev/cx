@@ -104,6 +104,35 @@ pub fn configure(command: &mut Command) -> Result<bool> {
     })
 }
 
+/// Environment a child needs so its `sudo -A` (or SSH) askpass reaches the
+/// active broker. Returns None when no broker is running on this thread.
+pub fn askpass_env() -> Option<Vec<(String, String)>> {
+    let (socket, nonce) = BROKER
+        .with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .and_then(|l| Some((l.socket.to_str()?.to_owned(), l.nonce.clone())))
+        })
+        // A helper launched with an inherited broker locator reuses it; the UI
+        // sets the thread-local instead and takes precedence.
+        .or_else(|| {
+            Some((
+                std::env::var(SOCKET_ENV).ok()?,
+                std::env::var(NONCE_ENV).ok()?,
+            ))
+        })?;
+    let cx = std::env::current_exe().ok()?.to_str()?.to_owned();
+    Some(vec![
+        ("SUDO_ASKPASS".into(), cx.clone()),
+        ("SSH_ASKPASS".into(), cx),
+        ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
+        ("DISPLAY".into(), "cx-askpass".into()),
+        (CLIENT_ENV.into(), "1".into()),
+        (SOCKET_ENV.into(), socket),
+        (NONCE_ENV.into(), nonce),
+    ])
+}
+
 pub fn is_askpass_client() -> bool {
     std::env::var_os(CLIENT_ENV).as_deref() == Some(std::ffi::OsStr::new("1"))
 }

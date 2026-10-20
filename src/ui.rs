@@ -515,6 +515,7 @@ struct App {
     pending_command: Option<(Device, RunCommand)>,
     pending_terminal: Option<Device>,
     pending_add: Option<String>,
+    pending_adopt: Option<(usize, Session, crate::model::ExternalOrigin)>,
     quit: bool,
     force_update: bool,
     pending_requests: std::cell::Cell<usize>,
@@ -641,6 +642,7 @@ impl App {
             pending_command: None,
             pending_terminal: None,
             pending_add: None,
+            pending_adopt: None,
             quit: false,
             force_update: false,
             pending_requests: std::cell::Cell::new(0),
@@ -1315,6 +1317,10 @@ impl App {
                     NoticeKind::Warning,
                     "This terminal's owner is not accessible, so it cannot be moved".into(),
                 );
+            } else if self.devices[device].target.is_none() {
+                // Local moves may need a sudo password; the main loop runs the
+                // askpass broker and the password panel around the request.
+                self.pending_adopt = Some((device, session, origin));
             } else if self.send(
                 device,
                 Operation::AdoptSession {
@@ -7738,6 +7744,9 @@ fn authentication_modal(
     let trust = prompt.kind == PromptKind::HostKey;
     let title = match prompt.kind {
         PromptKind::HostKey => "Verify host key",
+        PromptKind::Password if prompt.text.to_ascii_lowercase().contains("sudo") => {
+            "Administrator password"
+        }
         PromptKind::Password => "SSH password",
         PromptKind::KeyPassphrase => "Unlock SSH key",
         PromptKind::Verification => "SSH verification",
@@ -8738,6 +8747,54 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     NoticeKind::Error,
                     safe_text(&format!("Enrollment failed: {e:#}")),
                 ),
+            }
+            dirty = true;
+        }
+        if let Some((d, session, origin)) = app.pending_adopt.take() {
+            cleanup_native_preview(&mut screen, &mut native_preview)?;
+            let device = app.devices[d].clone();
+            let op = Operation::AdoptSession {
+                id: session.id.clone(),
+                origin,
+                boot_id: session.boot_id.clone(),
+            };
+            app.set_notice("Moving terminal into CX…".into());
+            screen
+                .terminal
+                .draw(|frame| render_with_native(frame, &app, None))?;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let request_device = device.clone();
+            let result = crate::auth::with_broker(
+                move || {
+                    let _ = tx.send(transport::request(&request_device, op));
+                    Ok(())
+                },
+                |prompt| authentication_modal(&mut screen, prompt),
+            );
+            last_interaction = Instant::now();
+            let value = match (result, rx.try_recv()) {
+                (Ok(()), Ok(Ok(value))) => Some(value),
+                (_, Ok(Err(e))) | (Err(e), _) => {
+                    app.set_notice_as(
+                        NoticeKind::Error,
+                        safe_text(&format!("{}: {e:#}", identity(&device))),
+                    );
+                    None
+                }
+                (Ok(()), Err(_)) => None,
+            };
+            if let Some(value) = value {
+                match serde_json::from_value::<Session>(value) {
+                    Ok(moved) => {
+                        app.work[d].sessions.retain(|row| row.id != session.id);
+                        app.work[d].sessions.push(moved.clone());
+                        app.pending_attach = Some((d, moved, false));
+                    }
+                    Err(_) => app.set_notice_as(
+                        NoticeKind::Error,
+                        "Move response invalid · refresh before retrying".into(),
+                    ),
+                }
             }
             dirty = true;
         }

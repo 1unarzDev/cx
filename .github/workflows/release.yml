@@ -71,6 +71,7 @@ jobs:
           export CX_ADOPT_CAPABLE=1 CX_ADOPT_REPTYR="$RUNNER_TEMP/cx-reptyr"
           python3 tests/adopt_terminal_live.py target/debug/cx
           python3 tests/adopt_stress_live.py target/debug/cx 30
+          python3 tests/adopt_sudo_live.py target/debug/cx
       - run: python3 tests/stop_shell_live.py target/debug/cx
       - run: python3 tests/session_permissions_live.py target/debug/cx
       - run: python3 tests/manual_agents_live.py target/debug/cx

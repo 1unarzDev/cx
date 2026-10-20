@@ -43,6 +43,7 @@ jobs:
           export CX_ADOPT_CAPABLE=1 CX_ADOPT_REPTYR="$RUNNER_TEMP/cx-reptyr"
           python3 tests/adopt_terminal_live.py target/debug/cx
           python3 tests/adopt_stress_live.py target/debug/cx 30
+          python3 tests/adopt_sudo_live.py target/debug/cx
       - run: python3 tests/install_fixture.py
       - run: python3 tests/session_names_live.py target/debug/cx
       - run: python3 tests/peer_pairing_cli.py target/debug/cx

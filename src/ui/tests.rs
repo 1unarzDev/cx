@@ -6141,13 +6141,23 @@ fn outside_terminals_move_only_with_a_verified_relay() {
             transport::now(),
         ),
     );
+    // A local move defers to the main loop so the password panel can run.
+    assert!(a.devices[0].target.is_none());
     enter(&mut a);
-    assert!(a.pending_attach.is_none());
+    assert!(a.pending_attach.is_none() && rx.try_recv().is_err());
+    assert!(matches!(&a.pending_adopt, Some((0, moved, origin))
+        if moved.id == "ext-0123456789abcdef" && origin.leader.pid == 1234));
+    a.pending_adopt = None;
+    // A remote move with the relay is sent straight to the helper.
+    a.devices[0].target = Some("laptop".into());
+    enter(&mut a);
+    assert!(a.pending_adopt.is_none());
     assert!(matches!(
         rx.try_recv().unwrap().op,
         Operation::AdoptSession { id, origin, boot_id }
             if id == "ext-0123456789abcdef" && origin.leader.pid == 1234 && boot_id == "test-boot"
     ));
+    a.devices[0].target = None;
     // Without the relay a default-server tmux row keeps its ordinary attach…
     a.providers
         .insert(0, (vec!["adopt-session-v1".into()], transport::now()));

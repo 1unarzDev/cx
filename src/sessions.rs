@@ -1098,12 +1098,31 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
     intent.sync_all()?;
     let errors = root.join(format!("{name}.adopt"));
     let leader = &terminal.leader;
-    let command = format!(
-        "exec env CX_VIEWER_THEME=1 CX_TMUX_BIN={} CX_MANAGED_SOCKET={} CX_MANAGED_SESSION={} {} -T {} {} {} {} {} {} 2>{}",
-        quote(tmux_executable().to_str().context("tmux path is not UTF-8")?),
+    // `sudo -A` reads the password through CX's askpass broker and sets SUDO_UID
+    // itself; the relay drops to that user after the steal. A capability relay
+    // needs no prompt. Askpass values are environment, never arguments.
+    let mut prefix = format!(
+        "env CX_VIEWER_THEME=1 CX_TMUX_BIN={} CX_MANAGED_SOCKET={} CX_MANAGED_SESSION={} ",
+        quote(
+            tmux_executable()
+                .to_str()
+                .context("tmux path is not UTF-8")?
+        ),
         quote(socket()?.to_str().context("socket path is not UTF-8")?),
         quote(&name),
-        quote(relay.to_str().context("relay path is not UTF-8")?),
+    );
+    if relay.privilege == crate::adoption::Privilege::Sudo {
+        let env = crate::auth::askpass_env()
+            .context("password entry is unavailable; move terminals from the CX interface")?;
+        for (key, value) in env {
+            prefix.push_str(&format!("{}={} ", key, quote(&value)));
+        }
+        prefix.push_str("sudo -A -p 'sudo password to move this terminal into CX: ' ");
+    }
+    let command = format!(
+        "exec {}{} -T {} {} {} {} {} {} 2>{}",
+        prefix,
+        quote(relay.path.to_str().context("relay path is not UTF-8")?),
         leader.pid,
         quote(&leader.start_ticks),
         leader.pid,
@@ -1136,10 +1155,11 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
             .ok()
             .and_then(|p| p.parse::<u32>().ok());
         if let Some(pane) = pane.filter(|_| !dead) {
-            if crate::adoption::holds_master(pane, terminal.index)
-                && !crate::adoption::holds_master(holder.process.pid, terminal.index)
-                && crate::adoption::effective_capabilities(pane) == Some(0)
-            {
+            // The master now lives under the pane (the relay, possibly beneath
+            // sudo) and no longer in the previous holder.
+            let moved = crate::adoption::holds_master(pane, terminal.index)
+                || crate::adoption::descendant_holds_master(pane, terminal.index);
+            if moved && !crate::adoption::holds_master(holder.process.pid, terminal.index) {
                 break pane;
             }
         } else {

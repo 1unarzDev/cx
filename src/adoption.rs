@@ -231,37 +231,68 @@ pub const REPTYR_VERSION: &str = "cx-reptyr 1 (reptyr 0.10.0)";
 const CAP_SYS_PTRACE: u32 = 19;
 
 /// Why adoption by terminal steal is unavailable, or the verified relay.
-pub fn reptyr() -> Result<PathBuf, &'static str> {
+/// How CX gains the privilege to steal a terminal with a relay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Privilege {
+    /// A root-owned relay carrying cap_sys_ptrace; no prompt per move.
+    Capability,
+    /// A verified relay run through `sudo -A`; prompts for a password.
+    Sudo,
+}
+pub struct Relay {
+    pub path: PathBuf,
+    pub privilege: Privilege,
+}
+
+/// User-installed relay for the sudo path, mirroring the portable tmux location.
+fn user_reptyr() -> Option<PathBuf> {
+    let path =
+        PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/bin/cx-reptyr");
+    (version(&path).as_deref() == Some(REPTYR_VERSION)).then_some(path)
+}
+
+/// Locate a relay and the privilege it needs, or say why none is usable.
+pub fn reptyr() -> Result<Relay, &'static str> {
     // Debug builds accept a fixture relay so tests never need host privilege.
     #[cfg(debug_assertions)]
     if let Some(path) = std::env::var_os("CX_ADOPT_REPTYR") {
         let path = PathBuf::from(path);
         return (version(&path).as_deref() == Some(REPTYR_VERSION))
-            .then_some(path)
+            .then_some(Relay {
+                path,
+                privilege: Privilege::Capability,
+            })
             .ok_or("fixture cx-reptyr version mismatch");
     }
-    let path = PathBuf::from(REPTYR_PATH);
     if fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope").is_ok_and(|s| s.trim() == "3") {
         return Err("ptrace is disabled on this host (Yama scope 3)");
     }
-    // Every ancestor and the binary must be root-owned and not writable by others.
-    let mut current = Some(path.as_path());
-    while let Some(p) = current {
-        let Ok(meta) = fs::symlink_metadata(p) else {
-            return Err("cx-reptyr is not installed; run cx device ptrace enable");
-        };
-        if meta.uid() != 0 || meta.mode() & 0o022 != 0 || meta.file_type().is_symlink() {
-            return Err("cx-reptyr install is not root-owned");
-        }
-        current = p.parent();
+    let path = PathBuf::from(REPTYR_PATH);
+    // A root-owned capability install needs no prompt. Any ancestor being
+    // writable by others, a symlink or a non-root owner disqualifies it.
+    let rooted =
+        std::iter::successors(Some(path.as_path()), |p| p.parent()).try_fold(true, |ok, p| {
+            let meta = fs::symlink_metadata(p).ok()?;
+            Some(
+                ok && meta.uid() == 0 && meta.mode() & 0o022 == 0 && !meta.file_type().is_symlink(),
+            )
+        });
+    if rooted == Some(true)
+        && version(&path).as_deref() == Some(REPTYR_VERSION)
+        && ptrace_capability(&path)
+    {
+        return Ok(Relay {
+            path,
+            privilege: Privilege::Capability,
+        });
     }
-    if version(&path).as_deref() != Some(REPTYR_VERSION) {
-        return Err("cx-reptyr version mismatch; run cx device ptrace enable");
-    }
-    if !ptrace_capability(&path) {
-        return Err("cx-reptyr lacks its ptrace capability; run cx device ptrace enable");
-    }
-    Ok(path)
+    // Otherwise a user-owned relay works through one sudo prompt per move.
+    user_reptyr()
+        .map(|path| Relay {
+            path,
+            privilege: Privilege::Sudo,
+        })
+        .ok_or("install cx-reptyr (cx device ptrace enable) to move terminals")
 }
 fn version(path: &Path) -> Option<String> {
     let out = std::process::Command::new(path)
@@ -314,6 +345,32 @@ pub fn file_capability_grants_ptrace(data: &[u8]) -> bool {
 /// Whether `pid` currently holds the master of pseudo-terminal `index`.
 pub fn holds_master(pid: u32, index: u32) -> bool {
     masters(Path::new("/proc"), pid).contains(&index)
+}
+/// Whether `pid` or any descendant holds the master of `index`. A sudo relay's
+/// pane child is `sudo`, with cx-reptyr (holding the master) beneath it.
+pub fn descendant_holds_master(pid: u32, index: u32) -> bool {
+    let root = Path::new("/proc");
+    let mut stack = vec![pid];
+    let mut seen = 0;
+    while let Some(current) = stack.pop() {
+        seen += 1;
+        if seen > 64 {
+            break;
+        }
+        if masters(root, current).contains(&index) {
+            return true;
+        }
+        if let Ok(children) =
+            fs::read_to_string(root.join(format!("{current}/task/{current}/children")))
+        {
+            stack.extend(
+                children
+                    .split_whitespace()
+                    .filter_map(|c| c.parse::<u32>().ok()),
+            );
+        }
+    }
+    false
 }
 /// Start ticks of a live process, for PID-reuse checks.
 pub fn start_ticks(pid: u32) -> Option<String> {

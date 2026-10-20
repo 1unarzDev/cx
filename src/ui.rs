@@ -677,7 +677,9 @@ impl App {
                     *slot = policy;
                 }
                 let message = match next {
-                    store::AccessMode::Core => "Bidirectional access enabled",
+                    store::AccessMode::Core => {
+                        "Core posture saved; reverse SSH requires cx device pair"
+                    }
                     store::AccessMode::Directed => "Viewer-to-device access only",
                 };
                 self.set_notice_as(

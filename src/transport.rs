@@ -512,7 +512,7 @@ fn schedule_host_update(target: &str, info: &serde_json::Value) {
     }
 }
 /// Detached from the cached channel so check/reconciliation cannot consume its replies.
-fn fresh_info(target: &str) -> Result<serde_json::Value> {
+pub(crate) fn fresh_info(target: &str) -> Result<serde_json::Value> {
     let mut connection = Connection::open(target)?;
     let id = format!(
         "update-{}-{}",

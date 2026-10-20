@@ -1672,54 +1672,15 @@ fn wait_for_first_screen(id: &str) -> Result<()> {
     }
 }
 
-fn claude_background() -> &'static str {
-    use std::io::Read;
-    use std::os::unix::fs::MetadataExt;
-    let config = std::env::var_os("CLAUDE_CONFIG_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()));
-    let theme = (|| -> Option<String> {
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(config.join(".claude.json"))
-            .ok()?;
-        let meta = file.metadata().ok()?;
-        if !meta.is_file() || meta.uid() != unsafe { libc::geteuid() } || meta.len() > 1024 * 1024 {
-            return None;
-        }
-        let mut bytes = Vec::new();
-        file.take(1024 * 1024 + 1).read_to_end(&mut bytes).ok()?;
-        if bytes.len() > 1024 * 1024 {
-            return None;
-        }
-        let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-        value["theme"].as_str().map(str::to_owned)
-    })();
-    if theme
-        .as_deref()
-        .is_some_and(|theme| theme.starts_with("light"))
-    {
-        "#f5f5f5"
-    } else {
-        "#181818"
-    }
-}
-
-fn set_managed_contrast(session: &Session) -> Result<()> {
-    // Override only default-background cells, preserving Claude's explicit
-    // colors and the viewer's foreground palette. Never touch external servers.
+fn restore_managed_style(session: &Session) -> Result<()> {
+    // Match the private server's terminal defaults, including transparency.
+    // Also clear opaque per-window overrides left by older CX versions.
     for option in ["window-style", "window-active-style"] {
         let mut query = tmux(true)?;
         query.args(["show-options", "-g", "-v", option]);
-        let default = output(query)?;
-        let style = if session.provider == "claude" {
-            format!("{},bg={}", default.trim(), claude_background())
-        } else {
-            default.trim().to_owned()
-        };
+        let style = output(query)?;
         let mut command = tmux(true)?;
-        command.args(["set-option", "-w", "-t", &session.id, option, &style]);
+        command.args(["set-option", "-w", "-t", &session.id, option, style.trim()]);
         output(command)?;
     }
     Ok(())
@@ -1933,7 +1894,7 @@ pub fn refresh_managed_status(id: &str) -> Result<()> {
         bail!("invalid managed session identity");
     }
     let session = inspect(true, id)?;
-    set_managed_contrast(&session)?;
+    restore_managed_style(&session)?;
     set_managed_status(&session)
 }
 

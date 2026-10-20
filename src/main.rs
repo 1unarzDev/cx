@@ -7,6 +7,7 @@ mod markdown_math;
 mod markdown_tables;
 mod model;
 mod network;
+mod peers;
 mod session_titles;
 mod sessions;
 mod sharing;
@@ -268,6 +269,12 @@ enum DeviceCommand {
     Edit { name: String, target: String },
     /// Remove an enrolled device from this viewer.
     Remove { name: String },
+    /// Verify reverse SSH and enroll this device on the remote helper.
+    Pair {
+        name: String,
+        #[arg(long)]
+        return_target: String,
+    },
     /// Promote an enrolled device to the core network posture.
     Promote { name: String },
     /// Demote an enrolled device to viewer-to-device access.
@@ -318,6 +325,7 @@ fn info() -> Result<serde_json::Value> {
     caps.push("stable-update-v1");
     caps.push("pdf-pages-v1");
     caps.push("network-candidates-v1");
+    caps.push("peer-enroll-v1");
     Ok(
         serde_json::json!({"host":d.host,"account":d.account,"machine_id":machine.trim(),"capabilities":caps,"protocol":1,"persistent_channel":true,"version":env!("CARGO_PKG_VERSION")}),
     )
@@ -325,6 +333,7 @@ fn info() -> Result<serde_json::Value> {
 pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
     match op {
         Operation::Info => info(),
+        Operation::PeerEnroll { peer } => peers::enroll(peer),
         Operation::Containers => containers::list(),
         Operation::ContainerInspect { id } => Ok(serde_json::to_value(containers::inspect(&id)?)?),
         Operation::DevcontainerUp { workspace } => containers::up(&workspace),
@@ -743,7 +752,7 @@ fn enroll_target(target: &str, _minimal: bool) -> Result<()> {
         ds.push(d.clone())
     };
     store::save_devices(&ds)?;
-    // Newly enrolled devices are trusted as full mesh peers. Users can demote
+    // Core is local intent only; reverse access requires explicit pairing. Users can demote
     // them later with `cx device demote` or the device-panel toggle.
     let _ = store::set_access(&d, store::AccessMode::Core)?;
     if !auth::active() {
@@ -1171,6 +1180,16 @@ fn run() -> Result<()> {
                     let updated = store::update_target(&device, &target)?;
                     println!("{}", serde_json::to_string_pretty(&updated)?);
                 }
+                DeviceCommand::Pair {
+                    name,
+                    return_target,
+                } => {
+                    let device = enrolled_device(&name)?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&peers::pair(&device, &return_target)?)?
+                    );
+                }
                 DeviceCommand::Promote { name } => {
                     let device = enrolled_device(&name)?;
                     let policy = store::set_access(&device, store::AccessMode::Core)?;
@@ -1180,7 +1199,8 @@ fn run() -> Result<()> {
                             "device": device.name,
                             "access": policy.access,
                             "availability": policy.availability,
-                            "bidirectional": true,
+                            "bidirectional": false,
+                            "verification": "not checked; use cx device pair",
                         }))?
                     );
                 }

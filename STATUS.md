@@ -1,5 +1,14 @@
 # CX status
 
+## Device pairing and presentation fixes — pending release
+
+Explicit pairing verifies reverse SSH and enrolls the caller on a compatible remote
+helper. Core posture alone no longer claims proven bidirectional access. Creation
+currently has only itself enrolled and lacks Innovation host trust. Tranquility’s
+mesh SSH address returns “No route to host” from both Innovation and Creation.
+No SSH trust, authentication, networking, installed binaries or active sessions changed.
+Claude attachment restores the terminal’s default background, including transparency.
+
 ## Terminal startup — v0.1.71
 
 New terminals initialize detached while CX animates a loader, then hand off at
@@ -14,7 +23,7 @@ filtering, exact container lifecycle checks and rediscovery of existing tmux-bac
 Docker exec terminals. Native agent names/directories/tasks refresh with process
 identity checks; new supported Codex launches use separate processes. Sessions show
 observed activity and offer task details with `s`. Claude question descriptions
-receive a solid default-cell background while retaining their existing colors.
+preserve terminal transparency; older opaque per-window overrides are cleared on attachment.
 Device removal/address changes invalidate old caches and in-flight observations.
 
 ## Remaining integration and acceptance

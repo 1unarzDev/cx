@@ -6,7 +6,7 @@ use std::{fs, path::PathBuf};
 
 /// A device's access posture is a local enrollment decision. It is kept out of
 /// `Device` so the wire and persisted device schema remains compatible with
-/// older helpers. Core devices are approved for bidirectional access; directed
+/// older helpers. Core records local intent, not proof of reverse access; directed
 /// devices retain the default viewer-to-device posture.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

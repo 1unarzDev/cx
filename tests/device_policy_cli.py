@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory(prefix="cx-device-policy-") as tmp:
         return subprocess.run([binary, *args], env=env, capture_output=True, text=True, check=True)
 
     promoted = json.loads(run("device", "promote", "creation").stdout)
-    assert promoted["access"] == "core" and promoted["bidirectional"]
+    assert promoted["access"] == "core" and not promoted["bidirectional"]
     run("device", "availability", "tranquility", "down")
     report = json.loads(run("device", "policy", "tranquility").stdout)
     assert report["availability"] == "usually_down"

@@ -87,7 +87,7 @@ fn device_edit_menu_is_remote_only_and_offers_address_or_remove() {
     app.device = 2;
     press(&mut app, 'e');
     assert!(matches!(app.dialog, Some(Dialog::EditDevice(1))));
-    assert!(capture_app(&app, 120).contains("Access: bidirectional"));
+    assert!(capture_app(&app, 120).contains("Access: core (reverse unverified)"));
     app.policies[1].access = store::AccessMode::Directed;
     assert!(capture_app(&app, 120).contains("Access: single-direction"));
     press(&mut app, 'G');

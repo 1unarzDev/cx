@@ -1617,8 +1617,8 @@ pub(super) fn render_at(
             Dialog::EditDevice(d) => (
                 format!("Edit {}", safe_label(&app.devices[*d].name)),
                 vec!["SSH address".into(), match app.device_policy(*d).access {
-                    store::AccessMode::Core => "Access: bidirectional · switch to single-direction".into(),
-                    store::AccessMode::Directed => "Access: single-direction · switch to bidirectional".into(),
+                    store::AccessMode::Core => "Access: core (reverse unverified) · switch to single-direction".into(),
+                    store::AccessMode::Directed => "Access: single-direction · switch to core".into(),
                 }, "Remove device".into(), "Cancel".into()],
                 format!("Current target: {}\nEdit the SSH alias or user@host. The device identity and posture stay unchanged.", safe_label(app.devices[*d].target.as_deref().unwrap_or("unknown"))),
             ),

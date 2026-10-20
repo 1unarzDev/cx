@@ -70,6 +70,9 @@ pub struct CreateSession {
 #[serde(tag = "op", content = "args", rename_all = "snake_case")]
 pub enum Operation {
     Info,
+    PeerEnroll {
+        peer: Device,
+    },
     Containers,
     ContainerInspect {
         id: String,

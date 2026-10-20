@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify Claude-only background contrast and shell restoration in private tmux."""
+"""Verify Claude preserves terminal transparency in private tmux."""
 import fcntl
 import json
 import os
@@ -56,15 +56,20 @@ with tempfile.TemporaryDirectory(prefix='cx-claude-contrast-') as tmp:
         while next(s for s in json.loads(subprocess.check_output([binary, 'sessions'], env=env)) if s['id']==sid)['provider']!='claude':
             assert time.monotonic()<deadline
             time.sleep(.02)
-        for theme, background in [('dark', '#181818'), ('light', '#f5f5f5')]:
+        for theme in ['dark', 'light']:
             (root/'.claude.json').write_text(json.dumps({'theme': theme}))
+            # Reproduce a window left opaque by older CX versions.
+            for option in ['window-style', 'window-active-style']:
+                tmux('set-option', '-w', '-t', sid, option, 'bg=#181818')
             style = attach(sid)
-            assert 'bg='+background in style, 'Claude question descriptions retain translucent background: '+style
+            assert style == baseline, 'Claude changed terminal background: '+style
+            active = tmux('show-options', '-w', '-A', '-t', sid, '-v', 'window-active-style').strip()
+            assert '#181818' not in active and '#f5f5f5' not in active, active
             assert 'fg=terminal' in style or 'fg=default' in style, 'existing text palette changed'
         tmux('send-keys', '-t', sid, 'C-c')
         time.sleep(.1)
         assert attach(sid)==baseline, 'shell did not restore original terminal style'
-        print(json.dumps({'result': 'PASS', 'checks': ['Claude dark/light opaque backgrounds',
+        print(json.dumps({'result': 'PASS', 'checks': ['Claude dark/light preserve terminal background', 'legacy opaque styles cleared',
             'existing foreground palette preserved', 'shell original background restored']}))
     finally:
         subprocess.run(['tmux', '-S', socket, 'kill-server'], env=env,

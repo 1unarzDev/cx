@@ -20,7 +20,10 @@ cx add user@host
 cx add robot@192.168.0.2 --via laptop
 ```
 
-On the device list, a small leading `*` means single-direction (viewer-to-device) access; unmarked devices are bidirectional. The marker stays visible even when a long device name is truncated. Focus a remote device and press `b` to toggle the locally stored posture. New enrollments start as bidirectional. Reachability is automatic: successful contact clears an unavailable state and the next refresh retries devices that were previously offline. Press `e` to edit its SSH alias/address, toggle access, or open removal, or `x` to remove it directly. Passive connection failures use the device marker and do not create error notifications.
+On the device list, a small leading `*` means single-direction (viewer-to-device) access; unmarked devices have core posture; reverse connectivity must be paired and verified. The marker stays visible even when a long device name is truncated. Focus a remote device and press `b` to toggle the locally stored posture. New enrollments start with core posture; this alone does not enroll the viewer on the remote host. Reachability is automatic: successful contact clears an unavailable state and the next refresh retries devices that were previously offline. Press `e` to edit its SSH alias/address, toggle access, or open removal, or `x` to remove it directly. Passive connection failures use the device marker and do not create error notifications.
+
+To enroll the return connection, run `cx device pair creation --return-target lunarz@innovation.mesh.lunarz.dev` from Innovation. Both helpers must support pairing. The endpoint must be reachable from Creation using its existing SSH trust and authentication; CX never copies private keys, installs host trust, or changes networking. Pair each required device connection separately (for example, run the equivalent command from Tranquility when it is online). Pairing verifies both machine/account identities and only reports bidirectional access after the remote helper successfully contacts and enrolls the caller. Existing receiver-local aliases and directed-device policies are preserved. `device promote` and the `b` key change local intent only and do not establish authentication.
+
 
 You can also select a discovered neighbor in **Network** and press Enter to connect. **Ctrl+P → Add by SSH address** handles aliases and devices discovery cannot reach. Enrollment checks compatibility and installs the helper and missing portable tmux. SSH passwords are masked and not stored.
 
@@ -36,7 +39,7 @@ You can also select a discovered neighbor in **Network** and press Enter to conn
 | Ctrl+] in a managed terminal | Return to CX; the session keeps running |
 | `w` in Sessions | Watch the highlighted session read-only |
 | `s` in Sessions | Inspect the selected agent's tasks and subagents |
-| `b` on a device | Toggle remote access: bidirectional or viewer-to-device |
+| `b` on a device | Toggle local posture: core or viewer-to-device |
 | `d` in Sessions | Confirm stopping a CX-managed shell or agent |
 | Ctrl+C in CX | Exit the viewer; sessions keep running |
 

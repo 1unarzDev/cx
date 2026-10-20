@@ -34,7 +34,7 @@ PEERS = {
 
 
 SSH_WRAPPER = r'''#!/usr/bin/env python3
-import base64,json,os,pathlib,subprocess,sys
+import base64,json,os,pathlib,subprocess,sys,time
 root=pathlib.Path(os.environ['CX_MESH_FIXTURE'])
 peers=json.loads(os.environ['CX_MESH_PEERS'])
 args=sys.argv[1:]
@@ -86,6 +86,13 @@ try:
             continue
         if endpoint=='robot':
             raise AssertionError('Directed device received bootstrap mutation')
+        if (os.environ['CX_MESH_MODE']=='reverse-barrier' and endpoint=='innovation'
+                and os.environ['CX_MESH_ORIGIN']=='creation' and request['op']['op']=='info'):
+            (root/'barrier-reached').touch()
+            deadline=time.monotonic()+15
+            while not (root/'barrier-release').exists():
+                assert time.monotonic()<deadline,'reverse-probe barrier timed out'
+                time.sleep(.01)
         write(child.stdin,request);response=read(child.stdout)
         if request['op']['op']=='peer_enroll' and response.get('error'):
             with (root/'errors.jsonl').open('a') as log:
@@ -200,6 +207,63 @@ class Fixture:
                     process.wait(timeout=3)
             os.close(master)
 
+    def revoke_during_reverse(self, action):
+        """A local user action wins while an authenticated reverse probe waits."""
+        peer = device("innovation")
+        peer["target"] = f"tester@{LOCAL_ADDRESS}"
+        self.write("creation", "devices.json", [device("creation", local=True), peer])
+        self.write("creation", "device-policies.json", {"devices": {
+            peer["id"]: {"access": "core", "availability": "usually_up"}
+        }})
+        environment = self.env("reverse-barrier")
+        environment.update(HOME=str(self.root / "creation/home"),
+                           XDG_STATE_HOME=str(self.root / "creation/state"),
+                           USER="conception", CX_MESH_ORIGIN="creation")
+        request = dict(version=1, id="barrier", op=dict(op="peer_enroll", args=dict(peer=peer, replace_stale=True)))
+        payload = json.dumps(request).encode()
+        process = subprocess.Popen([BINARY, "helper"], env=environment, stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        try:
+            process.stdin.write(b"CX1 " + str(len(payload)).encode() + b"\n" + payload)
+            process.stdin.flush()
+            deadline = time.monotonic() + 10
+            while not (self.root / "barrier-reached").exists():
+                assert process.poll() is None, "helper exited before reverse barrier"
+                assert time.monotonic() < deadline, "helper never attempted reverse probe"
+                time.sleep(.01)
+            command = [BINARY, "device", action, "innovation"]
+            mutation = subprocess.run(command, env=environment, capture_output=True, timeout=5)
+            assert mutation.returncode == 0, mutation.stderr
+            expected_devices = (self.state("creation") / "devices.json").read_bytes()
+            expected_policy_path = self.state("creation") / "device-policies.json"
+            expected_policy = expected_policy_path.read_bytes()
+            (self.root / "barrier-release").touch()
+            process.stdin.close()
+            process.stdin = None
+            output, errors = process.communicate(timeout=10)
+            assert process.returncode == 0, errors
+            header, payload = output.split(b"\n", 1)
+            assert header == b"CX1 " + str(len(payload)).encode()
+            assert json.loads(payload)["error"], "concurrent local revocation was ignored"
+            assert (self.state("creation") / "devices.json").read_bytes() == expected_devices
+            assert expected_policy_path.read_bytes() == expected_policy
+            if action == "remove":
+                assert all(p["id"] != peer["id"] for p in self.read("creation", "devices.json"))
+                # A fresh enrollment also respects the removal tombstone.
+                retry = subprocess.run([BINARY, "helper"], env=environment,
+                                       input=b"CX1 " + str(len(json.dumps(request).encode())).encode() + b"\n" + json.dumps(request).encode(),
+                                       capture_output=True, timeout=5)
+                assert retry.returncode == 0, retry.stderr
+                assert json.loads(retry.stdout.split(b"\n", 1)[1])["error"]
+            else:
+                policy = self.read("creation", "device-policies.json")
+                assert policy["devices"][peer["id"]]["access"] == "directed"
+        finally:
+            (self.root / "barrier-release").touch()
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=3)
+
     def security_invariants(self):
         for endpoint in PEERS:
             home = self.root / endpoint / "home"
@@ -249,6 +313,12 @@ class Fixture:
                 result[str(path.relative_to(self.root))] = path.read_bytes()
         return result
 
+
+for action in ("remove", "demote"):
+    with tempfile.TemporaryDirectory(prefix="cx-race-") as temporary:
+        fixture = Fixture(pathlib.Path(temporary))
+        fixture.revoke_during_reverse(action)
+        fixture.security_invariants()
 
 with tempfile.TemporaryDirectory(prefix="cx-ui-") as temporary:
     fixture = Fixture(pathlib.Path(temporary))
@@ -327,6 +397,7 @@ with tempfile.TemporaryDirectory(prefix="cx-peer-mesh-") as temporary:
 print(json.dumps(dict(result="PASS", real_helpers=True, three_core_devices=True,
                       normal_ui_startup_bootstraps=True, stored_gateway_route_not_exported=True,
                       stale_core_alias_adopts_verified_portable_endpoint=True,
+                      removal_and_demotion_win_during_reverse_probe=True,
                       offline_then_recovered=True, all_six_edges_registered=True,
                       directed_device_excluded=True, private_key_mode_600=True,
                       no_private_key_transmitted=True, repeated_sync_idempotent=True,

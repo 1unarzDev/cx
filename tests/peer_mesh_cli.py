@@ -124,6 +124,7 @@ class Fixture:
 
     def write(self, endpoint, filename, value):
         (self.state(endpoint) / filename).write_text(json.dumps(value))
+        (self.state(endpoint) / filename).chmod(0o600)
 
     def read(self, endpoint, filename):
         return json.loads((self.state(endpoint) / filename).read_text())

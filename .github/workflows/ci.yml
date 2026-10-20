@@ -37,5 +37,8 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/cx-devcontainer-cli" @devcontainers/cli@0.89.0 --no-audit --no-fund
           PATH="$RUNNER_TEMP/cx-devcontainer-cli/node_modules/.bin:$PATH" python3 tests/devcontainer_cli_live.py target/debug/cx
       - run: python3 tests/install_fixture.py
+      - run: python3 tests/session_names_live.py target/debug/cx
+      - run: python3 tests/peer_pairing_cli.py target/debug/cx
+      - run: python3 tests/device_policy_cli.py target/debug/cx
   portable:
     uses: ./.github/workflows/portable.yml

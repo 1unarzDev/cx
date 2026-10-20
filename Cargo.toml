@@ -1,6 +1,6 @@
 [package]
 name = "cx"
-version = "0.1.71"
+version = "0.1.72"
 edition = "2021"
 rust-version = "1.85"
 repository = "https://github.com/1unarzDev/cx"

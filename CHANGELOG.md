@@ -2,6 +2,20 @@
 
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
+## v0.1.72
+
+### Features
+- Add explicit reciprocal device pairing with portable account@host endpoints, reverse SSH verification and stable machine/account identity checks. Older helpers report that they need updating.
+
+### Fixes
+- Restore Claude terminal transparency and clear opaque window backgrounds left by older CX versions when attaching.
+- Keep directory availability warnings out of Codex session titles. Preserve verified native/custom titles; show `codex` when the selected thread is ambiguous.
+- Stop reporting local core posture as verified bidirectional connectivity. Preserve receiver-local routes and directed peer policies during pairing.
+
+### Integration
+- Pairing requires existing SSH trust/authentication and reachable endpoints; it does not install keys, copy SSH aliases, or modify networking. Each required connection must be paired explicitly.
+- Installed binaries and active sessions are not restarted by this release. Updated helpers are needed for the pairing command and remote presentation fixes.
+
 ## v0.1.71
 
 ### Features

@@ -1,5 +1,12 @@
 # Validation record
 
+## Reciprocal pairing and presentation — v0.1.72
+
+PASS — full locked Rust suite: 598 passed, one protected live test ignored; debug build, formatting and diff checks passed. Real two-helper isolated CLI fixture verifies reverse identity, enrollment/retry, legacy capability rejection, both identity mismatch directions, reverse trust failure, directed-policy preservation, self/endpoint collision rejection, preserved stale-endpoint re-verification, same-channel verification/mutation, and unchanged SSH/route files. Disposable tmux fixtures verify Claude dark/light terminal-default backgrounds (including cleanup of legacy opaque styles) and Codex exact-writer/native/custom names with neutral ambiguous-selection fallback. Unknown Codex directories remain unavailable for actions. Local policy CLI fixture passes.
+
+LIVE — after explicit user approval for Creation–Innovation SSH trust/authentication, network-presented host keys matched each host’s local public host key. Creation uses a dedicated key and home-relative SSH configuration. Reverse authenticated SSH, exact machine/account verification, reciprocal Innovation enrollment and a real installed-CX sessions request succeeded. No private key was transferred. Tranquility’s mesh TCP/22 endpoint returned “No route to host” from both Innovation and Creation; live Tranquility acceptance remains unresolved. No networking, installed binary or active provider/tmux restart was performed.
+
+
 ## Device access posture UI — v0.1.48 (2026-10-10)
 
 PASS — full locked Rust suite passed (`/tmp/cx-access-deployed-full.log`), including the UI marker/toggle guard test. The TestBackend capture verifies `↔` (or `<->` in ASCII mode) for bidirectional access; `→` (or `->`) marks viewer-to-device access. The `b` binding is active only when the device list has focus and refuses the local device/All devices selection. `tests/device_policy_cli.py` passed promotion, demotion, availability persistence and bounded owner-checked policy storage (`/tmp/cx-access-deployed-policy.log`).

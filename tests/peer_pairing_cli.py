@@ -165,6 +165,7 @@ with tempfile.TemporaryDirectory(prefix="cx-peer-pair-") as temporary:
         state("creation", "device-policies.json").write_text(json.dumps({
             "devices": {retained["id"]: {"access": "core", "availability": "usually_up"}}
         }))
+        state("creation", "device-policies.json").chmod(0o600)
         previous_devices = state("creation", "devices.json").read_bytes()
         previous_policy = state("creation", "device-policies.json").read_bytes()
         previous_source = state("innovation", "devices.json").read_bytes()

@@ -1,13 +1,16 @@
 # CX status
 
-## Device pairing and presentation fixes — pending release
+## Device pairing and presentation fixes — v0.1.72
 
 Explicit pairing verifies reverse SSH and enrolls the caller on a compatible remote
 helper. Core posture alone no longer claims proven bidirectional access. Creation
-currently has only itself enrolled and lacks Innovation host trust. Tranquility’s
+now has Innovation enrolled after explicit approval, verified host fingerprints and
+a dedicated SSH key. A real reverse CX sessions request succeeded. Tranquility’s
 mesh SSH address returns “No route to host” from both Innovation and Creation.
-No SSH trust, authentication, networking, installed binaries or active sessions changed.
-Claude attachment restores the terminal’s default background, including transparency.
+Only the approved Creation–Innovation SSH trust/authentication entries and Creation’s
+peer registry changed. Networking, installed binaries and active sessions were untouched.
+Codex uses a verified title or neutral provider name while keeping unknown folders
+unavailable for actions. Claude attachment restores the terminal’s default background, including transparency.
 
 ## Terminal startup — v0.1.71
 

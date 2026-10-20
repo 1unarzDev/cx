@@ -50,12 +50,12 @@ pub fn enroll(mut peer: Device) -> Result<serde_json::Value> {
         "cannot enroll this device as its own peer"
     );
     // Nothing is persisted until reverse authentication and identity are proven.
-    let observed = transport::fresh_info(peer.target.as_deref().context("missing endpoint")?).context("reverse SSH unavailable; configure the existing SSH route/trust/authentication outside CX and retry pairing")?;
+    let observed = transport::probe_info(peer.target.as_deref().context("missing endpoint")?).context("reverse SSH unavailable; configure the existing SSH route/trust/authentication outside CX and retry pairing")?;
     anyhow::ensure!(
         identity(&observed)? == peer.id,
         "reverse helper identity mismatch"
     );
-    // Serialize concurrent pairing helpers without holding a lock during SSH.
+    // Serialize pairing updates, including verification of a preserved local alias.
     use std::os::unix::fs::OpenOptionsExt;
     let lock = std::fs::OpenOptions::new()
         .write(true)
@@ -84,6 +84,14 @@ pub fn enroll(mut peer: Device) -> Result<serde_json::Value> {
             policy.access == store::AccessMode::Core,
             "existing peer is directed; promote it locally before pairing"
         );
+        if existing.target != peer.target {
+            let target = existing
+                .target
+                .as_deref()
+                .context("existing peer has no SSH endpoint")?;
+            let preserved = transport::probe_info(target).context("existing receiver endpoint is unavailable; edit it on the receiver with cx device edit, then retry pairing")?;
+            anyhow::ensure!(identity(&preserved)? == peer.id, "existing receiver endpoint identity mismatch; edit it on the receiver before pairing");
+        }
         existing.status = peer.status.clone();
         existing.observed_at = peer.observed_at;
     } else {
@@ -104,19 +112,24 @@ pub fn pair(device: &Device, return_target: &str) -> Result<serde_json::Value> {
     local.id = identity(&local_info)?;
     local.target = Some(return_target.to_owned());
     validate(&local)?;
-    let remote = transport::fresh_info(device.target.as_deref().context("missing endpoint")?)?;
-    anyhow::ensure!(
-        identity(&remote)? == device.id,
-        "remote helper identity mismatch; re-enroll the correct device"
-    );
-    if !remote["capabilities"]
-        .as_array()
-        .is_some_and(|c| c.iter().any(|c| c == "peer-enroll-v1"))
-    {
-        bail!("remote helper does not support pairing; update that helper first");
-    }
     let local_id = local.id.clone();
-    let result = transport::request(device, Operation::PeerEnroll { peer: local })?;
+    let result = transport::verified_request(
+        device.target.as_deref().context("missing endpoint")?,
+        Operation::PeerEnroll { peer: local },
+        |remote| {
+            anyhow::ensure!(
+                identity(remote)? == device.id,
+                "remote helper identity mismatch; re-enroll the correct device"
+            );
+            if !remote["capabilities"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(|c| c == "peer-enroll-v1"))
+            {
+                bail!("remote helper does not support pairing; update that helper first");
+            }
+            Ok(())
+        },
+    )?;
     anyhow::ensure!(
         result["registered"] == true && result["id"].as_str() == Some(local_id.as_str()),
         "remote helper did not confirm enrollment"

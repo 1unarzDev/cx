@@ -54,6 +54,8 @@ jobs:
       - run: python3 tests/metadata_reconnect_cli.py target/debug/cx
       - run: python3 tests/jump_routes_cli.py target/debug/cx
       - run: python3 tests/access_routes_cli.py target/debug/cx
+      - run: python3 tests/peer_pairing_cli.py target/debug/cx
+      - run: python3 tests/device_policy_cli.py target/debug/cx
       - run: python3 tests/enrollment_tooling_cli.py target/debug/cx
       - run: python3 tests/robot_enrollment.py
       - run: python3 tests/login_terminal_pty.py target/debug/cx

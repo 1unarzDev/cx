@@ -43,6 +43,18 @@ pub struct Session {
     pub activity: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agent_tasks: Vec<AgentTask>,
+    /// Terminal evidence for a session started outside CX. Adoption re-verifies it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ExternalOrigin>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExternalOrigin {
+    /// Owner of the terminal master: terminal, sshd, tmux or screen.
+    pub kind: String,
+    pub tty: String,
+    pub leader: ProcessIdentity,
+    #[serde(default)]
+    pub holder: Option<ProcessIdentity>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentTask {

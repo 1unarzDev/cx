@@ -554,6 +554,10 @@ pub(super) fn render_at(
                     } else {
                         format!("{} · {} tasks", safe_label(&s.name), s.agent_tasks.len())
                     };
+                    let name = match s.origin.as_ref().filter(|_| s.id.starts_with("ext-")) {
+                        Some(origin) => format!("{name} · {}", origin_label(&origin.kind)),
+                        None => name,
+                    };
                     let cells = vec![
                         Cell::from(badge).style(if std::env::var_os("NO_COLOR").is_some() {
                             Style::default()
@@ -2134,5 +2138,16 @@ fn render_containers(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 area.height.saturating_sub(4),
             ),
         );
+    }
+}
+
+/// Where an outside-CX terminal currently lives, from its master holder.
+fn origin_label(kind: &str) -> &'static str {
+    match kind {
+        "terminal" => "terminal",
+        "sshd" => "ssh",
+        "tmux" => "tmux",
+        "screen" => "screen",
+        _ => "external",
     }
 }

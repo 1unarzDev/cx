@@ -1,3 +1,5 @@
+#[path = "../src/adoption.rs"]
+mod adoption;
 #[path = "../src/containers.rs"]
 mod containers;
 #[path = "../src/files.rs"]

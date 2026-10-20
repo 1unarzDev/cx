@@ -6101,3 +6101,33 @@ fn background_inventory_reconciliation_preserves_selection_and_invalidates_chang
     assert_eq!(a.devices.len(), 2);
     assert_eq!(a.devices.len(), a.work.len());
 }
+
+#[test]
+fn outside_tmux_rows_never_queue_a_tmux_attach() {
+    let (mut a, _rx) = queued_app();
+    let mut s = disposable_shell();
+    s.id = "ext-0123456789abcdef".into();
+    s.external = true;
+    s.origin = Some(crate::model::ExternalOrigin {
+        kind: "terminal".into(),
+        tty: "/dev/pts/7".into(),
+        leader: crate::model::ProcessIdentity {
+            pid: 1234,
+            start_ticks: "100".into(),
+            native_id: None,
+        },
+        holder: None,
+    });
+    a.work[0].sessions = vec![s.clone()];
+    a.focus = Focus::Workspace;
+    a.view = View::Work;
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(a.pending_attach.is_none());
+    press(&mut a, 'w');
+    assert!(a.pending_attach.is_none());
+    // A default-server tmux row keeps its ordinary attach.
+    s.id = "$3".into();
+    a.work[0].sessions = vec![s];
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(a.pending_attach.is_some());
+}

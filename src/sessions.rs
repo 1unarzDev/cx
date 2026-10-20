@@ -695,6 +695,7 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
         process,
         activity,
         agent_tasks,
+        origin: None,
         container: prior.as_ref().and_then(|s| s.container.clone()),
         launcher: prior.as_ref().and_then(|s| s.launcher.clone()),
         socket: if managed {
@@ -849,6 +850,135 @@ fn container_scope_current(
     }
 }
 
+/// Session row for a terminal started outside CX. Metadata only: adoption
+/// re-verifies leader, holder and terminal before changing anything.
+fn external_terminal(terminal: &crate::adoption::Terminal) -> Option<Session> {
+    let (host, account, boot_id) = identity();
+    let leader = terminal.leader.pid;
+    let detected = foreground_provider(leader);
+    let provider = detected.as_ref().map(|(p, _)| *p).unwrap_or("shell");
+    let process = detected
+        .map(|(_, process)| process)
+        .or_else(|| process_identity(leader, "shell"));
+    let native = process
+        .as_ref()
+        .filter(|_| provider != "shell")
+        .and_then(|p| crate::session_titles::native_metadata_with_title(provider, p.pid, None));
+    let current_thread_unknown = native.as_ref().is_some_and(|m| m.current_thread_unknown);
+    let foreground = (terminal.foreground > 0 && terminal.foreground as u32 != leader)
+        .then(|| {
+            fs::read_to_string(format!("/proc/{}/comm", terminal.foreground))
+                .ok()
+                .and_then(|c| shell_command_label(&c))
+        })
+        .flatten();
+    let directory = if current_thread_unknown {
+        String::new()
+    } else {
+        native
+            .as_ref()
+            .and_then(|m| m.directory.clone())
+            .or_else(|| {
+                let p = process.as_ref()?;
+                provider_directory(provider, p)
+            })
+            .or_else(|| {
+                provider_directory(
+                    "shell",
+                    &ProcessIdentity {
+                        pid: leader,
+                        start_ticks: terminal.leader.start_ticks.clone(),
+                        native_id: None,
+                    },
+                )
+            })
+            .unwrap_or_default()
+    };
+    let name = if provider == "shell" {
+        foreground
+            .as_ref()
+            .map(|c| format!("running {c}"))
+            .unwrap_or_else(|| workspace_session_name("shell", &directory))
+    } else {
+        automatic_provider_name(
+            provider,
+            native.as_ref(),
+            current_thread_unknown,
+            workspace_session_name(provider, &directory),
+        )
+    };
+    let activity = normalized_activity(native.as_ref().and_then(|m| m.activity.as_deref()))
+        .map(str::to_owned)
+        .or_else(|| {
+            (provider == "shell").then(|| {
+                if foreground.is_some() {
+                    "running"
+                } else {
+                    "idle"
+                }
+                .into()
+            })
+        });
+    let agent_tasks = native
+        .map(|m| {
+            m.agents
+                .into_iter()
+                .map(|a| crate::model::AgentTask {
+                    id: a.id,
+                    name: a.name,
+                    task: a.task,
+                    status: a.status,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(Session {
+        id: crate::adoption::session_id(&boot_id, terminal),
+        name,
+        directory,
+        provider: provider.into(),
+        host,
+        account,
+        pid: leader,
+        started: format!("ext:{}", terminal.leader.start_ticks),
+        boot_id,
+        external: true,
+        socket: None,
+        launcher: None,
+        process,
+        container: None,
+        activity,
+        agent_tasks,
+        origin: Some(origin(terminal)),
+    })
+}
+fn origin(terminal: &crate::adoption::Terminal) -> crate::model::ExternalOrigin {
+    crate::model::ExternalOrigin {
+        kind: terminal
+            .holder
+            .as_ref()
+            .map(|h| h.kind)
+            .unwrap_or("unknown")
+            .into(),
+        tty: terminal.tty(),
+        leader: terminal.leader.identity(),
+        holder: terminal.holder.as_ref().map(|h| h.process.identity()),
+    }
+}
+fn external_terminals() -> Vec<crate::adoption::Terminal> {
+    let exclude = crate::adoption::Exclusions {
+        executables: std::env::current_exe().into_iter().collect(),
+        sessions: vec![unsafe { libc::getsid(0) }],
+        managed_socket: socket().ok(),
+    };
+    crate::adoption::discover(
+        std::path::Path::new("/proc"),
+        unsafe { libc::geteuid() },
+        &exclude,
+    )
+    .0
+}
+
 pub fn list() -> Result<Vec<Session>> {
     let mut result = vec![];
     for managed in [true, false] {
@@ -856,6 +986,20 @@ pub fn list() -> Result<Vec<Session>> {
             if let Ok(s) = inspect(managed, &id) {
                 result.push(s);
             }
+        }
+    }
+    // Terminals outside tmux, other tmux/screen servers and default-server
+    // panes. A default-server session's active pane annotates its $N row.
+    for terminal in external_terminals() {
+        let tty = terminal.tty();
+        if let Some(row) = result.iter_mut().find(|s| {
+            s.external
+                && s.origin.is_none()
+                && field(false, &s.id, "#{pane_tty}").is_ok_and(|t| t == tty)
+        }) {
+            row.origin = Some(origin(&terminal));
+        } else if let Some(session) = external_terminal(&terminal) {
+            result.push(session);
         }
     }
     // Reconcile saved container scopes on every listing, even without a newly
@@ -880,6 +1024,10 @@ pub fn list() -> Result<Vec<Session>> {
                         .is_none_or(|scope| container_scope_current(scope, &inventory, complete))
                 });
                 for session in result.iter_mut().filter(|s| s.container.is_none()) {
+                    let tmux_row = session
+                        .origin
+                        .as_ref()
+                        .is_none_or(|_| session.id.starts_with('$'));
                     let Some(target) = foreground_container(session.pid) else {
                         continue;
                     };
@@ -892,11 +1040,13 @@ pub fn list() -> Result<Vec<Session>> {
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_secs();
-                        session.activity = recent_terminal_output(
-                            &field(!session.external, &session.id, "#{window_activity}")
-                                .unwrap_or_default(),
-                            now,
-                        );
+                        if tmux_row {
+                            session.activity = recent_terminal_output(
+                                &field(!session.external, &session.id, "#{window_activity}")
+                                    .unwrap_or_default(),
+                                now,
+                            );
+                        }
                     }
                 }
             }
@@ -1574,6 +1724,7 @@ fn create_with_permissions(
         process: None,
         activity: None,
         agent_tasks: vec![],
+        origin: None,
         container: container.cloned(),
     };
     // Persist intent before starting: an interrupted helper response must never lose the launcher identity.
@@ -2579,6 +2730,7 @@ mod tests {
             process: None,
             activity: None,
             agent_tasks: vec![],
+            origin: None,
             container: None,
         };
         assert_eq!(

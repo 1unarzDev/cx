@@ -1,4 +1,5 @@
 mod access;
+mod adoption;
 mod auth;
 mod containers;
 mod files;

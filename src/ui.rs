@@ -2361,7 +2361,13 @@ impl App {
             }
             Action::Observe => {
                 if let Some((d, s)) = self.selected_session() {
-                    self.pending_attach = Some((d, s, true));
+                    if outside_tmux(&s) {
+                        self.set_notice(
+                            "This terminal is outside tmux; press Enter to move it into CX".into(),
+                        );
+                    } else {
+                        self.pending_attach = Some((d, s, true));
+                    }
                 }
             }
             Action::Copy | Action::Cut => {
@@ -5022,7 +5028,15 @@ impl App {
                         View::Containers => self.open_container_actions(),
                         View::Work => {
                             if let Some((d, s)) = self.selected_session() {
-                                self.pending_attach = Some((d, s, false));
+                                if outside_tmux(&s) {
+                                    self.set_notice_as(
+                                        NoticeKind::Warning,
+                                        "Moving terminals into CX is not available on this device yet"
+                                            .into(),
+                                    );
+                                } else {
+                                    self.pending_attach = Some((d, s, false));
+                                }
                             } else if empty_work_can_create(self) {
                                 self.start_shell();
                             }
@@ -5753,6 +5767,10 @@ fn workspace_action(action: Action) -> bool {
 
 fn local_only(app: &App) -> bool {
     !app.devices.is_empty() && app.devices.iter().all(|d| d.target.is_none())
+}
+/// Terminals discovered outside any tmux server have no attachable tmux id.
+fn outside_tmux(s: &Session) -> bool {
+    s.external && s.id.starts_with("ext-")
 }
 fn empty_work_can_create(app: &App) -> bool {
     app.view == View::Work

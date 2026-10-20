@@ -742,7 +742,9 @@ fn enroll_target(target: &str, _minimal: bool) -> Result<()> {
         status: "unknown".into(),
         observed_at: 0,
     };
-    let value = transport::request(&d, Operation::Info)?;
+    // Installation already chose the helper binary; verify without starting a redundant
+    // background updater that could outlive this short enrollment command.
+    let value = transport::probe_info(target)?;
     d.account = value["account"].as_str().unwrap_or("unknown").into();
     d.host = value["host"].as_str().unwrap_or(target).into();
     if target.contains('@') {

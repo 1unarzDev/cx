@@ -14,8 +14,11 @@ for scenario in ('unsupported', 'existing', 'broken', 'missing-offline'):
             (tools/name).symlink_to(shutil.which(name))
         ssh = tools/'ssh'
         ssh.write_text(f'''#!{sys.executable}
-import os, subprocess, sys
+import os, pathlib, subprocess, sys
 command = sys.argv[-1]
+if "cx update" in command:
+    pathlib.Path(os.environ["HOME"], "unexpected-update").touch()
+    sys.exit(1)
 if command == 'uname -sm; id -un':
     print('Darwin arm64' if os.environ['CX_ENROLL_FIXTURE']=='unsupported' else 'Linux '+os.uname().machine)
     print('fixture')
@@ -29,6 +32,7 @@ sys.exit(subprocess.call(['/bin/sh','-c',command]))
         env = dict(os.environ, HOME=str(home), XDG_STATE_HOME=str(root/'s'), PATH=str(tools),
             CX_ENROLL_FIXTURE=scenario, HTTPS_PROXY='http://127.0.0.1:9')
         result = subprocess.run([binary,'add','fixture@example.test'], env=env, capture_output=True, timeout=20)
+        assert not (home/'unexpected-update').exists(), 'newly installed helper started a redundant updater'
         helper = home/'.local/bin/cx'
         if scenario=='unsupported':
             assert result.returncode!=0 and b'Linux x86_64 or ARM64' in result.stderr, (result.returncode, result.stderr)

@@ -8,10 +8,14 @@ no network, installed helper, personal trust or configuration is touched.
 import json
 import os
 import pathlib
+import pty
+import select
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 
 
 BINARY = str(pathlib.Path(sys.argv[1]).resolve())
@@ -50,7 +54,6 @@ for name,(account,host) in peers.items():
 assert endpoint is not None,'unknown fixture SSH endpoint'
 with (root/'connections.jsonl').open('a') as log:
     log.write(json.dumps(dict(source=os.environ['CX_MESH_ORIGIN'],target=endpoint,args=args,pid=os.getpid()))+'\n')
-if endpoint=='robot':raise AssertionError('Directed device must never join core bootstrap')
 if endpoint=='tranquility' and os.environ['CX_MESH_MODE']=='offline':
     sys.stderr.write('No route to host\n');sys.exit(255)
 account=peers[endpoint][0]
@@ -74,7 +77,17 @@ try:
         if request is None:break
         with (root/'requests.jsonl').open('a') as log:
             log.write(json.dumps(dict(source=os.environ['CX_MESH_ORIGIN'],target=endpoint,op=request['op']['op'],pid=os.getpid()))+'\n')
+        if request['op']['op'] not in ('info','peer_identity','peer_configure','peer_enroll'):
+            # UI observers are outside bootstrap scope. Return empty metadata
+            # without asking real helpers to inspect unrelated host sessions.
+            write(sys.stdout.buffer,dict(version=1,id=request['id'],result=[],error=None))
+            continue
+        if endpoint=='robot':
+            raise AssertionError('Directed device received bootstrap mutation')
         write(child.stdin,request);response=read(child.stdout)
+        if request['op']['op']=='peer_enroll' and response.get('error'):
+            with (root/'errors.jsonl').open('a') as log:
+                log.write(json.dumps(dict(target=endpoint,error=response['error']))+'\n')
         if endpoint=='creation' and os.environ['CX_MESH_MODE']=='changed-host-key' and request['op']['op']=='peer_identity':
             fields=response['result']['host_key'].split()
             raw=bytearray(base64.b64decode(fields[1]));raw[-1]^=1
@@ -140,6 +153,51 @@ class Fixture:
         return subprocess.run([BINARY, "device", "sync"], env=self.env(mode),
                               capture_output=True, text=True, timeout=45)
 
+    def startup(self):
+        """Normal interactive startup must bootstrap without a pairing command."""
+        master, slave = pty.openpty()
+        environment = self.env()
+        environment.update(TERM="xterm-256color", HTTP_PROXY="http://127.0.0.1:9",
+                           HTTPS_PROXY="http://127.0.0.1:9", ALL_PROXY="http://127.0.0.1:9",
+                           http_proxy="http://127.0.0.1:9", https_proxy="http://127.0.0.1:9",
+                           all_proxy="http://127.0.0.1:9", NO_PROXY="", no_proxy="")
+        process = subprocess.Popen([BINARY], env=environment, stdin=slave, stdout=slave,
+                                   stderr=slave, start_new_session=True, cwd=self.root)
+        os.close(slave)
+        deadline = time.monotonic() + 20
+        complete = False
+        try:
+            while time.monotonic() < deadline:
+                assert process.poll() is None, "normal CX startup exited before mesh enrollment"
+                # Drain terminal output boundedly; never retain session content.
+                if select.select([master], [], [], 0.05)[0]:
+                    try:
+                        os.read(master, 65536)
+                    except OSError:
+                        pass
+                try:
+                    self.assert_mesh()
+                    complete = True
+                    break
+                except (AssertionError, FileNotFoundError, json.JSONDecodeError):
+                    continue
+            if not complete:
+                requests = self.root / "requests.jsonl"
+                evidence = requests.read_text()[-6000:] if requests.exists() else "no SSH requests"
+                errors = self.root / "errors.jsonl"
+                if errors.exists():evidence += errors.read_text()[-4000:]
+                raise AssertionError("normal CX startup did not enroll six core edges within 20 seconds; " + evidence)
+        finally:
+            # Stop only the owned UI process and subprocess group.
+            if process.poll() is None:
+                process.send_signal(signal.SIGTERM)
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=3)
+            os.close(master)
+
     def security_invariants(self):
         for endpoint in PEERS:
             home = self.root / endpoint / "home"
@@ -153,7 +211,8 @@ class Fixture:
         requests = (self.root / "requests.jsonl").read_text() if (self.root / "requests.jsonl").exists() else ""
         assert "PRIVATE KEY" not in requests
         connections = (self.root / "connections.jsonl").read_text() if (self.root / "connections.jsonl").exists() else ""
-        assert all(json.loads(line)["target"] != "robot" for line in connections.splitlines())
+        assert all(json.loads(line)["target"] != "robot" or json.loads(line)["op"] not in
+                   ("peer_identity", "peer_configure", "peer_enroll") for line in requests.splitlines())
 
     def assert_mesh(self):
         for endpoint in ("innovation", "creation", "tranquility"):
@@ -188,6 +247,24 @@ class Fixture:
                 result[str(path.relative_to(self.root))] = path.read_bytes()
         return result
 
+
+with tempfile.TemporaryDirectory(prefix="cx-ui-") as temporary:
+    fixture = Fixture(pathlib.Path(temporary))
+    fixture.startup()
+    fixture.assert_mesh()
+    fixture.security_invariants()
+
+with tempfile.TemporaryDirectory(prefix="cx-rt-") as temporary:
+    fixture = Fixture(pathlib.Path(temporary))
+    fixture.write("innovation", "routes.json", {"creation": ["fixture-gateway"]})
+    previous = (fixture.state("innovation") / "routes.json").read_bytes()
+    fixture.sync()
+    requests = [json.loads(line) for line in (fixture.root / "requests.jsonl").read_text().splitlines()]
+    assert not any(r["target"] == "creation" for r in requests), requests
+    assert (fixture.state("innovation") / "routes.json").read_bytes() == previous
+    assert len(fixture.read("creation", "devices.json")) == 1
+    assert not any(p["id"] == f"{MACHINE}:conception" for p in fixture.read("tranquility", "devices.json"))
+    fixture.security_invariants()
 
 with tempfile.TemporaryDirectory(prefix="cx-peer-mesh-") as temporary:
     fixture = Fixture(pathlib.Path(temporary))
@@ -230,6 +307,7 @@ with tempfile.TemporaryDirectory(prefix="cx-peer-mesh-") as temporary:
     fixture.security_invariants()
 
 print(json.dumps(dict(result="PASS", real_helpers=True, three_core_devices=True,
+                      normal_ui_startup_bootstraps=True, stored_gateway_route_not_exported=True,
                       offline_then_recovered=True, all_six_edges_registered=True,
                       directed_device_excluded=True, private_key_mode_600=True,
                       no_private_key_transmitted=True, repeated_sync_idempotent=True,

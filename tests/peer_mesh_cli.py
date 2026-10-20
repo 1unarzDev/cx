@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+"""Disposable three-helper core mesh bootstrap regression.
+
+Real helpers create managed keys and persist configuration under separate HOME
+and state roots. The SSH executable is a deterministic, framed transport fixture;
+no network, installed helper, personal trust or configuration is touched.
+"""
+import json
+import os
+import pathlib
+import stat
+import subprocess
+import sys
+import tempfile
+
+
+BINARY = str(pathlib.Path(sys.argv[1]).resolve())
+MACHINE = pathlib.Path("/etc/machine-id").read_text().strip()
+ADDRESSES = json.loads(subprocess.check_output(["ip", "-j", "address", "show", "scope", "global"], text=True))
+LOCAL_ADDRESS = next(a["local"] for interface in ADDRESSES for a in interface.get("addr_info", [])
+                     if a.get("family") == "inet")
+PEERS = {
+    "innovation": ("tester", LOCAL_ADDRESS),
+    "creation": ("conception", "creation.example"),
+    "tranquility": ("peace", "tranquility.example"),
+    "robot": ("robot", "robot.example"),
+}
+
+
+SSH_WRAPPER = r'''#!/usr/bin/env python3
+import base64,json,os,pathlib,subprocess,sys
+root=pathlib.Path(os.environ['CX_MESH_FIXTURE'])
+peers=json.loads(os.environ['CX_MESH_PEERS'])
+args=sys.argv[1:]
+if '-G' in args:
+    target=args[-1]
+    for name,(account,host) in peers.items():
+        if target in (name,account+'@'+host):
+            print('hostname '+host+'\nuser '+account+'\nport 22');sys.exit(0)
+    raise AssertionError('unknown fixture resolver target')
+assert args[-1]=='exec ~/.local/bin/cx helper','fixed helper command required'
+assert 'ForwardAgent=no' in args,'credentials must never be forwarded'
+assert 'BatchMode=yes' in args,'core sync must never prompt for SSH authentication'
+target=args[-2]
+endpoint=None
+for name,(account,host) in peers.items():
+    if target in (name,account+'@'+host):endpoint=name;break
+assert endpoint is not None,'unknown fixture SSH endpoint'
+with (root/'connections.jsonl').open('a') as log:
+    log.write(json.dumps(dict(source=os.environ['CX_MESH_ORIGIN'],target=endpoint,args=args,pid=os.getpid()))+'\n')
+if endpoint=='robot':raise AssertionError('Directed device must never join core bootstrap')
+if endpoint=='tranquility' and os.environ['CX_MESH_MODE']=='offline':
+    sys.stderr.write('No route to host\n');sys.exit(255)
+account=peers[endpoint][0]
+env=dict(os.environ,HOME=str(root/endpoint/'home'),XDG_STATE_HOME=str(root/endpoint/'state'),
+         USER=account,CX_MESH_ORIGIN=endpoint,
+         SSH_CONNECTION=peers['innovation'][1]+' 40000 '+peers['innovation'][1]+' 22')
+child=subprocess.Popen([os.environ['CX_MESH_BINARY'],'helper'],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE)
+def read(stream):
+    header=stream.readline()
+    if not header:return None
+    prefix,size=header.split();assert prefix==b'CX1'
+    size=int(size);assert 0<=size<=1048576
+    payload=stream.read(size);assert len(payload)==size
+    assert b'PRIVATE KEY' not in payload,'private key crossed SSH helper protocol'
+    return json.loads(payload)
+def write(stream,value):
+    payload=json.dumps(value).encode();stream.write(b'CX1 '+str(len(payload)).encode()+b'\n'+payload);stream.flush()
+try:
+    while True:
+        request=read(sys.stdin.buffer)
+        if request is None:break
+        with (root/'requests.jsonl').open('a') as log:
+            log.write(json.dumps(dict(source=os.environ['CX_MESH_ORIGIN'],target=endpoint,op=request['op']['op'],pid=os.getpid()))+'\n')
+        write(child.stdin,request);response=read(child.stdout)
+        if endpoint=='creation' and os.environ['CX_MESH_MODE']=='changed-host-key' and request['op']['op']=='peer_identity':
+            fields=response['result']['host_key'].split()
+            raw=bytearray(base64.b64decode(fields[1]));raw[-1]^=1
+            fields[1]=base64.b64encode(raw).decode()
+            response['result']['host_key']=' '.join(fields)
+        write(sys.stdout.buffer,response)
+finally:
+    child.stdin.close();child.terminate();child.wait(timeout=3)
+'''
+
+
+def device(name, local=False):
+    account, host = PEERS[name]
+    return dict(id="local" if local else f"{MACHINE}:{account}",
+                name=f"fixture-local-{name}" if local else name,
+                target=None if local else name, account=account, host=host,
+                status="unknown", observed_at=0)
+
+
+class Fixture:
+    def __init__(self, root):
+        self.root = root
+        tools = root / "tools"
+        tools.mkdir()
+        wrapper = tools / "ssh"
+        wrapper.write_text(SSH_WRAPPER)
+        wrapper.chmod(0o700)
+        for endpoint in PEERS:
+            (root / endpoint / "home/.ssh").mkdir(parents=True)
+            (root / endpoint / "home/.ssh/config").write_text("# untouched fixture config\n")
+            (root / endpoint / "home/.ssh/known_hosts").write_text("# untouched personal trust\n")
+            self.state(endpoint).mkdir(parents=True)
+            self.state(endpoint).chmod(0o700)
+            self.write(endpoint, "devices.json", [device(endpoint, local=True)])
+        self.write("innovation", "devices.json", [device("innovation", local=True),
+                                                   device("creation"), device("tranquility"), device("robot")])
+        self.write("innovation", "device-policies.json", {"devices": {
+            f"{MACHINE}:{PEERS[name][0]}": {"access": "core", "availability": "usually_up"}
+            for name in ("creation", "tranquility")
+        }})
+
+    def state(self, endpoint):
+        return self.root / endpoint / "state/cx"
+
+    def write(self, endpoint, filename, value):
+        (self.state(endpoint) / filename).write_text(json.dumps(value))
+
+    def read(self, endpoint, filename):
+        return json.loads((self.state(endpoint) / filename).read_text())
+
+    def env(self, mode="success"):
+        return dict(os.environ, HOME=str(self.root / "innovation/home"),
+                    XDG_STATE_HOME=str(self.root / "innovation/state"), USER="tester",
+                    PATH=str(self.root / "tools") + os.pathsep + os.environ["PATH"],
+                    CX_MESH_FIXTURE=str(self.root), CX_MESH_PEERS=json.dumps(PEERS),
+                    CX_MESH_BINARY=BINARY, CX_MESH_ORIGIN="innovation", CX_MESH_MODE=mode)
+
+    def sync(self, mode="success"):
+        return subprocess.run([BINARY, "device", "sync"], env=self.env(mode),
+                              capture_output=True, text=True, timeout=45)
+
+    def security_invariants(self):
+        for endpoint in PEERS:
+            home = self.root / endpoint / "home"
+            assert (home / ".ssh/config").read_text() == "# untouched fixture config\n"
+            assert (home / ".ssh/known_hosts").read_text() == "# untouched personal trust\n"
+        requests = (self.root / "requests.jsonl").read_text() if (self.root / "requests.jsonl").exists() else ""
+        assert "PRIVATE KEY" not in requests
+        connections = (self.root / "connections.jsonl").read_text() if (self.root / "connections.jsonl").exists() else ""
+        assert all(json.loads(line)["target"] != "robot" for line in connections.splitlines())
+
+    def assert_mesh(self):
+        for endpoint in ("innovation", "creation", "tranquility"):
+            peers = self.read(endpoint, "devices.json")
+            expected = {f"{MACHINE}:{PEERS[name][0]}" for name in ("innovation", "creation", "tranquility")
+                        if name != endpoint}
+            observed = {peer["id"] for peer in peers if peer["target"] and peer["account"] != "robot"}
+            assert expected == observed, (endpoint, expected, observed)
+            if endpoint != "innovation":
+                assert all(peer["account"] != "robot" for peer in peers), endpoint
+
+    def private_keys(self):
+        found = {}
+        for endpoint in ("innovation", "creation", "tranquility"):
+            keys = []
+            for path in (self.root / endpoint).rglob("*"):
+                if path.is_file() and path.stat().st_size <= 16384:
+                    value = path.read_bytes()
+                    if value.startswith(b"-----BEGIN OPENSSH PRIVATE KEY-----"):
+                        assert stat.S_IMODE(path.stat().st_mode) == 0o600, path
+                        keys.append((str(path.relative_to(self.root)), value))
+            assert keys, (endpoint, "managed private client key missing")
+            found[endpoint] = keys
+        return found
+
+    def managed_trust(self):
+        result = {}
+        for endpoint in ("innovation", "creation", "tranquility"):
+            for path in (self.state(endpoint) / "peer-ssh/known_hosts",
+                         self.state(endpoint) / "peer-ssh/peers.json",
+                         self.root / endpoint / "home/.ssh/authorized_keys"):
+                result[str(path.relative_to(self.root))] = path.read_bytes()
+        return result
+
+
+with tempfile.TemporaryDirectory(prefix="cx-peer-mesh-") as temporary:
+    fixture = Fixture(pathlib.Path(temporary))
+    # Start with no managed key, reciprocal enrollment or private host trust.
+    offline = fixture.sync("offline")
+    assert offline.returncode in (0, 1), offline.stderr
+    tranquility = fixture.read("tranquility", "devices.json")
+    assert len(tranquility) == 1 and tranquility[0]["target"] is None, tranquility
+    creation = fixture.read("creation", "devices.json")
+    assert any(peer["id"] == f"{MACHINE}:tester" for peer in creation), offline.stderr
+    fixture.security_invariants()
+
+    # An ordinary retry recovers an offline core peer and completes every edge.
+    recovered = fixture.sync()
+    assert recovered.returncode == 0, recovered.stderr
+    fixture.assert_mesh()
+    fixture.security_invariants()
+    original_keys = fixture.private_keys()
+    original_authorizations = {
+        endpoint: (fixture.root / endpoint / "home/.ssh/authorized_keys").read_bytes()
+        for endpoint in ("innovation", "creation", "tranquility")
+    }
+
+    repeated = fixture.sync()
+    assert repeated.returncode == 0, repeated.stderr
+    fixture.assert_mesh()
+    fixture.security_invariants()
+    assert fixture.private_keys() == original_keys, "retry rotated a managed client key"
+    for endpoint, contents in original_authorizations.items():
+        assert (fixture.root / endpoint / "home/.ssh/authorized_keys").read_bytes() == contents, endpoint
+
+    # Stable account/machine identity does not authorize a silent host-key change.
+    # Failure remains pending; existing trusted pins and authorizations survive.
+    trusted = fixture.managed_trust()
+    changed = fixture.sync("changed-host-key")
+    assert changed.returncode in (0, 1), changed.stderr
+    assert "pending" in (changed.stdout + changed.stderr).lower(), changed.stdout + changed.stderr
+    assert fixture.managed_trust() == trusted, "changed host key replaced managed trust"
+    assert fixture.private_keys() == original_keys
+    fixture.security_invariants()
+
+print(json.dumps(dict(result="PASS", real_helpers=True, three_core_devices=True,
+                      offline_then_recovered=True, all_six_edges_registered=True,
+                      directed_device_excluded=True, private_key_mode_600=True,
+                      no_private_key_transmitted=True, repeated_sync_idempotent=True,
+                      changed_host_key_rejected=True,
+                      personal_ssh_config_and_trust_unchanged=True)))

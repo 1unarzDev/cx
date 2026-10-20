@@ -1273,6 +1273,10 @@ pub fn list() -> Result<Vec<Session>> {
     let mut result = vec![];
     for managed in [true, false] {
         for id in ids(managed)? {
+            // Command-panel panes are transient and shown only in their panel.
+            if managed && field(true, &id, "#{session_name}").is_ok_and(|n| valid_pane_name(&n)) {
+                continue;
+            }
             if let Ok(s) = inspect(managed, &id) {
                 result.push(s);
             }
@@ -2459,6 +2463,145 @@ pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
 
 /// Open an ordinary login terminal without requiring tmux or the CX helper.
 /// Exiting the shell restores the viewer through the existing native handoff.
+/// Transient managed pane names for command panels; never recorded or listed.
+fn command_pane_name() -> Result<String> {
+    use std::io::Read;
+    let mut bytes = [0u8; 16];
+    fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(format!(
+        "cxcmd-{}",
+        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    ))
+}
+fn valid_pane_name(id: &str) -> bool {
+    id.len() == 38 && id.starts_with("cxcmd-") && id[6..].bytes().all(|b| b.is_ascii_hexdigit())
+}
+fn clamp_size(cols: u16, rows: u16) -> (u16, u16) {
+    (cols.clamp(20, 500), rows.clamp(4, 300))
+}
+
+/// Start a command in a managed pane kept alive after exit so its final output
+/// and status remain capturable. The pane is transient: no ownership record,
+/// hidden from the session list, and closed when its panel closes.
+pub fn command_panel(request: &RunCommand, cols: u16, rows: u16) -> Result<serde_json::Value> {
+    validate_command(request)?;
+    let directory = fs::canonicalize(crate::files::decode_path(&request.directory)?)
+        .context("command directory is unavailable")?;
+    if !directory.is_dir() {
+        bail!("command directory is not a folder");
+    }
+    let (cols, rows) = clamp_size(cols, rows);
+    ensure_server()?;
+    let shell = launch_shell()?;
+    let fish = std::path::Path::new(&shell)
+        .file_name()
+        .is_some_and(|s| s == "fish");
+    // The command runs under a login shell on the pane's own tty, so colors and
+    // interactive prompts work. Output and status persist via remain-on-exit.
+    let invocation = if fish {
+        format!(
+            "exec {} -l -c {} cx-command {}",
+            quote(&shell),
+            quote("eval $argv[1]"),
+            quote(&request.command)
+        )
+    } else {
+        format!(
+            "exec {} -l -c {} cx-command {}",
+            quote(&shell),
+            quote(r#"eval "$1""#),
+            quote(&request.command)
+        )
+    };
+    let name = command_pane_name()?;
+    let mut c = tmux(true)?;
+    c.args(["new-session", "-d", "-s", &name])
+        .arg("-x")
+        .arg(cols.to_string())
+        .arg("-y")
+        .arg(rows.to_string())
+        .args(["-n", "work", "-c"])
+        .arg(&directory)
+        .arg(&invocation);
+    output(c)?;
+    // Keep the dead pane and its status; scope the option to this session.
+    let mut opt = tmux(true)?;
+    opt.args(["set-option", "-t", &name, "remain-on-exit", "on"]);
+    let _ = output(opt);
+    let pid = field(true, &name, "#{pane_pid}")?.parse().unwrap_or(0);
+    Ok(serde_json::json!({
+        "id": name,
+        "socket": socket()?.to_string_lossy(),
+        "pid": pid,
+        "cols": cols,
+        "rows": rows,
+    }))
+}
+
+/// Capture the styled screen, liveness and exit status of a command pane.
+pub fn capture_pane(id: &str, cols: u16, rows: u16) -> Result<serde_json::Value> {
+    anyhow::ensure!(valid_pane_name(id), "invalid command pane");
+    let (cols, rows) = clamp_size(cols, rows);
+    // Match the pane to the panel so wrapping and cursor line up.
+    let mut resize = tmux(true)?;
+    resize
+        .args(["resize-window", "-t", id, "-x"])
+        .arg(cols.to_string())
+        .arg("-y")
+        .arg(rows.to_string());
+    let _ = output(resize);
+    let dead = field(true, id, "#{pane_dead}").map_or(true, |d| d != "0");
+    let status = if dead {
+        field(true, id, "#{pane_dead_status}")
+            .ok()
+            .and_then(|s| s.parse::<i32>().ok())
+    } else {
+        None
+    };
+    let mut capture = tmux(true)?;
+    capture.args(["capture-pane", "-e", "-p", "-t", id]);
+    let screen = output(capture).unwrap_or_default();
+    Ok(serde_json::json!({
+        "id": id,
+        "lines": screen.split('\n').collect::<Vec<_>>(),
+        "alive": !dead,
+        "status": status,
+        "cols": cols,
+        "rows": rows,
+    }))
+}
+
+/// Deliver hex-encoded bytes to a running command pane.
+pub fn pane_input(id: &str, hex: &str) -> Result<serde_json::Value> {
+    anyhow::ensure!(valid_pane_name(id), "invalid command pane");
+    anyhow::ensure!(
+        !hex.is_empty()
+            && hex.len() <= 8192
+            && hex.len() % 2 == 0
+            && hex.bytes().all(|b| b.is_ascii_hexdigit()),
+        "invalid key data"
+    );
+    if field(true, id, "#{pane_dead}").map_or(true, |d| d != "0") {
+        return Ok(serde_json::json!({"delivered": false}));
+    }
+    let mut c = tmux(true)?;
+    c.args(["send-keys", "-t", id, "-H"]);
+    for pair in hex.as_bytes().chunks(2) {
+        c.arg(std::str::from_utf8(pair)?);
+    }
+    output(c)?;
+    Ok(serde_json::json!({"delivered": true}))
+}
+
+/// Close a command pane, ending the command if it is still running.
+pub fn pane_close(id: &str) -> Result<serde_json::Value> {
+    anyhow::ensure!(valid_pane_name(id), "invalid command pane");
+    let mut c = tmux(true)?;
+    c.args(["kill-session", "-t", id]);
+    let _ = c.output();
+    Ok(serde_json::json!({"closed": true}))
+}
+
 pub fn login_terminal(device: &Device) -> Result<()> {
     let mut command = if let Some(target) = &device.target {
         let routed = crate::store::ssh(target, true)?;

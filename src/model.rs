@@ -247,6 +247,27 @@ pub enum Operation {
     TransferRetry {
         key: String,
     },
+    /// Run a command in a managed pane shown live in a CX panel.
+    CommandPanel {
+        request: RunCommand,
+        cols: u16,
+        rows: u16,
+    },
+    /// Styled screen, liveness and exit status of a command panel pane.
+    CapturePane {
+        id: String,
+        cols: u16,
+        rows: u16,
+    },
+    /// Hex-encoded bytes to deliver to a command panel pane.
+    PaneInput {
+        id: String,
+        hex: String,
+    },
+    /// Close a command panel pane, stopping the command if it is still running.
+    PaneClose {
+        id: String,
+    },
     Network,
     NetworkCandidates,
     ProbeCandidate {

@@ -441,6 +441,14 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
             ref started,
             ref boot_id,
         } => sessions::stop_shell(id, pid, started, boot_id),
+        Operation::CommandPanel {
+            ref request,
+            cols,
+            rows,
+        } => sessions::command_panel(request, cols, rows),
+        Operation::CapturePane { ref id, cols, rows } => sessions::capture_pane(id, cols, rows),
+        Operation::PaneInput { ref id, ref hex } => sessions::pane_input(id, hex),
+        Operation::PaneClose { ref id } => sessions::pane_close(id),
         Operation::Network => network::observe(),
         Operation::NetworkCandidates => network::candidates(),
         Operation::ProbeCandidate { address, interface } => {

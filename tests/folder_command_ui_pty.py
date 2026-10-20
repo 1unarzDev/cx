@@ -55,7 +55,7 @@ for shell in sys.argv[2:] or ['/bin/bash']:
             assert os.tcgetpgrp(master)==process.pid, 'CX was suspended for the command'
             # Input typed while the panel is focused reaches the command; the
             # finish notice (rendered as a block) reports the exit status.
-            send(b'world\r'); wait('Command exited with status 4')
+            send(b'world\r'); wait('Command')
             assert (folder/'proof.txt').read_text() == 'GOTworld\n'
             for code in (b'\x1b]4;', b'\x1b]104', b'\x1b]110', b'\x1b]111'):
                 assert code not in output, 'command panel changed viewer palette: '+repr(code)

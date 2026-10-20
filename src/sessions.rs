@@ -462,6 +462,24 @@ fn current_session_name(prior: &Session, provider: &str, directory: &str) -> Str
     }
 }
 
+fn automatic_provider_name(
+    provider: &str,
+    native: Option<&crate::session_titles::NativeMetadata>,
+    directory_unknown: bool,
+    fallback: String,
+) -> String {
+    // A proven selected thread can have a title before its directory arrives.
+    // Conversely an unknown selection must not revive an old workspace/title.
+    let selected = native.filter(|metadata| !metadata.current_thread_unknown);
+    if let Some(title) = selected.and_then(|metadata| metadata.title.clone()) {
+        title
+    } else if directory_unknown {
+        provider.into()
+    } else {
+        fallback
+    }
+}
+
 fn shell_command_label(command: &str) -> Option<String> {
     // Command name only: never arguments, shell history or terminal contents.
     let command = command.trim();
@@ -604,13 +622,13 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
     let automatic = prior.as_ref().is_some_and(automatically_named);
     let display_name = if automatic && provider == "shell" {
         shell_activity(managed, id).unwrap_or(saved_name)
-    } else if automatic && current_thread_unknown {
-        format!("{provider} · directory unavailable")
     } else if automatic {
-        native
-            .as_ref()
-            .and_then(|m| m.title.clone())
-            .unwrap_or(saved_name)
+        automatic_provider_name(
+            provider,
+            native.as_ref(),
+            current_thread_unknown,
+            saved_name,
+        )
     } else {
         saved_name
     };
@@ -2512,6 +2530,35 @@ mod tests {
             native_id: None,
         };
         assert_eq!(provider_directory("claude", &process), None);
+    }
+
+    #[test]
+    fn unknown_provider_directory_is_not_a_session_title() {
+        let fallback = "codex · old-project".to_owned();
+        let named = crate::session_titles::NativeMetadata {
+            title: Some("Current task".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            automatic_provider_name("codex", Some(&named), true, fallback.clone()),
+            "Current task"
+        );
+        let unselected = crate::session_titles::NativeMetadata {
+            current_thread_unknown: true,
+            ..named
+        };
+        assert_eq!(
+            automatic_provider_name("codex", Some(&unselected), true, fallback.clone()),
+            "codex"
+        );
+        assert_eq!(
+            automatic_provider_name("codex", None, true, fallback.clone()),
+            "codex"
+        );
+        assert_eq!(
+            automatic_provider_name("codex", None, false, fallback.clone()),
+            fallback
+        );
     }
 
     #[test]

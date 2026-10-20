@@ -3,6 +3,41 @@
 import fcntl, json, os, pathlib, pty, select, struct, subprocess, sys, tempfile, termios, time
 import pyte
 binary = str(pathlib.Path(sys.argv[1]).resolve())
+def process_identity(pid):
+    try:
+        # The command name may contain spaces and closing parentheses.
+        fields = pathlib.Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+    except FileNotFoundError:
+        return None
+    return fields[19], fields[0]
+
+def stop_owned_tmux(socket, env):
+    # kill-server acknowledges the request before shells finish their exit hooks.
+    # Pin identities before stopping, then wait without signalling recycled PIDs.
+    owned = set()
+    for command in [
+        ['display-message', '-p', '#{pid}'],
+        ['list-panes', '-a', '-F', '#{pane_pid}'],
+    ]:
+        result = subprocess.run(['tmux', '-S', socket, *command], env=env,
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            owned.update(int(pid) for pid in result.stdout.split())
+    identities = {pid: process_identity(pid) for pid in owned}
+    subprocess.run(['tmux', '-S', socket, 'kill-server'], env=env,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+    deadline = time.monotonic() + 5
+    while True:
+        alive = []
+        for pid, original in identities.items():
+            current = process_identity(pid)
+            if original is not None and current is not None and current[0] == original[0] and current[1] != 'Z':
+                alive.append(pid)
+        if not alive:
+            return
+        assert time.monotonic() < deadline, f'Owned fixture tmux processes did not exit: {alive}'
+        time.sleep(.02)
+
 with tempfile.TemporaryDirectory(prefix='cx-startup-loader-') as tmp:
     root = pathlib.Path(tmp)
     state = root/'state/cx'; state.mkdir(parents=True)
@@ -46,8 +81,10 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-loader-') as tmp:
         os.write(master,b'\x1d'); wait(lambda:'Files' in text())
         os.write(master,b'\x03');proc.wait(timeout=5)
         assert termios.tcgetattr(slave)==before
-        print(json.dumps({'result':'PASS','checks':['loader animates during delayed shell startup','no native client before visible screen','single handoff accepts input and restores viewer/termios']}))
     finally:
         if proc.poll() is None: proc.kill();proc.wait()
-        subprocess.run(['tmux','-S',socket,'kill-server'],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        os.close(master);os.close(slave)
+        try:
+            stop_owned_tmux(socket, env)
+        finally:
+            os.close(master);os.close(slave)
+print(json.dumps({'result':'PASS','checks':['loader animates during delayed shell startup','no native client before visible screen','single handoff accepts input and restores viewer/termios','owned tmux server and panes exit before temporary state removal']}))

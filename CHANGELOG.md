@@ -6,7 +6,7 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ### Changes
 - List shells and Claude/Codex sessions started outside CX (terminal windows, SSH logins, other tmux/screen servers and `docker exec` clients) in Sessions.
-- Move such a terminal into CX with Enter, keeping its processes, PIDs and in-progress work running. This uses a guarded cx-reptyr relay enabled per device with `cx device ptrace NAME enable`.
+- Move such a terminal into CX with Enter, keeping its processes, PIDs and in-progress work running. Install the guarded relay with `cx device ptrace NAME install`; each move asks for a password through a panel, with no persistent privilege. `cx device ptrace NAME enable` optionally grants a no-prompt capability relay.
 
 ## v0.1.76
 

@@ -39,15 +39,17 @@ Sessions also lists your shells and Claude/Codex sessions that CX did not start.
 
 Press Enter on such a row to move it into CX. The terminal's processes keep running: the same PIDs, threads, child tools and in-progress work, with only where the terminal is shown changing. A move takes well under a second, and output continues during it. The original window freezes on its last frame and can be closed; the work continues in CX. Stopping the moved session with `d`, exiting its shell, or `cx reset` ends it as it would end any CX session. Programs that ignore SIGTERM are not force-killed.
 
-Moving uses a guarded copy of [reptyr](https://github.com/nelhage/reptyr) that needs a one-time privileged setup on each device:
+Moving uses a guarded copy of [reptyr](https://github.com/nelhage/reptyr). Install it once per device:
 
 ```sh
-cx device ptrace local enable     # or a device name; asks for sudo once
+cx device ptrace local install    # or a device name; no admin rights needed
 cx device ptrace local status
-cx device ptrace local disable
+cx device ptrace local uninstall
 ```
 
-`enable` installs `/usr/local/libexec/cx/cx-reptyr` (root-owned) with `cap_sys_ptrace`. The relay accepts only one exact form. It refuses any process not fully owned by the user running it, and re-checks every process identity CX observed. It drops the capability once the terminal moves. Any program running as you on that device could still use it to take over your other terminals, so enable it only where you want this feature. Hosts with Yama `ptrace_scope=3` cannot move terminals. Without setup, these rows remain visible, and default-server tmux rows still attach as before.
+`install` places `cx-reptyr` in `~/.local/bin`. Each move then runs it through `sudo`, and CX asks for your password in a panel, so no privileged state persists between moves. The relay accepts only one exact form: it refuses any process not fully owned by you, re-checks every process identity CX observed, and drops back to your user (and all capabilities) once the terminal has moved.
+
+To skip the per-move password on a device you trust, `cx device ptrace <device> enable` installs a root-owned `/usr/local/libexec/cx/cx-reptyr` with `cap_sys_ptrace` (one `sudo` at setup; undo with `disable`). Any program running as you on that device could then use it to take over your other terminals, so enable it only where you want that. Hosts with Yama `ptrace_scope=3` cannot move terminals. Without setup, these rows stay visible and default-server tmux rows still attach as before.
 
 Automatically named shells show the running executable, such as `running cargo`; new managed Fish shells remember short commands as `last: git`, while older/Bash/Zsh shells show the most recently observed command as `recent: git`. Arguments and shell history are excluded. Claude native names and Codex names use exact process metadata when available; daemon-backed Codex sessions without a reliable identity retain their folder label. Custom names stay unchanged and label refreshes preserve row order.
 

@@ -304,7 +304,13 @@ enum DeviceCommand {
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum PtraceAction {
+    /// Install the user-local relay so moves work through one sudo prompt each.
+    Install,
+    /// Remove the user-local relay.
+    Uninstall,
+    /// Grant cap_sys_ptrace to a root-owned relay so moves need no prompt.
     Enable,
+    /// Remove the privileged capability relay.
     Disable,
     Status,
 }
@@ -524,7 +530,13 @@ fn device_ptrace(
             .is_some_and(|c| c.iter().any(|c| c == "adopt-reptyr-v1"));
         Ok(serde_json::json!({
             "device": label,
-            "adoption": if enabled { "enabled" } else { "unavailable" },
+            "adoption": if !enabled {
+                "unavailable"
+            } else if info["adoption_needs_password"] == serde_json::json!(true) {
+                "enabled (asks for a password per move)"
+            } else {
+                "enabled (no prompt)"
+            },
             "reason": info["adoption_unavailable"],
         }))
     };
@@ -554,34 +566,90 @@ fn device_ptrace(
         );
         Ok(())
     };
+    // Verified relay bytes for this device's architecture.
+    let relay_bytes = |device: &Device| -> Result<Vec<u8>> {
+        let arch = match &device.target {
+            None => std::env::consts::ARCH.to_string(),
+            Some(target) => {
+                let mut c = transport::ssh(target, true)?;
+                c.arg("uname -sm");
+                let out = enrollment_command(c, None)?;
+                match String::from_utf8_lossy(&out.stdout).trim() {
+                    "Linux x86_64" => "x86_64".into(),
+                    "Linux aarch64" => "aarch64".into(),
+                    _ => bail!("cx-reptyr supports Linux x86_64 and ARM64 only"),
+                }
+            }
+        };
+        match &binary {
+            Some(path) => Ok(std::fs::read(path)?),
+            None => Ok(std::fs::read(
+                update::obtain_reptyr_binary(&arch, env!("CARGO_PKG_VERSION"))?.path(),
+            )?),
+        }
+    };
     match action {
         PtraceAction::Status => status(&device),
+        PtraceAction::Uninstall => {
+            if let Some(target) = &device.target {
+                let mut c = transport::ssh(target, true)?;
+                c.arg("rm -f \"$HOME/.local/bin/cx-reptyr\"");
+                enrollment_command(c, None)?;
+            } else {
+                let _ = std::fs::remove_file(
+                    std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                        .join(".local/bin/cx-reptyr"),
+                );
+            }
+            status(&device)
+        }
+        PtraceAction::Install => {
+            // Unprivileged: the relay only becomes capable when run through sudo
+            // per move. Verify the exact version where it is installed.
+            let bytes = relay_bytes(&device)?;
+            if let Some(target) = &device.target {
+                let mut c = transport::ssh(target, true)?;
+                c.arg("set -eu; umask 077; d=\"$HOME/.local/bin\"; mkdir -p \"$d\"; f=\"$d/cx-reptyr\"; cat > \"$f.new\"; chmod 755 \"$f.new\"; \"$f.new\" -v; mv -f \"$f.new\" \"$f\"")
+                    .stdin(Stdio::piped());
+                let out = enrollment_command(c, Some(bytes))?;
+                anyhow::ensure!(
+                    out.status.success()
+                        && String::from_utf8_lossy(&out.stdout).trim() == adoption::REPTYR_VERSION,
+                    "cx-reptyr did not verify on {label}; nothing installed"
+                );
+            } else {
+                use std::os::unix::fs::OpenOptionsExt;
+                let dir = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                    .join(".local/bin");
+                std::fs::create_dir_all(&dir)?;
+                let staged = dir.join("cx-reptyr.new");
+                let _ = std::fs::remove_file(&staged);
+                let mut f = std::fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .mode(0o755)
+                    .open(&staged)?;
+                std::io::Write::write_all(&mut f, &bytes)?;
+                f.sync_all()?;
+                drop(f);
+                let out = Command::new(&staged)
+                    .arg("-v")
+                    .stdin(Stdio::null())
+                    .output()?;
+                anyhow::ensure!(
+                    String::from_utf8_lossy(&out.stdout).trim() == adoption::REPTYR_VERSION,
+                    "cx-reptyr version mismatch; nothing installed"
+                );
+                std::fs::rename(&staged, dir.join("cx-reptyr"))?;
+            }
+            status(&device)
+        }
         PtraceAction::Disable => {
             sudo(&["disable"])?;
             status(&device)
         }
         PtraceAction::Enable => {
-            let arch = match &device.target {
-                None => std::env::consts::ARCH.to_string(),
-                Some(target) => {
-                    let mut c = transport::ssh(target, true)?;
-                    c.arg("uname -sm");
-                    let out = enrollment_command(c, None)?;
-                    match String::from_utf8_lossy(&out.stdout).trim() {
-                        "Linux x86_64" => "x86_64".into(),
-                        "Linux aarch64" => "aarch64".into(),
-                        _ => bail!("cx-reptyr supports Linux x86_64 and ARM64 only"),
-                    }
-                }
-            };
-            let artifact;
-            let bytes = match binary {
-                Some(path) => std::fs::read(path)?,
-                None => {
-                    artifact = update::obtain_reptyr_binary(&arch, env!("CARGO_PKG_VERSION"))?;
-                    std::fs::read(artifact.path())?
-                }
-            };
+            let bytes = relay_bytes(&device)?;
             use sha2::Digest;
             let sha = format!("{:x}", sha2::Sha256::digest(&bytes));
             // Stage as the user and verify the exact version there, never as root.

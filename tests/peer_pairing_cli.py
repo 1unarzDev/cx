@@ -173,7 +173,7 @@ with tempfile.TemporaryDirectory(prefix="cx-peer-pair-") as temporary:
     collision = [device("intruder", "existing", "tester@innovation.example", "other-machine:intruder")]
     state("creation", "devices.json").write_text(json.dumps(collision))
     previous = state("creation", "devices.json").read_bytes()
-    response = receiver(device("tester", "innovation", "tester@innovation.example"))
+    response = receiver(device("tester", "fixture-source", "tester@innovation.example"))
     assert response["error"], response
     assert state("creation", "devices.json").read_bytes() == previous
     unchanged_security_files()

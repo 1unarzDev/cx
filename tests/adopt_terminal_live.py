@@ -234,8 +234,11 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-') as temporary:
         elapsed = time.time() - started
         assert adopted['id'].startswith('cx-') and not adopted['external'], adopted
         after = stat(target)
-        assert (after['start'], after['ppid'], after['pgrp'], after['sid']) == (
-            before['start'], before['ppid'], before['pgrp'], before['sid']), (before, after)
+        # The emptied source window closes automatically, reparenting the agent;
+        # its own identity (start, group, session) and tool child are intact.
+        assert (after['start'], after['pgrp'], after['sid']) == (
+            before['start'], before['pgrp'], before['sid']), (before, after)
+        wait_for(lambda: not alive(emulator.pid), 5, 'source window closes')
         assert all(alive(t) for t in tool) and children(target) == tool
         relay_pid = adopted['pid']
         status = Path(f'/proc/{relay_pid}/status').read_text()
@@ -250,15 +253,14 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-') as temporary:
         wait_for(lambda: 'tick' in tmux('capture-pane', '-p', '-t', name).stdout, 5, 'output')
         checks.append('pane output, input and resize reach the adopted agent')
 
-        (Path(str(log) + '.close')).touch()
-        wait_for(lambda: 'closed' in log.read_text(), 5, 'window close')
-        time.sleep(0.5)
+        # The source window already closed on the move (asserted above); the
+        # agent keeps running and is listed once, as managed.
         assert alive(target)
         sessions = helper('sessions')['result']
         managed = [s for s in sessions if s['id'] == name]
         assert managed and managed[0]['provider'] == 'claude' and managed[0]['origin'], sessions
         assert not [s for s in sessions if s['id'].startswith('ext-') and s['origin']['tty'] == tty], sessions
-        checks.append('closing the original window leaves the agent running; listed once, as managed')
+        checks.append('the emptied window closes while the agent keeps running; listed once, as managed')
 
         lines, beat = beats('leader')
         gap = max(int(float(l.split('worst_gap_ms=')[1].split()[0])) for l in beat)

@@ -206,9 +206,12 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-stress-') as temporary:
             slowest = max(slowest, time.time() - started)
             session = adopted['result']
             after = stat(leader)
-            assert (before['start'], before['ppid'], before['pgrp'], before['sid']) == (
-                after['start'], after['ppid'], after['pgrp'], after['sid']), (i, before, after)
-            assert children(leader) == tool and all(alive(t) for t in tool), i
+            # The source window closes on a successful move, so only ppid moves.
+            assert (before['start'], before['pgrp'], before['sid']) == (
+                after['start'], after['pgrp'], after['sid']), (i, before, after)
+            wait_for(lambda: sorted(children(leader)) == sorted(tool), 3,
+                     f'tool child stable (iter {i}: {children(leader)} vs {tool})')
+            assert all(alive(t) for t in tool), i
             time.sleep(random.uniform(0.05, 0.25))
             log = (home / f'{name}.churn').read_text().splitlines()
             bad = [l for l in log if l.startswith(('signal HUP', 'write-error', 'read-error', 'stdin-eof'))]

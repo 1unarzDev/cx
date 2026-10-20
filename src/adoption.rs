@@ -346,6 +346,33 @@ pub fn file_capability_grants_ptrace(data: &[u8]) -> bool {
 pub fn holds_master(pid: u32, index: u32) -> bool {
     masters(Path::new("/proc"), pid).contains(&index)
 }
+/// Close a single-window terminal emulator whose only terminal was just stolen.
+///
+/// After the steal the holder no longer holds any pseudo-terminal master, so
+/// its window is empty; SIGHUP closes it. A multiplexer (tmux, screen) or a
+/// server emulator (gnome-terminal, konsole) still holds other masters and is
+/// left untouched, as are reused PIDs.
+pub fn close_empty_holder(holder: &ProcessIdentity, kind: &str) -> bool {
+    if kind != "terminal" {
+        return false;
+    }
+    let root = Path::new("/proc");
+    if start_ticks(holder.pid).as_deref() != Some(holder.start_ticks.as_str()) {
+        return false;
+    }
+    if fs::metadata(root.join(holder.pid.to_string()))
+        .map(|m| m.uid())
+        .ok()
+        != Some(unsafe { libc::geteuid() })
+    {
+        return false;
+    }
+    if !masters(root, holder.pid).is_empty() {
+        return false;
+    }
+    unsafe { libc::kill(holder.pid as i32, libc::SIGHUP) == 0 }
+}
+
 /// Whether `pid` or any descendant holds the master of `index`. A sudo relay's
 /// pane child is `sudo`, with cx-reptyr (holding the master) beneath it.
 pub fn descendant_holds_master(pid: u32, index: u32) -> bool {
@@ -391,6 +418,7 @@ pub fn effective_capabilities(pid: u32) -> Option<u64> {
 /// Relay executables whose stolen masters belong to adopted CX sessions.
 pub fn relay_executables() -> Vec<PathBuf> {
     let mut found = vec![PathBuf::from(REPTYR_PATH)];
+    found.extend(user_reptyr());
     #[cfg(debug_assertions)]
     if let Some(path) = std::env::var_os("CX_ADOPT_REPTYR") {
         found.extend(fs::canonicalize(path));

@@ -1201,7 +1201,14 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
         set_managed_status(&session)?;
         Ok(session)
     };
-    finish().map_err(|error| {
+    let outcome = finish();
+    if outcome.is_ok() {
+        // The source window is now empty; close it if it was single-window.
+        if let Some(h) = origin.holder.as_ref() {
+            crate::adoption::close_empty_holder(h, &origin.kind);
+        }
+    }
+    outcome.map_err(|error| {
         // The moved terminal ended immediately (its relay exits with it).
         if field(true, &name, "#{pane_dead}").map_or(true, |d| d != "0") {
             let _ = fs::remove_file(&temp);
@@ -1273,7 +1280,20 @@ pub fn list() -> Result<Vec<Session>> {
     }
     // Terminals outside tmux, other tmux/screen servers and default-server
     // panes. A default-server session's active pane annotates its $N row.
+    // A terminal already moved into CX keeps its original session leader, so it
+    // is still discoverable. Its managed row owns it; never list it twice.
+    let adopted_leaders: Vec<(u32, String)> = result
+        .iter()
+        .filter(|s| !s.external)
+        .filter_map(|s| s.origin.as_ref())
+        .map(|o| (o.leader.pid, o.leader.start_ticks.clone()))
+        .collect();
     for terminal in external_terminals() {
+        if adopted_leaders.iter().any(|(pid, start)| {
+            *pid == terminal.leader.pid && *start == terminal.leader.start_ticks
+        }) {
+            continue;
+        }
         let tty = terminal.tty();
         if let Some(row) = result.iter_mut().find(|s| {
             s.external

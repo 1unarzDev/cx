@@ -228,7 +228,9 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-sudo-') as temporary:
         checks.append('the move asked for a password through the askpass bridge with the right nonce')
 
         after = stat(leader)
-        assert (before['start'], before['ppid'], before['sid']) == (after['start'], after['ppid'], after['sid'])
+        # ppid changes when the emptied source window closes; the process
+        # itself (start time, session) and its tool child are unchanged.
+        assert (before['start'], before['sid']) == (after['start'], after['sid'])
         assert all(alive(t) for t in tool)
         pane = int(tmux('display', '-p', '-t', session['id'], '#{pane_pid}').stdout)
         want = os.path.realpath(home / '.local/bin/cx-reptyr')
@@ -244,6 +246,16 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-sudo-') as temporary:
         wait_for(lambda: 'input 5 ping' in (home / 'churn').read_text(), 5, 'input')
         wait_for(lambda: 'tick' in tmux('capture-pane', '-p', '-t', session['id']).stdout, 5, 'output')
         checks.append('input and output reach the moved agent in its new pane')
+
+        listed = helper('sessions')['result']
+        assert any(s['id'] == session['id'] and not s['external'] for s in listed), listed
+        assert not [s for s in listed if s['id'].startswith('ext-')
+                    and (s.get('origin') or {}).get('tty') == tty], listed
+        checks.append('after the move the terminal is listed once, as managed, with no stale ext row')
+
+        # The single-window holder (our emulator) is now empty and gets closed.
+        wait_for(lambda: not alive(emulator.pid), 5, 'source window closes')
+        checks.append('the emptied single-window terminal is closed after the move')
 
         # A rejected password leaves the original terminal untouched.
         emulator2 = subprocess.Popen([sys.executable, '-c', EMULATOR, str(home / 'emu2'), stub],

@@ -54,6 +54,8 @@ for name,(account,host) in peers.items():
 assert endpoint is not None,'unknown fixture SSH endpoint'
 with (root/'connections.jsonl').open('a') as log:
     log.write(json.dumps(dict(source=os.environ['CX_MESH_ORIGIN'],target=endpoint,args=args,pid=os.getpid()))+'\n')
+if target=='innovation' and os.environ['CX_MESH_ORIGIN']!='innovation' and os.environ['CX_MESH_MODE']=='stale-alias':
+    sys.stderr.write('Could not resolve hostname innovation\n');sys.exit(255)
 if endpoint=='tranquility' and os.environ['CX_MESH_MODE']=='offline':
     sys.stderr.write('No route to host\n');sys.exit(255)
 account=peers[endpoint][0]
@@ -266,6 +268,22 @@ with tempfile.TemporaryDirectory(prefix="cx-rt-") as temporary:
     assert not any(p["id"] == f"{MACHINE}:conception" for p in fixture.read("tranquility", "devices.json"))
     fixture.security_invariants()
 
+with tempfile.TemporaryDirectory(prefix="cx-old-") as temporary:
+    fixture = Fixture(pathlib.Path(temporary))
+    # Alias meaningful on the viewer was previously persisted on the receiver.
+    # It is stale there; automatic setup must adopt the proven portable address.
+    fixture.write("creation", "devices.json", [device("creation", local=True), device("innovation")])
+    fixture.write("creation", "device-policies.json", {"devices": {
+        f"{MACHINE}:tester": {"access": "core", "availability": "usually_up"}
+    }})
+    repaired = fixture.sync("stale-alias")
+    assert repaired.returncode == 0, repaired.stderr
+    fixture.assert_mesh()
+    repaired_peer = next(peer for peer in fixture.read("creation", "devices.json")
+                         if peer["id"] == f"{MACHINE}:tester")
+    assert repaired_peer["target"] == f"tester@{LOCAL_ADDRESS}", repaired_peer
+    fixture.security_invariants()
+
 with tempfile.TemporaryDirectory(prefix="cx-peer-mesh-") as temporary:
     fixture = Fixture(pathlib.Path(temporary))
     # Start with no managed key, reciprocal enrollment or private host trust.
@@ -308,6 +326,7 @@ with tempfile.TemporaryDirectory(prefix="cx-peer-mesh-") as temporary:
 
 print(json.dumps(dict(result="PASS", real_helpers=True, three_core_devices=True,
                       normal_ui_startup_bootstraps=True, stored_gateway_route_not_exported=True,
+                      stale_core_alias_adopts_verified_portable_endpoint=True,
                       offline_then_recovered=True, all_six_edges_registered=True,
                       directed_device_excluded=True, private_key_mode_600=True,
                       no_private_key_transmitted=True, repeated_sync_idempotent=True,

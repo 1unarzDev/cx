@@ -572,14 +572,20 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
         .as_ref()
         .map(|s| s.provider.as_str())
         .unwrap_or("shell");
-    let detected = foreground_provider(pid);
+    // An adopted terminal's processes are not pane descendants: the pane runs
+    // the relay. Follow the original session leader while its identity holds.
+    let adopted = prior.as_ref().and_then(|s| s.origin.as_ref()).filter(|o| {
+        crate::adoption::start_ticks(o.leader.pid).as_deref() == Some(o.leader.start_ticks.as_str())
+    });
+    let probe = adopted.map(|o| o.leader.pid).unwrap_or(pid);
+    let detected = foreground_provider(probe);
     let provider = detected
         .as_ref()
         .map(|(provider, _)| *provider)
         .unwrap_or(original_provider);
     let process = detected
         .map(|(_, process)| process)
-        .or_else(|| process_identity(pid, original_provider));
+        .or_else(|| process_identity(probe, original_provider));
     // Native metadata follows the live provider thread when its control panel
     // switches projects; argv and process cwd retain only the launch location.
     let tracked_title = process
@@ -613,6 +619,10 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
                     .filter(|_| provider != "shell")
                     .and_then(|process| provider_directory(provider, process))
             })
+            .or_else(|| {
+                let o = adopted?;
+                provider_directory("shell", &o.leader)
+            })
             .unwrap_or(field(managed, id, "#{pane_current_path}")?)
     };
     let saved_name = prior
@@ -620,7 +630,19 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
         .map(|s| current_session_name(s, provider, &directory))
         .unwrap_or_else(|| name.clone());
     let automatic = prior.as_ref().is_some_and(automatically_named);
-    let display_name = if automatic && provider == "shell" {
+    let adopted_command = adopted.and_then(|o| {
+        let (foreground, _) = crate::adoption::terminal_of(o.leader.pid)?;
+        (foreground > 0 && foreground as u32 != o.leader.pid)
+            .then(|| fs::read_to_string(format!("/proc/{foreground}/comm")).ok())
+            .flatten()
+            .and_then(|c| shell_command_label(&c))
+    });
+    let display_name = if adopted.is_some() && provider == "shell" {
+        adopted_command
+            .as_ref()
+            .map(|c| format!("running {c}"))
+            .unwrap_or(saved_name)
+    } else if automatic && provider == "shell" {
         shell_activity(managed, id).unwrap_or(saved_name)
     } else if automatic {
         automatic_provider_name(
@@ -636,7 +658,18 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
     let activity = normalized_activity(native_activity)
         .map(str::to_owned)
         .or_else(|| {
-            if provider == "shell" && prior.as_ref().and_then(|s| s.container.as_ref()).is_none() {
+            if provider == "shell" && adopted.is_some() {
+                Some(
+                    if adopted_command.is_some() {
+                        "running"
+                    } else {
+                        "idle"
+                    }
+                    .into(),
+                )
+            } else if provider == "shell"
+                && prior.as_ref().and_then(|s| s.container.as_ref()).is_none()
+            {
                 field(managed, id, "#{pane_current_command}")
                     .ok()
                     .map(|command| {
@@ -695,7 +728,7 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
         process,
         activity,
         agent_tasks,
-        origin: None,
+        origin: prior.as_ref().and_then(|s| s.origin.clone()),
         container: prior.as_ref().and_then(|s| s.container.clone()),
         launcher: prior.as_ref().and_then(|s| s.launcher.clone()),
         socket: if managed {
@@ -966,8 +999,10 @@ fn origin(terminal: &crate::adoption::Terminal) -> crate::model::ExternalOrigin 
     }
 }
 fn external_terminals() -> Vec<crate::adoption::Terminal> {
+    let mut executables: Vec<_> = std::env::current_exe().into_iter().collect();
+    executables.extend(crate::adoption::relay_executables());
     let exclude = crate::adoption::Exclusions {
-        executables: std::env::current_exe().into_iter().collect(),
+        executables,
         sessions: vec![unsafe { libc::getsid(0) }],
         managed_socket: socket().ok(),
     };
@@ -977,6 +1012,220 @@ fn external_terminals() -> Vec<crate::adoption::Terminal> {
         &exclude,
     )
     .0
+}
+
+fn session_lock(root: &std::path::Path) -> Result<fs::File> {
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .open(root.join("sessions.lock"))?;
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        bail!("session lock unavailable");
+    }
+    Ok(lock)
+}
+
+/// Move a terminal started outside CX into the managed tmux server.
+///
+/// The guarded relay steals the terminal's master from its current holder, so
+/// the running processes, their PIDs, threads and child tools are untouched;
+/// only where the terminal is displayed changes. Every identity CX observed is
+/// re-verified under the session lock, and failure leaves the original holder.
+pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> Result<Session> {
+    let (_, _, boot) = identity();
+    anyhow::ensure!(
+        !boot.is_empty() && boot == boot_id,
+        "execution device restarted; refresh sessions"
+    );
+    let relay = crate::adoption::reptyr().map_err(|e| anyhow::anyhow!(e))?;
+    let root = state()?;
+    let _lock = session_lock(&root)?;
+    let name = format!(
+        "cx-{:x}",
+        Sha256::digest(format!(
+            "adopt:{boot}:{}:{}:{}",
+            origin.tty, origin.leader.pid, origin.leader.start_ticks
+        ))
+    );
+    let mut exists = tmux(true)?;
+    exists.args(["has-session", "-t", &format!("={name}")]);
+    if exists.output().is_ok_and(|o| o.status.success()) {
+        return inspect(true, &name);
+    }
+    let terminal = external_terminals()
+        .into_iter()
+        .find(|t| {
+            t.tty() == origin.tty
+                && t.leader.pid == origin.leader.pid
+                && t.leader.start_ticks == origin.leader.start_ticks
+        })
+        .context("terminal changed or closed; refresh sessions")?;
+    anyhow::ensure!(
+        id == crate::adoption::session_id(&boot, &terminal)
+            || (id.starts_with('$') && id[1..].bytes().all(|b| b.is_ascii_digit())),
+        "invalid external session identity"
+    );
+    let holder = terminal
+        .holder
+        .clone()
+        .context("this terminal's owner is not accessible; it cannot be moved")?;
+    anyhow::ensure!(
+        origin.holder.as_ref().is_some_and(
+            |h| h.pid == holder.process.pid && h.start_ticks == holder.process.start_ticks
+        ),
+        "terminal owner changed; refresh sessions"
+    );
+    let snapshot = external_terminal(&terminal).context("terminal changed; refresh sessions")?;
+    ensure_server()?;
+    let record = root.join(format!("{name}.json"));
+    if record.exists() {
+        bail!("this terminal was already moved once; refresh sessions");
+    }
+    let mut pending = snapshot.clone();
+    pending.id = name.clone();
+    pending.external = false;
+    pending.socket = Some(socket()?.to_string_lossy().into_owned());
+    pending.origin = Some(origin.clone());
+    let mut intent = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&record)?;
+    intent.write_all(&serde_json::to_vec(&pending)?)?;
+    intent.sync_all()?;
+    let errors = root.join(format!("{name}.adopt"));
+    let leader = &terminal.leader;
+    let command = format!(
+        "exec env CX_VIEWER_THEME=1 CX_TMUX_BIN={} CX_MANAGED_SOCKET={} CX_MANAGED_SESSION={} {} -T {} {} {} {} {} {} 2>{}",
+        quote(tmux_executable().to_str().context("tmux path is not UTF-8")?),
+        quote(socket()?.to_str().context("socket path is not UTF-8")?),
+        quote(&name),
+        quote(relay.to_str().context("relay path is not UTF-8")?),
+        leader.pid,
+        quote(&leader.start_ticks),
+        leader.pid,
+        quote(&leader.start_ticks),
+        holder.process.pid,
+        quote(&holder.process.start_ticks),
+        quote(errors.to_str().context("state path is not UTF-8")?),
+    );
+    let directory = if snapshot.directory.is_empty() {
+        std::env::var("HOME").unwrap_or_else(|_| "/".into())
+    } else {
+        snapshot.directory.clone()
+    };
+    let mut c = tmux(true)?;
+    c.args(["new-session", "-d", "-s", &name, "-n", "work", "-c"])
+        .arg(&directory)
+        .arg(command);
+    if let Err(error) = output(c) {
+        let _ = fs::remove_file(&record);
+        return Err(error);
+    }
+    // Success is observed, not assumed: the relay holds the master, the
+    // previous holder no longer does, and the relay dropped its capabilities.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let relay_pid = loop {
+        let dead = field(true, &name, "#{pane_dead}").map_or(true, |d| d == "1");
+        let pane = field(true, &name, "#{pane_pid}")
+            .ok()
+            .and_then(|p| p.parse::<u32>().ok());
+        if let Some(pane) = pane.filter(|_| !dead) {
+            if crate::adoption::holds_master(pane, terminal.index)
+                && !crate::adoption::holds_master(holder.process.pid, terminal.index)
+                && crate::adoption::effective_capabilities(pane) == Some(0)
+            {
+                break pane;
+            }
+        } else {
+            let reason = fs::read_to_string(&errors).unwrap_or_default();
+            let _ = fs::remove_file(&errors);
+            let _ = fs::remove_file(&record);
+            let intact = crate::adoption::holds_master(holder.process.pid, terminal.index);
+            bail!(
+                "could not move this terminal{}: {}",
+                if intact { "; it is unchanged" } else { "" },
+                reason
+                    .lines()
+                    .rfind(|l| !l.trim().is_empty())
+                    .unwrap_or("relay exited")
+                    .trim_start_matches("cx-reptyr: ")
+            );
+        }
+        if std::time::Instant::now() > deadline {
+            // Never kill a relay mid-steal: its ptrace state must unwind itself.
+            bail!("moving this terminal is taking unusually long; refresh sessions");
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
+    let _ = fs::remove_file(&errors);
+    let mut session = inspect(true, &name).context("terminal unavailable after moving")?;
+    session.pid = relay_pid;
+    session.origin = Some(origin.clone());
+    let temp = root.join(format!("{name}.tmp"));
+    let mut f = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(&temp)?;
+    f.write_all(&serde_json::to_vec(&session)?)?;
+    f.sync_all()?;
+    fs::rename(temp, &record)?;
+    set_managed_status(&session).context("terminal unavailable after moving")?;
+    Ok(session)
+}
+
+fn adopted_index(origin: &crate::model::ExternalOrigin) -> Result<u32> {
+    origin
+        .tty
+        .strip_prefix("/dev/pts/")
+        .and_then(|v| v.parse().ok())
+        .context("invalid adopted terminal")
+}
+/// Managed tmux id of a named session, if it is running.
+fn managed_target(name: &str) -> Result<Option<String>> {
+    for session_id in ids(true)? {
+        if field(true, &session_id, "#{session_name}")? == name {
+            return Ok(Some(session_id));
+        }
+    }
+    Ok(None)
+}
+/// Stop an adopted terminal: its processes first, while the terminal is live,
+/// then the relay. Closing the relay hangs up interactive shells with EOF.
+fn stop_adopted(
+    name: &str,
+    relay: u32,
+    origin: &crate::model::ExternalOrigin,
+) -> Result<serde_json::Value> {
+    let index = adopted_index(origin)?;
+    let target = managed_target(name)?;
+    if let Some(target) = &target {
+        anyhow::ensure!(
+            field(true, target, "#{pane_pid}")? == relay.to_string(),
+            "session runtime identity changed; refresh sessions"
+        );
+    }
+    let groups = crate::adoption::terminate(&origin.leader, index);
+    if let Some(target) = target {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline
+            && field(true, &target, "#{pane_dead}").is_ok_and(|d| d == "0")
+            && crate::adoption::start_ticks(origin.leader.pid).as_deref()
+                == Some(origin.leader.start_ticks.as_str())
+        {
+            thread::sleep(Duration::from_millis(50));
+        }
+        let mut kill = tmux(true)?;
+        kill.args(["kill-session", "-t", &target]);
+        // The relay may already have exited with the terminal.
+        let _ = kill.output();
+    }
+    Ok(serde_json::json!({"status": "stopped", "adopted_groups": groups}))
 }
 
 pub fn list() -> Result<Vec<Session>> {
@@ -1064,6 +1313,22 @@ pub fn list() -> Result<Vec<Session>> {
 /// Claude and Codex launched inside its panes are descendants of that server.
 pub fn reset() -> Result<serde_json::Value> {
     let sessions = ids(true)?;
+    // Adopted terminals are not descendants of the server; ask them to exit
+    // before their relays close, rather than leaving them on a dead terminal.
+    let root = state()?;
+    for id in &sessions {
+        let Ok(name) = field(true, id, "#{session_name}") else {
+            continue;
+        };
+        let record: Option<Session> = fs::read(root.join(format!("{name}.json")))
+            .ok()
+            .and_then(|v| serde_json::from_slice(&v).ok());
+        if let Some(origin) = record.and_then(|r| r.origin) {
+            if let Ok(index) = adopted_index(&origin) {
+                crate::adoption::terminate(&origin.leader, index);
+            }
+        }
+    }
     let mut kill = tmux(true)?;
     kill.arg("kill-server");
     let status = kill
@@ -1144,6 +1409,9 @@ fn stop_managed(
         || record.boot_id != boot_id
     {
         bail!("session ownership or runtime identity changed; refresh sessions");
+    }
+    if let Some(origin) = record.origin.as_ref() {
+        return stop_adopted(id, pid, origin);
     }
     let mut target = None;
     for session_id in ids(true)? {

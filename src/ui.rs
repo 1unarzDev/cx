@@ -1292,6 +1292,53 @@ impl App {
             .filter(|choice| available.contains(&choice.provider))
             .collect()
     }
+    /// Attach to a tmux session, or move a terminal started outside CX into
+    /// managed tmux first when the device has a verified relay.
+    fn open_session(&mut self, device: usize, session: Session) {
+        let Some(origin) = session.origin.clone().filter(|_| session.external) else {
+            self.pending_attach = Some((device, session, false));
+            return;
+        };
+        let Some(caps) = self
+            .providers
+            .get(&device)
+            .filter(|(_, checked)| transport::now().saturating_sub(*checked) < 60)
+            .map(|(caps, _)| caps.clone())
+        else {
+            self.check_providers(device);
+            self.set_notice("Checking whether this terminal can move · press Enter again".into());
+            return;
+        };
+        if caps.iter().any(|c| c == "adopt-reptyr-v1") {
+            if origin.holder.is_none() {
+                self.set_notice_as(
+                    NoticeKind::Warning,
+                    "This terminal's owner is not accessible, so it cannot be moved".into(),
+                );
+            } else if self.send(
+                device,
+                Operation::AdoptSession {
+                    id: session.id.clone(),
+                    origin,
+                    boot_id: session.boot_id.clone(),
+                },
+            ) {
+                self.set_notice("Moving terminal into CX…".into());
+            }
+        } else if !outside_tmux(&session) {
+            self.pending_attach = Some((device, session, false));
+        } else if caps.iter().any(|c| c == "adopt-session-v1") {
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "Moving terminals needs ptrace access · run: cx device ptrace enable".into(),
+            );
+        } else {
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "Update CX on this device to move terminals".into(),
+            );
+        }
+    }
     fn check_providers(&mut self, device: usize) {
         if !self.background_checks_enabled(device) {
             return;
@@ -3897,6 +3944,8 @@ impl App {
                                     "stop-session-v1",
                                     "stop-agent-session-v1",
                                     "session-yolo-v1",
+                                    "adopt-session-v1",
+                                    "adopt-reptyr-v1",
                                     "containers-v1",
                                     "pdf-pages-v1",
                                     "stable-update-v1",
@@ -3979,6 +4028,17 @@ impl App {
                     }
                 }
             }
+            Operation::AdoptSession { id, .. } => match serde_json::from_value::<Session>(value) {
+                Ok(s) => {
+                    self.work[reply.device].sessions.retain(|row| row.id != *id);
+                    self.work[reply.device].sessions.push(s.clone());
+                    self.pending_attach = Some((reply.device, s, false));
+                }
+                Err(_) => self.set_notice_as(
+                    NoticeKind::Error,
+                    "Move response invalid · refresh before retrying".into(),
+                ),
+            },
             Operation::Create(_) | Operation::CreateYolo(_) | Operation::ContainerCreate { .. } => {
                 match serde_json::from_value::<Session>(value) {
                     Ok(s) => {
@@ -5028,15 +5088,7 @@ impl App {
                         View::Containers => self.open_container_actions(),
                         View::Work => {
                             if let Some((d, s)) = self.selected_session() {
-                                if outside_tmux(&s) {
-                                    self.set_notice_as(
-                                        NoticeKind::Warning,
-                                        "Moving terminals into CX is not available on this device yet"
-                                            .into(),
-                                    );
-                                } else {
-                                    self.pending_attach = Some((d, s, false));
-                                }
+                                self.open_session(d, s);
                             } else if empty_work_can_create(self) {
                                 self.start_shell();
                             }

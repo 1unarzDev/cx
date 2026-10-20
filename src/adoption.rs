@@ -225,6 +225,179 @@ pub fn session_id(boot_id: &str, terminal: &Terminal) -> String {
     format!("ext-{:x}", digest)[..20].to_string()
 }
 
+/// Root-owned install location; `cx device ptrace` places cx-reptyr here.
+pub const REPTYR_PATH: &str = "/usr/local/libexec/cx/cx-reptyr";
+pub const REPTYR_VERSION: &str = "cx-reptyr 1 (reptyr 0.10.0)";
+const CAP_SYS_PTRACE: u32 = 19;
+
+/// Why adoption by terminal steal is unavailable, or the verified relay.
+pub fn reptyr() -> Result<PathBuf, &'static str> {
+    // Debug builds accept a fixture relay so tests never need host privilege.
+    #[cfg(debug_assertions)]
+    if let Some(path) = std::env::var_os("CX_ADOPT_REPTYR") {
+        let path = PathBuf::from(path);
+        return (version(&path).as_deref() == Some(REPTYR_VERSION))
+            .then_some(path)
+            .ok_or("fixture cx-reptyr version mismatch");
+    }
+    let path = PathBuf::from(REPTYR_PATH);
+    if fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope").is_ok_and(|s| s.trim() == "3") {
+        return Err("ptrace is disabled on this host (Yama scope 3)");
+    }
+    // Every ancestor and the binary must be root-owned and not writable by others.
+    let mut current = Some(path.as_path());
+    while let Some(p) = current {
+        let Ok(meta) = fs::symlink_metadata(p) else {
+            return Err("cx-reptyr is not installed; run cx device ptrace enable");
+        };
+        if meta.uid() != 0 || meta.mode() & 0o022 != 0 || meta.file_type().is_symlink() {
+            return Err("cx-reptyr install is not root-owned");
+        }
+        current = p.parent();
+    }
+    if version(&path).as_deref() != Some(REPTYR_VERSION) {
+        return Err("cx-reptyr version mismatch; run cx device ptrace enable");
+    }
+    if !ptrace_capability(&path) {
+        return Err("cx-reptyr lacks its ptrace capability; run cx device ptrace enable");
+    }
+    Ok(path)
+}
+fn version(path: &Path) -> Option<String> {
+    let out = std::process::Command::new(path)
+        .arg("-v")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+/// File capability grants effective+permitted CAP_SYS_PTRACE on a mount that honors it.
+fn ptrace_capability(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c_path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    let mut fs_stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c_path.as_ptr(), &mut fs_stat) } != 0
+        || fs_stat.f_flag & libc::ST_NOSUID != 0
+    {
+        return false;
+    }
+    let mut data = [0u8; 24];
+    let n = unsafe {
+        libc::getxattr(
+            c_path.as_ptr(),
+            c"security.capability".as_ptr(),
+            data.as_mut_ptr().cast(),
+            data.len(),
+        )
+    };
+    file_capability_grants_ptrace(&data[..n.max(0) as usize])
+}
+/// Parse `vfs_cap_data`: magic/flags word, then permitted/inheritable pairs.
+pub fn file_capability_grants_ptrace(data: &[u8]) -> bool {
+    let word = |i: usize| {
+        data.get(i..i + 4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+    };
+    let (Some(magic), Some(permitted)) = (word(0), word(4)) else {
+        return false;
+    };
+    let effective = magic & 1 == 1;
+    matches!(magic & 0xff00_0000, 0x0100_0000 | 0x0200_0000 | 0x0300_0000)
+        && effective
+        && permitted & (1 << CAP_SYS_PTRACE) != 0
+}
+
+/// Whether `pid` currently holds the master of pseudo-terminal `index`.
+pub fn holds_master(pid: u32, index: u32) -> bool {
+    masters(Path::new("/proc"), pid).contains(&index)
+}
+/// Start ticks of a live process, for PID-reuse checks.
+pub fn start_ticks(pid: u32) -> Option<String> {
+    stat(Path::new("/proc"), pid).map(|s| s.start_ticks)
+}
+/// Foreground process group and terminal index of a session leader.
+pub fn terminal_of(pid: u32) -> Option<(i32, Option<u32>)> {
+    stat(Path::new("/proc"), pid).map(|s| (s.foreground, pts_index(s.tty)))
+}
+/// Effective capabilities of a process, from its status.
+pub fn effective_capabilities(pid: u32) -> Option<u64> {
+    fs::read_to_string(format!("/proc/{pid}/status"))
+        .ok()?
+        .lines()
+        .find_map(|l| l.strip_prefix("CapEff:"))
+        .and_then(|v| u64::from_str_radix(v.trim(), 16).ok())
+}
+/// Relay executables whose stolen masters belong to adopted CX sessions.
+pub fn relay_executables() -> Vec<PathBuf> {
+    let mut found = vec![PathBuf::from(REPTYR_PATH)];
+    #[cfg(debug_assertions)]
+    if let Some(path) = std::env::var_os("CX_ADOPT_REPTYR") {
+        found.extend(fs::canonicalize(path));
+    }
+    found
+}
+
+/// Ask every process group of an adopted terminal session to exit.
+///
+/// The leader identity is re-verified first, and only this user's processes
+/// whose session and terminal both match are signalled. reptyr makes the
+/// leader ignore SIGHUP, so termination uses SIGTERM.
+pub fn terminate(leader: &ProcessIdentity, index: u32) -> usize {
+    let root = Path::new("/proc");
+    let uid = unsafe { libc::geteuid() };
+    let Some(current) = stat(root, leader.pid) else {
+        return 0;
+    };
+    if current.start_ticks != leader.start_ticks
+        || current.session != leader.pid as i32
+        || pts_index(current.tty) != Some(index)
+    {
+        return 0;
+    }
+    let mut groups = std::collections::BTreeSet::new();
+    let Ok(entries) = fs::read_dir(root) else {
+        return 0;
+    };
+    for pid in entries
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+        .take(PROCESS_LIMIT)
+    {
+        if fs::metadata(root.join(pid.to_string()))
+            .map(|m| m.uid())
+            .ok()
+            != Some(uid)
+        {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(root.join(pid.to_string()).join("stat")) else {
+            continue;
+        };
+        let Some((_, rest)) = text.rsplit_once(')') else {
+            continue;
+        };
+        let fields: Vec<_> = rest.split_whitespace().collect();
+        let (Some(group), Some(session), Some(tty)) = (
+            fields.get(2).and_then(|v| v.parse::<i32>().ok()),
+            fields.get(3).and_then(|v| v.parse::<i32>().ok()),
+            fields.get(4).and_then(|v| v.parse::<i64>().ok()),
+        ) else {
+            continue;
+        };
+        if session == leader.pid as i32 && pts_index(tty) == Some(index) && group > 0 {
+            groups.insert(group);
+        }
+    }
+    for group in &groups {
+        unsafe { libc::kill(-group, libc::SIGTERM) };
+    }
+    groups.len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,5 +513,22 @@ mod tests {
         reused.leader.start_ticks = "200".into();
         assert_ne!(a, session_id("boot", &reused));
         assert_ne!(a, session_id("other-boot", &t));
+    }
+
+    #[test]
+    fn file_capability_must_be_effective_ptrace() {
+        // setcap cap_sys_ptrace+ep: VFS_CAP_REVISION_2 | effective, permitted bit 19.
+        let mut data = vec![];
+        data.extend(0x0200_0001u32.to_le_bytes());
+        data.extend((1u32 << 19).to_le_bytes());
+        data.extend([0u8; 16]);
+        assert!(file_capability_grants_ptrace(&data));
+        let mut not_effective = data.clone();
+        not_effective[0] = 0;
+        assert!(!file_capability_grants_ptrace(&not_effective));
+        let mut other = data.clone();
+        other[4..8].copy_from_slice(&(1u32 << 21).to_le_bytes());
+        assert!(!file_capability_grants_ptrace(&other));
+        assert!(!file_capability_grants_ptrace(&[]));
     }
 }

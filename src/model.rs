@@ -131,6 +131,12 @@ pub enum Operation {
         shell: String,
     },
     Sessions,
+    /// Move a terminal started outside CX into the managed tmux server.
+    AdoptSession {
+        id: String,
+        origin: ExternalOrigin,
+        boot_id: String,
+    },
     Create(CreateSession),
     CreateYolo(CreateSession),
     StopAgentSession {

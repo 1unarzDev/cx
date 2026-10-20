@@ -331,6 +331,10 @@ fn info() -> Result<serde_json::Value> {
     caps.push("network-candidates-v1");
     caps.push("peer-enroll-v1");
     caps.push("peer-bootstrap-v1");
+    caps.push("adopt-session-v1");
+    if adoption::reptyr().is_ok() {
+        caps.push("adopt-reptyr-v1");
+    }
     Ok(
         serde_json::json!({"host":d.host,"account":d.account,"machine_id":machine.trim(),"capabilities":caps,"protocol":1,"persistent_channel":true,"version":env!("CARGO_PKG_VERSION")}),
     )
@@ -390,6 +394,11 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
         Operation::TransferCancel { key } => transfers::cancel(&key),
         Operation::TransferRetry { key } => transfers::retry(&key),
         Operation::Sessions => Ok(serde_json::to_value(sessions::list()?)?),
+        Operation::AdoptSession {
+            ref id,
+            ref origin,
+            ref boot_id,
+        } => Ok(serde_json::to_value(sessions::adopt(id, origin, boot_id)?)?),
         Operation::Create(ref c) => Ok(serde_json::to_value(sessions::create(c)?)?),
         Operation::CreateYolo(ref c) => Ok(serde_json::to_value(sessions::create_yolo(c)?)?),
         Operation::StopAgentSession {

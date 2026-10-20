@@ -63,3 +63,26 @@ In every `-T` case the target's fd 0 path does not change. The target keeps its 
 - logind `KillUserProcesses=yes`.
 
 These belong to the M3 lifecycle fixtures and to manual acceptance with the user.
+
+## Guarded relay findings (M2/M3)
+
+- **The attach in upstream reptyr 0.10.0 races.** It calls `PTRACE_ATTACH` and then
+  `kill(pid, SIGCONT)` straight away. If the SIGCONT arrives before the tracee takes the
+  queued SIGSTOP, the kernel throws the SIGSTOP away and `waitpid` blocks forever.
+  - Observed in 1 of 12 runs against the multithreaded churn stub. Every case had a
+    `signal CONT` in the target's log.
+  - The patch attaches with `PTRACE_SEIZE` + `PTRACE_INTERRUPT` instead.
+  - With the patch: 30/30 guard runs adopted in under 0.1 s, and 8/8 full live fixture
+    runs passed.
+- **The session leader keeps ignoring SIGHUP after a steal.** `steal_block_hup` sets SIGHUP
+  to ignored in the leader, permanently. CX therefore stops adopted terminals with SIGTERM
+  to each process group of the session, sent while the relay is still live. It then closes
+  the relay, which gives interactive shells EOF.
+- **The guard narrows what cx-reptyr will do.** It accepts only
+  `-T TARGET START LEADER START HOLDER START`. All three processes must belong to the
+  caller's real uid/gid (real, effective, saved and fs ids, and the `/proc` owner), and
+  their start times must still match. The leader's parent must be the holder.
+  Identities are checked again after each ptrace attach. The relay runs with
+  `CapEff=0` once the steal is done.
+- **A process that ignores SIGTERM survives a stop.** This matches managed-session stop,
+  which only hangs up. CX does not escalate to SIGKILL.

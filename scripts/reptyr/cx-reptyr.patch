@@ -1,0 +1,103 @@
+diff -ruN a/attach.c b/attach.c
+--- a/attach.c	2026-10-19 21:01:55.945275309 -0500
++++ b/attach.c	2026-10-19 21:01:55.966159002 -0500
+@@ -44,6 +44,7 @@
+ #include "reptyr.h"
+ #include "reallocarray.h"
+ #include "platform/platform.h"
++#include "cx_guard.h"
+ 
+ int fd_array_push(struct fd_array *fda, int fd) {
+     int *tmp;
+@@ -233,6 +234,10 @@
+         err = child->error;
+         goto out;
+     }
++    if (cx_guard_recheck(pid)) {
++        err = EPERM;
++        goto out;
++    }
+     if (ptrace_advance_to_state(child, ptrace_at_syscall)) {
+         err = child->error;
+         goto out;
+@@ -262,6 +267,10 @@
+     if (ptrace_attach_child(&child, pid)) {
+         return child.error;
+     }
++    if (cx_guard_recheck(pid)) {
++        ptrace_detach_child(&child);
++        return EPERM;
++    }
+     ptrace_detach_child(&child);
+     return 0;
+ }
+diff -ruN a/Makefile b/Makefile
+--- a/Makefile	2026-10-19 21:01:55.945230833 -0500
++++ b/Makefile	2026-10-19 21:01:55.965981729 -0500
+@@ -1,5 +1,5 @@
+ override CFLAGS := -MD -Wall -Werror -D_GNU_SOURCE -g $(CFLAGS)
+-OBJS=reptyr.o reallocarray.o attach.o
++OBJS=reptyr.o reallocarray.o attach.o cx_guard.o
+ DEPS=$(wildcard *.d platform/*/*.d)
+ UNAME_S := $(shell uname -s)
+ ifeq ($(UNAME_S),Linux)
+diff -ruN a/platform/linux/linux_ptrace.c b/platform/linux/linux_ptrace.c
+--- a/platform/linux/linux_ptrace.c	2026-10-19 21:01:55.945559204 -0500
++++ b/platform/linux/linux_ptrace.c	2026-10-19 21:14:08.414040552 -0500
+@@ -111,10 +111,26 @@
+ int ptrace_attach_child(struct ptrace_child *child, pid_t pid) {
+     memset(child, 0, sizeof * child);
+     child->pid = pid;
+-    if (ptrace_command(child, PTRACE_ATTACH) < 0)
++    // cx: PTRACE_ATTACH queues a SIGSTOP that the SIGCONT in
++    // ptrace_finish_attach can discard before the tracee takes it, leaving
++    // waitpid() blocked forever on busy multithreaded targets. A seized
++    // tracee's PTRACE_INTERRUPT stop cannot be cancelled by SIGCONT.
++    if (ptrace_command(child, PTRACE_SEIZE, 0, 0) < 0)
+         return -1;
++    if (ptrace_command(child, PTRACE_INTERRUPT, 0, 0) < 0)
++        goto detach;
++    if (ptrace_wait(child) < 0)
++        goto detach;
++    if (arch_get_personality(child))
++        goto detach;
++    if (ptrace_command(child, PTRACE_SETOPTIONS, 0,
++                       PTRACE_O_TRACESYSGOOD | PTRACE_O_TRACEFORK) < 0)
++        goto detach;
++    return 0;
+ 
+-    return ptrace_finish_attach(child, pid);
++detach:
++    ptrace(PTRACE_DETACH, child->pid, 0, 0);
++    return -1;
+ }
+ 
+ int ptrace_finish_attach(struct ptrace_child *child, pid_t pid) {
+diff -ruN a/reptyr.c b/reptyr.c
+--- a/reptyr.c	2026-10-19 21:01:55.945652163 -0500
++++ b/reptyr.c	2026-10-19 21:01:55.966076969 -0500
+@@ -35,6 +35,7 @@
+ #include "reptyr.h"
+ #include "reallocarray.h"
+ #include "platform/platform.h"
++#include "cx_guard.h"
+ 
+ static int verbose = 0;
+ 
+@@ -198,6 +199,8 @@
+     int do_steal = 0;
+     int unattached_script_redirection = 0;
+ 
++    cx_guard(&argc, argv);
++
+     while ((opt = getopt(argc, argv, "hlLsTvV")) != -1) {
+         switch (opt) {
+         case 'h':
+@@ -271,6 +274,7 @@
+             }
+             return 1;
+         }
++        cx_drop_caps();
+     } else {
+         printf("Opened a new pty: %s\n", ptsname(pty));
+         fflush(stdout);

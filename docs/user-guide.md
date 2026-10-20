@@ -33,6 +33,22 @@ New Codex/Claude sessions offer **Default** (existing host permissions) or **YOL
 
 In Sessions, `d` stops the selected CX-managed shell, Claude or Codex session after confirmation; Enter initially keeps it, `y` confirms. External tmux sessions are protected. Expanded sessions must be stopped from their terminal.
 
+### Moving terminals started outside CX
+
+Sessions also lists your shells and Claude/Codex sessions that CX did not start. These include sessions in an ordinary terminal window, an SSH login, another tmux or screen server, a default-server tmux pane, or a `docker exec` client. Rows outside tmux end with where they live, such as `· terminal` or `· ssh`.
+
+Press Enter on such a row to move it into CX. The terminal's processes keep running: the same PIDs, threads, child tools and in-progress work, with only where the terminal is shown changing. A move takes well under a second, and output continues during it. The original window freezes on its last frame and can be closed; the work continues in CX. Stopping the moved session with `d`, exiting its shell, or `cx reset` ends it as it would end any CX session. Programs that ignore SIGTERM are not force-killed.
+
+Moving uses a guarded copy of [reptyr](https://github.com/nelhage/reptyr) that needs a one-time privileged setup on each device:
+
+```sh
+cx device ptrace local enable     # or a device name; asks for sudo once
+cx device ptrace local status
+cx device ptrace local disable
+```
+
+`enable` installs `/usr/local/libexec/cx/cx-reptyr` (root-owned) with `cap_sys_ptrace`. The relay accepts only one exact form. It refuses any process not fully owned by the user running it, and re-checks every process identity CX observed. It drops the capability once the terminal moves. Any program running as you on that device could still use it to take over your other terminals, so enable it only where you want this feature. Hosts with Yama `ptrace_scope=3` cannot move terminals. Without setup, these rows remain visible, and default-server tmux rows still attach as before.
+
 Automatically named shells show the running executable, such as `running cargo`; new managed Fish shells remember short commands as `last: git`, while older/Bash/Zsh shells show the most recently observed command as `recent: git`. Arguments and shell history are excluded. Claude native names and Codex names use exact process metadata when available; daemon-backed Codex sessions without a reliable identity retain their folder label. Custom names stay unchanged and label refreshes preserve row order.
 
 New terminals prepare in the background while CX shows an animated loader. CX opens the terminal once its first screen has content; intentionally silent programs open after a bounded five-second wait. Startup failures return to the panel. Remote devices need an updated helper for this readiness check.

@@ -17,6 +17,15 @@ session identities and personal SSH configuration hashes are preserved.
 Signed v0.1.76 is installed on all three, and all six session-list requests
 passed again after deployment. Release validation passed on retry. No provider/tmux restart or live networking change occurred.
 
+## Session adoption (Unreleased, `feat/session-adoption`)
+
+Outside-CX terminals are listed and can be moved into managed tmux through the guarded cx-reptyr relay. Local fixtures pass: synthetic busy multithreaded agents kept their identities, saw no hangup or EIO, and output paused at most about 14 ms over repeated randomized moves. Target exits, relay kills and forged identities were injected and left nothing behind. Pending:
+- Real Claude/Codex mid-turn on a real terminal and over SSH.
+- The privileged `cx device ptrace enable` on a real host.
+- A signed cx-reptyr release asset.
+- Fallback resume for hosts without ptrace.
+- In-container (shim-held) terminals.
+
 ## Session behavior already released
 
 Startup-folder navigation, background cache reconciliation, dead-shell filtering,

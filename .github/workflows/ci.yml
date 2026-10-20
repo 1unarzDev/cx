@@ -14,7 +14,7 @@ jobs:
       - run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt
       - run: cargo fmt --check && cargo test --locked
       - run: sudo apt-get update && sudo apt-get install -y shellcheck tmux sqlite3 python3-pyte poppler-utils openssh-server iproute2 iputils-ping ncurses-bin
-      - run: shellcheck install.sh tests/distro_smoke.sh scripts/build-portable-tmux.sh scripts/enroll-tmux.sh
+      - run: shellcheck install.sh tests/distro_smoke.sh scripts/build-portable-tmux.sh scripts/enroll-tmux.sh scripts/build-portable-reptyr.sh scripts/enable-ptrace.sh
       - name: Container integration fixtures
         run: |
           cargo build --locked
@@ -36,6 +36,13 @@ jobs:
           python3 tests/claude_contrast_live.py target/debug/cx
           npm install --prefix "$RUNNER_TEMP/cx-devcontainer-cli" @devcontainers/cli@0.89.0 --no-audit --no-fund
           PATH="$RUNNER_TEMP/cx-devcontainer-cli/node_modules/.bin:$PATH" python3 tests/devcontainer_cli_live.py target/debug/cx
+      - name: Session adoption fixtures
+        run: |
+          CX_REPTYR_DYNAMIC=1 sh scripts/build-portable-reptyr.sh "$RUNNER_TEMP/cx-reptyr"
+          sudo setcap cap_sys_ptrace+ep "$RUNNER_TEMP/cx-reptyr"
+          export CX_ADOPT_CAPABLE=1 CX_ADOPT_REPTYR="$RUNNER_TEMP/cx-reptyr"
+          python3 tests/adopt_terminal_live.py target/debug/cx
+          python3 tests/adopt_stress_live.py target/debug/cx 30
       - run: python3 tests/install_fixture.py
       - run: python3 tests/session_names_live.py target/debug/cx
       - run: python3 tests/peer_pairing_cli.py target/debug/cx

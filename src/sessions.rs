@@ -2349,7 +2349,7 @@ pub fn refresh_managed_status(id: &str) -> Result<()> {
     set_managed_status(&session)
 }
 
-fn quote(s: &str) -> String {
+pub fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {

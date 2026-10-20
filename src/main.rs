@@ -291,6 +291,22 @@ enum DeviceCommand {
     },
     /// Show the effective access and availability policy for a device.
     Policy { name: String },
+    /// Manage the guarded ptrace relay that moves outside terminals into CX.
+    Ptrace {
+        name: String,
+        #[arg(value_enum)]
+        action: PtraceAction,
+        /// Locally built cx-reptyr instead of the signed release artifact.
+        #[arg(long)]
+        binary: Option<std::path::PathBuf>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum PtraceAction {
+    Enable,
+    Disable,
+    Status,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -332,11 +348,12 @@ fn info() -> Result<serde_json::Value> {
     caps.push("peer-enroll-v1");
     caps.push("peer-bootstrap-v1");
     caps.push("adopt-session-v1");
-    if adoption::reptyr().is_ok() {
+    let relay = adoption::reptyr();
+    if relay.is_ok() {
         caps.push("adopt-reptyr-v1");
     }
     Ok(
-        serde_json::json!({"host":d.host,"account":d.account,"machine_id":machine.trim(),"capabilities":caps,"protocol":1,"persistent_channel":true,"version":env!("CARGO_PKG_VERSION")}),
+        serde_json::json!({"host":d.host,"account":d.account,"machine_id":machine.trim(),"capabilities":caps,"protocol":1,"persistent_channel":true,"version":env!("CARGO_PKG_VERSION"),"adoption_unavailable":relay.err()}),
     )
 }
 pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
@@ -480,6 +497,139 @@ fn device(name: Option<String>) -> Result<Device> {
             .context("device not enrolled; use cx add")
     } else {
         Ok(store::local_device())
+    }
+}
+
+/// Install, remove or report the guarded relay on a device. Installation is an
+/// explicit privileged step: one sudo prompt on that device, never automatic.
+fn device_ptrace(
+    name: &str,
+    action: PtraceAction,
+    binary: Option<std::path::PathBuf>,
+) -> Result<serde_json::Value> {
+    let device = if name == "local" {
+        store::local_device()
+    } else {
+        enrolled_device(name)?
+    };
+    let label = device.name.clone();
+    let status = |device: &Device| -> Result<serde_json::Value> {
+        let info = transport::request(device, Operation::Info)?;
+        let enabled = info["capabilities"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|c| c == "adopt-reptyr-v1"));
+        Ok(serde_json::json!({
+            "device": label,
+            "adoption": if enabled { "enabled" } else { "unavailable" },
+            "reason": info["adoption_unavailable"],
+        }))
+    };
+    let script = include_str!("../scripts/enable-ptrace.sh");
+    let sudo = |args: &[&str]| -> Result<()> {
+        let quoted: Vec<String> = args.iter().map(|a| sessions::quote(a)).collect();
+        let command = format!(
+            "sudo sh -c {} sh {}",
+            sessions::quote(script),
+            quoted.join(" ")
+        );
+        let ok = if let Some(target) = &device.target {
+            let routed = store::ssh(target, true)?;
+            let mut c = Command::new("ssh");
+            c.arg("-tt").args(routed.get_args()).arg(command);
+            c.status()?.success()
+        } else {
+            Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .status()?
+                .success()
+        };
+        anyhow::ensure!(
+            ok,
+            "privileged step failed or was cancelled; nothing else changed"
+        );
+        Ok(())
+    };
+    match action {
+        PtraceAction::Status => status(&device),
+        PtraceAction::Disable => {
+            sudo(&["disable"])?;
+            status(&device)
+        }
+        PtraceAction::Enable => {
+            let arch = match &device.target {
+                None => std::env::consts::ARCH.to_string(),
+                Some(target) => {
+                    let mut c = transport::ssh(target, true)?;
+                    c.arg("uname -sm");
+                    let out = enrollment_command(c, None)?;
+                    match String::from_utf8_lossy(&out.stdout).trim() {
+                        "Linux x86_64" => "x86_64".into(),
+                        "Linux aarch64" => "aarch64".into(),
+                        _ => bail!("cx-reptyr supports Linux x86_64 and ARM64 only"),
+                    }
+                }
+            };
+            let artifact;
+            let bytes = match binary {
+                Some(path) => std::fs::read(path)?,
+                None => {
+                    artifact = update::obtain_reptyr_binary(&arch, env!("CARGO_PKG_VERSION"))?;
+                    std::fs::read(artifact.path())?
+                }
+            };
+            use sha2::Digest;
+            let sha = format!("{:x}", sha2::Sha256::digest(&bytes));
+            // Stage as the user and verify the exact version there, never as root.
+            let stage = if device.target.is_none() {
+                use std::os::unix::fs::OpenOptionsExt;
+                let tools = store::ensure()?.join("tools");
+                std::fs::create_dir_all(&tools)?;
+                let stage = tools.join("cx-reptyr.stage");
+                let _ = std::fs::remove_file(&stage);
+                let mut f = std::fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .mode(0o700)
+                    .open(&stage)?;
+                std::io::Write::write_all(&mut f, &bytes)?;
+                f.sync_all()?;
+                drop(f);
+                let out = Command::new(&stage)
+                    .arg("-v")
+                    .stdin(Stdio::null())
+                    .output()?;
+                anyhow::ensure!(
+                    String::from_utf8_lossy(&out.stdout).trim() == adoption::REPTYR_VERSION,
+                    "cx-reptyr version mismatch; nothing installed"
+                );
+                stage
+                    .to_str()
+                    .context("state path is not UTF-8")?
+                    .to_string()
+            } else {
+                let mut c = transport::ssh(device.target.as_deref().unwrap(), true)?;
+                c.arg("set -eu; umask 077; d=\"${XDG_STATE_HOME:-$HOME/.local/state}/cx/tools\"; mkdir -p \"$d\"; f=\"$d/cx-reptyr.stage\"; rm -f \"$f\"; cat > \"$f\"; chmod 700 \"$f\"; printf '%s\\n' \"$f\"; \"$f\" -v")
+                    .stdin(Stdio::piped());
+                let out = enrollment_command(c, Some(bytes))?;
+                let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                let mut lines = text.lines();
+                let stage = lines.next().unwrap_or_default().to_string();
+                anyhow::ensure!(
+                    out.status.success() && lines.next() == Some(adoption::REPTYR_VERSION),
+                    "cx-reptyr did not verify on {label}; nothing installed"
+                );
+                stage
+            };
+            eprintln!(
+                "Installing cx-reptyr on {label} with cap_sys_ptrace. It moves terminals into CX \
+                 only for processes fully owned by the user who runs it. Any program running as \
+                 you on {label} could use it to take over your other terminals. Undo with: \
+                 cx device ptrace {name} disable"
+            );
+            sudo(&["enable", &stage, &sha])?;
+            status(&device)
+        }
     }
 }
 
@@ -1236,6 +1386,16 @@ fn run() -> Result<()> {
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&peers::pair(&device, &return_target)?)?
+                    );
+                }
+                DeviceCommand::Ptrace {
+                    name,
+                    action,
+                    binary,
+                } => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&device_ptrace(&name, action, binary)?)?
                     );
                 }
                 DeviceCommand::Promote { name } => {

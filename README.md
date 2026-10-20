@@ -38,6 +38,7 @@ You can also select a discovered neighbor in **Network** and press Enter to conn
 | Tab / Shift+Tab | Change panel focus |
 | Ctrl+] in a managed terminal | Return to CX; the session keeps running |
 | `w` in Sessions | Watch the highlighted session read-only |
+| Enter on a `· terminal` / `· ssh` row | Move a shell or agent started outside CX into CX ([setup](docs/user-guide.md#moving-terminals-started-outside-cx)) |
 | `s` in Sessions | Inspect the selected agent's tasks and subagents |
 | `b` on a device | Toggle local posture: core or viewer-to-device |
 | `d` in Sessions | Confirm stopping a CX-managed shell or agent |

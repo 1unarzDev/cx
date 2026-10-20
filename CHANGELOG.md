@@ -2,6 +2,12 @@
 
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
+## Unreleased
+
+### Changes
+- List shells and Claude/Codex sessions started outside CX (terminal windows, SSH logins, other tmux/screen servers and `docker exec` clients) in Sessions.
+- Move such a terminal into CX with Enter, keeping its processes, PIDs and in-progress work running. This uses a guarded cx-reptyr relay enabled per device with `cx device ptrace NAME enable`.
+
 ## v0.1.76
 
 ### Fixes

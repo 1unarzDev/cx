@@ -64,6 +64,13 @@ jobs:
       - run: python3 tests/attach_terminal_pty.py target/debug/cx
       - run: python3 tests/enrollment_auth_pty.py target/debug/cx
       - run: python3 tests/enrollment_ssh.py .
+      - name: Session adoption fixtures
+        run: |
+          CX_REPTYR_DYNAMIC=1 sh scripts/build-portable-reptyr.sh "$RUNNER_TEMP/cx-reptyr"
+          sudo setcap cap_sys_ptrace+ep "$RUNNER_TEMP/cx-reptyr"
+          export CX_ADOPT_CAPABLE=1 CX_ADOPT_REPTYR="$RUNNER_TEMP/cx-reptyr"
+          python3 tests/adopt_terminal_live.py target/debug/cx
+          python3 tests/adopt_stress_live.py target/debug/cx 30
       - run: python3 tests/stop_shell_live.py target/debug/cx
       - run: python3 tests/session_permissions_live.py target/debug/cx
       - run: python3 tests/manual_agents_live.py target/debug/cx
@@ -83,7 +90,7 @@ jobs:
       - run: python3 tests/pdf_pages_pty.py target/debug/cx
       - run: CX_TEST_SHELL=/usr/bin/fish python3 tests/native_command_pty.py target/debug/cx
       - run: CX_TEST_SHELL=/usr/bin/zsh python3 tests/native_command_pty.py target/debug/cx
-      - run: shellcheck install.sh tests/distro_smoke.sh scripts/build-portable-tmux.sh scripts/enroll-tmux.sh && python3 tests/install_fixture.py
+      - run: shellcheck install.sh tests/distro_smoke.sh scripts/build-portable-tmux.sh scripts/enroll-tmux.sh scripts/build-portable-reptyr.sh scripts/enable-ptrace.sh && python3 tests/install_fixture.py
   portable:
     uses: ./.github/workflows/portable.yml
   publish:
@@ -125,6 +132,13 @@ jobs:
             chmod 755 "$tool"
             asset="dist/cx-tmux-$GITHUB_REF_NAME-linux-$arch.tar.gz"
             tar --mtime="@$(git log -1 --format=%ct)" --owner=0 --group=0 --numeric-owner -C "binaries/binary-$arch" -czf "$asset" tmux
+            openssl dgst -sha256 -sign "$key" -out "$asset.sig" "$asset"
+            openssl dgst -sha256 -verify release-key.pem -signature "$asset.sig" "$asset"
+            relay="binaries/binary-$arch/cx-reptyr"
+            test -f "$relay" && test ! -L "$relay"
+            chmod 755 "$relay"
+            asset="dist/cx-reptyr-$GITHUB_REF_NAME-linux-$arch.tar.gz"
+            tar --mtime="@$(git log -1 --format=%ct)" --owner=0 --group=0 --numeric-owner -C "binaries/binary-$arch" -czf "$asset" cx-reptyr
             openssl dgst -sha256 -sign "$key" -out "$asset.sig" "$asset"
             openssl dgst -sha256 -verify release-key.pem -signature "$asset.sig" "$asset"
           done

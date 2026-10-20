@@ -39,6 +39,8 @@ Network observation and SSH jump routes work. Internet sharing, full trust/revoc
 
 For session naming research, see [Codex session identity](../research/codex-session-names.md).
 
+Session adoption (`src/adoption.rs`) discovers outside-CX terminals by reading `/proc`, pairing each session leader with the process holding its PTY master. `sessions::adopt` moves one by running the guarded `cx-reptyr -T` relay in a managed pane. The relay is built by `scripts/build-portable-reptyr.sh` from pinned reptyr 0.10.0 plus `scripts/reptyr/` (uid/start-time guard, SEIZE-based attach, capability drop). Adopted records keep `origin`, and inspection follows the original leader instead of pane descendants. This supersedes the earlier "never automate migration" note; see [the adoption research](../research/session-adoption.md). Live fixtures run under `unshare -Ur`, or with `CX_ADOPT_CAPABLE=1` and a `setcap` relay in CI. Debug builds accept a fixture relay through `CX_ADOPT_REPTYR`.
+
 Container transfers use optional source/destination `ContainerScope` fields on `TransferSpec`, dispatched with `scoped_transfer` whenever either field is present. The transfer adapter routes file I/O through `container_file_action`; ordinary `transfer` rejects scopes. Container I/O reuses private framed helper channels, with engine/user/lifecycle validation before and after each request. Container state/checkpoints stay under the selected user's private tools directory; queued UI mutations capture their scope at enqueue time. Rebuild uses the Node CLI with unique selected workspace labels and requires `devcontainer-rebuild-v1` on remote hosts.
 
 [Back to README](../README.md)

@@ -33,11 +33,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .cache/cx-tools
-          key: cx-tools-tmux-3.7c-ncurses-6.5-libevent-2.1.12-${{ matrix.arch }}
+          key: cx-tools-tmux-3.7c-ncurses-6.5-libevent-2.1.12-reptyr-0.10.0-${{ matrix.arch }}
       - name: Build portable tmux
         env:
           CX_TOOL_SOURCE_CACHE: ${{ github.workspace }}/.cache/cx-tools
         run: sh scripts/build-portable-tmux.sh dist/tmux
+      - name: Build guarded cx-reptyr
+        env:
+          CX_TOOL_SOURCE_CACHE: ${{ github.workspace }}/.cache/cx-tools
+        run: sh scripts/build-portable-reptyr.sh dist/cx-reptyr
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: binary-${{ matrix.arch }}

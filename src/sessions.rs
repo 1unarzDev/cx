@@ -1001,9 +1001,33 @@ fn origin(terminal: &crate::adoption::Terminal) -> crate::model::ExternalOrigin 
 fn external_terminals() -> Vec<crate::adoption::Terminal> {
     let mut executables: Vec<_> = std::env::current_exe().into_iter().collect();
     executables.extend(crate::adoption::relay_executables());
+    // Exclude the viewer's own terminal and every ancestor's session, so the
+    // terminal that launched CX never appears even across a session boundary.
+    let mut sessions = vec![unsafe { libc::getsid(0) }];
+    let mut pid = std::process::id();
+    for _ in 0..32 {
+        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            break;
+        };
+        let Some(rest) = stat.rsplit_once(')').map(|(_, r)| r) else {
+            break;
+        };
+        let fields: Vec<_> = rest.split_whitespace().collect();
+        let (Some(ppid), Some(sid)) = (
+            fields.get(2).and_then(|v| v.parse::<i32>().ok()),
+            fields.get(3).and_then(|v| v.parse::<i32>().ok()),
+        ) else {
+            break;
+        };
+        sessions.push(sid);
+        if ppid <= 1 {
+            break;
+        }
+        pid = ppid as u32;
+    }
     let exclude = crate::adoption::Exclusions {
         executables,
-        sessions: vec![unsafe { libc::getsid(0) }],
+        sessions,
         managed_socket: socket().ok(),
     };
     crate::adoption::discover(

@@ -4,6 +4,16 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.80
+
+### Changes
+- Show the session loader animation while a terminal is being moved into CX.
+- Size a command panel to its output and keep the final output after the command exits; a command that produces no output (e.g. `mkdir`, `echo`) shows only a brief status notice instead of an empty panel.
+
+### Fixes
+- Never offer the terminal that is running CX (or any ancestor terminal) as an adoptable session, and don't mislabel a CX-running terminal as a shell.
+
+
 ## v0.1.79
 
 ### Features

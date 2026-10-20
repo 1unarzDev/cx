@@ -17,9 +17,11 @@ with tempfile.TemporaryDirectory(prefix='cx-panel-') as tmp:
         return json.loads(r.stdout.split(b'\n', 1)[1])
 
     try:
-        # 1. A colored command that then reads input and exits with a code.
+        # 1. A colored command that reads input, echoes it, then waits again so
+        # its output is still on-screen when we read it (tmux clears a dead
+        # pane), and finally exits with a code.
         start = helper(dict(op='command_panel', args=dict(
-            request=dict(directory=tmp, command='printf "\\033[32mhello\\033[0m\\n"; read x; echo "got:$x"; exit 3'),
+            request=dict(directory=tmp, command='printf "\\033[32mhello\\033[0m\\n"; read x; printf "got:%s\\n" "$x"; read go; exit 3'),
             cols=60, rows=10)))
         pane = start['result']['id']
         assert pane.startswith('cxcmd-'), start
@@ -30,17 +32,24 @@ with tempfile.TemporaryDirectory(prefix='cx-panel-') as tmp:
         # not in the ordinary session list
         sessions = helper(dict(op='sessions'))['result']
         assert not any(s['id'] == pane for s in sessions), sessions
-        # 2. Send "world\n" as hex and read echoed result + exit status.
-        hexkeys = ''.join(f'{b:02x}' for b in b'world\n')
-        assert helper(dict(op='pane_input', args=dict(id=pane, hex=hexkeys)))['result']['delivered']
+        # 2. Send "world\n"; the command echoes got:world and waits (still
+        # alive), so the output is visible in a capture.
+        assert helper(dict(op='pane_input', args=dict(id=pane, hex=''.join(f'{b:02x}' for b in b'world\n'))))['result']['delivered']
         deadline = time.time() + 5
-        cap = None
+        while time.time() < deadline:
+            cap = helper(dict(op='capture_pane', args=dict(id=pane, cols=60, rows=10)))['result']
+            if any('got:world' in l for l in cap['lines']):
+                break
+            time.sleep(0.1)
+        assert any('got:world' in l for l in cap['lines']) and cap['alive'], cap
+        # Release the final read so it exits; the status is then reported.
+        assert helper(dict(op='pane_input', args=dict(id=pane, hex='0a')))['result']['delivered']
+        deadline = time.time() + 5
         while time.time() < deadline:
             cap = helper(dict(op='capture_pane', args=dict(id=pane, cols=60, rows=10)))['result']
             if cap['alive'] is False and cap['status'] is not None:
                 break
             time.sleep(0.1)
-        assert any('got:world' in l for l in cap['lines']), cap
         assert cap['alive'] is False and cap['status'] == 3, cap
         # input to a dead pane is a no-op
         assert helper(dict(op='pane_input', args=dict(id=pane, hex='61')))['result']['delivered'] is False

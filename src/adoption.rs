@@ -169,14 +169,14 @@ pub fn discover(root: &Path, uid: u32, exclude: &Exclusions) -> (Vec<Terminal>, 
             continue;
         };
         if stat.session == pid as i32 {
-            // A terminal led by CX itself (another viewer or a CLI invocation)
-            // is never adoptable, independent of which session is running.
-            let is_cx_leader = exclude
-                .executables
-                .iter()
-                .any(|e| executable(root, pid).as_deref() == Some(e.as_path()));
+            // A terminal led by or currently running CX (another viewer or a
+            // CLI invocation) is never adoptable, whatever its session.
+            let is_cx = |p: u32| {
+                executable(root, p).is_some_and(|exe| exclude.executables.iter().any(|e| *e == exe))
+            };
+            let cx_here = is_cx(pid) || (stat.foreground > 0 && is_cx(stat.foreground as u32));
             if let Some(index) = pts_index(stat.tty) {
-                if !exclude.sessions.contains(&stat.session) && !is_cx_leader {
+                if !exclude.sessions.contains(&stat.session) && !cx_here {
                     leaders.push(Terminal {
                         index,
                         leader: Process {

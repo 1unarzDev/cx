@@ -2154,14 +2154,42 @@ fn origin_label(kind: &str) -> &'static str {
 }
 
 /// Floating live view of a command running in a managed pane.
+/// Printable width of a `capture-pane -e` line, ignoring SGR escapes.
+fn visible_width(raw: &str) -> usize {
+    let mut width = 0;
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            let mut j = i + 2;
+            while j < bytes.len() && !bytes[j].is_ascii_alphabetic() {
+                j += 1;
+            }
+            i = (j + 1).min(bytes.len());
+            continue;
+        }
+        let ch = raw[i..].chars().next().unwrap_or(' ');
+        if !ch.is_control() {
+            width += if ch.is_ascii() { 1 } else { 2 };
+        }
+        i += ch.len_utf8();
+    }
+    width
+}
+
 fn render_command_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(panel) = app.command_panel.as_ref() else {
         return;
     };
-    let width = (panel.cols + 2).min(area.width.saturating_sub(2));
-    let height = (panel.rows + 2).min(area.height.saturating_sub(2));
-    let rect = popup(area, width, height);
-    frame.render_widget(Clear, rect);
+    // Size the panel to its output, not the whole pane: trim trailing blank
+    // lines so a short command gets a small box.
+    let mut content: Vec<&String> = panel.lines.iter().collect();
+    while content
+        .last()
+        .is_some_and(|l| visible_width(l) == 0 || l.trim().is_empty())
+    {
+        content.pop();
+    }
     let state = if panel.alive {
         " · running".to_string()
     } else {
@@ -2171,6 +2199,22 @@ fn render_command_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }
     };
     let title = format!("{}{}", safe_label(&panel.label), state);
+    let hint = if panel.alive {
+        "Esc close · Ctrl+O expand · keys to command"
+    } else {
+        "Esc close · Ctrl+O full screen"
+    };
+    // A running command with no output yet shows a compact waiting line.
+    let placeholder = content.is_empty();
+    let body_rows = if placeholder { 1 } else { content.len() } as u16;
+    let content_w = content.iter().map(|l| visible_width(l)).max().unwrap_or(0);
+    let inner_w = content_w
+        .max(title.chars().count())
+        .max(hint.chars().count())
+        .clamp(16, area.width.saturating_sub(4) as usize) as u16;
+    let inner_h = (body_rows + 1).min(area.height.saturating_sub(4));
+    let rect = popup(area, inner_w + 4, inner_h + 2);
+    frame.render_widget(Clear, rect);
     let outer = block(title, true).padding(Padding::horizontal(1));
     let inner = outer.inner(rect);
     frame.render_widget(outer, rect);
@@ -2178,18 +2222,17 @@ fn render_command_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
         height: inner.height.saturating_sub(1),
         ..inner
     };
-    let lines: Vec<Line> = panel
-        .lines
-        .iter()
-        .take(body.height as usize)
-        .map(|raw| ansi_line(raw))
-        .collect();
-    frame.render_widget(Paragraph::new(lines), body);
-    let hint = if panel.alive {
-        "Esc close · Ctrl+O expand · keys go to the command"
+    let lines: Vec<Line> = if placeholder {
+        vec![Line::from(Span::styled("working…", muted()))]
     } else {
-        "Esc close · Ctrl+O open full screen"
+        let skip = content.len().saturating_sub(body.height as usize);
+        content
+            .iter()
+            .skip(skip)
+            .map(|raw| ansi_line(raw))
+            .collect()
     };
+    frame.render_widget(Paragraph::new(lines), body);
     frame.render_widget(
         Paragraph::new(hint).style(muted()),
         Rect {

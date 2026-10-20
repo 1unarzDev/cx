@@ -1354,6 +1354,7 @@ impl App {
             } else if self.devices[device].target.is_none() {
                 // Local moves may need a sudo password; the main loop runs the
                 // askpass broker and the password panel around the request.
+                self.creating = true;
                 self.pending_adopt = Some((device, session, origin));
             } else if self.send(
                 device,
@@ -1363,6 +1364,8 @@ impl App {
                     boot_id: session.boot_id.clone(),
                 },
             ) {
+                // Show the same animated loader as a new session while moving.
+                self.creating = true;
                 self.set_notice("Moving terminal into CX…".into());
             }
         } else if !outside_tmux(&session) {
@@ -3749,7 +3752,10 @@ impl App {
         }
         if matches!(
             reply.op,
-            Operation::Create(_) | Operation::CreateYolo(_) | Operation::ContainerCreate { .. }
+            Operation::Create(_)
+                | Operation::CreateYolo(_)
+                | Operation::ContainerCreate { .. }
+                | Operation::AdoptSession { .. }
         ) {
             self.creating = false;
         }
@@ -4172,24 +4178,42 @@ impl App {
                 if let Some(panel) = self.command_panel.as_mut().filter(|p| p.id == *id) {
                     panel.inflight = false;
                     panel.last_poll = std::time::Instant::now();
-                    if let Some(lines) = value["lines"].as_array() {
-                        panel.lines = lines
-                            .iter()
-                            .filter_map(|l| l.as_str().map(str::to_owned))
-                            .collect();
+                    // tmux clears the pane and shows "Pane is dead" on exit, so
+                    // drop that marker and keep the last frame that had output
+                    // rather than overwriting it with the emptied screen.
+                    let fresh: Vec<String> = value["lines"]
+                        .as_array()
+                        .map(|lines| {
+                            lines
+                                .iter()
+                                .filter_map(|l| l.as_str())
+                                .filter(|l| !l.trim_start().starts_with("Pane is dead (status"))
+                                .map(str::to_owned)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let meaningful = fresh.iter().any(|l| !l.trim().is_empty());
+                    if meaningful || panel.lines.iter().all(|l| l.trim().is_empty()) {
+                        panel.lines = fresh;
                     }
                     let was_alive = panel.alive;
                     panel.alive = value["alive"].as_bool().unwrap_or(false);
                     panel.status = value["status"].as_i64().map(|s| s as i32);
                     if was_alive && !panel.alive {
-                        finished = Some(panel.status);
+                        let empty = panel.lines.iter().all(|l| l.trim().is_empty());
+                        finished = Some((panel.status, empty, panel.id.clone(), panel.device));
                     }
                 }
-                if let Some(status) = finished {
+                if let Some((status, empty, id, device)) = finished {
                     self.set_notice(match status {
                         Some(0) | None => "Command finished".into(),
                         Some(code) => format!("Command exited with status {code}"),
                     });
+                    // Nothing to read: close the panel rather than show an empty box.
+                    if empty {
+                        self.command_panel = None;
+                        self.send(device, Operation::PaneClose { id });
+                    }
                 }
             }
             Operation::PaneInput { .. } | Operation::PaneClose { .. } => {}
@@ -8944,6 +8968,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 }
                 (Ok(()), Err(_)) => None,
             };
+            app.creating = false;
             if let Some(value) = value {
                 match serde_json::from_value::<Session>(value) {
                     Ok(moved) => {

@@ -69,9 +69,7 @@ jobs:
       - run: python3 tests/enrollment_ssh.py .
       - name: Session adoption fixtures
         run: |
-          CX_REPTYR_DYNAMIC=1 sh scripts/build-portable-reptyr.sh "$RUNNER_TEMP/cx-reptyr"
-          sudo setcap cap_sys_ptrace+ep "$RUNNER_TEMP/cx-reptyr"
-          export CX_ADOPT_CAPABLE=1 CX_ADOPT_REPTYR="$RUNNER_TEMP/cx-reptyr"
+          sudo apt-get install -y uidmap
           python3 tests/adopt_terminal_live.py target/debug/cx
           python3 tests/adopt_stress_live.py target/debug/cx 30
           python3 tests/adopt_sudo_live.py target/debug/cx

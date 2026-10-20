@@ -52,12 +52,17 @@ def _reexec_sandbox():
     if sub_u is None or sub_g is None or not shutil.which('newuidmap'):
         print(json.dumps(dict(result='SKIP', reason='no subuid range or newuidmap for ptrace sandbox')))
         sys.exit(0)
-    os.environ['CX_ADOPT_NS'] = '1'
-    os.execvp('unshare', [
-        'unshare', '-U',
+    maps = [
         '--map-users', f'0:{os.getuid()}:1', '--map-users', f'1:{sub_u}:1',
         '--map-groups', f'0:{os.getgid()}:1', '--map-groups', f'1:{sub_g}:1',
-        sys.executable, *sys.argv])
+    ]
+    import subprocess as _sp
+    probe = _sp.run(['unshare', '-U', *maps, 'true'], capture_output=True)
+    if probe.returncode != 0:
+        print(json.dumps(dict(result='SKIP', reason='user namespace mapping unavailable')))
+        sys.exit(0)
+    os.environ['CX_ADOPT_NS'] = '1'
+    os.execvp('unshare', ['unshare', '-U', *maps, sys.executable, *sys.argv])
 
 
 if (os.geteuid() != 0 and os.environ.get('CX_ADOPT_CAPABLE') != '1'

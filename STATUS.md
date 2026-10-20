@@ -1,5 +1,15 @@
 # CX status
 
+## Portable managed SSH permissions — v0.1.76
+
+Live Creation testing found that umask 0002 made a newly created managed SSH root
+group-writable, which CX then refused. New roots now use mode 700 from creation;
+empty legacy roots under a private parent can recover safely. Full Rust suite:
+629 passed, one protected live case ignored. The three-helper fixture passes with
+umask 0002. Innovation/Creation/Tranquility have signed v0.1.75; Creation's empty
+root was repaired and Tranquility's legacy Innovation posture migrated to Core.
+Tranquility connectivity is intermittent; final six-edge acceptance remains pending.
+
 ## Automatic core setup — v0.1.75
 
 Core devices automatically exchange verified public keys and enroll reciprocal

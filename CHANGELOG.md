@@ -2,6 +2,14 @@
 
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
+## v0.1.76
+
+### Fixes
+
+- Create managed SSH directories with explicit private permissions, including on hosts with group-writable umasks.
+- Recover an empty directory left by v0.1.75 only when its parent is private and owned; reject nonempty or exposed directories.
+- Run the three-helper mesh fixture under umask 0002 and verify bounded legacy-directory recovery.
+
 ## v0.1.75
 
 ### Features

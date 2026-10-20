@@ -11,7 +11,7 @@ use std::{
     io::{Read, Write},
     os::{
         fd::AsRawFd,
-        unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+        unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     },
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -41,7 +41,10 @@ fn owned_dir(path: &Path) -> Result<()> {
         }
     }
     if !path.exists() {
-        fs::create_dir_all(path)?;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)?;
     }
     let m = fs::symlink_metadata(path)?;
     anyhow::ensure!(
@@ -174,6 +177,33 @@ struct Locked {
 }
 impl Locked {
     fn new(root: PathBuf) -> Result<Self> {
+        // v0.1.75 could leave an empty group-writable root under a private state
+        // directory. Recover only that harmless shape, never existing key material.
+        if let Ok(metadata) = fs::symlink_metadata(&root) {
+            if metadata.is_dir()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.mode() & 0o022 != 0
+            {
+                for ancestor in root.ancestors() {
+                    if let Ok(meta) = fs::symlink_metadata(ancestor) {
+                        anyhow::ensure!(
+                            !meta.file_type().is_symlink(),
+                            "symlink in SSH directory path"
+                        );
+                    }
+                }
+                let parent =
+                    fs::symlink_metadata(root.parent().context("missing SSH state parent")?)?;
+                anyhow::ensure!(
+                    parent.is_dir()
+                        && parent.uid() == unsafe { libc::geteuid() }
+                        && parent.mode() & 0o077 == 0
+                        && fs::read_dir(&root)?.next().is_none(),
+                    "unsafe existing SSH state directory"
+                );
+                fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+            }
+        }
         private_dir(&root)?;
         let f = open(&root.join("lock"), false)?;
         anyhow::ensure!(
@@ -499,6 +529,24 @@ mod tests {
             observed_at: 0,
         }
     }
+    #[test]
+    fn recovers_only_empty_legacy_root_beneath_private_parent() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let root = temp.path().join("legacy");
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o775)).unwrap();
+        let locked = Locked::new(root.clone()).unwrap();
+        assert_eq!(fs::metadata(&root).unwrap().mode() & 0o777, 0o700);
+        drop(locked);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(Locked::new(root.clone()).is_err()); // lock file exists: not empty
+        assert_eq!(fs::metadata(&root).unwrap().mode() & 0o777, 0o775);
+        fs::remove_file(root.join("lock")).unwrap();
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(Locked::new(root).is_err()); // parent no longer private
+    }
+
     #[test]
     fn validates_public_key_wire_format_and_endpoint() {
         assert!(public_key(&key(1)).is_ok());

@@ -1,5 +1,20 @@
 # Validation record
 
+## Managed SSH portability — v0.1.76
+
+PASS — `cargo test --locked`: 629 passed, one protected live test ignored.
+`/tmp/cx-auto-umask-full.log`. Three-helper startup/six-edge/stale-alias/race fixture
+passes with coordinator and remote helpers using umask 0002:
+`/tmp/cx-auto-umask-mesh.log`. Recovery regression accepts only an empty legacy
+root beneath a private owned parent, and rejects nonempty/exposed roots.
+
+LIVE — signed v0.1.75 installed atomically on all three core devices without
+provider/tmux restarts. Creation's umask exposed the fixed permission issue;
+Tranquility's old Directed Innovation entry required a one-time Core migration.
+Tranquility–Innovation pairing reports verified ready. Creation–Innovation session
+requests work. Final all-six verification remains pending intermittent Tranquility
+mesh connectivity (SSH reports No route to host). No networking changes made.
+
 ## Automatic core setup — v0.1.75
 
 PASS — locked Rust suite: 625 tests passed, one protected live test ignored;

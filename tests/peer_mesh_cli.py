@@ -62,7 +62,7 @@ account=peers[endpoint][0]
 env=dict(os.environ,HOME=str(root/endpoint/'home'),XDG_STATE_HOME=str(root/endpoint/'state'),
          USER=account,CX_MESH_ORIGIN=endpoint,
          SSH_CONNECTION=peers['innovation'][1]+' 40000 '+peers['innovation'][1]+' 22')
-child=subprocess.Popen([os.environ['CX_MESH_BINARY'],'helper'],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE)
+child=subprocess.Popen([os.environ['CX_MESH_BINARY'],'helper'],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,umask=0o002)
 def read(stream):
     header=stream.readline()
     if not header:return None
@@ -159,7 +159,7 @@ class Fixture:
                     CX_MESH_BINARY=BINARY, CX_MESH_ORIGIN="innovation", CX_MESH_MODE=mode)
 
     def sync(self, mode="success"):
-        return subprocess.run([BINARY, "device", "sync"], env=self.env(mode),
+        return subprocess.run([BINARY, "device", "sync"], env=self.env(mode), umask=0o002,
                               capture_output=True, text=True, timeout=45)
 
     def startup(self):

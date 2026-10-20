@@ -16,6 +16,8 @@ import tempfile
 
 BINARY = str(pathlib.Path(sys.argv[1]).resolve())
 MACHINE = pathlib.Path("/etc/machine-id").read_text().strip()
+HOST_PUBLIC = pathlib.Path("/etc/ssh/ssh_host_ed25519_key.pub").read_text().split()
+UNRELATED_KEY = (" ".join(HOST_PUBLIC[:2]) + " fixture-unrelated").encode()
 ADDRESSES = json.loads(subprocess.check_output(["ip", "-j", "address", "show", "scope", "global"], text=True))
 LOCAL_ADDRESS = next(a["local"] for interface in ADDRESSES for a in interface.get("addr_info", [])
                      if a.get("family") == "inet")
@@ -104,6 +106,9 @@ class Fixture:
             (root / endpoint / "home/.ssh").mkdir(parents=True)
             (root / endpoint / "home/.ssh/config").write_text("# untouched fixture config\n")
             (root / endpoint / "home/.ssh/known_hosts").write_text("# untouched personal trust\n")
+            authorized = root / endpoint / "home/.ssh/authorized_keys"
+            authorized.write_bytes(UNRELATED_KEY)  # Deliberately no final newline.
+            authorized.chmod(0o600)
             self.state(endpoint).mkdir(parents=True)
             self.state(endpoint).chmod(0o700)
             self.write(endpoint, "devices.json", [device(endpoint, local=True)])
@@ -139,6 +144,11 @@ class Fixture:
             home = self.root / endpoint / "home"
             assert (home / ".ssh/config").read_text() == "# untouched fixture config\n"
             assert (home / ".ssh/known_hosts").read_text() == "# untouched personal trust\n"
+            authorized = (home / ".ssh/authorized_keys").read_bytes()
+            assert authorized.startswith(UNRELATED_KEY), "existing authorized key changed"
+            assert authorized.count(UNRELATED_KEY) == 1, "existing authorized key duplicated"
+            if endpoint == "robot":
+                assert authorized == UNRELATED_KEY, "Directed device authorization changed"
         requests = (self.root / "requests.jsonl").read_text() if (self.root / "requests.jsonl").exists() else ""
         assert "PRIVATE KEY" not in requests
         connections = (self.root / "connections.jsonl").read_text() if (self.root / "connections.jsonl").exists() else ""
@@ -223,4 +233,5 @@ print(json.dumps(dict(result="PASS", real_helpers=True, three_core_devices=True,
                       directed_device_excluded=True, private_key_mode_600=True,
                       no_private_key_transmitted=True, repeated_sync_idempotent=True,
                       changed_host_key_rejected=True,
+                      existing_authorized_key_without_newline_preserved=True,
                       personal_ssh_config_and_trust_unchanged=True)))

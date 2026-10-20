@@ -173,7 +173,7 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-') as temporary:
         # 1. Agent as session leader of a bare terminal, mid-output.
         emulator, leader, log = emulate('leader', str(bins / 'claude'))
         target = target_of(leader)
-        tool = children(target)
+        tool = wait_for(lambda: children(target), 5, 'tool child')
         before = stat(target)
         time.sleep(0.6)
         sessions = helper('sessions')['result']

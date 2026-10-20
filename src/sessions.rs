@@ -1128,8 +1128,10 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
     // Success is observed, not assumed: the relay holds the master, the
     // previous holder no longer does, and the relay dropped its capabilities.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    // tmux prints nothing for a session that no longer exists, so only an
+    // explicit "0" proves a live pane.
     let relay_pid = loop {
-        let dead = field(true, &name, "#{pane_dead}").map_or(true, |d| d == "1");
+        let dead = field(true, &name, "#{pane_dead}").map_or(true, |d| d != "0");
         let pane = field(true, &name, "#{pane_pid}")
             .ok()
             .and_then(|p| p.parse::<u32>().ok());
@@ -1162,21 +1164,33 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
         thread::sleep(Duration::from_millis(25));
     };
     let _ = fs::remove_file(&errors);
-    let mut session = inspect(true, &name).context("terminal unavailable after moving")?;
-    session.pid = relay_pid;
-    session.origin = Some(origin.clone());
     let temp = root.join(format!("{name}.tmp"));
-    let mut f = fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(&temp)?;
-    f.write_all(&serde_json::to_vec(&session)?)?;
-    f.sync_all()?;
-    fs::rename(temp, &record)?;
-    set_managed_status(&session).context("terminal unavailable after moving")?;
-    Ok(session)
+    let finish = || -> Result<Session> {
+        let mut session = inspect(true, &name)?;
+        session.pid = relay_pid;
+        session.origin = Some(origin.clone());
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&temp)?;
+        f.write_all(&serde_json::to_vec(&session)?)?;
+        f.sync_all()?;
+        fs::rename(&temp, &record)?;
+        set_managed_status(&session)?;
+        Ok(session)
+    };
+    finish().map_err(|error| {
+        // The moved terminal ended immediately (its relay exits with it).
+        if field(true, &name, "#{pane_dead}").map_or(true, |d| d != "0") {
+            let _ = fs::remove_file(&temp);
+            let _ = fs::remove_file(&record);
+            anyhow::anyhow!("the terminal closed while it was being moved")
+        } else {
+            error.context("terminal unavailable after moving")
+        }
+    })
 }
 
 fn adopted_index(origin: &crate::model::ExternalOrigin) -> Result<u32> {

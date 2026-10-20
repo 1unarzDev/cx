@@ -1269,6 +1269,56 @@ fn stop_adopted(
     Ok(serde_json::json!({"status": "stopped", "adopted_groups": groups}))
 }
 
+/// Leaders of terminals already moved into CX, from managed session records,
+/// so a moved terminal is never also offered as external.
+fn adopted_origins() -> Vec<(u32, String)> {
+    let Ok(root) = state() else {
+        return vec![];
+    };
+    let Ok(entries) = fs::read_dir(&root) else {
+        return vec![];
+    };
+    let mut out = vec![];
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !(name.starts_with("cx-") && name.ends_with(".json")) {
+            continue;
+        }
+        if let Some(origin) = fs::read(entry.path())
+            .ok()
+            .and_then(|v| serde_json::from_slice::<Session>(&v).ok())
+            .and_then(|s| s.origin)
+        {
+            out.push((origin.leader.pid, origin.leader.start_ticks));
+        }
+    }
+    out
+}
+
+/// Terminals started outside CX: bare terminals, SSH logins and screen. These
+/// are shown only in the UI for adoption, never in the managed session list, so
+/// the `cx sessions` contract and scripts stay unchanged. tmux-held panes are
+/// omitted here: the default server's panes already appear via `list()`.
+pub fn external_list() -> Result<Vec<Session>> {
+    let adopted = adopted_origins();
+    let mut rows = vec![];
+    for terminal in external_terminals() {
+        if terminal.holder.as_ref().is_some_and(|h| h.kind == "tmux") {
+            continue;
+        }
+        if adopted.iter().any(|(pid, start)| {
+            *pid == terminal.leader.pid && *start == terminal.leader.start_ticks
+        }) {
+            continue;
+        }
+        if let Some(session) = external_terminal(&terminal) {
+            rows.push(session);
+        }
+    }
+    Ok(rows)
+}
+
 pub fn list() -> Result<Vec<Session>> {
     let mut result = vec![];
     for managed in [true, false] {
@@ -1280,33 +1330,6 @@ pub fn list() -> Result<Vec<Session>> {
             if let Ok(s) = inspect(managed, &id) {
                 result.push(s);
             }
-        }
-    }
-    // Terminals outside tmux, other tmux/screen servers and default-server
-    // panes. A default-server session's active pane annotates its $N row.
-    // A terminal already moved into CX keeps its original session leader, so it
-    // is still discoverable. Its managed row owns it; never list it twice.
-    let adopted_leaders: Vec<(u32, String)> = result
-        .iter()
-        .filter(|s| !s.external)
-        .filter_map(|s| s.origin.as_ref())
-        .map(|o| (o.leader.pid, o.leader.start_ticks.clone()))
-        .collect();
-    for terminal in external_terminals() {
-        if adopted_leaders.iter().any(|(pid, start)| {
-            *pid == terminal.leader.pid && *start == terminal.leader.start_ticks
-        }) {
-            continue;
-        }
-        let tty = terminal.tty();
-        if let Some(row) = result.iter_mut().find(|s| {
-            s.external
-                && s.origin.is_none()
-                && field(false, &s.id, "#{pane_tty}").is_ok_and(|t| t == tty)
-        }) {
-            row.origin = Some(origin(&terminal));
-        } else if let Some(session) = external_terminal(&terminal) {
-            result.push(session);
         }
     }
     // Reconcile saved container scopes on every listing, even without a newly

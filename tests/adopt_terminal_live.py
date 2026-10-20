@@ -211,10 +211,10 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-') as temporary:
         tool = wait_for(lambda: children(target), 5, 'tool child')
         before = stat(target)
         time.sleep(0.6)
-        sessions = helper('sessions')['result']
         tty = os.readlink(f'/proc/{target}/fd/0')
-        found = row(sessions, tty)
-        assert found and found['external'] and found['id'].startswith('ext-'), sessions
+        external = helper('external_sessions')['result']
+        found = row(external, tty)
+        assert found and found['external'] and found['id'].startswith('ext-'), external
         assert found['provider'] == 'claude' and found['origin']['kind'] == 'terminal', found
         assert found['origin']['holder']['pid'] == emulator.pid, found
         checks.append('bare terminal agent is listed with its terminal holder')
@@ -259,7 +259,8 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-') as temporary:
         sessions = helper('sessions')['result']
         managed = [s for s in sessions if s['id'] == name]
         assert managed and managed[0]['provider'] == 'claude' and managed[0]['origin'], sessions
-        assert not [s for s in sessions if s['id'].startswith('ext-') and s['origin']['tty'] == tty], sessions
+        external = helper('external_sessions')['result']
+        assert not [s for s in external if (s.get('origin') or {}).get('tty') == tty], external
         checks.append('the emptied window closes while the agent keeps running; listed once, as managed')
 
         lines, beat = beats('leader')
@@ -281,7 +282,7 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-') as temporary:
         emulator, leader, log = emulate('job', 'bash', '--norc', '--noprofile', '-i')
         time.sleep(0.4)
         tty = os.readlink(f'/proc/{leader}/fd/0')
-        found = wait_for(lambda: row(helper('sessions')['result'], tty), 5, 'shell row')
+        found = wait_for(lambda: row(helper('external_sessions')['result'], tty), 5, 'shell row')
         assert found['provider'] == 'shell' and found['activity'] == 'idle', found
         # Adopt the idle shell, then start the agent inside the moved terminal.
         adopted = helper('adopt_session', dict(id=found['id'], origin=found['origin'], boot_id=boot))
@@ -303,7 +304,7 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-') as temporary:
         emulator, leader, log = emulate('reset', str(bins / 'claude'))
         target = target_of(leader)
         tty = os.readlink(f'/proc/{target}/fd/0')
-        found = wait_for(lambda: row(helper('sessions')['result'], tty), 5, 'reset row')
+        found = wait_for(lambda: row(helper('external_sessions')['result'], tty), 5, 'reset row')
         adopted = helper('adopt_session', dict(id=found['id'], origin=found['origin'], boot_id=boot))
         assert adopted['error'] is None, adopted
         # Restarting the server afterwards may be refused without a user

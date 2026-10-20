@@ -421,6 +421,7 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
         Operation::TransferCancel { key } => transfers::cancel(&key),
         Operation::TransferRetry { key } => transfers::retry(&key),
         Operation::Sessions => Ok(serde_json::to_value(sessions::list()?)?),
+        Operation::ExternalSessions => Ok(serde_json::to_value(sessions::external_list()?)?),
         Operation::AdoptSession {
             ref id,
             ref origin,

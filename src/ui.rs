@@ -1020,6 +1020,15 @@ impl App {
                         "Refresh queue busy · retry shortly".into(),
                     );
                 }
+                // Discover outside-CX terminals for the UI when the device
+                // supports adoption; `cx sessions` itself stays managed-only.
+                if self
+                    .providers
+                    .get(&index)
+                    .is_some_and(|(caps, _)| caps.iter().any(|c| c == "adopt-session-v1"))
+                {
+                    self.send(index, Operation::ExternalSessions);
+                }
             }
         }
         for index in 0..self.devices.len() {
@@ -4066,7 +4075,15 @@ impl App {
                     value.get("sessions").cloned().unwrap_or(Value::Null)
                 };
                 match serde_json::from_value::<Vec<Session>>(data) {
-                    Ok(s) => {
+                    Ok(mut s) => {
+                        // Keep discovered external terminals (a separate request);
+                        // the managed list owns everything else.
+                        s.extend(
+                            self.work[reply.device]
+                                .sessions
+                                .drain(..)
+                                .filter(is_discovered_external),
+                        );
                         self.work[reply.device].sessions = s;
                         self.work[reply.device].error = None;
                         self.work[reply.device].fetched = transport::now();
@@ -4090,6 +4107,15 @@ impl App {
                         self.work[reply.device].error = Some("Invalid session metadata".into());
                         self.reconcile_session_selection(selected);
                     }
+                }
+            }
+            Operation::ExternalSessions => {
+                if let Ok(mut external) = serde_json::from_value::<Vec<Session>>(value) {
+                    let selected = self.selected_session().map(|(d, s)| (d, s.id));
+                    let rows = &mut self.work[reply.device].sessions;
+                    rows.retain(|s| !is_discovered_external(s));
+                    rows.append(&mut external);
+                    self.reconcile_session_selection(selected);
                 }
             }
             Operation::AdoptSession { id, .. } => match serde_json::from_value::<Session>(value) {
@@ -5943,6 +5969,11 @@ fn local_only(app: &App) -> bool {
 }
 /// Terminals discovered outside any tmux server have no attachable tmux id.
 fn outside_tmux(s: &Session) -> bool {
+    s.external && s.id.starts_with("ext-")
+}
+/// Rows that came from the separate external-terminal discovery, not the
+/// managed session list (which includes default-tmux `$N` rows).
+fn is_discovered_external(s: &Session) -> bool {
     s.external && s.id.starts_with("ext-")
 }
 fn empty_work_can_create(app: &App) -> bool {

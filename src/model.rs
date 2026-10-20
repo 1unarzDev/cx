@@ -131,6 +131,8 @@ pub enum Operation {
         shell: String,
     },
     Sessions,
+    /// Terminals started outside CX, shown for adoption in the UI only.
+    ExternalSessions,
     /// Move a terminal started outside CX into the managed tmux server.
     AdoptSession {
         id: String,

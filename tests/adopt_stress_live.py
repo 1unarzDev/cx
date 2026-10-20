@@ -161,7 +161,7 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-stress-') as temporary:
         return process, leader, log
 
     def row(tty):
-        return next((s for s in helper('sessions')['result'] if (s.get('origin') or {}).get('tty') == tty), None)
+        return next((s for s in helper('external_sessions')['result'] if (s.get('origin') or {}).get('tty') == tty), None)
 
     def ours():
         found = {}

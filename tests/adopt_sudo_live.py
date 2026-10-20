@@ -218,7 +218,7 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-sudo-') as temporary:
         before = stat(leader)
         tool = wait_for(lambda: children(leader), 5, 'tool')
         tty = os.readlink(f'/proc/{leader}/fd/0')
-        found = wait_for(lambda: next((s for s in helper('sessions')['result']
+        found = wait_for(lambda: next((s for s in helper('external_sessions')['result']
                                        if (s.get('origin') or {}).get('tty') == tty), None), 5, 'row')
         time.sleep(0.5)
         moved = helper('adopt_session', dict(id=found['id'], origin=found['origin'], boot_id=boot))
@@ -249,8 +249,8 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-sudo-') as temporary:
 
         listed = helper('sessions')['result']
         assert any(s['id'] == session['id'] and not s['external'] for s in listed), listed
-        assert not [s for s in listed if s['id'].startswith('ext-')
-                    and (s.get('origin') or {}).get('tty') == tty], listed
+        external = helper('external_sessions')['result']
+        assert not [s for s in external if (s.get('origin') or {}).get('tty') == tty], external
         checks.append('after the move the terminal is listed once, as managed, with no stale ext row')
 
         # The single-window holder (our emulator) is now empty and gets closed.
@@ -263,7 +263,7 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-sudo-') as temporary:
         leader2 = int(wait_for(lambda: (home / 'emu2').exists() and (home / 'emu2').read_text().split('\n')[0].split()[-1:], 5, 'emu2')[0])
         wait_for(lambda: exe(leader2) == stub, 5, 'stub2')
         tty2 = os.readlink(f'/proc/{leader2}/fd/0')
-        found2 = wait_for(lambda: next((s for s in helper('sessions')['result']
+        found2 = wait_for(lambda: next((s for s in helper('external_sessions')['result']
                                         if (s.get('origin') or {}).get('tty') == tty2), None), 5, 'row2')
         global PASSWORD_BAD
         # Point the fake sudo at a wrong expected password by flipping the stored one.

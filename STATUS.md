@@ -19,11 +19,11 @@ passed again after deployment. Release validation passed on retry. No provider/t
 
 ## Command output panel (Unreleased)
 
-`:` commands run in a managed pane shown in a floating panel (live styled capture, input including Ctrl+C, Esc to close, Ctrl+O to expand, exit status). Panel traffic uses its own worker lane so captures stay responsive behind slow refreshes. Covered by a helper fixture and a real-PTY fixture on bash and fish.
+`:` commands run in a managed pane shown in a floating panel (live styled capture, input including Ctrl+C, Esc to close, Ctrl+O to expand, exit status). Panel traffic uses its own worker lane so captures stay responsive behind slow refreshes. Covered by a helper fixture and a real-PTY fixture on bash and fish (both in CI).
 
 ## Session adoption (Unreleased, `feat/session-adoption`)
 
-Outside-CX terminals are listed and can be moved into managed tmux through the guarded cx-reptyr relay. Local fixtures pass: synthetic busy multithreaded agents kept their identities, saw no hangup or EIO, and output paused at most about 14 ms over repeated randomized moves. Target exits, relay kills and forged identities were injected and left nothing behind. Pending:
+Outside-CX terminals are listed and can be moved into managed tmux through the guarded cx-reptyr relay. Adoption live fixtures run locally (ptrace sandbox), not CI. Synthetic busy multithreaded agents kept their identities, saw no hangup or EIO, and output paused at most about 14 ms over repeated randomized moves. Target exits, relay kills and forged identities were injected and left nothing behind. Pending:
 - Real Claude/Codex mid-turn on a real terminal and over SSH.
 - A real move through the sudo password panel, and the privileged `cx device ptrace enable`, on a real host.
 - A signed cx-reptyr release asset.

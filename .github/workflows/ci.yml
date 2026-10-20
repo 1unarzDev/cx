@@ -38,12 +38,6 @@ jobs:
           python3 tests/claude_contrast_live.py target/debug/cx
           npm install --prefix "$RUNNER_TEMP/cx-devcontainer-cli" @devcontainers/cli@0.89.0 --no-audit --no-fund
           PATH="$RUNNER_TEMP/cx-devcontainer-cli/node_modules/.bin:$PATH" python3 tests/devcontainer_cli_live.py target/debug/cx
-      - name: Session adoption fixtures
-        run: |
-          sudo apt-get install -y uidmap
-          python3 tests/adopt_terminal_live.py target/debug/cx
-          python3 tests/adopt_stress_live.py target/debug/cx 30
-          python3 tests/adopt_sudo_live.py target/debug/cx
       - run: python3 tests/install_fixture.py
       - run: python3 tests/session_names_live.py target/debug/cx
       - run: python3 tests/peer_pairing_cli.py target/debug/cx

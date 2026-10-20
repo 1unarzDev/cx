@@ -74,8 +74,9 @@ libc="0.2"
 serde={version="1",features=["derive"]}
 serde_json="1"
 sha2="0.10"
+base64="0.22"
 ''')
-    modules = '\n'.join(f'#[path={json.dumps(str(source/"src"/(name+".rs")))}] mod {name};' for name in ['auth','model','store'])
+    modules = '\n'.join(f'#[path={json.dumps(str(source/"src"/(name+".rs")))}] mod {name};' for name in ['auth','model','store','peer_ssh'])
     (harness/'src/main.rs').write_text(modules + r'''
 use anyhow::{bail,Result};
 use std::{process::{Command,Stdio},os::unix::process::CommandExt,fs};

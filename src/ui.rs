@@ -678,7 +678,7 @@ impl App {
                 }
                 let message = match next {
                     store::AccessMode::Core => {
-                        "Core posture saved; reverse SSH requires cx device pair"
+                        "Core posture saved; connections will be configured automatically"
                     }
                     store::AccessMode::Directed => "Viewer-to-device access only",
                 };
@@ -792,6 +792,47 @@ impl App {
         self.device = self.device.min(self.devices.len());
         self.view = View::Work;
         self.focus = Focus::Devices;
+    }
+
+    fn reconcile_devices(&mut self, updated: Vec<Device>) -> bool {
+        let selected = self
+            .device
+            .checked_sub(1)
+            .and_then(|i| self.devices.get(i))
+            .map(|d| d.id.clone());
+        let mut changed = false;
+        for i in (0..self.devices.len()).rev() {
+            if !updated.iter().any(|d| d.id == self.devices[i].id) {
+                self.remove_device_state(i);
+                changed = true;
+            }
+        }
+        for device in updated {
+            let policy = store::policy(&device).unwrap_or_default();
+            if let Some(i) = self.devices.iter().position(|d| d.id == device.id) {
+                if self.devices[i].target != device.target {
+                    self.replace_device_endpoint(i, device.clone());
+                    changed = true;
+                }
+                changed |= self.devices[i].name != device.name || self.policies[i] != policy;
+                self.devices[i] = device;
+                self.policies[i] = policy;
+            } else {
+                self.devices.push(device);
+                self.policies.push(policy);
+                self.work.push(Cached {
+                    sessions: vec![],
+                    loading: false,
+                    error: None,
+                    fetched: 0,
+                });
+                changed = true;
+            }
+        }
+        self.device = selected
+            .and_then(|id| self.devices.iter().position(|d| d.id == id))
+            .map_or(0, |i| i + 1);
+        changed
     }
 
     fn remove_selected_device(&mut self) {
@@ -8380,6 +8421,23 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     let (tx, rx) = mpsc::sync_channel::<Task>(32);
     let (result_tx, result_rx) = mpsc::channel::<Reply>();
     start_task_workers(rx, result_tx);
+    let (core_tx, core_rx) = mpsc::channel();
+    let core_stopping = stopping.clone();
+    thread::spawn(move || {
+        while !core_stopping.load(std::sync::atomic::Ordering::Relaxed) {
+            let result = crate::peers::sync();
+            if core_tx.send(result).is_err() {
+                break;
+            }
+            for _ in 0..60 {
+                if core_stopping.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                thread::sleep(Duration::from_secs(1));
+            }
+        }
+    });
+    let mut last_inventory_check = Instant::now();
     let mut app = App::new(devices, tx);
     load_cache(&mut app);
     if let Some(name) = restore {
@@ -8418,6 +8476,20 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     let mut last_transfer_frame = Instant::now();
     let mut notice_was_animating = false;
     while !app.quit && !stopping.load(std::sync::atomic::Ordering::Relaxed) {
+        if core_rx.try_iter().next().is_some()
+            || last_inventory_check.elapsed() >= Duration::from_secs(5)
+        {
+            last_inventory_check = Instant::now();
+            if let Ok(devices) = store::devices() {
+                if app.reconcile_devices(devices) {
+                    app.refresh_work();
+                    for d in 0..app.devices.len() {
+                        app.check_providers(d);
+                    }
+                    dirty = true;
+                }
+            }
+        }
         for update in transport::drain_host_updates() {
             app.host_updated(update);
             dirty = true;

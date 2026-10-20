@@ -1,5 +1,27 @@
 # Validation record
 
+## Automatic core setup — v0.1.73
+
+PASS — locked Rust suite: 625 tests passed, one protected live test ignored;
+additional inventory reconciliation regression passed. Full suite rerun is required
+by release CI. Logs: `/tmp/cx-auto-release-tests.log`, `/tmp/cx-auto-ui-test.log`.
+
+PASS — `peer_mesh_cli.py`: ordinary PTY UI startup forms all six directed edges,
+offline recovery, Directed exclusion, private-key isolation, idempotent authorization,
+changed-key rejection, stale alias repair, stored jump-route exclusion, and removal/
+demotion during a paused reverse probe. Real helpers use disposable homes/state and
+a bounded SSH transport fixture. Log: `/tmp/cx-auto-mesh-final.log`.
+
+PASS — `peer_managed_ssh.py`: disposable native OpenSSH authenticates the actual
+managed key, enforces pinned host trust, rejects unknown/changed hosts and never
+prompts. `peer_pairing_cli.py` preserves explicit pairing compatibility. Native
+`enrollment_ssh.py` verifies encrypted-key prompts, explicit trust, safe child cleanup
+and reusable masters. Logs: `/tmp/cx-auto-peer_*.log`, `/tmp/cx-auto-enrollment.log`.
+
+Live core setup/deployment remains pending signed publication. No session restarts
+or networking changes are part of this implementation. Existing SSH authorizations
+remain after demotion/removal; current pin conflicts require explicit resolution.
+
 ## Reciprocal pairing and presentation — v0.1.72
 
 PASS — full locked Rust suite: 598 passed, one protected live test ignored; debug build, formatting and diff checks passed. Real two-helper isolated CLI fixture verifies reverse identity, enrollment/retry, legacy capability rejection, both identity mismatch directions, reverse trust failure, directed-policy preservation, self/endpoint collision rejection, preserved stale-endpoint re-verification, same-channel verification/mutation, and unchanged SSH/route files. Disposable tmux fixtures verify Claude dark/light terminal-default backgrounds (including cleanup of legacy opaque styles) and Codex exact-writer/native/custom names with neutral ambiguous-selection fallback. Unknown Codex directories remain unavailable for actions. Local policy CLI fixture passes.

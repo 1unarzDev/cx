@@ -7,6 +7,7 @@ mod markdown_math;
 mod markdown_tables;
 mod model;
 mod network;
+mod peer_ssh;
 mod peers;
 mod session_titles;
 mod sessions;
@@ -269,6 +270,8 @@ enum DeviceCommand {
     Edit { name: String, target: String },
     /// Remove an enrolled device from this viewer.
     Remove { name: String },
+    /// Reconcile automatic SSH setup and enrollment for core devices.
+    Sync,
     /// Verify reverse SSH and enroll this device on the remote helper.
     Pair {
         name: String,
@@ -326,6 +329,7 @@ fn info() -> Result<serde_json::Value> {
     caps.push("pdf-pages-v1");
     caps.push("network-candidates-v1");
     caps.push("peer-enroll-v1");
+    caps.push("peer-bootstrap-v1");
     Ok(
         serde_json::json!({"host":d.host,"account":d.account,"machine_id":machine.trim(),"capabilities":caps,"protocol":1,"persistent_channel":true,"version":env!("CARGO_PKG_VERSION")}),
     )
@@ -333,7 +337,16 @@ fn info() -> Result<serde_json::Value> {
 pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
     match op {
         Operation::Info => info(),
-        Operation::PeerEnroll { peer } => peers::enroll(peer),
+        Operation::PeerEnroll {
+            peer,
+            replace_stale,
+        } => peers::enroll(peer, replace_stale),
+        Operation::PeerIdentity => peers::bootstrap_identity(),
+        Operation::PeerConfigure {
+            peer,
+            host_key,
+            client_key,
+        } => peers::configure(&peer, &host_key, &client_key),
         Operation::Containers => containers::list(),
         Operation::ContainerInspect { id } => Ok(serde_json::to_value(containers::inspect(&id)?)?),
         Operation::DevcontainerUp { workspace } => containers::up(&workspace),
@@ -742,7 +755,14 @@ fn enroll_target(target: &str, _minimal: bool) -> Result<()> {
     );
     d.status = "reachable".into();
     d.observed_at = transport::now();
+    let enrollment_guard = store::device_guard()?;
     let mut ds = store::devices()?;
+    let existing = ds
+        .iter()
+        .find(|entry| entry.id == d.id)
+        .map(|entry| store::policy(entry))
+        .transpose()?
+        .is_some_and(|policy| policy.access == store::AccessMode::Directed);
     if let Some(old) = ds
         .iter_mut()
         .find(|o| o.id == d.id || (o.host == d.host && o.account == d.account))
@@ -751,10 +771,23 @@ fn enroll_target(target: &str, _minimal: bool) -> Result<()> {
     } else {
         ds.push(d.clone())
     };
+    store::allow_explicit_enrollment(&d.id)?;
     store::save_devices(&ds)?;
-    // Core is local intent only; reverse access requires explicit pairing. Users can demote
+    // Core enrollment automatically reconciles verified SSH access. Users can demote
     // them later with `cx device demote` or the device-panel toggle.
-    let _ = store::set_access(&d, store::AccessMode::Core)?;
+    if !existing {
+        let _ = store::set_access(&d, store::AccessMode::Core)?;
+    }
+    drop(enrollment_guard);
+    let setup = peers::sync();
+    if !auth::active() {
+        match setup {
+            Ok(report) if report["state"] == "ready" => {
+                eprintln!("Core device connections verified")
+            }
+            _ => eprintln!("Device enrolled; core setup is pending and will retry in CX"),
+        }
+    }
     if !auth::active() {
         println!(
             "Added {} · {}@{} · {}",
@@ -1180,6 +1213,9 @@ fn run() -> Result<()> {
                     let updated = store::update_target(&device, &target)?;
                     println!("{}", serde_json::to_string_pretty(&updated)?);
                 }
+                DeviceCommand::Sync => {
+                    println!("{}", serde_json::to_string_pretty(&peers::sync()?)?);
+                }
                 DeviceCommand::Pair {
                     name,
                     return_target,
@@ -1193,14 +1229,15 @@ fn run() -> Result<()> {
                 DeviceCommand::Promote { name } => {
                     let device = enrolled_device(&name)?;
                     let policy = store::set_access(&device, store::AccessMode::Core)?;
+                    let setup = peers::sync()?;
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "device": device.name,
                             "access": policy.access,
                             "availability": policy.availability,
-                            "bidirectional": false,
-                            "verification": "not checked; use cx device pair",
+                            "bidirectional": setup["state"] == "ready",
+                            "setup": setup,
                         }))?
                     );
                 }

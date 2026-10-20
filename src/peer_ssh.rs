@@ -401,12 +401,21 @@ fn configure_at(
     let authorized = read(&ssh.join("authorized_keys"))?;
     let _ = read(&locked.root.join("known_hosts"))?;
     let _ = locked.identity()?;
-    let present = authorized.lines().any(|line| {
+    let managed_line = format!("no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc {authorized_key} cx-managed-peer");
+    let mut present = false;
+    for line in authorized
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+    {
         let fields: Vec<_> = line.split_whitespace().collect();
-        fields
+        if fields
             .windows(2)
             .any(|w| format!("{} {}", w[0], w[1]) == authorized_key)
-    });
+        {
+            anyhow::ensure!(line == managed_line, "existing managed-key authorization has different restrictions; refusing to override it");
+            present = true;
+        }
+    }
     if !present {
         let prefix = if !authorized.is_empty() && !authorized.ends_with('\n') {
             "\n"
@@ -506,6 +515,27 @@ mod tests {
             assert!(endpoint(target).is_err(), "{target}");
         }
     }
+    #[test]
+    fn commented_keys_are_not_authorization_and_restricted_keys_are_preserved() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("peer-ssh");
+        let ssh = temp.path().join("ssh");
+        private_dir(&ssh).unwrap();
+        let comment = format!("# {} disabled\n", key(2));
+        fs::write(ssh.join("authorized_keys"), &comment).unwrap();
+        configure_at(root.clone(), &ssh, &peer(), &key(1), &key(2)).unwrap();
+        let authorized = fs::read_to_string(ssh.join("authorized_keys")).unwrap();
+        assert!(authorized.starts_with(&comment));
+        assert!(authorized.contains("no-user-rc ssh-ed25519"));
+        let restricted = format!("command=\"false\" {} restricted\n", key(2));
+        fs::write(ssh.join("authorized_keys"), &restricted).unwrap();
+        assert!(configure_at(root, &ssh, &peer(), &key(1), &key(2)).is_err());
+        assert_eq!(
+            fs::read_to_string(ssh.join("authorized_keys")).unwrap(),
+            restricted
+        );
+    }
+
     #[test]
     fn pairing_preserves_keys_and_is_idempotent_with_private_files() {
         let temp = tempfile::tempdir().unwrap();

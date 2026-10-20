@@ -6076,3 +6076,28 @@ fn terminal_startup_loader_animates_in_files_and_sessions_and_clears_on_failure(
     assert!(!screen.contains("Starting terminal"));
     assert!(screen.contains("terminal exited during startup"));
 }
+
+#[test]
+fn background_inventory_reconciliation_preserves_selection_and_invalidates_changed_hosts() {
+    let (mut a, _rx) = queued_app();
+    a.device = 2;
+    a.work[1].sessions.push(disposable_shell());
+    a.containers.insert(1, vec![container_fixture('a', true)]);
+    let local = a.devices[0].clone();
+    let mut remote = a.devices[1].clone();
+    remote.target = Some("verified-portable-endpoint".into());
+    let mut added = remote.clone();
+    added.id = "new-core".into();
+    added.name = "new core".into();
+    added.target = Some("new-core".into());
+    assert!(a.reconcile_devices(vec![local.clone(), added.clone(), remote.clone()]));
+    assert_eq!(a.devices[a.device - 1].id, remote.id);
+    assert!(a.work[1].sessions.is_empty());
+    assert!(!a.containers.contains_key(&1));
+    assert_eq!(a.devices.len(), a.work.len());
+    assert_eq!(a.devices.len(), a.policies.len());
+    assert!(a.reconcile_devices(vec![local, added]));
+    assert_eq!(a.device, 0);
+    assert_eq!(a.devices.len(), 2);
+    assert_eq!(a.devices.len(), a.work.len());
+}

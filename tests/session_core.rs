@@ -4,6 +4,8 @@ mod containers;
 mod files;
 #[path = "../src/model.rs"]
 mod model;
+#[path = "../src/peer_ssh.rs"]
+mod peer_ssh;
 #[path = "../src/session_titles.rs"]
 mod session_titles;
 #[path = "../src/sessions.rs"]

@@ -2,6 +2,16 @@
 
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
+## v0.1.73
+
+### Features
+
+- Automatically connect all core devices on enrollment, promotion, startup and background retry; directed devices remain excluded.
+- Generate device-local dedicated keys, exchange authenticated public metadata and pin managed host trust without changing personal SSH configuration or transferring private keys.
+- Verify reverse machine/account identities, repair stale aliases using verified portable endpoints, and reconcile newly discovered core devices into the open panel.
+- Serialize inventory/policy mutations and retain removal tombstones so concurrent setup cannot undo local removal or demotion.
+- Add disposable three-helper and native OpenSSH regression fixtures. Old helpers, unsupported routes and offline peers remain pending; active sessions are not restarted.
+
 ## v0.1.72
 
 ### Features

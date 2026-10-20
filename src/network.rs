@@ -15,7 +15,7 @@ use std::{
 };
 const OUTPUT_LIMIT: usize = 256 * 1024;
 /// Execute an allowlisted observation with a strict wall clock and output bound.
-fn bounded_command(program: &str, args: &[&str]) -> Result<String> {
+pub(crate) fn bounded_command(program: &str, args: &[&str]) -> Result<String> {
     // RHEL-family installations place ip outside ordinary users' PATH.
     let executable = if program == "ip" {
         ["/usr/sbin/ip", "/sbin/ip", "/usr/bin/ip"]

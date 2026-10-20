@@ -36,6 +36,8 @@ pub struct DevicePolicy {
 struct PolicyFile {
     #[serde(default)]
     devices: std::collections::BTreeMap<String, DevicePolicy>,
+    #[serde(default)]
+    removed: std::collections::BTreeSet<String>,
 }
 
 const POLICY_LIMIT: usize = 128;
@@ -88,17 +90,76 @@ pub fn devices() -> Result<Vec<Device>> {
     }
     Ok(d)
 }
+// One cross-process lock protects inventory and policy read-modify-write operations.
+thread_local! { static DEVICE_LOCK_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+pub struct DeviceGuard {
+    _file: Option<fs::File>,
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+impl Drop for DeviceGuard {
+    fn drop(&mut self) {
+        DEVICE_LOCK_DEPTH.with(|depth| depth.set(depth.get() - 1));
+    }
+}
+pub fn device_guard() -> Result<DeviceGuard> {
+    use std::os::{
+        fd::AsRawFd,
+        unix::fs::{MetadataExt, OpenOptionsExt},
+    };
+    let file = if DEVICE_LOCK_DEPTH.with(|depth| depth.get() == 0) {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(ensure()?.join("peer-enrollment.lock"))?;
+        let metadata = file.metadata()?;
+        anyhow::ensure!(
+            metadata.is_file()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.nlink() == 1,
+            "unsafe device lock"
+        );
+        anyhow::ensure!(
+            unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0,
+            "device lock unavailable"
+        );
+        Some(file)
+    } else {
+        None
+    };
+    DEVICE_LOCK_DEPTH.with(|depth| depth.set(depth.get() + 1));
+    Ok(DeviceGuard {
+        _file: file,
+        _thread: std::marker::PhantomData,
+    })
+}
 pub fn save_devices(d: &[Device]) -> Result<()> {
+    let _guard = device_guard()?;
     let p = ensure()?.join("devices.json");
-    let tmp = p.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(d)?)?;
-    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
+    let tmp = p.with_extension(format!(
+        "{}.{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    file.write_all(&serde_json::to_vec_pretty(d)?)?;
+    file.sync_all()?;
     fs::rename(tmp, p).context("save enrolled devices")
 }
 
 /// Remove an enrolled remote device and its local policy/route records.
 /// The local execution device is never removable.
 pub fn remove_device(name: &str) -> Result<Device> {
+    let _guard = device_guard()?;
     let mut devices = devices()?;
     let index = devices
         .iter()
@@ -112,6 +173,7 @@ pub fn remove_device(name: &str) -> Result<Device> {
 
     let mut policies = read_policies()?;
     policies.devices.remove(&removed.id);
+    policies.removed.insert(removed.id.clone());
     write_policies(&policies)?;
     let _ = remove_route(removed.target.as_deref().unwrap_or_default());
     Ok(removed)
@@ -120,6 +182,7 @@ pub fn remove_device(name: &str) -> Result<Device> {
 /// Change only the SSH target for an enrolled device. Its stable machine id,
 /// posture and remote configuration remain unchanged.
 pub fn update_target(device: &Device, target: &str) -> Result<Device> {
+    let _guard = device_guard()?;
     anyhow::ensure!(device.target.is_some(), "the local device cannot be edited");
     anyhow::ensure!(valid_target(target), "invalid SSH target");
     let mut devices = devices()?;
@@ -170,7 +233,7 @@ fn read_policies() -> Result<PolicyFile> {
     );
     let policies: PolicyFile = serde_json::from_slice(&fs::read(path)?)?;
     anyhow::ensure!(
-        policies.devices.len() <= POLICY_LIMIT,
+        policies.devices.len() <= POLICY_LIMIT && policies.removed.len() <= POLICY_LIMIT,
         "too many device policies"
     );
     Ok(policies)
@@ -178,7 +241,7 @@ fn read_policies() -> Result<PolicyFile> {
 
 fn write_policies(policies: &PolicyFile) -> Result<()> {
     anyhow::ensure!(
-        policies.devices.len() <= POLICY_LIMIT,
+        policies.devices.len() <= POLICY_LIMIT && policies.removed.len() <= POLICY_LIMIT,
         "too many device policies"
     );
     let dir = ensure()?;
@@ -231,7 +294,18 @@ pub fn policy(device: &Device) -> Result<DevicePolicy> {
         .unwrap_or_default())
 }
 
+pub fn peer_removed(id: &str) -> Result<bool> {
+    Ok(read_policies()?.removed.contains(id))
+}
+pub fn allow_explicit_enrollment(id: &str) -> Result<()> {
+    let _guard = device_guard()?;
+    let mut policies = read_policies()?;
+    policies.removed.remove(id);
+    write_policies(&policies)
+}
+
 pub fn set_access(device: &Device, access: AccessMode) -> Result<DevicePolicy> {
+    let _guard = device_guard()?;
     anyhow::ensure!(device.target.is_some(), "the local device is always core");
     let mut policies = read_policies()?;
     let entry = policies.devices.entry(device.id.clone()).or_default();
@@ -242,6 +316,7 @@ pub fn set_access(device: &Device, access: AccessMode) -> Result<DevicePolicy> {
 }
 
 pub fn set_availability(device: &Device, availability: Availability) -> Result<DevicePolicy> {
+    let _guard = device_guard()?;
     anyhow::ensure!(
         device.target.is_some(),
         "the local device is always available"
@@ -428,6 +503,39 @@ pub fn ssh(target: &str, interactive: bool) -> Result<std::process::Command> {
         anyhow::bail!("invalid SSH target")
     };
     let mut c = std::process::Command::new("ssh");
+    if let Some((identity, known_hosts)) = crate::peer_ssh::options(target)? {
+        let (account, hostname) = target.split_once('@').context("invalid managed endpoint")?;
+        let hostname = hostname.trim_start_matches('[').trim_end_matches(']');
+        let trust_path = known_hosts
+            .to_str()
+            .context("invalid managed trust path")?
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        c.arg("-i").arg(identity);
+        c.arg("-o")
+            .arg(format!("UserKnownHostsFile=\"{trust_path}\""));
+        for option in [
+            "IdentitiesOnly=yes",
+            "StrictHostKeyChecking=yes",
+            "GlobalKnownHostsFile=/dev/null",
+            "HostKeyAlgorithms=ssh-ed25519",
+            "CheckHostIP=no",
+            "ProxyJump=none",
+            "ProxyCommand=none",
+            "Port=22",
+            "ControlPath=none",
+            "ControlMaster=no",
+        ] {
+            c.args(["-o", option]);
+        }
+        for option in [
+            format!("HostName={hostname}"),
+            format!("HostKeyAlias={hostname}"),
+            format!("User={account}"),
+        ] {
+            c.arg("-o").arg(option);
+        }
+    }
     c.args([
         "-o",
         "ConnectTimeout=6",

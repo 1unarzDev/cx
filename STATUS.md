@@ -1,12 +1,21 @@
 # CX status
 
-## Device pairing and presentation fixes — v0.1.72
+## Automatic core setup — v0.1.73
+
+Core devices automatically exchange verified public keys and enroll reciprocal
+endpoints at startup, on enrollment/promotion, and on background retry. Directed
+devices are excluded. Managed SSH pins and device-local keys leave personal SSH
+config/known_hosts untouched. Failed/offline/old-helper edges remain pending.
+Disposable three-helper startup, stale alias recovery, concurrent removal/demotion,
+and native OpenSSH authentication fixtures pass. Live three-device acceptance and
+signed helper deployment are pending publication; active local sessions stay running.
+
+## Historical device pairing and presentation fixes — v0.1.72
 
 Explicit pairing verifies reverse SSH and enrolls the caller on a compatible remote
 helper. Core posture alone no longer claims proven bidirectional access. Creation
 now has Innovation enrolled after explicit approval, verified host fingerprints and
-a dedicated SSH key. A real reverse CX sessions request succeeded. Tranquility’s
-mesh SSH address returns “No route to host” from both Innovation and Creation.
+a dedicated SSH key. A real reverse CX sessions request succeeded. At that checkpoint Tranquility was unreachable; it is now available for automatic setup testing.
 Only the approved Creation–Innovation SSH trust/authentication entries and Creation’s
 peer registry changed. Networking, installed binaries and active sessions were untouched.
 Codex uses a verified title or neutral provider name while keeping unknown folders

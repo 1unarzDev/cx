@@ -34,10 +34,15 @@ target=args[-2]
 root=pathlib.Path(os.environ['CX_PAIR_FIXTURE'])
 if target=='conception@creation.example': endpoint='creation'; account='conception'
 elif target=='tester@innovation.example': endpoint='innovation'; account='tester'
+elif target=='tester@stale.example': endpoint='innovation'; account='tester'
 else: raise AssertionError('unexpected fixture SSH target')
 mode=os.environ['CX_PAIR_MODE']
+with (root/'connections.jsonl').open('a') as log:
+    log.write(json.dumps(dict(target=target,pid=os.getpid()))+'\n')
 if endpoint=='innovation' and mode=='reverse-trust':
     sys.stderr.write('Host key verification failed.\n');sys.exit(255)
+if target=='tester@stale.example' and mode=='stale-target-failure':
+    sys.stderr.write('No route to host\n');sys.exit(255)
 env=dict(os.environ,HOME=str(root/endpoint/'home'),XDG_STATE_HOME=str(root/endpoint/'state'),USER=account)
 child=subprocess.Popen([os.environ['CX_PAIR_BINARY'],'helper'],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE)
 def read(stream):
@@ -54,7 +59,7 @@ try:
         request=read(sys.stdin.buffer)
         if request is None:break
         with (root/'requests.jsonl').open('a') as log:
-            log.write(json.dumps(dict(endpoint=endpoint,op=request['op']['op']))+'\n')
+            log.write(json.dumps(dict(endpoint=endpoint,target=target,pid=os.getpid(),op=request['op']['op']))+'\n')
         # Distinct machines would have distinct kernel hostnames. Keep actual
         # account/machine identity while avoiding a same-host display-name collision.
         if endpoint=='creation' and request['op']['op']=='peer_enroll':
@@ -65,6 +70,8 @@ try:
             response['result']['capabilities']=[c for c in response['result']['capabilities'] if c!='peer-enroll-v1']
         if endpoint=='innovation' and mode=='reverse-identity' and request['op']['op']=='info':
             response['result']['machine_id']='wrong-return-machine'
+        if target=='tester@stale.example' and mode=='stale-target-identity' and request['op']['op']=='info':
+            response['result']['machine_id']='wrong-preserved-machine'
         write(sys.stdout.buffer,response)
 finally:
     child.stdin.close();child.terminate();child.wait(timeout=3)
@@ -104,6 +111,7 @@ with tempfile.TemporaryDirectory(prefix="cx-peer-pair-") as temporary:
             device("conception", "creation", "conception@creation.example", identity),
         ]))
         (root / "requests.jsonl").write_text("")
+        (root / "connections.jsonl").write_text("")
 
     def pair(mode="success", target="tester@innovation.example"):
         return subprocess.run([binary, "device", "pair", "creation", "--return-target", target],
@@ -137,8 +145,39 @@ with tempfile.TemporaryDirectory(prefix="cx-peer-pair-") as temporary:
     assert result.returncode == 0, result.stderr
     assert len([p for p in json.loads(state("creation", "devices.json").read_text()) if p["target"]]) == 1
     requests = [json.loads(line) for line in (root / "requests.jsonl").read_text().splitlines()]
-    assert any(r == dict(endpoint="innovation", op="info") for r in requests), requests
+    assert any(r["endpoint"] == "innovation" and r["op"] == "info" for r in requests), requests
+    # The same newly opened SSH channel must verify identity and apply mutation.
+    # Verifying one connection while mutating an old cached channel is unsafe.
+    mutations = [r for r in requests if r["op"] == "peer_enroll"]
+    assert len(mutations) == 2, requests
+    for mutation in mutations:
+        earlier = requests[:requests.index(mutation)]
+        assert any(r["op"] == "info" and r["pid"] == mutation["pid"] for r in earlier), requests
     unchanged_security_files()
+
+    # A verified supplied address must not conceal a broken receiver-local alias.
+    # Existing core records keep their endpoint, so that endpoint must also prove
+    # reachability and exact stable identity before pairing can report success.
+    for mode in ("stale-target-failure", "stale-target-identity"):
+        reset()
+        retained = device("tester", "fixture-source", "tester@stale.example")
+        state("creation", "devices.json").write_text(json.dumps([retained]))
+        state("creation", "device-policies.json").write_text(json.dumps({
+            "devices": {retained["id"]: {"access": "core", "availability": "usually_up"}}
+        }))
+        previous_devices = state("creation", "devices.json").read_bytes()
+        previous_policy = state("creation", "device-policies.json").read_bytes()
+        previous_source = state("innovation", "devices.json").read_bytes()
+        result = pair(mode)
+        assert result.returncode != 0, (mode, result.stdout)
+        assert state("creation", "devices.json").read_bytes() == previous_devices, mode
+        assert state("creation", "device-policies.json").read_bytes() == previous_policy, mode
+        assert state("innovation", "devices.json").read_bytes() == previous_source, mode
+        assert policy("innovation", f"{machine}:conception") == "directed", mode
+        connections = [json.loads(line) for line in (root / "connections.jsonl").read_text().splitlines()]
+        assert any(c["target"] == "tester@innovation.example" for c in connections), connections
+        assert any(c["target"] == "tester@stale.example" for c in connections), connections
+        unchanged_security_files()
 
     for mode, identity in (("old-helper", None), ("success", "wrong-machine:conception"),
                            ("reverse-trust", None), ("reverse-identity", None)):
@@ -203,4 +242,5 @@ print(json.dumps(dict(result="PASS", real_helpers=True, reciprocal_enrollment=Tr
                       reverse_identity_probed=True, old_helper_rejected=True,
                       identity_mismatch_rejected=True, reverse_trust_fail_closed=True,
                       reverse_identity_rejected=True, directed_peer_preserved=True,
+                      preserved_endpoint_reverified=True, verification_and_mutation_same_channel=True,
                       self_and_endpoint_collision_rejected=True, ssh_and_routes_unchanged=True)))

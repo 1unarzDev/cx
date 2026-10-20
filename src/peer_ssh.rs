@@ -1,7 +1,7 @@
 //! Dedicated SSH identity and verified pins for automatically paired core peers.
 //! Private keys never leave this host; caller must authenticate peer metadata.
 use crate::{model::Device, store};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -14,7 +14,9 @@ use std::{
         unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     },
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant},
 };
 const MAX: u64 = 1024 * 1024;
 #[derive(Default, Serialize, Deserialize)]
@@ -78,13 +80,93 @@ fn open(path: &Path, append: bool) -> Result<File> {
     Ok(f)
 }
 fn read(path: &Path) -> Result<String> {
-    if !path.try_exists()? {
-        return Ok(String::new());
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
     }
     let mut s = String::new();
     open(path, false)?.take(MAX + 1).read_to_string(&mut s)?;
     anyhow::ensure!(s.len() as u64 <= MAX, "SSH file too large");
     Ok(s)
+}
+
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Never buffer unbounded command output or block forever on key generation.
+fn keygen(command: &mut Command, timeout: Duration) -> Result<Vec<u8>> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command.spawn().context("cannot start ssh-keygen")?;
+    let result = (|| -> Result<Vec<u8>> {
+        let mut stdout = child.stdout.take().context("missing ssh-keygen output")?;
+        let fd = stdout.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        anyhow::ensure!(
+            flags >= 0 && unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } >= 0,
+            "cannot bound ssh-keygen output"
+        );
+        let deadline = Instant::now() + timeout;
+        let mut output = Vec::new();
+        loop {
+            let mut bytes = [0; 1024];
+            loop {
+                match stdout.read(&mut bytes) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        anyhow::ensure!(output.len() + n <= 4096, "ssh-keygen output too large");
+                        output.extend_from_slice(&bytes[..n]);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            if let Some(status) = child.try_wait()? {
+                anyhow::ensure!(status.success(), "ssh-keygen failed");
+                // Drain bytes written between the previous read and observed exit.
+                loop {
+                    match stdout.read(&mut bytes) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            anyhow::ensure!(
+                                output.len() + n <= 4096,
+                                "ssh-keygen output too large"
+                            );
+                            output.extend_from_slice(&bytes[..n]);
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                return Ok(output);
+            }
+            anyhow::ensure!(Instant::now() < deadline, "ssh-keygen timed out");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    })();
+    if result.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    result
+}
+fn private_key(path: &Path) -> Result<String> {
+    let private = open(path, false)?;
+    anyhow::ensure!(
+        private.metadata()?.mode() & 0o077 == 0,
+        "unsafe private key permissions"
+    );
+    let output = keygen(
+        Command::new("ssh-keygen")
+            .args(["-y", "-P", "", "-f"])
+            .arg(path),
+        Duration::from_secs(10),
+    )?;
+    public_key(std::str::from_utf8(&output)?)
 }
 struct Locked {
     root: PathBuf,
@@ -110,55 +192,97 @@ impl Locked {
     }
     fn write(&self, name: &str, text: &str) -> Result<()> {
         anyhow::ensure!(text.len() as u64 <= MAX, "SSH file too large");
-        let mut f = open(&self.root.join(name), false)?;
-        f.set_len(0)?;
-        f.write_all(text.as_bytes())?;
-        f.sync_all()?;
-        Ok(())
+        anyhow::ensure!(
+            !name.is_empty() && !name.contains('/') && name != "." && name != "..",
+            "invalid managed SSH filename"
+        );
+        let destination = self.root.join(name);
+        // Validate any existing file, including dangling symlinks, before replacement.
+        let _ = read(&destination)?;
+        let (temporary, mut file) = (0..64)
+            .find_map(|_| {
+                let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+                let path =
+                    self.root
+                        .join(format!(".{name}.{}.{}.tmp", std::process::id(), sequence));
+                match OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                    .open(&path)
+                {
+                    Ok(file) => Some(Ok((path, file))),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                    Err(error) => Some(Err(error)),
+                }
+            })
+            .context("cannot reserve managed SSH temporary file")??;
+        let result = (|| -> Result<()> {
+            file.write_all(text.as_bytes())?;
+            file.sync_all()?;
+            fs::rename(&temporary, &destination)?;
+            File::open(&self.root)?.sync_all()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
     }
     fn identity(&self) -> Result<String> {
         let key = self.root.join("id_ed25519");
-        if let Ok(meta) = fs::symlink_metadata(&key) {
-            anyhow::ensure!(
-                !meta.file_type().is_symlink(),
-                "unsafe SSH private key symlink"
-            );
+        match fs::symlink_metadata(&key) {
+            Ok(_) => return private_key(&key),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
-        if !key.try_exists()? {
-            // Reserve the filename safely; ssh-keygen refuses existing files, so generate
-            // in a private staging directory while holding the per-host lock.
-            let staging = self.root.join("generate");
-            fs::create_dir(&staging)
-                .context("unfinished SSH identity generation; inspect peer-ssh/generate")?;
-            fs::set_permissions(&staging, fs::Permissions::from_mode(0o700))?;
-            let output = Command::new("ssh-keygen")
-                .args(["-q", "-t", "ed25519", "-N", "", "-C", "cx-peer"])
-                .arg("-f")
-                .arg(staging.join("identity"))
-                .output()?;
-            if !output.status.success() {
-                let _ = fs::remove_dir_all(&staging);
-                bail!("cannot generate CX peer SSH identity");
+        // A completed staging private key survives interruption and is reused.
+        // Unknown contents are left alone; neither retries nor cleanup remove them.
+        let staging = self.root.join("generate");
+        private_dir(&staging)?;
+        let staged_key = staging.join("identity");
+        match fs::symlink_metadata(&staged_key) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                anyhow::ensure!(
+                    fs::symlink_metadata(staging.join("identity.pub"))
+                        .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound),
+                    "staged public key has no private key; refusing identity rotation"
+                );
+                keygen(
+                    Command::new("ssh-keygen")
+                        .args(["-q", "-t", "ed25519", "-N", "", "-C", "cx-peer"])
+                        .arg("-f")
+                        .arg(&staged_key),
+                    Duration::from_secs(10),
+                )?;
             }
-            fs::rename(staging.join("identity"), &key)?;
-            fs::rename(
-                staging.join("identity.pub"),
-                self.root.join("id_ed25519.pub"),
-            )?;
-            fs::remove_dir(&staging)?;
+            Err(error) => return Err(error.into()),
         }
-        let private = open(&key, false)?;
+        let public = private_key(&staged_key)
+            .context("staged SSH key is incomplete; preserved without rotation")?;
+        open(&staged_key, false)?.sync_all()?;
+        // The lock serializes CX writers. Existing final paths are never replaced.
+        let source = std::ffi::CString::new(staged_key.as_os_str().as_encoded_bytes())?;
+        let destination = std::ffi::CString::new(key.as_os_str().as_encoded_bytes())?;
         anyhow::ensure!(
-            private.metadata()?.mode() & 0o077 == 0,
-            "unsafe private key permissions"
+            unsafe {
+                libc::renameat2(
+                    libc::AT_FDCWD,
+                    source.as_ptr(),
+                    libc::AT_FDCWD,
+                    destination.as_ptr(),
+                    libc::RENAME_NOREPLACE,
+                )
+            } == 0,
+            "cannot install staged SSH identity without replacing existing file"
         );
-        // Derive from private key, rather than trusting an independently replaced .pub.
-        let output = Command::new("ssh-keygen")
-            .args(["-y", "-P", "", "-f"])
-            .arg(&key)
-            .output()?;
-        anyhow::ensure!(output.status.success(), "cannot read CX peer SSH identity");
-        public_key(std::str::from_utf8(&output.stdout)?)
+        File::open(&self.root)?.sync_all()?;
+        // This is only a convenience public copy; derive the authoritative value
+        // from the private key on every call, including after an interrupted write.
+        self.write("id_ed25519.pub", &format!("{public}\n"))?;
+        Ok(public)
     }
 }
 fn root() -> PathBuf {
@@ -457,5 +581,132 @@ mod tests {
         .is_err());
         symlink(&ssh, temp.path().join("alias")).unwrap();
         assert!(Locked::new(temp.path().join("alias/subdir")).is_err());
+    }
+    #[test]
+    fn atomic_replacement_preserves_old_reader_and_orphan_staging() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let locked = Locked::new(temp.path().join("peer-ssh")).unwrap();
+        locked.write("known_hosts", "old complete pin\n").unwrap();
+        let mut old_reader = File::open(locked.root.join("known_hosts")).unwrap();
+        // Simulate a crash leaving an unpublished temporary file.
+        let orphan = locked.root.join(".known_hosts.crashed.tmp");
+        fs::write(&orphan, "partial new pin").unwrap();
+        locked.write("known_hosts", "new complete pin\n").unwrap();
+        let mut old = String::new();
+        old_reader.read_to_string(&mut old).unwrap();
+        assert_eq!(old, "old complete pin\n");
+        assert_eq!(
+            read(&locked.root.join("known_hosts")).unwrap(),
+            "new complete pin\n"
+        );
+        assert_eq!(fs::read_to_string(orphan).unwrap(), "partial new pin");
+        assert_eq!(
+            fs::metadata(locked.root.join("known_hosts"))
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert!(locked
+            .write("known_hosts", &"x".repeat(MAX as usize + 1))
+            .is_err());
+        assert_eq!(
+            read(&locked.root.join("known_hosts")).unwrap(),
+            "new complete pin\n"
+        );
+        let dangling = locked.root.join("peers.json");
+        symlink(locked.root.join("missing"), &dangling).unwrap();
+        assert!(locked.write("peers.json", "{}").is_err());
+        assert!(fs::symlink_metadata(dangling)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+    #[test]
+    fn interrupted_identity_generation_reuses_private_key_without_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let locked = Locked::new(temp.path().join("peer-ssh")).unwrap();
+        let staging = locked.root.join("generate");
+        private_dir(&staging).unwrap();
+        fs::write(staging.join("unrelated"), "preserve").unwrap();
+        keygen(
+            Command::new("ssh-keygen")
+                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+                .arg(staging.join("identity")),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        let public = private_key(&staging.join("identity")).unwrap();
+        let private = fs::read(staging.join("identity")).unwrap();
+        // Public staging file exists, as after a kill before final-key promotion.
+        assert_eq!(locked.identity().unwrap(), public);
+        assert_eq!(fs::read(locked.root.join("id_ed25519")).unwrap(), private);
+        assert_eq!(
+            fs::read_to_string(staging.join("unrelated")).unwrap(),
+            "preserve"
+        );
+        fs::remove_file(locked.root.join("id_ed25519.pub")).unwrap();
+        // A crash after promotion but before the convenience public copy is harmless.
+        assert_eq!(locked.identity().unwrap(), public);
+        assert_eq!(fs::read(locked.root.join("id_ed25519")).unwrap(), private);
+    }
+    #[test]
+    fn empty_staging_retries_and_incomplete_key_fails_without_rotation() {
+        let temp = tempfile::tempdir().unwrap();
+        let locked = Locked::new(temp.path().join("peer-ssh")).unwrap();
+        private_dir(&locked.root.join("generate")).unwrap();
+        let first = locked.identity().unwrap();
+        assert_eq!(first, locked.identity().unwrap());
+        let other = Locked::new(temp.path().join("other-peer-ssh")).unwrap();
+        private_dir(&other.root.join("generate")).unwrap();
+        let path = other.root.join("generate/identity");
+        fs::write(&path, "partial private key").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(other.identity().is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "partial private key");
+        assert!(!other.root.join("id_ed25519").exists());
+    }
+    #[test]
+    fn concurrent_configuration_serializes_and_keeps_one_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("peer-ssh");
+        let ssh = temp.path().join("ssh");
+        // Real startup races include concurrent directory creation.
+        let handles: Vec<_> = (0..6)
+            .map(|_| {
+                let root = root.clone();
+                let ssh = ssh.clone();
+                std::thread::spawn(move || {
+                    configure_at(root.clone(), &ssh, &peer(), &key(1), &key(2)).unwrap();
+                    Locked::new(root).unwrap().identity().unwrap()
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert!(results.iter().all(|r| r == &results[0]));
+        let contents = read(&ssh.join("authorized_keys")).unwrap();
+        assert_eq!(contents.lines().count(), 1);
+        assert_eq!(
+            Locked::new(root.clone())
+                .unwrap()
+                .pins()
+                .unwrap()
+                .endpoints
+                .len(),
+            1
+        );
+        assert_eq!(read(&root.join("known_hosts")).unwrap().lines().count(), 1);
+    }
+    #[test]
+    fn keygen_time_and_output_are_bounded() {
+        let start = Instant::now();
+        assert!(keygen(Command::new("sleep").arg("10"), Duration::from_millis(30)).is_err());
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(keygen(
+            Command::new("head").args(["-c", "5000", "/dev/zero"]),
+            Duration::from_secs(2)
+        )
+        .is_err());
     }
 }

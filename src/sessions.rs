@@ -2576,13 +2576,25 @@ pub fn capture_pane(id: &str, cols: u16, rows: u16) -> Result<serde_json::Value>
         .arg(rows.to_string());
     let _ = output(resize);
     let dead = field(true, id, "#{pane_dead}").map_or(true, |d| d != "0");
-    let status = if dead {
-        field(true, id, "#{pane_dead_status}")
-            .ok()
-            .and_then(|s| s.parse::<i32>().ok())
-    } else {
-        None
-    };
+    // tmux can report pane_dead before pane_dead_status is populated. When the
+    // pane has just died, wait briefly for the exit code so the panel shows it
+    // instead of settling on "finished".
+    let mut status = None;
+    if dead {
+        for attempt in 0..15 {
+            if let Some(code) = field(true, id, "#{pane_dead_status}")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .and_then(|s| s.parse::<i32>().ok())
+            {
+                status = Some(code);
+                break;
+            }
+            if attempt < 14 {
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
     let mut capture = tmux(true)?;
     capture.args(["capture-pane", "-e", "-p", "-t", id]);
     let screen = output(capture).unwrap_or_default();

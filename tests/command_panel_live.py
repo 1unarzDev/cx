@@ -33,8 +33,13 @@ with tempfile.TemporaryDirectory(prefix='cx-panel-') as tmp:
         # 2. Send "world\n" as hex and read echoed result + exit status.
         hexkeys = ''.join(f'{b:02x}' for b in b'world\n')
         assert helper(dict(op='pane_input', args=dict(id=pane, hex=hexkeys)))['result']['delivered']
-        time.sleep(0.5)
-        cap = helper(dict(op='capture_pane', args=dict(id=pane, cols=60, rows=10)))['result']
+        deadline = time.time() + 5
+        cap = None
+        while time.time() < deadline:
+            cap = helper(dict(op='capture_pane', args=dict(id=pane, cols=60, rows=10)))['result']
+            if cap['alive'] is False and cap['status'] is not None:
+                break
+            time.sleep(0.1)
         assert any('got:world' in l for l in cap['lines']), cap
         assert cap['alive'] is False and cap['status'] == 3, cap
         # input to a dead pane is a no-op

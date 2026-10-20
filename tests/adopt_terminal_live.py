@@ -21,9 +21,44 @@ import time
 binary = str(Path(sys.argv[1]).resolve())
 here = Path(__file__).resolve().parent
 scope = Path('/proc/sys/kernel/yama/ptrace_scope')
+
+
+def _subid(path, name):
+    try:
+        for line in Path(path).read_text().splitlines():
+            who, base, count = line.split(':')
+            if who in (name, str(os.getuid())) and int(count) >= 1:
+                return int(base)
+    except OSError:
+        pass
+    return None
+
+
+def _reexec_sandbox():
+    """Re-run inside a user namespace that permits ptrace and setgroups.
+
+    `unshare -Ur` denies setgroups, which the relay's privilege drop needs, so a
+    two-range map (via newuidmap/newgidmap) is used instead. CI sets
+    CX_ADOPT_CAPABLE=1 with a real capability relay and skips this path.
+    """
+    import pwd
+    name = pwd.getpwuid(os.getuid()).pw_name
+    sub_u, sub_g = _subid('/etc/subuid', name), _subid('/etc/subgid', name)
+    if sub_u is None or sub_g is None or not shutil.which('newuidmap'):
+        print(json.dumps(dict(result='SKIP', reason='no subuid range or newuidmap for ptrace sandbox')))
+        sys.exit(0)
+    os.environ['CX_ADOPT_NS'] = '1'
+    os.execvp('unshare', [
+        'unshare', '-U',
+        '--map-users', f'0:{os.getuid()}:1', '--map-users', f'1:{sub_u}:1',
+        '--map-groups', f'0:{os.getgid()}:1', '--map-groups', f'1:{sub_g}:1',
+        sys.executable, *sys.argv])
+
+
 if (os.geteuid() != 0 and os.environ.get('CX_ADOPT_CAPABLE') != '1'
+        and os.environ.get('CX_ADOPT_NS') != '1'
         and scope.exists() and scope.read_text().strip() != '0'):
-    os.execvp('unshare', ['unshare', '-Ur', sys.executable, *sys.argv])
+    _reexec_sandbox()
 
 EMULATOR = r'''
 import fcntl, os, pty, struct, sys, termios, time

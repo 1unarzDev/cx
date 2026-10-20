@@ -6,4 +6,5 @@
 void cx_guard(int *argc, char **argv);
 int cx_guard_recheck(pid_t pid);
 void cx_drop_caps(void);
+void cx_drop_privileges(void);
 #endif

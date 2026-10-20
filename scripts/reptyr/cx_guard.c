@@ -9,6 +9,7 @@
 // leader's parent (reptyr's terminal emulator). Identities are re-checked
 // after each ptrace attach, and every capability is dropped before relaying.
 #include <errno.h>
+#include <grp.h>
 #include <linux/capability.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +25,20 @@ struct cx_allowed {
     unsigned long long start;
 };
 static struct cx_allowed allowed[3];
+static uid_t owner_uid;
+static gid_t owner_gid;
+
+// The user CX is acting for: the sudo caller when escalated, else ourselves.
+static void resolve_owner(void) {
+    const char *su = getenv("SUDO_UID");
+    const char *sg = getenv("SUDO_GID");
+    owner_uid = getuid();
+    owner_gid = getgid();
+    if (owner_uid == 0 && su && sg) {
+        owner_uid = (uid_t)strtoul(su, NULL, 10);
+        owner_gid = (gid_t)strtoul(sg, NULL, 10);
+    }
+}
 
 struct cx_stat {
     pid_t ppid, session;
@@ -61,7 +76,7 @@ static int same_owner(pid_t pid) {
     char path[64], line[256];
     struct stat st;
     snprintf(path, sizeof path, "/proc/%d", (int)pid);
-    if (stat(path, &st) || st.st_uid != getuid() || st.st_gid != getgid())
+    if (stat(path, &st) || st.st_uid != owner_uid || st.st_gid != owner_gid)
         return 0;
     snprintf(path, sizeof path, "/proc/%d/status", (int)pid);
     FILE *f = fopen(path, "re");
@@ -71,9 +86,9 @@ static int same_owner(pid_t pid) {
     while (fgets(line, sizeof line, f)) {
         unsigned a, b, c, d;
         if (sscanf(line, "Uid: %u %u %u %u", &a, &b, &c, &d) == 4)
-            uid_ok = a == getuid() && b == getuid() && c == getuid() && d == getuid();
+            uid_ok = a == owner_uid && b == owner_uid && c == owner_uid && d == owner_uid;
         if (sscanf(line, "Gid: %u %u %u %u", &a, &b, &c, &d) == 4)
-            gid_ok = a == getgid() && b == getgid() && c == getgid() && d == getgid();
+            gid_ok = a == owner_gid && b == owner_gid && c == owner_gid && d == owner_gid;
     }
     fclose(f);
     return uid_ok && gid_ok;
@@ -103,6 +118,7 @@ void cx_guard(int *argc, char **argv) {
         puts(CX_REPTYR_VERSION);
         exit(0);
     }
+    resolve_owner();
     if (*argc != 8 || strcmp(argv[1], "-T"))
         refuse("usage: cx-reptyr -T TARGET START LEADER START HOLDER START");
     unsigned long long v[6];
@@ -143,4 +159,23 @@ void cx_drop_caps(void) {
         perror("cx-reptyr: capset");
         exit(1);
     }
+}
+
+// After the terminal is stolen, relay as the owner, never as root. Any file
+// capability is gone and, under sudo, root is dropped irrevocably.
+void cx_drop_privileges(void) {
+    // Give up uid/gid before capabilities: dropping CAP_SETUID first would make
+    // the setresuid below impossible. Leaving root also clears the caps.
+    if (getuid() == 0 || geteuid() == 0) {
+        if (setgroups(1, &owner_gid) || setresgid(owner_gid, owner_gid, owner_gid) ||
+            setresuid(owner_uid, owner_uid, owner_uid)) {
+            perror("cx-reptyr: drop privileges");
+            exit(1);
+        }
+        if (owner_uid != 0 && setuid(0) == 0) {
+            fprintf(stderr, "cx-reptyr: privileges were not dropped\n");
+            exit(1);
+        }
+    }
+    cx_drop_caps();
 }

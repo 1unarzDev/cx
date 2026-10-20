@@ -75,7 +75,7 @@ diff -ruN a/platform/linux/linux_ptrace.c b/platform/linux/linux_ptrace.c
  int ptrace_finish_attach(struct ptrace_child *child, pid_t pid) {
 diff -ruN a/reptyr.c b/reptyr.c
 --- a/reptyr.c	2026-10-19 21:01:55.945652163 -0500
-+++ b/reptyr.c	2026-10-19 21:01:55.966076969 -0500
++++ b/reptyr.c	2026-10-19 21:40:54.860644834 -0500
 @@ -35,6 +35,7 @@
  #include "reptyr.h"
  #include "reallocarray.h"
@@ -93,11 +93,11 @@ diff -ruN a/reptyr.c b/reptyr.c
      while ((opt = getopt(argc, argv, "hlLsTvV")) != -1) {
          switch (opt) {
          case 'h':
-@@ -271,6 +274,7 @@
-             }
-             return 1;
+@@ -296,6 +299,7 @@
          }
-+        cx_drop_caps();
-     } else {
-         printf("Opened a new pty: %s\n", ptsname(pty));
-         fflush(stdout);
+     }
+ 
++    cx_drop_privileges();
+     setup_raw(&saved_termios);
+     do_proxy(pty);
+     do {

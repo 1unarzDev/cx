@@ -169,8 +169,14 @@ pub fn discover(root: &Path, uid: u32, exclude: &Exclusions) -> (Vec<Terminal>, 
             continue;
         };
         if stat.session == pid as i32 {
+            // A terminal led by CX itself (another viewer or a CLI invocation)
+            // is never adoptable, independent of which session is running.
+            let is_cx_leader = exclude
+                .executables
+                .iter()
+                .any(|e| executable(root, pid).as_deref() == Some(e.as_path()));
             if let Some(index) = pts_index(stat.tty) {
-                if !exclude.sessions.contains(&stat.session) {
+                if !exclude.sessions.contains(&stat.session) && !is_cx_leader {
                     leaders.push(Terminal {
                         index,
                         leader: Process {
@@ -570,6 +576,24 @@ mod tests {
         };
         let (found, _) = discover(root, uid(), &exclude);
         assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn a_cx_viewer_terminal_is_never_listed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // A separate CX viewer leads its own terminal; it must not be adoptable
+        // even though it is not the calling process's session.
+        process(root, 40, 40, 136 << 8 | 7, "/home/u/.local/bin/cx");
+        process(root, 41, 41, 136 << 8 | 8, "/usr/bin/bash");
+        let exclude = Exclusions {
+            executables: vec!["/home/u/.local/bin/cx".into()],
+            sessions: vec![],
+            managed_socket: None,
+        };
+        let (found, _) = discover(root, uid(), &exclude);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].leader.pid, 41);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # CX status
 
-## Automatic core setup — v0.1.73
+## Automatic core setup — v0.1.74
 
 Core devices automatically exchange verified public keys and enroll reciprocal
 endpoints at startup, on enrollment/promotion, and on background retry. Directed

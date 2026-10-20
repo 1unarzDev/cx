@@ -1,6 +1,6 @@
 # Validation record
 
-## Automatic core setup — v0.1.73
+## Automatic core setup — v0.1.74
 
 PASS — locked Rust suite: 625 tests passed, one protected live test ignored;
 additional inventory reconciliation regression passed. Full suite rerun is required

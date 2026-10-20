@@ -268,7 +268,8 @@ impl Locked {
         let destination = std::ffi::CString::new(key.as_os_str().as_encoded_bytes())?;
         anyhow::ensure!(
             unsafe {
-                libc::renameat2(
+                libc::syscall(
+                    libc::SYS_renameat2,
                     libc::AT_FDCWD,
                     source.as_ptr(),
                     libc::AT_FDCWD,

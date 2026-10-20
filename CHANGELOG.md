@@ -2,7 +2,7 @@
 
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
-## v0.1.73
+## v0.1.74
 
 ### Features
 
@@ -10,7 +10,14 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 - Generate device-local dedicated keys, exchange authenticated public metadata and pin managed host trust without changing personal SSH configuration or transferring private keys.
 - Verify reverse machine/account identities, repair stale aliases using verified portable endpoints, and reconcile newly discovered core devices into the open panel.
 - Serialize inventory/policy mutations and retain removal tombstones so concurrent setup cannot undo local removal or demotion.
+- Keep staged key installation compatible with static musl builds through the Linux no-replace rename syscall.
 - Add disposable three-helper and native OpenSSH regression fixtures. Old helpers, unsupported routes and offline peers remain pending; active sessions are not restarted.
+
+## v0.1.73
+
+### Fixes
+
+- Unpublished candidate: static builds exposed an unavailable libc renameat2 symbol. Superseded by v0.1.74 using the Linux syscall directly.
 
 ## v0.1.72
 

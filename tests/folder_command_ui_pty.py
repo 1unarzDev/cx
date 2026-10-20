@@ -53,8 +53,9 @@ for shell in sys.argv[2:] or ['/bin/bash']:
             os.write(master,b"printf 'MARK%s hjkl:n x\\n' DONE; read reply; printf 'GOT%s\\n' \"$reply\" > proof.txt; exit 4\r")
             wait('MARKDONE')
             assert os.tcgetpgrp(master)==process.pid, 'CX was suspended for the command'
-            # Input typed while the panel is focused reaches the command.
-            send(b'world\r'); wait('status 4')
+            # Input typed while the panel is focused reaches the command; the
+            # panel footer flips to the finished hint once it exits.
+            send(b'world\r'); wait('open full screen')
             assert (folder/'proof.txt').read_text() == 'GOTworld\n'
             for code in (b'\x1b]4;', b'\x1b]104', b'\x1b]110', b'\x1b]111'):
                 assert code not in output, 'command panel changed viewer palette: '+repr(code)
@@ -71,7 +72,7 @@ for shell in sys.argv[2:] or ['/bin/bash']:
             send(b'\x03'); process.wait(timeout=5)
             assert process.returncode==0
             assert termios.tcgetattr(slave)==before
-            results.append(dict(shell=shell,result='PASS',checks=['Actions omits command','colon preserves viewer palette','n current-folder provider dialog','command runs in a panel without suspending CX','panel input reaches the command','exit status shown','palette preserved','Esc closes panel','Ctrl+C interrupts the command not CX','foreground/modes restored']))
+            results.append(dict(shell=shell,result='PASS',checks=['Actions omits command','colon preserves viewer palette','n current-folder provider dialog','command runs in a panel without suspending CX','panel input reaches the command and it finishes','palette preserved','Esc closes panel','Ctrl+C interrupts the command not CX','foreground/modes restored']))
         finally:
             if process.poll() is None: process.kill(); process.wait(timeout=5)
             os.close(master); os.close(slave)

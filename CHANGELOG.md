@@ -14,7 +14,7 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 ### Fixes
 - Keep `cx sessions` managed-only; discover outside-CX terminals through a separate request merged by the UI, so scripts and the CLI are unchanged.
 - Never list a CX viewer's own terminal as an adoptable session.
-- Build the portable `cx-reptyr` against kernel UAPI headers under musl.
+- Build the portable `cx-reptyr` as a static binary with the system compiler.
 
 ## v0.1.76
 

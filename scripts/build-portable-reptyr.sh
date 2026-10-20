@@ -37,9 +37,10 @@ cp "$here/reptyr/cx_guard.c" "$here/reptyr/cx_guard.h" .
 if [ "${CX_REPTYR_DYNAMIC:-}" = 1 ]; then
     make -s CFLAGS=-O2 reptyr
 else
-    # musl-gcc omits kernel UAPI headers (linux/*.h, asm/*.h); add them after
-    # musl's own include dirs so libc headers still win.
-    make -s CC=musl-gcc CFLAGS="-O2 -idirafter /usr/include" LDFLAGS=-static reptyr
+    # Static link with the system compiler: reptyr needs kernel UAPI headers
+    # (linux/*.h, asm/*.h) that musl-gcc omits, and it uses no NSS, so a static
+    # glibc build is self-contained with no dynamic interpreter.
+    make -s CC="${CC:-cc}" CFLAGS="-O2" LDFLAGS="-static" reptyr
     if readelf -l ./reptyr | grep -q INTERP; then echo 'dynamic cx-reptyr refused' >&2; exit 1; fi
 fi
 [ "$(./reptyr -v)" = 'cx-reptyr 1 (reptyr 0.10.0)' ]

@@ -1,19 +1,45 @@
 # Validation record
 
-## Managed SSH portability — v0.1.76
+## Managed SSH portability and live mesh — v0.1.76
 
 PASS — `cargo test --locked`: 629 passed, one protected live test ignored.
 `/tmp/cx-auto-umask-full.log`. Three-helper startup/six-edge/stale-alias/race fixture
 passes with coordinator and remote helpers using umask 0002:
-`/tmp/cx-auto-umask-mesh.log`. Recovery regression accepts only an empty legacy
-root beneath a private owned parent, and rejects nonempty/exposed roots.
+`/tmp/cx-auto-umask-mesh.log`. Recovery accepts only an empty legacy root beneath
+a private owned parent, and rejects nonempty/exposed roots.
 
-LIVE — signed v0.1.75 installed atomically on all three core devices without
-provider/tmux restarts. Creation's umask exposed the fixed permission issue;
-Tranquility's old Directed Innovation entry required a one-time Core migration.
-Tranquility–Innovation pairing reports verified ready. Creation–Innovation session
-requests work. Final all-six verification remains pending intermittent Tranquility
-mesh connectivity (SSH reports No route to host). No networking changes made.
+LIVE PASS — signed v0.1.75 installed atomically on all three core devices. Ordinary
+CX startup formed all pairs after Tranquility woke up. Actual installed-CX session
+requests succeeded in all six directions (two original sessions on Innovation,
+zero on Creation/Tranquility). Repeated sync reports `state: ready`, three verified
+pairs and no pending entries. Evidence: `/tmp/cx-v073-live-edges.json`,
+`/tmp/cx-v076-live-sync.json`. Before/after session PID/start/boot/socket/process
+identities and personal SSH config/known_hosts hashes match on all three devices:
+`/tmp/cx-v073-{before,after}.json`. No provider/tmux restart or networking changes.
+
+Creation's umask 0002 exposed the directory issue. Its empty managed root/staging
+were repaired under verified private parents; the source fix covers new directory
+creation and safe legacy-root recovery. Tranquility's old Innovation record was
+explicitly migrated from Directed to Core; robots stayed Directed. A sleeping
+Tranquility returned No route to host; retry after wake completed setup.
+
+RELEASE — v0.1.75 fully passed release jobs and signed publication. v0.1.76 source
+passed main-branch CI and x86/ARM static builds/distro checks. Release attempt 1
+passed loader behavior but hit a fixture teardown race (temporary directory still
+receiving shell-exit writes). A focused test-only fix now waits on pinned identities
+of the fixture's own tmux server/panes before deleting state; two isolated runs pass.
+Release attempt 2 passed all checks and published signed assets:
+https://github.com/1unarzDev/cx/actions/runs/39351284914 . Main-branch CI also passed:
+https://github.com/1unarzDev/cx/actions/runs/39351283454 .
+
+FINAL LIVE PASS — installed signed v0.1.76 on Innovation, Creation and Tranquility
+through the normal verified updater, serially and without restarting sessions.
+All six actual installed-CX session requests passed again. All three report
+`cx 0.1.76`; baseline personal SSH config/known_hosts hashes and all original
+session process identities are preserved. Evidence:
+`/tmp/cx-v076-final-{before,after,edges,sync}.json`. The temporary verified public
+host-key exchange file was removed. Release source/tag: `6cdf1b5` / `v0.1.76`.
+The fixture teardown fix is a test-only follow-up, `a381eae`.
 
 ## Automatic core setup — v0.1.75
 

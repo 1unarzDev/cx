@@ -1339,6 +1339,7 @@ pub(super) fn render_at(
             rect,
         );
     }
+    render_command_panel(frame, app, area);
     if !app.creating {
         notifications::render(
             frame,
@@ -2149,5 +2150,199 @@ fn origin_label(kind: &str) -> &'static str {
         "tmux" => "tmux",
         "screen" => "screen",
         _ => "external",
+    }
+}
+
+/// Floating live view of a command running in a managed pane.
+fn render_command_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let Some(panel) = app.command_panel.as_ref() else {
+        return;
+    };
+    let width = (panel.cols + 2).min(area.width.saturating_sub(2));
+    let height = (panel.rows + 2).min(area.height.saturating_sub(2));
+    let rect = popup(area, width, height);
+    frame.render_widget(Clear, rect);
+    let state = if panel.alive {
+        " · running".to_string()
+    } else {
+        match panel.status {
+            Some(0) | None => " · done".into(),
+            Some(code) => format!(" · exited {code}"),
+        }
+    };
+    let title = format!("{}{}", safe_label(&panel.label), state);
+    let outer = block(title, true).padding(Padding::horizontal(1));
+    let inner = outer.inner(rect);
+    frame.render_widget(outer, rect);
+    let body = Rect {
+        height: inner.height.saturating_sub(1),
+        ..inner
+    };
+    let lines: Vec<Line> = panel
+        .lines
+        .iter()
+        .take(body.height as usize)
+        .map(|raw| ansi_line(raw))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), body);
+    let hint = if panel.alive {
+        "Esc close · Ctrl+O expand · keys go to the command"
+    } else {
+        "Esc close · Ctrl+O open full screen"
+    };
+    frame.render_widget(
+        Paragraph::new(hint).style(muted()),
+        Rect {
+            y: inner.y + inner.height.saturating_sub(1),
+            height: 1,
+            ..inner
+        },
+    );
+}
+
+/// Parse a tmux `capture-pane -e` line (SGR escapes) into a styled Line.
+fn ansi_line(raw: &str) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut style = Style::default();
+    let mut text = String::new();
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    let flush = |spans: &mut Vec<Span<'static>>, text: &mut String, style: Style| {
+        if !text.is_empty() {
+            spans.push(Span::styled(std::mem::take(text), style));
+        }
+    };
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            let mut j = i + 2;
+            while j < bytes.len() && !bytes[j].is_ascii_alphabetic() {
+                j += 1;
+            }
+            if j < bytes.len() {
+                if bytes[j] == b'm' {
+                    flush(&mut spans, &mut text, style);
+                    style = apply_sgr(style, &raw[i + 2..j]);
+                }
+                // Non-color control sequences are dropped.
+                i = j + 1;
+                continue;
+            }
+            break;
+        }
+        let ch = raw[i..].chars().next().unwrap_or(' ');
+        if !ch.is_control() {
+            text.push(ch);
+        }
+        i += ch.len_utf8();
+    }
+    flush(&mut spans, &mut text, style);
+    if spans.is_empty() {
+        spans.push(Span::raw(""));
+    }
+    Line::from(spans)
+}
+
+fn ansi_color(code: u8) -> Color {
+    match code {
+        0 => Color::Black,
+        1 => Color::Red,
+        2 => Color::Green,
+        3 => Color::Yellow,
+        4 => Color::Blue,
+        5 => Color::Magenta,
+        6 => Color::Cyan,
+        7 => Color::Gray,
+        8 => Color::DarkGray,
+        9 => Color::LightRed,
+        10 => Color::LightGreen,
+        11 => Color::LightYellow,
+        12 => Color::LightBlue,
+        13 => Color::LightMagenta,
+        14 => Color::LightCyan,
+        _ => Color::White,
+    }
+}
+
+/// Apply one SGR parameter list to a style. Unsupported codes are ignored.
+fn apply_sgr(mut style: Style, params: &str) -> Style {
+    let parts: Vec<i64> = if params.is_empty() {
+        vec![0]
+    } else {
+        params.split(';').map(|p| p.parse().unwrap_or(0)).collect()
+    };
+    let mut k = 0;
+    while k < parts.len() {
+        match parts[k] {
+            0 => style = Style::default(),
+            1 => style = style.add_modifier(Modifier::BOLD),
+            2 | 22 => style = style.remove_modifier(Modifier::BOLD),
+            3 => style = style.add_modifier(Modifier::ITALIC),
+            4 => style = style.add_modifier(Modifier::UNDERLINED),
+            7 => style = style.add_modifier(Modifier::REVERSED),
+            30..=37 => style = style.fg(ansi_color(parts[k] as u8 - 30)),
+            90..=97 => style = style.fg(ansi_color(parts[k] as u8 - 90 + 8)),
+            40..=47 => style = style.bg(ansi_color(parts[k] as u8 - 40)),
+            100..=107 => style = style.bg(ansi_color(parts[k] as u8 - 100 + 8)),
+            39 => style.fg = None,
+            49 => style.bg = None,
+            38 | 48 => {
+                let fg = parts[k] == 38;
+                if parts.get(k + 1) == Some(&5) {
+                    if let Some(&n) = parts.get(k + 2) {
+                        let color = Color::Indexed(n.clamp(0, 255) as u8);
+                        style = if fg { style.fg(color) } else { style.bg(color) };
+                    }
+                    k += 2;
+                } else if parts.get(k + 1) == Some(&2) {
+                    if let (Some(&r), Some(&g), Some(&b)) =
+                        (parts.get(k + 2), parts.get(k + 3), parts.get(k + 4))
+                    {
+                        let color = Color::Rgb(r as u8, g as u8, b as u8);
+                        style = if fg { style.fg(color) } else { style.bg(color) };
+                    }
+                    k += 4;
+                }
+            }
+            _ => {}
+        }
+        k += 1;
+    }
+    style
+}
+
+#[cfg(test)]
+mod ansi_tests {
+    use super::*;
+
+    #[test]
+    fn parses_colors_bold_and_strips_cursor_moves() {
+        let line = ansi_line("\x1b[1;31mred\x1b[0m plain\x1b[5;10Hmoved");
+        let spans: Vec<(String, Style)> = line
+            .spans
+            .iter()
+            .map(|s| (s.content.to_string(), s.style))
+            .collect();
+        assert_eq!(spans[0].0, "red");
+        assert_eq!(spans[0].1.fg, Some(Color::Red));
+        assert!(spans[0].1.add_modifier.contains(Modifier::BOLD));
+        // The reset clears bold and color for the following text.
+        assert!(spans[1].1.fg.is_none() && !spans[1].1.add_modifier.contains(Modifier::BOLD));
+        // The cursor-move sequence is dropped, its literal text kept.
+        let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, "red plainmoved");
+    }
+
+    #[test]
+    fn parses_256_and_truecolor() {
+        let line = ansi_line("\x1b[38;5;200mx\x1b[48;2;1;2;3my");
+        assert_eq!(line.spans[0].style.fg, Some(Color::Indexed(200)));
+        assert_eq!(line.spans[1].style.bg, Some(Color::Rgb(1, 2, 3)));
+    }
+
+    #[test]
+    fn plain_text_is_one_span() {
+        let line = ansi_line("just text");
+        let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, "just text");
     }
 }

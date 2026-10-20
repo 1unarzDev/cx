@@ -5,6 +5,7 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 ## Unreleased
 
 ### Changes
+- Run a folder command (`:`) in a floating panel with live colored output and input instead of leaving CX; Esc closes it, Ctrl+O opens it full screen, and the exit status is shown.
 - List shells and Claude/Codex sessions started outside CX (terminal windows, SSH logins, other tmux/screen servers and `docker exec` clients) in Sessions.
 - Move such a terminal into CX with Enter, keeping its processes, PIDs and in-progress work running. The now-empty single-window source terminal closes itself; multiplexers and server emulators are left alone. Install the guarded relay with `cx device ptrace NAME install`; each move asks for a password through a panel, with no persistent privilege. `cx device ptrace NAME enable` optionally grants a no-prompt capability relay.
 

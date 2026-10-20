@@ -46,24 +46,32 @@ for shell in sys.argv[2:] or ['/bin/bash']:
             send(b'\x1b'); time.sleep(.2); read()
             send(b'n'); wait('New session'); wait('Shell')
             send(b'\x1b'); time.sleep(.2); read()
+            # A command runs in a floating panel; CX is never suspended. The
+            # markers use printf format strings so the panel OUTPUT differs from
+            # the command text echoed in the input box (which also appears).
             send(b':'); wait('Run command')
-            # Includes browser shortcut characters, safely treated as command text.
-            os.write(master,b"printf '%s' 'hjkl:n x' > proof.txt\r")
-            wait('Command ended:'); assert process.poll() is None
+            os.write(master,b"printf 'MARK%s hjkl:n x\\n' DONE; read reply; printf 'GOT%s\\n' \"$reply\" > proof.txt; exit 4\r")
+            wait('MARKDONE')
+            assert os.tcgetpgrp(master)==process.pid, 'CX was suspended for the command'
+            # Input typed while the panel is focused reaches the command.
+            send(b'world\r'); wait('status 4')
+            assert (folder/'proof.txt').read_text() == 'GOTworld\n'
             for code in (b'\x1b]4;', b'\x1b]104', b'\x1b]110', b'\x1b]111'):
-                assert code not in output, 'native command changed viewer palette: '+repr(code)
-            assert (folder/'proof.txt').read_text() == 'hjkl:n x'
-            send(b'\r'); wait('Returned from'); wait('proof.txt')
+                assert code not in output, 'command panel changed viewer palette: '+repr(code)
+            # Esc closes the panel and returns to the browser.
+            send(b'\x1b'); wait('before.txt')
             assert os.tcgetpgrp(master)==process.pid
+            # Ctrl+C is delivered to the running command, not to CX.
             send(b':'); wait('Run command')
-            os.write(master,b'echo INTERRUPT_READY; sleep 30\r')
-            wait('INTERRUPT_READY'); time.sleep(.3); os.write(master,b'\x03')
-            wait('Command ended:'); assert process.poll() is None, 'Ctrl+C killed viewer'
-            send(b'\r'); wait('Returned from'); assert process.poll() is None
+            os.write(master,b"printf 'READY%s\\n' NOW; sleep 30\r")
+            wait('READYNOW'); time.sleep(.3); send(b'\x03')
+            # The panel footer flips to the finished hint once the command ends.
+            wait('open full screen'); assert process.poll() is None, 'Ctrl+C killed viewer'
+            send(b'\x1b'); wait('before.txt'); assert process.poll() is None
             send(b'\x03'); process.wait(timeout=5)
             assert process.returncode==0
             assert termios.tcgetattr(slave)==before
-            results.append(dict(shell=shell,result='PASS',checks=['Actions omits command','colon preserves viewer palette','n current-folder provider dialog','colon input owns browser shortcuts','exact current folder execution','Enter restores browser and refreshes new file','Ctrl+C interrupts command and preserves viewer','foreground/modes restored']))
+            results.append(dict(shell=shell,result='PASS',checks=['Actions omits command','colon preserves viewer palette','n current-folder provider dialog','command runs in a panel without suspending CX','panel input reaches the command','exit status shown','palette preserved','Esc closes panel','Ctrl+C interrupts the command not CX','foreground/modes restored']))
         finally:
             if process.poll() is None: process.kill(); process.wait(timeout=5)
             os.close(master); os.close(slave)

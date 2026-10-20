@@ -905,28 +905,28 @@ fn external_terminal(terminal: &crate::adoption::Terminal) -> Option<Session> {
                 .and_then(|c| shell_command_label(&c))
         })
         .flatten();
-    let directory = if current_thread_unknown {
-        String::new()
-    } else {
-        native
-            .as_ref()
-            .and_then(|m| m.directory.clone())
-            .or_else(|| {
-                let p = process.as_ref()?;
-                provider_directory(provider, p)
-            })
-            .or_else(|| {
-                provider_directory(
-                    "shell",
-                    &ProcessIdentity {
-                        pid: leader,
-                        start_ticks: terminal.leader.start_ticks.clone(),
-                        native_id: None,
-                    },
-                )
-            })
-            .unwrap_or_default()
-    };
+    // A discovered terminal always has a real working directory to show. When
+    // the native workspace can't be proven (daemon-backed Codex), fall back to
+    // the leader's actual cwd rather than leaving it blank.
+    let directory = native
+        .as_ref()
+        .filter(|_| !current_thread_unknown)
+        .and_then(|m| m.directory.clone())
+        .or_else(|| {
+            let p = process.as_ref()?;
+            provider_directory(provider, p)
+        })
+        .or_else(|| {
+            provider_directory(
+                "shell",
+                &ProcessIdentity {
+                    pid: leader,
+                    start_ticks: terminal.leader.start_ticks.clone(),
+                    native_id: None,
+                },
+            )
+        })
+        .unwrap_or_default();
     let name = if provider == "shell" {
         foreground
             .as_ref()
@@ -2404,9 +2404,10 @@ pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
         if !session.id.starts_with('$') || !session.id[1..].bytes().all(|b| b.is_ascii_digit()) {
             bail!("invalid external session identity");
         }
-    } else if !session.id.starts_with("cx-")
-        || session.id.len() != 67
-        || !session.id[3..].bytes().all(|b| b.is_ascii_hexdigit())
+    } else if !(session.id.starts_with("cx-")
+        && session.id.len() == 67
+        && session.id[3..].bytes().all(|b| b.is_ascii_hexdigit()))
+        && !valid_pane_name(&session.id)
     {
         bail!("invalid managed session identity");
     }
@@ -2499,8 +2500,9 @@ pub fn command_panel(request: &RunCommand, cols: u16, rows: u16) -> Result<serde
     // The command runs under a login shell on the pane's own tty, so colors and
     // interactive prompts work. Output and status persist via remain-on-exit.
     let invocation = if fish {
+        // fish -c has no $0 slot, so the command is argv[1] directly.
         format!(
-            "exec {} -l -c {} cx-command {}",
+            "exec {} -l -c {} {}",
             quote(&shell),
             quote("eval $argv[1]"),
             quote(&request.command)

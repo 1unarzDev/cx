@@ -43,4 +43,6 @@ Session adoption (`src/adoption.rs`) discovers outside-CX terminals by reading `
 
 Container transfers use optional source/destination `ContainerScope` fields on `TransferSpec`, dispatched with `scoped_transfer` whenever either field is present. The transfer adapter routes file I/O through `container_file_action`; ordinary `transfer` rejects scopes. Container I/O reuses private framed helper channels, with engine/user/lifecycle validation before and after each request. Container state/checkpoints stay under the selected user's private tools directory; queued UI mutations capture their scope at enqueue time. Rebuild uses the Node CLI with unique selected workspace labels and requires `devcontainer-rebuild-v1` on remote hosts.
 
+Command panels run a `:` command in a transient managed pane (`sessions::command_panel`, kept with `remain-on-exit`) and poll `capture_pane`/`pane_input`/`pane_close` over a dedicated worker lane. `src/ui/rendering.rs` parses the styled capture (`ansi_line`) into the floating panel.
+
 [Back to README](../README.md)

@@ -432,6 +432,22 @@ enum Dialog {
     Reset,
 }
 
+/// Live view of a command running in a managed pane, shown in a floating panel.
+struct CommandPanel {
+    device: usize,
+    id: String,
+    cols: u16,
+    rows: u16,
+    /// Raw styled lines (SGR intact) from the last capture.
+    lines: Vec<String>,
+    alive: bool,
+    status: Option<i32>,
+    /// A capture request is outstanding.
+    inflight: bool,
+    last_poll: std::time::Instant,
+    /// The command, for the panel title.
+    label: String,
+}
 struct App {
     devices: Vec<Device>,
     policies: Vec<store::DevicePolicy>,
@@ -513,6 +529,11 @@ struct App {
     pending_attach: Option<(usize, Session, bool)>,
     command_target: Option<(usize, String)>,
     pending_command: Option<(Device, RunCommand)>,
+    pending_command_panel: Option<(usize, RunCommand)>,
+    command_panel: Option<CommandPanel>,
+    /// A command panel to attach full-screen on the next loop turn.
+    pending_panel_expand: Option<(usize, Session)>,
+    command_panel_label: Option<String>,
     pending_terminal: Option<Device>,
     pending_add: Option<String>,
     pending_adopt: Option<(usize, Session, crate::model::ExternalOrigin)>,
@@ -640,6 +661,10 @@ impl App {
             pending_attach: None,
             command_target: None,
             pending_command: None,
+            pending_command_panel: None,
+            command_panel: None,
+            pending_panel_expand: None,
+            command_panel_label: None,
             pending_terminal: None,
             pending_add: None,
             pending_adopt: None,
@@ -1343,6 +1368,39 @@ impl App {
                 NoticeKind::Warning,
                 "Update CX on this device to move terminals".into(),
             );
+        }
+    }
+    /// Route a key to the open command panel: Esc closes it, Ctrl+O expands it
+    /// full-screen, everything else is delivered to the running command.
+    fn command_panel_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if key.code == KeyCode::Esc {
+            if let Some(panel) = self.command_panel.take() {
+                self.send(panel.device, Operation::PaneClose { id: panel.id });
+            }
+            return;
+        }
+        if ctrl && key.code == KeyCode::Char('o') {
+            if let Some(panel) = self.command_panel.as_ref() {
+                if panel.alive {
+                    self.pending_panel_expand = Some((panel.device, command_panel_session(panel)));
+                }
+            }
+            return;
+        }
+        let alive = self.command_panel.as_ref().is_some_and(|p| p.alive);
+        if !alive {
+            // A finished command only accepts closing or expanding to scroll.
+            return;
+        }
+        if let Some(bytes) = encode_key(key) {
+            let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+            let (id, device) = self
+                .command_panel
+                .as_ref()
+                .map(|p| (p.id.clone(), p.device))
+                .unwrap();
+            self.send(device, Operation::PaneInput { id, hex });
         }
     }
     fn check_providers(&mut self, device: usize) {
@@ -4057,6 +4115,58 @@ impl App {
                     ),
                 }
             }
+            Operation::CommandPanel { .. } => {
+                if let (Some(id), Some(cols), Some(rows)) = (
+                    value["id"].as_str(),
+                    value["cols"].as_u64(),
+                    value["rows"].as_u64(),
+                ) {
+                    self.command_panel = Some(CommandPanel {
+                        device: reply.device,
+                        id: id.to_string(),
+                        cols: cols as u16,
+                        rows: rows as u16,
+                        lines: vec![],
+                        alive: true,
+                        status: None,
+                        inflight: false,
+                        last_poll: std::time::Instant::now()
+                            - std::time::Duration::from_millis(500),
+                        label: self.command_panel_label.take().unwrap_or_default(),
+                    });
+                } else {
+                    self.set_notice_as(
+                        NoticeKind::Error,
+                        "Command could not start · refresh before retrying".into(),
+                    );
+                }
+            }
+            Operation::CapturePane { id, .. } => {
+                let mut finished = None;
+                if let Some(panel) = self.command_panel.as_mut().filter(|p| p.id == *id) {
+                    panel.inflight = false;
+                    panel.last_poll = std::time::Instant::now();
+                    if let Some(lines) = value["lines"].as_array() {
+                        panel.lines = lines
+                            .iter()
+                            .filter_map(|l| l.as_str().map(str::to_owned))
+                            .collect();
+                    }
+                    let was_alive = panel.alive;
+                    panel.alive = value["alive"].as_bool().unwrap_or(false);
+                    panel.status = value["status"].as_i64().map(|s| s as i32);
+                    if was_alive && !panel.alive {
+                        finished = Some(panel.status);
+                    }
+                }
+                if let Some(status) = finished {
+                    self.set_notice(match status {
+                        Some(0) | None => "Command finished".into(),
+                        Some(code) => format!("Command exited with status {code}"),
+                    });
+                }
+            }
+            Operation::PaneInput { .. } | Operation::PaneClose { .. } => {}
             Operation::Jobs | Operation::TransferJobs => {
                 if let Some(rows) = value["jobs"].as_array() {
                     for job in rows {
@@ -4493,6 +4603,11 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        // A command panel captures input (including Ctrl+C) while it is open.
+        if self.command_panel.is_some() {
+            self.command_panel_key(key);
+            return;
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.request_quit();
             return;
@@ -4640,8 +4755,8 @@ impl App {
                     Input::Command => {
                         if !self.text.trim().is_empty() {
                             if let Some((d, directory)) = self.command_target.take() {
-                                self.pending_command = Some((
-                                    self.devices[d].clone(),
+                                self.pending_command_panel = Some((
+                                    d,
                                     RunCommand {
                                         directory,
                                         command: std::mem::take(&mut self.text),
@@ -8233,6 +8348,8 @@ fn can_restart(app: &App) -> bool {
         && !app.creating
         && app.pending_attach.is_none()
         && app.pending_command.is_none()
+        && app.pending_command_panel.is_none()
+        && app.command_panel.is_none()
         && app.pending_add.is_none()
         && app.network_add_target.is_none()
         && app.pending_add_via.is_none()
@@ -8309,19 +8426,32 @@ fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender<Reply>) {
         closed: bool,
     }
     fn endpoint(task: &Task) -> String {
-        task.execution.target.clone().unwrap_or_else(|| {
-            if matches!(
+        // Command-panel traffic (start, frequent captures, input) runs on its
+        // own lane so it is never serialized behind slow refreshes like a
+        // container inventory, and captures stay responsive.
+        let panel = matches!(
+            task.op,
+            Operation::CommandPanel { .. }
+                | Operation::CapturePane { .. }
+                | Operation::PaneInput { .. }
+                | Operation::PaneClose { .. }
+        );
+        match &task.execution.target {
+            Some(target) if panel => format!("panel:{target}"),
+            Some(target) => target.clone(),
+            None if panel => "<local-command>".into(),
+            None if matches!(
                 task.op,
                 Operation::List { .. }
                     | Operation::ListPage { .. }
                     | Operation::Preview { .. }
                     | Operation::PreviewPage { .. }
-            ) {
+            ) =>
+            {
                 "<local-files-read>".into()
-            } else {
-                "<local>".into()
             }
-        })
+            None => "<local>".into(),
+        }
     }
     let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
     let input = shared.clone();
@@ -8817,6 +8947,52 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             );
             dirty = true;
         }
+        if let Some((d, command)) = app.pending_command_panel.take() {
+            // Open a floating panel for the command instead of leaving CX. A
+            // panel is already open? Close it first.
+            if let Some(panel) = app.command_panel.take() {
+                app.send(panel.device, Operation::PaneClose { id: panel.id });
+            }
+            let (cols, rows) = command_panel_size(screen.terminal.size()?);
+            app.command_panel_label = Some(safe_text(&command.command));
+            app.send(
+                d,
+                Operation::CommandPanel {
+                    request: command,
+                    cols,
+                    rows,
+                },
+            );
+            app.set_notice("Running…".into());
+            dirty = true;
+        }
+        // Poll the open command panel for fresh output while it runs.
+        if let Some(panel) = app.command_panel.as_ref() {
+            let due = panel.last_poll.elapsed() >= Duration::from_millis(100);
+            if !panel.inflight && due && (panel.alive || panel.lines.is_empty()) {
+                let (id, device, cols, rows) =
+                    (panel.id.clone(), panel.device, panel.cols, panel.rows);
+                if app.send(device, Operation::CapturePane { id, cols, rows }) {
+                    if let Some(panel) = app.command_panel.as_mut() {
+                        panel.inflight = true;
+                    }
+                }
+            }
+        }
+        if let Some((d, session)) = app.pending_panel_expand.take() {
+            cleanup_native_preview(&mut screen, &mut native_preview)?;
+            screen.suspend()?;
+            let result = sessions::attach(&app.devices[d], &session, false);
+            screen.resume()?;
+            last_interaction = Instant::now();
+            if let Err(e) = result {
+                app.set_notice_as(
+                    NoticeKind::Error,
+                    safe_text(&format!("Expand failed: {e:#}")),
+                );
+            }
+            dirty = true;
+        }
         if let Some((device, command)) = app.pending_command.take() {
             cleanup_native_preview(&mut screen, &mut native_preview)?;
             screen.suspend()?;
@@ -8908,11 +9084,12 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 .draw(|frame| render_with_native(frame, &app, Some(&mut native_preview)))?;
             dirty = false;
         }
-        if event::poll(notifications::poll_interval(
-            app.notice_started,
-            app.notice_deadline,
-            Instant::now(),
-        ))? {
+        let mut wait =
+            notifications::poll_interval(app.notice_started, app.notice_deadline, Instant::now());
+        if app.command_panel.as_ref().is_some_and(|p| p.alive) {
+            wait = wait.min(Duration::from_millis(80));
+        }
+        if event::poll(wait)? {
             for (input, observed) in read_input_batch()? {
                 if !wheel_reports.accepts(&input, observed) {
                     continue;
@@ -9027,4 +9204,65 @@ fn file_endpoint_label(device: &Device, scope: &Option<ContainerScope>) -> Strin
         .as_ref()
         .map(|c| format!("{host} / {}", safe_label(&c.name)))
         .unwrap_or(host)
+}
+
+/// Encode a key for delivery to a command pane, or None if it has no bytes.
+fn encode_key(key: KeyEvent) -> Option<Vec<u8>> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    Some(match key.code {
+        KeyCode::Char(c) => {
+            if ctrl {
+                let b = (c.to_ascii_uppercase() as u8).wrapping_sub(0x40);
+                if b < 0x20 || b == 0x7f {
+                    vec![b]
+                } else {
+                    return None;
+                }
+            } else {
+                let mut buf = [0u8; 4];
+                c.encode_utf8(&mut buf).as_bytes().to_vec()
+            }
+        }
+        KeyCode::Enter => vec![b'\r'],
+        KeyCode::Backspace => vec![0x7f],
+        KeyCode::Tab => vec![b'\t'],
+        KeyCode::Up => b"\x1b[A".to_vec(),
+        KeyCode::Down => b"\x1b[B".to_vec(),
+        KeyCode::Right => b"\x1b[C".to_vec(),
+        KeyCode::Left => b"\x1b[D".to_vec(),
+        KeyCode::Home => b"\x1b[H".to_vec(),
+        KeyCode::End => b"\x1b[F".to_vec(),
+        KeyCode::PageUp => b"\x1b[5~".to_vec(),
+        KeyCode::PageDown => b"\x1b[6~".to_vec(),
+        KeyCode::Delete => b"\x1b[3~".to_vec(),
+        _ => return None,
+    })
+}
+/// Inner panel size for a command panel, bounded for readability.
+fn command_panel_size(area: ratatui::layout::Size) -> (u16, u16) {
+    let cols = area.width.saturating_sub(6).clamp(20, 200);
+    let rows = area.height.saturating_sub(6).clamp(4, 120);
+    (cols, rows)
+}
+/// A minimal Session describing a command pane, for full-screen expand.
+fn command_panel_session(panel: &CommandPanel) -> Session {
+    Session {
+        id: panel.id.clone(),
+        name: panel.label.clone(),
+        directory: String::new(),
+        provider: "shell".into(),
+        host: String::new(),
+        account: String::new(),
+        pid: 0,
+        started: String::new(),
+        boot_id: String::new(),
+        external: false,
+        socket: None,
+        launcher: None,
+        process: None,
+        container: None,
+        activity: None,
+        agent_tasks: vec![],
+        origin: None,
+    }
 }

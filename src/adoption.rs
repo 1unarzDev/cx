@@ -407,14 +407,6 @@ pub fn start_ticks(pid: u32) -> Option<String> {
 pub fn terminal_of(pid: u32) -> Option<(i32, Option<u32>)> {
     stat(Path::new("/proc"), pid).map(|s| (s.foreground, pts_index(s.tty)))
 }
-/// Effective capabilities of a process, from its status.
-pub fn effective_capabilities(pid: u32) -> Option<u64> {
-    fs::read_to_string(format!("/proc/{pid}/status"))
-        .ok()?
-        .lines()
-        .find_map(|l| l.strip_prefix("CapEff:"))
-        .and_then(|v| u64::from_str_radix(v.trim(), 16).ok())
-}
 /// Relay executables whose stolen masters belong to adopted CX sessions.
 pub fn relay_executables() -> Vec<PathBuf> {
     let mut found = vec![PathBuf::from(REPTYR_PATH)];

@@ -2299,8 +2299,8 @@ fn command_input_pins_host_folder_and_owns_printable_shortcuts() {
     assert_eq!(a.text, "printf n:hjl");
     a.browser = Some(Browser::new(1, "/elsewhere".into()));
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let (device, command) = a.pending_command.as_ref().unwrap();
-    assert_eq!(device.id, a.devices[0].id);
+    let (device, command) = a.pending_command_panel.as_ref().unwrap();
+    assert_eq!(*device, 0);
     assert_eq!(command.directory, "/projects/quoted ' robot");
     assert_eq!(command.command, "printf n:hjl");
     assert!(a.input.is_none() && a.text.is_empty());

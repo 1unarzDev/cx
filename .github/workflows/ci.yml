@@ -20,6 +20,8 @@ jobs:
           cargo build --locked
           docker pull ubuntu:24.04
           python3 tests/session_chooser_pty.py target/debug/cx
+          python3 tests/command_panel_live.py target/debug/cx
+          python3 tests/folder_command_ui_pty.py target/debug/cx
           python3 tests/startup_directory_pty.py target/debug/cx
           python3 tests/terminal_startup_loader_pty.py target/debug/cx
           python3 tests/terminal_startup_readiness_live.py target/debug/cx

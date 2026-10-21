@@ -466,13 +466,18 @@ fn automatic_provider_name(
     provider: &str,
     native: Option<&crate::session_titles::NativeMetadata>,
     directory_unknown: bool,
+    tracked_title: Option<&str>,
     fallback: String,
 ) -> String {
     // A proven selected thread can have a title before its directory arrives.
-    // Conversely an unknown selection must not revive an old workspace/title.
     let selected = native.filter(|metadata| !metadata.current_thread_unknown);
     if let Some(title) = selected.and_then(|metadata| metadata.title.clone()) {
         title
+    } else if let Some(title) = tracked_title.filter(|t| !t.is_empty()) {
+        // The provider sets its terminal title to the live thread's name even
+        // when CX cannot pin the thread's directory, so a project switch in the
+        // agent's own control panel still relabels the session.
+        title.to_string()
     } else if directory_unknown {
         provider.into()
     } else {
@@ -607,24 +612,24 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
     let current_thread_unknown = native.as_ref().is_some_and(|m| m.current_thread_unknown)
         || (tracked_title.is_some()
             && native.as_ref().and_then(|m| m.directory.as_ref()).is_none());
-    let directory = if current_thread_unknown {
-        String::new()
-    } else {
-        native
-            .as_ref()
-            .and_then(|m| m.directory.clone())
-            .or_else(|| {
-                process
-                    .as_ref()
-                    .filter(|_| provider != "shell")
-                    .and_then(|process| provider_directory(provider, process))
-            })
-            .or_else(|| {
-                let o = adopted?;
-                provider_directory("shell", &o.leader)
-            })
-            .unwrap_or(field(managed, id, "#{pane_current_path}")?)
-    };
+    // Always resolve a real directory to show. A proven thread gives its own
+    // working directory; otherwise fall back to the process's current directory
+    // (the launch location) rather than leaving the row "Directory unavailable".
+    let directory = native
+        .as_ref()
+        .filter(|_| !current_thread_unknown)
+        .and_then(|m| m.directory.clone())
+        .or_else(|| {
+            process
+                .as_ref()
+                .filter(|_| provider != "shell")
+                .and_then(|process| provider_directory(provider, process))
+        })
+        .or_else(|| {
+            let o = adopted?;
+            provider_directory("shell", &o.leader)
+        })
+        .unwrap_or(field(managed, id, "#{pane_current_path}")?);
     let saved_name = prior
         .as_ref()
         .map(|s| current_session_name(s, provider, &directory))
@@ -649,6 +654,7 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
             provider,
             native.as_ref(),
             current_thread_unknown,
+            tracked_title.as_deref(),
             saved_name,
         )
     } else {
@@ -937,6 +943,7 @@ fn external_terminal(terminal: &crate::adoption::Terminal) -> Option<Session> {
             provider,
             native.as_ref(),
             current_thread_unknown,
+            None,
             workspace_session_name(provider, &directory),
         )
     };
@@ -3217,23 +3224,37 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            automatic_provider_name("codex", Some(&named), true, fallback.clone()),
+            automatic_provider_name("codex", Some(&named), true, None, fallback.clone()),
             "Current task"
         );
         let unselected = crate::session_titles::NativeMetadata {
             current_thread_unknown: true,
             ..named
         };
+        // With no live terminal title, an unknown selection falls back to the
+        // provider name rather than reviving a stale workspace label.
         assert_eq!(
-            automatic_provider_name("codex", Some(&unselected), true, fallback.clone()),
+            automatic_provider_name("codex", Some(&unselected), true, None, fallback.clone()),
+            "codex"
+        );
+        // The provider's own terminal title (the switched thread's name) relabels
+        // the session even when CX cannot pin the thread's directory.
+        assert_eq!(
+            automatic_provider_name(
+                "codex",
+                Some(&unselected),
+                true,
+                Some("project-nebula"),
+                fallback.clone()
+            ),
+            "project-nebula"
+        );
+        assert_eq!(
+            automatic_provider_name("codex", None, true, None, fallback.clone()),
             "codex"
         );
         assert_eq!(
-            automatic_provider_name("codex", None, true, fallback.clone()),
-            "codex"
-        );
-        assert_eq!(
-            automatic_provider_name("codex", None, false, fallback.clone()),
+            automatic_provider_name("codex", None, false, None, fallback.clone()),
             fallback
         );
     }

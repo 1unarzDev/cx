@@ -168,15 +168,20 @@ def main():
                     and row['directory']==str(first), 'actual initial Codex metadata missing')
                 capture('initial')
                 native_title = tmux('display-message', '-p', '-t', sid, '#{pane_title}').strip()
+                # When the thread cannot be pinned the row still shows a real
+                # directory (the launch cwd), never "Directory unavailable", and
+                # the name mirrors whatever title Codex itself is displaying.
                 tmux('select-pane', '-t', sid, '-T', 'CX awaiting native title')
-                expect(lambda row: row['directory']=='',
-                       'pending selection incorrectly revived original directory')
+                expect(lambda row: row['directory']==str(first) and row['name']=='codex',
+                       'pending selection should fall back to the launch directory')
                 tmux('select-pane', '-t', sid, '-T', 'Synthetic unmatched title')
-                expect(lambda row: row['directory']=='',
-                       'contradictory selection incorrectly reused singleton writer')
+                expect(lambda row: row['directory']==str(first)
+                       and row['name']=='Synthetic unmatched title',
+                       'an unpinned thread should mirror the live terminal title and keep a directory')
                 tmux('select-pane', '-t', sid, '-T', native_title)
-                expect(lambda row: row['directory']==str(first),
-                       'restored native title did not recover directory')
+                expect(lambda row: row['directory']==str(first)
+                       and row['name']=='Synthetic first project',
+                       'restored native title did not recover directory and name')
                 send('/resume')
                 deadline = time.monotonic()+5
                 while 'Resume a previous session' not in capture('picker'):
@@ -198,7 +203,7 @@ def main():
                 print(json.dumps({'result': 'PASS', 'checks': [
                     'actual production Codex launch uses isolated process/title tracking',
                     'idle native resume picker updates exact name and selected directory',
-                    'pending/contradictory title clears singleton directory',
+                    'an unpinned thread shows the launch directory and the live title, never "unavailable"',
                     'terminal identity preserved', 'no inference on idle switch']}))
             finally:
                 if app is not None and app.poll() is None:

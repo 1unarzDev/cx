@@ -4,6 +4,13 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.81
+
+### Fixes
+- Always show a session's working directory — the agent's launch directory when CX can't pin its native thread — instead of "Directory unavailable".
+- Relabel an agent session when its own control panel switches to another project, following the title the agent displays in its terminal.
+
+
 ## v0.1.80
 
 ### Changes

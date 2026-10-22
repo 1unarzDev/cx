@@ -77,6 +77,10 @@ pub struct CreateSession {
     pub name: String,
     #[serde(default)]
     pub resume: bool,
+    /// Resume by choosing from the provider's own session picker rather than the
+    /// most recent session. Ignored unless `resume` is set.
+    #[serde(default)]
+    pub resume_pick: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", content = "args", rename_all = "snake_case")]

@@ -416,7 +416,7 @@ enum Dialog {
     ContainerConfirm(usize, crate::containers::Container, String),
     Device(ChooseDevice),
     Provider(usize, Option<String>),
-    Permissions(usize, String, String, bool),
+    Permissions(usize, String, String, bool, bool),
     AgentStart(usize, String, String),
     Matching(usize, String, String, Session),
     Jobs,
@@ -1703,6 +1703,7 @@ impl App {
             provider,
             name: String::new(),
             resume: false,
+            resume_pick: false,
         };
         self.creating = self.send(
             d,
@@ -2867,16 +2868,20 @@ impl App {
         }
     }
     fn resume_at(&mut self, d: usize, directory: String, provider: String) {
-        self.dialog = Some(Dialog::Permissions(d, directory, provider, true));
+        self.dialog = Some(Dialog::Permissions(d, directory, provider, true, false));
+        self.dialog_selected = 0;
+    }
+    fn resume_pick_at(&mut self, d: usize, directory: String, provider: String) {
+        self.dialog = Some(Dialog::Permissions(d, directory, provider, true, true));
         self.dialog_selected = 0;
     }
     fn create_at(&mut self, d: usize, directory: String, provider: String) {
         if provider != "shell" {
-            self.dialog = Some(Dialog::Permissions(d, directory, provider, false));
+            self.dialog = Some(Dialog::Permissions(d, directory, provider, false, false));
             self.dialog_selected = 0;
             return;
         }
-        self.create_permission_session(d, directory, provider, false, false);
+        self.create_permission_session(d, directory, provider, false, false, false);
     }
     fn create_permission_session(
         &mut self,
@@ -2885,6 +2890,7 @@ impl App {
         provider: String,
         yolo: bool,
         resume: bool,
+        pick: bool,
     ) {
         let key = unique_key();
         // Execution helper generates the label after resolving the directory.
@@ -2895,6 +2901,7 @@ impl App {
             provider: provider.clone(),
             name,
             resume,
+            resume_pick: pick,
         };
         self.creating = self.send(
             d,
@@ -3068,7 +3075,8 @@ impl App {
             Dialog::Links(links) => links.len(),
             Dialog::Device(purpose) => self.device_choices(*purpose).len(),
             Dialog::Provider(d, _) => self.provider_choices(*d).len(),
-            Dialog::AgentStart(..) | Dialog::Permissions(..) => 2,
+            Dialog::AgentStart(..) => 3,
+            Dialog::Permissions(..) => 2,
             Dialog::Matching(..) => 3,
             Dialog::Jobs => self.job_rows().len(),
             Dialog::AgentTasks(_, session) => session.agent_tasks.len(),
@@ -3433,13 +3441,13 @@ impl App {
                     }
                     Dialog::AgentStart(d, path, provider) => {
                         self.dialog = None;
-                        if self.dialog_selected == 0 {
-                            self.create_at(d, path, provider);
-                        } else {
-                            self.resume_at(d, path, provider);
+                        match self.dialog_selected {
+                            0 => self.create_at(d, path, provider),
+                            1 => self.resume_at(d, path, provider),
+                            _ => self.resume_pick_at(d, path, provider),
                         }
                     }
-                    Dialog::Permissions(d, path, provider, resume) => {
+                    Dialog::Permissions(d, path, provider, resume, pick) => {
                         let yolo = self.dialog_selected == 1;
                         if yolo
                             && self.devices[d].target.is_some()
@@ -3453,7 +3461,7 @@ impl App {
                             return;
                         }
                         self.dialog = None;
-                        self.create_permission_session(d, path, provider, yolo, resume);
+                        self.create_permission_session(d, path, provider, yolo, resume, pick);
                     }
                     Dialog::Matching(d, path, provider, session) => {
                         self.dialog = None;
@@ -3704,6 +3712,9 @@ impl App {
         } else {
             true
         };
+        // External-terminal discovery is a best-effort UI extra; a failing or
+        // unreachable device must not raise a notice for it.
+        let notify_error = notify_error && !matches!(reply.op, Operation::ExternalSessions);
         let listing_offset = match &reply.op {
             Operation::ListPage { offset, .. } => *offset,
             _ => 0,

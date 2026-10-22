@@ -195,7 +195,10 @@ impl Connection {
     }
 }
 fn reconnectable_observation(op: &Operation) -> bool {
-    matches!(op, Operation::Info | Operation::Sessions)
+    matches!(
+        op,
+        Operation::Info | Operation::Sessions | Operation::ExternalSessions
+    )
 }
 fn retry_observation<T>(op: &Operation, mut attempt: impl FnMut() -> Result<T>) -> Result<T> {
     let result = attempt();
@@ -894,6 +897,7 @@ mod tests {
                 provider: "shell".into(),
                 name: "fixture".into(),
                 resume: false,
+                resume_pick: false,
             }),
             Operation::StopSession {
                 id: "fixture".into(),

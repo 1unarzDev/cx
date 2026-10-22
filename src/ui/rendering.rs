@@ -1574,15 +1574,19 @@ pub(super) fn render_at(
                     "Enter choose · next: browse folder, then n to start".into()
                 },
             ),
-            Dialog::Permissions(d, path, provider, resume) => (
+            Dialog::Permissions(d, path, provider, resume, pick) => (
                 format!("{} permissions · {}", provider, identity(&app.devices[*d])),
                 vec!["Default · existing host permissions".into(), "YOLO · bypass approvals".into()],
-                format!("{}\n{}Applies to this session only.\nYOLO bypasses approval prompts; Codex also disables its sandbox.\nEnter starts · Escape cancels", safe_label(path), if *resume { "Native resume: " } else { "Fresh session: " }),
+                format!("{}\n{}Applies to this session only.\nYOLO bypasses approval prompts; Codex also disables its sandbox.\nEnter starts · Escape cancels", safe_label(path), if *pick { "Native resume (choose): " } else if *resume { "Native resume (latest): " } else { "Fresh session: " }),
             ),
             Dialog::AgentStart(d, path, provider) => (
                 format!("{} session · {}", provider, identity(&app.devices[*d])),
-                vec!["Fresh session".into(), "Resume latest session".into()],
-                format!("{}\nFresh starts a new conversation. Resume uses the provider's native {} resume command in this folder.\nEnter chooses · Escape cancels", safe_label(path), if provider == "codex" { "Codex" } else { "Claude" }),
+                vec![
+                    "Fresh session".into(),
+                    "Resume latest session".into(),
+                    "Resume · choose session".into(),
+                ],
+                format!("{}\nFresh starts a new conversation. Resume latest reopens the most recent {agent} session; Resume · choose opens {agent}'s own session picker. Both run in this folder.\nEnter chooses · Escape cancels", safe_label(path), agent = if provider == "codex" { "Codex" } else { "Claude" }),
             ),
             Dialog::StopShell(d, session) => (
                 format!("Stop {} session?", session.provider), vec!["Keep session".into(), "Stop session".into()],

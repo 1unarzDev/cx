@@ -1190,6 +1190,7 @@ fn run() -> Result<()> {
                 provider,
                 name: String::new(),
                 resume: false,
+                resume_pick: false,
             };
             println!(
                 "{}",
@@ -1571,6 +1572,7 @@ fn run() -> Result<()> {
                 provider,
                 name,
                 resume: false,
+                resume_pick: false,
             };
             let op = if yolo {
                 Operation::CreateYolo(spec)

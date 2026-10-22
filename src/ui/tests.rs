@@ -2532,7 +2532,7 @@ fn session_chooser_device_focus_never_inherits_other_browser_or_search() {
     assert!(matches!(a.dialog, Some(Dialog::AgentStart(..))));
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(
-        matches!(&a.dialog,Some(Dialog::Permissions(1,path,provider, _)) if path=="~" && provider=="codex")
+        matches!(&a.dialog,Some(Dialog::Permissions(1,path,provider, _, _)) if path=="~" && provider=="codex")
     );
 }
 #[test]
@@ -2908,7 +2908,10 @@ fn matching_live_session_offers_reuse_and_explicit_new() {
     assert!(a.pending_attach.is_none());
     a.dialog_selected = 1;
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(matches!(a.dialog, Some(Dialog::Permissions(_, _, _, true))));
+    assert!(matches!(
+        a.dialog,
+        Some(Dialog::Permissions(_, _, _, true, _))
+    ));
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let Operation::Create(resume) = rx.try_recv().unwrap().op else {
         panic!("expected native resume create")
@@ -2920,7 +2923,7 @@ fn matching_live_session_offers_reuse_and_explicit_new() {
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(matches!(
         a.dialog,
-        Some(Dialog::Permissions(_, _, _, false))
+        Some(Dialog::Permissions(_, _, _, false, _))
     ));
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let Operation::Create(fresh) = rx.try_recv().unwrap().op else {
@@ -6066,6 +6069,7 @@ fn terminal_startup_loader_animates_in_files_and_sessions_and_clears_on_failure(
             provider: "shell".into(),
             name: String::new(),
             resume: false,
+            resume_pick: false,
         }),
         generation: a.generation,
         result: Err(anyhow::anyhow!("terminal exited during startup")),
@@ -6173,4 +6177,39 @@ fn outside_terminals_move_only_with_a_verified_relay() {
     enter(&mut a);
     assert!(a.pending_attach.is_none());
     assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn agent_start_offers_fresh_latest_and_choose_resume() {
+    let (mut a, rx) = queued_app();
+    a.providers
+        .insert(0, (vec!["claude".into(), "codex".into()], transport::now()));
+    // Resume · choose → the picker, carried through the permission dialog.
+    a.dialog = Some(Dialog::AgentStart(0, "/work".into(), "claude".into()));
+    a.dialog_selected = 2;
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(
+        &a.dialog,
+        Some(Dialog::Permissions(0, p, prov, true, true)) if p == "/work" && prov == "claude"
+    ));
+    a.dialog_selected = 0; // Default permissions
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(
+        rx.try_recv().unwrap().op,
+        Operation::Create(spec) if spec.resume && spec.resume_pick && spec.provider == "claude"
+    ));
+    // Resume latest → no picker.
+    a.dialog = Some(Dialog::AgentStart(0, "/work".into(), "codex".into()));
+    a.dialog_selected = 1;
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(
+        &a.dialog,
+        Some(Dialog::Permissions(0, _, _, true, false))
+    ));
+    a.dialog_selected = 0;
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(
+        rx.try_recv().unwrap().op,
+        Operation::Create(spec) if spec.resume && !spec.resume_pick
+    ));
 }

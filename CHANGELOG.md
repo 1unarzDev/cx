@@ -4,6 +4,16 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.82
+
+### Features
+- Agent resume offers "Resume · choose session" (`claude --resume` / `codex resume`) to pick from the provider's own session list, alongside "Resume latest".
+
+### Fixes
+- Move a terminal into CX asynchronously: the loader animates and the sudo password panel appears without the event loop freezing, instead of hanging with no feedback.
+- Stop raising "SSH access unavailable" notices for background external-terminal discovery on unreachable devices.
+
+
 ## v0.1.81
 
 ### Fixes

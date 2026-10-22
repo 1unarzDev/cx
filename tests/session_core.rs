@@ -40,6 +40,7 @@ fn persistent_idempotent_hostile_directory() {
         provider: "shell".into(),
         name: "disposable fixture".into(),
         resume: false,
+        resume_pick: false,
     };
     let result = std::panic::catch_unwind(|| {
         let first = sessions::create(&request).unwrap();

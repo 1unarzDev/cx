@@ -1975,21 +1975,33 @@ pub fn create(request: &CreateSession) -> Result<Session> {
 pub fn create_yolo(request: &CreateSession) -> Result<Session> {
     create_with_permissions(request, true, None)
 }
-fn provider_command(provider: &str, yolo: bool, resume: bool) -> Result<String> {
-    match (provider, yolo, resume) {
-        ("codex", true, true) => {
-            Ok("codex resume --last --dangerously-bypass-approvals-and-sandbox".into())
-        }
-        ("codex", false, true) => Ok("codex resume --last".into()),
-        ("claude", true, true) => Ok("claude --continue --dangerously-skip-permissions".into()),
-        ("claude", false, true) => Ok("claude --continue".into()),
-        ("shell", _, true) => bail!("resume is available only for Codex or Claude sessions"),
-        ("codex", true, false) => Ok("codex --dangerously-bypass-approvals-and-sandbox".into()),
-        ("claude", true, false) => Ok("claude --dangerously-skip-permissions".into()),
-        ("shell", true, false) => bail!("YOLO applies only to Codex or Claude sessions"),
-        ("shell" | "codex" | "claude", false, false) => Ok(provider.into()),
-        _ => bail!("unsupported launch profile"),
+fn provider_command(provider: &str, yolo: bool, resume: bool, pick: bool) -> Result<String> {
+    if !resume && pick {
+        bail!("a session picker applies only when resuming");
     }
+    // Resume either the most recent session (--last / --continue) or the
+    // provider's own interactive picker (codex resume / claude --resume).
+    let base = match (provider, resume, pick) {
+        ("codex", false, _) => "codex",
+        ("codex", true, false) => "codex resume --last",
+        ("codex", true, true) => "codex resume",
+        ("claude", false, _) => "claude",
+        ("claude", true, false) => "claude --continue",
+        ("claude", true, true) => "claude --resume",
+        ("shell", false, false) => return Ok("shell".into()),
+        ("shell", _, _) => {
+            bail!("resume is available only for Codex or Claude sessions")
+        }
+        _ => bail!("unsupported launch profile"),
+    };
+    let flag = match (provider, yolo) {
+        (_, false) => "",
+        ("codex", true) => " --dangerously-bypass-approvals-and-sandbox",
+        ("claude", true) => " --dangerously-skip-permissions",
+        ("shell", true) => bail!("YOLO applies only to Codex or Claude sessions"),
+        _ => bail!("unsupported launch profile"),
+    };
+    Ok(format!("{base}{flag}"))
 }
 pub fn create_container(
     request: &CreateSession,
@@ -2004,7 +2016,8 @@ fn create_with_permissions(
     yolo: bool,
     container: Option<&crate::model::ContainerScope>,
 ) -> Result<Session> {
-    let mut agent_command = provider_command(&request.provider, yolo, request.resume)?;
+    let mut agent_command =
+        provider_command(&request.provider, yolo, request.resume, request.resume_pick)?;
     if request.key.is_empty() || request.key.len() > 1024 {
         bail!("creation key must be 1–1024 bytes");
     }
@@ -3117,25 +3130,41 @@ mod tests {
 
     #[test]
     fn provider_commands_distinguish_fresh_and_native_resume() {
-        assert_eq!(provider_command("codex", false, false).unwrap(), "codex");
         assert_eq!(
-            provider_command("codex", false, true).unwrap(),
+            provider_command("codex", false, false, false).unwrap(),
+            "codex"
+        );
+        assert_eq!(
+            provider_command("codex", false, true, false).unwrap(),
             "codex resume --last"
         );
         assert_eq!(
-            provider_command("codex", true, true).unwrap(),
+            provider_command("codex", false, true, true).unwrap(),
+            "codex resume"
+        );
+        assert_eq!(
+            provider_command("codex", true, true, false).unwrap(),
             "codex resume --last --dangerously-bypass-approvals-and-sandbox"
         );
-        assert_eq!(provider_command("claude", false, false).unwrap(), "claude");
         assert_eq!(
-            provider_command("claude", false, true).unwrap(),
+            provider_command("claude", false, false, false).unwrap(),
+            "claude"
+        );
+        assert_eq!(
+            provider_command("claude", false, true, false).unwrap(),
             "claude --continue"
         );
         assert_eq!(
-            provider_command("claude", true, true).unwrap(),
-            "claude --continue --dangerously-skip-permissions"
+            provider_command("claude", false, true, true).unwrap(),
+            "claude --resume"
         );
-        assert!(provider_command("shell", false, true).is_err());
+        assert_eq!(
+            provider_command("claude", true, true, true).unwrap(),
+            "claude --resume --dangerously-skip-permissions"
+        );
+        assert!(provider_command("shell", false, true, false).is_err());
+        // A picker only applies when resuming.
+        assert!(provider_command("claude", false, false, true).is_err());
     }
     fn assert_probe_child_stopped(pid: &str) {
         let deadline = std::time::Instant::now() + Duration::from_millis(250);

@@ -536,7 +536,6 @@ struct App {
     command_panel_label: Option<String>,
     pending_terminal: Option<Device>,
     pending_add: Option<String>,
-    pending_adopt: Option<(usize, Session, crate::model::ExternalOrigin)>,
     quit: bool,
     force_update: bool,
     pending_requests: std::cell::Cell<usize>,
@@ -667,7 +666,6 @@ impl App {
             command_panel_label: None,
             pending_terminal: None,
             pending_add: None,
-            pending_adopt: None,
             quit: false,
             force_update: false,
             pending_requests: std::cell::Cell::new(0),
@@ -1351,11 +1349,6 @@ impl App {
                     NoticeKind::Warning,
                     "This terminal's owner is not accessible, so it cannot be moved".into(),
                 );
-            } else if self.devices[device].target.is_none() {
-                // Local moves may need a sudo password; the main loop runs the
-                // askpass broker and the password panel around the request.
-                self.creating = true;
-                self.pending_adopt = Some((device, session, origin));
             } else if self.send(
                 device,
                 Operation::AdoptSession {
@@ -1364,7 +1357,9 @@ impl App {
                     boot_id: session.boot_id.clone(),
                 },
             ) {
-                // Show the same animated loader as a new session while moving.
+                // Async move with the animated loader. A local move that needs a
+                // sudo password gets it through the persistent askpass broker
+                // the event loop services, so the loop never blocks.
                 self.creating = true;
                 self.set_notice("Moving terminal into CX…".into());
             }
@@ -8739,7 +8734,22 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     let mut last_jobs = Instant::now();
     let mut last_transfer_frame = Instant::now();
     let mut notice_was_animating = false;
+    // A persistent askpass broker lets `sudo` while moving a terminal prompt
+    // for a password without blocking the event loop or the loader animation.
+    let askpass = crate::auth::Broker::start().ok();
+    if let Some(broker) = &askpass {
+        std::env::set_var("CX_ASKPASS_SOCKET", broker.socket());
+        std::env::set_var("CX_ASKPASS_NONCE", broker.nonce());
+    }
     while !app.quit && !stopping.load(std::sync::atomic::Ordering::Relaxed) {
+        // Service one pending password prompt per iteration, if any.
+        if let Some((prompt, pending)) = askpass.as_ref().and_then(|b| b.accept()) {
+            let answer =
+                authentication_modal(&mut screen, prompt).unwrap_or(crate::auth::Answer::Cancel);
+            pending.answer(answer);
+            last_interaction = Instant::now();
+            dirty = true;
+        }
         if core_rx.try_iter().next().is_some()
             || last_inventory_check.elapsed() >= Duration::from_secs(5)
         {
@@ -8932,55 +8942,6 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     NoticeKind::Error,
                     safe_text(&format!("Enrollment failed: {e:#}")),
                 ),
-            }
-            dirty = true;
-        }
-        if let Some((d, session, origin)) = app.pending_adopt.take() {
-            cleanup_native_preview(&mut screen, &mut native_preview)?;
-            let device = app.devices[d].clone();
-            let op = Operation::AdoptSession {
-                id: session.id.clone(),
-                origin,
-                boot_id: session.boot_id.clone(),
-            };
-            app.set_notice("Moving terminal into CX…".into());
-            screen
-                .terminal
-                .draw(|frame| render_with_native(frame, &app, None))?;
-            let (tx, rx) = std::sync::mpsc::channel();
-            let request_device = device.clone();
-            let result = crate::auth::with_broker(
-                move || {
-                    let _ = tx.send(transport::request(&request_device, op));
-                    Ok(())
-                },
-                |prompt| authentication_modal(&mut screen, prompt),
-            );
-            last_interaction = Instant::now();
-            let value = match (result, rx.try_recv()) {
-                (Ok(()), Ok(Ok(value))) => Some(value),
-                (_, Ok(Err(e))) | (Err(e), _) => {
-                    app.set_notice_as(
-                        NoticeKind::Error,
-                        safe_text(&format!("{}: {e:#}", identity(&device))),
-                    );
-                    None
-                }
-                (Ok(()), Err(_)) => None,
-            };
-            app.creating = false;
-            if let Some(value) = value {
-                match serde_json::from_value::<Session>(value) {
-                    Ok(moved) => {
-                        app.work[d].sessions.retain(|row| row.id != session.id);
-                        app.work[d].sessions.push(moved.clone());
-                        app.pending_attach = Some((d, moved, false));
-                    }
-                    Err(_) => app.set_notice_as(
-                        NoticeKind::Error,
-                        "Move response invalid · refresh before retrying".into(),
-                    ),
-                }
             }
             dirty = true;
         }

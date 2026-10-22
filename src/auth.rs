@@ -231,6 +231,105 @@ pub fn askpass_client() -> Result<()> {
     result
 }
 
+/// A persistent askpass endpoint serviced by the UI event loop, so a password
+/// prompt (e.g. `sudo` while moving a terminal) can appear without blocking the
+/// loop or the loader animation. One pending request is handled at a time.
+pub struct Broker {
+    _dir: PrivateDir,
+    listener: UnixListener,
+    token: String,
+    socket: PathBuf,
+}
+/// An accepted askpass connection awaiting an answer; its stream stays open.
+pub struct Pending {
+    stream: UnixStream,
+    host_key: bool,
+}
+impl Broker {
+    pub fn start() -> Result<Broker> {
+        let token = nonce()?;
+        let directory = std::env::temp_dir().join(format!(
+            "cx-askpass-{}-{}",
+            std::process::id(),
+            &token[..16]
+        ));
+        DirBuilder::new().mode(0o700).create(&directory)?;
+        let directory = PrivateDir(directory);
+        let socket = directory.0.join("askpass");
+        let listener = UnixListener::bind(&socket)?;
+        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
+        listener.set_nonblocking(true)?;
+        Ok(Broker {
+            _dir: directory,
+            listener,
+            token,
+            socket,
+        })
+    }
+    pub fn socket(&self) -> &std::path::Path {
+        &self.socket
+    }
+    pub fn nonce(&self) -> &str {
+        &self.token
+    }
+    /// Environment a child's `sudo -A`/SSH askpass needs to reach this broker.
+    pub fn env(&self) -> Option<Vec<(String, String)>> {
+        let cx = std::env::current_exe().ok()?.to_str()?.to_owned();
+        let socket = self.socket.to_str()?.to_owned();
+        Some(vec![
+            ("SUDO_ASKPASS".into(), cx.clone()),
+            ("SSH_ASKPASS".into(), cx),
+            ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
+            ("DISPLAY".into(), "cx-askpass".into()),
+            (CLIENT_ENV.into(), "1".into()),
+            (SOCKET_ENV.into(), socket),
+            (NONCE_ENV.into(), self.token.clone()),
+        ])
+    }
+    /// Non-blocking: return one pending askpass request if a valid same-user
+    /// client is waiting. The caller answers through the returned handle.
+    pub fn accept(&self) -> Option<(Prompt, Pending)> {
+        let (mut stream, _) = self.listener.accept().ok()?;
+        let request = (|| -> Result<Prompt> {
+            same_user(&stream)?;
+            limits(&stream, 2)?;
+            if frame_read(&mut stream)? != self.token.as_bytes() {
+                bail!("askpass token rejected");
+            }
+            Ok(classify(String::from_utf8(frame_read(&mut stream)?)?))
+        })();
+        let request = request.ok()?;
+        let host_key = request.kind == PromptKind::HostKey;
+        Some((request, Pending { stream, host_key }))
+    }
+}
+impl Pending {
+    pub fn answer(mut self, answer: Answer) {
+        match answer {
+            Answer::Cancel => {
+                let _ = frame_write(&mut self.stream, &[0]);
+            }
+            Answer::Submit(mut value) => {
+                let valid = value.len() < MAX_FRAME
+                    && !value.contains(['\n', '\r', '\0'])
+                    && (!self.host_key || matches!(value.as_str(), "yes" | "no"));
+                if valid {
+                    let mut bytes = Vec::with_capacity(value.len() + 1);
+                    bytes.push(1);
+                    bytes.extend_from_slice(value.as_bytes());
+                    let _ = frame_write(&mut self.stream, &bytes);
+                    clear(&mut bytes);
+                } else {
+                    let _ = frame_write(&mut self.stream, &[0]);
+                }
+                unsafe {
+                    clear(value.as_bytes_mut());
+                }
+            }
+        }
+    }
+}
+
 pub fn with_broker(
     work: impl FnOnce() -> Result<()> + Send + 'static,
     mut prompt: impl FnMut(Prompt) -> Result<Answer>,

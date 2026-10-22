@@ -1988,7 +1988,8 @@ fn provider_command(provider: &str, yolo: bool, resume: bool, pick: bool) -> Res
         ("claude", false, _) => "claude",
         ("claude", true, false) => "claude --continue",
         ("claude", true, true) => "claude --resume",
-        ("shell", false, false) => return Ok("shell".into()),
+        // Fall through to the YOLO check so shell + YOLO is still rejected.
+        ("shell", false, false) => "shell",
         ("shell", _, _) => {
             bail!("resume is available only for Codex or Claude sessions")
         }
@@ -3165,6 +3166,12 @@ mod tests {
         assert!(provider_command("shell", false, true, false).is_err());
         // A picker only applies when resuming.
         assert!(provider_command("claude", false, false, true).is_err());
+        // YOLO never applies to a shell, fresh or not.
+        assert_eq!(
+            provider_command("shell", false, false, false).unwrap(),
+            "shell"
+        );
+        assert!(provider_command("shell", true, false, false).is_err());
     }
     fn assert_probe_child_stopped(pid: &str) {
         let deadline = std::time::Instant::now() + Duration::from_millis(250);

@@ -226,6 +226,21 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-sudo-') as temporary:
         found = wait_for(lambda: next((s for s in helper('external_sessions')['result']
                                        if (s.get('origin') or {}).get('tty') == tty), None), 5, 'row')
         time.sleep(0.5)
+        # Without a reachable password prompt (as on a remote helper), the move
+        # fails cleanly, leaves no record, and the terminal stays listed —
+        # it must never silently disappear.
+        no_prompt_env = {k: v for k, v in env.items() if k not in ('CX_ASKPASS_SOCKET', 'CX_ASKPASS_NONCE')}
+        req = json.dumps(dict(version=1, id='np', op=dict(op='adopt_session',
+            args=dict(id=found['id'], origin=found['origin'], boot_id=boot)))).encode()
+        r = subprocess.run([binary, 'helper'], input=b'CX1 ' + str(len(req)).encode() + b'\n' + req,
+                           env=no_prompt_env, capture_output=True, timeout=30)
+        refused = json.loads(r.stdout.split(b'\n', 1)[1])
+        assert refused['error'] and 'cx device ptrace' in refused['error'], refused
+        assert not any(n.endswith('.json') for n in os.listdir(root)), ('stale record', os.listdir(root))
+        assert any((s.get('origin') or {}).get('tty') == tty
+                   for s in helper('external_sessions')['result']), 'terminal disappeared after a failed move'
+        checks.append('a move with no reachable password prompt fails cleanly and keeps the terminal listed')
+
         moved = helper('adopt_session', dict(id=found['id'], origin=found['origin'], boot_id=boot))
         assert moved['error'] is None, moved
         session = moved['result']

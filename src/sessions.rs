@@ -891,11 +891,39 @@ fn container_scope_current(
 
 /// Session row for a terminal started outside CX. Metadata only: adoption
 /// re-verifies leader, holder and terminal before changing anything.
+/// A live, interactive shell is a stable terminal session worth listing; a
+/// transient or exiting process that briefly owned a pseudo-terminal is not.
+fn interactive_shell_leader(pid: u32) -> bool {
+    let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat,
+        Err(_) => return false,
+    };
+    // Skip zombies and dying leaders: they vanish before they can be adopted.
+    if stat
+        .rsplit_once(')')
+        .and_then(|(_, rest)| rest.split_whitespace().next())
+        .is_some_and(|state| state == "Z" || state == "X")
+    {
+        return false;
+    }
+    let comm = fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+    matches!(
+        comm.trim(),
+        "bash" | "zsh" | "fish" | "sh" | "dash" | "ash" | "ksh" | "mksh" | "tcsh" | "csh"
+    )
+}
+
 fn external_terminal(terminal: &crate::adoption::Terminal) -> Option<Session> {
     let (host, account, boot_id) = identity();
     let leader = terminal.leader.pid;
     let detected = foreground_provider(leader);
     let provider = detected.as_ref().map(|(p, _)| *p).unwrap_or("shell");
+    // List a terminal only when it is a real agent session or a live
+    // interactive shell. Anything else that momentarily held a pseudo-terminal
+    // would disappear from the list before it could be selected.
+    if provider == "shell" && !interactive_shell_leader(leader) {
+        return None;
+    }
     let process = detected
         .map(|(_, process)| process)
         .or_else(|| process_identity(leader, "shell"));
@@ -1112,26 +1140,11 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
     let snapshot = external_terminal(&terminal).context("terminal changed; refresh sessions")?;
     ensure_server()?;
     let record = root.join(format!("{name}.json"));
-    if record.exists() {
-        bail!("this terminal was already moved once; refresh sessions");
-    }
-    let mut pending = snapshot.clone();
-    pending.id = name.clone();
-    pending.external = false;
-    pending.socket = Some(socket()?.to_string_lossy().into_owned());
-    pending.origin = Some(origin.clone());
-    let mut intent = fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
-        .open(&record)?;
-    intent.write_all(&serde_json::to_vec(&pending)?)?;
-    intent.sync_all()?;
     let errors = root.join(format!("{name}.adopt"));
     let leader = &terminal.leader;
-    // `sudo -A` reads the password through CX's askpass broker and sets SUDO_UID
-    // itself; the relay drops to that user after the steal. A capability relay
-    // needs no prompt. Askpass values are environment, never arguments.
+    // Build the whole launch command FIRST, so a failure here (e.g. no reachable
+    // password prompt on a remote helper) never leaves a record that would hide
+    // the terminal from future listings.
     let mut prefix = format!(
         "env CX_VIEWER_THEME=1 CX_TMUX_BIN={} CX_MANAGED_SOCKET={} CX_MANAGED_SESSION={} ",
         quote(
@@ -1143,8 +1156,11 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
         quote(&name),
     );
     if relay.privilege == crate::adoption::Privilege::Sudo {
-        let env = crate::auth::askpass_env()
-            .context("password entry is unavailable; move terminals from the CX interface")?;
+        // `sudo -A` reads the password through CX's askpass broker and sets
+        // SUDO_UID itself; the relay drops to that user after the steal.
+        let env = crate::auth::askpass_env().context(
+            "moving a terminal here needs a no-prompt relay: run `cx device ptrace <device> enable`",
+        )?;
         for (key, value) in env {
             prefix.push_str(&format!("{}={} ", key, quote(&value)));
         }
@@ -1162,6 +1178,26 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
         quote(&holder.process.start_ticks),
         quote(errors.to_str().context("state path is not UTF-8")?),
     );
+    // A leftover record only blocks when its managed session is still alive;
+    // a stale one from an interrupted move is cleared and the move proceeds.
+    if record.exists() {
+        if managed_target(&name)?.is_some() {
+            return inspect(true, &name);
+        }
+        let _ = fs::remove_file(&record);
+    }
+    let mut pending = snapshot.clone();
+    pending.id = name.clone();
+    pending.external = false;
+    pending.socket = Some(socket()?.to_string_lossy().into_owned());
+    pending.origin = Some(origin.clone());
+    let mut intent = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&record)?;
+    intent.write_all(&serde_json::to_vec(&pending)?)?;
+    intent.sync_all()?;
     let directory = if snapshot.directory.is_empty() {
         std::env::var("HOME").unwrap_or_else(|_| "/".into())
     } else {
@@ -1316,10 +1352,16 @@ fn adopted_origins() -> Vec<(u32, String)> {
         if !(name.starts_with("cx-") && name.ends_with(".json")) {
             continue;
         }
+        let Some(session_name) = name.strip_suffix(".json") else {
+            continue;
+        };
+        // Only a live managed session hides its origin terminal. A leftover
+        // record from an interrupted move must not hide it forever.
         if let Some(origin) = fs::read(entry.path())
             .ok()
             .and_then(|v| serde_json::from_slice::<Session>(&v).ok())
             .and_then(|s| s.origin)
+            .filter(|_| managed_target(session_name).ok().flatten().is_some())
         {
             out.push((origin.leader.pid, origin.leader.start_ticks));
         }

@@ -4,6 +4,13 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.83
+
+### Fixes
+- Stop external terminals from vanishing when you try to move them: the adoption record is written only once the move can actually proceed, a leftover record from an interrupted move no longer hides its terminal, and a move that needs a password prompt unavailable on that device (such as a remote host without a no-prompt relay) now fails with a clear message instead of making the terminal disappear.
+- List only genuine interactive shells and detected Claude/Codex sessions as external terminals, so a short-lived process that briefly held a pseudo-terminal no longer shows up and then disappears.
+
+
 ## v0.1.82
 
 ### Features

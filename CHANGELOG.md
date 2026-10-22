@@ -4,6 +4,15 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.84
+
+### Changes
+- Set up terminal moving from inside CX: when a device needs the ptrace relay, CX runs the one-time setup (with its admin-password prompt) for you and you retry the move, instead of printing a `cx device ptrace … enable` command to run yourself.
+
+### Fixes
+- Fix "unsupported artifact member" when installing the terminal-move relay: the signed `cx-reptyr` release asset is now an accepted download member.
+
+
 ## v0.1.83
 
 ### Fixes

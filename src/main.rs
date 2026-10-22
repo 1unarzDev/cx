@@ -303,7 +303,7 @@ enum DeviceCommand {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum PtraceAction {
+pub(crate) enum PtraceAction {
     /// Install the user-local relay so moves work through one sudo prompt each.
     Install,
     /// Remove the user-local relay.
@@ -521,7 +521,7 @@ fn device(name: Option<String>) -> Result<Device> {
 
 /// Install, remove or report the guarded relay on a device. Installation is an
 /// explicit privileged step: one sudo prompt on that device, never automatic.
-fn device_ptrace(
+pub(crate) fn device_ptrace(
     name: &str,
     action: PtraceAction,
     binary: Option<std::path::PathBuf>,

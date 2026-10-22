@@ -534,6 +534,7 @@ struct App {
     /// A command panel to attach full-screen on the next loop turn.
     pending_panel_expand: Option<(usize, Session)>,
     command_panel_label: Option<String>,
+    pending_ptrace: Option<usize>,
     pending_terminal: Option<Device>,
     pending_add: Option<String>,
     quit: bool,
@@ -664,6 +665,7 @@ impl App {
             command_panel: None,
             pending_panel_expand: None,
             command_panel_label: None,
+            pending_ptrace: None,
             pending_terminal: None,
             pending_add: None,
             quit: false,
@@ -1366,10 +1368,9 @@ impl App {
         } else if !outside_tmux(&session) {
             self.pending_attach = Some((device, session, false));
         } else if caps.iter().any(|c| c == "adopt-session-v1") {
-            self.set_notice_as(
-                NoticeKind::Warning,
-                "Moving terminals needs ptrace access · run: cx device ptrace enable".into(),
-            );
+            // Set the relay up from inside CX rather than asking the user to run
+            // a CLI command; the move can be retried once it is installed.
+            self.pending_ptrace = Some(device);
         } else {
             self.set_notice_as(
                 NoticeKind::Warning,
@@ -8952,6 +8953,38 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 Err(e) => app.set_notice_as(
                     NoticeKind::Error,
                     safe_text(&format!("Enrollment failed: {e:#}")),
+                ),
+            }
+            dirty = true;
+        }
+        if let Some(d) = app.pending_ptrace.take() {
+            cleanup_native_preview(&mut screen, &mut native_preview)?;
+            let device = app.devices[d].clone();
+            let name = if device.target.is_none() {
+                "local".to_string()
+            } else {
+                device.name.clone()
+            };
+            screen.suspend()?;
+            eprintln!(
+                "\nSetting up terminal moving on {}. This installs a small helper and asks for your \n\
+                 administrator password once; it is only used to let CX move terminals you own.\n",
+                identity(&device)
+            );
+            let result = crate::device_ptrace(&name, crate::PtraceAction::Enable, None);
+            screen.resume()?;
+            last_interaction = Instant::now();
+            match result {
+                Ok(_) => {
+                    app.providers.remove(&d);
+                    app.check_providers(d);
+                    app.set_notice(
+                        "Terminal moving is set up · select the terminal again to move it".into(),
+                    );
+                }
+                Err(e) => app.set_notice_as(
+                    NoticeKind::Error,
+                    safe_text(&format!("Setup did not complete: {e:#}")),
                 ),
             }
             dirty = true;

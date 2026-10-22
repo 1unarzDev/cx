@@ -746,7 +746,7 @@ fn download_verified_member(
     member: &str,
 ) -> Result<ArtifactOutcome> {
     ensure!(
-        matches!(member, "cx" | "tmux"),
+        matches!(member, "cx" | "tmux" | "cx-reptyr"),
         "unsupported artifact member"
     );
     let s = stage(parent)?;
@@ -990,7 +990,7 @@ fn extract(compressed: File, dir: &Dir) -> Result<File> {
 }
 fn extract_member(mut compressed: File, dir: &Dir, member: &str) -> Result<File> {
     ensure!(
-        matches!(member, "cx" | "tmux"),
+        matches!(member, "cx" | "tmux" | "cx-reptyr"),
         "unsupported artifact member"
     );
     use std::io::{Seek, SeekFrom};

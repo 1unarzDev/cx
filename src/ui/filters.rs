@@ -28,6 +28,9 @@ impl App {
         } else {
             self.search.clone()
         };
+        // Remember the committed filter so Esc cancels back to it rather than
+        // leaving the half-typed text applied for the next time `f` is pressed.
+        self.filter_restore = Some(self.text.clone());
     }
     pub(super) fn update_list_filter(&mut self) {
         if matches!(self.dialog, Some(Dialog::Jobs)) {

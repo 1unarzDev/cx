@@ -464,6 +464,10 @@ struct App {
     navigation: navigation::State,
     device_filter: String,
     job_filter: String,
+    /// The committed filter text captured when a filter edit begins, so Esc can
+    /// cancel back to it (empty when there was none) instead of leaving the
+    /// half-typed filter applied. Taken on cancel; overwritten on each new edit.
+    filter_restore: Option<String>,
     help: bool,
     help_scroll: u16,
     notice: String,
@@ -595,6 +599,7 @@ impl App {
             palette_selected: 0,
             device_filter: String::new(),
             job_filter: String::new(),
+            filter_restore: None,
             navigation: navigation::State::default(),
             help: false,
             help_scroll: 0,
@@ -2569,6 +2574,8 @@ impl App {
                     .as_ref()
                     .map(|b| b.filter.clone())
                     .unwrap_or_default();
+                // Remember the committed filter so Esc cancels back to it.
+                self.filter_restore = Some(self.text.clone());
                 self.input = Some(Input::Filter);
             }
             Action::Select => {
@@ -4697,6 +4704,15 @@ impl App {
             let before_text = self.text.clone();
             match key.code {
                 KeyCode::Esc => {
+                    // Cancelling a filter edit reverts the live filter to what it
+                    // was when the edit began (empty if there was none), so the
+                    // half-typed text is not left applied for the next `f`.
+                    if mode == Input::Filter {
+                        if let Some(original) = self.filter_restore.take() {
+                            self.text = original;
+                            self.update_list_filter();
+                        }
+                    }
                     self.input = None;
                     self.text.clear();
                     self.rename_target = None;
@@ -4835,6 +4851,8 @@ impl App {
                         self.focus = Focus::Workspace;
                     }
                     Input::Filter => {
+                        // Enter commits the filter; nothing to cancel back to.
+                        self.filter_restore = None;
                         self.input = None;
                     }
                     Input::Rename => {

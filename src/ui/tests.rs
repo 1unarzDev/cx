@@ -1469,6 +1469,44 @@ fn menu_navigation_counts_edges_and_text_ownership() {
     assert!(a.navigation.is_idle());
 }
 #[test]
+fn escaping_a_filter_edit_cancels_it_so_the_next_f_starts_fresh() {
+    let (mut a, _rx) = queued_app();
+    a.focus = Focus::Devices;
+    // Type a filter, then Esc. The live filter reverts to empty and the input
+    // buffer clears, instead of leaving the half-typed text applied.
+    press(&mut a, 'f');
+    for c in "laptop".chars() {
+        press(&mut a, c);
+    }
+    assert_eq!(a.device_filter, "laptop");
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(a.input.is_none());
+    assert_eq!(a.device_filter, "");
+    assert_eq!(a.text, "");
+    // A second `f` opens a fresh, empty edit rather than the old text.
+    press(&mut a, 'f');
+    assert_eq!(a.text, "");
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    // Refining a committed filter and then cancelling restores the committed
+    // value rather than clearing or leaving the half-typed refinement.
+    press(&mut a, 'f');
+    for c in "laptop".chars() {
+        press(&mut a, c);
+    }
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(a.device_filter, "laptop");
+    press(&mut a, 'f');
+    assert_eq!(a.text, "laptop");
+    a.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    for c in "phone".chars() {
+        press(&mut a, c);
+    }
+    assert_eq!(a.device_filter, "phone");
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(a.device_filter, "laptop");
+    assert_eq!(a.text, "");
+}
+#[test]
 fn transfer_filter_and_counted_detail_navigation_preserve_job_identity() {
     let (mut a, rx) = queued_app();
     a.jobs.insert(0,serde_json::json!({"jobs":[

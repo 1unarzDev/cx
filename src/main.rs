@@ -739,20 +739,18 @@ fn add_via_mode(target: &str, via: Option<&Device>, minimal: bool) -> Result<()>
     if !transport::valid_target(target) {
         bail!("invalid SSH target")
     };
-    let resolved = if let Some(gateway) = via {
+    // The name stays the target: the gateway resolves it per connect, so a DHCP change needs no re-enroll.
+    let mut target = target.to_string();
+    if let Some(gateway) = via {
         if target
             .rsplit_once('@')
             .is_some_and(|(_, host)| host.parse::<std::net::IpAddr>().is_err())
         {
             let candidates = transport::request(gateway, Operation::NetworkCandidates)?;
-            candidate_target(target, &candidates)?.unwrap_or_else(|| target.into())
-        } else {
-            target.into()
+            target = check_candidate(&target, &candidates)?;
         }
-    } else {
-        target.into()
-    };
-    let target = resolved.as_str();
+    }
+    let target = target.as_str();
     let _maintenance = update::maintenance_lock()?;
     let previous = store::route(target)?;
     let next = if let Some(via) = via {
@@ -772,9 +770,11 @@ fn add_via_mode(target: &str, via: Option<&Device>, minimal: bool) -> Result<()>
     result
 }
 // A name is a routing hint on the selected observer, not SSH identity evidence.
-fn candidate_target(target: &str, snapshot: &serde_json::Value) -> Result<Option<String>> {
+// Reject names that match several devices. A matched name becomes the observed hostname, since
+// only `*.local` resolves on the gateway; an unseen name is kept as given.
+fn check_candidate(target: &str, snapshot: &serde_json::Value) -> Result<String> {
     let Some((account, host)) = target.rsplit_once('@') else {
-        return Ok(None);
+        return Ok(target.into());
     };
     let normalized = |name: &str| {
         name.trim_end_matches('.')
@@ -782,15 +782,18 @@ fn candidate_target(target: &str, snapshot: &serde_json::Value) -> Result<Option
             .to_ascii_lowercase()
     };
     let Some(rows) = snapshot["candidates"].as_array() else {
-        return Ok(None);
+        return Ok(target.into());
     };
-    let mut matches: Vec<_> = rows
+    let named: Vec<_> = rows
         .iter()
         .filter(|row| {
             row["hostname"]
                 .as_str()
                 .is_some_and(|name| normalized(name) == normalized(host))
         })
+        .collect();
+    let mut matches: Vec<_> = named
+        .iter()
         .filter_map(|row| {
             let address = row["address"].as_str()?.parse::<std::net::IpAddr>().ok()?;
             if matches!(address, std::net::IpAddr::V6(ip) if ip.is_unicast_link_local()) {
@@ -806,34 +809,37 @@ fn candidate_target(target: &str, snapshot: &serde_json::Value) -> Result<Option
         anyhow::ensure!(mac.is_some() && matches.iter().all(|(_, other)| *other == mac),
             "This hostname matches multiple devices. Select its address under the gateway in Network.");
     }
-    Ok(matches.first().map(|(ip, _)| format!("{account}@{ip}")))
+    Ok(
+        match named.first().and_then(|row| row["hostname"].as_str()) {
+            Some(name) => format!("{account}@{}", name.trim_end_matches('.')),
+            None => target.into(),
+        },
+    )
 }
 #[cfg(test)]
 mod robot_target_tests {
     use super::*;
     #[test]
-    fn observer_names_choose_numeric_ipv4_without_granting_ssh_identity() {
+    fn observer_names_stay_names_but_ambiguous_devices_are_rejected() {
         let mut rows = serde_json::json!({"candidates":[
             {"hostname":"blastoise-odroid.local","address":"192.168.0.152","lladdr":"same"},
             {"hostname":"blastoise-odroid.local","address":"192.168.0.147","lladdr":"same"}
         ]});
-        assert_eq!(
-            candidate_target("roboboat@blastoise-odroid.local", &rows)
-                .unwrap()
-                .as_deref(),
-            Some("roboboat@192.168.0.147")
-        );
-        assert_eq!(
-            candidate_target("roboboat@blastoise-odroid", &rows)
-                .unwrap()
-                .as_deref(),
-            Some("roboboat@192.168.0.147")
-        );
+        for given in [
+            "roboboat@blastoise-odroid.local",
+            "roboboat@blastoise-odroid",
+        ] {
+            assert_eq!(
+                check_candidate(given, &rows).unwrap(),
+                "roboboat@blastoise-odroid.local"
+            );
+        }
         rows["candidates"][1]["lladdr"] = serde_json::json!("different");
-        assert!(candidate_target("roboboat@blastoise-odroid.local", &rows).is_err());
-        assert!(candidate_target("roboboat@unknown", &rows)
-            .unwrap()
-            .is_none());
+        assert!(check_candidate("roboboat@blastoise-odroid.local", &rows).is_err());
+        assert_eq!(
+            check_candidate("roboboat@unknown", &rows).unwrap(),
+            "roboboat@unknown"
+        );
     }
 }
 // Bound enrollment I/O even if a remote host stops consuming the binary.

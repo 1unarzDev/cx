@@ -4,6 +4,9 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+### Changes
+- Keep a robot's `.local` name as its enrolled target when adding it through a gateway, instead of pinning one of its DHCP addresses. The gateway resolves the name on each connect, so an address change needs no re-enrollment. Existing IP-pinned devices keep working; remove and re-add them to switch.
+
 ## v0.1.85
 
 ### Fixes

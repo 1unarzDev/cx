@@ -4,6 +4,9 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+### Fixes
+- Stop the previous session's `Connection to … closed.` / `[detached …]` teardown text from flashing when you open a session. CX now clears the screen as it hands off to the attach, so a slow remote connection shows a clean screen while tmux repaints instead of the stale text, which looked like the session had detached rather than loaded.
+
 ## v0.1.84
 
 ### Changes

@@ -8204,16 +8204,31 @@ impl Screen {
         }
         Ok(())
     }
-    fn suspend(&mut self) -> Result<()> {
+    /// Leave the TUI for a subprocess. `clear` wipes the primary screen that
+    /// LeaveAlternateScreen restores: without it, a slow remote handoff briefly
+    /// shows the previous attach's "Connection closed"/"[detached]" teardown
+    /// text before tmux repaints, which looks like the session failed to load.
+    /// Final teardown (Drop) passes `false` so the user's own terminal is kept.
+    fn suspend(&mut self, clear: bool) -> Result<()> {
         if self.active {
             let mouse = self.mouse_capture(false);
             self.active = false;
             let raw = terminal::disable_raw_mode();
             let leave = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+            let wipe = if clear {
+                execute!(
+                    self.terminal.backend_mut(),
+                    terminal::Clear(terminal::ClearType::All),
+                    crossterm::cursor::MoveTo(0, 0)
+                )
+            } else {
+                Ok(())
+            };
             let cursor = self.terminal.show_cursor();
             mouse?;
             raw?;
             leave?;
+            wipe?;
             cursor?;
         }
         Ok(())
@@ -8228,7 +8243,7 @@ impl Screen {
 }
 impl Drop for Screen {
     fn drop(&mut self) {
-        let _ = self.suspend();
+        let _ = self.suspend(false);
     }
 }
 
@@ -8868,7 +8883,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                         }
                         use std::os::unix::process::CommandExt;
                         cleanup_native_preview(&mut screen, &mut native_preview)?;
-                        screen.suspend()?;
+                        screen.suspend(true)?;
                         let error = std::process::Command::new(path)
                             .arg("restart")
                             .arg(&name)
@@ -8965,7 +8980,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             } else {
                 device.name.clone()
             };
-            screen.suspend()?;
+            screen.suspend(true)?;
             eprintln!(
                 "\nSetting up terminal moving on {}. This installs a small helper and asks for your \n\
                  administrator password once; it is only used to let CX move terminals you own.\n",
@@ -8991,7 +9006,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
         if let Some(device) = app.pending_terminal.take() {
             cleanup_native_preview(&mut screen, &mut native_preview)?;
-            screen.suspend()?;
+            screen.suspend(true)?;
             let result = sessions::login_terminal(&device);
             screen.resume()?;
             last_interaction = Instant::now();
@@ -9042,7 +9057,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
         if let Some((d, session)) = app.pending_panel_expand.take() {
             cleanup_native_preview(&mut screen, &mut native_preview)?;
-            screen.suspend()?;
+            screen.suspend(true)?;
             let result = sessions::attach(&app.devices[d], &session, false);
             screen.resume()?;
             last_interaction = Instant::now();
@@ -9056,7 +9071,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
         if let Some((device, command)) = app.pending_command.take() {
             cleanup_native_preview(&mut screen, &mut native_preview)?;
-            screen.suspend()?;
+            screen.suspend(true)?;
             let result = sessions::run_command(&device, &command);
             screen.resume()?;
             last_interaction = Instant::now();
@@ -9078,7 +9093,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
         if let Some((d, session, observe)) = app.pending_attach.take() {
             cleanup_native_preview(&mut screen, &mut native_preview)?;
-            screen.suspend()?;
+            screen.suspend(true)?;
             let result = sessions::attach(&app.devices[d], &session, observe);
             screen.resume()?;
             last_interaction = Instant::now();

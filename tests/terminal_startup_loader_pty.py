@@ -57,10 +57,12 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-loader-') as tmp:
     class Screen(pyte.Screen):
         def report_device_status(self,*args,**kwargs): pass
     screen=Screen(100,24); stream=pyte.Stream(screen)
+    raw=bytearray()
     def read(seconds=.1):
         end=time.monotonic()+seconds
         while time.monotonic()<end:
-            if select.select([master],[],[],.02)[0]: stream.feed(os.read(master,65536).decode(errors='replace'))
+            if select.select([master],[],[],.02)[0]:
+                chunk=os.read(master,65536); raw.extend(chunk); stream.feed(chunk.decode(errors='replace'))
     def text(): return '\n'.join(screen.display)
     def wait(predicate):
         end=time.monotonic()+12
@@ -78,6 +80,10 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-loader-') as tmp:
         wait(lambda:'CX_READY_SCREEN' in text())
         os.write(master,b'printf done > loader-proof\r')
         wait(lambda:(root/'loader-proof').exists())
+        # Leaving the TUI for the handoff must wipe the primary screen it restores,
+        # so a slow remote attach cannot flash the prior "[detached]" teardown text
+        # before tmux repaints. crossterm emits LeaveAlternateScreen then Clear(All).
+        assert b'\x1b[?1049l\x1b[2J' in raw, 'handoff did not clear the primary screen'
         os.write(master,b'\x1d'); wait(lambda:'Files' in text())
         os.write(master,b'\x03');proc.wait(timeout=5)
         assert termios.tcgetattr(slave)==before
@@ -87,4 +93,4 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-loader-') as tmp:
             stop_owned_tmux(socket, env)
         finally:
             os.close(master);os.close(slave)
-print(json.dumps({'result':'PASS','checks':['loader animates during delayed shell startup','no native client before visible screen','single handoff accepts input and restores viewer/termios','owned tmux server and panes exit before temporary state removal']}))
+print(json.dumps({'result':'PASS','checks':['loader animates during delayed shell startup','no native client before visible screen','handoff clears the primary screen (no stale detach-text flash)','single handoff accepts input and restores viewer/termios','owned tmux server and panes exit before temporary state removal']}))

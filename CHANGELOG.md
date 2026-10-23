@@ -6,6 +6,7 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ### Changes
 - Keep a robot's `.local` name as its enrolled target when adding it through a gateway, instead of pinning one of its DHCP addresses. The gateway resolves the name on each connect, so an address change needs no re-enrollment. Existing IP-pinned devices keep working; remove and re-add them to switch.
+- Match the shared-LAN preview rules by robot subnet instead of interface names, and never forward or masquerade into `docker0`.
 
 ## v0.1.85
 

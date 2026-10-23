@@ -61,7 +61,7 @@ try:
     before = run('ip', '-j', 'address'), run('ip', '-j', 'route')
     with tempfile.TemporaryDirectory() as tmp:
         path = pathlib.Path(tmp) / 'observation.json'
-        path.write_text(json.dumps(dict(observed_at=int(time.time()), downstream='robotlan', upstream='uplink', gateway='192.168.0.2', forwarding_enabled=True, mesh_addresses=['100.96.0.12'], recipients=[dict(id='robot', address='192.168.0.147', gateway='192.168.0.2', dns=['1.1.1.1'])])))
+        path.write_text(json.dumps(dict(observed_at=int(time.time()), subnet='192.168.0.0/24', gateway='192.168.0.2', forwarding_enabled=True, mesh_addresses=['100.96.0.12'], recipients=[dict(id='robot', address='192.168.0.147', gateway='192.168.0.2', dns=['1.1.1.1'])])))
         plan = json.loads(run(binary, 'share-plan', 'packet_test', '--observation', str(path)))
     run('nft', '-f', '-', text=plan['nft_rules'])
     assert probe(robot, '100.96.0.12', 22) == 'DENIED'

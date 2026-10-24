@@ -3528,10 +3528,7 @@ fn empty_session_action_respects_loading_errors_search_and_focus() {
     a.work.truncate(1);
     a.device = 0;
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(matches!(
-        a.dialog,
-        Some(Dialog::Device(ChooseDevice::SessionChooser))
-    ));
+    assert!(matches!(a.dialog, Some(Dialog::SessionChooser(0, _))));
     for state in ["loading", "error", "search", "creating"] {
         let mut a = app();
         match state {

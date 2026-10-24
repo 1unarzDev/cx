@@ -3601,11 +3601,21 @@ fn project_headers_render_immediately_above_sessions_with_space_before_later_gro
         let lines: Vec<_> = rendered.lines().collect();
         let first = lines
             .iter()
-            .position(|line| line.contains("alpha-session"))
+            .position(|line| {
+                line.chars()
+                    .take(if width >= 120 { 75 } else { 80 })
+                    .collect::<String>()
+                    .contains("alpha-session")
+            })
             .expect("first session");
         let second = lines
             .iter()
-            .position(|line| line.contains("beta-session"))
+            .position(|line| {
+                line.chars()
+                    .take(if width >= 120 { 75 } else { 80 })
+                    .collect::<String>()
+                    .contains("beta-session")
+            })
             .expect("second session");
         assert!(lines[first - 1].contains("/alpha"), "{rendered}");
         assert!(lines[second - 1].contains("/beta"), "{rendered}");
@@ -3617,6 +3627,11 @@ fn project_headers_render_immediately_above_sessions_with_space_before_later_gro
             lines[second - 2]
                 .chars()
                 .skip(workspace_start)
+                .take(if width >= 120 {
+                    75usize.saturating_sub(workspace_start)
+                } else {
+                    usize::MAX
+                })
                 .all(|c| c.is_whitespace() || matches!(c, '│' | '┃' | '|')),
             "{rendered}"
         );
@@ -6320,4 +6335,47 @@ fn selected_snapshot_requires_live_terminal_and_helper_support() {
         rx.try_recv().unwrap().op,
         Operation::SessionPreview { .. }
     ));
+}
+
+#[test]
+fn selected_snapshot_mouse_does_not_navigate_session_list() {
+    for (width, column, row) in [(160, 145, 12), (80, 60, 26)] {
+        let (mut a, _) = queued_app();
+        let mut second = disposable_shell();
+        second.id = "cx-second".into();
+        a.work[0].sessions = vec![disposable_shell(), second];
+        let mut terminal = ratatui::Terminal::new(TestBackend::new(width, 30)).unwrap();
+        terminal.draw(|f| render(f, &a)).unwrap();
+        for kind in [
+            MouseEventKind::ScrollDown,
+            MouseEventKind::Down(event::MouseButton::Left),
+        ] {
+            let selected = a.selected;
+            a.mouse(
+                MouseEvent {
+                    kind,
+                    column,
+                    row,
+                    modifiers: KeyModifiers::NONE,
+                },
+                Rect::new(0, 0, width, 30),
+            );
+            assert_eq!(a.selected, selected);
+            assert!(a.pending_attach.is_none());
+        }
+        assert!(a.mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 30,
+                row: 10,
+                modifiers: KeyModifiers::NONE
+            },
+            Rect::new(0, 0, width, 30)
+        ));
+        assert_eq!(a.selected, 1);
+    }
+    let mut s = disposable_shell();
+    s.directory = "/".into();
+    s.name = "shell".into();
+    assert!(session_preview::label(&s).starts_with("/ ·"));
 }

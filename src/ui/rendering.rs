@@ -421,6 +421,14 @@ pub(super) fn render_at(
     match app.view {
         View::Work => {
             let workspace = session_preview::render(frame, app, workspace);
+            // Only the list owns wheel navigation; the snapshot and metadata
+            // footer must never move the selected session behind the pointer.
+            app.panels
+                .borrow_mut()
+                .retain(|(focus, _, _)| *focus != Focus::Workspace);
+            app.panels
+                .borrow_mut()
+                .push((Focus::Workspace, false, workspace));
             let rows = app.session_rows();
             if rows.is_empty() {
                 let checking = app
@@ -510,7 +518,7 @@ pub(super) fn render_at(
                 } else {
                     workspace
                 };
-                let compact = workspace.width < 50;
+                let compact = workspace.width < 70;
                 let state_width = if rows.iter().any(|(_, s)| s.activity.is_some()) {
                     10
                 } else {

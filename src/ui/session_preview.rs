@@ -35,7 +35,12 @@ pub(super) fn label(s: &Session) -> String {
         .trim_end_matches('/')
         .rsplit('/')
         .next()
-        .unwrap_or("~");
+        .filter(|folder| !folder.is_empty())
+        .unwrap_or(if s.directory.starts_with('/') {
+            "/"
+        } else {
+            "~"
+        });
     format!(
         "{} · {} · {}",
         safe_label(folder),
@@ -186,10 +191,13 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(area);
-    let mut lines = vec![
+    let border = block("Selected session · snapshot".into(), false);
+    let inner = border.inner(parts[1]);
+    frame.render_widget(border, parts[1]);
+    let metadata = vec![
         Line::from(label(&s)),
         Line::from(identity(&app.devices[d])),
-        Line::from(safe_label(&s.directory)),
+        Line::from(session_folder_label(&s.directory)),
         Line::from(format!(
             "{} · {}",
             safe_label(&s.provider),
@@ -198,9 +206,19 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
         Line::from(app.session_status(d, &s)),
         Line::from(""),
     ];
+    let metadata = Paragraph::new(metadata).wrap(Wrap { trim: false });
+    let height = (metadata.line_count(inner.width) as u16)
+        .min(10)
+        .min(inner.height.saturating_sub(3));
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(height), Constraint::Min(0)])
+        .split(inner);
+    frame.render_widget(metadata, sections[0]);
+    let mut lines = Vec::new();
     if app.session_preview.key.as_ref() == Some(&key(&app.devices[d], &s)) {
         lines.push(Line::from(app.session_preview.status.clone()).style(muted()));
-        let available = usize::from(parts[1].height.saturating_sub(9));
+        let available = usize::from(sections[1].height.saturating_sub(1));
         let skip = app.session_preview.lines.len().saturating_sub(available);
         lines.extend(
             app.session_preview
@@ -220,9 +238,6 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
         };
         lines.push(Line::from(reason).style(muted()));
     }
-    frame.render_widget(
-        Paragraph::new(lines).block(block("Selected session · snapshot".into(), false)),
-        parts[1],
-    );
+    frame.render_widget(Paragraph::new(lines), sections[1]);
     parts[0]
 }

@@ -2,6 +2,8 @@
 
 ## Integrated session terminals and unified creation — 0.1.88
 
+Deployed locally from `6fc6411` to `~/.local/bin/cx` under the maintenance lock. Installed version and build digest verified; rollback `~/.local/bin/cx.rollback-0.1.87-live-pane`. Existing sessions remain running.
+
 The user rejected clipped text snapshots. The session pane now displays the full styled current tmux screen with blank rows, cursor and alternate-screen content; its viewport follows the cursor. Enter focuses the existing pane within CX, Ctrl+] returns navigation, Ctrl+O opens native attachment. Input binds to device/server/session/pane, not process identity or title, and a same-queue generation guard prevents stale input delivery. Focus survives a shell starting an agent. Shell is now a choice in New session, with duplicate sidebar/palette creation entries removed.
 
 Limits: original terminal geometry is preserved; oversized content is viewport-clipped. No mouse forwarding/scrollback/terminal emulation; native attach remains available. Pasted input is bounded to 4096 bytes including mode markers. Remote helpers need `live-session-pane-v1`; no remote deployment is included. Physical acceptance beyond synthetic PTYs and real provider-specific keybindings remains separate.

@@ -2,6 +2,8 @@
 
 ## Integrated live terminal panes — 0.1.88
 
+PASS — atomic local installation from `6fc6411`; version0.1.88 and installed/build SHA-256 `4b5da5b22fb8c4beeee4c8062f0ba460f9875a5ced6e11bdd1af8278adf7a4c0` match (`/tmp/cx-live-pane-install.log`). Rollback `~/.local/bin/cx.rollback-0.1.87-live-pane`. No remote deployment or live-session restart.
+
 PASS — full offline Rust suite: **729 passed, 0 failed, 1 protected live test ignored** (`/tmp/cx-live-pane-full-final.log`). Final legacy Ctrl+] mapping correction passed the focused-input regression separately (`/tmp/cx-live-pane-return-key.log`). Source formatting, diff checks and optimized release build passed.
 
 PASS — real disposable managed/default tmux runtime tests against release (`/tmp/cx-live-pane-runtime-final.log`): full styled 100-row screen, actual cursor, no geometry/attachment mutation, input reaches existing shell, raw alternate-screen TUI colors/arrow/Ctrl+C bytes, malformed/wrong-pane/server-generation/ended-session refusal. No personal sessions or transcripts inspected.

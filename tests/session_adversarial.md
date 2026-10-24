@@ -121,3 +121,25 @@ checked attachment awaits root execution against the integrated binary.
 The tiny interval between predicate acceptance and tmux attachment is not forced
 by this supplement. Root's same-command-queue implementation plus its targeted
 predicate tests must establish that ordering; a preflight-only pass cannot.
+
+## Pin and cached folder UI restart supplement
+
+```sh
+python3 -B tests/session_adversarial_ui.py --self-test
+# Root executes the actual UI; no live tmux/Docker/SSH endpoint:
+uv run --offline --with pyte python -B tests/session_adversarial_ui.py /absolute/path/to/cx --run-pty
+```
+
+The first viewer receives one synthetic remote session through a framed fake
+SSH helper. It pins with the real `p` key, opens Files through the palette, then
+quits normally. The second viewer reads the persisted pin/cache while the helper
+reports no sessions. Enter offers the saved folder; opening it must show the
+cached file before the delayed fresh response. Delete/rename/cut stay disabled
+both before and after that refresh fails. The operation log allows observations
+only, proving no Create, attachment or mutation was requested. Both exits check
+termios restoration; only synthetic metadata and operation kinds are inspected.
+The inherited environment is allowlisted, default tmux directory is private,
+tmux/Docker/service tools are refusal stubs, and SSH never leaves the process.
+No screen contents or transcripts are emitted. Four pure tests (including a
+fake-helper frame round trip without subprocesses) passed; actual PTY execution
+is left to root.

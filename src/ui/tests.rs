@@ -6224,3 +6224,100 @@ fn unified_picker_offers_explicit_native_history() {
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(rx.try_iter().any(|task| matches!(task.op, Operation::Create(spec) if spec.resume && spec.resume_pick && spec.provider == "claude")));
 }
+
+#[test]
+fn selected_snapshot_rejects_late_reply_and_clears_when_hidden() {
+    let (mut a, rx) = queued_app();
+    a.work[0].sessions = vec![disposable_shell()];
+    a.providers
+        .get_mut(&0)
+        .unwrap()
+        .0
+        .push("session-preview-v1".into());
+    a.work[0].sessions[0].terminal = Some(crate::model::TerminalIdentity {
+        server_pid: 1,
+        server_start: "1".into(),
+        session_id: "$1".into(),
+        created: "1".into(),
+    });
+    a.work[0].fetched = transport::now();
+    assert!(a.refresh_session_preview(160));
+    let first = rx.try_recv().unwrap();
+    a.work[0].sessions[0].started = "replacement".into();
+    assert!(a.refresh_session_preview(160));
+    let second = rx.try_recv().unwrap();
+    let reply = |task: Task| Reply {
+        device_id: Some("local".into()),
+        execution_target: Some(None),
+        preview: None,
+        device: 0,
+        op: task.op,
+        generation: task.generation,
+        result: Ok(serde_json::json!({"lines":["fixture snapshot"]})),
+    };
+    a.apply(reply(first));
+    assert!(!a.refresh_session_preview(160)); // Newer request remains in flight.
+    a.apply(reply(second));
+    let mut terminal = ratatui::Terminal::new(TestBackend::new(160, 30)).unwrap();
+    terminal.draw(|f| render(f, &a)).unwrap();
+    let rendered: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(rendered.contains("fixture snapshot"));
+    assert!(a.refresh_session_preview(80));
+    terminal.draw(|f| render(f, &a)).unwrap();
+    let rendered: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(!rendered.contains("fixture snapshot"));
+    a.view = View::Files;
+    assert!(!a.refresh_session_preview(160));
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn selected_snapshot_labels_preserve_titles_and_disambiguate_fallbacks() {
+    let mut s = disposable_shell();
+    assert_eq!(session_preview::label(&s), "Disposable shell");
+    s.name = "shell".into();
+    let label = session_preview::label(&s);
+    assert!(label.contains("cx-disposable") && label.contains("shell"));
+}
+
+#[test]
+fn selected_snapshot_requires_live_terminal_and_helper_support() {
+    let (mut a, rx) = queued_app();
+    a.work[0].sessions = vec![disposable_shell()];
+    a.work[0].fetched = transport::now();
+    assert!(!a.refresh_session_preview(160));
+    a.work[0].sessions[0].terminal = Some(crate::model::TerminalIdentity {
+        server_pid: 1,
+        server_start: "1".into(),
+        session_id: "$1".into(),
+        created: "1".into(),
+    });
+    assert!(!a.refresh_session_preview(160)); // Older helper.
+    a.providers
+        .get_mut(&0)
+        .unwrap()
+        .0
+        .push("session-preview-v1".into());
+    a.work[0].fetched = 0;
+    assert!(!a.refresh_session_preview(160));
+    a.work[0].fetched = transport::now();
+    assert!(!a.refresh_session_preview(80));
+    assert!(rx.try_recv().is_err());
+    assert!(a.refresh_session_preview(160));
+    assert!(matches!(
+        rx.try_recv().unwrap().op,
+        Operation::SessionPreview { .. }
+    ));
+}

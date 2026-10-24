@@ -420,6 +420,7 @@ pub(super) fn render_at(
     let workspace = split_workspace[0];
     match app.view {
         View::Work => {
+            let workspace = session_preview::render(frame, app, workspace);
             let rows = app.session_rows();
             if rows.is_empty() {
                 let checking = app
@@ -549,9 +550,13 @@ pub(super) fn render_at(
                     let fresh = status.starts_with('+');
                     let badge = format!("[{}]", safe_label(menus::session_label(app, *i, s)));
                     let name = if s.agent_tasks.is_empty() {
-                        safe_label(&s.name)
+                        session_preview::label(s)
                     } else {
-                        format!("{} · {} tasks", safe_label(&s.name), s.agent_tasks.len())
+                        format!(
+                            "{} · {} tasks",
+                            session_preview::label(s),
+                            s.agent_tasks.len()
+                        )
                     };
                     let name = format!("{}{}", if app.pinned(*i, s) { "* " } else { "" }, name);
                     let name = match s.origin.as_ref().filter(|_| s.id.starts_with("ext-")) {
@@ -1610,7 +1615,7 @@ pub(super) fn render_at(
             ),
             Dialog::SessionPicker(d, path, scope, provider, rows) => (
                 format!("Sessions here · {}", identity(&app.devices[*d])),
-                rows.iter().map(|s| format!("{} · {} · {} · {}", safe_label(&s.provider), safe_label(&s.name), app.session_status(*d, s), safe_label(&s.id.chars().rev().take(6).collect::<String>().chars().rev().collect::<String>()))).chain(std::iter::once(if provider.is_empty() && scope.is_some() { "+ New session…".into() } else { format!("+ New {} session", if provider.is_empty() { "shell" } else { provider }) })).chain(container_agents::has_history(scope.as_ref(), provider).then(|| format!("Choose past conversation in {}…", safe_label(provider)))).collect(),
+                rows.iter().map(|s| format!("{} · {} · {} · {}", safe_label(&s.provider), session_preview::label(s), app.session_status(*d, s), safe_label(&s.id.chars().rev().take(6).collect::<String>().chars().rev().collect::<String>()))).chain(std::iter::once(if provider.is_empty() && scope.is_some() { "+ New session…".into() } else { format!("+ New {} session", if provider.is_empty() { "shell" } else { provider }) })).chain(container_agents::has_history(scope.as_ref(), provider).then(|| format!("Choose past conversation in {}…", safe_label(provider)))).collect(),
                 format!("{}{}\nEnter joins the selected runtime · New creates separate work\nNo conversation is selected by recency.", scope.as_ref().map(|c| format!("{} · ", safe_label(&c.name))).unwrap_or_default(), safe_label(if path.is_empty() { scope.as_ref().map(|c| c.folder.as_str()).unwrap_or("~") } else { path })),
             ),
             Dialog::PinnedEnded(d, s) => (

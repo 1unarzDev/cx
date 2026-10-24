@@ -6,6 +6,7 @@ use crate::{
 mod container_agents;
 mod filters;
 mod rendering;
+mod session_preview;
 mod workspaces;
 #[cfg(test)]
 use rendering::render;
@@ -456,6 +457,7 @@ struct CommandPanel {
     label: String,
 }
 struct App {
+    session_preview: session_preview::Snapshot,
     devices: Vec<Device>,
     policies: Vec<store::DevicePolicy>,
     device: usize,
@@ -593,6 +595,7 @@ impl App {
             })
             .collect();
         let mut app = Self {
+            session_preview: session_preview::Snapshot::default(),
             devices,
             policies,
             device: 0,
@@ -3761,6 +3764,10 @@ impl App {
             reply.device = device;
         }
         if reply.device >= self.devices.len() || reply.device >= self.work.len() {
+            return;
+        }
+        if matches!(reply.op, Operation::SessionPreview { .. }) {
+            self.apply_session_preview(reply);
             return;
         }
         if reply.generation < self.device_generation_floor {
@@ -8686,6 +8693,7 @@ fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender<Reply>) {
         let panel = matches!(
             task.op,
             Operation::CommandPanel { .. }
+                | Operation::SessionPreview { .. }
                 | Operation::CapturePane { .. }
                 | Operation::PaneInput { .. }
                 | Operation::PaneClose { .. }
@@ -9359,6 +9367,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         // them with accelerated arrow-key bursts. suspend() releases this before
         // handing the terminal to SSH/tmux/native commands.
         screen.mouse_capture(true)?;
+        dirty |= app.refresh_session_preview(screen.terminal.size()?.width);
         if dirty {
             screen
                 .terminal
@@ -9367,6 +9376,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
         let mut wait =
             notifications::poll_interval(app.notice_started, app.notice_deadline, Instant::now());
+        if app.view == View::Work {
+            wait = wait.min(Duration::from_millis(250));
+        }
         if app.command_panel.as_ref().is_some_and(|p| p.alive) {
             wait = wait.min(Duration::from_millis(80));
         }

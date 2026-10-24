@@ -431,13 +431,19 @@ pub(super) fn navigation_read(op: &Operation) -> bool {
 /// Replies already reject old navigation generations. Discard those reads before
 /// they consume helper time, retaining mutation ordering and reply accounting.
 pub(super) fn superseded_reads(tasks: &mut VecDeque<Task>, incoming: &Task) -> Vec<Task> {
-    if !navigation_read(&incoming.op) {
+    let preview = matches!(incoming.op, Operation::SessionPreview { .. });
+    if !preview && !navigation_read(&incoming.op) {
         return Vec::new();
     }
     let mut discarded = Vec::new();
     let mut retained = VecDeque::new();
     while let Some(task) = tasks.pop_front() {
-        if task.generation < incoming.generation && navigation_read(&task.op) {
+        let same_kind = if preview {
+            matches!(task.op, Operation::SessionPreview { .. })
+        } else {
+            navigation_read(&task.op)
+        };
+        if task.generation < incoming.generation && same_kind {
             discarded.push(task);
         } else {
             retained.push_back(task);

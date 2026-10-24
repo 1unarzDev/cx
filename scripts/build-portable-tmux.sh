@@ -9,12 +9,23 @@ build=$(mktemp -d)
 trap 'rm -rf "$build"' EXIT HUP INT TERM
 fetch() {
     name=$1 url=$2 expected=$3
-    if [ -n "${CX_TOOL_SOURCE_CACHE:-}" ] && [ -f "$CX_TOOL_SOURCE_CACHE/$name" ]; then
-        cp "$CX_TOOL_SOURCE_CACHE/$name" "$build/$name"
-    else
-        curl --disable --fail --silent --show-error --proto '=https' --proto-redir '=https' --location --connect-timeout 5 --max-time 90 "$url" --output "$build/$name"
+    cache_file=
+    if [ -n "${CX_TOOL_SOURCE_CACHE:-}" ]; then
+        cache_file="$CX_TOOL_SOURCE_CACHE/$name"
+        if [ -f "$cache_file" ]; then
+            cp "$cache_file" "$build/$name"
+        fi
     fi
-    printf '%s  %s\n' "$expected" "$build/$name" | sha256sum --check --status
+    if ! printf '%s  %s\n' "$expected" "$build/$name" | sha256sum --check --status 2>/dev/null; then
+        curl --disable --fail --silent --show-error --proto '=https' --proto-redir '=https' --location \
+            --connect-timeout 10 --max-time 180 --retry 8 --retry-delay 5 --retry-max-time 240 \
+            --retry-connrefused --retry-all-errors "$url" --output "$build/$name"
+        printf '%s  %s\n' "$expected" "$build/$name" | sha256sum --check --status
+        if [ -n "$cache_file" ]; then
+            mkdir -p "${CX_TOOL_SOURCE_CACHE}"
+            cp "$build/$name" "$cache_file"
+        fi
+    fi
 }
 fetch tmux.tar.gz https://github.com/tmux/tmux/releases/download/3.7c/tmux-3.7c.tar.gz 7c60cae9a0e25288e2e24750aafc9e8800fc7fd4555e447e1b29ee4201cfb3bf
 fetch ncurses.tar.gz https://ftp.gnu.org/gnu/ncurses/ncurses-6.5.tar.gz 136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6

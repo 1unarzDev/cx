@@ -83,6 +83,8 @@ fn container_history_selection_survives_runtime_refresh() {
     s.directory = scope.folder.clone();
     s.container = Some(scope);
     a.apply(Reply {
+        device_id: None,
+        execution_target: None,
         preview: None,
         device: task.device,
         generation: task.generation,
@@ -169,6 +171,8 @@ fn remote_container_capability_probe_is_explicit_and_requires_new_helper() {
     let t = rx.try_recv().unwrap();
     assert!(matches!(t.op, Operation::Info));
     a.apply(Reply {
+        device_id: None,
+        execution_target: None,
         preview: None,
         device: 1,
         generation: t.generation,
@@ -178,6 +182,8 @@ fn remote_container_capability_probe_is_explicit_and_requires_new_helper() {
     let t = rx.try_recv().unwrap();
     assert!(matches!(t.op, Operation::ContainerProviders { .. }));
     a.apply(Reply {
+        device_id: None,
+        execution_target: None,
         preview: None,
         device: 1,
         generation: t.generation,

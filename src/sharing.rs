@@ -20,6 +20,41 @@ pub struct Observation {
     pub occupied_subnets: Vec<String>,
     pub outputs: Vec<Output>,
 }
+
+/// Fresh measured uplink evidence gathered from a device that can act as a
+/// gateway. Throughput is preferred; latency breaks ties. Unknown or stale
+/// candidates are never selected automatically.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct UpstreamEvidence {
+    pub interface: String,
+    pub throughput_mbps: u32,
+    pub latency_ms: u32,
+    pub internet_ready: bool,
+    pub observed_at: u64,
+}
+
+pub fn select_upstream(candidates: &[UpstreamEvidence], now: u64) -> Result<String> {
+    let mut valid = candidates
+        .iter()
+        .filter(|c| {
+            iface(&c.interface)
+                && c.internet_ready
+                && c.throughput_mbps > 0
+                && now >= c.observed_at
+                && now - c.observed_at <= 30
+        })
+        .collect::<Vec<_>>();
+    valid.sort_by(|a, b| {
+        b.throughput_mbps
+            .cmp(&a.throughput_mbps)
+            .then(a.latency_ms.cmp(&b.latency_ms))
+            .then(a.interface.cmp(&b.interface))
+    });
+    valid
+        .first()
+        .map(|c| c.interface.clone())
+        .context("no fresh internet-capable upstream evidence")
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Source {
     Automatic,
@@ -582,6 +617,51 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+    #[test]
+    fn upstream_selection_prefers_throughput_then_latency_and_rejects_stale() {
+        let candidates = vec![
+            UpstreamEvidence {
+                interface: "tranquility".into(),
+                throughput_mbps: 80,
+                latency_ms: 8,
+                internet_ready: true,
+                observed_at: 100,
+            },
+            UpstreamEvidence {
+                interface: "innovation".into(),
+                throughput_mbps: 120,
+                latency_ms: 30,
+                internet_ready: true,
+                observed_at: 100,
+            },
+            UpstreamEvidence {
+                interface: "stale".into(),
+                throughput_mbps: 1000,
+                latency_ms: 1,
+                internet_ready: true,
+                observed_at: 60,
+            },
+        ];
+        assert_eq!(select_upstream(&candidates, 100).unwrap(), "innovation");
+        let tied = vec![
+            UpstreamEvidence {
+                interface: "slow-latency".into(),
+                throughput_mbps: 100,
+                latency_ms: 40,
+                internet_ready: true,
+                observed_at: 100,
+            },
+            UpstreamEvidence {
+                interface: "fast-latency".into(),
+                throughput_mbps: 100,
+                latency_ms: 10,
+                internet_ready: true,
+                observed_at: 100,
+            },
+        ];
+        assert_eq!(select_upstream(&tied, 100).unwrap(), "fast-latency");
+        assert!(select_upstream(&candidates, 131).is_err());
     }
     #[test]
     fn preview_scope_and_rejections() {

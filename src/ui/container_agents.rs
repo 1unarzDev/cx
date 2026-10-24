@@ -10,8 +10,8 @@ pub(super) struct Profiles {
 fn key(d: usize, scope: &ContainerScope) -> (usize, String) {
     (d, serde_json::to_string(scope).unwrap_or_default())
 }
-pub(super) fn has_history(scope: Option<&ContainerScope>, provider: &str) -> bool {
-    scope.is_some() && matches!(provider, "claude" | "codex")
+pub(super) fn has_history(_scope: Option<&ContainerScope>, provider: &str) -> bool {
+    matches!(provider, "claude" | "codex")
 }
 impl App {
     fn container_agents_supported(&self, d: usize) -> bool {
@@ -242,6 +242,7 @@ impl App {
             provider,
             name: String::new(),
             resume,
+            resume_pick: resume,
         };
         self.creating = self.send_explicit(
             d,

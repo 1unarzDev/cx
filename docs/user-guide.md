@@ -2,6 +2,8 @@
 
 Detailed controls and behavior for sessions, files, terminals, network discovery and updates. For installation and dependencies, see [installation](installation.md).
 
+Plain `cx` opens the current folder in Files on the invocation device. An update restart restores the existing workspace instead.
+
 ## Controls
 
 | Keys | Action |
@@ -35,11 +37,41 @@ Cached session/folder navigation is saved locally and displayed before refresh. 
 
 In a container, `n` probes installed agents for its selected user and folder. Choose Claude/Codex to join an existing runtime, start New, or choose a past conversation in the provider’s own picker. Both new and history launches offer Default/YOLO. Sign-in and history stay inside that container; host availability does not enable container agents. See [containers](containers.md).
 
+Press `:` to run a command in the current folder. It opens in a floating panel instead of leaving CX: output streams live with color, typing goes to the command (including Ctrl+C), Esc closes the panel while Ctrl+O opens it full screen, and the exit status shows when it finishes. CX is never suspended.
+
 New Codex/Claude sessions offer **Default** (existing host permissions) or **YOLO** before launch. YOLO applies only to that session: Codex bypasses approvals and sandboxing; Claude bypasses permission prompts. CLI: `cx new --provider codex --directory ~/cx --yolo` (also supports `--provider claude`). Existing sessions keep their launch permissions. Update remote helpers before selecting YOLO.
 
 In Sessions, `d` stops the selected CX-managed shell, Claude or Codex session after confirmation; Enter initially keeps it, `y` confirms. External tmux sessions are protected. Expanded sessions must be stopped from their terminal.
 
+### Moving terminals started outside CX
+
+Sessions also lists your shells and Claude/Codex sessions that CX did not start. These include sessions in an ordinary terminal window, an SSH login, another tmux or screen server, a default-server tmux pane, or a `docker exec` client. Rows outside tmux end with where they live, such as `· terminal` or `· ssh`.
+
+Press Enter on such a row to move it into CX. The terminal's processes keep running: the same PIDs, threads, child tools and in-progress work, with only where the terminal is shown changing. A move takes well under a second, and output continues during it. If the terminal was a single-window emulator, its now-empty window closes automatically; a multiplexer (tmux, screen) or a server emulator that drives other windows (gnome-terminal, konsole) is left alone, and you can close that window yourself. The moved row then appears once, as a managed CX session. Stopping it with `d`, exiting its shell, or `cx reset` ends it as it would end any CX session. Programs that ignore SIGTERM are not force-killed.
+
+Moving uses a guarded copy of [reptyr](https://github.com/nelhage/reptyr). Install it once per device:
+
+```sh
+cx device ptrace local install    # or a device name; no admin rights needed
+cx device ptrace local status
+cx device ptrace local uninstall
+```
+
+`install` places `cx-reptyr` in `~/.local/bin`. Each move then runs it through `sudo`, and CX asks for your password in a panel, so no privileged state persists between moves. The relay accepts only one exact form: it refuses any process not fully owned by you, re-checks every process identity CX observed, and drops back to your user (and all capabilities) once the terminal has moved.
+
+To skip the per-move password on a device you trust, `cx device ptrace <device> enable` installs a root-owned `/usr/local/libexec/cx/cx-reptyr` with `cap_sys_ptrace` (one `sudo` at setup; undo with `disable`). Any program running as you on that device could then use it to take over your other terminals, so enable it only where you want that. Hosts with Yama `ptrace_scope=3` cannot move terminals. Without setup, these rows stay visible and default-server tmux rows still attach as before.
+
 Automatically named shells show the running executable, such as `running cargo`; new managed Fish shells remember short commands as `last: git`, while older/Bash/Zsh shells show the most recently observed command as `recent: git`. Arguments and shell history are excluded. Claude native names and Codex names use exact process metadata when available; daemon-backed Codex sessions without a reliable identity retain their folder label. Custom names stay unchanged and label refreshes preserve row order.
+
+New terminals prepare in the background while CX shows an animated loader. CX opens the terminal once its first screen has content; intentionally silent programs open after a bounded five-second wait. Startup failures return to the panel. Remote devices need an updated helper for this readiness check.
+
+Session rows refresh while Files and other panels are open. Failed device checks discard unattachable cached rows; successful checks recover existing managed/default tmux terminals, including recognized Docker exec terminals in running devcontainers. Stopped, restarted or missing container runtimes disappear from Sessions after authoritative checks. The Containers inventory retains actual stopped containers for an explicit Start; cache cleanup never deletes Docker objects or reattaches arbitrary orphaned PTYs.
+
+The Sessions state column animates for observed foreground commands, known native agent work, or recent terminal output. `output` means the terminal emitted output; it does not prove a model is reasoning or a silent command is running. Stale observations expire. Press `s` to inspect the selected session's provider-reported tasks/subagents and task text. Open/closed child records are task states, not busy indicators. The dialog follows refreshed metadata and closes when the session disappears.
+
+Exact native names and project directories follow provider metadata without changing terminal identity. Custom CX names stay unchanged. New host Codex launches use a separate process (`--no-daemon`) when supported, improving current-thread tracking at the cost of additional memory; older versions fall back. Existing sessions are not restarted. New supported host launches also set Codex’s native thread-name terminal title per launch to identify idle thread switches. This requires explicit, unique names of at most 48 characters among owned threads; otherwise CX shows “Directory unavailable” and avoids using the launch folder for contextual commands. Saved provider configuration is unchanged. Codex database metadata additionally needs the optional `sqlite3` executable; unsupported identities omit optional metadata. No transcripts are read.
+
+Claude attachments use a solid light or dark background for default terminal cells, following the host Claude theme. This improves small question-description contrast in transparent terminals while preserving provider text colors and explicit highlights. Reattaching as a shell restores the terminal background. External tmux sessions and terminal/provider configuration are unchanged.
 
 ## Files and transfers
 

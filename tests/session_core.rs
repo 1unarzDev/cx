@@ -1,9 +1,13 @@
+#[path = "../src/adoption.rs"]
+mod adoption;
 #[path = "../src/containers.rs"]
 mod containers;
 #[path = "../src/files.rs"]
 mod files;
 #[path = "../src/model.rs"]
 mod model;
+#[path = "../src/peer_ssh.rs"]
+mod peer_ssh;
 #[path = "../src/session_titles.rs"]
 mod session_titles;
 #[path = "../src/sessions.rs"]
@@ -36,6 +40,7 @@ fn persistent_idempotent_hostile_directory() {
         provider: "shell".into(),
         name: "disposable fixture".into(),
         resume: false,
+        resume_pick: false,
     };
     let result = std::panic::catch_unwind(|| {
         let first = sessions::create(&request).unwrap();

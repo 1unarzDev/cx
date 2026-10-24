@@ -1,5 +1,16 @@
 # Validation record
 
+## Local 0.1.86 integration
+
+- Integrated the installed v0.1.85 baseline without replacing its adoption, metadata, command panel or peer modules with older versions.
+- `cargo test --locked --offline -- --test-threads=1`: **718 passed, 0 failed, 1 protected live test ignored** (`/tmp/cx-deploy-tests3.log`). Updated the older cache-discard assertion to verify stale cache preservation and mandatory attachment rechecking.
+- Optimized offline release build, formatting and whitespace checks passed.
+- Integrated release passed the real disposable network-none Ubuntu container matrix: all eight provider/fresh-or-history/Default-or-YOLO combinations, quoted cwd after startup changes, duplicate/key guards, native watch, public CLI, and restart invalidation (`/tmp/cx-deploy-container-live.log`). Synthetic agents only; no provider credentials or real conversation histories used.
+- Isolated fake Docker/SSH scope and offline cases passed; six owned-tmux discovery/lifecycle cases passed (`/tmp/cx-deploy-session-fixtures.log`, `/tmp/cx-deploy-runtime.log`). Container provider fake matrix passed (`/tmp/cx-deploy-container-fixtures.log`).
+- Owned PTY managed/external attach/watch, generation rejection, reused-name and dead-pane checks passed (`/tmp/cx-deploy-attach.log`).
+- Viewer restart/pin/cache PTY passed: cached folder visible before remote listing reply (176.49 ms in this fixture); failed reads did not authorize mutation (`/tmp/cx-deploy-ui.log`). Fixture permits the newer read-only container inventory request. This is not a general startup performance benchmark.
+
+
 ## Container agent launch and native history — 2026-10-24
 
 Worktree/branch: `worktrees/container-agent-parity-20261024`, `feat/container-agent-parity-20261024`, based on `970f9f8`. Runtime commit `e34803b`; adversarial matrix commits `22edba8` and `f51a941`. Version 0.1.60 separates the new container-private helper from older payload decoders. No installed binary, remote fleet or conflicted root checkout was changed.
@@ -48,6 +59,74 @@ Median improvement is approximately 18–23% in this small fixture. Five samples
 ### Remaining coverage and integration
 
 No real Claude/Codex conversation history, Docker daemon, remote fleet/robot, graphical emulator or credential configuration was used. Actual paste/scroll/clipboard/resize/provider editor takeover across all terminal configurations remains unvalidated here. Custom tmux sockets, inner-container tmux, nested attachment, container UI agent/resume parity and provider conversation dedup are not implemented by this milestone. Current folder badges show observed working-directory presence, not per-file edits or inferred task activity. Missing pinned rows mean “not seen,” not confirmed process death. No universal shell/tmux hook, networking mutation or external publication was performed.
+## Managed SSH portability and live mesh — v0.1.76
+
+PASS — `cargo test --locked`: 629 passed, one protected live test ignored.
+`/tmp/cx-auto-umask-full.log`. Three-helper startup/six-edge/stale-alias/race fixture
+passes with coordinator and remote helpers using umask 0002:
+`/tmp/cx-auto-umask-mesh.log`. Recovery accepts only an empty legacy root beneath
+a private owned parent, and rejects nonempty/exposed roots.
+
+LIVE PASS — signed v0.1.75 installed atomically on all three core devices. Ordinary
+CX startup formed all pairs after Tranquility woke up. Actual installed-CX session
+requests succeeded in all six directions (two original sessions on Innovation,
+zero on Creation/Tranquility). Repeated sync reports `state: ready`, three verified
+pairs and no pending entries. Evidence: `/tmp/cx-v073-live-edges.json`,
+`/tmp/cx-v076-live-sync.json`. Before/after session PID/start/boot/socket/process
+identities and personal SSH config/known_hosts hashes match on all three devices:
+`/tmp/cx-v073-{before,after}.json`. No provider/tmux restart or networking changes.
+
+Creation's umask 0002 exposed the directory issue. Its empty managed root/staging
+were repaired under verified private parents; the source fix covers new directory
+creation and safe legacy-root recovery. Tranquility's old Innovation record was
+explicitly migrated from Directed to Core; robots stayed Directed. A sleeping
+Tranquility returned No route to host; retry after wake completed setup.
+
+RELEASE — v0.1.75 fully passed release jobs and signed publication. v0.1.76 source
+passed main-branch CI and x86/ARM static builds/distro checks. Release attempt 1
+passed loader behavior but hit a fixture teardown race (temporary directory still
+receiving shell-exit writes). A focused test-only fix now waits on pinned identities
+of the fixture's own tmux server/panes before deleting state; two isolated runs pass.
+Release attempt 2 passed all checks and published signed assets:
+https://github.com/1unarzDev/cx/actions/runs/39351284914 . Main-branch CI also passed:
+https://github.com/1unarzDev/cx/actions/runs/39351283454 .
+
+FINAL LIVE PASS — installed signed v0.1.76 on Innovation, Creation and Tranquility
+through the normal verified updater, serially and without restarting sessions.
+All six actual installed-CX session requests passed again. All three report
+`cx 0.1.76`; baseline personal SSH config/known_hosts hashes and all original
+session process identities are preserved. Evidence:
+`/tmp/cx-v076-final-{before,after,edges,sync}.json`. The temporary verified public
+host-key exchange file was removed. Release source/tag: `6cdf1b5` / `v0.1.76`.
+The fixture teardown fix is a test-only follow-up, `a381eae`.
+
+## Automatic core setup — v0.1.75
+
+PASS — locked Rust suite: 625 tests passed, one protected live test ignored;
+additional inventory reconciliation regression passed. Full suite rerun is required
+by release CI. Logs: `/tmp/cx-auto-release-tests.log`, `/tmp/cx-auto-ui-test.log`.
+
+PASS — `peer_mesh_cli.py`: ordinary PTY UI startup forms all six directed edges,
+offline recovery, Directed exclusion, private-key isolation, idempotent authorization,
+changed-key rejection, stale alias repair, stored jump-route exclusion, and removal/
+demotion during a paused reverse probe. Real helpers use disposable homes/state and
+a bounded SSH transport fixture. Log: `/tmp/cx-auto-mesh-final.log`.
+
+PASS — `peer_managed_ssh.py`: disposable native OpenSSH authenticates the actual
+managed key, enforces pinned host trust, rejects unknown/changed hosts and never
+prompts. `peer_pairing_cli.py` preserves explicit pairing compatibility. Native
+`enrollment_ssh.py` verifies encrypted-key prompts, explicit trust, safe child cleanup
+and reusable masters. Logs: `/tmp/cx-auto-peer_*.log`, `/tmp/cx-auto-enrollment.log`.
+
+Live core setup/deployment remains pending signed publication. No session restarts
+or networking changes are part of this implementation. Existing SSH authorizations
+remain after demotion/removal; current pin conflicts require explicit resolution.
+
+## Reciprocal pairing and presentation — v0.1.72
+
+PASS — full locked Rust suite: 598 passed, one protected live test ignored; debug build, formatting and diff checks passed. Real two-helper isolated CLI fixture verifies reverse identity, enrollment/retry, legacy capability rejection, both identity mismatch directions, reverse trust failure, directed-policy preservation, self/endpoint collision rejection, preserved stale-endpoint re-verification, same-channel verification/mutation, and unchanged SSH/route files. Disposable tmux fixtures verify Claude dark/light terminal-default backgrounds (including cleanup of legacy opaque styles) and Codex exact-writer/native/custom names with neutral ambiguous-selection fallback. Unknown Codex directories remain unavailable for actions. Local policy CLI fixture passes.
+
+LIVE — after explicit user approval for Creation–Innovation SSH trust/authentication, network-presented host keys matched each host’s local public host key. Creation uses a dedicated key and home-relative SSH configuration. Reverse authenticated SSH, exact machine/account verification, reciprocal Innovation enrollment and a real installed-CX sessions request succeeded. No private key was transferred. Tranquility’s mesh TCP/22 endpoint returned “No route to host” from both Innovation and Creation; live Tranquility acceptance remains unresolved. No networking, installed binary or active provider/tmux restart was performed.
 
 
 ## Device access posture UI — v0.1.48 (2026-10-10)
@@ -852,4 +931,142 @@ PASS: `cargo test --locked --bin cx containers_ui_capture_matrix_and_default_bac
 
 Removed container-menu agent options and permissions, retaining Shell, read-only Files and lifecycle controls. Existing protocol/runtime support remains for compatibility with existing sessions/older clients; new UI container launches are shell-only. `n` on a highlighted container session retains its container scope. Shared navigation covers Devices/Actions/Sessions/Network/Containers/Files, chooser/device/provider/transfer dialogs and help: gg/G, counted j/k/arrows/pages, numbered row jumps and horizontal chooser motion. File/preview n/N supports counts. Counts are bounded, reset at actions/input boundaries and never repeat mutations. Transfer details scroll within wrapped content bounds. Device and transfer filters map visible rows to stable device/job identities; typing and finishing filters cannot launch or cancel work.
 
-PASS: locked serial suite529 passed/one protected live test ignored, `/tmp/cx-v041-rust.log`. Final UI rerun after help/scope/indicator changes321 passed, `/tmp/cx-v041-final-ui.log`; regression checks cover list edges/counts, filtered devices, typed prefixes, job identity/detail scrolling and shell-only container paths. PASS: rebuilt debug binary and extended actual chooser/watch PTY checks including gg/G/2l/2G, `/tmp/cx-v041-chooser-pty.log`. PASS: actual owned Docker passthrough/scoped files/lifecycle/inner-shell stop, `/tmp/cx-v041-containers.log`; destination Enter copy/completion/termios, `/tmp/cx-v041-transfer-pty.log`. Final container capture matrix includes the shell-only chooser at 48/80/120 columns (`/tmp/cx-v041-container-captures`); inspected80-column shell-only render. No physical UI or powered-down robot acceptance is claimed. Signed release/local update is a separate gate; no remote deployment in this followup.
+PASS: locked serial suite529 passed/one protected live test ignored, `/tmp/cx-v041-rust.log`. Final UI rerun after help/scope/indicator changes321 passed, `/tmp/cx-v041-final-ui.log`; regression checks cover list edges/counts, filtered devices, typed prefixes, job identity/detail scrolling and shell-only container paths. PASS: rebuilt debug binary and extended actual chooser/watch PTY checks including gg/G/2l/2G, `/tmp/cx-v041-chooser-pty.log`. PASS: actual owned Docker passthrough/scoped files/lifecycle/inner-shell stop, `/tmp/cx-v041-containers.log`; destination Enter copy/completion/termios, `/tmp/cx-v041-transfer-pty.log`. Final container capture matrix includes the shell-only chooser at48/80/120 columns (`/tmp/cx-v041-container-captures`); inspected80-column shell-only render. No physical UI or powered-down robot acceptance is claimed. Signed release/local update is a separate gate; no remote deployment in this followup.
+
+
+## v0.1.67 — session reliability and native project selection (2026-10-19)
+
+Integrated in isolated `worktrees/session-reliability`, based on v0.1.66.
+The original conflicted checkout, installed CX binary and active provider sessions
+were preserved. Root serialized fixture host mutations; all tmux/Docker writes
+were limited to owned fixtures.
+
+- PASS: `cargo fmt --check`, locked build and locked Rust suite with one test
+  thread: **595 passed, 1 ignored** (370 binary, 49 files/network, 72 session core,
+  80 transfers, 24 updater). `/tmp/cx-release-final-tests.log` and
+  `/tmp/cx-release-final-build.log`. Existing unused-code warnings remain.
+- PASS: actual Codex **0.163.0**, production helper create/resume path, private
+  configuration and rejecting loopback API. Idle `/resume` → another project →
+  “Use session directory” updates exact name and folder with stable terminal
+  identity and no inference during switching. Pending/contradictory native title
+  also clears a singleton writer's stale directory. Evidence:
+  `/tmp/cx-native-switch-final.log`, `/tmp/cx-native-switch-final/`.
+- PASS: actual Claude **2.1.303** synthetic AskUserQuestion fixture in foot.
+  Before/after same-screen captures `/tmp/cx-claude-comparison/{before,after}.png`
+  were visually compared: opaque default cells improve gray descriptions,
+  preserving text colors and explicit question highlights. Consecutive questions
+  showed no background leak. Native attach fixtures verify light/dark themes,
+  preserved foregrounds and restoration on shell attachment.
+- PASS: earlier PTY/CLI integration covered session creation/chooser, attach,
+  Fish/native commands, exact native names/directories, manual agents, external
+  tmux discovery, RGB preservation, background device refresh and transfer Enter.
+  Actual owned network-none Docker fixtures covered container creation, agent
+  terminals and scoped transfers. See `/tmp/cx-<fixture filename>.log`.
+
+Final-binary repeats all PASS: `native_runtime_metadata_live`,
+`codex_process_mode_live`, `claude_contrast_live`,
+`devcontainer_terminal_recovery_live`, `container_session_reconcile_live`,
+`session_activity_timestamp_live`, and `startup_directory_pty` (via `uv --with pyte`).
+Logs: `/tmp/cx-final-<fixture>.log`. Actual Codex idle-switch acceptance also PASS
+as detailed above. The controlled native title template is per launch; deferred
+lifecycle hooks were investigated but are not shipped. No saved provider config,
+credentials, SSH trust, personal tmux sessions, WARP or live networking changed.
+
+Blastoise and Squirtle failed bounded read-only SSH probes (exit 255), so physical
+remote reconnect/attach acceptance remains unavailable. Devices need updated
+helpers to expose the new metadata/reconciliation behavior. Unsupported native
+schemas, missing SQLite and ambiguous names fail closed. Silent model/network
+waits and silent inner-container commands remain unknown rather than busy.
+No local or fleet deployment/restart was performed.
+
+
+## v0.1.68 — Files-startup enrollment fixture correction
+
+v0.1.67 release run 39210279146 blocked publication on an older enrollment PTY
+that pressed the Sessions-only `a` key at startup. Both portable builds and both
+distribution smoke matrices passed. The separate checks run 39210279040 passed.
+All new container/native/contrast fixtures passed in release CI before the old
+fixture failure.
+
+The enrollment fixture now uses Ctrl+P → Add by SSH address → Direct SSH and
+limits its redundant-instructions assertion to the compact prompt; the Files
+footer correctly retains its key guidance. PASS against the v0.1.68 binary in
+80-column password/cancel and 48-column show/hide/host-trust scenarios, including
+masked input, cancellation cleanup and termios restoration:
+`/tmp/cx-final-enrollment_auth_pty.log`. Locked build and formatting pass. Runtime
+behavior is unchanged from the 595-test v0.1.67 source; v0.1.68 supersedes the
+unpublished tag without rewriting it. No installed binaries or sessions changed.
+
+
+## v0.1.69 — ambiguous-writer acceptance correction
+
+v0.1.68 release run 39211126206 passed corrected enrollment, both portable builds
+and both distribution smoke matrices, then blocked publication on the legacy
+native-name fixture's expected launch-folder fallback. The fixture now asserts
+both `codex · directory unavailable` and an empty directory for ambiguous writers.
+Runtime behavior is unchanged; v0.1.69 preserves both unpublished tags.
+
+PASS final local follow-through: session_names_live, shell_labels_live,
+tmux_discovery_live, preview_helper_live, source_preview_pty, markdown_preview_pty,
+markdown_blocks_pty, markdown_prose_pty, markdown_relative_pty, preview_search_pty,
+browser_find_pty, list_wheel_pty, pdf_pages_helper and pdf_pages_pty. Logs:
+`/tmp/cx-final-<fixture>.log`. Final locked build/format/diff checks pass.
+
+The separate v0.1.68 checks run encountered ETXTBSY (`Text file busy`) executing
+a temporary updater fixture on x86_64. The same test passed in release jobs;
+failed jobs were retried without source changes. This is recorded separately
+from the two corrected acceptance expectations.
+
+
+## v0.1.70 — background terminal startup and loader
+
+Reproduced against v0.1.69 with an isolated delayed-shell PTY fixture:
+`uv run --with pyte python tests/terminal_startup_loader_pty.py <binary>` failed
+because the first-screen wait/animated loader was absent (`/tmp/cx-loader-before.log`).
+New tmux sessions already start detached; creation previously returned before
+visible terminal content, letting the viewer suspend too early. Creation now
+waits on the helper worker for visible content, at most five seconds. Only the
+first 40 visible rows are inspected and immediately discarded; no history,
+screen text or credentials are stored/logged, and no input is synthesized.
+Existing attachments do not acquire this wait.
+
+PASS locked Rust suite: **596 passed, 1 ignored** (371 binary, 49 files/network,
+72 session core, 80 transfers, 24 updater), `/tmp/cx-loader-all-tests.log`.
+PASS locked build, formatting/diff checks. The loader regression covers Files
+and Sessions at 48/80/120 columns, animation changes and removal on failure.
+Live readiness checks cover delayed content/no premature native client, a usable
+single handoff and restored termios, silent-program timeout and startup exit.
+Evidence `/tmp/cx-loader-after.log`, `/tmp/cx-loader-readiness.log` and final
+fixture logs `/tmp/cx-loader-<fixture>.log`. Final-binary repeats PASS:
+session_chooser_pty, terminal_startup_loader_pty, terminal_startup_readiness_live,
+claude_contrast_live, codex_process_mode_live and container_agents_live (owned
+network-none container, both providers in Default/YOLO modes, native input,
+detach/termios and scoped termination).
+
+No installed binary replacement, unrelated tmux/session changes, provider config,
+SSH trust or networking mutations. Fixtures own their sockets/state/containers.
+Remote devices require updated helpers; physical remote/terminal acceptance
+remains distinct from automated PTY checks. Readiness means visible content,
+not a provider-specific ready prompt or completed authentication.
+
+
+## v0.1.71 — startup compatibility and fixture durability
+
+v0.1.70 publication was blocked by distro smoke checks: calling the existing
+attachment-contrast function during creation introduced an unsupported global
+window-style query on tmux 2.7. That unnecessary call is removed; styling remains
+in the existing attachment path. The readiness fixture now wraps tmux to reject
+attachment-style options, proving new shell creation has no such dependency.
+Delayed-screen/timeout/exit behavior is retained.
+
+The same run's enrollment cancellation fixture could be killed between opening
+and flushing its result file. The synthetic fixture now writes and closes a
+temporary result before atomically replacing the final path; assertions still
+check the process exits, credentials do not leak and terminal state is restored.
+No enrollment runtime or trust behavior changed.
+
+Final local build, readiness/legacy-option regression, loader PTY and all four
+enrollment PTY scenarios PASS; `/tmp/cx-loader-{build,readiness,after,enrollment}.log`.
+The 596-test Rust suite remains the full feature validation; this correction
+removes one attachment-only call and changes fixture result publication.
+v0.1.70 remains an unpublished tag; no installed binary or session was replaced.

@@ -102,9 +102,7 @@ pub(super) fn render_at(
         .enumerate()
         .filter(|(i, _)| app.device_matches(*i))
     {
-        let status = if app.device_policy(i).availability == store::Availability::UsuallyDown {
-            "down"
-        } else if app.work[i].loading {
+        let status = if app.work[i].loading {
             "checking"
         } else if app.work[i].error.is_some() {
             "unavailable"
@@ -309,13 +307,13 @@ pub(super) fn render_at(
                 identity(&app.devices[i]),
                 menus::session_label(app, i, &s),
                 safe_label(&scope.name),
-                safe_label(&s.directory)
+                session_folder_label(&s.directory)
             )
         } else {
             format!(
                 "Host {}\nFolder {}\nEnter open · n new",
                 identity(&app.devices[i]),
-                safe_label(&s.directory)
+                session_folder_label(&s.directory)
             )
         }
     } else if let Some(i) = app.actual_device() {
@@ -512,6 +510,11 @@ pub(super) fn render_at(
                     workspace
                 };
                 let compact = workspace.width < 50;
+                let state_width = if rows.iter().any(|(_, s)| s.activity.is_some()) {
+                    10
+                } else {
+                    8
+                };
                 let mut display_rows = Vec::new();
                 let mut selected_row = 0;
                 let mut last_project = None;
@@ -522,11 +525,14 @@ pub(super) fn render_at(
                         }
                         display_rows.push(
                             Row::new(if compact {
-                                vec![Cell::from(safe_label(&s.directory)), Cell::from("")]
+                                vec![
+                                    Cell::from(session_folder_label(&s.directory)),
+                                    Cell::from(""),
+                                ]
                             } else {
                                 vec![
                                     Cell::from(""),
-                                    Cell::from(safe_label(&s.directory)),
+                                    Cell::from(session_folder_label(&s.directory)),
                                     Cell::from(""),
                                     Cell::from(""),
                                 ]
@@ -542,6 +548,16 @@ pub(super) fn render_at(
                     let status = app.session_status(*i, s);
                     let fresh = status.starts_with('+');
                     let badge = format!("[{}]", safe_label(menus::session_label(app, *i, s)));
+                    let name = if s.agent_tasks.is_empty() {
+                        safe_label(&s.name)
+                    } else {
+                        format!("{} · {} tasks", safe_label(&s.name), s.agent_tasks.len())
+                    };
+                    let name = format!("{}{}", if app.pinned(*i, s) { "* " } else { "" }, name);
+                    let name = match s.origin.as_ref().filter(|_| s.id.starts_with("ext-")) {
+                        Some(origin) => format!("{name} · {}", origin_label(&origin.kind)),
+                        None => name,
+                    };
                     let cells = vec![
                         Cell::from(badge).style(if std::env::var_os("NO_COLOR").is_some() {
                             Style::default()
@@ -553,21 +569,42 @@ pub(super) fn render_at(
                             })
                         }),
                         Cell::from(if compact && s.container.is_some() {
-                            format!(
-                                "{}{} · {}",
-                                if app.pinned(*i, s) { "* " } else { "" },
-                                menus::session_label(app, *i, s),
-                                safe_label(&s.name)
-                            )
+                            format!("{} · {}", menus::session_label(app, *i, s), name)
                         } else {
-                            format!(
-                                "{}{}",
-                                if app.pinned(*i, s) { "* " } else { "" },
-                                safe_label(&s.name)
-                            )
+                            name
                         }),
                         Cell::from(identity(&app.devices[*i])),
-                        Cell::from(status).style(if !fresh { muted() } else { accent() }),
+                        Cell::from(if !fresh {
+                            status.to_string()
+                        } else if s.activity.is_some() && !session_activity_current(&app.work[*i]) {
+                            "? state".into()
+                        } else if session_busy(s) {
+                            let frames = if ascii() {
+                                ["|", "/", "-", "\\"]
+                            } else {
+                                ["◐", "◓", "◑", "◒"]
+                            };
+                            format!(
+                                "{} {}",
+                                frames[app.transfer_frame % frames.len()],
+                                s.activity.as_deref().unwrap_or("")
+                            )
+                        } else if let Some(activity) = &s.activity {
+                            safe_label(activity)
+                        } else if s.external {
+                            if ascii() {
+                                "+ ext".into()
+                            } else {
+                                "● ext".into()
+                            }
+                        } else {
+                            if ascii() {
+                                "+ live".into()
+                            } else {
+                                "● live".into()
+                            }
+                        })
+                        .style(if !fresh { muted() } else { accent() }),
                     ];
                     display_rows.push(
                         Row::new(if compact {
@@ -587,7 +624,7 @@ pub(super) fn render_at(
                 let table = Table::new(
                     display_rows,
                     if compact {
-                        vec![Constraint::Min(10), Constraint::Length(9)]
+                        vec![Constraint::Min(10), Constraint::Length(state_width)]
                     } else {
                         vec![
                             Constraint::Length(
@@ -599,7 +636,7 @@ pub(super) fn render_at(
                             ),
                             Constraint::Min(10),
                             Constraint::Length(if workspace.width > 65 { 24 } else { 18 }),
-                            Constraint::Length(9),
+                            Constraint::Length(state_width),
                         ]
                     },
                 )
@@ -1013,7 +1050,15 @@ pub(super) fn render_at(
     let mut hints = if app.help {
         vec![("↑↓", "Scroll"), ("PgUpDn", "Page"), ("Esc", "Close")]
     } else if let Some(dialog) = &app.dialog {
-        if matches!(dialog, Dialog::Jobs) {
+        if matches!(dialog, Dialog::AgentTasks(..)) {
+            vec![
+                ("↑↓", "Choose"),
+                ("Enter", "Details"),
+                ("Tab", "Focus"),
+                ("PgUpDn", "Scroll"),
+                ("Esc", "Close"),
+            ]
+        } else if matches!(dialog, Dialog::Jobs) {
             vec![
                 ("c", "Cancel job"),
                 ("r", "Retry job"),
@@ -1029,7 +1074,10 @@ pub(super) fn render_at(
                     },
                 ),
             ]
-        } else if matches!(dialog, Dialog::Delete(..) | Dialog::StopShell(..)) {
+        } else if matches!(
+            dialog,
+            Dialog::Delete(..) | Dialog::StopShell(..) | Dialog::RemoveDevice(..) | Dialog::Reset
+        ) {
             vec![
                 (
                     "↑↓",
@@ -1051,6 +1099,10 @@ pub(super) fn render_at(
                     "y / n",
                     if matches!(dialog, Dialog::StopShell(..)) {
                         "Stop / keep"
+                    } else if matches!(dialog, Dialog::RemoveDevice(..)) {
+                        "Remove / keep"
+                    } else if matches!(dialog, Dialog::Reset) {
+                        "Reset / cancel"
                     } else {
                         "Delete / cancel"
                     },
@@ -1205,6 +1257,7 @@ pub(super) fn render_at(
             ("n", "New session"),
             ("w", "Watch · read-only"),
             ("p", "Pin / unpin"),
+            ("s", "Agent tasks"),
             ("d", "Stop · confirm"),
             ("Ctrl P", "Actions"),
             ("?", "Help"),
@@ -1275,13 +1328,35 @@ pub(super) fn render_at(
             cells[i % columns],
         );
     }
-    notifications::render(
-        frame,
-        &app.notice,
-        app.notice_kind,
-        workspace,
-        notifications::appearance(app.notice_started, app.notice_deadline, now),
-    );
+    if app.creating && app.dialog.is_none() && app.input.is_none() {
+        let rect = popup(workspace, 44, 5);
+        frame.render_widget(Clear, rect);
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    format!(
+                        "{} Starting terminal",
+                        transfer_spinner(app.transfer_frame, ascii())
+                    ),
+                    accent().add_modifier(Modifier::BOLD),
+                )),
+                Line::from("Preparing the first screen…"),
+            ])
+            .alignment(ratatui::layout::Alignment::Center)
+            .block(block("New session".into(), true)),
+            rect,
+        );
+    }
+    render_command_panel(frame, app, area);
+    if !app.creating {
+        notifications::render(
+            frame,
+            &app.notice,
+            app.notice_kind,
+            workspace,
+            notifications::appearance(app.notice_started, app.notice_deadline, now),
+        );
+    }
     if let Some(input) = app
         .input
         .filter(|i| !matches!(*i, Input::Search | Input::PreviewSearch | Input::Filter))
@@ -1462,6 +1537,17 @@ pub(super) fn render_at(
                     "Enter choose · Escape cancel".to_string()
                 },
             ),
+            Dialog::AgentTasks(_, session) => {
+                let selected = session.agent_tasks.get(app.dialog_selected);
+                (
+                    format!("Agent tasks · {}", safe_label(&session.name)),
+                    session.agent_tasks.iter().map(|task| format!("{} · {}", safe_label(&task.name), safe_label(&task.status))).collect(),
+                    selected.map(|task| format!("{}\n{}\n{}\n\nTask status comes from the provider. Open does not imply busy.",
+                        safe_label(&task.name), safe_label(&task.status),
+                        task.task.as_deref().map(safe_text).unwrap_or_else(|| "Task description unavailable".into())))
+                    .unwrap_or_else(|| "No task details reported for this session.".into()),
+                )
+            },
             Dialog::SessionChooser(d,path) => (
                 format!("New session · {}",safe_label(&app.devices[*d].name)),
                 app.host_session_choices(*d).iter().map(|choice|choice.label.into()).collect(),
@@ -1501,14 +1587,14 @@ pub(super) fn render_at(
                     "Enter choose · next: browse folder, then n to start".into()
                 },
             ),
-            Dialog::Permissions(d, path, provider, resume) => (
+            Dialog::Permissions(d, path, provider, resume, pick) => (
                 format!("{} permissions · {}", provider, identity(&app.devices[*d])),
                 vec!["Default · existing host permissions".into(), "YOLO · bypass approvals".into()],
-                format!("{}\n{}Applies to this session only.\nYOLO bypasses approval prompts; Codex also disables its sandbox.\nEnter starts · Escape cancels", safe_label(path), if *resume { "Native resume: " } else { "Fresh session: " }),
+                format!("{}\n{}Applies to this session only.\nYOLO bypasses approval prompts; Codex also disables its sandbox.\nEnter starts · Escape cancels", safe_label(path), if *pick { "Native resume (choose): " } else if *resume { "Native resume (latest): " } else { "Fresh session: " }),
             ),
             Dialog::StopShell(d, session) => (
                 format!("Stop {} session?", session.provider), vec!["Keep session".into(), "Stop session".into()],
-                format!("Running work in this session will end.\n{}\n{}\n{}", identity(&app.devices[*d]), safe_label(&session.name), safe_label(&session.directory)),
+                format!("Running work in this session will end.\n{}\n{}\n{}", identity(&app.devices[*d]), safe_label(&session.name), session_folder_label(&session.directory)),
             ),
             Dialog::Delete(d, entries) => (
                 format!("Delete {} {}?", entries.len(), if entries.len() == 1 { "item" } else { "items" }),
@@ -1545,10 +1631,15 @@ pub(super) fn render_at(
             Dialog::EditDevice(d) => (
                 format!("Edit {}", safe_label(&app.devices[*d].name)),
                 vec!["SSH address".into(), match app.device_policy(*d).access {
-                    store::AccessMode::Core => "Access: bidirectional · switch to single-direction".into(),
-                    store::AccessMode::Directed => "Access: single-direction · switch to bidirectional".into(),
+                    store::AccessMode::Core => "Access: core (reverse unverified) · switch to single-direction".into(),
+                    store::AccessMode::Directed => "Access: single-direction · switch to core".into(),
                 }, "Remove device".into(), "Cancel".into()],
                 format!("Current target: {}\nEdit the SSH alias or user@host. The device identity and posture stay unchanged.", safe_label(app.devices[*d].target.as_deref().unwrap_or("unknown"))),
+            ),
+            Dialog::Reset => (
+                "Reset managed sessions?".into(),
+                vec!["Cancel · keep running sessions".into(), "Reset tmux and agents".into()],
+                "This forcefully terminates all CX-managed tmux sessions on this execution device, including Claude and Codex processes running inside them. External tmux sessions are untouched.\nEnter confirms · Escape cancels".into(),
             ),
             Dialog::Neighbor(d, candidate) => (
                 format!("Neighbor · {}", safe_label(candidate["address"].as_str().unwrap_or("unknown"))),
@@ -1597,9 +1688,18 @@ pub(super) fn render_at(
             render_session_chooser(frame, app, area, dialog, &title, &detail);
         } else if matches!(
             dialog,
-            Dialog::Delete(..) | Dialog::StopShell(..) | Dialog::RemoveDevice(..)
+            Dialog::Delete(..) | Dialog::StopShell(..) | Dialog::RemoveDevice(..) | Dialog::Reset
         ) {
             let stop = matches!(dialog, Dialog::StopShell(..));
+            let labels = if stop {
+                ["Keep session", "Stop session"]
+            } else if matches!(dialog, Dialog::RemoveDevice(..)) {
+                ["Keep device", "Remove device"]
+            } else if matches!(dialog, Dialog::Reset) {
+                ["Cancel", "Reset"]
+            } else {
+                ["Cancel", "Delete"]
+            };
             let rect = confirmation_popup(area, &detail);
             frame.render_widget(Clear, rect);
             frame.render_widget(
@@ -1651,6 +1751,7 @@ pub(super) fn render_at(
                 app.dialog_selected,
                 app.dialog_detail_focus,
                 ConfirmationLayout::Separate,
+                labels,
             );
         } else {
             let mut rect = popup(
@@ -1807,6 +1908,10 @@ pub(super) fn render_at(
             help.push(key_row("p", "Pin / unpin; keep an ended-work bookmark"));
             help.push(key_row("d", "Stop selected CX-managed session · confirm"));
             help.push(key_row("w", "Watch selected session · read-only"));
+            help.push(key_row(
+                "s",
+                "Inspect selected session's tasks and subagents",
+            ));
         }
         if app.focus == Focus::Devices {
             help.push(key_row(
@@ -2045,5 +2150,253 @@ fn render_containers(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 area.height.saturating_sub(4),
             ),
         );
+    }
+}
+
+/// Where an outside-CX terminal currently lives, from its master holder.
+fn origin_label(kind: &str) -> &'static str {
+    match kind {
+        "terminal" => "terminal",
+        "sshd" => "ssh",
+        "tmux" => "tmux",
+        "screen" => "screen",
+        _ => "external",
+    }
+}
+
+/// Floating live view of a command running in a managed pane.
+/// Printable width of a `capture-pane -e` line, ignoring SGR escapes.
+fn visible_width(raw: &str) -> usize {
+    let mut width = 0;
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            let mut j = i + 2;
+            while j < bytes.len() && !bytes[j].is_ascii_alphabetic() {
+                j += 1;
+            }
+            i = (j + 1).min(bytes.len());
+            continue;
+        }
+        let ch = raw[i..].chars().next().unwrap_or(' ');
+        if !ch.is_control() {
+            width += if ch.is_ascii() { 1 } else { 2 };
+        }
+        i += ch.len_utf8();
+    }
+    width
+}
+
+fn render_command_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let Some(panel) = app.command_panel.as_ref() else {
+        return;
+    };
+    // Size the panel to its output, not the whole pane: trim trailing blank
+    // lines so a short command gets a small box.
+    let mut content: Vec<&String> = panel.lines.iter().collect();
+    while content
+        .last()
+        .is_some_and(|l| visible_width(l) == 0 || l.trim().is_empty())
+    {
+        content.pop();
+    }
+    let state = if panel.alive {
+        " · running".to_string()
+    } else {
+        match panel.status {
+            Some(0) | None => " · done".into(),
+            Some(code) => format!(" · exited {code}"),
+        }
+    };
+    let title = format!("{}{}", safe_label(&panel.label), state);
+    let hint = if panel.alive {
+        "Esc close · Ctrl+O expand · keys to command"
+    } else {
+        "Esc close · Ctrl+O full screen"
+    };
+    // A running command with no output yet shows a compact waiting line.
+    let placeholder = content.is_empty();
+    let body_rows = if placeholder { 1 } else { content.len() } as u16;
+    let content_w = content.iter().map(|l| visible_width(l)).max().unwrap_or(0);
+    let inner_w = content_w
+        .max(title.chars().count())
+        .max(hint.chars().count())
+        .clamp(16, area.width.saturating_sub(4) as usize) as u16;
+    let inner_h = (body_rows + 1).min(area.height.saturating_sub(4));
+    let rect = popup(area, inner_w + 4, inner_h + 2);
+    frame.render_widget(Clear, rect);
+    let outer = block(title, true).padding(Padding::horizontal(1));
+    let inner = outer.inner(rect);
+    frame.render_widget(outer, rect);
+    let body = Rect {
+        height: inner.height.saturating_sub(1),
+        ..inner
+    };
+    let lines: Vec<Line> = if placeholder {
+        vec![Line::from(Span::styled("working…", muted()))]
+    } else {
+        let skip = content.len().saturating_sub(body.height as usize);
+        content
+            .iter()
+            .skip(skip)
+            .map(|raw| ansi_line(raw))
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(lines), body);
+    frame.render_widget(
+        Paragraph::new(hint).style(muted()),
+        Rect {
+            y: inner.y + inner.height.saturating_sub(1),
+            height: 1,
+            ..inner
+        },
+    );
+}
+
+/// Parse a tmux `capture-pane -e` line (SGR escapes) into a styled Line.
+fn ansi_line(raw: &str) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut style = Style::default();
+    let mut text = String::new();
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    let flush = |spans: &mut Vec<Span<'static>>, text: &mut String, style: Style| {
+        if !text.is_empty() {
+            spans.push(Span::styled(std::mem::take(text), style));
+        }
+    };
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            let mut j = i + 2;
+            while j < bytes.len() && !bytes[j].is_ascii_alphabetic() {
+                j += 1;
+            }
+            if j < bytes.len() {
+                if bytes[j] == b'm' {
+                    flush(&mut spans, &mut text, style);
+                    style = apply_sgr(style, &raw[i + 2..j]);
+                }
+                // Non-color control sequences are dropped.
+                i = j + 1;
+                continue;
+            }
+            break;
+        }
+        let ch = raw[i..].chars().next().unwrap_or(' ');
+        if !ch.is_control() {
+            text.push(ch);
+        }
+        i += ch.len_utf8();
+    }
+    flush(&mut spans, &mut text, style);
+    if spans.is_empty() {
+        spans.push(Span::raw(""));
+    }
+    Line::from(spans)
+}
+
+fn ansi_color(code: u8) -> Color {
+    match code {
+        0 => Color::Black,
+        1 => Color::Red,
+        2 => Color::Green,
+        3 => Color::Yellow,
+        4 => Color::Blue,
+        5 => Color::Magenta,
+        6 => Color::Cyan,
+        7 => Color::Gray,
+        8 => Color::DarkGray,
+        9 => Color::LightRed,
+        10 => Color::LightGreen,
+        11 => Color::LightYellow,
+        12 => Color::LightBlue,
+        13 => Color::LightMagenta,
+        14 => Color::LightCyan,
+        _ => Color::White,
+    }
+}
+
+/// Apply one SGR parameter list to a style. Unsupported codes are ignored.
+fn apply_sgr(mut style: Style, params: &str) -> Style {
+    let parts: Vec<i64> = if params.is_empty() {
+        vec![0]
+    } else {
+        params.split(';').map(|p| p.parse().unwrap_or(0)).collect()
+    };
+    let mut k = 0;
+    while k < parts.len() {
+        match parts[k] {
+            0 => style = Style::default(),
+            1 => style = style.add_modifier(Modifier::BOLD),
+            2 | 22 => style = style.remove_modifier(Modifier::BOLD),
+            3 => style = style.add_modifier(Modifier::ITALIC),
+            4 => style = style.add_modifier(Modifier::UNDERLINED),
+            7 => style = style.add_modifier(Modifier::REVERSED),
+            30..=37 => style = style.fg(ansi_color(parts[k] as u8 - 30)),
+            90..=97 => style = style.fg(ansi_color(parts[k] as u8 - 90 + 8)),
+            40..=47 => style = style.bg(ansi_color(parts[k] as u8 - 40)),
+            100..=107 => style = style.bg(ansi_color(parts[k] as u8 - 100 + 8)),
+            39 => style.fg = None,
+            49 => style.bg = None,
+            38 | 48 => {
+                let fg = parts[k] == 38;
+                if parts.get(k + 1) == Some(&5) {
+                    if let Some(&n) = parts.get(k + 2) {
+                        let color = Color::Indexed(n.clamp(0, 255) as u8);
+                        style = if fg { style.fg(color) } else { style.bg(color) };
+                    }
+                    k += 2;
+                } else if parts.get(k + 1) == Some(&2) {
+                    if let (Some(&r), Some(&g), Some(&b)) =
+                        (parts.get(k + 2), parts.get(k + 3), parts.get(k + 4))
+                    {
+                        let color = Color::Rgb(r as u8, g as u8, b as u8);
+                        style = if fg { style.fg(color) } else { style.bg(color) };
+                    }
+                    k += 4;
+                }
+            }
+            _ => {}
+        }
+        k += 1;
+    }
+    style
+}
+
+#[cfg(test)]
+mod ansi_tests {
+    use super::*;
+
+    #[test]
+    fn parses_colors_bold_and_strips_cursor_moves() {
+        let line = ansi_line("\x1b[1;31mred\x1b[0m plain\x1b[5;10Hmoved");
+        let spans: Vec<(String, Style)> = line
+            .spans
+            .iter()
+            .map(|s| (s.content.to_string(), s.style))
+            .collect();
+        assert_eq!(spans[0].0, "red");
+        assert_eq!(spans[0].1.fg, Some(Color::Red));
+        assert!(spans[0].1.add_modifier.contains(Modifier::BOLD));
+        // The reset clears bold and color for the following text.
+        assert!(spans[1].1.fg.is_none() && !spans[1].1.add_modifier.contains(Modifier::BOLD));
+        // The cursor-move sequence is dropped, its literal text kept.
+        let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, "red plainmoved");
+    }
+
+    #[test]
+    fn parses_256_and_truecolor() {
+        let line = ansi_line("\x1b[38;5;200mx\x1b[48;2;1;2;3my");
+        assert_eq!(line.spans[0].style.fg, Some(Color::Indexed(200)));
+        assert_eq!(line.spans[1].style.bg, Some(Color::Rgb(1, 2, 3)));
+    }
+
+    #[test]
+    fn plain_text_is_one_span() {
+        let line = ansi_line("just text");
+        let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, "just text");
     }
 }

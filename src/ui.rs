@@ -150,7 +150,7 @@ impl RichPreview {
                 .ok()?;
             (bytes.len() == w * h * 4).then_some((w, h, bytes))
         })();
-        Self {
+        let app = Self {
             kind: value["kind"].as_str().unwrap_or("text").to_owned(),
             title: safe_label(value["title"].as_str().unwrap_or("Preview")),
             raster,
@@ -174,7 +174,8 @@ impl RichPreview {
                 )),
                 _ => None,
             },
-        }
+        };
+        app
     }
 }
 
@@ -292,6 +293,8 @@ struct Task {
     generation: u64,
 }
 struct Reply {
+    device_id: Option<String>,
+    execution_target: Option<Option<String>>,
     preview: Option<RichPreview>,
     device: usize,
     op: Operation,
@@ -330,6 +333,7 @@ enum Action {
     Mkdir,
     Help,
     Update,
+    Reset,
     Quit,
 }
 const ACTIONS: &[(Action, &str)] = &[
@@ -389,6 +393,10 @@ const ACTIONS: &[(Action, &str)] = &[
         Action::Update,
         concat!("Update cx v", env!("CARGO_PKG_VERSION"), ": check releases"),
     ),
+    (
+        Action::Reset,
+        "Reset managed tmux / agent sessions · confirm",
+    ),
     (Action::Quit, "Quit workspace"),
 ];
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -415,10 +423,11 @@ enum Dialog {
     ContainerConfirm(usize, crate::containers::Container, String),
     Device(ChooseDevice),
     Provider(usize, Option<String>),
-    Permissions(usize, String, String, bool),
+    Permissions(usize, String, String, bool, bool),
     SessionPicker(usize, String, Option<ContainerScope>, String, Vec<Session>),
     PinnedEnded(usize, Session),
     Jobs,
+    AgentTasks(String, Session),
     Links(Vec<crate::markdown_links::Link>),
     Delete(usize, Vec<Entry>),
     StopShell(usize, Session),
@@ -427,8 +436,25 @@ enum Dialog {
     Peer(usize),
     RemoveDevice(usize),
     EditDevice(usize),
+    Reset,
 }
 
+/// Live view of a command running in a managed pane, shown in a floating panel.
+struct CommandPanel {
+    device: usize,
+    id: String,
+    cols: u16,
+    rows: u16,
+    /// Raw styled lines (SGR intact) from the last capture.
+    lines: Vec<String>,
+    alive: bool,
+    status: Option<i32>,
+    /// A capture request is outstanding.
+    inflight: bool,
+    last_poll: std::time::Instant,
+    /// The command, for the panel title.
+    label: String,
+}
 struct App {
     devices: Vec<Device>,
     policies: Vec<store::DevicePolicy>,
@@ -515,6 +541,12 @@ struct App {
     attach_check: Option<(usize, Session, bool, u64)>,
     command_target: Option<(usize, String)>,
     pending_command: Option<(Device, RunCommand)>,
+    pending_command_panel: Option<(usize, RunCommand)>,
+    command_panel: Option<CommandPanel>,
+    /// A command panel to attach full-screen on the next loop turn.
+    pending_panel_expand: Option<(usize, Session)>,
+    command_panel_label: Option<String>,
+    pending_ptrace: Option<usize>,
     pending_terminal: Option<Device>,
     pending_add: Option<String>,
     quit: bool,
@@ -560,7 +592,7 @@ impl App {
                 fetched: 0,
             })
             .collect();
-        Self {
+        let mut app = Self {
             devices,
             policies,
             device: 0,
@@ -646,6 +678,11 @@ impl App {
             attach_check: None,
             command_target: None,
             pending_command: None,
+            pending_command_panel: None,
+            command_panel: None,
+            pending_panel_expand: None,
+            command_panel_label: None,
+            pending_ptrace: None,
             pending_terminal: None,
             pending_add: None,
             quit: false,
@@ -653,15 +690,17 @@ impl App {
             pending_requests: std::cell::Cell::new(0),
             panels: std::cell::RefCell::new(Vec::new()),
             tx,
+        };
+        if let Ok(message) = std::env::var("CX_STARTUP_NOTICE") {
+            app.set_notice_as(NoticeKind::Info, safe_text(&message));
         }
+        app
     }
     fn device_policy(&self, device: usize) -> store::DevicePolicy {
         self.policies.get(device).copied().unwrap_or_default()
     }
     fn background_checks_enabled(&self, device: usize) -> bool {
         device < self.devices.len()
-            && (self.devices[device].target.is_none()
-                || self.device_policy(device).availability == store::Availability::UsuallyUp)
     }
     fn toggle_access(&mut self) {
         let Some(device) = self.device.checked_sub(1) else {
@@ -682,7 +721,9 @@ impl App {
                     *slot = policy;
                 }
                 let message = match next {
-                    store::AccessMode::Core => "Bidirectional access enabled",
+                    store::AccessMode::Core => {
+                        "Core posture saved; connections will be configured automatically"
+                    }
                     store::AccessMode::Directed => "Viewer-to-device access only",
                 };
                 self.set_notice_as(
@@ -725,6 +766,122 @@ impl App {
             ),
         }
     }
+    // These collections use device vector indices. Clear them as one unit
+    // whenever an endpoint changes or removing a device shifts those indices.
+    fn invalidate_device_views(&mut self) {
+        self.browser = None;
+        self.other_browser = None;
+        self.destination_active = false;
+        self.browser_cache.clear();
+        self.container_locations.clear();
+        self.containers.clear();
+        self.container_errors.clear();
+        self.containers_loading.clear();
+        self.rebuilding.clear();
+        self.container_collapsed.clear();
+        self.container_selected = 0;
+        self.file_locations.clear();
+        self.providers.clear();
+        self.provider_loading.clear();
+        self.network.clear();
+        self.peer_evidence.clear();
+        self.peer_checks.clear();
+        self.peer_inflight.clear();
+        self.network_inflight.clear();
+        self.network_candidates_inflight.clear();
+        self.network_refresh_queue.clear();
+        self.network_jump_routes.clear();
+        self.network_loading = false;
+        self.neighbor_probes.clear();
+        self.neighbor_queue.clear();
+        self.neighbor_evidence.clear();
+        self.jobs.clear();
+        self.pending_attach = None;
+        self.attach_check = None;
+        self.container_profiles.clear();
+        self.container_profile_loading.clear();
+        self.pending_command = None;
+        self.pending_terminal = None;
+        self.clipboard = None;
+        self.creating = false;
+        self.dialog = None;
+        self.command_target = None;
+        self.rename_target = None;
+        self.network_add_target = None;
+        self.generation += 1;
+        for work in &mut self.work {
+            work.loading = false;
+        }
+    }
+
+    fn replace_device_endpoint(&mut self, device: usize, updated: Device) {
+        self.devices[device] = updated;
+        self.invalidate_device_views();
+        self.work[device] = Cached {
+            sessions: vec![],
+            loading: false,
+            error: None,
+            fetched: 0,
+        };
+        self.file_queue.retain(|(d, _)| *d != device);
+    }
+    fn remove_device_state(&mut self, index: usize) {
+        self.devices.remove(index);
+        self.policies.remove(index);
+        self.work.remove(index);
+        self.invalidate_device_views();
+        self.file_queue.retain(|(d, _)| *d != index);
+        for (d, _) in &mut self.file_queue {
+            if *d > index {
+                *d -= 1;
+            }
+        }
+        self.device = self.device.min(self.devices.len());
+        self.view = View::Work;
+        self.focus = Focus::Devices;
+    }
+
+    fn reconcile_devices(&mut self, updated: Vec<Device>) -> bool {
+        let selected = self
+            .device
+            .checked_sub(1)
+            .and_then(|i| self.devices.get(i))
+            .map(|d| d.id.clone());
+        let mut changed = false;
+        for i in (0..self.devices.len()).rev() {
+            if !updated.iter().any(|d| d.id == self.devices[i].id) {
+                self.remove_device_state(i);
+                changed = true;
+            }
+        }
+        for device in updated {
+            let policy = store::policy(&device).unwrap_or_default();
+            if let Some(i) = self.devices.iter().position(|d| d.id == device.id) {
+                if self.devices[i].target != device.target {
+                    self.replace_device_endpoint(i, device.clone());
+                    changed = true;
+                }
+                changed |= self.devices[i].name != device.name || self.policies[i] != policy;
+                self.devices[i] = device;
+                self.policies[i] = policy;
+            } else {
+                self.devices.push(device);
+                self.policies.push(policy);
+                self.work.push(Cached {
+                    sessions: vec![],
+                    loading: false,
+                    error: None,
+                    fetched: 0,
+                });
+                changed = true;
+            }
+        }
+        self.device = selected
+            .and_then(|id| self.devices.iter().position(|d| d.id == id))
+            .map_or(0, |i| i + 1);
+        changed
+    }
+
     fn remove_selected_device(&mut self) {
         if self.file_busy
             || !self.file_queue.is_empty()
@@ -808,6 +965,7 @@ impl App {
                         "Transfers"
                     }
                 }
+                Dialog::AgentTasks(..) => "Agent tasks",
                 Dialog::Delete(..) => "Delete",
                 Dialog::StopShell(..) => "Stop session",
                 Dialog::PendingExit(_) => "Pending actions",
@@ -815,6 +973,7 @@ impl App {
                 Dialog::Peer(_) => "Device actions",
                 Dialog::RemoveDevice(_) => "Remove device",
                 Dialog::EditDevice(_) => "Edit device",
+                Dialog::Reset => "Reset managed sessions",
             };
         }
         if let Some(input) = self.input {
@@ -908,10 +1067,7 @@ impl App {
     }
     fn refresh_work(&mut self) {
         for index in 0..self.devices.len() {
-            if self.background_checks_enabled(index)
-                && (self.device == 0 || self.device == index + 1)
-                && !self.work[index].loading
-            {
+            if self.background_checks_enabled(index) && !self.work[index].loading {
                 self.work[index].loading = self.send(index, Operation::Sessions);
                 if !self.work[index].loading {
                     self.set_notice_as(
@@ -919,12 +1075,27 @@ impl App {
                         "Refresh queue busy · retry shortly".into(),
                     );
                 }
+                // Discover outside-CX terminals for the UI when the device
+                // supports adoption; `cx sessions` itself stays managed-only.
+                if self
+                    .providers
+                    .get(&index)
+                    .is_some_and(|(caps, _)| caps.iter().any(|c| c == "adopt-session-v1"))
+                {
+                    self.send(index, Operation::ExternalSessions);
+                }
             }
         }
         for index in 0..self.devices.len() {
             if self.background_checks_enabled(index) {
                 self.check_providers(index);
             }
+        }
+    }
+    fn open_startup_directory(&mut self, directory: std::path::PathBuf) {
+        if let Some(local) = self.devices.iter().position(|d| d.target.is_none()) {
+            self.device = local + 1;
+            self.open_host_browser(local, crate::files::encode_path(&directory));
         }
     }
     fn actual_device(&self) -> Option<usize> {
@@ -996,6 +1167,31 @@ impl App {
             })
         });
         rows.into_iter().map(|(_, _, d, s)| (d, s)).collect()
+    }
+    fn reconcile_session_selection(&mut self, identity: Option<(usize, String)>) {
+        if let Some((device, id)) = identity {
+            self.selected = self
+                .session_rows()
+                .iter()
+                .position(|(d, s)| *d == device && workspaces::runtime_key(s) == id)
+                .unwrap_or_else(|| self.session_rows().len());
+        } else {
+            self.selected = self.selected.min(self.session_rows().len());
+        }
+        if let Some(Dialog::AgentTasks(device_id, session)) = &self.dialog {
+            let updated = self
+                .devices
+                .iter()
+                .position(|d| &d.id == device_id)
+                .and_then(|d| self.work[d].sessions.iter().find(|s| s.id == session.id))
+                .cloned();
+            self.dialog = updated.map(|session| Dialog::AgentTasks(device_id.clone(), session));
+            let count = match &self.dialog {
+                Some(Dialog::AgentTasks(_, s)) => s.agent_tasks.len(),
+                _ => 0,
+            };
+            self.dialog_selected = self.dialog_selected.min(count.saturating_sub(1));
+        }
     }
     fn selected_session(&self) -> Option<(usize, Session)> {
         self.session_rows()
@@ -1134,7 +1330,7 @@ impl App {
         }
         if self.view == View::Work {
             if let Some((d, session)) = self.selected_session() {
-                if session.container.is_some() {
+                if session.container.is_some() || session.directory.is_empty() {
                     return None;
                 }
                 return Some((d, session.directory));
@@ -1210,6 +1406,89 @@ impl App {
             .iter()
             .filter(|choice| available.contains(&choice.provider))
             .collect()
+    }
+    /// Attach to a tmux session, or move a terminal started outside CX into
+    /// managed tmux first when the device has a verified relay.
+    fn adopt_external_session(&mut self, device: usize, session: Session) {
+        let Some(origin) = session.origin.clone().filter(|_| session.external) else {
+            self.check_session(device, session, false);
+            return;
+        };
+        let Some(caps) = self
+            .providers
+            .get(&device)
+            .filter(|(_, checked)| transport::now().saturating_sub(*checked) < 60)
+            .map(|(caps, _)| caps.clone())
+        else {
+            self.check_providers(device);
+            self.set_notice("Checking whether this terminal can move · press Enter again".into());
+            return;
+        };
+        if caps.iter().any(|c| c == "adopt-reptyr-v1") {
+            if origin.holder.is_none() {
+                self.set_notice_as(
+                    NoticeKind::Warning,
+                    "This terminal's owner is not accessible, so it cannot be moved".into(),
+                );
+            } else if self.send(
+                device,
+                Operation::AdoptSession {
+                    id: session.id.clone(),
+                    origin,
+                    boot_id: session.boot_id.clone(),
+                },
+            ) {
+                // Async move with the animated loader. A local move that needs a
+                // sudo password gets it through the persistent askpass broker
+                // the event loop services, so the loop never blocks.
+                self.creating = true;
+                self.set_notice("Moving terminal into CX…".into());
+            }
+        } else if !outside_tmux(&session) {
+            self.check_session(device, session, false);
+        } else if caps.iter().any(|c| c == "adopt-session-v1") {
+            // Set the relay up from inside CX rather than asking the user to run
+            // a CLI command; the move can be retried once it is installed.
+            self.pending_ptrace = Some(device);
+        } else {
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "Update CX on this device to move terminals".into(),
+            );
+        }
+    }
+    /// Route a key to the open command panel: Esc closes it, Ctrl+O expands it
+    /// full-screen, everything else is delivered to the running command.
+    fn command_panel_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if key.code == KeyCode::Esc {
+            if let Some(panel) = self.command_panel.take() {
+                self.send(panel.device, Operation::PaneClose { id: panel.id });
+            }
+            return;
+        }
+        if ctrl && key.code == KeyCode::Char('o') {
+            if let Some(panel) = self.command_panel.as_ref() {
+                if panel.alive {
+                    self.pending_panel_expand = Some((panel.device, command_panel_session(panel)));
+                }
+            }
+            return;
+        }
+        let alive = self.command_panel.as_ref().is_some_and(|p| p.alive);
+        if !alive {
+            // A finished command only accepts closing or expanding to scroll.
+            return;
+        }
+        if let Some(bytes) = encode_key(key) {
+            let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+            let (id, device) = self
+                .command_panel
+                .as_ref()
+                .map(|p| (p.id.clone(), p.device))
+                .unwrap();
+            self.send(device, Operation::PaneInput { id, hex });
+        }
     }
     fn check_providers(&mut self, device: usize) {
         if !self.background_checks_enabled(device) {
@@ -1421,7 +1700,6 @@ impl App {
     fn refresh_containers(&mut self) {
         for d in 0..self.devices.len() {
             if self.background_checks_enabled(d)
-                && (self.device == 0 || self.device == d + 1)
                 && !self.containers_loading.contains(&d)
                 && self.send(d, Operation::Containers)
             {
@@ -1511,6 +1789,7 @@ impl App {
             provider,
             name: String::new(),
             resume: false,
+            resume_pick: false,
         };
         self.creating = self.send(
             d,
@@ -2122,6 +2401,10 @@ impl App {
             }
             Action::Shell => self.start_shell(),
             Action::Update => self.force_update = true,
+            Action::Reset => {
+                self.dialog = Some(Dialog::Reset);
+                self.dialog_selected = 0;
+            }
             Action::Quit => self.request_quit(),
             Action::Add => {
                 self.network_add_target = None;
@@ -2217,7 +2500,10 @@ impl App {
                             return;
                         }
                         self.check_providers(d);
-                        self.dialog = Some(Dialog::Provider(d, Some(session.directory)));
+                        self.dialog = Some(Dialog::Provider(
+                            d,
+                            (!session.directory.is_empty()).then_some(session.directory),
+                        ));
                         self.dialog_selected = 0;
                         return;
                     }
@@ -2240,7 +2526,14 @@ impl App {
                     if let Some(scope) = session.container {
                         self.open_container_browser(d, scope);
                     } else {
-                        self.open_host_browser(d, session.directory);
+                        self.open_host_browser(
+                            d,
+                            if session.directory.is_empty() {
+                                "~".into()
+                            } else {
+                                session.directory
+                            },
+                        );
                     }
                 } else {
                     self.choose_device(ChooseDevice::Files);
@@ -2631,7 +2924,7 @@ impl App {
             return;
         }
         let rows = self.scoped_sessions(d, &directory, None, &provider);
-        if !rows.is_empty() {
+        if !rows.is_empty() || container_agents::has_history(None, &provider) {
             self.dialog = Some(Dialog::SessionPicker(d, directory, None, provider, rows));
             self.dialog_selected = 0;
             self.refresh_sessions_on(d);
@@ -2641,11 +2934,11 @@ impl App {
     }
     fn create_at(&mut self, d: usize, directory: String, provider: String) {
         if provider != "shell" {
-            self.dialog = Some(Dialog::Permissions(d, directory, provider, false));
+            self.dialog = Some(Dialog::Permissions(d, directory, provider, false, false));
             self.dialog_selected = 0;
             return;
         }
-        self.create_permission_session(d, directory, provider, false, false);
+        self.create_permission_session(d, directory, provider, false, false, false);
     }
     fn create_permission_session(
         &mut self,
@@ -2654,6 +2947,7 @@ impl App {
         provider: String,
         yolo: bool,
         resume: bool,
+        pick: bool,
     ) {
         let key = unique_key();
         // Execution helper generates the label after resolving the directory.
@@ -2664,6 +2958,7 @@ impl App {
             provider: provider.clone(),
             name,
             resume,
+            resume_pick: pick,
         };
         self.creating = self.send(
             d,
@@ -2845,17 +3140,31 @@ impl App {
             }
             Dialog::PinnedEnded(..) => 2,
             Dialog::Jobs => self.job_rows().len(),
+            Dialog::AgentTasks(_, session) => session.agent_tasks.len(),
             Dialog::Delete(..) | Dialog::StopShell(..) => 2,
             Dialog::PendingExit(_) => 2,
             Dialog::Neighbor(..) => 1,
             Dialog::Peer(_) => 5,
             Dialog::RemoveDevice(_) => 2,
             Dialog::EditDevice(_) => 4,
+            Dialog::Reset => 2,
         };
         let horizontal = matches!(
             dialog,
             Dialog::SessionChooser(..) | Dialog::ContainerProvider(..)
         );
+        // A left arrow is an explicit back action in the new-session menus. Keep
+        // it separate from list navigation so it never skips a provider choice.
+        if matches!(dialog, Dialog::SessionChooser(..) | Dialog::Provider(..))
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && key.code == KeyCode::Left
+        {
+            self.dialog = None;
+            self.dialog_detail_focus = false;
+            return;
+        }
         if let Some(motion) = self.navigation.read(key, 5, horizontal) {
             let detail = self.dialog_detail_focus
                 || (matches!(key.code, KeyCode::PageDown | KeyCode::PageUp)
@@ -2899,10 +3208,12 @@ impl App {
                 }
             }
         }
-        if matches!(dialog, Dialog::Delete(..) | Dialog::StopShell(..))
-            && !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        if matches!(
+            dialog,
+            Dialog::Delete(..) | Dialog::StopShell(..) | Dialog::RemoveDevice(..) | Dialog::Reset
+        ) && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
         {
             match key.code {
                 KeyCode::Char('n' | 'N') => {
@@ -2932,8 +3243,11 @@ impl App {
         if matches!(
             dialog,
             Dialog::Jobs
+                | Dialog::AgentTasks(..)
                 | Dialog::Delete(..)
                 | Dialog::StopShell(..)
+                | Dialog::RemoveDevice(..)
+                | Dialog::Reset
                 | Dialog::ContainerConfirm(..)
                 | Dialog::DestinationScope(..)
         ) {
@@ -2964,7 +3278,13 @@ impl App {
                 }
                 KeyCode::Esc
                     if self.dialog_detail_focus
-                        && matches!(dialog, Dialog::Delete(..) | Dialog::StopShell(..)) =>
+                        && matches!(
+                            dialog,
+                            Dialog::Delete(..)
+                                | Dialog::StopShell(..)
+                                | Dialog::RemoveDevice(..)
+                                | Dialog::Reset
+                        ) =>
                 {
                     self.dialog_detail_focus = false;
                     self.dialog = None;
@@ -3194,7 +3514,7 @@ impl App {
                         self.launch_provider = Some(provider);
                         self.open_browser(d, "~".into());
                     }
-                    Dialog::Permissions(d, path, provider, resume) => {
+                    Dialog::Permissions(d, path, provider, resume, pick) => {
                         let yolo = self.dialog_selected == 1;
                         if yolo
                             && self.devices[d].target.is_some()
@@ -3208,7 +3528,7 @@ impl App {
                             return;
                         }
                         self.dialog = None;
-                        self.create_permission_session(d, path, provider, yolo, resume);
+                        self.create_permission_session(d, path, provider, yolo, resume, pick);
                     }
                     Dialog::SessionPicker(d, path, scope, provider, rows) => {
                         if let Some(session) = rows.get(self.dialog_selected) {
@@ -3224,6 +3544,11 @@ impl App {
                                 let resume = self.dialog_selected == rows.len() + 1;
                                 self.container_permissions(d, scope, provider, resume);
                             }
+                        } else if self.dialog_selected == rows.len() + 1
+                            && container_agents::has_history(None, &provider)
+                        {
+                            self.dialog = Some(Dialog::Permissions(d, path, provider, true, true));
+                            self.dialog_selected = 0;
                         } else {
                             self.dialog = None;
                             self.create_at(
@@ -3249,7 +3574,7 @@ impl App {
                             self.refresh_sessions_on(d);
                         }
                     }
-                    Dialog::Jobs => {
+                    Dialog::Jobs | Dialog::AgentTasks(..) => {
                         self.dialog_detail_focus = true;
                     }
                     Dialog::Delete(d, entries) => {
@@ -3341,6 +3666,24 @@ impl App {
                         }
                         _ => self.dialog = None,
                     },
+                    Dialog::Reset => {
+                        self.dialog = None;
+                        if self.dialog_selected == 1 {
+                            match crate::sessions::reset() {
+                                Ok(report) => self.set_notice_as(
+                                    NoticeKind::Success,
+                                    format!(
+                                        "Managed tmux reset · {} sessions terminated",
+                                        report["managed_sessions"].as_u64().unwrap_or(0)
+                                    ),
+                                ),
+                                Err(error) => self.set_notice_as(
+                                    NoticeKind::Error,
+                                    format!("Managed session reset failed: {error:#}"),
+                                ),
+                            }
+                        }
+                    }
                     Dialog::Neighbor(d, candidate) => {
                         self.dialog = None;
                         self.connect_neighbor(d, candidate);
@@ -3389,7 +3732,38 @@ impl App {
     fn apply(&mut self, mut reply: Reply) {
         self.pending_requests
             .set(self.pending_requests.get().saturating_sub(1));
-        if reply.generation < self.device_generation_floor || reply.device >= self.devices.len() {
+        let file_action = matches!(
+            match &reply.op {
+                Operation::ContainerFileAction { operation, .. } => operation.as_ref(),
+                other => other,
+            },
+            Operation::Remove { .. }
+                | Operation::Rename { .. }
+                | Operation::Transfer(_)
+                | Operation::ScopedTransfer(_)
+                | Operation::TransferRetry { .. }
+        );
+        if file_action {
+            self.file_busy = false;
+            self.start_next_file_action();
+        }
+        if let Some(id) = &reply.device_id {
+            let Some(device) = self.devices.iter().position(|d| &d.id == id) else {
+                return; // Device removed while this request was in flight.
+            };
+            if reply
+                .execution_target
+                .as_ref()
+                .is_some_and(|target| target != &self.devices[device].target)
+            {
+                return; // Reply belongs to an SSH address that has since changed.
+            }
+            reply.device = device;
+        }
+        if reply.device >= self.devices.len() || reply.device >= self.work.len() {
+            return;
+        }
+        if reply.generation < self.device_generation_floor {
             return;
         }
         if let Operation::ContainerProviders { scope } = &reply.op {
@@ -3410,18 +3784,6 @@ impl App {
         if let Operation::ContainerFileAction { operation, .. } = &reply.op {
             // Mutation replies release the serialized queue even after navigating away.
             reply.op = *operation.clone();
-        }
-        let file_action = matches!(
-            reply.op,
-            Operation::Remove { .. }
-                | Operation::Rename { .. }
-                | Operation::Transfer(_)
-                | Operation::ScopedTransfer(_)
-                | Operation::TransferRetry { .. }
-        );
-        if file_action {
-            self.file_busy = false;
-            self.start_next_file_action();
         }
         let failed_attachment_check = matches!(reply.op, Operation::Sessions)
             && reply.result.is_err()
@@ -3473,6 +3835,9 @@ impl App {
         } else {
             true
         };
+        // External-terminal discovery is a best-effort UI extra; a failing or
+        // unreachable device must not raise a notice for it.
+        let notify_error = notify_error && !matches!(reply.op, Operation::ExternalSessions);
         let listing_offset = match &reply.op {
             Operation::ListPage { offset, .. } => *offset,
             _ => 0,
@@ -3520,6 +3885,7 @@ impl App {
                 | Operation::CreateYolo(_)
                 | Operation::ContainerCreate { .. }
                 | Operation::ContainerAgentCreate { .. }
+                | Operation::AdoptSession { .. }
         ) {
             self.creating = false;
         }
@@ -3531,6 +3897,22 @@ impl App {
                         v["containers"].clone(),
                     ) {
                         Ok(items) => {
+                            if v["complete"] == true && v["truncated"] != true {
+                                let selected = self
+                                    .selected_session()
+                                    .map(|(d, s)| (d, workspaces::runtime_key(&s)));
+                                self.work[reply.device].sessions.retain(|session| {
+                                    session.container.as_ref().is_none_or(|scope| {
+                                        items.iter().any(|c| {
+                                            c.id == scope.id
+                                                && c.engine == scope.engine
+                                                && c.state == "running"
+                                                && c.started_at == scope.started_at
+                                        })
+                                    })
+                                });
+                                self.reconcile_session_selection(selected);
+                            }
                             self.containers.insert(reply.device, items);
                             self.container_errors.remove(&reply.device);
                         }
@@ -3663,7 +4045,17 @@ impl App {
                     self.providers.remove(&reply.device);
                 }
                 if is_sessions {
+                    // Failed contact is not evidence that a cached terminal is attachable.
+                    let selected = self
+                        .selected_session()
+                        .map(|(d, s)| (d, workspaces::runtime_key(&s)));
+                    for session in &mut self.work[reply.device].sessions {
+                        session.activity = None;
+                        session.agent_tasks.clear();
+                    }
+                    self.work[reply.device].fetched = 0;
                     self.work[reply.device].error = Some(message.clone());
+                    self.reconcile_session_selection(selected);
                 }
                 if reply.generation == self.generation || file_action {
                     if file_action {
@@ -3768,6 +4160,8 @@ impl App {
                                     "stop-session-v1",
                                     "stop-agent-session-v1",
                                     "session-yolo-v1",
+                                    "adopt-session-v1",
+                                    "adopt-reptyr-v1",
                                     "containers-v1",
                                     "container-agents-v1",
                                     "pdf-pages-v1",
@@ -3832,7 +4226,15 @@ impl App {
                     value.get("sessions").cloned().unwrap_or(Value::Null)
                 };
                 match serde_json::from_value::<Vec<Session>>(data) {
-                    Ok(s) => {
+                    Ok(mut s) => {
+                        // Keep discovered external terminals (a separate request);
+                        // the managed list owns everything else.
+                        s.extend(
+                            self.work[reply.device]
+                                .sessions
+                                .drain(..)
+                                .filter(is_discovered_external),
+                        );
                         self.work[reply.device].sessions = s;
                         self.work[reply.device].error = None;
                         self.work[reply.device].fetched = transport::now();
@@ -3867,6 +4269,10 @@ impl App {
                         self.work[reply.device].error = Some("Invalid session metadata".into());
                     }
                 }
+                let identity = self
+                    .selected_session()
+                    .map(|(d, s)| (d, workspaces::runtime_key(&s)));
+                self.reconcile_session_selection(identity);
                 self.reconcile_picker(reply.device);
                 if self
                     .attach_check
@@ -3895,6 +4301,28 @@ impl App {
                     }
                 }
             }
+            Operation::ExternalSessions => {
+                if let Ok(mut external) = serde_json::from_value::<Vec<Session>>(value) {
+                    let selected = self
+                        .selected_session()
+                        .map(|(d, s)| (d, workspaces::runtime_key(&s)));
+                    let rows = &mut self.work[reply.device].sessions;
+                    rows.retain(|s| !is_discovered_external(s));
+                    rows.append(&mut external);
+                    self.reconcile_session_selection(selected);
+                }
+            }
+            Operation::AdoptSession { id, .. } => match serde_json::from_value::<Session>(value) {
+                Ok(s) => {
+                    self.work[reply.device].sessions.retain(|row| row.id != *id);
+                    self.work[reply.device].sessions.push(s.clone());
+                    self.open_session(reply.device, s, false);
+                }
+                Err(_) => self.set_notice_as(
+                    NoticeKind::Error,
+                    "Move response invalid · refresh before retrying".into(),
+                ),
+            },
             Operation::Create(_)
             | Operation::CreateYolo(_)
             | Operation::ContainerCreate { .. }
@@ -3913,6 +4341,76 @@ impl App {
                     ),
                 }
             }
+            Operation::CommandPanel { .. } => {
+                if let (Some(id), Some(cols), Some(rows)) = (
+                    value["id"].as_str(),
+                    value["cols"].as_u64(),
+                    value["rows"].as_u64(),
+                ) {
+                    self.command_panel = Some(CommandPanel {
+                        device: reply.device,
+                        id: id.to_string(),
+                        cols: cols as u16,
+                        rows: rows as u16,
+                        lines: vec![],
+                        alive: true,
+                        status: None,
+                        inflight: false,
+                        last_poll: std::time::Instant::now()
+                            - std::time::Duration::from_millis(500),
+                        label: self.command_panel_label.take().unwrap_or_default(),
+                    });
+                } else {
+                    self.set_notice_as(
+                        NoticeKind::Error,
+                        "Command could not start · refresh before retrying".into(),
+                    );
+                }
+            }
+            Operation::CapturePane { id, .. } => {
+                let mut finished = None;
+                if let Some(panel) = self.command_panel.as_mut().filter(|p| p.id == *id) {
+                    panel.inflight = false;
+                    panel.last_poll = std::time::Instant::now();
+                    // tmux clears the pane and shows "Pane is dead" on exit, so
+                    // drop that marker and keep the last frame that had output
+                    // rather than overwriting it with the emptied screen.
+                    let fresh: Vec<String> = value["lines"]
+                        .as_array()
+                        .map(|lines| {
+                            lines
+                                .iter()
+                                .filter_map(|l| l.as_str())
+                                .filter(|l| !l.trim_start().starts_with("Pane is dead (status"))
+                                .map(str::to_owned)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let meaningful = fresh.iter().any(|l| !l.trim().is_empty());
+                    if meaningful || panel.lines.iter().all(|l| l.trim().is_empty()) {
+                        panel.lines = fresh;
+                    }
+                    let was_alive = panel.alive;
+                    panel.alive = value["alive"].as_bool().unwrap_or(false);
+                    panel.status = value["status"].as_i64().map(|s| s as i32);
+                    if was_alive && !panel.alive {
+                        let empty = panel.lines.iter().all(|l| l.trim().is_empty());
+                        finished = Some((panel.status, empty, panel.id.clone(), panel.device));
+                    }
+                }
+                if let Some((status, empty, id, device)) = finished {
+                    self.set_notice(match status {
+                        Some(0) | None => "Command finished".into(),
+                        Some(code) => format!("Command exited with status {code}"),
+                    });
+                    // Nothing to read: close the panel rather than show an empty box.
+                    if empty {
+                        self.command_panel = None;
+                        self.send(device, Operation::PaneClose { id });
+                    }
+                }
+            }
+            Operation::PaneInput { .. } | Operation::PaneClose { .. } => {}
             Operation::Jobs | Operation::TransferJobs => {
                 if let Some(rows) = value["jobs"].as_array() {
                     for job in rows {
@@ -4349,6 +4847,11 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        // A command panel captures input (including Ctrl+C) while it is open.
+        if self.command_panel.is_some() {
+            self.command_panel_key(key);
+            return;
+        }
         if self.attach_check.take().is_some() || self.pending_attach.take().is_some() {
             self.pending_attach = None;
             self.set_notice("Attachment cancelled".into());
@@ -4503,8 +5006,8 @@ impl App {
                     Input::Command => {
                         if !self.text.trim().is_empty() {
                             if let Some((d, directory)) = self.command_target.take() {
-                                self.pending_command = Some((
-                                    self.devices[d].clone(),
+                                self.pending_command_panel = Some((
+                                    d,
                                     RunCommand {
                                         directory,
                                         command: std::mem::take(&mut self.text),
@@ -4569,10 +5072,7 @@ impl App {
                             if let Some(device) = self.pending_edit.take() {
                                 match store::update_target(&self.devices[device], &target) {
                                     Ok(updated) => {
-                                        self.devices[device] = updated;
-                                        self.providers.remove(&device);
-                                        self.work[device].error = None;
-                                        self.work[device].fetched = 0;
+                                        self.replace_device_endpoint(device, updated);
                                         self.set_notice_as(
                                             NoticeKind::Success,
                                             "SSH address updated · refresh to verify the connection".into(),
@@ -4837,6 +5337,15 @@ impl App {
             }
         }
         match key.code {
+            KeyCode::Char('s') if self.view == View::Work && self.focus == Focus::Workspace => {
+                if let Some((device, session)) = self.selected_session() {
+                    self.dialog =
+                        Some(Dialog::AgentTasks(self.devices[device].id.clone(), session));
+                    self.dialog_selected = 0;
+                    self.dialog_scroll = 0;
+                    self.dialog_detail_focus = false;
+                }
+            }
             KeyCode::Char('J') | KeyCode::Char('K')
                 if self.view == View::Network && self.focus == Focus::Workspace =>
             {
@@ -4859,12 +5368,6 @@ impl App {
                 });
             }
             KeyCode::Char('b' | 'B') if self.focus == Focus::Devices => self.toggle_access(),
-            KeyCode::Char('d') if self.focus == Focus::Devices && self.device > 0 => {
-                self.set_availability(store::Availability::UsuallyDown)
-            }
-            KeyCode::Char('u') if self.focus == Focus::Devices && self.device > 0 => {
-                self.set_availability(store::Availability::UsuallyUp)
-            }
             KeyCode::Char('x' | 'X') if self.focus == Focus::Devices && self.device > 0 => {
                 self.dialog_selected = 0;
                 self.dialog = Some(Dialog::RemoveDevice(self.device - 1));
@@ -5706,6 +6209,15 @@ fn workspace_action(action: Action) -> bool {
 fn local_only(app: &App) -> bool {
     !app.devices.is_empty() && app.devices.iter().all(|d| d.target.is_none())
 }
+/// Terminals discovered outside any tmux server have no attachable tmux id.
+fn outside_tmux(s: &Session) -> bool {
+    s.external && s.id.starts_with("ext-")
+}
+/// Rows that came from the separate external-terminal discovery, not the
+/// managed session list (which includes default-tmux `$N` rows).
+fn is_discovered_external(s: &Session) -> bool {
+    s.external && s.id.starts_with("ext-")
+}
 fn empty_work_can_create(app: &App) -> bool {
     app.view == View::Work
         && app.search.is_empty()
@@ -6202,16 +6714,13 @@ fn confirmation_buttons(
     selected: usize,
     detail_focus: bool,
     layout: ConfirmationLayout,
+    labels: [&str; 2],
 ) {
     frame.render_widget(Clear, area);
-    let labels = if stop {
-        if area.width < 38 {
-            ["Keep", "Stop"]
-        } else {
-            ["Keep session", "Stop session"]
-        }
+    let labels = if stop && area.width < 38 {
+        ["Keep", "Stop"]
     } else {
-        ["Cancel", "Delete"]
+        labels
     };
     let columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -7543,6 +8052,18 @@ fn network_summary(value: &Value) -> String {
     ));
     lines.join("\n")
 }
+fn session_activity_current(cache: &Cached) -> bool {
+    cache.error.is_none()
+        && cache.fetched > 0
+        && transport::now().saturating_sub(cache.fetched) <= 5
+}
+fn session_busy(session: &Session) -> bool {
+    matches!(
+        session.activity.as_deref(),
+        Some("running" | "working" | "busy" | "output")
+    )
+}
+
 fn load_cache(app: &mut App) {
     let path = store::state_dir().join("ui-sessions.json");
     if std::fs::metadata(&path).map_or(true, |m| m.len() > 1024 * 1024) {
@@ -7577,6 +8098,9 @@ fn authentication_modal(
     let trust = prompt.kind == PromptKind::HostKey;
     let title = match prompt.kind {
         PromptKind::HostKey => "Verify host key",
+        PromptKind::Password if prompt.text.to_ascii_lowercase().contains("sudo") => {
+            "Administrator password"
+        }
         PromptKind::Password => "SSH password",
         PromptKind::KeyPassphrase => "Unlock SSH key",
         PromptKind::Verification => "SSH verification",
@@ -7857,16 +8381,31 @@ impl Screen {
         }
         Ok(())
     }
-    fn suspend(&mut self) -> Result<()> {
+    /// Leave the TUI for a subprocess. `clear` wipes the primary screen that
+    /// LeaveAlternateScreen restores: without it, a slow remote handoff briefly
+    /// shows the previous attach's "Connection closed"/"[detached]" teardown
+    /// text before tmux repaints, which looks like the session failed to load.
+    /// Final teardown (Drop) passes `false` so the user's own terminal is kept.
+    fn suspend(&mut self, clear: bool) -> Result<()> {
         if self.active {
             let mouse = self.mouse_capture(false);
             self.active = false;
             let raw = terminal::disable_raw_mode();
             let leave = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+            let wipe = if clear {
+                execute!(
+                    self.terminal.backend_mut(),
+                    terminal::Clear(terminal::ClearType::All),
+                    crossterm::cursor::MoveTo(0, 0)
+                )
+            } else {
+                Ok(())
+            };
             let cursor = self.terminal.show_cursor();
             mouse?;
             raw?;
             leave?;
+            wipe?;
             cursor?;
         }
         Ok(())
@@ -7881,7 +8420,7 @@ impl Screen {
 }
 impl Drop for Screen {
     fn drop(&mut self) {
-        let _ = self.suspend();
+        let _ = self.suspend(false);
     }
 }
 
@@ -8041,7 +8580,7 @@ fn restore_restart_at(app: &mut App, name: &str, directory: &std::path::Path) ->
         .and_then(|(device, id)| {
             app.session_rows()
                 .iter()
-                .position(|(d, s)| app.devices[*d].id == device && s.id == id)
+                .position(|(d, s)| app.devices[*d].id == device && workspaces::runtime_key(s) == id)
         })
         .unwrap_or(
             state
@@ -8063,6 +8602,8 @@ fn can_restart(app: &App) -> bool {
         && !app.creating
         && app.pending_attach.is_none()
         && app.pending_command.is_none()
+        && app.pending_command_panel.is_none()
+        && app.command_panel.is_none()
         && app.pending_add.is_none()
         && app.network_add_target.is_none()
         && app.pending_add_via.is_none()
@@ -8139,19 +8680,32 @@ fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender<Reply>) {
         closed: bool,
     }
     fn endpoint(task: &Task) -> String {
-        task.execution.target.clone().unwrap_or_else(|| {
-            if matches!(
+        // Command-panel traffic (start, frequent captures, input) runs on its
+        // own lane so it is never serialized behind slow refreshes like a
+        // container inventory, and captures stay responsive.
+        let panel = matches!(
+            task.op,
+            Operation::CommandPanel { .. }
+                | Operation::CapturePane { .. }
+                | Operation::PaneInput { .. }
+                | Operation::PaneClose { .. }
+        );
+        match &task.execution.target {
+            Some(target) if panel => format!("panel:{target}"),
+            Some(target) => target.clone(),
+            None if panel => "<local-command>".into(),
+            None if matches!(
                 task.op,
                 Operation::List { .. }
                     | Operation::ListPage { .. }
                     | Operation::Preview { .. }
                     | Operation::PreviewPage { .. }
-            ) {
+            ) =>
+            {
                 "<local-files-read>".into()
-            } else {
-                "<local>".into()
             }
-        })
+            None => "<local>".into(),
+        }
     }
     let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
     let input = shared.clone();
@@ -8162,6 +8716,8 @@ fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender<Reply>) {
             let mut queue = lock.lock().unwrap();
             for old in workspaces::superseded_reads(&mut queue.tasks, &task) {
                 let _ = discarded_replies.send(Reply {
+                    device_id: Some(old.execution.id.clone()),
+                    execution_target: Some(old.execution.target.clone()),
                     preview: None,
                     device: old.device,
                     op: old.op,
@@ -8218,6 +8774,8 @@ fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender<Reply>) {
                 };
                 let delivered = replies
                     .send(Reply {
+                        device_id: Some(task.execution.id.clone()),
+                        execution_target: Some(task.execution.target.clone()),
                         preview,
                         device: task.device,
                         op: task.op,
@@ -8338,6 +8896,23 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     let (tx, rx) = mpsc::sync_channel::<Task>(32);
     let (result_tx, result_rx) = mpsc::channel::<Reply>();
     start_task_workers(rx, result_tx);
+    let (core_tx, core_rx) = mpsc::channel();
+    let core_stopping = stopping.clone();
+    thread::spawn(move || {
+        while !core_stopping.load(std::sync::atomic::Ordering::Relaxed) {
+            let result = crate::peers::sync();
+            if core_tx.send(result).is_err() {
+                break;
+            }
+            for _ in 0..60 {
+                if core_stopping.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                thread::sleep(Duration::from_secs(1));
+            }
+        }
+    });
+    let mut last_inventory_check = Instant::now();
     let mut app = App::new(devices, tx);
     load_cache(&mut app);
     app.pins = store::session_pins().unwrap_or_default();
@@ -8357,7 +8932,11 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     if restore.is_some() && app.view == View::Files {
         app.refresh_browser();
     }
+    if restore.is_none() {
+        app.open_startup_directory(std::env::current_dir()?);
+    }
     app.refresh_work();
+    app.refresh_containers();
     for d in 0..app.devices.len() {
         app.check_providers(d);
         app.send(d, Operation::TransferJobs);
@@ -8374,10 +8953,40 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     let mut last_interaction = Instant::now();
     let mut wheel_reports = WheelReports::default();
     let mut last_refresh = Instant::now();
+    let mut last_session_refresh = Instant::now();
     let mut last_jobs = Instant::now();
     let mut last_transfer_frame = Instant::now();
     let mut notice_was_animating = false;
+    // A persistent askpass broker lets `sudo` while moving a terminal prompt
+    // for a password without blocking the event loop or the loader animation.
+    let askpass = crate::auth::Broker::start().ok();
+    if let Some(broker) = &askpass {
+        std::env::set_var("CX_ASKPASS_SOCKET", broker.socket());
+        std::env::set_var("CX_ASKPASS_NONCE", broker.nonce());
+    }
     while !app.quit && !stopping.load(std::sync::atomic::Ordering::Relaxed) {
+        // Service one pending password prompt per iteration, if any.
+        if let Some((prompt, pending)) = askpass.as_ref().and_then(|b| b.accept()) {
+            let answer =
+                authentication_modal(&mut screen, prompt).unwrap_or(crate::auth::Answer::Cancel);
+            pending.answer(answer);
+            last_interaction = Instant::now();
+            dirty = true;
+        }
+        if core_rx.try_iter().next().is_some()
+            || last_inventory_check.elapsed() >= Duration::from_secs(5)
+        {
+            last_inventory_check = Instant::now();
+            if let Ok(devices) = store::devices() {
+                if app.reconcile_devices(devices) {
+                    app.refresh_work();
+                    for d in 0..app.devices.len() {
+                        app.check_providers(d);
+                    }
+                    dirty = true;
+                }
+            }
+        }
         for update in transport::drain_host_updates() {
             app.host_updated(update);
             dirty = true;
@@ -8470,7 +9079,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                         }
                         use std::os::unix::process::CommandExt;
                         cleanup_native_preview(&mut screen, &mut native_preview)?;
-                        screen.suspend()?;
+                        screen.suspend(true)?;
                         let error = std::process::Command::new(path)
                             .arg("restart")
                             .arg(&name)
@@ -8497,6 +9106,8 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             cache_changed |= matches!(
                 reply.op,
                 Operation::Sessions
+                    | Operation::ExternalSessions
+                    | Operation::Containers
                     | Operation::List { .. }
                     | Operation::ListPage { .. }
                     | Operation::ContainerFiles { .. }
@@ -8565,9 +9176,41 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             }
             dirty = true;
         }
+        if let Some(d) = app.pending_ptrace.take() {
+            cleanup_native_preview(&mut screen, &mut native_preview)?;
+            let device = app.devices[d].clone();
+            let name = if device.target.is_none() {
+                "local".to_string()
+            } else {
+                device.name.clone()
+            };
+            screen.suspend(true)?;
+            eprintln!(
+                "\nSetting up terminal moving on {}. This installs a small helper and asks for your \n\
+                 administrator password once; it is only used to let CX move terminals you own.\n",
+                identity(&device)
+            );
+            let result = crate::device_ptrace(&name, crate::PtraceAction::Enable, None);
+            screen.resume()?;
+            last_interaction = Instant::now();
+            match result {
+                Ok(_) => {
+                    app.providers.remove(&d);
+                    app.check_providers(d);
+                    app.set_notice(
+                        "Terminal moving is set up · select the terminal again to move it".into(),
+                    );
+                }
+                Err(e) => app.set_notice_as(
+                    NoticeKind::Error,
+                    safe_text(&format!("Setup did not complete: {e:#}")),
+                ),
+            }
+            dirty = true;
+        }
         if let Some(device) = app.pending_terminal.take() {
             cleanup_native_preview(&mut screen, &mut native_preview)?;
-            screen.suspend()?;
+            screen.suspend(true)?;
             let result = sessions::login_terminal(&device);
             screen.resume()?;
             last_interaction = Instant::now();
@@ -8584,9 +9227,55 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             );
             dirty = true;
         }
+        if let Some((d, command)) = app.pending_command_panel.take() {
+            // Open a floating panel for the command instead of leaving CX. A
+            // panel is already open? Close it first.
+            if let Some(panel) = app.command_panel.take() {
+                app.send(panel.device, Operation::PaneClose { id: panel.id });
+            }
+            let (cols, rows) = command_panel_size(screen.terminal.size()?);
+            app.command_panel_label = Some(safe_text(&command.command));
+            app.send(
+                d,
+                Operation::CommandPanel {
+                    request: command,
+                    cols,
+                    rows,
+                },
+            );
+            app.set_notice("Running…".into());
+            dirty = true;
+        }
+        // Poll the open command panel for fresh output while it runs.
+        if let Some(panel) = app.command_panel.as_ref() {
+            let due = panel.last_poll.elapsed() >= Duration::from_millis(100);
+            if !panel.inflight && due && (panel.alive || panel.lines.is_empty()) {
+                let (id, device, cols, rows) =
+                    (panel.id.clone(), panel.device, panel.cols, panel.rows);
+                if app.send(device, Operation::CapturePane { id, cols, rows }) {
+                    if let Some(panel) = app.command_panel.as_mut() {
+                        panel.inflight = true;
+                    }
+                }
+            }
+        }
+        if let Some((d, session)) = app.pending_panel_expand.take() {
+            cleanup_native_preview(&mut screen, &mut native_preview)?;
+            screen.suspend(true)?;
+            let result = sessions::attach(&app.devices[d], &session, false);
+            screen.resume()?;
+            last_interaction = Instant::now();
+            if let Err(e) = result {
+                app.set_notice_as(
+                    NoticeKind::Error,
+                    safe_text(&format!("Expand failed: {e:#}")),
+                );
+            }
+            dirty = true;
+        }
         if let Some((device, command)) = app.pending_command.take() {
             cleanup_native_preview(&mut screen, &mut native_preview)?;
-            screen.suspend()?;
+            screen.suspend(true)?;
             let result = sessions::run_command(&device, &command);
             screen.resume()?;
             last_interaction = Instant::now();
@@ -8609,7 +9298,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         if app.pending_attach.is_some() && !event::poll(Duration::ZERO)? {
             let (d, session, observe) = app.pending_attach.take().unwrap();
             cleanup_native_preview(&mut screen, &mut native_preview)?;
-            screen.suspend()?;
+            screen.suspend(true)?;
             let result = sessions::attach(&app.devices[d], &session, observe);
             screen.resume()?;
             last_interaction = Instant::now();
@@ -8649,7 +9338,13 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             dirty = true;
         }
         // Animate only while work is pending; idle keeps its existing bounded redraw.
-        if !app.active_transfer_keys().is_empty()
+        if (app.creating
+            || !app.active_transfer_keys().is_empty()
+            || (app.view == View::Work
+                && app
+                    .session_rows()
+                    .iter()
+                    .any(|(d, s)| session_activity_current(&app.work[*d]) && session_busy(s))))
             && last_transfer_frame.elapsed() >= Duration::from_millis(160)
         {
             app.transfer_frame = app.transfer_frame.wrapping_add(1);
@@ -8670,11 +9365,12 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 .draw(|frame| render_with_native(frame, &app, Some(&mut native_preview)))?;
             dirty = false;
         }
-        if event::poll(notifications::poll_interval(
-            app.notice_started,
-            app.notice_deadline,
-            Instant::now(),
-        ))? {
+        let mut wait =
+            notifications::poll_interval(app.notice_started, app.notice_deadline, Instant::now());
+        if app.command_panel.as_ref().is_some_and(|p| p.alive) {
+            wait = wait.min(Duration::from_millis(80));
+        }
+        if event::poll(wait)? {
             for (input, observed) in read_input_batch()? {
                 if !wheel_reports.accepts(&input, observed) {
                     continue;
@@ -8727,6 +9423,18 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             update_phase = UpdatePhase::Checking;
             last_update_check = Instant::now();
         }
+        if app.view == View::Work && last_session_refresh.elapsed() >= Duration::from_secs(3) {
+            for d in 0..app.devices.len() {
+                if app.background_checks_enabled(d)
+                    && (app.device == 0 || app.device == d + 1)
+                    && !app.work[d].loading
+                {
+                    app.work[d].loading = app.send(d, Operation::Sessions);
+                }
+            }
+            last_session_refresh = Instant::now();
+        }
+        // Session and container caches are reconciled even while browsing files.
         // Bounded fleet refresh; idle does not continuously redraw.
         if last_refresh.elapsed() >= Duration::from_secs(30) {
             if let Some(browser) = &app.browser {
@@ -8737,18 +9445,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             {
                 app.check_providers(device);
             }
-            if app.view == View::Work {
-                app.refresh_work();
-            } else if app.view == View::Files {
-                if let Some(d) = app
-                    .browser
-                    .as_ref()
-                    .map(|b| b.device)
-                    .filter(|d| app.background_checks_enabled(*d))
-                {
-                    app.refresh_sessions_on(d);
-                }
-            } else if app.view == View::Network || app.view == View::Containers {
+            app.refresh_work();
+            app.refresh_containers();
+            if app.view == View::Network {
                 app.refresh();
             }
             if app.browser.is_some() {
@@ -8773,10 +9472,80 @@ fn browser_scope_key(scope: Option<&ContainerScope>) -> String {
         .unwrap_or_default()
 }
 
+fn session_folder_label(path: &str) -> String {
+    if path.is_empty() {
+        "Directory unavailable".into()
+    } else {
+        safe_label(path)
+    }
+}
+
 fn file_endpoint_label(device: &Device, scope: &Option<ContainerScope>) -> String {
     let host = identity(device);
     scope
         .as_ref()
         .map(|c| format!("{host} / {}", safe_label(&c.name)))
         .unwrap_or(host)
+}
+
+/// Encode a key for delivery to a command pane, or None if it has no bytes.
+fn encode_key(key: KeyEvent) -> Option<Vec<u8>> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    Some(match key.code {
+        KeyCode::Char(c) => {
+            if ctrl {
+                let b = (c.to_ascii_uppercase() as u8).wrapping_sub(0x40);
+                if b < 0x20 || b == 0x7f {
+                    vec![b]
+                } else {
+                    return None;
+                }
+            } else {
+                let mut buf = [0u8; 4];
+                c.encode_utf8(&mut buf).as_bytes().to_vec()
+            }
+        }
+        KeyCode::Enter => vec![b'\r'],
+        KeyCode::Backspace => vec![0x7f],
+        KeyCode::Tab => vec![b'\t'],
+        KeyCode::Up => b"\x1b[A".to_vec(),
+        KeyCode::Down => b"\x1b[B".to_vec(),
+        KeyCode::Right => b"\x1b[C".to_vec(),
+        KeyCode::Left => b"\x1b[D".to_vec(),
+        KeyCode::Home => b"\x1b[H".to_vec(),
+        KeyCode::End => b"\x1b[F".to_vec(),
+        KeyCode::PageUp => b"\x1b[5~".to_vec(),
+        KeyCode::PageDown => b"\x1b[6~".to_vec(),
+        KeyCode::Delete => b"\x1b[3~".to_vec(),
+        _ => return None,
+    })
+}
+/// Inner panel size for a command panel, bounded for readability.
+fn command_panel_size(area: ratatui::layout::Size) -> (u16, u16) {
+    let cols = area.width.saturating_sub(6).clamp(20, 200);
+    let rows = area.height.saturating_sub(6).clamp(4, 120);
+    (cols, rows)
+}
+/// A minimal Session describing a command pane, for full-screen expand.
+fn command_panel_session(panel: &CommandPanel) -> Session {
+    Session {
+        id: panel.id.clone(),
+        name: panel.label.clone(),
+        directory: String::new(),
+        provider: "shell".into(),
+        host: String::new(),
+        account: String::new(),
+        pid: 0,
+        started: String::new(),
+        boot_id: String::new(),
+        external: false,
+        socket: None,
+        launcher: None,
+        process: None,
+        container: None,
+        activity: None,
+        agent_tasks: vec![],
+        origin: None,
+        terminal: None,
+    }
 }

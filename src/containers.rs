@@ -190,7 +190,7 @@ fn workspace_up(workspace: &str, rebuild: Option<&Container>) -> Result<Value> {
         }
         command.args(["--expect-existing-container", "--remove-existing-container"]);
     }
-    let bytes = bounded(command, None, 600, 1024 * 1024).with_context(|| if rebuild.is_some() {
+    let bytes = bounded_workspace(command, 600, 1024 * 1024).with_context(|| if rebuild.is_some() {
         "Devcontainer rebuild failed. The CLI may have replaced the old container; refresh to inspect its state. Check the workspace configuration, Docker access and available disk space before retrying"
     } else { "Workspace startup failed; refresh to inspect its state" })?;
     let result: Value = bytes
@@ -218,11 +218,21 @@ fn memfile() -> Result<fs::File> {
     anyhow::ensure!(fd >= 0, "bounded container I/O storage unavailable");
     Ok(unsafe { fs::File::from_raw_fd(fd) })
 }
-fn bounded(
+// Dev Containers writes build/lifecycle progress to stderr and its machine
+// result to stdout. Progress is not protocol data and must not exhaust the
+// result budget (or an unbounded temporary file) during a successful rebuild.
+fn bounded_workspace(command: Command, timeout: u64, cap: u64) -> Result<Vec<u8>> {
+    bounded_output(command, None, timeout, cap, false)
+}
+fn bounded(command: Command, input: Option<fs::File>, timeout: u64, cap: u64) -> Result<Vec<u8>> {
+    bounded_output(command, input, timeout, cap, true)
+}
+fn bounded_output(
     mut command: Command,
     input: Option<fs::File>,
     timeout: u64,
     cap: u64,
+    capture_stderr: bool,
 ) -> Result<Vec<u8>> {
     let mut out = memfile()?;
     let err = memfile()?;
@@ -230,7 +240,11 @@ fn bounded(
         .process_group(0)
         .stdin(input.map(Stdio::from).unwrap_or_else(Stdio::null))
         .stdout(out.try_clone()?)
-        .stderr(err.try_clone()?);
+        .stderr(if capture_stderr {
+            Stdio::from(err.try_clone()?)
+        } else {
+            Stdio::null()
+        });
     let mut child = command
         .spawn()
         .context("Container engine/tool unavailable on this device")?;
@@ -485,19 +499,24 @@ fn inspect_on(id: &str, engine: &str) -> Result<Container> {
         c.evidence = "Dev Containers labels".into();
     }
     let mut configs = vec![];
-    if let Some(s) = label_workspace {
-        let p = PathBuf::from(s);
-        if p.is_absolute() {
-            if let Some(config) = config_at(&p) {
-                configs.push((p, config, None));
-            }
-        }
-    }
+    // The label identifies the configuration actually used to start this instance.
+    // A default config beside it may describe a different user or workspace.
     if let Some(s) = v["config"].as_str() {
         let p = PathBuf::from(s);
         if p.is_absolute() && p.is_file() {
-            if let Some(w) = label_workspace {
+            if let Some(w) = label_workspace.filter(|w| Path::new(w).is_absolute()) {
                 configs.push((PathBuf::from(w), p, None));
+            }
+        }
+    }
+    if let Some(s) = label_workspace {
+        let p = PathBuf::from(s);
+        if p.is_absolute() {
+            // Labels remain useful recovery evidence even when the workspace's
+            // host mount/configuration is temporarily unavailable after reboot.
+            c.workspace = Some(s.to_owned());
+            if let Some(config) = config_at(&p) {
+                configs.push((p, config, None));
             }
         }
     }
@@ -583,14 +602,21 @@ pub fn list() -> Result<Value> {
     let engine = engine_identity()?;
     let deadline = Instant::now() + Duration::from_secs(40);
     let mut truncated = ids.lines().count() > 256;
+    let mut failed_inspections = 0usize;
     let mut items = vec![];
     for id in ids.lines().take(256) {
         if Instant::now() >= deadline {
             truncated = true;
             break;
         }
-        if let Ok(c) = inspect_on(id, &engine) {
-            items.push(c);
+        match inspect_on(id, &engine) {
+            Ok(c) => items.push(c),
+            Err(_) => {
+                // An instance may disappear between ps and inspect, or the
+                // engine may become unavailable. Neither proves a full scan.
+                failed_inspections += 1;
+                truncated = true;
+            }
         }
     }
     anyhow::ensure!(
@@ -599,7 +625,10 @@ pub fn list() -> Result<Value> {
     );
     items.sort_by(|a, b| (!a.devcontainer, &a.name).cmp(&(!b.devcontainer, &b.name)));
     Ok(
-        json!({"containers":items,"truncated":truncated,"engine":"docker","network_policy":"Existing networks and ports are preserved; no automatic forwarding"}),
+        json!({"containers":items,"truncated":truncated,"complete":!truncated,
+            "failed_inspections":failed_inspections,"observed_at":std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+            "engine":"docker","network_policy":"Existing networks and ports are preserved; no automatic forwarding"}),
     )
 }
 fn check(scope: &ContainerScope) -> Result<Container> {
@@ -1238,6 +1267,18 @@ exec /bin/sh -c "$@"
             assert!(check_observed(&scope, &changed).is_err(), "{field}");
         }
     }
+    #[test]
+    fn workspace_progress_does_not_exhaust_result_budget() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "head -c 2097152 /dev/zero >&2; printf '%s\\n' '{\"outcome\":\"success\",\"containerId\":\"fixture\"}'"]);
+        let result = bounded_workspace(command, 5, 1024).unwrap();
+        let value: Value = serde_json::from_slice(&result).unwrap();
+        assert_eq!(value["outcome"], "success");
+        let mut failure = Command::new("sh");
+        failure.args(["-c", "echo '{\"outcome\":\"success\"}'; exit 1"]);
+        assert!(bounded_workspace(failure, 5, 1024).is_err());
+    }
+
     #[test]
     fn jsonc_preserves_strings_and_accepts_comments_and_trailing_commas() {
         assert_eq!(

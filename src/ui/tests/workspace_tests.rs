@@ -24,8 +24,8 @@ fn workspace_new_agent_does_not_ask_about_unknown_latest_history() {
     let (mut a, _) = queued_app();
     a.start_at(0, "/empty".into(), "claude".into());
     assert!(
-        matches!(a.dialog, Some(Dialog::Permissions(_, _, _, false))),
-        "new agent goes directly to explicit launch permissions"
+        matches!(a.dialog, Some(Dialog::SessionPicker(..))),
+        "agent picker offers explicit fresh and history choices"
     );
 }
 
@@ -50,6 +50,8 @@ fn pin(a: &mut App, d: usize, s: &Session) {
 }
 fn observed_reply(a: &mut App, task: Task, sessions: Vec<Session>) {
     a.apply(Reply {
+        device_id: None,
+        execution_target: None,
         preview: None,
         device: task.device,
         op: task.op,
@@ -123,6 +125,8 @@ fn failed_pin_refresh_preserves_cached_work_without_attaching() {
     a.open_session(0, s.clone(), false);
     let task = rx.try_recv().unwrap();
     a.apply(Reply {
+        device_id: None,
+        execution_target: None,
         preview: None,
         device: task.device,
         op: task.op,
@@ -162,6 +166,8 @@ fn removing_device_discards_indexed_cache_and_old_replies() {
     assert!(a.browser_cache.is_empty() && a.clipboard.is_none());
     for old_index in [1, 2] {
         a.apply(Reply {
+            device_id: None,
+            execution_target: None,
             preview: None,
             device: old_index,
             op: Operation::Sessions,

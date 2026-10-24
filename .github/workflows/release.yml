@@ -23,17 +23,31 @@ jobs:
       - run: cargo fmt --check && cargo test --locked && cargo build --locked
       - run: python3 tests/native_command_pty.py target/debug/cx
       - run: CX_TEST_SHELL=/bin/sh python3 tests/native_command_pty.py target/debug/cx
-      - run: sudo apt-get update && sudo apt-get install -y shellcheck fish zsh tmux poppler-utils python3-pyte openssh-server
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck fish zsh tmux sqlite3 poppler-utils python3-pyte openssh-server iproute2
       - name: Container integration fixtures
         run: |
           cargo build --locked
           docker pull ubuntu:24.04
           python3 tests/session_chooser_pty.py target/debug/cx
+          python3 tests/command_panel_live.py target/debug/cx
+          python3 tests/folder_command_ui_pty.py target/debug/cx
+          CX_TEST_SHELL=/usr/bin/fish python3 tests/folder_command_ui_pty.py target/debug/cx /usr/bin/fish
+          python3 tests/startup_directory_pty.py target/debug/cx
+          python3 tests/terminal_startup_loader_pty.py target/debug/cx
+          python3 tests/terminal_startup_readiness_live.py target/debug/cx
+          python3 tests/session_runtime_live.py target/debug/cx
+          python3 tests/container_discovery_fixtures.py target/debug/cx
+          python3 tests/container_session_reconcile_live.py target/debug/cx
+          python3 tests/session_activity_timestamp_live.py target/debug/cx
+          python3 tests/native_runtime_metadata_live.py target/debug/cx
+          python3 tests/codex_process_mode_live.py target/debug/cx
           python3 tests/transfer_enter_pty.py target/debug/cx
           python3 tests/transfer_enter_pty.py target/debug/cx --container
           python3 tests/containers_live.py target/debug/cx
           python3 tests/container_transfers_live.py target/debug/cx
           python3 tests/container_agents_live.py target/debug/cx
+          python3 tests/devcontainer_terminal_recovery_live.py target/debug/cx
+          python3 tests/claude_contrast_live.py target/debug/cx
           npm install --prefix "$RUNNER_TEMP/cx-devcontainer-cli" @devcontainers/cli@0.89.0 --no-audit --no-fund
           PATH="$RUNNER_TEMP/cx-devcontainer-cli/node_modules/.bin:$PATH" python3 tests/devcontainer_cli_live.py target/debug/cx
       - run: python3 tests/mouse_scrollback_pty.py target/debug/cx
@@ -43,6 +57,10 @@ jobs:
       - run: python3 tests/metadata_reconnect_cli.py target/debug/cx
       - run: python3 tests/jump_routes_cli.py target/debug/cx
       - run: python3 tests/access_routes_cli.py target/debug/cx
+      - run: python3 tests/peer_pairing_cli.py target/debug/cx
+      - run: python3 tests/peer_mesh_cli.py target/debug/cx
+      - run: python3 tests/peer_managed_ssh.py target/debug/cx
+      - run: python3 tests/device_policy_cli.py target/debug/cx
       - run: python3 tests/enrollment_tooling_cli.py target/debug/cx
       - run: python3 tests/robot_enrollment.py
       - run: python3 tests/login_terminal_pty.py target/debug/cx
@@ -68,7 +86,7 @@ jobs:
       - run: python3 tests/pdf_pages_pty.py target/debug/cx
       - run: CX_TEST_SHELL=/usr/bin/fish python3 tests/native_command_pty.py target/debug/cx
       - run: CX_TEST_SHELL=/usr/bin/zsh python3 tests/native_command_pty.py target/debug/cx
-      - run: shellcheck install.sh tests/distro_smoke.sh scripts/build-portable-tmux.sh scripts/enroll-tmux.sh && python3 tests/install_fixture.py
+      - run: shellcheck install.sh tests/distro_smoke.sh scripts/build-portable-tmux.sh scripts/enroll-tmux.sh scripts/build-portable-reptyr.sh scripts/enable-ptrace.sh && python3 tests/install_fixture.py
   portable:
     uses: ./.github/workflows/portable.yml
   publish:
@@ -110,6 +128,13 @@ jobs:
             chmod 755 "$tool"
             asset="dist/cx-tmux-$GITHUB_REF_NAME-linux-$arch.tar.gz"
             tar --mtime="@$(git log -1 --format=%ct)" --owner=0 --group=0 --numeric-owner -C "binaries/binary-$arch" -czf "$asset" tmux
+            openssl dgst -sha256 -sign "$key" -out "$asset.sig" "$asset"
+            openssl dgst -sha256 -verify release-key.pem -signature "$asset.sig" "$asset"
+            relay="binaries/binary-$arch/cx-reptyr"
+            test -f "$relay" && test ! -L "$relay"
+            chmod 755 "$relay"
+            asset="dist/cx-reptyr-$GITHUB_REF_NAME-linux-$arch.tar.gz"
+            tar --mtime="@$(git log -1 --format=%ct)" --owner=0 --group=0 --numeric-owner -C "binaries/binary-$arch" -czf "$asset" cx-reptyr
             openssl dgst -sha256 -sign "$key" -out "$asset.sig" "$asset"
             openssl dgst -sha256 -verify release-key.pem -signature "$asset.sig" "$asset"
           done

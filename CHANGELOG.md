@@ -4,6 +4,202 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.86
+
+### Improvements
+- Show identifiable existing sessions with explicit new/history choices, persistent pins first, and saved-folder bookmarks after terminals end.
+- Restore bounded session/folder navigation caches immediately and retain stale views through failed refreshes; mark observed agent presence beside folders.
+- Collapse duplicate runtime observations, handle dead panes without hiding live peers, and verify terminal generations before native attachment.
+- Launch installed Claude/Codex agents inside the exact container/user/folder with Default/YOLO permissions and native conversation pickers; reject stale scopes and mismatched creation keys.
+- Preserve v0.1.85 external-terminal adoption, agent tasks, command panels, startup readiness, and clean handoff behavior.
+
+
+## v0.1.85
+
+### Fixes
+- Stop the previous session's `Connection to … closed.` / `[detached …]` teardown text from flashing when you open a session. CX now clears the screen as it hands off to the attach, so a slow remote connection shows a clean screen while tmux repaints instead of the stale text, which looked like the session had detached rather than loaded.
+
+
+## v0.1.84
+
+### Changes
+- Set up terminal moving from inside CX: when a device needs the ptrace relay, CX runs the one-time setup (with its admin-password prompt) for you and you retry the move, instead of printing a `cx device ptrace … enable` command to run yourself.
+
+### Fixes
+- Fix "unsupported artifact member" when installing the terminal-move relay: the signed `cx-reptyr` release asset is now an accepted download member.
+
+
+## v0.1.83
+
+### Fixes
+- Stop external terminals from vanishing when you try to move them: the adoption record is written only once the move can actually proceed, a leftover record from an interrupted move no longer hides its terminal, and a move that needs a password prompt unavailable on that device (such as a remote host without a no-prompt relay) now fails with a clear message instead of making the terminal disappear.
+- List only genuine interactive shells and detected Claude/Codex sessions as external terminals, so a short-lived process that briefly held a pseudo-terminal no longer shows up and then disappears.
+
+
+## v0.1.82
+
+### Features
+- Agent resume offers "Resume · choose session" (`claude --resume` / `codex resume`) to pick from the provider's own session list, alongside "Resume latest".
+
+### Fixes
+- Move a terminal into CX asynchronously: the loader animates and the sudo password panel appears without the event loop freezing, instead of hanging with no feedback.
+- Stop raising "SSH access unavailable" notices for background external-terminal discovery on unreachable devices.
+
+
+## v0.1.81
+
+### Fixes
+- Always show a session's working directory — the agent's launch directory when CX can't pin its native thread — instead of "Directory unavailable".
+- Relabel an agent session when its own control panel switches to another project, following the title the agent displays in its terminal.
+
+
+## v0.1.80
+
+### Changes
+- Show the session loader animation while a terminal is being moved into CX.
+- Size a command panel to its output and keep the final output after the command exits; a command that produces no output (e.g. `mkdir`, `echo`) shows only a brief status notice instead of an empty panel.
+
+### Fixes
+- Never offer the terminal that is running CX (or any ancestor terminal) as an adoptable session, and don't mislabel a CX-running terminal as a shell.
+
+
+## v0.1.79
+
+### Features
+- Run a folder command (`:`) in a floating panel with live colored output and input instead of leaving CX; Esc closes it, Ctrl+O opens it full screen, and the exit status is shown.
+- List shells and Claude/Codex sessions started outside CX (terminal windows, SSH logins, other tmux/screen servers and `docker exec` clients) in Sessions.
+- Move such a terminal into CX with Enter, keeping its processes, PIDs and in-progress work running. The now-empty single-window source terminal closes itself; multiplexers and server emulators are left alone. Install the guarded relay with `cx device ptrace NAME install`; each move asks for a password through a panel, with no persistent privilege. `cx device ptrace NAME enable` optionally grants a no-prompt capability relay.
+
+### Fixes
+- Keep `cx sessions` managed-only; discover outside-CX terminals through a separate request merged by the UI, so scripts and the CLI are unchanged.
+- Wait for tmux to report a command's exit status before the panel settles on "finished", so the real status is shown.
+- Never list a CX viewer's own terminal as an adoptable session.
+- Build the portable `cx-reptyr` as a static binary with the system compiler.
+
+## v0.1.76
+
+### Fixes
+
+- Create managed SSH directories with explicit private permissions, including on hosts with group-writable umasks.
+- Recover an empty directory left by v0.1.75 only when its parent is private and owned; reject nonempty or exposed directories.
+- Run the three-helper mesh fixture under umask 0002 and verify bounded legacy-directory recovery.
+
+## v0.1.75
+
+### Features
+
+- Automatically connect all core devices on enrollment, promotion, startup and background retry; directed devices remain excluded.
+- Generate device-local dedicated keys, exchange authenticated public metadata and pin managed host trust without changing personal SSH configuration or transferring private keys.
+- Verify reverse machine/account identities, repair stale aliases using verified portable endpoints, and reconcile newly discovered core devices into the open panel.
+- Serialize inventory/policy mutations and retain removal tombstones so concurrent setup cannot undo local removal or demotion.
+- Verify newly installed helpers without scheduling redundant background updates that can outlive enrollment.
+- Keep staged key installation compatible with static musl builds through the Linux no-replace rename syscall.
+- Add disposable three-helper and native OpenSSH regression fixtures. Old helpers, unsupported routes and offline peers remain pending; active sessions are not restarted.
+
+## v0.1.74
+
+### Fixes
+
+- Unpublished candidate: validation found a redundant background helper update during enrollment. Superseded by v0.1.75.
+
+## v0.1.73
+
+### Fixes
+
+- Unpublished candidate: static builds exposed an unavailable libc renameat2 symbol. Corrected in v0.1.74 using the Linux syscall directly.
+
+## v0.1.72
+
+### Features
+- Add explicit reciprocal device pairing with portable account@host endpoints, reverse SSH verification and stable machine/account identity checks. Older helpers report that they need updating.
+
+### Fixes
+- Restore Claude terminal transparency and clear opaque window backgrounds left by older CX versions when attaching.
+- Keep directory availability warnings out of Codex session titles. Preserve verified native/custom titles; show `codex` when the selected thread is ambiguous.
+- Stop reporting local core posture as verified bidirectional connectivity. Preserve receiver-local routes and directed peer policies during pairing.
+
+### Integration
+- Pairing requires existing SSH trust/authentication and reachable endpoints; it does not install keys, copy SSH aliases, or modify networking. Each required connection must be paired explicitly.
+- Installed binaries and active sessions are not restarted by this release. Updated helpers are needed for the pairing command and remote presentation fixes.
+
+## v0.1.71
+
+### Features
+- Keep CX visible with an animated loader while a new terminal starts in the background. Hand off once the first screen has content, with a five-second fallback for intentionally silent programs.
+
+### Fixes
+- Report terminal startup exits in the panel instead of attempting to attach to an ended terminal.
+
+## v0.1.70
+
+### Validation
+- Publication was blocked by a tmux 2.7 compatibility check. Superseded by v0.1.71, which keeps attachment styling out of shell creation.
+
+## v0.1.69
+
+### Features
+- Open the invocation folder in Files on startup; restore prior workspace on update restart.
+- Show observed command/agent activity and recent terminal output in Sessions. Press `s` for native task/subagent details.
+- Track native project/name changes and launch new Codex terminals with `--no-daemon` and a native thread-name title option when supported. Ambiguous selection shows an unavailable directory; existing sessions remain running.
+
+### Fixes
+- Reconcile session/container caches in every view; discard unreachable cached shells and dead tmux panes, and revalidate saved container lifecycles on every listing.
+- Recover existing tmux-backed Docker exec terminals from fresh devcontainer evidence without reparenting processes or changing containers.
+- Report incomplete container discovery honestly, retain labeled workspace identity, and prefer explicit devcontainer configuration paths.
+- Keep session selection stable during pruning and route in-flight replies by device identity across removal/reorder.
+- Bound and isolate optional native metadata reads, including exact Codex parent/subagent writer trees.
+- Improve Claude question-description contrast with solid default-cell backgrounds while preserving text colors and explicit highlights.
+
+## v0.1.68
+
+### Validation
+- Publication was blocked by an older native-name fixture expecting a launch-folder fallback for ambiguous writer identities. Superseded by v0.1.69, which validates an unavailable directory instead.
+
+## v0.1.67
+
+### Validation
+- Publication was blocked by an enrollment fixture that assumed Sessions startup. Superseded by v0.1.68, which validates enrollment through the global action palette from Files.
+
+## v0.1.66
+
+### Fixes
+- Prevent verbose Dev Container CLI build progress from exhausting the result output limit and falsely reporting a failed rebuild. CLI exit status and machine-readable success checks remain enforced.
+
+## v0.1.65
+
+### Features
+- Add fresh-evidence upstream selection for internet sharing, preferring measured throughput and using latency as a tie-breaker.
+
+## v0.1.64
+
+### Fixes
+- Repair device-removal confirmation controls so arrow keys, h/l, Enter, and clear button labels work consistently.
+
+## v0.1.63
+
+### Features
+- Add `cx reset` for the local CX-managed tmux server, and a confirmation action in the workspace. Reset ends managed sessions; external tmux servers remain untouched.
+
+### Fixes
+- Open the workspace after an interactive update finds the current version, with a temporary up-to-date notification.
+- Allow Left Arrow to cancel the session/provider chooser.
+- Refresh Anthropic environment variables from the execution process before creating managed sessions and after reset.
+
+## v0.1.62
+
+### Fixes
+- Remove manual device down/up controls; reachability now retries automatically and recovers after successful contact.
+
+## v0.1.61
+
+### Changes
+- Remove manual device down/up controls; reachability now retries automatically and recovers after successful contact.
+
+## v0.1.60
+
+### Fixes
+- Make portable tmux source downloads retry transient DNS/network failures and reuse validated per-architecture CI cache entries.
+
 ## v0.1.59
 
 ### Fixes

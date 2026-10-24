@@ -195,7 +195,10 @@ impl Connection {
     }
 }
 fn reconnectable_observation(op: &Operation) -> bool {
-    matches!(op, Operation::Info | Operation::Sessions)
+    matches!(
+        op,
+        Operation::Info | Operation::Sessions | Operation::ExternalSessions
+    )
 }
 fn retry_observation<T>(op: &Operation, mut attempt: impl FnMut() -> Result<T>) -> Result<T> {
     let result = attempt();
@@ -267,6 +270,7 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
             | Operation::ContainerAgentCreate { .. }
             | Operation::ContainerProviders { .. }
             | Operation::Containers
+            | Operation::Sessions
             | Operation::ContainerFileAction { .. }
     ) {
         90
@@ -513,6 +517,24 @@ fn schedule_host_update(target: &str, info: &serde_json::Value) {
     }
 }
 /// Detached from the cached channel so check/reconciliation cannot consume its replies.
+/// Read-only verification without automatic updates or shared cached channels.
+pub(crate) fn probe_info(target: &str) -> Result<serde_json::Value> {
+    let mut connection = Some(Connection::open(target)?);
+    exchange(&mut connection, Operation::Info, 15)
+}
+
+/// Keep identity/capability verification and its mutation on one SSH connection.
+pub(crate) fn verified_request(
+    target: &str,
+    op: Operation,
+    verify: impl FnOnce(&serde_json::Value) -> Result<()>,
+) -> Result<serde_json::Value> {
+    let mut connection = Some(Connection::open(target)?);
+    let info = exchange(&mut connection, Operation::Info, 15)?;
+    verify(&info)?;
+    exchange(&mut connection, op, 30)
+}
+
 fn fresh_info(target: &str) -> Result<serde_json::Value> {
     let mut connection = Connection::open(target)?;
     let id = format!(
@@ -877,6 +899,7 @@ mod tests {
                 provider: "shell".into(),
                 name: "fixture".into(),
                 resume: false,
+                resume_pick: false,
             }),
             Operation::StopSession {
                 id: "fixture".into(),

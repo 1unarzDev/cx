@@ -98,6 +98,20 @@ impl App {
         }
     }
     pub(super) fn open_session(&mut self, d: usize, s: Session, watch: bool) {
+        if s.external && s.origin.is_some() {
+            if watch && outside_tmux(&s) {
+                self.set_notice(
+                    "This terminal is outside tmux; press Enter to move it into CX".into(),
+                );
+                return;
+            } else if !watch {
+                self.adopt_external_session(d, s);
+                return;
+            }
+        }
+        self.check_session(d, s, watch);
+    }
+    pub(super) fn check_session(&mut self, d: usize, s: Session, watch: bool) {
         if !self.observed(d, &s)
             && self.work[d].fetched > 0
             && self.work[d].error.is_none()
@@ -319,7 +333,17 @@ impl NavigationCache {
                     .collect();
                 DeviceCache {
                     device: device.clone(),
-                    sessions: app.work[d].sessions.iter().take(512).cloned().collect(),
+                    sessions: app.work[d]
+                        .sessions
+                        .iter()
+                        .take(512)
+                        .cloned()
+                        .map(|mut s| {
+                            s.activity = None;
+                            s.agent_tasks.clear();
+                            s
+                        })
+                        .collect(),
                     browsers,
                 }
             })

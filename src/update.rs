@@ -746,7 +746,7 @@ fn download_verified_member(
     member: &str,
 ) -> Result<ArtifactOutcome> {
     ensure!(
-        matches!(member, "cx" | "tmux"),
+        matches!(member, "cx" | "tmux" | "cx-reptyr"),
         "unsupported artifact member"
     );
     let s = stage(parent)?;
@@ -940,6 +940,34 @@ pub fn obtain_tmux_binary(arch: &str, version: &str) -> Result<EnrollmentBinary>
     })
 }
 
+/// Signed cx-reptyr for `cx device ptrace enable`; never executed on a foreign-arch viewer.
+pub fn obtain_reptyr_binary(arch: &str, version: &str) -> Result<EnrollmentBinary> {
+    supported_arch(arch)?;
+    numeric(version)?;
+    let (home, state) = paths()?;
+    let root = state_dir(&home, &state)?;
+    let url = format!("https://github.com/{REPO}/releases/download/v{version}/cx-reptyr-v{version}-linux-{arch}.tar.gz");
+    let (stage, binary) = match download_verified_member(
+        root.child("tools", true)?,
+        &url,
+        &Backend::system(),
+        "cx-reptyr",
+    )? {
+        ArtifactOutcome::Ready(stage, binary) => (stage, binary),
+        ArtifactOutcome::Offline => {
+            bail!("cx-reptyr download unavailable; retry when this viewer is online")
+        }
+        ArtifactOutcome::Unavailable(message) => bail!("cx-reptyr artifact unavailable: {message}"),
+    };
+    binary.sync_all()?;
+    Ok(EnrollmentBinary {
+        version: version.into(),
+        arch: arch.into(),
+        binary,
+        _stage: stage,
+    })
+}
+
 fn digest(f: &File) -> Result<String> {
     use std::os::unix::fs::FileExt;
     let mut hash = Sha256::new();
@@ -962,7 +990,7 @@ fn extract(compressed: File, dir: &Dir) -> Result<File> {
 }
 fn extract_member(mut compressed: File, dir: &Dir, member: &str) -> Result<File> {
     ensure!(
-        matches!(member, "cx" | "tmux"),
+        matches!(member, "cx" | "tmux" | "cx-reptyr"),
         "unsupported artifact member"
     );
     use std::io::{Seek, SeekFrom};

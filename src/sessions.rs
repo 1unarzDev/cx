@@ -464,6 +464,37 @@ fn codex_directory_arg(args: &[Vec<u8>]) -> Option<PathBuf> {
     directory
 }
 
+fn launch_native_title(managed: bool, id: &str, process: &ProcessIdentity) -> Option<String> {
+    use std::io::Read;
+    if !managed {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(format!("/proc/{}/environ", process.pid))
+        .ok()?
+        .take(65537)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > 65536 || bytes.last() != Some(&0) {
+        return None;
+    }
+    let expected = format!("CX_MANAGED_SESSION={id}");
+    let entries = bytes.split(|b| *b == 0).collect::<Vec<_>>();
+    if !entries.contains(&b"CX_CODEX_TITLE=thread-name-v1".as_slice())
+        || !entries.contains(&expected.as_bytes())
+    {
+        return None;
+    }
+    // The launcher clears inherited titles before Codex starts. A missing or
+    // pending native title must not enable the older ancestry fallback.
+    let title = field(managed, id, "#{pane_title}").unwrap_or_default();
+    Some(if title == "CX awaiting native title" {
+        String::new()
+    } else {
+        title
+    })
+}
+
 fn provider_directory(provider: &str, process: &ProcessIdentity) -> Option<String> {
     use std::io::Read;
     // Guard PID reuse; never retarget a session to a replacement process.
@@ -559,6 +590,29 @@ fn current_session_name(prior: &Session, provider: &str, directory: &str) -> Str
     }
 }
 
+fn automatic_provider_name(
+    provider: &str,
+    native: Option<&crate::session_titles::NativeMetadata>,
+    directory_unknown: bool,
+    tracked_title: Option<&str>,
+    fallback: String,
+) -> String {
+    // A proven selected thread can have a title before its directory arrives.
+    let selected = native.filter(|metadata| !metadata.current_thread_unknown);
+    if let Some(title) = selected.and_then(|metadata| metadata.title.clone()) {
+        title
+    } else if let Some(title) = tracked_title.filter(|t| !t.is_empty()) {
+        // The provider sets its terminal title to the live thread's name even
+        // when CX cannot pin the thread's directory, so a project switch in the
+        // agent's own control panel still relabels the session.
+        title.to_string()
+    } else if directory_unknown {
+        provider.into()
+    } else {
+        fallback
+    }
+}
+
 fn shell_command_label(command: &str) -> Option<String> {
     // Command name only: never arguments, shell history or terminal contents.
     let command = command.trim();
@@ -607,6 +661,21 @@ fn shell_activity(managed: bool, id: &str) -> Option<String> {
     None
 }
 
+fn normalized_activity(status: Option<&str>) -> Option<&'static str> {
+    match status? {
+        "running" | "working" | "busy" => Some("running"),
+        "waiting" | "waiting_for_input" => Some("waiting"),
+        "idle" => Some("idle"),
+        "output" => Some("output"),
+        _ => None,
+    }
+}
+
+fn recent_terminal_output(timestamp: &str, now: u64) -> Option<String> {
+    let observed = timestamp.parse::<u64>().ok()?;
+    (observed > 0 && observed <= now && now - observed <= 2).then(|| "output".into())
+}
+
 fn inspect(managed: bool, id: &str) -> Result<Session> {
     let mut rows = parse_snapshot(&field(managed, id, SNAPSHOT_FORMAT)?)?;
     anyhow::ensure!(rows.len() == 1, "session metadata unavailable");
@@ -648,35 +717,145 @@ fn inspect_observed(
         .as_ref()
         .map(|s| s.provider.as_str())
         .unwrap_or("shell");
-    let detected = foreground_provider(pid);
+    // An adopted terminal's processes are not pane descendants: the pane runs
+    // the relay. Follow the original session leader while its identity holds.
+    let adopted = prior.as_ref().and_then(|s| s.origin.as_ref()).filter(|o| {
+        crate::adoption::start_ticks(o.leader.pid).as_deref() == Some(o.leader.start_ticks.as_str())
+    });
+    let probe = adopted.map(|o| o.leader.pid).unwrap_or(pid);
+    let detected = foreground_provider(probe);
     let provider = detected
         .as_ref()
         .map(|(provider, _)| *provider)
         .unwrap_or(original_provider);
     let process = detected
         .map(|(_, process)| process)
-        .or_else(|| process_identity(pid, original_provider));
-    let directory = process
+        .or_else(|| process_identity(probe, original_provider));
+    // Native metadata follows the live provider thread when its control panel
+    // switches projects; argv and process cwd retain only the launch location.
+    let tracked_title = process
+        .as_ref()
+        .filter(|_| provider == "codex")
+        .and_then(|p| launch_native_title(managed, &name, p));
+    let native = process
         .as_ref()
         .filter(|_| provider != "shell")
-        .and_then(|process| provider_directory(provider, process))
-        .map(Ok)
-        .unwrap_or_else(|| field(managed, target, "#{pane_current_path}"))?;
+        .and_then(|p| {
+            crate::session_titles::native_metadata_with_title(
+                provider,
+                p.pid,
+                tracked_title.as_deref(),
+            )
+        });
+    // A controlled launch must prove the selected thread and its directory.
+    // Missing SQLite, scan races or a pending title cannot revive launch cwd.
+    let current_thread_unknown = native.as_ref().is_some_and(|m| m.current_thread_unknown)
+        || (tracked_title.is_some()
+            && native.as_ref().and_then(|m| m.directory.as_ref()).is_none());
+    // Always resolve a real directory to show. A proven thread gives its own
+    // working directory; otherwise fall back to the process's current directory
+    // (the launch location) rather than leaving the row "Directory unavailable".
+    let directory = native
+        .as_ref()
+        .filter(|_| !current_thread_unknown)
+        .and_then(|m| m.directory.clone())
+        .or_else(|| {
+            process
+                .as_ref()
+                .filter(|_| provider != "shell")
+                .and_then(|process| provider_directory(provider, process))
+        })
+        .or_else(|| {
+            let o = adopted?;
+            provider_directory("shell", &o.leader)
+        })
+        .unwrap_or(field(managed, target, "#{pane_current_path}")?);
     let saved_name = prior
         .as_ref()
         .map(|s| current_session_name(s, provider, &directory))
         .unwrap_or_else(|| name.clone());
     let automatic = prior.as_ref().is_some_and(automatically_named);
-    let display_name = if automatic && provider == "shell" {
+    let adopted_command = adopted.and_then(|o| {
+        let (foreground, _) = crate::adoption::terminal_of(o.leader.pid)?;
+        (foreground > 0 && foreground as u32 != o.leader.pid)
+            .then(|| fs::read_to_string(format!("/proc/{foreground}/comm")).ok())
+            .flatten()
+            .and_then(|c| shell_command_label(&c))
+    });
+    let display_name = if adopted.is_some() && provider == "shell" {
+        adopted_command
+            .as_ref()
+            .map(|c| format!("running {c}"))
+            .unwrap_or(saved_name)
+    } else if automatic && provider == "shell" {
         shell_activity(managed, target).unwrap_or(saved_name)
     } else if automatic {
-        process
-            .as_ref()
-            .and_then(|p| crate::session_titles::native_title(provider, p.pid))
-            .unwrap_or(saved_name)
+        automatic_provider_name(
+            provider,
+            native.as_ref(),
+            current_thread_unknown,
+            tracked_title.as_deref(),
+            saved_name,
+        )
     } else {
         saved_name
     };
+    let native_activity = native.as_ref().and_then(|m| m.activity.as_deref());
+    let activity = normalized_activity(native_activity)
+        .map(str::to_owned)
+        .or_else(|| {
+            if provider == "shell" && adopted.is_some() {
+                Some(
+                    if adopted_command.is_some() {
+                        "running"
+                    } else {
+                        "idle"
+                    }
+                    .into(),
+                )
+            } else if provider == "shell"
+                && prior.as_ref().and_then(|s| s.container.as_ref()).is_none()
+            {
+                field(managed, target, "#{pane_current_command}")
+                    .ok()
+                    .map(|command| {
+                        if shell_command_label(&command).is_some() {
+                            "running"
+                        } else {
+                            "idle"
+                        }
+                        .into()
+                    })
+            } else {
+                None
+            }
+        });
+    // This indicates recent terminal output, never inferred model work. Native
+    // waiting/idle/running status is stronger evidence and takes precedence.
+    let activity = activity.or_else(|| {
+        if provider != "shell" || prior.as_ref().and_then(|s| s.container.as_ref()).is_some() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_secs();
+            recent_terminal_output(&field(managed, target, "#{window_activity}").ok()?, now)
+        } else {
+            None
+        }
+    });
+    let agent_tasks = native
+        .map(|m| {
+            m.agents
+                .into_iter()
+                .map(|a| crate::model::AgentTask {
+                    id: a.id,
+                    name: a.name,
+                    task: a.task,
+                    status: a.status,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     {
         let expected = observed;
         // A pane can move between sessions while enrichment is in flight. Never
@@ -710,6 +889,9 @@ fn inspect_observed(
         boot_id,
         external: !managed,
         process,
+        activity,
+        agent_tasks,
+        origin: prior.as_ref().and_then(|s| s.origin.clone()),
         container: prior.as_ref().and_then(|s| s.container.clone()),
         launcher: prior.as_ref().and_then(|s| s.launcher.clone()),
         socket: if managed {
@@ -719,6 +901,655 @@ fn inspect_observed(
         },
     })
 }
+// Parse only the Docker exec invocation prefix; never inspect its command or
+// arguments. Unknown daemon/context options fail closed rather than associating
+// a terminal with a different engine's similarly named container.
+fn docker_exec_target(args: &[Vec<u8>]) -> Option<String> {
+    let mut args = args.iter().skip(1);
+    if args.next()?.as_slice() != b"exec" {
+        return None;
+    }
+    while let Some(arg) = args.next() {
+        if arg == b"--" {
+            return docker_target_name(args.next()?);
+        }
+        if [
+            b"-u".as_slice(),
+            b"--user",
+            b"-w",
+            b"--workdir",
+            b"-e",
+            b"--env",
+            b"--env-file",
+            b"--detach-keys",
+        ]
+        .contains(&arg.as_slice())
+        {
+            args.next()?;
+        } else if [
+            b"-i".as_slice(),
+            b"-t",
+            b"-it",
+            b"-ti",
+            b"--interactive",
+            b"--tty",
+            b"--privileged",
+        ]
+        .contains(&arg.as_slice())
+        {
+        } else if [
+            b"--user=".as_slice(),
+            b"--workdir=",
+            b"--env=",
+            b"--env-file=",
+            b"--detach-keys=",
+        ]
+        .iter()
+        .any(|prefix| arg.starts_with(prefix))
+        {
+        } else if arg.starts_with(b"-") {
+            return None;
+        } else {
+            return docker_target_name(arg);
+        }
+    }
+    None
+}
+fn docker_target_name(arg: &[u8]) -> Option<String> {
+    let value = std::str::from_utf8(arg).ok()?;
+    if value.is_empty()
+        || value.len() > 256
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+    {
+        return None;
+    }
+    Some(value.into())
+}
+fn foreground_container(pane: u32) -> Option<String> {
+    use std::io::Read;
+    let (_, terminal, foreground) = terminal_group(pane)?;
+    let mut queue = std::collections::VecDeque::from([(pane, 0)]);
+    let mut seen = std::collections::HashSet::new();
+    while let Some((pid, depth)) = queue.pop_front() {
+        if !seen.insert(pid) {
+            continue;
+        }
+        if seen.len() > 64 {
+            return None;
+        }
+        if terminal_group(pid).is_some_and(|(group, tty, _)| group == foreground && tty == terminal)
+            && fs::read_link(format!("/proc/{pid}/exe"))
+                .ok()
+                .is_some_and(|exe| exe.file_name().is_some_and(|name| name == "docker"))
+        {
+            let mut bytes = Vec::new();
+            fs::File::open(format!("/proc/{pid}/cmdline"))
+                .ok()?
+                .take(4097)
+                .read_to_end(&mut bytes)
+                .ok()?;
+            if bytes.len() > 4096 || bytes.last() != Some(&0) {
+                return None;
+            }
+            let args = bytes[..bytes.len() - 1]
+                .split(|b| *b == 0)
+                .take(64)
+                .map(<[u8]>::to_vec)
+                .collect::<Vec<_>>();
+            return docker_exec_target(&args);
+        }
+        if depth < 6 {
+            if let Ok(children) = fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")) {
+                for child in children.split_whitespace().take(16) {
+                    if let Ok(child) = child.parse() {
+                        queue.push_back((child, depth + 1));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+fn recovered_container(
+    target: &str,
+    inventory: &[crate::containers::Container],
+) -> Option<crate::model::ContainerScope> {
+    let mut matches = inventory.iter().filter(|c| {
+        c.state == "running"
+            && (c.devcontainer || c.allowed)
+            && (c.id == target || c.name == target)
+    });
+    let candidate = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(candidate.scope())
+}
+
+fn container_scope_current(
+    scope: &crate::model::ContainerScope,
+    inventory: &[crate::containers::Container],
+    complete: bool,
+) -> bool {
+    match inventory.iter().find(|c| c.id == scope.id) {
+        Some(c) => {
+            c.engine == scope.engine
+                && c.started_at == scope.started_at
+                && c.state == "running"
+                && c.user == scope.user
+                && (c.devcontainer || c.allowed)
+        }
+        // A partial observation never establishes that a missing instance died.
+        None => !complete,
+    }
+}
+
+/// Session row for a terminal started outside CX. Metadata only: adoption
+/// re-verifies leader, holder and terminal before changing anything.
+/// A live, interactive shell is a stable terminal session worth listing; a
+/// transient or exiting process that briefly owned a pseudo-terminal is not.
+fn interactive_shell_leader(pid: u32) -> bool {
+    let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat,
+        Err(_) => return false,
+    };
+    // Skip zombies and dying leaders: they vanish before they can be adopted.
+    if stat
+        .rsplit_once(')')
+        .and_then(|(_, rest)| rest.split_whitespace().next())
+        .is_some_and(|state| state == "Z" || state == "X")
+    {
+        return false;
+    }
+    let comm = fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+    matches!(
+        comm.trim(),
+        "bash" | "zsh" | "fish" | "sh" | "dash" | "ash" | "ksh" | "mksh" | "tcsh" | "csh"
+    )
+}
+
+fn external_terminal(terminal: &crate::adoption::Terminal) -> Option<Session> {
+    let (host, account, boot_id) = identity();
+    let leader = terminal.leader.pid;
+    let detected = foreground_provider(leader);
+    let provider = detected.as_ref().map(|(p, _)| *p).unwrap_or("shell");
+    // List a terminal only when it is a real agent session or a live
+    // interactive shell. Anything else that momentarily held a pseudo-terminal
+    // would disappear from the list before it could be selected.
+    if provider == "shell" && !interactive_shell_leader(leader) {
+        return None;
+    }
+    let process = detected
+        .map(|(_, process)| process)
+        .or_else(|| process_identity(leader, "shell"));
+    let native = process
+        .as_ref()
+        .filter(|_| provider != "shell")
+        .and_then(|p| crate::session_titles::native_metadata_with_title(provider, p.pid, None));
+    let current_thread_unknown = native.as_ref().is_some_and(|m| m.current_thread_unknown);
+    let foreground = (terminal.foreground > 0 && terminal.foreground as u32 != leader)
+        .then(|| {
+            fs::read_to_string(format!("/proc/{}/comm", terminal.foreground))
+                .ok()
+                .and_then(|c| shell_command_label(&c))
+        })
+        .flatten();
+    // A discovered terminal always has a real working directory to show. When
+    // the native workspace can't be proven (daemon-backed Codex), fall back to
+    // the leader's actual cwd rather than leaving it blank.
+    let directory = native
+        .as_ref()
+        .filter(|_| !current_thread_unknown)
+        .and_then(|m| m.directory.clone())
+        .or_else(|| {
+            let p = process.as_ref()?;
+            provider_directory(provider, p)
+        })
+        .or_else(|| {
+            provider_directory(
+                "shell",
+                &ProcessIdentity {
+                    pid: leader,
+                    start_ticks: terminal.leader.start_ticks.clone(),
+                    native_id: None,
+                },
+            )
+        })
+        .unwrap_or_default();
+    let name = if provider == "shell" {
+        foreground
+            .as_ref()
+            .map(|c| format!("running {c}"))
+            .unwrap_or_else(|| workspace_session_name("shell", &directory))
+    } else {
+        automatic_provider_name(
+            provider,
+            native.as_ref(),
+            current_thread_unknown,
+            None,
+            workspace_session_name(provider, &directory),
+        )
+    };
+    let activity = normalized_activity(native.as_ref().and_then(|m| m.activity.as_deref()))
+        .map(str::to_owned)
+        .or_else(|| {
+            (provider == "shell").then(|| {
+                if foreground.is_some() {
+                    "running"
+                } else {
+                    "idle"
+                }
+                .into()
+            })
+        });
+    let agent_tasks = native
+        .map(|m| {
+            m.agents
+                .into_iter()
+                .map(|a| crate::model::AgentTask {
+                    id: a.id,
+                    name: a.name,
+                    task: a.task,
+                    status: a.status,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(Session {
+        terminal: None,
+        id: crate::adoption::session_id(&boot_id, terminal),
+        name,
+        directory,
+        provider: provider.into(),
+        host,
+        account,
+        pid: leader,
+        started: format!("ext:{}", terminal.leader.start_ticks),
+        boot_id,
+        external: true,
+        socket: None,
+        launcher: None,
+        process,
+        container: None,
+        activity,
+        agent_tasks,
+        origin: Some(origin(terminal)),
+    })
+}
+fn origin(terminal: &crate::adoption::Terminal) -> crate::model::ExternalOrigin {
+    crate::model::ExternalOrigin {
+        kind: terminal
+            .holder
+            .as_ref()
+            .map(|h| h.kind)
+            .unwrap_or("unknown")
+            .into(),
+        tty: terminal.tty(),
+        leader: terminal.leader.identity(),
+        holder: terminal.holder.as_ref().map(|h| h.process.identity()),
+    }
+}
+fn external_terminals() -> Vec<crate::adoption::Terminal> {
+    let mut executables: Vec<_> = std::env::current_exe().into_iter().collect();
+    executables.extend(crate::adoption::relay_executables());
+    // Exclude the viewer's own terminal and every ancestor's session, so the
+    // terminal that launched CX never appears even across a session boundary.
+    let mut sessions = vec![unsafe { libc::getsid(0) }];
+    let mut pid = std::process::id();
+    for _ in 0..32 {
+        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            break;
+        };
+        let Some(rest) = stat.rsplit_once(')').map(|(_, r)| r) else {
+            break;
+        };
+        let fields: Vec<_> = rest.split_whitespace().collect();
+        let (Some(ppid), Some(sid)) = (
+            fields.get(2).and_then(|v| v.parse::<i32>().ok()),
+            fields.get(3).and_then(|v| v.parse::<i32>().ok()),
+        ) else {
+            break;
+        };
+        sessions.push(sid);
+        if ppid <= 1 {
+            break;
+        }
+        pid = ppid as u32;
+    }
+    let exclude = crate::adoption::Exclusions {
+        executables,
+        sessions,
+        managed_socket: socket().ok(),
+    };
+    crate::adoption::discover(
+        std::path::Path::new("/proc"),
+        unsafe { libc::geteuid() },
+        &exclude,
+    )
+    .0
+}
+
+fn session_lock(root: &std::path::Path) -> Result<fs::File> {
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .open(root.join("sessions.lock"))?;
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        bail!("session lock unavailable");
+    }
+    Ok(lock)
+}
+
+/// Move a terminal started outside CX into the managed tmux server.
+///
+/// The guarded relay steals the terminal's master from its current holder, so
+/// the running processes, their PIDs, threads and child tools are untouched;
+/// only where the terminal is displayed changes. Every identity CX observed is
+/// re-verified under the session lock, and failure leaves the original holder.
+pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> Result<Session> {
+    let (_, _, boot) = identity();
+    anyhow::ensure!(
+        !boot.is_empty() && boot == boot_id,
+        "execution device restarted; refresh sessions"
+    );
+    let relay = crate::adoption::reptyr().map_err(|e| anyhow::anyhow!(e))?;
+    let root = state()?;
+    let _lock = session_lock(&root)?;
+    let name = format!(
+        "cx-{:x}",
+        Sha256::digest(format!(
+            "adopt:{boot}:{}:{}:{}",
+            origin.tty, origin.leader.pid, origin.leader.start_ticks
+        ))
+    );
+    let mut exists = tmux(true)?;
+    exists.args(["has-session", "-t", &format!("={name}")]);
+    if exists.output().is_ok_and(|o| o.status.success()) {
+        return inspect(true, &name);
+    }
+    let terminal = external_terminals()
+        .into_iter()
+        .find(|t| {
+            t.tty() == origin.tty
+                && t.leader.pid == origin.leader.pid
+                && t.leader.start_ticks == origin.leader.start_ticks
+        })
+        .context("terminal changed or closed; refresh sessions")?;
+    anyhow::ensure!(
+        id == crate::adoption::session_id(&boot, &terminal)
+            || (id.starts_with('$') && id[1..].bytes().all(|b| b.is_ascii_digit())),
+        "invalid external session identity"
+    );
+    let holder = terminal
+        .holder
+        .clone()
+        .context("this terminal's owner is not accessible; it cannot be moved")?;
+    anyhow::ensure!(
+        origin.holder.as_ref().is_some_and(
+            |h| h.pid == holder.process.pid && h.start_ticks == holder.process.start_ticks
+        ),
+        "terminal owner changed; refresh sessions"
+    );
+    let snapshot = external_terminal(&terminal).context("terminal changed; refresh sessions")?;
+    ensure_server()?;
+    let record = root.join(format!("{name}.json"));
+    let errors = root.join(format!("{name}.adopt"));
+    let leader = &terminal.leader;
+    // Build the whole launch command FIRST, so a failure here (e.g. no reachable
+    // password prompt on a remote helper) never leaves a record that would hide
+    // the terminal from future listings.
+    let mut prefix = format!(
+        "env CX_VIEWER_THEME=1 CX_TMUX_BIN={} CX_MANAGED_SOCKET={} CX_MANAGED_SESSION={} ",
+        quote(
+            tmux_executable()
+                .to_str()
+                .context("tmux path is not UTF-8")?
+        ),
+        quote(socket()?.to_str().context("socket path is not UTF-8")?),
+        quote(&name),
+    );
+    if relay.privilege == crate::adoption::Privilege::Sudo {
+        // `sudo -A` reads the password through CX's askpass broker and sets
+        // SUDO_UID itself; the relay drops to that user after the steal.
+        let env = crate::auth::askpass_env().context(
+            "moving a terminal here needs a no-prompt relay: run `cx device ptrace <device> enable`",
+        )?;
+        for (key, value) in env {
+            prefix.push_str(&format!("{}={} ", key, quote(&value)));
+        }
+        prefix.push_str("sudo -A -p 'sudo password to move this terminal into CX: ' ");
+    }
+    let command = format!(
+        "exec {}{} -T {} {} {} {} {} {} 2>{}",
+        prefix,
+        quote(relay.path.to_str().context("relay path is not UTF-8")?),
+        leader.pid,
+        quote(&leader.start_ticks),
+        leader.pid,
+        quote(&leader.start_ticks),
+        holder.process.pid,
+        quote(&holder.process.start_ticks),
+        quote(errors.to_str().context("state path is not UTF-8")?),
+    );
+    // A leftover record only blocks when its managed session is still alive;
+    // a stale one from an interrupted move is cleared and the move proceeds.
+    if record.exists() {
+        if managed_target(&name)?.is_some() {
+            return inspect(true, &name);
+        }
+        let _ = fs::remove_file(&record);
+    }
+    let mut pending = snapshot.clone();
+    pending.id = name.clone();
+    pending.external = false;
+    pending.socket = Some(socket()?.to_string_lossy().into_owned());
+    pending.origin = Some(origin.clone());
+    let mut intent = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&record)?;
+    intent.write_all(&serde_json::to_vec(&pending)?)?;
+    intent.sync_all()?;
+    let directory = if snapshot.directory.is_empty() {
+        std::env::var("HOME").unwrap_or_else(|_| "/".into())
+    } else {
+        snapshot.directory.clone()
+    };
+    let mut c = tmux(true)?;
+    c.args(["new-session", "-d", "-s", &name, "-n", "work", "-c"])
+        .arg(&directory)
+        .arg(command);
+    if let Err(error) = output(c) {
+        let _ = fs::remove_file(&record);
+        return Err(error);
+    }
+    // Success is observed, not assumed: the relay holds the master, the
+    // previous holder no longer does, and the relay dropped its capabilities.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    // tmux prints nothing for a session that no longer exists, so only an
+    // explicit "0" proves a live pane.
+    let relay_pid = loop {
+        let dead = field(true, &name, "#{pane_dead}").map_or(true, |d| d != "0");
+        let pane = field(true, &name, "#{pane_pid}")
+            .ok()
+            .and_then(|p| p.parse::<u32>().ok());
+        if let Some(pane) = pane.filter(|_| !dead) {
+            // The master now lives under the pane (the relay, possibly beneath
+            // sudo) and no longer in the previous holder.
+            let moved = crate::adoption::holds_master(pane, terminal.index)
+                || crate::adoption::descendant_holds_master(pane, terminal.index);
+            if moved && !crate::adoption::holds_master(holder.process.pid, terminal.index) {
+                break pane;
+            }
+        } else {
+            let reason = fs::read_to_string(&errors).unwrap_or_default();
+            let _ = fs::remove_file(&errors);
+            let _ = fs::remove_file(&record);
+            let intact = crate::adoption::holds_master(holder.process.pid, terminal.index);
+            bail!(
+                "could not move this terminal{}: {}",
+                if intact { "; it is unchanged" } else { "" },
+                reason
+                    .lines()
+                    .rfind(|l| !l.trim().is_empty())
+                    .unwrap_or("relay exited")
+                    .trim_start_matches("cx-reptyr: ")
+            );
+        }
+        if std::time::Instant::now() > deadline {
+            // Never kill a relay mid-steal: its ptrace state must unwind itself.
+            bail!("moving this terminal is taking unusually long; refresh sessions");
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
+    let _ = fs::remove_file(&errors);
+    let temp = root.join(format!("{name}.tmp"));
+    let finish = || -> Result<Session> {
+        let mut session = inspect(true, &name)?;
+        session.pid = relay_pid;
+        session.origin = Some(origin.clone());
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&temp)?;
+        f.write_all(&serde_json::to_vec(&session)?)?;
+        f.sync_all()?;
+        fs::rename(&temp, &record)?;
+        set_managed_status(&session)?;
+        Ok(session)
+    };
+    let outcome = finish();
+    if outcome.is_ok() {
+        // The source window is now empty; close it if it was single-window.
+        if let Some(h) = origin.holder.as_ref() {
+            crate::adoption::close_empty_holder(h, &origin.kind);
+        }
+    }
+    outcome.map_err(|error| {
+        // The moved terminal ended immediately (its relay exits with it).
+        if field(true, &name, "#{pane_dead}").map_or(true, |d| d != "0") {
+            let _ = fs::remove_file(&temp);
+            let _ = fs::remove_file(&record);
+            anyhow::anyhow!("the terminal closed while it was being moved")
+        } else {
+            error.context("terminal unavailable after moving")
+        }
+    })
+}
+
+fn adopted_index(origin: &crate::model::ExternalOrigin) -> Result<u32> {
+    origin
+        .tty
+        .strip_prefix("/dev/pts/")
+        .and_then(|v| v.parse().ok())
+        .context("invalid adopted terminal")
+}
+/// Managed tmux id of a named session, if it is running.
+fn managed_target(name: &str) -> Result<Option<String>> {
+    for session_id in ids(true)? {
+        if field(true, &session_id, "#{session_name}")? == name {
+            return Ok(Some(session_id));
+        }
+    }
+    Ok(None)
+}
+/// Stop an adopted terminal: its processes first, while the terminal is live,
+/// then the relay. Closing the relay hangs up interactive shells with EOF.
+fn stop_adopted(
+    name: &str,
+    relay: u32,
+    origin: &crate::model::ExternalOrigin,
+) -> Result<serde_json::Value> {
+    let index = adopted_index(origin)?;
+    let target = managed_target(name)?;
+    if let Some(target) = &target {
+        anyhow::ensure!(
+            field(true, target, "#{pane_pid}")? == relay.to_string(),
+            "session runtime identity changed; refresh sessions"
+        );
+    }
+    let groups = crate::adoption::terminate(&origin.leader, index);
+    if let Some(target) = target {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline
+            && field(true, &target, "#{pane_dead}").is_ok_and(|d| d == "0")
+            && crate::adoption::start_ticks(origin.leader.pid).as_deref()
+                == Some(origin.leader.start_ticks.as_str())
+        {
+            thread::sleep(Duration::from_millis(50));
+        }
+        let mut kill = tmux(true)?;
+        kill.args(["kill-session", "-t", &target]);
+        // The relay may already have exited with the terminal.
+        let _ = kill.output();
+    }
+    Ok(serde_json::json!({"status": "stopped", "adopted_groups": groups}))
+}
+
+/// Leaders of terminals already moved into CX, from managed session records,
+/// so a moved terminal is never also offered as external.
+fn adopted_origins() -> Vec<(u32, String)> {
+    let Ok(root) = state() else {
+        return vec![];
+    };
+    let Ok(entries) = fs::read_dir(&root) else {
+        return vec![];
+    };
+    let mut out = vec![];
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !(name.starts_with("cx-") && name.ends_with(".json")) {
+            continue;
+        }
+        let Some(session_name) = name.strip_suffix(".json") else {
+            continue;
+        };
+        // Only a live managed session hides its origin terminal. A leftover
+        // record from an interrupted move must not hide it forever.
+        if let Some(origin) = fs::read(entry.path())
+            .ok()
+            .and_then(|v| serde_json::from_slice::<Session>(&v).ok())
+            .and_then(|s| s.origin)
+            .filter(|_| managed_target(session_name).ok().flatten().is_some())
+        {
+            out.push((origin.leader.pid, origin.leader.start_ticks));
+        }
+    }
+    out
+}
+
+/// Terminals started outside CX: bare terminals, SSH logins and screen. These
+/// are shown only in the UI for adoption, never in the managed session list, so
+/// the `cx sessions` contract and scripts stay unchanged. tmux-held panes are
+/// omitted here: the default server's panes already appear via `list()`.
+pub fn external_list() -> Result<Vec<Session>> {
+    let adopted = adopted_origins();
+    let mut rows = vec![];
+    for terminal in external_terminals() {
+        if terminal.holder.as_ref().is_some_and(|h| h.kind == "tmux") {
+            continue;
+        }
+        if adopted.iter().any(|(pid, start)| {
+            *pid == terminal.leader.pid && *start == terminal.leader.start_ticks
+        }) {
+            continue;
+        }
+        if let Some(session) = external_terminal(&terminal) {
+            rows.push(session);
+        }
+    }
+    Ok(rows)
+}
+
 pub fn list() -> Result<Vec<Session>> {
     let mut result = vec![];
     let host_identity = identity();
@@ -734,9 +1565,66 @@ pub fn list() -> Result<Vec<Session>> {
             if observed.ended() || seen.contains(&runtime) {
                 continue;
             }
+            // Command-panel panes belong only in their panel.
+            if managed
+                && field(true, &observed.pane_id, "#{session_name}")
+                    .is_ok_and(|n| valid_pane_name(&n))
+            {
+                continue;
+            }
             if let Ok(s) = inspect_observed(managed, &observed, &host_identity) {
                 seen.insert(runtime);
                 result.push(s);
+            }
+        }
+    }
+    // Reconcile saved container scopes on every listing, even without a newly
+    // observed Docker exec. Otherwise stale JSON records resurrect removed rows.
+    // Inventory is also queried when a live foreground Docker exec is observed.
+    // Exact names/full IDs are revalidated against a fresh engine observation;
+    // no helper deployment, execution inside containers or process reparenting.
+    let candidates = result
+        .iter()
+        .filter(|s| s.container.is_none())
+        .any(|s| foreground_container(s.pid).is_some());
+    if candidates || result.iter().any(|s| s.container.is_some()) {
+        if let Ok(value) = crate::containers::list() {
+            if let Ok(inventory) = serde_json::from_value::<Vec<crate::containers::Container>>(
+                value["containers"].clone(),
+            ) {
+                let complete = value["complete"].as_bool() == Some(true)
+                    && value["truncated"].as_bool() != Some(true);
+                result.retain(|s| {
+                    s.container
+                        .as_ref()
+                        .is_none_or(|scope| container_scope_current(scope, &inventory, complete))
+                });
+                for session in result.iter_mut().filter(|s| s.container.is_none()) {
+                    let tmux_row = session
+                        .origin
+                        .as_ref()
+                        .is_none_or(|_| session.id.starts_with('$'));
+                    let Some(target) = foreground_container(session.pid) else {
+                        continue;
+                    };
+                    if let Some(scope) = recovered_container(&target, &inventory) {
+                        session.directory = scope.folder.clone();
+                        session.container = Some(scope);
+                        // Docker's attached client alone does not prove an inner
+                        // command is busy; preserve unknown instead of spinning.
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        if tmux_row {
+                            session.activity = recent_terminal_output(
+                                &field(!session.external, &session.id, "#{window_activity}")
+                                    .unwrap_or_default(),
+                                now,
+                            );
+                        }
+                    }
+                }
             }
         }
     }
@@ -744,6 +1632,49 @@ pub fn list() -> Result<Vec<Session>> {
     result.sort_by(|a, b| (a.external, &a.id).cmp(&(b.external, &b.id)));
     Ok(result)
 }
+
+/// Restart CX's managed tmux server and its child provider processes.
+///
+/// The default tmux server and any externally-created sessions are deliberately
+/// untouched. Killing the managed server is the safe provider reset boundary:
+/// Claude and Codex launched inside its panes are descendants of that server.
+pub fn reset() -> Result<serde_json::Value> {
+    let sessions = ids(true)?;
+    // Adopted terminals are not descendants of the server; ask them to exit
+    // before their relays close, rather than leaving them on a dead terminal.
+    let root = state()?;
+    for id in &sessions {
+        let Ok(name) = field(true, id, "#{session_name}") else {
+            continue;
+        };
+        let record: Option<Session> = fs::read(root.join(format!("{name}.json")))
+            .ok()
+            .and_then(|v| serde_json::from_slice(&v).ok());
+        if let Some(origin) = record.and_then(|r| r.origin) {
+            if let Ok(index) = adopted_index(&origin) {
+                crate::adoption::terminate(&origin.leader, index);
+            }
+        }
+    }
+    let mut kill = tmux(true)?;
+    kill.arg("kill-server");
+    let status = kill
+        .status()
+        .context("managed tmux reset failed; tmux is unavailable")?;
+    if !status.success() && !sessions.is_empty() {
+        bail!("managed tmux reset failed")
+    }
+    ensure_server()?;
+    configure_managed()?;
+    refresh_provider_environment()?;
+    Ok(serde_json::json!({
+        "status": "reset",
+        "managed_sessions": sessions.len(),
+        "provider_processes": "restarted with managed tmux",
+        "external_tmux": "untouched"
+    }))
+}
+
 /// Stop the exact CX-owned runtime shown at confirmation; preserve external sessions.
 pub fn stop_shell(id: &str, pid: u32, started: &str, boot_id: &str) -> Result<serde_json::Value> {
     stop_managed(id, pid, started, boot_id, "shell")
@@ -805,6 +1736,9 @@ fn stop_managed(
         || record.boot_id != boot_id
     {
         bail!("session ownership or runtime identity changed; refresh sessions");
+    }
+    if let Some(origin) = record.origin.as_ref() {
+        return stop_adopted(id, pid, origin);
     }
     let mut target = None;
     for session_id in ids(true)? {
@@ -963,6 +1897,15 @@ pub fn available_providers() -> Result<Vec<&'static str>> {
         }
     }
     Ok(available)
+}
+
+/// Probe in the same selected login shell as the eventual launcher. Never
+/// assume version support or edit provider configuration; older CLIs fall back.
+fn codex_supports_no_daemon(shell: &str) -> bool {
+    provider_available(
+        shell,
+        "codex --help 2>/dev/null | command head -c 65536 | command grep -Fq -- '  --no-daemon'",
+    )
 }
 
 fn provider_available(shell: &str, probe: &str) -> bool {
@@ -1156,6 +2099,33 @@ pub fn configure_managed() -> Result<()> {
     output(c)?;
     Ok(())
 }
+
+/// Refresh the allowlisted Anthropic variables in tmux's server environment.
+/// Tmux keeps a server-wide snapshot, which otherwise survives shell reloads.
+pub fn refresh_provider_environment() -> Result<()> {
+    const VARS: &[&str] = &[
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_CUSTOM_HEADERS",
+    ];
+    for name in VARS {
+        let mut command = tmux(true)?;
+        command.args(["set-environment", "-g"]);
+        match std::env::var(name) {
+            Ok(value) => {
+                command.arg(*name).arg(value);
+            }
+            Err(_) => {
+                command.args(["-u", *name]);
+            }
+        };
+        command
+            .status()
+            .with_context(|| format!("refreshing managed tmux variable {name}"))?;
+    }
+    Ok(())
+}
 fn ensure_server() -> Result<()> {
     // An owned server may persist after its last session ends. New binaries
     // must reload its configuration too, rather than reusing old key bindings.
@@ -1220,21 +2190,34 @@ pub fn create(request: &CreateSession) -> Result<Session> {
 pub fn create_yolo(request: &CreateSession) -> Result<Session> {
     create_with_permissions(request, true, None)
 }
-fn provider_command(provider: &str, yolo: bool, resume: bool) -> Result<String> {
-    match (provider, yolo, resume) {
-        ("codex", true, true) => {
-            Ok("codex resume --last --dangerously-bypass-approvals-and-sandbox".into())
-        }
-        ("codex", false, true) => Ok("codex resume --last".into()),
-        ("claude", true, true) => Ok("claude --continue --dangerously-skip-permissions".into()),
-        ("claude", false, true) => Ok("claude --continue".into()),
-        ("shell", _, true) => bail!("resume is available only for Codex or Claude sessions"),
-        ("codex", true, false) => Ok("codex --dangerously-bypass-approvals-and-sandbox".into()),
-        ("claude", true, false) => Ok("claude --dangerously-skip-permissions".into()),
-        ("shell", true, false) => bail!("YOLO applies only to Codex or Claude sessions"),
-        ("shell" | "codex" | "claude", false, false) => Ok(provider.into()),
-        _ => bail!("unsupported launch profile"),
+fn provider_command(provider: &str, yolo: bool, resume: bool, pick: bool) -> Result<String> {
+    if !resume && pick {
+        bail!("a session picker applies only when resuming");
     }
+    // Resume either the most recent session (--last / --continue) or the
+    // provider's own interactive picker (codex resume / claude --resume).
+    let base = match (provider, resume, pick) {
+        ("codex", false, _) => "codex",
+        ("codex", true, false) => "codex resume --last",
+        ("codex", true, true) => "codex resume",
+        ("claude", false, _) => "claude",
+        ("claude", true, false) => "claude --continue",
+        ("claude", true, true) => "claude --resume",
+        // Fall through to the YOLO check so shell + YOLO is still rejected.
+        ("shell", false, false) => "shell",
+        ("shell", _, _) => {
+            bail!("resume is available only for Codex or Claude sessions")
+        }
+        _ => bail!("unsupported launch profile"),
+    };
+    let flag = match (provider, yolo) {
+        (_, false) => "",
+        ("codex", true) => " --dangerously-bypass-approvals-and-sandbox",
+        ("claude", true) => " --dangerously-skip-permissions",
+        ("shell", true) => bail!("YOLO applies only to Codex or Claude sessions"),
+        _ => bail!("unsupported launch profile"),
+    };
+    Ok(format!("{base}{flag}"))
 }
 pub fn create_container(
     request: &CreateSession,
@@ -1246,7 +2229,7 @@ pub fn create_container(
         "Container launch directory does not match the selected scope"
     );
     // Validate unsupported shell permissions/history before any container work.
-    provider_command(&request.provider, yolo, request.resume)?;
+    provider_command(&request.provider, yolo, request.resume, request.resume)?;
     crate::containers::prepare(scope, &request.provider)?;
     create_with_permissions(request, yolo, Some(scope))
 }
@@ -1272,6 +2255,8 @@ fn container_run_payload(
 struct LaunchIntent {
     provider: String,
     resume: bool,
+    #[serde(default)]
+    resume_pick: bool,
     yolo: bool,
     directory: String,
     container: Option<crate::model::ContainerScope>,
@@ -1317,6 +2302,7 @@ fn validate_launch_intent(
             LaunchIntent {
                 provider: original.provider,
                 resume: false,
+                resume_pick: false,
                 yolo: expected.yolo,
                 directory: original.directory,
                 container: original.container,
@@ -1335,7 +2321,8 @@ fn create_with_permissions(
     yolo: bool,
     container: Option<&crate::model::ContainerScope>,
 ) -> Result<Session> {
-    let agent_command = provider_command(&request.provider, yolo, request.resume)?;
+    let mut agent_command =
+        provider_command(&request.provider, yolo, request.resume, request.resume_pick)?;
     if request.key.is_empty() || request.key.len() > 1024 {
         bail!("creation key must be 1–1024 bytes");
     }
@@ -1376,6 +2363,11 @@ fn create_with_permissions(
     let launch = LaunchIntent {
         provider: request.provider.clone(),
         resume: request.resume,
+        resume_pick: if container.is_some() {
+            request.resume
+        } else {
+            request.resume_pick
+        },
         yolo,
         directory: container
             .map(|c| c.folder.clone())
@@ -1421,7 +2413,11 @@ fn create_with_permissions(
             request.provider
         );
     }
+    if container.is_none() && request.provider == "codex" && codex_supports_no_daemon(&shell) {
+        agent_command.push_str(" --no-daemon --config 'tui.terminal_title=[\"thread-name\"]'");
+    }
     ensure_server()?;
+    refresh_provider_environment()?;
     let (host, account, boot_id) = identity();
     let pending = Session {
         terminal: None,
@@ -1440,6 +2436,9 @@ fn create_with_permissions(
         socket: Some(socket()?.to_string_lossy().into_owned()),
         launcher: Some(shell.clone()),
         process: None,
+        activity: None,
+        agent_tasks: vec![],
+        origin: None,
         container: container.cloned(),
     };
     // Persist intent before starting: an interrupted helper response must never lose the launcher identity.
@@ -1489,8 +2488,15 @@ fn create_with_permissions(
             payload,
         ];
     }
+    let title_tracking = container.is_none()
+        && request.provider == "codex"
+        && launcher
+            .iter()
+            .any(|arg| arg.contains("tui.terminal_title="));
     let command = format!(
-        "exec env CX_VIEWER_THEME=1 CX_TMUX_BIN={} CX_MANAGED_SOCKET={} CX_MANAGED_SESSION={} {}",
+        "{}exec env {}CX_VIEWER_THEME=1 CX_TMUX_BIN={} CX_MANAGED_SOCKET={} CX_MANAGED_SESSION={} {}",
+        if title_tracking { "printf '\\033]0;CX awaiting native title\\007'; " } else { "" },
+        if title_tracking { "CX_CODEX_TITLE=thread-name-v1 " } else { "" },
         quote(
             tmux_executable()
                 .to_str()
@@ -1509,7 +2515,7 @@ fn create_with_permissions(
         .arg(directory)
         .arg(command);
     output(c)?;
-    let mut session = inspect(true, &name)?;
+    let mut session = inspect(true, &name).context("terminal unavailable during startup")?;
     session.name = display_name;
     session.provider = request.provider.clone();
     let temp = root.join(format!("{name}.tmp"));
@@ -1522,9 +2528,50 @@ fn create_with_permissions(
     f.write_all(&serde_json::to_vec(&session)?)?;
     f.sync_all()?;
     fs::rename(temp, root.join(format!("{name}.json")))?;
-    set_managed_status(&session)?;
+    set_managed_status(&session).context("terminal unavailable during startup")?;
+    wait_for_first_screen(&name).context("terminal unavailable during startup")?;
     Ok(session)
 }
+
+/// Creation already runs on the helper worker. Keep the viewer visible while
+/// the detached terminal initializes, without sending input or guessing prompts.
+/// Silent programs must remain attachable, so this is a bounded presentation wait.
+fn wait_for_first_screen(id: &str) -> Result<()> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if field(true, id, "#{pane_dead}")? == "1" {
+            bail!("terminal exited during startup; inspect the session before retrying");
+        }
+        let mut capture = tmux(true)?;
+        // Only inspect the first 40 visible rows, never history. The text is
+        // discarded immediately and never stored, logged or used as metadata.
+        capture.args(["capture-pane", "-p", "-t", id, "-S", "0", "-E", "39"]);
+        let visible = output(capture)?;
+        if visible
+            .chars()
+            .any(|c| !c.is_whitespace() && !c.is_control())
+            || std::time::Instant::now() >= deadline
+        {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(80));
+    }
+}
+
+fn restore_managed_style(session: &Session) -> Result<()> {
+    // Match the private server's terminal defaults, including transparency.
+    // Also clear opaque per-window overrides left by older CX versions.
+    for option in ["window-style", "window-active-style"] {
+        let mut query = tmux(true)?;
+        query.args(["show-options", "-g", "-v", option]);
+        let style = output(query)?;
+        let mut command = tmux(true)?;
+        command.args(["set-option", "-w", "-t", &session.id, option, style.trim()]);
+        output(command)?;
+    }
+    Ok(())
+}
+
 fn set_managed_status(session: &Session) -> Result<()> {
     let safe = |value: &str| {
         value
@@ -1732,10 +2779,12 @@ pub fn refresh_managed_status(id: &str) -> Result<()> {
     if !id.starts_with("cx-") || id.len() != 67 || !id[3..].bytes().all(|b| b.is_ascii_hexdigit()) {
         bail!("invalid managed session identity");
     }
-    set_managed_status(&inspect(true, id)?)
+    let session = inspect(true, id)?;
+    restore_managed_style(&session)?;
+    set_managed_status(&session)
 }
 
-fn quote(s: &str) -> String {
+pub fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 const ATTACH_PAYLOAD_LIMIT: usize = 32768;
@@ -2002,9 +3051,10 @@ pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
         if !session.id.starts_with('$') || !session.id[1..].bytes().all(|b| b.is_ascii_digit()) {
             bail!("invalid external session identity");
         }
-    } else if !session.id.starts_with("cx-")
-        || session.id.len() != 67
-        || !session.id[3..].bytes().all(|b| b.is_ascii_hexdigit())
+    } else if !(session.id.starts_with("cx-")
+        && session.id.len() == 67
+        && session.id[3..].bytes().all(|b| b.is_ascii_hexdigit()))
+        && !valid_pane_name(&session.id)
     {
         bail!("invalid managed session identity");
     }
@@ -2061,6 +3111,158 @@ pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
 
 /// Open an ordinary login terminal without requiring tmux or the CX helper.
 /// Exiting the shell restores the viewer through the existing native handoff.
+/// Transient managed pane names for command panels; never recorded or listed.
+fn command_pane_name() -> Result<String> {
+    use std::io::Read;
+    let mut bytes = [0u8; 16];
+    fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(format!(
+        "cxcmd-{}",
+        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    ))
+}
+fn valid_pane_name(id: &str) -> bool {
+    id.len() == 38 && id.starts_with("cxcmd-") && id[6..].bytes().all(|b| b.is_ascii_hexdigit())
+}
+fn clamp_size(cols: u16, rows: u16) -> (u16, u16) {
+    (cols.clamp(20, 500), rows.clamp(4, 300))
+}
+
+/// Start a command in a managed pane kept alive after exit so its final output
+/// and status remain capturable. The pane is transient: no ownership record,
+/// hidden from the session list, and closed when its panel closes.
+pub fn command_panel(request: &RunCommand, cols: u16, rows: u16) -> Result<serde_json::Value> {
+    validate_command(request)?;
+    let directory = fs::canonicalize(crate::files::decode_path(&request.directory)?)
+        .context("command directory is unavailable")?;
+    if !directory.is_dir() {
+        bail!("command directory is not a folder");
+    }
+    let (cols, rows) = clamp_size(cols, rows);
+    ensure_server()?;
+    let shell = launch_shell()?;
+    let fish = std::path::Path::new(&shell)
+        .file_name()
+        .is_some_and(|s| s == "fish");
+    // The command runs under a login shell on the pane's own tty, so colors and
+    // interactive prompts work. Output and status persist via remain-on-exit.
+    let invocation = if fish {
+        // fish -c has no $0 slot, so the command is argv[1] directly.
+        format!(
+            "exec {} -l -c {} {}",
+            quote(&shell),
+            quote("eval $argv[1]"),
+            quote(&request.command)
+        )
+    } else {
+        format!(
+            "exec {} -l -c {} cx-command {}",
+            quote(&shell),
+            quote(r#"eval "$1""#),
+            quote(&request.command)
+        )
+    };
+    let name = command_pane_name()?;
+    let mut c = tmux(true)?;
+    c.args(["new-session", "-d", "-s", &name])
+        .arg("-x")
+        .arg(cols.to_string())
+        .arg("-y")
+        .arg(rows.to_string())
+        .args(["-n", "work", "-c"])
+        .arg(&directory)
+        .arg(&invocation);
+    output(c)?;
+    // Keep the dead pane and its status; scope the option to this session.
+    let mut opt = tmux(true)?;
+    opt.args(["set-option", "-t", &name, "remain-on-exit", "on"]);
+    let _ = output(opt);
+    let pid = field(true, &name, "#{pane_pid}")?.parse().unwrap_or(0);
+    Ok(serde_json::json!({
+        "id": name,
+        "socket": socket()?.to_string_lossy(),
+        "pid": pid,
+        "cols": cols,
+        "rows": rows,
+    }))
+}
+
+/// Capture the styled screen, liveness and exit status of a command pane.
+pub fn capture_pane(id: &str, cols: u16, rows: u16) -> Result<serde_json::Value> {
+    anyhow::ensure!(valid_pane_name(id), "invalid command pane");
+    let (cols, rows) = clamp_size(cols, rows);
+    // Match the pane to the panel so wrapping and cursor line up.
+    let mut resize = tmux(true)?;
+    resize
+        .args(["resize-window", "-t", id, "-x"])
+        .arg(cols.to_string())
+        .arg("-y")
+        .arg(rows.to_string());
+    let _ = output(resize);
+    let dead = field(true, id, "#{pane_dead}").map_or(true, |d| d != "0");
+    // tmux can report pane_dead before pane_dead_status is populated. When the
+    // pane has just died, wait briefly for the exit code so the panel shows it
+    // instead of settling on "finished".
+    let mut status = None;
+    if dead {
+        for attempt in 0..15 {
+            if let Some(code) = field(true, id, "#{pane_dead_status}")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .and_then(|s| s.parse::<i32>().ok())
+            {
+                status = Some(code);
+                break;
+            }
+            if attempt < 14 {
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+    let mut capture = tmux(true)?;
+    capture.args(["capture-pane", "-e", "-p", "-t", id]);
+    let screen = output(capture).unwrap_or_default();
+    Ok(serde_json::json!({
+        "id": id,
+        "lines": screen.split('\n').collect::<Vec<_>>(),
+        "alive": !dead,
+        "status": status,
+        "cols": cols,
+        "rows": rows,
+    }))
+}
+
+/// Deliver hex-encoded bytes to a running command pane.
+pub fn pane_input(id: &str, hex: &str) -> Result<serde_json::Value> {
+    anyhow::ensure!(valid_pane_name(id), "invalid command pane");
+    anyhow::ensure!(
+        !hex.is_empty()
+            && hex.len() <= 8192
+            && hex.len() % 2 == 0
+            && hex.bytes().all(|b| b.is_ascii_hexdigit()),
+        "invalid key data"
+    );
+    if field(true, id, "#{pane_dead}").map_or(true, |d| d != "0") {
+        return Ok(serde_json::json!({"delivered": false}));
+    }
+    let mut c = tmux(true)?;
+    c.args(["send-keys", "-t", id, "-H"]);
+    for pair in hex.as_bytes().chunks(2) {
+        c.arg(std::str::from_utf8(pair)?);
+    }
+    output(c)?;
+    Ok(serde_json::json!({"delivered": true}))
+}
+
+/// Close a command pane, ending the command if it is still running.
+pub fn pane_close(id: &str) -> Result<serde_json::Value> {
+    anyhow::ensure!(valid_pane_name(id), "invalid command pane");
+    let mut c = tmux(true)?;
+    c.args(["kill-session", "-t", id]);
+    let _ = c.output();
+    Ok(serde_json::json!({"closed": true}))
+}
+
 pub fn login_terminal(device: &Device) -> Result<()> {
     let mut command = if let Some(target) = &device.target {
         let routed = crate::store::ssh(target, true)?;
@@ -2404,6 +3606,7 @@ mod tests {
             provider: "codex".into(),
             name: String::new(),
             resume: true,
+            resume_pick: true,
         };
         let value: serde_json::Value = serde_json::from_slice(
             &base64::engine::general_purpose::STANDARD
@@ -2520,6 +3723,7 @@ esac
                     provider: "codex".into(),
                     name: String::new(),
                     resume: false,
+                    resume_pick: false,
                 };
                 assert!(
                     create(&request).is_err(),
@@ -2787,6 +3991,7 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
         let original = LaunchIntent {
             provider: "codex".into(),
             resume: false,
+            resume_pick: false,
             yolo: false,
             directory: "/work".into(),
             container: None,
@@ -2797,7 +4002,14 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
         )
         .unwrap();
         assert!(validate_launch_intent(fixture.path(), "fixture", &original).is_ok());
-        for field in ["provider", "resume", "yolo", "directory", "container"] {
+        for field in [
+            "provider",
+            "resume",
+            "resume_pick",
+            "yolo",
+            "directory",
+            "container",
+        ] {
             let mut value = serde_json::to_value(&original).unwrap();
             value[field] = match field {
                 "provider" => serde_json::json!("claude"),
@@ -2910,26 +4122,167 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
     }
 
     #[test]
-    fn provider_commands_distinguish_fresh_and_native_resume() {
-        assert_eq!(provider_command("codex", false, false).unwrap(), "codex");
+    fn terminal_output_indicator_expires_and_rejects_future_or_invalid_time() {
         assert_eq!(
-            provider_command("codex", false, true).unwrap(),
+            recent_terminal_output("100", 102).as_deref(),
+            Some("output")
+        );
+        assert_eq!(recent_terminal_output("100", 103), None);
+        assert_eq!(recent_terminal_output("104", 103), None);
+        assert_eq!(recent_terminal_output("0", 1), None);
+        assert_eq!(recent_terminal_output("unknown", 103), None);
+    }
+    #[test]
+    fn saved_container_scope_reconciles_explicit_evidence_and_complete_absence() {
+        let c: crate::containers::Container = serde_json::from_value(serde_json::json!({
+            "engine":"fixture", "id":"a".repeat(64), "name":"workspace", "image":"fixture", "state":"running",
+            "started_at":"one", "devcontainer":true,"evidence":"label", "user":"dev", "folder":"/workspace", "workspace":null,
+            "config":null,"network":"bridge", "networks":[],"ports":{},"allowed":true
+        })).unwrap();
+        let scope = c.scope();
+        assert!(container_scope_current(&scope, &[c.clone()], true));
+        assert!(
+            container_scope_current(&scope, &[], false),
+            "partial absence must preserve uncertainty"
+        );
+        assert!(
+            !container_scope_current(&scope, &[], true),
+            "complete absence must prune"
+        );
+        for change in ["stopped", "restart", "engine", "user", "access"] {
+            let mut changed = c.clone();
+            match change {
+                "stopped" => changed.state = "exited".into(),
+                "restart" => changed.started_at = "two".into(),
+                "engine" => changed.engine = "different".into(),
+                "user" => changed.user = "other".into(),
+                _ => {
+                    changed.devcontainer = false;
+                    changed.allowed = false;
+                }
+            }
+            assert!(
+                !container_scope_current(&scope, &[changed], false),
+                "explicit {change} evidence must prune even partial discovery"
+            );
+        }
+    }
+
+    #[test]
+    fn docker_exec_recovery_reads_only_exact_invocation_prefix() {
+        let parse = |args: &[&str]| {
+            docker_exec_target(
+                &args
+                    .iter()
+                    .map(|s| s.as_bytes().to_vec())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(
+            parse(&[
+                "docker",
+                "exec",
+                "-it",
+                "--user",
+                "dev",
+                "--workdir=/projects/cx",
+                "workspace",
+                "bash",
+                "secret prompt"
+            ]),
+            Some("workspace".into())
+        );
+        assert_eq!(
+            parse(&["docker", "exec", "--", "workspace", "sh"]),
+            Some("workspace".into())
+        );
+        for args in [
+            vec!["docker", "--context", "other", "exec", "workspace", "sh"],
+            vec!["docker", "exec", "--future-option", "workspace", "sh"],
+            vec!["docker", "exec", "-d", "workspace", "sh"],
+            vec!["docker", "exec", "--user"],
+            vec!["docker", "exec", "evil;command", "sh"],
+        ] {
+            assert_eq!(parse(&args), None);
+        }
+    }
+    #[test]
+    fn activity_requires_known_native_status() {
+        for status in ["working", "busy", "running"] {
+            assert_eq!(normalized_activity(Some(status)), Some("running"));
+        }
+        assert_eq!(
+            normalized_activity(Some("waiting_for_input")),
+            Some("waiting")
+        );
+        assert_eq!(normalized_activity(Some("idle")), Some("idle"));
+        assert_eq!(normalized_activity(None), None);
+        assert_eq!(normalized_activity(Some("unrecognized")), None);
+    }
+    #[test]
+    fn recovered_container_requires_running_allowed_exact_unique_identity() {
+        let id = "a".repeat(64);
+        let c: crate::containers::Container = serde_json::from_value(serde_json::json!({
+            "engine":"fixture", "id":id, "name":"workspace", "image":"fixture", "state":"running",
+            "started_at":"one", "devcontainer":true,"evidence":"label", "user":"dev", "folder":"/workspace", "workspace":null,
+            "config":null,"network":"bridge", "networks":[],"ports":{},"allowed":true
+        })).unwrap();
+        assert!(recovered_container("workspace", &[c.clone()]).is_some());
+        assert!(recovered_container(&id, &[c.clone()]).is_some());
+        assert!(recovered_container(&id[..12], &[c.clone()]).is_none());
+        assert!(recovered_container("workspace", &[c.clone(), c.clone()]).is_none());
+        let mut stopped = c.clone();
+        stopped.state = "exited".into();
+        assert!(recovered_container("workspace", &[stopped]).is_none());
+        let mut service = c;
+        service.devcontainer = false;
+        service.allowed = false;
+        assert!(recovered_container("workspace", &[service]).is_none());
+    }
+
+    #[test]
+    fn provider_commands_distinguish_fresh_and_native_resume() {
+        assert_eq!(
+            provider_command("codex", false, false, false).unwrap(),
+            "codex"
+        );
+        assert_eq!(
+            provider_command("codex", false, true, false).unwrap(),
             "codex resume --last"
         );
         assert_eq!(
-            provider_command("codex", true, true).unwrap(),
+            provider_command("codex", false, true, true).unwrap(),
+            "codex resume"
+        );
+        assert_eq!(
+            provider_command("codex", true, true, false).unwrap(),
             "codex resume --last --dangerously-bypass-approvals-and-sandbox"
         );
-        assert_eq!(provider_command("claude", false, false).unwrap(), "claude");
         assert_eq!(
-            provider_command("claude", false, true).unwrap(),
+            provider_command("claude", false, false, false).unwrap(),
+            "claude"
+        );
+        assert_eq!(
+            provider_command("claude", false, true, false).unwrap(),
             "claude --continue"
         );
         assert_eq!(
-            provider_command("claude", true, true).unwrap(),
-            "claude --continue --dangerously-skip-permissions"
+            provider_command("claude", false, true, true).unwrap(),
+            "claude --resume"
         );
-        assert!(provider_command("shell", false, true).is_err());
+        assert_eq!(
+            provider_command("claude", true, true, true).unwrap(),
+            "claude --resume --dangerously-skip-permissions"
+        );
+        assert!(provider_command("shell", false, true, false).is_err());
+        // A picker only applies when resuming.
+        assert!(provider_command("claude", false, false, true).is_err());
+        // YOLO never applies to a shell, fresh or not.
+        assert_eq!(
+            provider_command("shell", false, false, false).unwrap(),
+            "shell"
+        );
+        assert!(provider_command("shell", true, false, false).is_err());
     }
     fn assert_probe_child_stopped(pid: &str) {
         let deadline = std::time::Instant::now() + Duration::from_millis(250);
@@ -3011,6 +4364,49 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
     }
 
     #[test]
+    fn unknown_provider_directory_is_not_a_session_title() {
+        let fallback = "codex · old-project".to_owned();
+        let named = crate::session_titles::NativeMetadata {
+            title: Some("Current task".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            automatic_provider_name("codex", Some(&named), true, None, fallback.clone()),
+            "Current task"
+        );
+        let unselected = crate::session_titles::NativeMetadata {
+            current_thread_unknown: true,
+            ..named
+        };
+        // With no live terminal title, an unknown selection falls back to the
+        // provider name rather than reviving a stale workspace label.
+        assert_eq!(
+            automatic_provider_name("codex", Some(&unselected), true, None, fallback.clone()),
+            "codex"
+        );
+        // The provider's own terminal title (the switched thread's name) relabels
+        // the session even when CX cannot pin the thread's directory.
+        assert_eq!(
+            automatic_provider_name(
+                "codex",
+                Some(&unselected),
+                true,
+                Some("project-nebula"),
+                fallback.clone()
+            ),
+            "project-nebula"
+        );
+        assert_eq!(
+            automatic_provider_name("codex", None, true, None, fallback.clone()),
+            "codex"
+        );
+        assert_eq!(
+            automatic_provider_name("codex", None, false, None, fallback.clone()),
+            fallback
+        );
+    }
+
+    #[test]
     fn generated_session_names_follow_provider_workspace_and_keep_custom_names() {
         let mut session = Session {
             terminal: None,
@@ -3027,6 +4423,9 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
             socket: None,
             launcher: None,
             process: None,
+            activity: None,
+            agent_tasks: vec![],
+            origin: None,
             container: None,
         };
         assert_eq!(

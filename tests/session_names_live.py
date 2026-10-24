@@ -53,9 +53,16 @@ int main(int argc,char **argv) {
   with index.open('a') as f:f.write(json.dumps(dict(id='12345678-1234-1234-1234-12345fffffff',thread_name='Other task'))+'\n')
   os.kill(live['process']['pid'], __import__('signal').SIGUSR1)
   time.sleep(.1)
-  assert next(s for s in sessions() if s['id']==created['id'])['name']=='codex · '+root.name
+  ambiguous=next(s for s in sessions() if s['id']==created['id'])
+  assert ambiguous['name']=='codex',ambiguous['name']
+  # An unpinned thread shows the launch directory, never "Directory unavailable".
+  assert ambiguous['directory']==tmp, 'ambiguous writer should fall back to the launch folder'
+  saved['name']='My custom Codex title';record.write_text(json.dumps(saved))
+  custom_codex=next(s for s in sessions() if s['id']==created['id'])
+  assert custom_codex['name']=='My custom Codex title',custom_codex['name']
+  assert custom_codex['directory']==tmp, 'custom title should keep the launch folder'
   custom=cli('new','--provider','shell','--directory',tmp,'--name','work')
   assert next(s for s in sessions() if s['id']==custom['id'])['name']=='work'
-  results.append(dict(result='PASS',scenario='Codex exact writer association, blank saved labels, rename refresh, multiple-writer folder fallback, custom name preservation, same terminal',provider='synthetic ELF executable; no inference'))
+  results.append(dict(result='PASS',scenario='Codex exact writer association, blank saved labels, rename refresh, multiple-writer neutral title with launch-directory fallback, custom name preservation, same terminal',provider='synthetic ELF executable; no inference'))
  finally:subprocess.run(['tmux','-S',sock,'kill-server'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 print(json.dumps(results))

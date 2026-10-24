@@ -1,4 +1,5 @@
 mod access;
+mod adoption;
 mod auth;
 mod containers;
 mod files;
@@ -7,6 +8,8 @@ mod markdown_math;
 mod markdown_tables;
 mod model;
 mod network;
+mod peer_ssh;
+mod peers;
 mod session_titles;
 mod sessions;
 mod sharing;
@@ -56,6 +59,8 @@ enum Cmd {
         #[arg(long, hide = true)]
         json: bool,
     },
+    /// Restart CX's managed tmux server and provider sessions on this device.
+    Reset,
     #[command(hide = true)]
     Restart {
         state: String,
@@ -288,6 +293,14 @@ enum DeviceCommand {
     Edit { name: String, target: String },
     /// Remove an enrolled device from this viewer.
     Remove { name: String },
+    /// Reconcile automatic SSH setup and enrollment for core devices.
+    Sync,
+    /// Verify reverse SSH and enroll this device on the remote helper.
+    Pair {
+        name: String,
+        #[arg(long)]
+        return_target: String,
+    },
     /// Promote an enrolled device to the core network posture.
     Promote { name: String },
     /// Demote an enrolled device to viewer-to-device access.
@@ -300,6 +313,28 @@ enum DeviceCommand {
     },
     /// Show the effective access and availability policy for a device.
     Policy { name: String },
+    /// Manage the guarded ptrace relay that moves outside terminals into CX.
+    Ptrace {
+        name: String,
+        #[arg(value_enum)]
+        action: PtraceAction,
+        /// Locally built cx-reptyr instead of the signed release artifact.
+        #[arg(long)]
+        binary: Option<std::path::PathBuf>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum PtraceAction {
+    /// Install the user-local relay so moves work through one sudo prompt each.
+    Install,
+    /// Remove the user-local relay.
+    Uninstall,
+    /// Grant cap_sys_ptrace to a root-owned relay so moves need no prompt.
+    Enable,
+    /// Remove the privileged capability relay.
+    Disable,
+    Status,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -340,13 +375,34 @@ fn info() -> Result<serde_json::Value> {
     caps.push("stable-update-v1");
     caps.push("pdf-pages-v1");
     caps.push("network-candidates-v1");
+    caps.push("peer-enroll-v1");
+    caps.push("peer-bootstrap-v1");
+    caps.push("adopt-session-v1");
+    let relay = adoption::reptyr();
+    if relay.is_ok() {
+        caps.push("adopt-reptyr-v1");
+    }
+    let (needs_sudo, unavailable) = match &relay {
+        Ok(r) => (r.privilege == adoption::Privilege::Sudo, None),
+        Err(e) => (false, Some(*e)),
+    };
     Ok(
-        serde_json::json!({"host":d.host,"account":d.account,"machine_id":machine.trim(),"capabilities":caps,"protocol":1,"persistent_channel":true,"version":env!("CARGO_PKG_VERSION")}),
+        serde_json::json!({"host":d.host,"account":d.account,"machine_id":machine.trim(),"capabilities":caps,"protocol":1,"persistent_channel":true,"version":env!("CARGO_PKG_VERSION"),"adoption_unavailable":unavailable,"adoption_needs_password":needs_sudo}),
     )
 }
 pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
     match op {
         Operation::Info => info(),
+        Operation::PeerEnroll {
+            peer,
+            replace_stale,
+        } => peers::enroll(peer, replace_stale),
+        Operation::PeerIdentity => peers::bootstrap_identity(),
+        Operation::PeerConfigure {
+            peer,
+            host_key,
+            client_key,
+        } => peers::configure(&peer, &host_key, &client_key),
         Operation::Containers => containers::list(),
         Operation::ContainerInspect { id } => Ok(serde_json::to_value(containers::inspect(&id)?)?),
         Operation::DevcontainerUp { workspace } => containers::up(&workspace),
@@ -369,13 +425,14 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
         Operation::ContainerProviders { scope } => containers::providers(&scope),
         Operation::ContainerAgentCreate {
             scope,
-            request,
+            mut request,
             yolo,
         } => {
             anyhow::ensure!(
                 ["claude", "codex"].contains(&request.provider.as_str()),
                 "container agent profile required"
             );
+            request.resume_pick = request.resume;
             Ok(serde_json::to_value(sessions::create_container(
                 &request, &scope, yolo,
             )?)?)
@@ -409,6 +466,12 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
         Operation::TransferCancel { key } => transfers::cancel(&key),
         Operation::TransferRetry { key } => transfers::retry(&key),
         Operation::Sessions => Ok(serde_json::to_value(sessions::list()?)?),
+        Operation::ExternalSessions => Ok(serde_json::to_value(sessions::external_list()?)?),
+        Operation::AdoptSession {
+            ref id,
+            ref origin,
+            ref boot_id,
+        } => Ok(serde_json::to_value(sessions::adopt(id, origin, boot_id)?)?),
         Operation::Create(ref c) => Ok(serde_json::to_value(sessions::create(c)?)?),
         Operation::CreateYolo(ref c) => Ok(serde_json::to_value(sessions::create_yolo(c)?)?),
         Operation::StopAgentSession {
@@ -424,6 +487,14 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
             ref started,
             ref boot_id,
         } => sessions::stop_shell(id, pid, started, boot_id),
+        Operation::CommandPanel {
+            ref request,
+            cols,
+            rows,
+        } => sessions::command_panel(request, cols, rows),
+        Operation::CapturePane { ref id, cols, rows } => sessions::capture_pane(id, cols, rows),
+        Operation::PaneInput { ref id, ref hex } => sessions::pane_input(id, hex),
+        Operation::PaneClose { ref id } => sessions::pane_close(id),
         Operation::Network => network::observe(),
         Operation::NetworkCandidates => network::candidates(),
         Operation::ProbeCandidate { address, interface } => {
@@ -490,6 +561,201 @@ fn device(name: Option<String>) -> Result<Device> {
             .context("device not enrolled; use cx add")
     } else {
         Ok(store::local_device())
+    }
+}
+
+/// Install, remove or report the guarded relay on a device. Installation is an
+/// explicit privileged step: one sudo prompt on that device, never automatic.
+pub(crate) fn device_ptrace(
+    name: &str,
+    action: PtraceAction,
+    binary: Option<std::path::PathBuf>,
+) -> Result<serde_json::Value> {
+    let device = if name == "local" {
+        store::local_device()
+    } else {
+        enrolled_device(name)?
+    };
+    let label = device.name.clone();
+    let status = |device: &Device| -> Result<serde_json::Value> {
+        let info = transport::request(device, Operation::Info)?;
+        let enabled = info["capabilities"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|c| c == "adopt-reptyr-v1"));
+        Ok(serde_json::json!({
+            "device": label,
+            "adoption": if !enabled {
+                "unavailable"
+            } else if info["adoption_needs_password"] == serde_json::json!(true) {
+                "enabled (asks for a password per move)"
+            } else {
+                "enabled (no prompt)"
+            },
+            "reason": info["adoption_unavailable"],
+        }))
+    };
+    let script = include_str!("../scripts/enable-ptrace.sh");
+    let sudo = |args: &[&str]| -> Result<()> {
+        let quoted: Vec<String> = args.iter().map(|a| sessions::quote(a)).collect();
+        let command = format!(
+            "sudo sh -c {} sh {}",
+            sessions::quote(script),
+            quoted.join(" ")
+        );
+        let ok = if let Some(target) = &device.target {
+            let routed = store::ssh(target, true)?;
+            let mut c = Command::new("ssh");
+            c.arg("-tt").args(routed.get_args()).arg(command);
+            c.status()?.success()
+        } else {
+            Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .status()?
+                .success()
+        };
+        anyhow::ensure!(
+            ok,
+            "privileged step failed or was cancelled; nothing else changed"
+        );
+        Ok(())
+    };
+    // Verified relay bytes for this device's architecture.
+    let relay_bytes = |device: &Device| -> Result<Vec<u8>> {
+        let arch = match &device.target {
+            None => std::env::consts::ARCH.to_string(),
+            Some(target) => {
+                let mut c = transport::ssh(target, true)?;
+                c.arg("uname -sm");
+                let out = enrollment_command(c, None)?;
+                match String::from_utf8_lossy(&out.stdout).trim() {
+                    "Linux x86_64" => "x86_64".into(),
+                    "Linux aarch64" => "aarch64".into(),
+                    _ => bail!("cx-reptyr supports Linux x86_64 and ARM64 only"),
+                }
+            }
+        };
+        match &binary {
+            Some(path) => Ok(std::fs::read(path)?),
+            None => Ok(std::fs::read(
+                update::obtain_reptyr_binary(&arch, env!("CARGO_PKG_VERSION"))?.path(),
+            )?),
+        }
+    };
+    match action {
+        PtraceAction::Status => status(&device),
+        PtraceAction::Uninstall => {
+            if let Some(target) = &device.target {
+                let mut c = transport::ssh(target, true)?;
+                c.arg("rm -f \"$HOME/.local/bin/cx-reptyr\"");
+                enrollment_command(c, None)?;
+            } else {
+                let _ = std::fs::remove_file(
+                    std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                        .join(".local/bin/cx-reptyr"),
+                );
+            }
+            status(&device)
+        }
+        PtraceAction::Install => {
+            // Unprivileged: the relay only becomes capable when run through sudo
+            // per move. Verify the exact version where it is installed.
+            let bytes = relay_bytes(&device)?;
+            if let Some(target) = &device.target {
+                let mut c = transport::ssh(target, true)?;
+                c.arg("set -eu; umask 077; d=\"$HOME/.local/bin\"; mkdir -p \"$d\"; f=\"$d/cx-reptyr\"; cat > \"$f.new\"; chmod 755 \"$f.new\"; \"$f.new\" -v; mv -f \"$f.new\" \"$f\"")
+                    .stdin(Stdio::piped());
+                let out = enrollment_command(c, Some(bytes))?;
+                anyhow::ensure!(
+                    out.status.success()
+                        && String::from_utf8_lossy(&out.stdout).trim() == adoption::REPTYR_VERSION,
+                    "cx-reptyr did not verify on {label}; nothing installed"
+                );
+            } else {
+                use std::os::unix::fs::OpenOptionsExt;
+                let dir = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                    .join(".local/bin");
+                std::fs::create_dir_all(&dir)?;
+                let staged = dir.join("cx-reptyr.new");
+                let _ = std::fs::remove_file(&staged);
+                let mut f = std::fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .mode(0o755)
+                    .open(&staged)?;
+                std::io::Write::write_all(&mut f, &bytes)?;
+                f.sync_all()?;
+                drop(f);
+                let out = Command::new(&staged)
+                    .arg("-v")
+                    .stdin(Stdio::null())
+                    .output()?;
+                anyhow::ensure!(
+                    String::from_utf8_lossy(&out.stdout).trim() == adoption::REPTYR_VERSION,
+                    "cx-reptyr version mismatch; nothing installed"
+                );
+                std::fs::rename(&staged, dir.join("cx-reptyr"))?;
+            }
+            status(&device)
+        }
+        PtraceAction::Disable => {
+            sudo(&["disable"])?;
+            status(&device)
+        }
+        PtraceAction::Enable => {
+            let bytes = relay_bytes(&device)?;
+            use sha2::Digest;
+            let sha = format!("{:x}", sha2::Sha256::digest(&bytes));
+            // Stage as the user and verify the exact version there, never as root.
+            let stage = if device.target.is_none() {
+                use std::os::unix::fs::OpenOptionsExt;
+                let tools = store::ensure()?.join("tools");
+                std::fs::create_dir_all(&tools)?;
+                let stage = tools.join("cx-reptyr.stage");
+                let _ = std::fs::remove_file(&stage);
+                let mut f = std::fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .mode(0o700)
+                    .open(&stage)?;
+                std::io::Write::write_all(&mut f, &bytes)?;
+                f.sync_all()?;
+                drop(f);
+                let out = Command::new(&stage)
+                    .arg("-v")
+                    .stdin(Stdio::null())
+                    .output()?;
+                anyhow::ensure!(
+                    String::from_utf8_lossy(&out.stdout).trim() == adoption::REPTYR_VERSION,
+                    "cx-reptyr version mismatch; nothing installed"
+                );
+                stage
+                    .to_str()
+                    .context("state path is not UTF-8")?
+                    .to_string()
+            } else {
+                let mut c = transport::ssh(device.target.as_deref().unwrap(), true)?;
+                c.arg("set -eu; umask 077; d=\"${XDG_STATE_HOME:-$HOME/.local/state}/cx/tools\"; mkdir -p \"$d\"; f=\"$d/cx-reptyr.stage\"; rm -f \"$f\"; cat > \"$f\"; chmod 700 \"$f\"; printf '%s\\n' \"$f\"; \"$f\" -v")
+                    .stdin(Stdio::piped());
+                let out = enrollment_command(c, Some(bytes))?;
+                let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                let mut lines = text.lines();
+                let stage = lines.next().unwrap_or_default().to_string();
+                anyhow::ensure!(
+                    out.status.success() && lines.next() == Some(adoption::REPTYR_VERSION),
+                    "cx-reptyr did not verify on {label}; nothing installed"
+                );
+                stage
+            };
+            eprintln!(
+                "Installing cx-reptyr on {label} with cap_sys_ptrace. It moves terminals into CX \
+                 only for processes fully owned by the user who runs it. Any program running as \
+                 you on {label} could use it to take over your other terminals. Undo with: \
+                 cx device ptrace {name} disable"
+            );
+            sudo(&["enable", &stage, &sha])?;
+            status(&device)
+        }
     }
 }
 
@@ -762,7 +1028,9 @@ fn enroll_target(target: &str, _minimal: bool) -> Result<()> {
         status: "unknown".into(),
         observed_at: 0,
     };
-    let value = transport::request(&d, Operation::Info)?;
+    // Installation already chose the helper binary; verify without starting a redundant
+    // background updater that could outlive this short enrollment command.
+    let value = transport::probe_info(target)?;
     d.account = value["account"].as_str().unwrap_or("unknown").into();
     d.host = value["host"].as_str().unwrap_or(target).into();
     if target.contains('@') {
@@ -775,7 +1043,14 @@ fn enroll_target(target: &str, _minimal: bool) -> Result<()> {
     );
     d.status = "reachable".into();
     d.observed_at = transport::now();
+    let enrollment_guard = store::device_guard()?;
     let mut ds = store::devices()?;
+    let existing = ds
+        .iter()
+        .find(|entry| entry.id == d.id)
+        .map(|entry| store::policy(entry))
+        .transpose()?
+        .is_some_and(|policy| policy.access == store::AccessMode::Directed);
     if let Some(old) = ds
         .iter_mut()
         .find(|o| o.id == d.id || (o.host == d.host && o.account == d.account))
@@ -784,10 +1059,23 @@ fn enroll_target(target: &str, _minimal: bool) -> Result<()> {
     } else {
         ds.push(d.clone())
     };
+    store::allow_explicit_enrollment(&d.id)?;
     store::save_devices(&ds)?;
-    // Newly enrolled devices are trusted as full mesh peers. Users can demote
+    // Core enrollment automatically reconciles verified SSH access. Users can demote
     // them later with `cx device demote` or the device-panel toggle.
-    let _ = store::set_access(&d, store::AccessMode::Core)?;
+    if !existing {
+        let _ = store::set_access(&d, store::AccessMode::Core)?;
+    }
+    drop(enrollment_guard);
+    let setup = peers::sync();
+    if !auth::active() {
+        match setup {
+            Ok(report) if report["state"] == "ready" => {
+                eprintln!("Core device connections verified")
+            }
+            _ => eprintln!("Device enrolled; core setup is pending and will retry in CX"),
+        }
+    }
     if !auth::active() {
         println!(
             "Added {} · {}@{} · {}",
@@ -954,6 +1242,7 @@ fn run() -> Result<()> {
                 provider,
                 name: String::new(),
                 resume,
+                resume_pick: resume,
             };
             println!(
                 "{}",
@@ -1010,7 +1299,13 @@ fn run() -> Result<()> {
                     ("ready", format!("Verified cx {} ready", version), None)
                 }
                 update::CheckOutcome::Current => {
-                    ("current", format!("cx {} is current", version), None)
+                    // Keep the interactive command consistent with the update path:
+                    // after reporting the result, return to the normal workspace.
+                    (
+                        "current",
+                        format!("cx {} is current", version),
+                        Some(std::env::current_exe()?),
+                    )
                 }
                 update::CheckOutcome::Offline => (
                     "offline",
@@ -1035,10 +1330,20 @@ fn run() -> Result<()> {
             }
             if !json && !automatic && unsafe { libc::isatty(libc::STDIN_FILENO) } != 0 {
                 if let Some(path) = launch {
+                    if state == "current" {
+                        std::env::set_var(
+                            "CX_STARTUP_NOTICE",
+                            format!("cx {} is already up to date", version),
+                        );
+                    }
                     use std::os::unix::process::CommandExt;
                     return Err(Command::new(path).exec().into());
                 }
             }
+            Ok(())
+        }
+        Some(Cmd::Reset) => {
+            println!("{}", serde_json::to_string_pretty(&sessions::reset()?)?);
             Ok(())
         }
         Some(Cmd::Copy {
@@ -1219,16 +1524,41 @@ fn run() -> Result<()> {
                     let updated = store::update_target(&device, &target)?;
                     println!("{}", serde_json::to_string_pretty(&updated)?);
                 }
+                DeviceCommand::Sync => {
+                    println!("{}", serde_json::to_string_pretty(&peers::sync()?)?);
+                }
+                DeviceCommand::Pair {
+                    name,
+                    return_target,
+                } => {
+                    let device = enrolled_device(&name)?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&peers::pair(&device, &return_target)?)?
+                    );
+                }
+                DeviceCommand::Ptrace {
+                    name,
+                    action,
+                    binary,
+                } => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&device_ptrace(&name, action, binary)?)?
+                    );
+                }
                 DeviceCommand::Promote { name } => {
                     let device = enrolled_device(&name)?;
                     let policy = store::set_access(&device, store::AccessMode::Core)?;
+                    let setup = peers::sync()?;
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "device": device.name,
                             "access": policy.access,
                             "availability": policy.availability,
-                            "bidirectional": true,
+                            "bidirectional": setup["state"] == "ready",
+                            "setup": setup,
                         }))?
                     );
                 }
@@ -1309,6 +1639,7 @@ fn run() -> Result<()> {
                 provider,
                 name,
                 resume: false,
+                resume_pick: false,
             };
             let op = if yolo {
                 Operation::CreateYolo(spec)

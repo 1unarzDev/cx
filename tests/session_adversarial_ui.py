@@ -239,9 +239,9 @@ def exercise(f):
             require('Delete 1 item?' not in viewer.text() and 'Focus: Rename' not in viewer.text()
                     and 'CUT 1' not in viewer.text(), 'failed refresh authorized cached destructive action')
         viewer.quit()
-        allowed = {'sessions', 'info', 'list', 'list_page', 'transfer_jobs'}
+        allowed = {'sessions', 'info', 'list', 'list_page', 'transfer_jobs', 'containers'}
         require(all(r['op'] in allowed for r in read_operations(f)),
-                'saved-folder/cache flow submitted creation, attachment, or mutation')
+                'saved-folder/cache flow submitted unexpected operations: ' + str(sorted({r['op'] for r in read_operations(f)} - allowed)))
         require(len(json.loads(pins.read_text())) == 1, 'absent bookmark not retained on second quit')
         return dict(cached_folder_visible_ms=round(elapsed * 1000, 3),
                     checks=['p persisted exact remote runtime', 'pin survived restart and absence',

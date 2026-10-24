@@ -9,6 +9,8 @@ curl -fsSL https://raw.githubusercontent.com/1unarzDev/cx/main/install.sh | sh
 cx
 ```
 
+Running `cx` opens Files in the folder you launched it from on that device. Update restarts restore your previous workspace.
+
 Install as your ordinary user. The installer verifies signed releases and offers to install missing dependencies. See [installation and requirements](docs/installation.md) for supported platforms, optional tools and minimal robot setup.
 
 Add a device using an existing SSH alias or account/address:
@@ -18,7 +20,10 @@ cx add user@host
 cx add robot@192.168.0.2 --via laptop
 ```
 
-On the device list, a small leading `*` means single-direction (viewer-to-device) access; unmarked devices are bidirectional. The marker stays visible even when a long device name is truncated. Focus a remote device and press `b` to toggle the locally stored posture. New enrollments start as bidirectional. Press `d` to mark a known-offline device down, `u` to resume background checks, `e` to edit its SSH alias/address, toggle access, or open removal, or `x` to remove it directly. The local device is always bidirectional and available; its posture cannot be changed or removed. Passive connection failures use the device marker and do not create error notifications.
+On the device list, a leading `*` marks directed (viewer-to-device) access. Core devices automatically establish reciprocal access with every other core device when CX starts, after enrollment or promotion, and on background retries. Directed devices such as robots are excluded. Press `b` to change posture, `e` to edit an endpoint, or `x` to remove a device. Reachability reports observed contact; core posture alone does not prove that setup has completed.
+
+Core setup uses an existing authenticated connection to verify machine/account identities and exchange public keys. Each device generates its own dedicated private key; CX never copies private keys or edits personal SSH config/known_hosts. Managed trust is pinned in CX state, and restricted public authorizations are added to `~/.ssh/authorized_keys`. Verified portable endpoints replace stale aliases when necessary. Use `cx device sync` to retry immediately; ordinary CX startup does this automatically. Helpers need v0.1.76 or newer, Linux/OpenSSH, direct port-22 connectivity and a reachable address observed on the authenticated connection. Custom proxy/jump routes stay pending rather than being guessed. Changed pinned identities/keys fail closed. Removal or demotion stops future enrollment; existing SSH authorizations remain and are not automatically revoked. Explicit `cx device pair NAME --return-target user@host` remains available for already configured SSH connections.
+
 
 You can also select a discovered neighbor in **Network** and press Enter to connect. **Ctrl+P → Add by SSH address** handles aliases and devices discovery cannot reach. Enrollment checks compatibility and installs the helper and missing portable tmux. SSH passwords are masked and not stored.
 
@@ -33,6 +38,8 @@ You can also select a discovered neighbor in **Network** and press Enter to conn
 | Tab / Shift+Tab | Change panel focus |
 | Ctrl+] in a managed terminal | Return to CX; the session keeps running |
 | `w` in Sessions | Watch the highlighted session read-only |
+| Enter on external terminal | Move existing work into CX after verification |
+| `s` in Sessions | Inspect agent tasks and subagents |
 | `p` in Sessions | Pin/unpin work; retain a bookmark after its terminal ends |
 | `s` in Files | Show sessions in the selected folder, or the current folder |
 | `b` on a device | Toggle remote access: bidirectional or viewer-to-device |

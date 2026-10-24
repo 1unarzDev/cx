@@ -3,6 +3,8 @@
 mod files;
 #[path = "../src/model.rs"]
 mod model;
+#[path = "../src/peer_ssh.rs"]
+mod peer_ssh;
 #[path = "../src/store.rs"]
 mod store;
 #[path = "../src/transfers.rs"]

@@ -48,6 +48,31 @@ pub struct Session {
     /// Stable terminal generation; pane/provider changes do not replace the terminal.
     #[serde(default)]
     pub terminal: Option<TerminalIdentity>,
+    /// Observed activity, never inferred from a cached liveness label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_tasks: Vec<AgentTask>,
+    /// Terminal evidence for a session started outside CX. Adoption re-verifies it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ExternalOrigin>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExternalOrigin {
+    /// Owner of the terminal master: terminal, sshd, tmux or screen.
+    pub kind: String,
+    pub tty: String,
+    pub leader: ProcessIdentity,
+    #[serde(default)]
+    pub holder: Option<ProcessIdentity>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AgentTask {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    pub status: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RunCommand {
@@ -62,11 +87,26 @@ pub struct CreateSession {
     pub name: String,
     #[serde(default)]
     pub resume: bool,
+    /// Resume by choosing from the provider's own session picker rather than the
+    /// most recent session. Ignored unless `resume` is set.
+    #[serde(default)]
+    pub resume_pick: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", content = "args", rename_all = "snake_case")]
 pub enum Operation {
     Info,
+    PeerIdentity,
+    PeerConfigure {
+        peer: Device,
+        host_key: String,
+        client_key: String,
+    },
+    PeerEnroll {
+        peer: Device,
+        #[serde(default)]
+        replace_stale: bool,
+    },
     Containers,
     ContainerInspect {
         id: String,
@@ -115,6 +155,14 @@ pub enum Operation {
         shell: String,
     },
     Sessions,
+    /// Terminals started outside CX, shown for adoption in the UI only.
+    ExternalSessions,
+    /// Move a terminal started outside CX into the managed tmux server.
+    AdoptSession {
+        id: String,
+        origin: ExternalOrigin,
+        boot_id: String,
+    },
     Create(CreateSession),
     CreateYolo(CreateSession),
     StopAgentSession {
@@ -224,6 +272,27 @@ pub enum Operation {
     },
     TransferRetry {
         key: String,
+    },
+    /// Run a command in a managed pane shown live in a CX panel.
+    CommandPanel {
+        request: RunCommand,
+        cols: u16,
+        rows: u16,
+    },
+    /// Styled screen, liveness and exit status of a command panel pane.
+    CapturePane {
+        id: String,
+        cols: u16,
+        rows: u16,
+    },
+    /// Hex-encoded bytes to deliver to a command panel pane.
+    PaneInput {
+        id: String,
+        hex: String,
+    },
+    /// Close a command panel pane, stopping the command if it is still running.
+    PaneClose {
+        id: String,
     },
     Network,
     NetworkCandidates,

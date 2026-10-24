@@ -101,6 +101,16 @@ pub enum Operation {
         request: CreateSession,
         yolo: bool,
     },
+    /// Scoped installed-provider evidence; does not report authentication.
+    ContainerProviders {
+        scope: ContainerScope,
+    },
+    /// Versioned agent launch: resume selects native history, never latest.
+    ContainerAgentCreate {
+        scope: ContainerScope,
+        request: CreateSession,
+        yolo: bool,
+    },
     SetLaunchShell {
         shell: String,
     },

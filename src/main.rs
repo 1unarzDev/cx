@@ -196,9 +196,20 @@ enum Cmd {
         #[arg(long)]
         device: Option<String>,
     },
+    /// Observe installed session profiles for the exact container user and folder.
+    ContainerProviders {
+        id: String,
+        #[arg(long)]
+        device: Option<String>,
+        #[arg(long)]
+        directory: Option<String>,
+    },
     /// Start a persistent shell or agent inside a selected container.
     ContainerNew {
         id: String,
+        /// Open the provider's native conversation picker; never select latest.
+        #[arg(long)]
+        resume: bool,
         #[arg(long)]
         device: Option<String>,
         #[arg(long, default_value = "shell")]
@@ -323,6 +334,7 @@ fn info() -> Result<serde_json::Value> {
     caps.push("stop-agent-session-v1");
     caps.push("session-yolo-v1");
     caps.push("containers-v1");
+    caps.push("container-agents-v1");
     caps.push("container-transfers-v1");
     caps.push("devcontainer-rebuild-v1");
     caps.push("stable-update-v1");
@@ -354,13 +366,33 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
         Operation::ContainerFileAction { scope, operation } => {
             containers::file_action(&scope, &operation)
         }
+        Operation::ContainerProviders { scope } => containers::providers(&scope),
+        Operation::ContainerAgentCreate {
+            scope,
+            request,
+            yolo,
+        } => {
+            anyhow::ensure!(
+                ["claude", "codex"].contains(&request.provider.as_str()),
+                "container agent profile required"
+            );
+            Ok(serde_json::to_value(sessions::create_container(
+                &request, &scope, yolo,
+            )?)?)
+        }
         Operation::ContainerCreate {
             scope,
             request,
             yolo,
-        } => Ok(serde_json::to_value(sessions::create_container(
-            &request, &scope, yolo,
-        )?)?),
+        } => {
+            anyhow::ensure!(
+                !request.resume,
+                "container resume requires container_agent_create; update the submitting helper"
+            );
+            Ok(serde_json::to_value(sessions::create_container(
+                &request, &scope, yolo,
+            )?)?)
+        }
         Operation::SetLaunchShell { shell } => sessions::set_launch_shell(&shell),
         Operation::TransferReachability { destination } => {
             transport::request(&destination, Operation::Info)
@@ -779,18 +811,7 @@ fn run() -> Result<()> {
             containers::container_home()?;
             helper()
         }
-        Some(Cmd::ContainerShell { payload }) => {
-            use base64::Engine;
-            anyhow::ensure!(
-                payload.len() < 65536,
-                "container shell payload exceeds limit"
-            );
-            let (provider, yolo, folder, id): (String, bool, String, String) =
-                serde_json::from_slice(
-                    &base64::engine::general_purpose::STANDARD.decode(payload)?,
-                )?;
-            containers::local_shell(&provider, yolo, &folder, &id)
-        }
+        Some(Cmd::ContainerShell { payload }) => containers::local_shell_payload(&payload),
         Some(Cmd::ContainerProcessStop { id }) => {
             println!("{}", containers::local_stop(&id)?);
             Ok(())
@@ -799,14 +820,7 @@ fn run() -> Result<()> {
             println!("{}", containers::local_wheel_owner(&id)?);
             Ok(())
         }
-        Some(Cmd::ContainerRun { payload }) => {
-            use base64::Engine;
-            anyhow::ensure!(payload.len() < 65536, "container launch exceeds limit");
-            let (scope, provider, yolo): (ContainerScope, String, bool) = serde_json::from_slice(
-                &base64::engine::general_purpose::STANDARD.decode(payload)?,
-            )?;
-            containers::run(&scope, &provider, yolo)
-        }
+        Some(Cmd::ContainerRun { payload }) => containers::run_payload(&payload),
         Some(Cmd::Containers { device: d }) => {
             println!(
                 "{}",
@@ -893,13 +907,38 @@ fn run() -> Result<()> {
             );
             Ok(())
         }
+        Some(Cmd::ContainerProviders {
+            id,
+            device: selected,
+            directory,
+        }) => {
+            let d = device(selected)?;
+            let c: containers::Container = serde_json::from_value(transport::request(
+                &d,
+                Operation::ContainerInspect { id },
+            )?)?;
+            let mut scope = c.scope();
+            if let Some(folder) = directory {
+                scope.folder = folder;
+            }
+            println!(
+                "{}",
+                transport::request(&d, Operation::ContainerProviders { scope })?
+            );
+            Ok(())
+        }
         Some(Cmd::ContainerNew {
             id,
+            resume,
             device: d,
             provider,
             yolo,
             directory,
         }) => {
+            anyhow::ensure!(
+                !resume || provider == "codex" || provider == "claude",
+                "resume is available only for container agents"
+            );
             let d = device(d)?;
             let c: containers::Container = serde_json::from_value(transport::request(
                 &d,
@@ -914,16 +953,24 @@ fn run() -> Result<()> {
                 directory: scope.folder.clone(),
                 provider,
                 name: String::new(),
-                resume: false,
+                resume,
             };
             println!(
                 "{}",
                 transport::request(
                     &d,
-                    Operation::ContainerCreate {
-                        scope,
-                        request,
-                        yolo
+                    if request.provider == "shell" {
+                        Operation::ContainerCreate {
+                            scope,
+                            request,
+                            yolo,
+                        }
+                    } else {
+                        Operation::ContainerAgentCreate {
+                            scope,
+                            request,
+                            yolo,
+                        }
                     }
                 )?
             );

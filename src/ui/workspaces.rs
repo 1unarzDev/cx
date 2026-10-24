@@ -195,6 +195,7 @@ impl App {
             return;
         }
         let selected = prior.get(self.dialog_selected).cloned();
+        let action_offset = self.dialog_selected.saturating_sub(prior.len());
         let mut rows = if let Some(scope) = scope.as_ref() {
             self.work[d]
                 .sessions
@@ -223,6 +224,10 @@ impl App {
             }
         } else {
             rows.len()
+                + action_offset.min(usize::from(container_agents::has_history(
+                    scope.as_ref(),
+                    &provider,
+                )))
         };
         self.dialog = Some(Dialog::SessionPicker(device, path, scope, provider, rows));
     }

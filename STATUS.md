@@ -1,5 +1,18 @@
 # CX status
 
+## Container agent launch/history parity — 2026-10-24
+
+Implemented on `feat/container-agent-parity-20261024` in `worktrees/container-agent-parity-20261024`, based on switcher commit `970f9f8`. Container session choices now expose installed Claude/Codex profiles scoped to the exact device/container/user/folder. Existing runtimes, fresh work and the provider's native history picker remain separate choices. Default/YOLO intent survives both launch hops; container history uses `codex resume` / `claude --resume`, never latest. Provider checks run no agent and install nothing. Login-startup directory changes cannot redirect agent launches from the selected folder.
+
+Version bumped to 0.1.60 so container-private helpers receive the matching decoder. New `container-agents-v1` capability and versioned agent-create operation prevent old helpers from silently dropping history intent. Runtime tests verify actual arguments/cwd with synthetic agents in a disposable network-none container. [Validation](VALIDATION.md) records evidence and limits.
+
+Integration/acceptance remaining:
+
+- Changes are isolated and committed; no installed binary replacement, publication or remote deployment. The root checkout's pre-existing conflicts remain untouched. Update execution helpers when integrating.
+- Real provider authentication/history selection, physical terminal acceptance, actual Node Dev Containers CLI environment behavior and remote robot acceptance remain separate from this synthetic Docker validation.
+- Custom/inner-container tmux and nested-client switching remain future work. Exact provider conversation IDs are still selected by the provider picker; CX does not merge separate conversations by folder/title.
+
+
 ## Unified session workspace — 2026-10-23
 
 Implemented in `worktrees/session-workspace-20261023`, branch `feat/session-workspace-20261023`: named runtime selection, all sessions with pins first, persistent unavailable-work bookmarks, folder agent presence, cached navigation, obsolete-read coalescing, alias deduplication, dead-pane lifecycle handling and checked native attachment. Pins reopen saved folders deliberately; no guessed-idle hiding or automatic agent restart. The previous latest/fresh/past launch prompt is removed.
@@ -9,7 +22,7 @@ Full Rust suite, isolated runtime lifecycle cases, managed/external attach/watch
 Current unresolved integration/acceptance:
 
 - The original root checkout is detached with pre-existing conflicts. This isolated branch is committed separately; no release, installed binary replacement or remote deployment is included. Updated endpoint helpers provide stable terminal generations; legacy observations retain legacy attachment behavior.
-- Next user-selected cycle: **container agent launch and resume parity**. Custom sockets, inner-container tmux, nested-client handoff and exact provider conversation history remain gaps. No global terminal hook was installed.
+- Container agent launch and resume parity is implemented in the next milestone above. Custom sockets, inner-container tmux, nested-client handoff and exact provider conversation history remain gaps. No global terminal hook was installed.
 - Physical emulator/provider/robot acceptance remains separate from synthetic providers, fake SSH/Docker scope checks and disposable tmux PTYs. Tests cover an explicit matrix, not every possible configuration.
 
 

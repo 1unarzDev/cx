@@ -40,8 +40,9 @@ not change Docker contexts, SSH trust, host networking, or provider credentials.
 - Existing YOLO flags append without changing the explicit history choice.
 - The old `container_create` operation must refuse `resume:true`, never quietly
   launch fresh work. Old binaries should reject the new unknown operation.
-- Agent UI/CLI uses `container-agents-v1` capability evidence before sending the
-  new operation; absent support cannot justify legacy fallback for a history request.
+- Agent UI requires `container-agents-v1` capability evidence. CLI submits the
+  versioned operation directly; an old helper rejects it. Neither path falls back
+  to legacy creation for a history request.
 
 ## Pairwise executable matrix
 
@@ -51,7 +52,7 @@ not change Docker contexts, SSH trust, host networking, or provider credentials.
 | Fake Docker public helper | Requested directory differs from scope folder | Refusal; request cannot silently override execution location. |
 | Fake Docker public helper | Same path on two IDs with different providers; engine/user/start changes after executable probe | Evidence remains specific to container/user/folder; post-probe change rejects instead of publishing old capabilities. |
 | Real owned container | Installed Codex+Claude; Claude made nonexecutable | Exact installed subset from that container; exact scope/time; no `/tmp/cx-tools-0` created by discovery. |
-| Real launch chain | Codex/Claude × fresh/native-history × Default/YOLO | All 8 actual argv vectors plus quoted/Unicode cwd survive host session → container-run → container-shell → provider. |
+| Real launch chain | Codex/Claude × fresh/native-history × Default/YOLO | All 8 actual argv vectors plus quoted/Unicode cwd (even with login startup changing directory) survive host session → container-run → container-shell → provider. |
 | Public CLI flags | `container-providers --directory`; `container-new --provider codex --resume --yolo --directory` | CLI preserves exact scope and explicit native picker/permission arguments, in addition to direct framed-operation coverage. |
 | Idempotency | Repeat each exact creation key/request; change provider/resume/YOLO under one existing key | Same session ID on exact repeat; changed intent rejected; exactly one live runtime. |
 | Existing runtime | Watch one already-running history picker session | Same terminal, one session, no replacement agent argv, termios restored. |

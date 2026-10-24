@@ -264,6 +264,8 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
         Operation::ContainerFiles { .. }
             | Operation::ContainerLifecycle { .. }
             | Operation::ContainerCreate { .. }
+            | Operation::ContainerAgentCreate { .. }
+            | Operation::ContainerProviders { .. }
             | Operation::Containers
             | Operation::ContainerFileAction { .. }
     ) {

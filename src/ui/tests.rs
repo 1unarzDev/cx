@@ -1,5 +1,6 @@
 use super::*;
 use ratatui::backend::TestBackend;
+mod container_agent_tests;
 mod workspace_tests;
 fn app() -> App {
     let (tx, _) = mpsc::sync_channel(32);
@@ -2405,7 +2406,7 @@ fn container_tree_collapses_and_ordinary_containers_only_offer_opt_in() {
     assert_eq!(a.container_selected, 2);
 }
 #[test]
-fn container_menus_only_launch_shells() {
+fn container_menus_keep_shell_available_until_scoped_agents_are_observed() {
     let (mut a, rx) = queued_app();
     let c = container_fixture('a', true);
     assert_eq!(
@@ -2433,7 +2434,9 @@ fn container_menus_only_launch_shells() {
     assert!(matches!(a.dialog, Some(Dialog::ContainerProvider(..))));
     press(&mut a, 'x');
     press(&mut a, 'c');
-    assert!(rx.try_recv().is_err());
+    assert!(rx
+        .try_iter()
+        .all(|t| matches!(t.op, Operation::ContainerProviders { .. })));
     press(&mut a, 's');
     assert!(
         matches!(rx.try_recv().unwrap().op,Operation::ContainerCreate{request,yolo:false,..} if request.provider=="shell")

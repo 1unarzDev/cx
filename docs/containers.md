@@ -1,10 +1,14 @@
 # Containers and Dev Containers
 
-CX treats containers as execution scopes beneath their enrolled device. They are not new SSH devices. Open **Ctrl+P → Containers**, choose a device or **All devices**, and expand its tree with Right/l. Names use the Docker container name, with **Devcontainer** or **Docker**, state and access status beside it. Enter opens actions; `n` opens a compact terminal chooser in a running accessible container. Devcontainers are labeled **Devcontainer** in the chooser and **devcontainer** in the session list; ordinary Docker and unclassified containers have distinct labels. The underlying terminal remains a shell.
+CX treats containers as execution scopes beneath their enrolled device. They are not new SSH devices. Open **Ctrl+P → Containers**, choose a device or **All devices**, and expand its tree with Right/l. Names use the Docker container name, with **Devcontainer** or **Docker**, state and access status beside it. Enter opens actions; `n` opens a compact terminal chooser in a running accessible container. Devcontainers are labeled **Devcontainer** in the chooser and **devcontainer** in the session list; ordinary Docker and unclassified containers have distinct labels. Shell remains available while CX checks which agents are executable as the selected container user.
 
 ## Attach and browse
 
-Devcontainers are recognized by modern/legacy Dev Containers labels, or a verified devcontainer configuration at a bind-mounted workspace. A name such as `roboboat_dev` alone does not grant access. Running entries offer Shell, Files and Stop. Container menus do not offer Claude/Codex sessions or agent permissions. Existing sessions remain attachable. No agents, credentials or packages are automatically installed.
+Devcontainers are recognized by modern/legacy Dev Containers labels, or a verified devcontainer configuration at a bind-mounted workspace. A name such as `roboboat_dev` alone does not grant access. Running entries offer Shell, Files and Stop. The session chooser offers Claude/Codex only after a successful check inside that exact container/user/folder. Host-installed agents never enable container choices. Existing sessions remain attachable. No agents, credentials or packages are automatically installed.
+
+Choose an agent to see existing matching runtimes by name, **New** for a fresh conversation, and **Choose past conversation** for the provider's native history picker. Existing runtime attachment does not start another agent. Both new and history launches offer **Default** or **YOLO** permissions. History invokes `codex resume` or `claude --resume`; CX never selects `--last` or `--continue` for container history. Authentication and saved conversations belong to the selected container user; executable presence does not prove sign-in or available history.
+
+Provider evidence is cached in memory for up to 60 seconds by device, engine, full container ID, start time, user and folder. Reopening the chooser uses valid evidence immediately; expired/failed checks retain Shell and explain how to retry. Creation rechecks the exact scope and provider before launch. Restart/replacement never silently redirects work. No provider configuration or history is copied. Container agent operations require an updated endpoint helper (`container-agents-v1`); an old helper refuses the new operation without falling back to a fresh launch. Version 0.1.60 gives the inner container helper a new private versioned path.
 
 Containers use the device's CX-managed tmux, so inner tmux is unnecessary. Native attachment retains terminal colors/default background, Tab completion, clipboard forwarding, paste and scrolling. Ctrl+] returns without stopping work. `d` in Sessions confirms stopping the exact managed shell or agent, including its owned process tree inside the container. An ordinary login shell inside a container loads its existing initialization; CX also loads an existing selected `/opt/ros/$ROS_DISTRO/setup.sh` when `ros2` is otherwise unavailable. It does not select a different ROS distribution.
 
@@ -34,6 +38,10 @@ Workspace startup requires the [Node Dev Containers CLI](https://code.visualstud
 cx containers --device laptop
 # Use the full ID from discovery in the following commands.
 cx container-new FULL_ID --device laptop
+cx container-providers FULL_ID --device laptop --directory /workspace
+cx container-new FULL_ID --device laptop --provider codex --directory /workspace
+cx container-new FULL_ID --device laptop --provider claude --resume --directory /workspace
+# Optional --yolo applies only to this launch.
 cx container-files FULL_ID --device laptop --path /workspace
 cx container-start FULL_ID --device laptop
 cx container-stop FULL_ID --device laptop
@@ -51,7 +59,7 @@ Graphical applications such as RViz2 need a separate display transport; native t
 
 The execution device needs a usable local Docker socket and permission to access it. Docker contexts pointing at remote TCP/SSH daemons are rejected: enroll that host as a CX SSH device instead. Containers need native Linux x86_64 or ARM64 matching the host helper, `/bin/sh`, basic POSIX tools, and writable executable `/tmp`. Read-only/noexec images and different architectures fail with an explanation. Alpine and older glibc images use the static release helper. Docker is the supported engine; Podman and Windows containers are not supported.
 
-Discovery is read-only and never executes in containers or starts them. The helper is copied only when opening files/a session, into a versioned private `/tmp/cx-tools-UID` directory as the selected container user. A future CX version supplies its matching helper without an OS package update. CX performs no automatic port forwarding, host network changes, ROS/GPU reconfiguration or SSH trust changes. Configuration-driven workspace startup uses the network settings declared by that configuration.
+Container inventory discovery never executes in containers or starts them. Opening the session chooser explicitly probes executable availability through the selected user's existing login shell; that bounded probe runs no agent, installs no helper and rechecks lifecycle evidence afterward. The helper is copied only when opening files/a session, into a versioned private `/tmp/cx-tools-UID` directory as the selected container user. A future CX version supplies its matching helper without an OS package update. CX performs no automatic port forwarding, host network changes, ROS/GPU reconfiguration or SSH trust changes. Configuration-driven workspace startup uses the network settings declared by that configuration.
 
 ## Implementation and verification
 

@@ -31,11 +31,23 @@ pub(super) const HOST: &[SessionChoice] = &[
         key: 'd',
     },
 ];
-pub(super) const CONTAINER: &[SessionChoice] = &[SessionChoice {
-    label: "[s] Shell",
-    provider: "shell",
-    key: 's',
-}];
+pub(super) const CONTAINER: &[SessionChoice] = &[
+    SessionChoice {
+        label: "[s] Shell",
+        provider: "shell",
+        key: 's',
+    },
+    SessionChoice {
+        label: "[c] Claude",
+        provider: "claude",
+        key: 'c',
+    },
+    SessionChoice {
+        label: "[x] Codex",
+        provider: "codex",
+        key: 'x',
+    },
+];
 pub(super) fn session_choices(dialog: &Dialog) -> Option<&'static [SessionChoice]> {
     match dialog {
         Dialog::SessionChooser(..) => Some(HOST),
@@ -80,6 +92,7 @@ pub(super) fn render_session_chooser(
     let host = matches!(dialog, Dialog::SessionChooser(..));
     let choices = match dialog {
         Dialog::SessionChooser(d, _) => app.host_session_choices(*d),
+        Dialog::ContainerProvider(d, scope) => app.container_session_choices(*d, scope),
         _ => session_choices(dialog)
             .expect("session chooser dialog")
             .iter()
@@ -123,7 +136,7 @@ pub(super) fn render_session_chooser(
             muted()
         };
         let label = match dialog {
-            Dialog::ContainerProvider(device, scope) => {
+            Dialog::ContainerProvider(device, scope) if choice.provider == "shell" => {
                 format!("[s] {}", container_label(app, *device, scope))
             }
             _ => choice.label.to_string(),
@@ -155,7 +168,7 @@ pub(super) fn render_session_chooser(
         );
     }
     let help = if !host {
-        "s shell · Enter start · Esc cancel"
+        "c/x/s choose · Enter · Esc cancel"
     } else if columns == 2 {
         "h/l choose · Enter start · Esc cancel"
     } else {

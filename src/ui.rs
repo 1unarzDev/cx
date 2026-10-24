@@ -3,6 +3,7 @@ use crate::{
     model::{ContainerScope, CreateSession, Device, Operation, RunCommand, Session},
     sessions, store, transport,
 };
+mod container_agents;
 mod filters;
 mod rendering;
 mod workspaces;
@@ -409,6 +410,7 @@ enum Dialog {
     DevcontainerUp(usize, String),
     ContainerActions(usize, crate::containers::Container),
     ContainerProvider(usize, ContainerScope),
+    ContainerPermissions(usize, ContainerScope, String, bool),
     DestinationScope(usize, Vec<crate::containers::Container>),
     ContainerConfirm(usize, crate::containers::Container, String),
     Device(ChooseDevice),
@@ -468,6 +470,8 @@ struct App {
     watched_jobs: BTreeSet<String>,
     browser_cache: HashMap<(usize, String, String), Browser>,
     container_locations: HashMap<(usize, String), String>,
+    container_profiles: HashMap<(usize, String), container_agents::Profiles>,
+    container_profile_loading: BTreeSet<(usize, String)>,
     containers: HashMap<usize, Vec<crate::containers::Container>>,
     container_errors: HashMap<usize, String>,
     containers_loading: BTreeSet<usize>,
@@ -597,6 +601,8 @@ impl App {
             watched_jobs: BTreeSet::new(),
             browser_cache: HashMap::new(),
             container_locations: HashMap::new(),
+            container_profiles: HashMap::new(),
+            container_profile_loading: BTreeSet::new(),
             containers: HashMap::new(),
             container_errors: HashMap::new(),
             containers_loading: BTreeSet::new(),
@@ -787,6 +793,7 @@ impl App {
                 Dialog::DevcontainerUp(..) => "Start devcontainer workspace",
                 Dialog::ContainerActions(..) => "Container actions",
                 Dialog::ContainerProvider(..) => "Container session",
+                Dialog::ContainerPermissions(..) => "Container permissions",
                 Dialog::DestinationScope(..) => "Transfer destination",
                 Dialog::ContainerConfirm(..) => "Container confirmation",
                 Dialog::Links(_) => "Links",
@@ -2069,8 +2076,7 @@ impl App {
         if action == Action::New && self.view == View::Containers {
             if let Some((d, c)) = self.selected_container() {
                 if (c.devcontainer || c.allowed) && c.state == "running" {
-                    self.dialog = Some(Dialog::ContainerProvider(d, c.scope()));
-                    self.dialog_selected = 0;
+                    self.open_container_chooser(d, c.scope());
                 } else {
                     self.open_container_actions();
                 }
@@ -2082,8 +2088,7 @@ impl App {
                 if let Some(scope) = &b.container {
                     let mut scope = scope.clone();
                     scope.folder = b.path.clone();
-                    self.dialog = Some(Dialog::ContainerProvider(b.device, scope));
-                    self.dialog_selected = 0;
+                    self.open_container_chooser(b.device, scope);
                     return;
                 }
             }
@@ -2208,8 +2213,7 @@ impl App {
                 if self.view == View::Work {
                     if let Some((d, session)) = self.selected_session() {
                         if let Some(scope) = session.container {
-                            self.dialog = Some(Dialog::ContainerProvider(d, scope));
-                            self.dialog_selected = 0;
+                            self.open_container_chooser(d, scope);
                             return;
                         }
                         self.check_providers(d);
@@ -2442,8 +2446,7 @@ impl App {
         if self.focus != Focus::Devices && self.view == View::Containers {
             if let Some((d, c)) = self.selected_container() {
                 if (c.devcontainer || c.allowed) && c.state == "running" {
-                    self.dialog = Some(Dialog::ContainerProvider(d, c.scope()));
-                    self.dialog_selected = 0;
+                    self.open_container_chooser(d, c.scope());
                 } else {
                     self.open_container_actions();
                 }
@@ -2455,8 +2458,7 @@ impl App {
                 if let Some(scope) = &b.container {
                     let mut scope = scope.clone();
                     scope.folder = b.path.clone();
-                    self.dialog = Some(Dialog::ContainerProvider(b.device, scope));
-                    self.dialog_selected = 0;
+                    self.open_container_chooser(b.device, scope);
                     return;
                 }
             }
@@ -2464,8 +2466,7 @@ impl App {
         if self.focus == Focus::Workspace && self.view == View::Work {
             if let Some((d, session)) = self.selected_session() {
                 if let Some(scope) = session.container {
-                    self.dialog = Some(Dialog::ContainerProvider(d, scope));
-                    self.dialog_selected = 0;
+                    self.open_container_chooser(d, scope);
                     return;
                 }
             }
@@ -2508,12 +2509,7 @@ impl App {
                     let d = b.device;
                     let mut scope = scope.clone();
                     scope.folder = b.path.clone();
-                    self.start_container_session(
-                        d,
-                        scope,
-                        menus::CONTAINER[self.dialog_selected].provider.into(),
-                        false,
-                    );
+                    self.start_container_session(d, scope, "shell".into(), false);
                     return;
                 }
             }
@@ -2835,14 +2831,18 @@ impl App {
             Dialog::SessionChooser(d, _) => self.host_session_choices(*d).len(),
             Dialog::DevcontainerUp(..) => 2,
             Dialog::ContainerActions(_, c) => container_action_labels(c).len(),
-            Dialog::ContainerProvider(..) => menus::CONTAINER.len(),
+            Dialog::ContainerProvider(d, scope) => self.container_session_choices(*d, scope).len(),
             Dialog::DestinationScope(_, containers) => 1 + containers.len(),
             Dialog::ContainerConfirm(..) => 2,
             Dialog::Links(links) => links.len(),
             Dialog::Device(purpose) => self.device_choices(*purpose).len(),
             Dialog::Provider(d, _) => self.provider_choices(*d).len(),
-            Dialog::Permissions(..) => 2,
-            Dialog::SessionPicker(_, _, _, _, rows) => rows.len() + 1,
+            Dialog::Permissions(..) | Dialog::ContainerPermissions(..) => 2,
+            Dialog::SessionPicker(_, _, scope, provider, rows) => {
+                rows.len()
+                    + 1
+                    + usize::from(container_agents::has_history(scope.as_ref(), provider))
+            }
             Dialog::PinnedEnded(..) => 2,
             Dialog::Jobs => self.job_rows().len(),
             Dialog::Delete(..) | Dialog::StopShell(..) => 2,
@@ -2878,6 +2878,7 @@ impl App {
         }
         let session_choices = match &dialog {
             Dialog::SessionChooser(d, _) => Some(self.host_session_choices(*d)),
+            Dialog::ContainerProvider(d, scope) => Some(self.container_session_choices(*d, scope)),
             _ => menus::session_choices(&dialog).map(|choices| choices.iter().collect()),
         };
         if let Some(choices) = session_choices {
@@ -3097,8 +3098,21 @@ impl App {
                         }
                     }
                     Dialog::ContainerProvider(d, scope) => {
-                        self.dialog = None;
-                        self.start_container_session(d, scope, "shell".into(), false);
+                        if let Some(choice) = self
+                            .container_session_choices(d, &scope)
+                            .get(self.dialog_selected)
+                        {
+                            self.choose_container_profile(d, scope, choice.provider.into());
+                        }
+                    }
+                    Dialog::ContainerPermissions(d, scope, provider, resume) => {
+                        self.launch_container_agent(
+                            d,
+                            scope,
+                            provider,
+                            self.dialog_selected == 1,
+                            resume,
+                        );
                     }
                     Dialog::ContainerConfirm(d, c, action) => {
                         self.dialog = None;
@@ -3197,18 +3211,30 @@ impl App {
                         self.create_permission_session(d, path, provider, yolo, resume);
                     }
                     Dialog::SessionPicker(d, path, scope, provider, rows) => {
-                        self.dialog = None;
-                        let provider = if provider.is_empty() {
-                            "shell".into()
-                        } else {
-                            provider
-                        };
                         if let Some(session) = rows.get(self.dialog_selected) {
+                            self.dialog = None;
                             self.open_session(d, session.clone(), false);
                         } else if let Some(scope) = scope {
-                            self.start_container_session(d, scope, provider, false);
+                            if provider.is_empty() {
+                                self.open_container_chooser(d, scope);
+                            } else if provider == "shell" {
+                                self.dialog = None;
+                                self.start_container_session(d, scope, provider, false);
+                            } else {
+                                let resume = self.dialog_selected == rows.len() + 1;
+                                self.container_permissions(d, scope, provider, resume);
+                            }
                         } else {
-                            self.create_at(d, path, provider);
+                            self.dialog = None;
+                            self.create_at(
+                                d,
+                                path,
+                                if provider.is_empty() {
+                                    "shell".into()
+                                } else {
+                                    provider
+                                },
+                            );
                         }
                     }
                     Dialog::PinnedEnded(d, session) => {
@@ -3366,6 +3392,10 @@ impl App {
         if reply.generation < self.device_generation_floor || reply.device >= self.devices.len() {
             return;
         }
+        if let Operation::ContainerProviders { scope } = &reply.op {
+            self.apply_container_profiles(reply.device, scope, reply.result);
+            return;
+        }
         if let Operation::ContainerFiles { scope, operation } = &reply.op {
             if self
                 .browser
@@ -3486,7 +3516,10 @@ impl App {
         }
         if matches!(
             reply.op,
-            Operation::Create(_) | Operation::CreateYolo(_) | Operation::ContainerCreate { .. }
+            Operation::Create(_)
+                | Operation::CreateYolo(_)
+                | Operation::ContainerCreate { .. }
+                | Operation::ContainerAgentCreate { .. }
         ) {
             self.creating = false;
         }
@@ -3736,6 +3769,7 @@ impl App {
                                     "stop-agent-session-v1",
                                     "session-yolo-v1",
                                     "containers-v1",
+                                    "container-agents-v1",
                                     "pdf-pages-v1",
                                     "stable-update-v1",
                                 ]
@@ -3747,6 +3781,11 @@ impl App {
                     .unwrap_or_default();
                 self.providers
                     .insert(reply.device, (available, transport::now()));
+                if let Some(Dialog::ContainerProvider(d, scope)) = self.dialog.clone() {
+                    if d == reply.device {
+                        self.check_container_profiles(d, &scope);
+                    }
+                }
                 if matches!(self.dialog, Some(Dialog::SessionChooser(d, _)) if d == reply.device) {
                     self.dialog_selected = previous
                         .as_ref()
@@ -3856,7 +3895,10 @@ impl App {
                     }
                 }
             }
-            Operation::Create(_) | Operation::CreateYolo(_) | Operation::ContainerCreate { .. } => {
+            Operation::Create(_)
+            | Operation::CreateYolo(_)
+            | Operation::ContainerCreate { .. }
+            | Operation::ContainerAgentCreate { .. } => {
                 match serde_json::from_value::<Session>(value) {
                     Ok(s) => {
                         self.work[reply.device].sessions.retain(|current| {

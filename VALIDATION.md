@@ -1,5 +1,22 @@
 # Validation record
 
+## Container agent launch and native history — 2026-10-24
+
+Worktree/branch: `worktrees/container-agent-parity-20261024`, `feat/container-agent-parity-20261024`, based on `970f9f8`. Runtime commit `e34803b`; adversarial matrix commits `22edba8` and `f51a941`. Version 0.1.60 separates the new container-private helper from older payload decoders. No installed binary, remote fleet or conflicted root checkout was changed.
+
+PASS — final `cargo test --locked --offline -- --test-threads=1`: **620 passed, 0 failed, 1 protected live test ignored** (`/tmp/cx-container-full-final.log`). Native debug build, `cargo fmt --check`, and `git diff --check` passed.
+
+PASS — scoped UI checks: **202 tests** (`/tmp/cx-container-ui2.log`). Agent availability is tied to the exact device/engine/full ID/start/user/folder, never host PATH. Coverage includes late provider evidence preserving the selected shell, failed/mismatched/missing-time evidence, all eight fresh/history/permission choices, existing-runtime attach without create, history-row selection through refresh, explicit observation of a device marked down, unsupported-helper gating and explicit Shell independent of an old menu cursor. Fixture captures at 48/80/120 columns were inspected (`/tmp/cx-container-parity-captures`). These are TestBackend renderings, not physical screenshots. Local receipt time controls the short cache TTL; remote timestamps are validated but not compared against an unsynchronized viewer clock.
+
+PASS — fake-Docker public-helper matrix (`/tmp/cx-container-fixtures-final.log`): distinct same-folder containers return distinct profile evidence; old engine/start/user/replaced/stopped scopes refuse before execution; engine/user/start changes during the probe invalidate its result; missing executable and mismatched requested directory refuse; an actual older binary rejects the new agent-create operation without fresh fallback. Five pure harness tests passed.
+
+PASS — initial real Docker matrix (`/tmp/cx-container-live1.log`): no helper installation during provider discovery; nonexecutable providers omitted; all eight Claude/Codex × fresh/native-history × Default/YOLO argv combinations and quoted/Unicode cwd; exact repeat request and watch retain one runtime; changed provider/resume/permission intent under the same key refuses; legacy operation and shell resume refuse; an owned container restart invalidates discovery and launch scope. Uses preinstalled Ubuntu 24.04, `--pull=never`, `--network=none`, private default/managed tmux sockets, synthetic static providers and only a temporary proof mount. No real provider configuration/history or unrelated session is inspected or changed.
+
+The startup-directory regression was reproduced by `cargo test --locked --offline --bin cx container_agent_restores_requested_folder_after_shell_startup -- --nocapture`: actual launch script returned `/` instead of the selected quoted folder (`/tmp/cx-container-cwd-unit-red.log`). After restoring cwd following login startup, the same regression passed (`/tmp/cx-container-cwd-unit-green.log`). PASS — final live acceptance includes a disposable login file that changes directories, plus public `container-providers --directory` and `container-new --resume --yolo --directory` checks (`/tmp/cx-container-live-final.log`). All earlier live cases passed again.
+
+Remaining limits: actual provider sign-in, availability/selection of real history, physical terminal/provider interaction, nonroot real-image launch, actual Node Dev Containers CLI environment handling and remote robot workflows are not established by these fixtures. Provider history remains in its own native picker; CX does not index transcripts or infer a conversation from cwd. Podman, custom/inner-container tmux and nested-client attachment remain unsupported. Updated endpoint helpers are required for container agents in the UI. The older container-create operation retains fresh-launch compatibility and refuses history intent; new agent operations are not retried or downgraded.
+
+
 ## Unified session workspace — 2026-10-23
 
 Implementation branch: `feat/session-workspace-20261023`, based on `8f369e6` / code baseline `c60e1a2`. No main-checkout conflict resolution or installed/fleet release was performed.
@@ -140,7 +157,7 @@ Final prior milestone full browser-flow fixtures also PASS at 80x24, 120x40, 48x
 
 ## Yazi-inspired browser and transfer ecosystem (2026-10-06)
 
-Integration based on fb656b0, main, innovation Linux x86_64/tmux 3.7c; remote backend verybeautifulserver Ubuntu24.04/tmux3.4. Backend commits 9255cdd and fb656b0 integrated before UI; subsequent integration commit contains final code.
+Integration based on fb656b0, main, innovation Linux x86_64/tmux 3.7c; remote backend verybeautifulserver Ubuntu 24.04/tmux3.4. Backend commits 9255cdd and fb656b0 integrated before UI; subsequent integration commit contains final code.
 
 | Result | Actual command/scenario | Evidence |
 |---|---|---|
@@ -765,7 +782,7 @@ Release v0.1.35 checks reached the new CLI fixture, then failed because the clea
 
 User chose stacked parents/current folder, then specified side panel only. The Selected panel now shows device, bounded parent stack, highlighted current folder and selected item, following the active split pane. Workspace path headers are removed, including bitmap previews; native preview geometry gains the reclaimed row. Short panels reserve the current folder/item before ancestors, and narrow panels use compact branch marks. Capture fixtures at48x24,80x24,120x40 (single/split) are `/tmp/cx-sidebar-hierarchy-captures`; these are TestBackend captures, not physical screenshots.
 
-PASS — final locked500 tests, one protected live test ignored (`/tmp/cx-v037-final-rust.log`). Actual rebuilt037 terminal tests pass file search/navigation at 48/80/120, duplicate-wheel replay in Files/Sessions, password show/hide/cancel, unsupported/existing/broken/offline enrollment, source previews in ANSI/monochrome and three PDF pages via keys/wheel. Single detach passes local tmux3.7c. Ubuntu24.04/tmux3.4 original fixture failed6/6; query-reply/size-only probes each failed3/3. A server round-trip confirming exact command output before the first Ctrl+] passed10/10, with unchanged shell-survival/termios assertions and bounded cleanup. This fixes fixture synchronization during startup redraw, rather than allowing multiple detach keys.
+PASS — final locked500 tests, one protected live test ignored (`/tmp/cx-v037-final-rust.log`). Actual rebuilt037 terminal tests pass file search/navigation at 48/80/120, duplicate-wheel replay in Files/Sessions, password show/hide/cancel, unsupported/existing/broken/offline enrollment, source previews in ANSI/monochrome and three PDF pages via keys/wheel. Single detach passes local tmux3.7c. Ubuntu 24.04/tmux3.4 original fixture failed6/6; query-reply/size-only probes each failed3/3. A server round-trip confirming exact command output before the first Ctrl+] passed10/10, with unchanged shell-survival/termios assertions and bounded cleanup. This fixes fixture synchronization during startup redraw, rather than allowing multiple detach keys.
 
 v0.1.36 both static architecture builds and both distro matrices passed (workflow37725055049), but the original detach fixture prevented publication. v035/v036 tags remain unchanged and unpublished. v037 carries the corrected fixture and the user's final sidebar direction. ARM/current signed publication and fleet deployment remain separate gates until recorded below. Internet sharing/reverse enforcement and optional PDF/agent runtimes remain as previously documented.
 

@@ -12,7 +12,7 @@ The user's settled preferences are **show all; pins first** and **keep ended pin
 
 ## Next features, ranked by workflow value
 
-The user selected **container agent launch and resume parity** as the next implementation cycle. The broader ranking below describes workflow value; implementation proceeds with that selected priority.
+The user selected **container agent launch and resume parity** next; its first slice is implemented on `feat/container-agent-parity-20261024`. It includes scoped executable evidence, existing-runtime selection, fresh/native-history launch and permissions. Physical provider/history and Node Dev Containers CLI acceptance remain open; see validation. The ranking below retains the broader feature proposals.
 
 1. **Exact conversation continuation.** Show provider-native conversation ID, user-visible name and last observed time before resuming a stopped Claude/Codex thread. An attached shell, tmux runtime and provider conversation are separate identities. Avoid guessing from the folder or “latest”; do not merge distinct threads or kill duplicate-looking processes.
 2. **External endpoint coverage and nested switching.** Register custom tmux endpoints and define same-server switch/return behavior before offering a persistent terminal launch profile. Inner-container tmux needs its own endpoint adapter and scope validation.

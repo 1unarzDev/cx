@@ -1421,7 +1421,12 @@ pub(super) fn render_at(
                 std::iter::once("Host files".into()).chain(containers.iter().map(|c| format!("{} · {} · {}", if c.devcontainer { "devcontainer" } else { "container" }, safe_label(&c.name), &c.id[..12]))).collect(),
                 format!("Choose the host or a running container, then browse to a folder and press Enter to transfer.{}", if app.containers_loading.contains(d) { "\nChecking containers…" } else if app.container_errors.contains_key(d) { "\nContainer discovery failed · Escape, refresh the device and retry. Host files remain available." } else { "" }),
             ),
-            Dialog::ContainerProvider(d,scope)=>(format!("Session · {} / {}",safe_label(&app.devices[*d].name),safe_label(&scope.name)),vec!["Shell · container user".into()],"Runtime availability is checked before launch. No packages are installed. Enter choose · Escape cancel".into()),
+            Dialog::ContainerProvider(d,scope)=>(format!("Session · {} / {}",safe_label(&app.devices[*d].name),safe_label(&scope.name)),app.container_session_choices(*d, scope).iter().map(|c| c.label.to_string()).collect(),app.container_profile_detail(*d, scope)),
+            Dialog::ContainerPermissions(d,scope,provider,resume) => (
+                format!("{} permissions · {} / {}", safe_label(provider), identity(&app.devices[*d]), safe_label(&scope.name)),
+                vec!["Default · existing container permissions".into(), "YOLO · bypass approvals".into()],
+                format!("User {} · {}\n{}\nYOLO bypasses provider approval prompts; Codex also disables its sandbox.\nSign-in and history belong to this container user.", safe_label(&scope.user), safe_label(&scope.folder), if *resume { "Choose a past conversation in the provider's native picker; no latest selection." } else { "Start a new conversation." }),
+            ),
             Dialog::ContainerConfirm(d,c,action)=>(format!("{} {}?",action,safe_label(&c.name)),vec!["Cancel · keep current state".into(),format!("{} selected container",action)],format!("{}\n{}\n{}\n{}\n{}",safe_label(&app.devices[*d].name),safe_label(&c.name),safe_label(&c.id[..12]),if action=="Rebuild"{"The CLI replaces the container and its writable layer and ends sessions/transfers using it. Back up container-only files first. Workspace hooks may run and Compose services may restart. Mounted data follows the workspace configuration; no volume removal flag is used. Allow up to 10 minutes."}else if action=="Stop"{"Running work in this container will end."}else if action=="Enable access"{"Enable this container for terminals, files, transfers and lifecycle actions on this host account."}else{"Existing image, volumes and ports are preserved."},if action=="Rebuild"{"The selected workspace must uniquely match this container. Rebuild follows its declared configuration."}else{"Only this exact container ID is targeted. No rebuild/removal or network changes."})),
             Dialog::Device(purpose) => (
                 match purpose {
@@ -1519,7 +1524,7 @@ pub(super) fn render_at(
             ),
             Dialog::SessionPicker(d, path, scope, provider, rows) => (
                 format!("Sessions here · {}", identity(&app.devices[*d])),
-                rows.iter().map(|s| format!("{} · {} · {} · {}", safe_label(&s.provider), safe_label(&s.name), app.session_status(*d, s), safe_label(&s.id.chars().rev().take(6).collect::<String>().chars().rev().collect::<String>()))).chain(std::iter::once(format!("+ New {} session", if provider.is_empty() { "shell" } else { provider }))).collect(),
+                rows.iter().map(|s| format!("{} · {} · {} · {}", safe_label(&s.provider), safe_label(&s.name), app.session_status(*d, s), safe_label(&s.id.chars().rev().take(6).collect::<String>().chars().rev().collect::<String>()))).chain(std::iter::once(if provider.is_empty() && scope.is_some() { "+ New session…".into() } else { format!("+ New {} session", if provider.is_empty() { "shell" } else { provider }) })).chain(container_agents::has_history(scope.as_ref(), provider).then(|| format!("Choose past conversation in {}…", safe_label(provider)))).collect(),
                 format!("{}{}\nEnter joins the selected runtime · New creates separate work\nNo conversation is selected by recency.", scope.as_ref().map(|c| format!("{} · ", safe_label(&c.name))).unwrap_or_default(), safe_label(if path.is_empty() { scope.as_ref().map(|c| c.folder.as_str()).unwrap_or("~") } else { path })),
             ),
             Dialog::PinnedEnded(d, s) => (

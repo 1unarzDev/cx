@@ -216,6 +216,8 @@ def live_checks(f, image):
         require(len(owned) == 64 and all(c in '0123456789abcdef' for c in owned), 'invalid owned container ID')
         for provider in ('codex', 'claude'):
             engine('cp', str(executable), owned + ':/usr/local/bin/' + provider)
+        # A login startup cd must not override the explicitly chosen folder.
+        engine('exec', owned, '/bin/sh', '-c', "printf '\ncd /\n' >> /root/.bash_profile")
         folder = "/parity project ' \u2603"
         engine('exec', owned, 'mkdir', '-p', folder)
         container = checked_reply(f, 'container_inspect', dict(id=owned))

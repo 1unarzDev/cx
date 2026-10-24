@@ -47,7 +47,7 @@ In **Files**, Enter previews a file. To transfer files, select with Space, press
 
 **Network → All devices** groups discoveries beneath each observer. Selecting one device shows only its interfaces, routes and neighbors. Devices reachable through another host use saved SSH jump routes. Internet sharing and full reverse-access enforcement are still in development; see [robot mesh sharing](docs/robot-mesh-sharing.md).
 
-**Containers** groups Docker containers and devcontainers beneath each device. Start persistent container shells/agents, browse container files, or explicitly start a configured workspace. See the [container guide](docs/containers.md).
+**Containers** groups Docker containers and devcontainers beneath each device. Join existing work, start a persistent shell or installed Claude/Codex agent, choose past conversations in the provider’s native picker, browse files, or explicitly start a configured workspace. See the [container guide](docs/containers.md).
 
 CX checks signed updates in the background. You can also run `cx update --check` or `cx update --device NAME`; existing sessions keep running.
 

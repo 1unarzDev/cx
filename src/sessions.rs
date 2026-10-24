@@ -1245,6 +1245,8 @@ pub fn create_container(
         request.directory == scope.folder,
         "Container launch directory does not match the selected scope"
     );
+    // Validate unsupported shell permissions/history before any container work.
+    provider_command(&request.provider, yolo, request.resume)?;
     crate::containers::prepare(scope, &request.provider)?;
     create_with_permissions(request, yolo, Some(scope))
 }
@@ -1279,7 +1281,7 @@ fn read_launch_record<T: serde::de::DeserializeOwned>(path: &std::path::Path) ->
     use std::os::unix::fs::MetadataExt;
     let file = fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
     let metadata = file.metadata()?;
     anyhow::ensure!(

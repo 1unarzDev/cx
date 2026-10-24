@@ -846,7 +846,8 @@ uid=$(id -u)
 while IFS=: read -r name password entry_uid gid gecos home shell; do
  if test "$entry_uid" = "$uid"; then export HOME="$home"; break; fi
 done < /etc/passwd
-cd -- "$1"
+cx_agent_folder=$1
+cd -- "$cx_agent_folder"
 shift
 if command -v infocmp >/dev/null 2>&1 && ! infocmp "$TERM" >/dev/null 2>&1; then export TERM=xterm-256color; fi
 # docker exec does not execute the ROS image's entrypoint. Load only its selected distro.
@@ -854,8 +855,8 @@ if ! command -v ros2 >/dev/null 2>&1; then
  case "${ROS_DISTRO:-}" in ''|*[!a-zA-Z0-9_-]*) ;; *) if test -f "/opt/ros/$ROS_DISTRO/setup.sh"; then . "/opt/ros/$ROS_DISTRO/setup.sh"; fi ;; esac
 fi
 if test "$1" != shell; then
- if command -v bash >/dev/null 2>&1; then exec bash -ilc 'exec "$@"' cx-agent "$@"; fi
- if command -v zsh >/dev/null 2>&1; then exec zsh -ilc 'exec "$@"' cx-agent "$@"; fi
+ if command -v bash >/dev/null 2>&1; then exec bash -ilc 'cd -- "$1" && shift && exec "$@"' cx-agent "$cx_agent_folder" "$@"; fi
+ if command -v zsh >/dev/null 2>&1; then exec zsh -ilc 'cd -- "$1" && shift && exec "$@"' cx-agent "$cx_agent_folder" "$@"; fi
  exec "$@"
 fi
 if command -v bash >/dev/null 2>&1; then exec bash -il; fi
@@ -880,7 +881,8 @@ fn require_provider(available: &Value, provider: &str) -> Result<()> {
     );
     Ok(())
 }
-const PROVIDERS_SCRIPT: &str = r#"cx_profiles=shell
+const PROVIDERS_SCRIPT: &str = r#"if test "$#" -gt 0; then cd -- "$1" || exit; fi
+cx_profiles=shell
 for cx_provider in codex claude; do
  if test -n "${BASH_VERSION:-}"; then cx_path=$(type -P "$cx_provider" 2>/dev/null)
  elif test -n "${ZSH_VERSION:-}"; then cx_path=$(whence -p "$cx_provider" 2>/dev/null)
@@ -893,9 +895,9 @@ const PROVIDER_PROBE_WRAPPER: &str = r#"uid=$(id -u)
 while IFS=: read -r name password entry_uid gid gecos home shell; do
  if test "$entry_uid" = "$uid"; then export HOME="$home"; break; fi
 done < /etc/passwd
-if command -v bash >/dev/null 2>&1; then exec bash -ilc "$1";
-elif command -v zsh >/dev/null 2>&1; then exec zsh -ilc "$1";
-else exec /bin/sh -lc "$1"; fi
+if command -v bash >/dev/null 2>&1; then exec bash -ilc "$1" cx-provider-check "$2";
+elif command -v zsh >/dev/null 2>&1; then exec zsh -ilc "$1" cx-provider-check "$2";
+else exec /bin/sh -lc "$1" cx-provider-check "$2"; fi
 "#;
 fn parse_providers(bytes: &[u8]) -> Result<Vec<String>> {
     let line = std::str::from_utf8(bytes)?
@@ -931,6 +933,7 @@ pub fn providers(scope: &ContainerScope) -> Result<Value> {
         "cx-provider-check",
         PROVIDERS_SCRIPT,
     ]);
+    command.arg(crate::files::decode_path(&scope.folder)?);
     let found = parse_providers(&bounded(command, None, 8, 32768)?)?;
     check(scope)?;
     let observed_at = std::time::SystemTime::now()
@@ -1078,6 +1081,36 @@ fn terminal_command(container: &Container, scope: &ContainerScope, tty: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn container_agent_restores_requested_folder_after_shell_startup() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("selected ' folder");
+        fs::create_dir(&folder).unwrap();
+        let bash = dir.path().join("bash");
+        // Simulate a login startup file that changes directory before -c runs.
+        fs::write(
+            &bash,
+            r#"#!/bin/sh
+cd /
+shift
+exec /bin/sh -c "$@"
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&bash, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut c = Command::new("/bin/sh");
+        c.args(["-c", SHELL_SCRIPT, "cx-container"])
+            .arg(&folder)
+            .arg("/bin/pwd")
+            .env("PATH", format!("{}:/usr/bin:/bin", dir.path().display()))
+            .env("TERM", "xterm-256color");
+        assert_eq!(
+            text(bounded(c, None, 3, 32768).unwrap()).unwrap(),
+            folder.to_string_lossy()
+        );
+    }
+
     #[test]
     fn container_picker_args_survive_both_payload_versions() {
         use base64::Engine;

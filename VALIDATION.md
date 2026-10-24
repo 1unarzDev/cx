@@ -2,6 +2,8 @@
 
 ## Local 0.1.86 integration
 
+Installed integration commit `bef1def` locally under the maintenance lock, preserving a 0.1.85 rollback binary. Installed version and container CLI help passed; installed/build SHA-256 both `4fd42cccc6e40c6aff21e0ee5f88efa04811d05b8dd0108cac834d3dc9c61db6` (`/tmp/cx-deploy-install.log`). No live viewer or remote helper was restarted. Full staged whitespace check reports only unchanged v0.1.85 patch-file context lines in `scripts/reptyr/cx-reptyr.patch`; edited source checks passed.
+
 - Integrated the installed v0.1.85 baseline without replacing its adoption, metadata, command panel or peer modules with older versions.
 - `cargo test --locked --offline -- --test-threads=1`: **718 passed, 0 failed, 1 protected live test ignored** (`/tmp/cx-deploy-tests3.log`). Updated the older cache-discard assertion to verify stale cache preservation and mandatory attachment rechecking.
 - Optimized offline release build, formatting and whitespace checks passed.

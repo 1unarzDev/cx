@@ -4,7 +4,7 @@
 
 Integrated container parity (`5863f5a`) and session workspace (`970f9f8`) with the installed release baseline `v0.1.85` (`ff7ebdc`) on `deploy/session-workspace-20261024`. This preserves external terminal adoption, task/activity metadata, command panel and startup/handoff improvements. A failed session refresh now retains stale navigation rows, clears transient activity, and requires a new successful check before attachment.
 
-Deployment scope: local executable only, atomic replacement with a 0.1.85 rollback copy. No public release, push, remote-helper rollout, terminal restart or personal network/trust changes. Earlier milestone deployment notes below are historical. Remote endpoints need a matching helper for container agent parity. Native provider authentication/history and physical terminal acceptance remain unvalidated; custom/inner-container tmux remains future work.
+Deployed locally from integration commit `bef1def`: `/home/lunarz/.local/bin/cx` now reports 0.1.86 and matches the optimized build SHA-256. Atomic replacement used the maintenance lock; rollback is `/home/lunarz/.local/bin/cx.rollback-0.1.85-session-deploy`. No public release, push, remote-helper rollout, terminal restart or personal network/trust changes. Earlier milestone deployment notes below are historical. Remote endpoints need a matching helper for container agent parity. Native provider authentication/history and physical terminal acceptance remain unvalidated; custom/inner-container tmux remains future work.
 
 ## Container agent launch/history parity — 2026-10-24
 

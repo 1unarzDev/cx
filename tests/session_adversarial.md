@@ -95,3 +95,26 @@ That binary is externally built; this records its identity, not an assertion
 that it was compiled from the harness base. No live tmux, Docker, service,
 physical terminal, benchmark or actual-network test was run by the author.
 Root records live outcomes separately after integration.
+
+## Checked native attachment PTY supplement
+
+```sh
+python3 -B tests/session_adversarial_attach.py --self-test
+# Root only, after checked-attach CLI integration:
+python3 -B tests/session_adversarial_attach.py /absolute/path/to/cx --run-owned-tmux
+```
+
+This supplement requires `native-attach-checked PAYLOAD` and
+`native-attach-check PAYLOAD SERVER_PID SESSION_ID CREATED`. PAYLOAD is standard
+base64 of JSON `{"session": <exact returned Session>, "observe": false}`.
+It validates the same-queue predicate, actual managed/external client attachment,
+read-only watch input rejection, termios restoration, external and managed global
+option/inventory preservation, changed server generation, wrong creation/numeric
+identity, renamed original with a new same-name peer, and dead selected runtime.
+Two owned servers are queried by exact socket; PTY bytes are discarded rather
+than captured. The original six self-tests and the payload self-test ran; live
+checked attachment awaits root execution against the integrated binary.
+
+The tiny interval between predicate acceptance and tmux attachment is not forced
+by this supplement. Root's same-command-queue implementation plus its targeted
+predicate tests must establish that ordering; a preflight-only pass cannot.

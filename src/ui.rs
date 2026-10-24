@@ -3766,6 +3766,26 @@ impl App {
         if reply.device >= self.devices.len() || reply.device >= self.work.len() {
             return;
         }
+        if let Operation::SessionPaneInput {
+            pane_id, session, ..
+        } = &reply.op
+        {
+            if reply.result.is_err()
+                && self
+                    .session_preview
+                    .focused
+                    .as_ref()
+                    .is_some_and(|(device, focused, pane)| {
+                        device.id == self.devices[reply.device].id
+                            && pane == pane_id
+                            && focused.terminal == session.terminal
+                    })
+            {
+                self.session_preview.focused = None;
+                self.set_notice("Terminal input failed; focus released".into());
+            }
+            return;
+        }
         if matches!(reply.op, Operation::SessionPreview { .. }) {
             self.apply_session_preview(reply);
             return;
@@ -4854,6 +4874,10 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        if self.pane_focused() {
+            self.session_pane_key(key);
+            return;
+        }
         // A command panel captures input (including Ctrl+C) while it is open.
         if self.command_panel.is_some() {
             self.command_panel_key(key);
@@ -5477,9 +5501,11 @@ impl App {
                         View::Containers => self.open_container_actions(),
                         View::Work => {
                             if let Some((d, s)) = self.selected_session() {
-                                self.open_session(d, s, false);
+                                if !self.focus_session_pane() {
+                                    self.open_session(d, s, false);
+                                }
                             } else if empty_work_can_create(self) {
-                                self.start_shell();
+                                self.session_shortcut();
                             }
                         }
                         View::Files => {
@@ -5895,6 +5921,9 @@ impl App {
         self.dialog = Some(Dialog::Links(links));
     }
     fn mouse(&mut self, mouse: MouseEvent, area: Rect) -> bool {
+        if self.pane_focused() {
+            return true;
+        }
         if matches!(
             mouse.kind,
             MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
@@ -6244,7 +6273,6 @@ fn sidebar_actions(app: &App) -> Vec<(Action, &'static str)> {
         (Action::Files, "Files"),
         (Action::Network, "Network"),
         (Action::Containers, "Containers"),
-        (Action::Shell, "New shell"),
         (Action::Jobs, "Transfers"),
     ];
     actions.retain(|(action, _)| {
@@ -8694,6 +8722,7 @@ fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender<Reply>) {
             task.op,
             Operation::CommandPanel { .. }
                 | Operation::SessionPreview { .. }
+                | Operation::SessionPaneInput { .. }
                 | Operation::CapturePane { .. }
                 | Operation::PaneInput { .. }
                 | Operation::PaneClose { .. }
@@ -9393,6 +9422,10 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                         app.key(k);
                         dirty = true;
                     }
+                    Event::Paste(text) if app.pane_focused() => {
+                        app.session_pane_paste(&text);
+                        dirty = true;
+                    }
                     Event::Resize(_, _) => {
                         native_preview.hide();
                         dirty = true;
@@ -9503,7 +9536,7 @@ fn file_endpoint_label(device: &Device, scope: &Option<ContainerScope>) -> Strin
 /// Encode a key for delivery to a command pane, or None if it has no bytes.
 fn encode_key(key: KeyEvent) -> Option<Vec<u8>> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    Some(match key.code {
+    let mut bytes = match key.code {
         KeyCode::Char(c) => {
             if ctrl {
                 let b = (c.to_ascii_uppercase() as u8).wrapping_sub(0x40);
@@ -9517,6 +9550,7 @@ fn encode_key(key: KeyEvent) -> Option<Vec<u8>> {
                 c.encode_utf8(&mut buf).as_bytes().to_vec()
             }
         }
+        KeyCode::Esc => vec![0x1b],
         KeyCode::Enter => vec![b'\r'],
         KeyCode::Backspace => vec![0x7f],
         KeyCode::Tab => vec![b'\t'],
@@ -9530,7 +9564,11 @@ fn encode_key(key: KeyEvent) -> Option<Vec<u8>> {
         KeyCode::PageDown => b"\x1b[6~".to_vec(),
         KeyCode::Delete => b"\x1b[3~".to_vec(),
         _ => return None,
-    })
+    };
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        bytes.insert(0, 0x1b);
+    }
+    Some(bytes)
 }
 /// Inner panel size for a command panel, bounded for readability.
 fn command_panel_size(area: ratatui::layout::Size) -> (u16, u16) {

@@ -1,6 +1,5 @@
-//! Selected-only, ephemeral snapshots. No terminal input, emulation or persistence.
+//! Selected-only live tmux screen, with explicitly focused and identity-bound input.
 use super::*;
-
 #[derive(Default)]
 pub(super) struct Snapshot {
     key: Option<String>,
@@ -9,17 +8,20 @@ pub(super) struct Snapshot {
     last: Option<Instant>,
     lines: Vec<String>,
     status: String,
+    pane: String,
+    live: bool,
+    cursor: (u16, u16),
+    cursor_visible: bool,
+    bracketed_paste: bool,
+    application_cursor: bool,
+    pub(super) focused: Option<(Device, Session, String)>,
 }
 fn key(device: &Device, session: &Session) -> String {
     serde_json::json!([
         device.id,
         device.target,
-        session.id,
-        session.pid,
-        session.started,
         session.boot_id,
         session.socket,
-        session.process,
         session.terminal,
         session.container
     ])
@@ -54,7 +56,25 @@ pub(super) fn label(s: &Session) -> String {
     )
 }
 impl App {
+    pub(super) fn pane_focused(&self) -> bool {
+        self.session_preview.focused.is_some()
+    }
     fn preview_selection(&self) -> Option<(usize, Session)> {
+        if let Some((device, session, _)) = &self.session_preview.focused {
+            let d = self
+                .devices
+                .iter()
+                .position(|d| d.id == device.id && d.target == device.target)?;
+            if self.work[d].error.is_some()
+                || !self.work[d]
+                    .sessions
+                    .iter()
+                    .any(|s| key(device, s) == key(device, session))
+            {
+                return None;
+            }
+            return Some((d, session.clone()));
+        }
         if self.view != View::Work
             || self.dialog.is_some()
             || self.help
@@ -65,17 +85,108 @@ impl App {
         self.selected_session().filter(|(d, s)| {
             !outside_tmux(s)
                 && s.terminal.is_some()
-                && self
-                    .providers
-                    .get(d)
-                    .is_none_or(|(caps, _)| caps.iter().any(|c| c == "session-preview-v1"))
+                && self.providers.get(d).is_none_or(|(caps, _)| {
+                    caps.iter()
+                        .any(|c| c == "session-preview-v1" || c == "live-session-pane-v1")
+                })
                 && self.work[*d].error.is_none()
                 && self.session_status(*d, s).starts_with('+')
         })
     }
-    pub(super) fn refresh_session_preview(&mut self, width: u16) -> bool {
-        // Work uses a 21-column device rail; 120 columns leaves room for both panes.
-        let selection = (width >= 120).then(|| self.preview_selection()).flatten();
+    pub(super) fn focus_session_pane(&mut self) -> bool {
+        let Some((d, s)) = self.preview_selection() else {
+            return false;
+        };
+        if !self.session_preview.live
+            || self.session_preview.pane.is_empty()
+            || self.session_preview.key.as_ref() != Some(&key(&self.devices[d], &s))
+        {
+            return false;
+        }
+        self.session_preview.focused = Some((
+            self.devices[d].clone(),
+            s,
+            self.session_preview.pane.clone(),
+        ));
+        true
+    }
+    pub(super) fn session_pane_key(&mut self, event: KeyEvent) {
+        if event.modifiers.contains(KeyModifiers::CONTROL) && event.code == KeyCode::Char(']') {
+            self.session_preview.focused = None;
+            return;
+        }
+        let Some((d, _)) = self.preview_selection() else {
+            self.session_preview = Snapshot::default();
+            return;
+        };
+        let (_, session, pane_id) = self.session_preview.focused.clone().unwrap();
+        if event.modifiers.contains(KeyModifiers::CONTROL) && event.code == KeyCode::Char('o') {
+            self.session_preview.focused = None;
+            self.open_session(d, session, false);
+            return;
+        }
+        if let Some(mut bytes) = encode_key(event) {
+            if self.session_preview.application_cursor
+                && event.modifiers.is_empty()
+                && matches!(
+                    event.code,
+                    KeyCode::Up
+                        | KeyCode::Down
+                        | KeyCode::Left
+                        | KeyCode::Right
+                        | KeyCode::Home
+                        | KeyCode::End
+                )
+                && bytes.len() == 3
+            {
+                bytes[1] = b'O';
+            }
+            let hex = bytes.iter().map(|b| format!("{b:02x}")).collect();
+            if !self.send(
+                d,
+                Operation::SessionPaneInput {
+                    session,
+                    pane_id,
+                    hex,
+                },
+            ) {
+                self.session_preview.focused = None;
+                self.set_notice("Terminal input was not queued; focus released".into());
+            }
+        }
+    }
+    pub(super) fn session_pane_paste(&mut self, text: &str) {
+        let text = if self.session_preview.bracketed_paste {
+            format!("\x1b[200~{text}\x1b[201~")
+        } else {
+            text.to_owned()
+        };
+        if text.len() > 4096 {
+            self.set_notice("Paste exceeds 4096 bytes; nothing sent".into());
+            return;
+        }
+        let Some((d, _)) = self.preview_selection() else {
+            self.session_preview = Snapshot::default();
+            return;
+        };
+        let Some((_, session, pane_id)) = self.session_preview.focused.clone() else {
+            return;
+        };
+        let hex = text.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+        if !self.send(
+            d,
+            Operation::SessionPaneInput {
+                session,
+                pane_id,
+                hex,
+            },
+        ) {
+            self.session_preview.focused = None;
+            self.set_notice("Paste was not queued; focus released".into());
+        }
+    }
+    pub(super) fn refresh_session_preview(&mut self, _width: u16) -> bool {
+        let selection = self.preview_selection();
         let next = selection.as_ref().map(|(d, s)| key(&self.devices[*d], s));
         let changed = next != self.session_preview.key;
         if changed {
@@ -89,11 +200,12 @@ impl App {
         let Some((device, session)) = selection else {
             return changed;
         };
+        let interval = if self.pane_focused() { 100 } else { 250 };
         if self.session_preview.inflight
             || self
                 .session_preview
                 .last
-                .is_some_and(|t| t.elapsed() < Duration::from_secs(2))
+                .is_some_and(|t| t.elapsed() < Duration::from_millis(interval))
         {
             return changed;
         }
@@ -111,9 +223,6 @@ impl App {
         if sent {
             self.pending_requests.set(self.pending_requests.get() + 1);
             self.session_preview.inflight = true;
-            if self.session_preview.lines.is_empty() {
-                self.session_preview.status = "Reading terminal snapshot…".into();
-            }
         }
         changed || sent
     }
@@ -131,113 +240,119 @@ impl App {
             return;
         }
         self.session_preview.inflight = false;
-        self.session_preview.lines.clear();
         match reply.result {
             Ok(value) => {
-                let mut budget = 24 * 1024;
-                for line in value["lines"].as_array().into_iter().flatten().take(60) {
-                    let Some(line) = line.as_str() else {
-                        continue;
-                    };
-                    let safe = safe_text(line);
-                    let end = safe
-                        .char_indices()
-                        .map(|(i, _)| i)
-                        .chain(std::iter::once(safe.len()))
-                        .take_while(|i| *i <= budget)
-                        .last()
-                        .unwrap_or(0);
-                    self.session_preview.lines.push(safe[..end].to_owned());
-                    budget -= end;
-                    if budget == 0 {
+                let pane = value["pane_id"].as_str().unwrap_or("").to_owned();
+                if self
+                    .session_preview
+                    .focused
+                    .as_ref()
+                    .is_some_and(|(_, _, p)| p != &pane)
+                {
+                    self.session_preview.focused = None;
+                }
+                self.session_preview.pane = pane;
+                self.session_preview.live = value["live"].as_bool() == Some(true);
+                if !self.session_preview.live {
+                    self.session_preview.focused = None;
+                }
+                self.session_preview.cursor = (
+                    value["cursor_x"].as_u64().unwrap_or(0).min(65535) as u16,
+                    value["cursor_y"].as_u64().unwrap_or(0).min(65535) as u16,
+                );
+                self.session_preview.bracketed_paste =
+                    value["bracketed_paste"].as_bool().unwrap_or(false);
+                self.session_preview.application_cursor =
+                    value["application_cursor"].as_bool().unwrap_or(false);
+                self.session_preview.cursor_visible =
+                    value["cursor_visible"].as_bool().unwrap_or(false);
+                self.session_preview.lines.clear();
+                let lines = value.get("styled_lines").unwrap_or(&value["lines"]);
+                let mut budget = 256 * 1024;
+                for line in lines
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .take(300)
+                    .filter_map(|v| v.as_str())
+                {
+                    if line.len() > budget {
                         break;
                     }
+                    budget -= line.len();
+                    self.session_preview.lines.push(line.to_owned());
                 }
-                self.session_preview.status = if self.session_preview.lines.is_empty() {
-                    "Terminal snapshot is empty".into()
+                self.session_preview.status = if self.session_preview.live {
+                    "Enter · focus terminal"
                 } else {
-                    "Read-only · refreshes every 2s".into()
-                };
+                    "Enter · attach"
+                }
+                .into();
             }
-            Err(_) => self.session_preview.status = "Preview unavailable · Enter to attach".into(),
+            Err(_) => {
+                self.session_preview.focused = None;
+                self.session_preview.live = false;
+                self.session_preview.lines.clear();
+                self.session_preview.status = "Terminal unavailable · refresh to check".into();
+            }
         }
     }
 }
 pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
-    let Some((d, s)) = app.selected_session() else {
+    let Some((d, s)) = app.preview_selection().or_else(|| app.selected_session()) else {
         return area;
     };
-    if area.width < 90 || frame.area().width < 120 {
-        if area.height < 10 {
-            return area;
-        }
-        let parts = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(5), Constraint::Length(3)])
-            .split(area);
-        frame.render_widget(
-            Paragraph::new(format!(
-                "{} · {}\n{} · widen for snapshot",
-                label(&s),
-                identity(&app.devices[d]),
-                safe_label(&s.directory)
-            ))
-            .style(muted()),
-            parts[1],
-        );
-        return parts[0];
+    let focused = app.pane_focused();
+    if !focused && (area.width < 90 || frame.area().width < 120) {
+        return area;
     }
-    let parts = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-        .split(area);
-    let border = block("Selected session · snapshot".into(), false);
-    let inner = border.inner(parts[1]);
-    frame.render_widget(border, parts[1]);
-    let metadata = vec![
-        Line::from(label(&s)),
-        Line::from(identity(&app.devices[d])),
-        Line::from(session_folder_label(&s.directory)),
-        Line::from(format!(
-            "{} · {}",
-            safe_label(&s.provider),
-            safe_label(&s.id)
-        )),
-        Line::from(app.session_status(d, &s)),
-        Line::from(""),
-    ];
-    let metadata = Paragraph::new(metadata).wrap(Wrap { trim: false });
-    let height = (metadata.line_count(inner.width) as u16)
-        .min(10)
-        .min(inner.height.saturating_sub(3));
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(height), Constraint::Min(0)])
-        .split(inner);
-    frame.render_widget(metadata, sections[0]);
-    let mut lines = Vec::new();
-    if app.session_preview.key.as_ref() == Some(&key(&app.devices[d], &s)) {
-        lines.push(Line::from(app.session_preview.status.clone()).style(muted()));
-        let available = usize::from(sections[1].height.saturating_sub(1));
-        let skip = app.session_preview.lines.len().saturating_sub(available);
-        lines.extend(
-            app.session_preview
-                .lines
-                .iter()
-                .skip(skip)
-                .cloned()
-                .map(Line::from),
-        );
+    let (list, pane) = if focused {
+        (Rect::new(area.x, area.y, 0, 0), area)
     } else {
-        let reason = if s.terminal.is_none() || outside_tmux(&s) {
-            "No verified tmux terminal · metadata only"
-        } else if !app.session_status(d, &s).starts_with('+') {
-            "Session not confirmed live · refresh to check"
+        let parts = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+            .split(area);
+        (parts[0], parts[1])
+    };
+    let border = block(
+        format!("{} · {}", label(&s), identity(&app.devices[d])),
+        focused,
+    );
+    let inner = border.inner(pane);
+    frame.render_widget(border, pane);
+    let screen = Rect::new(
+        inner.x,
+        inner.y.saturating_add(1),
+        inner.width,
+        inner.height.saturating_sub(1),
+    );
+    frame.render_widget(
+        Paragraph::new(if focused {
+            "Ctrl+] · back to sessions · Ctrl+O · expand"
         } else {
-            "Preview unavailable · helper support required"
-        };
-        lines.push(Line::from(reason).style(muted()));
+            &app.session_preview.status
+        })
+        .style(muted()),
+        Rect::new(inner.x, inner.y, inner.width, inner.height.min(1)),
+    );
+    if app.session_preview.key.as_ref() == Some(&key(&app.devices[d], &s)) {
+        let (cx, cy) = app.session_preview.cursor;
+        let top = cy.saturating_sub(screen.height.saturating_sub(1));
+        let left = cx.saturating_sub(screen.width.saturating_sub(1));
+        let lines: Vec<_> = app
+            .session_preview
+            .lines
+            .iter()
+            .map(|s| rendering::ansi_line(s))
+            .collect();
+        frame.render_widget(Paragraph::new(lines).scroll((top, left)), screen);
+        if focused && app.session_preview.cursor_visible && screen.width > 0 && screen.height > 0 {
+            frame.set_cursor_position((
+                screen.x + cx.saturating_sub(left).min(screen.width - 1),
+                screen.y + cy.saturating_sub(top).min(screen.height - 1),
+            ));
+        }
     }
-    frame.render_widget(Paragraph::new(lines), sections[1]);
-    parts[0]
+    list
 }

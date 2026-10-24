@@ -472,7 +472,7 @@ pub(super) fn render_at(
                         if app.creating {
                             "Creating session…"
                         } else {
-                            "[ Enter / n  New shell ]"
+                            "[ Enter / n  New session ]"
                         },
                         if app.focus == Focus::Workspace && !app.creating {
                             selected_style()
@@ -1250,7 +1250,7 @@ pub(super) fn render_at(
         ]
     } else if empty_work_can_create(app) && app.focus == Focus::Workspace {
         vec![
-            ("Enter/n", "New shell"),
+            ("Enter/n", "New session"),
             (
                 if local_only(app) { "a" } else { "/" },
                 if local_only(app) {
@@ -1523,7 +1523,7 @@ pub(super) fn render_at(
                     ChooseDevice::Network => "Network · choose device or All devices",
                     ChooseDevice::AddGateway => "Add by SSH address · choose gateway",
                     ChooseDevice::SessionChooser => "New session · choose device",
-                    ChooseDevice::Shell => "New shell · choose device · starts in home",
+                    ChooseDevice::Shell => "New session · choose device · starts in home",
                     ChooseDevice::New => "New session · execution device",
                     ChooseDevice::Terminal => "SSH terminal · choose device · exit returns",
                     ChooseDevice::Files => "Files · choose device",
@@ -2268,7 +2268,7 @@ fn render_command_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 /// Parse a tmux `capture-pane -e` line (SGR escapes) into a styled Line.
-fn ansi_line(raw: &str) -> Line<'static> {
+pub(super) fn ansi_line(raw: &str) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut style = Style::default();
     let mut text = String::new();

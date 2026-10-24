@@ -3703,7 +3703,7 @@ fn workspace_polish_capture_matrix() {
                     assert!(text.contains("live"), "{width}x{height}: {text}");
                 }
                 if state == "first-run" {
-                    assert!(text.contains("New shell"), "{width}x{height}: {text}");
+                    assert!(text.contains("New session"), "{width}x{height}: {text}");
                     assert!(
                         text.contains("Add by SSH address"),
                         "{width}x{height}: {text}"
@@ -6258,7 +6258,7 @@ fn selected_snapshot_rejects_late_reply_and_clears_when_hidden() {
     a.work[0].fetched = transport::now();
     assert!(a.refresh_session_preview(160));
     let first = rx.try_recv().unwrap();
-    a.work[0].sessions[0].started = "replacement".into();
+    a.work[0].sessions[0].terminal.as_mut().unwrap().created = "replacement".into();
     assert!(a.refresh_session_preview(160));
     let second = rx.try_recv().unwrap();
     let reply = |task: Task| Reply {
@@ -6283,6 +6283,7 @@ fn selected_snapshot_rejects_late_reply_and_clears_when_hidden() {
         .map(|c| c.symbol())
         .collect();
     assert!(rendered.contains("fixture snapshot"));
+    a.view = View::Files;
     assert!(a.refresh_session_preview(80));
     terminal.draw(|f| render(f, &a)).unwrap();
     let rendered: String = terminal
@@ -6328,9 +6329,8 @@ fn selected_snapshot_requires_live_terminal_and_helper_support() {
     a.work[0].fetched = 0;
     assert!(!a.refresh_session_preview(160));
     a.work[0].fetched = transport::now();
-    assert!(!a.refresh_session_preview(80));
-    assert!(rx.try_recv().is_err());
-    assert!(a.refresh_session_preview(160));
+    assert!(a.refresh_session_preview(80));
+    assert!(!a.refresh_session_preview(160));
     assert!(matches!(
         rx.try_recv().unwrap().op,
         Operation::SessionPreview { .. }
@@ -6378,4 +6378,62 @@ fn selected_snapshot_mouse_does_not_navigate_session_list() {
     s.directory = "/".into();
     s.name = "shell".into();
     assert!(session_preview::label(&s).starts_with("/ ·"));
+}
+
+#[test]
+fn live_pane_focus_input_return_and_runtime_invalidation() {
+    let (mut a, rx) = queued_app();
+    a.work[0].sessions = vec![disposable_shell()];
+    a.providers
+        .get_mut(&0)
+        .unwrap()
+        .0
+        .push("live-session-pane-v1".into());
+    a.work[0].sessions[0].terminal = Some(crate::model::TerminalIdentity {
+        server_pid: 1,
+        server_start: "1".into(),
+        session_id: "$1".into(),
+        created: "1".into(),
+    });
+    a.work[0].fetched = transport::now();
+    assert!(a.refresh_session_preview(80));
+    let task = rx.try_recv().unwrap();
+    a.apply(Reply {device_id:Some("local".into()),execution_target:Some(None),preview:None,device:0,op:task.op,generation:task.generation,result:Ok(serde_json::json!({"live":true,"pane_id":"%1","styled_lines":["\u{1b}[31mlive screen"],"cursor_x":2,"cursor_y":0,"cursor_visible":true,"bracketed_paste":true,"application_cursor":true}))});
+    a.focus = Focus::Workspace;
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(a.pane_focused());
+    assert!(rx.try_recv().is_err());
+    a.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert!(
+        matches!(rx.try_recv().unwrap().op,Operation::SessionPaneInput{hex,..} if hex=="1b4f41")
+    );
+    a.session_pane_paste("ok");
+    assert!(
+        matches!(rx.try_recv().unwrap().op,Operation::SessionPaneInput{hex,..} if hex=="1b5b3230307e6f6b1b5b3230317e")
+    );
+    a.work[0].sessions[0].pid = 999;
+    a.work[0].sessions[0].started = "changed".into();
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        matches!(rx.try_recv().unwrap().op,Operation::SessionPaneInput{hex,pane_id,..} if hex=="1b" && pane_id=="%1")
+    );
+    let mut terminal = ratatui::Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|f| render(f, &a)).unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(text.contains("live screen"));
+    assert!(text.contains("Ctrl+]"));
+    a.key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL));
+    assert!(!a.pane_focused());
+    assert!(rx.try_recv().is_err());
+    assert!(a.focus_session_pane());
+    a.work[0].sessions.clear();
+    a.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert!(!a.pane_focused());
+    assert!(rx.try_recv().is_err());
 }

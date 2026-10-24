@@ -91,8 +91,77 @@ fn identity() -> (String, String, String) {
     (host, user, boot)
 }
 fn ids(managed: bool) -> Result<Vec<String>> {
+    Ok(snapshot(managed)?.into_iter().map(|s| s.id).collect())
+}
+
+// Only tmux-generated numeric fields enter this framing. Names and paths may
+// contain tabs/newlines and must remain separate reads, never inventory records.
+const SNAPSHOT_FORMAT: &str = "#{session_id}\t#{pane_pid}\t#{session_created}\t#{pane_id}\t#{pane_dead}\t#{pid}\t#{session_windows}\t#{window_panes}";
+#[derive(Debug)]
+struct SessionSnapshot {
+    id: String,
+    pane_pid: u32,
+    created: String,
+    pane_id: String,
+    dead: bool,
+    server_pid: u32,
+    windows: u32,
+    panes: u32,
+}
+impl SessionSnapshot {
+    fn ended(&self) -> bool {
+        // An expanded session may have live work outside its selected dead pane.
+        self.dead && self.windows == 1 && self.panes == 1
+    }
+}
+fn parse_snapshot(raw: &str) -> Result<Vec<SessionSnapshot>> {
+    let number = |s: &str| -> Result<u32> {
+        anyhow::ensure!(
+            !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()),
+            "invalid tmux numeric metadata"
+        );
+        Ok(s.parse()?)
+    };
+    raw.lines()
+        .map(|line| {
+            let columns: Vec<_> = line.split('\t').collect();
+            anyhow::ensure!(columns.len() == 8, "invalid tmux inventory metadata");
+            let id = columns[0]
+                .strip_prefix('$')
+                .context("invalid tmux session identity")?;
+            number(id)?;
+            let pane = columns[3]
+                .strip_prefix('%')
+                .context("invalid tmux pane identity")?;
+            number(pane)?;
+            anyhow::ensure!(
+                !columns[2].is_empty() && columns[2].bytes().all(|b| b.is_ascii_digit()),
+                "invalid tmux creation time"
+            );
+            let dead = number(columns[4])?;
+            let server_pid = number(columns[5])?;
+            let windows = number(columns[6])?;
+            let panes = number(columns[7])?;
+            anyhow::ensure!(
+                dead <= 1 && server_pid > 0 && windows > 0 && panes > 0,
+                "invalid tmux runtime metadata"
+            );
+            Ok(SessionSnapshot {
+                id: columns[0].into(),
+                pane_pid: number(columns[1])?,
+                created: columns[2].into(),
+                pane_id: columns[3].into(),
+                dead: dead == 1,
+                server_pid,
+                windows,
+                panes,
+            })
+        })
+        .collect()
+}
+fn snapshot(managed: bool) -> Result<Vec<SessionSnapshot>> {
     let mut c = tmux(managed)?;
-    c.args(["list-sessions", "-F", "#{session_id}"]);
+    c.args(["list-sessions", "-F", SNAPSHOT_FORMAT]);
     let out = c.output().context(
         "Persistent sessions require tmux on the execution device; use SSH terminal or Files",
     )?;
@@ -108,11 +177,7 @@ fn ids(managed: bool) -> Result<Vec<String>> {
         }
         bail!("cannot list tmux sessions: {}", e.trim());
     }
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter(|s| s.starts_with('$') && s[1..].bytes().all(|b| b.is_ascii_digit()))
-        .map(str::to_owned)
-        .collect())
+    parse_snapshot(std::str::from_utf8(&out.stdout).context("invalid tmux inventory encoding")?)
 }
 fn process_identity(pane: u32, provider: &str) -> Option<ProcessIdentity> {
     let mut queue = std::collections::VecDeque::from([(pane, 0)]);
@@ -446,11 +511,23 @@ fn shell_command_label(command: &str) -> Option<String> {
     Some(command.into())
 }
 fn shell_activity(managed: bool, id: &str) -> Option<String> {
-    let current = field(managed, id, "#{pane_current_command}")
-        .ok()
-        .and_then(|name| shell_command_label(&name));
+    // These optional command labels are accepted only as three strictly bounded
+    // executable names. Malformed metadata loses its label, not its session.
+    let labels = field(
+        managed,
+        id,
+        "#{pane_current_command}\t#{@cx_last_command}\t#{@cx_recent_command}",
+    )
+    .ok()?;
+    let mut labels = labels.split('\t');
+    let current = shell_command_label(labels.next()?);
+    let last = shell_command_label(labels.next()?);
+    let recent = shell_command_label(labels.next()?);
+    if labels.next().is_some() {
+        return None;
+    }
     if let Some(name) = current {
-        if managed {
+        if managed && recent.as_ref() != Some(&name) {
             let mut c = tmux(true).ok()?;
             c.args(["set-option", "-t", id, "@cx_recent_command", &name]);
             // Best effort; this metadata cannot prevent listing a running terminal.
@@ -459,23 +536,27 @@ fn shell_activity(managed: bool, id: &str) -> Option<String> {
         return Some(format!("running {name}"));
     }
     if managed {
-        if let Some(name) = field(true, id, "#{@cx_last_command}")
-            .ok()
-            .and_then(|name| shell_command_label(&name))
-        {
+        if let Some(name) = last {
             return Some(format!("last: {name}"));
         }
-        return field(true, id, "#{@cx_recent_command}")
-            .ok()
-            .and_then(|name| shell_command_label(&name))
-            .map(|name| format!("recent: {name}"));
+        return recent.map(|name| format!("recent: {name}"));
     }
     None
 }
 
 fn inspect(managed: bool, id: &str) -> Result<Session> {
-    let (host, account, boot_id) = identity();
-    let name = field(managed, id, "#{session_name}")?;
+    inspect_observed(managed, id, None, &identity())
+}
+fn inspect_observed(
+    managed: bool,
+    id: &str,
+    observed: Option<&SessionSnapshot>,
+    host_identity: &(String, String, String),
+) -> Result<Session> {
+    let (host, account, boot_id) = host_identity.clone();
+    // Pin metadata reads to the observed pane; selection can change during refresh.
+    let target = observed.map(|s| s.pane_id.as_str()).unwrap_or(id);
+    let name = field(managed, target, "#{session_name}")?;
     let record = state()?.join(format!("{name}.json"));
     let prior: Option<Session> = if managed
         && name.len() == 67
@@ -488,7 +569,11 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
     } else {
         None
     };
-    let pid = field(managed, id, "#{pane_pid}")?.parse().unwrap_or(0);
+    let pid = if let Some(s) = observed {
+        s.pane_pid
+    } else {
+        field(managed, target, "#{pane_pid}")?.parse().unwrap_or(0)
+    };
     let process_start = fs::read_to_string(format!("/proc/{pid}/stat"))
         .ok()
         .and_then(|v| {
@@ -498,7 +583,11 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
         .unwrap_or_else(|| "unknown".into());
     let started = format!(
         "{}:{process_start}",
-        field(managed, id, "#{session_created}")?
+        if let Some(s) = observed {
+            s.created.clone()
+        } else {
+            field(managed, target, "#{session_created}")?
+        }
     );
     let original_provider = prior
         .as_ref()
@@ -516,14 +605,15 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
         .as_ref()
         .filter(|_| provider != "shell")
         .and_then(|process| provider_directory(provider, process))
-        .unwrap_or(field(managed, id, "#{pane_current_path}")?);
+        .map(Ok)
+        .unwrap_or_else(|| field(managed, target, "#{pane_current_path}"))?;
     let saved_name = prior
         .as_ref()
         .map(|s| current_session_name(s, provider, &directory))
         .unwrap_or_else(|| name.clone());
     let automatic = prior.as_ref().is_some_and(automatically_named);
     let display_name = if automatic && provider == "shell" {
-        shell_activity(managed, id).unwrap_or(saved_name)
+        shell_activity(managed, target).unwrap_or(saved_name)
     } else if automatic {
         process
             .as_ref()
@@ -532,6 +622,20 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
     } else {
         saved_name
     };
+    if let Some(expected) = observed {
+        // A pane can move between sessions while enrichment is in flight. Never
+        // return its new metadata under the old attachment/ownership identity.
+        let current = parse_snapshot(&field(managed, target, SNAPSHOT_FORMAT)?)?;
+        anyhow::ensure!(
+            current.len() == 1
+                && current[0].id == expected.id
+                && current[0].pane_pid == expected.pane_pid
+                && current[0].server_pid == expected.server_pid
+                && current[0].created == expected.created
+                && !current[0].ended(),
+            "session changed during observation"
+        );
+    }
     Ok(Session {
         id: if managed { name } else { id.into() },
         name: display_name,
@@ -559,9 +663,21 @@ fn inspect(managed: bool, id: &str) -> Result<Session> {
 }
 pub fn list() -> Result<Vec<Session>> {
     let mut result = vec![];
+    let host_identity = identity();
+    let mut seen = std::collections::BTreeSet::new();
     for managed in [true, false] {
-        for id in ids(managed)? {
-            if let Ok(s) = inspect(managed, &id) {
+        for observed in snapshot(managed)? {
+            let runtime = (
+                observed.server_pid,
+                observed.id.clone(),
+                observed.created.clone(),
+            );
+            if observed.ended() || seen.contains(&runtime) {
+                continue;
+            }
+            if let Ok(s) = inspect_observed(managed, &observed.id, Some(&observed), &host_identity)
+            {
+                seen.insert(runtime);
                 result.push(s);
             }
         }
@@ -1856,6 +1972,151 @@ fn stopped_command_choice(fd: i32, pid: libc::pid_t) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn inventory_fixture(case: &str) {
+        let fixture = tempfile::tempdir().unwrap();
+        let bin = fixture.path().join(".local/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let mock = bin.join("tmux");
+        // This executable simulates tmux metadata only; no tmux server is started.
+        fs::write(&mock, r#"#!/bin/sh
+managed=0
+op=
+for arg do
+    [ "$arg" = -S ] && managed=1
+    case "$arg" in list-sessions|display-message|set-option) op=$arg;; esac
+    last=$arg
+done
+server=42
+[ "$CX_INVENTORY_CASE" = distinct ] && [ "$managed" = 0 ] && server=43
+dead=0
+[ "$CX_INVENTORY_CASE" = dead ] && dead=1
+panes=1
+[ "$CX_INVENTORY_CASE" = expanded ] && { dead=1; panes=2; }
+case "$op" in
+list-sessions)
+    if [ "$last" = '#{session_id}' ]; then printf '$1\n'
+    else printf '$1\t%s\t100\t%%1\t%s\t%s\t1\t%s\n' "$CX_INVENTORY_PID" "$dead" "$server" "$panes"; fi;;
+display-message)
+    case "$last" in
+    '#{session_name}') printf 'cx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n';;
+    '#{pane_pid}') printf '%s\n' "$CX_INVENTORY_PID";;
+    '#{session_created}') printf '100\n';;
+    '#{pane_current_path}') printf '/same-project\n';;
+    '#{pane_current_command}') printf 'bash\n';;
+    '#{pane_dead}') printf '%s\n' "$dead";;
+    '#{pid}') printf '%s\n' "$server";;
+    '#{session_id}'*)
+        selected=1
+        [ "$CX_INVENTORY_CASE" = moved ] && selected=2
+        printf '$%s\t%s\t100\t%%1\t%s\t%s\t1\t%s\n' "$selected" "$CX_INVENTORY_PID" "$dead" "$server" "$panes";;
+    *) printf '\n';;
+    esac;;
+esac
+"#).unwrap();
+        fs::set_permissions(&mock, fs::Permissions::from_mode(0o700)).unwrap();
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "sessions::tests::runtime_inventory_fixture_child",
+                "--nocapture",
+            ])
+            .env("HOME", fixture.path())
+            .env("XDG_STATE_HOME", fixture.path().join("state"))
+            .env("CX_INVENTORY_CASE", case)
+            .env_remove("TMUX")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    #[test]
+    fn runtime_inventory_fixture_child() {
+        let Ok(case) = std::env::var("CX_INVENTORY_CASE") else {
+            return;
+        };
+        std::env::set_var("CX_INVENTORY_PID", std::process::id().to_string());
+        let sessions = list().unwrap();
+        match case.as_str() {
+            "alias" => {
+                assert_eq!(
+                    sessions.len(),
+                    1,
+                    "one tmux runtime reached through two socket aliases must have one row"
+                );
+                assert!(
+                    !sessions[0].external,
+                    "managed ownership must win over its external alias"
+                );
+            }
+            "distinct" => assert_eq!(
+                sessions.len(),
+                2,
+                "same folder/title/session number on distinct servers is distinct work"
+            ),
+            "dead" => assert!(
+                sessions.is_empty(),
+                "retained dead panes are not running shells or agents"
+            ),
+            "expanded" => assert_eq!(
+                sessions.len(),
+                1,
+                "a selected dead pane must not hide other work in an expanded session"
+            ),
+            "moved" => assert!(
+                sessions.is_empty(),
+                "a pane moved to another session must not inherit its previous attachment identity"
+            ),
+            _ => panic!("unknown fixture"),
+        }
+    }
+
+    #[test]
+    fn runtime_inventory_deduplicates_server_aliases() {
+        inventory_fixture("alias");
+    }
+
+    #[test]
+    fn runtime_inventory_preserves_distinct_servers() {
+        inventory_fixture("distinct");
+    }
+
+    #[test]
+    fn runtime_inventory_omits_dead_panes() {
+        inventory_fixture("dead");
+    }
+
+    #[test]
+    fn runtime_inventory_preserves_expanded_sessions() {
+        inventory_fixture("expanded");
+    }
+
+    #[test]
+    fn runtime_inventory_rejects_moved_pane_metadata() {
+        inventory_fixture("moved");
+    }
+
+    #[test]
+    fn runtime_snapshot_rejects_malformed_identity_and_framing() {
+        let valid = "$1\t10\t100\t%2\t0\t42\t1\t1";
+        assert_eq!(parse_snapshot(valid).unwrap().len(), 1);
+        for invalid in [
+            "$1\t10\t100\t%2\t0\t42\t1\t1\textra",
+            "$1\t10\t100\t%2\t0\t42\t1",
+            "$name\t10\t100\t%2\t0\t42\t1\t1",
+            "$1\t10\t100\t%2\t2\t42\t1\t1",
+            "$1\t10\t100\t%2\t0\t0\t1\t1",
+            "$1\t10\t100\t%2\t0\t42\t0\t1",
+            "$1\t10\t100\t%2\t0\t42\t1\t1\nforged",
+        ] {
+            assert!(parse_snapshot(invalid).is_err());
+        }
+    }
 
     #[test]
     fn provider_commands_distinguish_fresh_and_native_resume() {

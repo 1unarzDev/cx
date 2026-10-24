@@ -252,6 +252,17 @@ enum Cmd {
         preview: bool,
     },
     #[command(hide = true)]
+    NativeAttachChecked {
+        payload: String,
+    },
+    #[command(hide = true)]
+    NativeAttachCheck {
+        payload: String,
+        server_pid: u32,
+        session_id: String,
+        created: String,
+    },
+    #[command(hide = true)]
     NativeAttach {
         #[arg(long)]
         external: bool,
@@ -307,6 +318,7 @@ fn info() -> Result<serde_json::Value> {
     }
     caps.extend(sessions::available_providers()?);
     caps.push("native-command-v1");
+    caps.push("session-attach-checked-v1");
     caps.push("stop-session-v1");
     caps.push("stop-agent-session-v1");
     caps.push("session-yolo-v1");
@@ -1048,6 +1060,13 @@ fn run() -> Result<()> {
             y,
             client,
         }) => sessions::native_wheel(&pane, &direction, x, y, client),
+        Some(Cmd::NativeAttachChecked { payload }) => sessions::native_attach_checked(&payload),
+        Some(Cmd::NativeAttachCheck {
+            payload,
+            server_pid,
+            session_id,
+            created,
+        }) => sessions::native_attach_check(&payload, server_pid, &session_id, &created),
         Some(Cmd::NativeAttach { external, args }) => {
             if args.first().map(String::as_str) != Some("attach-session") {
                 bail!("invalid native operation")

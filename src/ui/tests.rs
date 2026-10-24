@@ -1,5 +1,6 @@
 use super::*;
 use ratatui::backend::TestBackend;
+mod workspace_tests;
 fn app() -> App {
     let (tx, _) = mpsc::sync_channel(32);
     App::new(
@@ -1203,7 +1204,7 @@ fn failed_cached_session_keeps_refresh_visible_at_small_widths() {
         let text = capture_app(&a, width);
         assert!(text.contains("Ctrl+P → Refresh"), "{width}: {text}");
         if width >= 80 {
-            assert!(text.contains("cached"), "{width}: {text}");
+            assert!(text.contains("stale"), "{width}: {text}");
         }
     }
     a.apply(Reply {
@@ -2149,8 +2150,6 @@ fn new_from_files_starts_current_execution_location_and_attaches_on_reply() {
     );
     a.dialog_selected = 2;
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(matches!(a.dialog, Some(Dialog::AgentStart(..))));
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(matches!(a.dialog, Some(Dialog::Permissions(..))));
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let task = rx.try_recv().unwrap();
@@ -2479,8 +2478,6 @@ fn session_chooser_device_focus_never_inherits_other_browser_or_search() {
     press(&mut a, 'h');
     assert_eq!(a.dialog_selected, 0);
     press(&mut a, 'x');
-    assert!(matches!(a.dialog, Some(Dialog::AgentStart(..))));
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(
         matches!(&a.dialog,Some(Dialog::Permissions(1,path,provider, _)) if path=="~" && provider=="codex")
     );
@@ -2530,16 +2527,25 @@ fn session_chooser_hides_unavailable_profiles_and_preserves_selection_on_check()
     press(&mut a, 'c');
     assert!(matches!(a.dialog, Some(Dialog::SessionChooser(..))));
     press(&mut a, 'x');
-    assert!(matches!(a.dialog, Some(Dialog::AgentStart(_, _, ref p)) if p == "codex"));
+    assert!(matches!(a.dialog, Some(Dialog::Permissions(_, _, ref p, false)) if p == "codex"));
 }
 #[test]
 fn watch_key_attaches_highlighted_session_read_only_and_is_contextual() {
-    let (mut a, _rx) = queued_app();
+    let (mut a, rx) = queued_app();
     a.device = 2;
     a.focus = Focus::Workspace;
     a.view = View::Work;
     a.work[1].sessions=vec![serde_json::from_value(serde_json::json!({"id":"watch-proof","name":"fixture","directory":"/workspace","provider":"shell","account":"peace","host":"laptop","pid":123,"started":"proof","boot_id":"boot","external":false,"socket":null})).unwrap()];
     press(&mut a, 'w');
+    assert!(a.pending_attach.is_none());
+    let task = rx.try_recv().unwrap();
+    a.apply(Reply {
+        preview: None,
+        device: task.device,
+        op: task.op,
+        generation: task.generation,
+        result: Ok(serde_json::to_value(&a.work[1].sessions).unwrap()),
+    });
     assert!(matches!(&a.pending_attach,Some((1,s,true)) if s.id=="watch-proof"));
     a.pending_attach = None;
     a.focus = Focus::Devices;
@@ -2563,7 +2569,7 @@ fn host_launch_does_not_offer_to_resume_same_path_container_session() {
     s.container = Some(container_fixture('a', true).scope());
     a.work[0].sessions = vec![s];
     a.start_at(0, "/workspace".into(), "shell".into());
-    assert!(!matches!(a.dialog, Some(Dialog::Matching(..))));
+    assert!(!matches!(a.dialog, Some(Dialog::SessionPicker(..))));
     assert!(rx
         .try_iter()
         .any(|t| matches!(t.op,Operation::Create(ref c) if c.directory=="/workspace")));
@@ -2740,8 +2746,6 @@ fn new_session_from_all_explicitly_selects_execution_provider_directory() {
     press(&mut a, 'n');
     assert!(matches!(a.dialog, Some(Dialog::SessionChooser(..))));
     press(&mut a, 'x');
-    assert!(matches!(a.dialog, Some(Dialog::AgentStart(..))));
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(matches!(a.dialog, Some(Dialog::Permissions(..))));
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let task = rx.try_recv().unwrap();
@@ -2852,26 +2856,36 @@ fn matching_live_session_offers_reuse_and_explicit_new() {
     let session: Session=serde_json::from_value(serde_json::json!({"id":"same","name":"existing","directory":"/project","provider":"codex","account":"peace","host":"laptop","pid":1,"started":"x","boot_id":"boot","external":false,"socket":null})).unwrap();
     a.work[1].sessions.push(session);
     a.start_at(1, "/project".into(), "codex".into());
-    assert!(matches!(a.dialog, Some(Dialog::Matching(..))));
+    assert!(matches!(a.dialog, Some(Dialog::SessionPicker(..))));
     assert!(a.pending_attach.is_none());
-    a.dialog_selected = 1;
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(matches!(a.dialog, Some(Dialog::Permissions(_, _, _, true))));
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let Operation::Create(resume) = rx.try_recv().unwrap().op else {
-        panic!("expected native resume create")
-    };
-    assert!(resume.resume);
-
+    assert!(a.pending_attach.is_none());
+    for task in rx.try_iter() {
+        assert!(matches!(task.op, Operation::Sessions));
+        a.apply(Reply {
+            preview: None,
+            device: task.device,
+            op: task.op,
+            generation: task.generation,
+            result: Ok(serde_json::to_value(&a.work[1].sessions).unwrap()),
+        });
+    }
+    assert_eq!(a.pending_attach.take().unwrap().1.id, "same");
+    assert!(rx.try_recv().is_err());
     a.start_at(1, "/project".into(), "codex".into());
-    a.dialog_selected = 2;
+    a.dialog_selected = 1;
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(matches!(
         a.dialog,
         Some(Dialog::Permissions(_, _, _, false))
     ));
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let Operation::Create(fresh) = rx.try_recv().unwrap().op else {
+    let Operation::Create(fresh) = rx
+        .try_iter()
+        .find(|t| matches!(t.op, Operation::Create(_)))
+        .unwrap()
+        .op
+    else {
         panic!("expected fresh create")
     };
     assert!(!fresh.resume);

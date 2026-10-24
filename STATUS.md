@@ -1,5 +1,18 @@
 # CX status
 
+## Unified session workspace — 2026-10-23
+
+Implemented in `worktrees/session-workspace-20261023`, branch `feat/session-workspace-20261023`: named runtime selection, all sessions with pins first, persistent unavailable-work bookmarks, folder agent presence, cached navigation, obsolete-read coalescing, alias deduplication, dead-pane lifecycle handling and checked native attachment. Pins reopen saved folders deliberately; no guessed-idle hiding or automatic agent restart. The previous latest/fresh/past launch prompt is removed.
+
+Full Rust suite, isolated runtime lifecycle cases, managed/external attach/watch PTYs delayed-host browser navigation and actual pin/cache viewer-restart checks passed. [VALIDATION.md](VALIDATION.md) records exact evidence and limits. [Feature priorities](docs/astra-improvement-proposals.md) includes the dedicated QoL ideation.
+
+Current unresolved integration/acceptance:
+
+- The original root checkout is detached with pre-existing conflicts. This isolated branch is committed separately; no release, installed binary replacement or remote deployment is included. Updated endpoint helpers provide stable terminal generations; legacy observations retain legacy attachment behavior.
+- Next user-selected cycle: **container agent launch and resume parity**. Custom sockets, inner-container tmux, nested-client handoff and exact provider conversation history remain gaps. No global terminal hook was installed.
+- Physical emulator/provider/robot acceptance remains separate from synthetic providers, fake SSH/Docker scope checks and disposable tmux PTYs. Tests cover an explicit matrix, not every possible configuration.
+
+
 ## Session workflow exploration 2026 10 23
 
 The user prioritizes agentic coding across machines and native-feeling management of all shells/agents, including sessions created outside CX. Three Astra specialists reviewed committed snapshot `c60e1a2`; findings and ranked features are in [session management and feature priorities](docs/astra-improvement-proposals.md). This isolated branch contains proposals only. `cargo check --locked --offline` and all 175 selected UI tests passed; no live sessions, shell configuration or networking were changed.

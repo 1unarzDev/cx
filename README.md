@@ -33,11 +33,15 @@ You can also select a discovered neighbor in **Network** and press Enter to conn
 | Tab / Shift+Tab | Change panel focus |
 | Ctrl+] in a managed terminal | Return to CX; the session keeps running |
 | `w` in Sessions | Watch the highlighted session read-only |
+| `p` in Sessions | Pin/unpin work; retain a bookmark after its terminal ends |
+| `s` in Files | Show sessions in the selected folder, or the current folder |
 | `b` on a device | Toggle remote access: bidirectional or viewer-to-device |
 | `d` in Sessions | Confirm stopping a CX-managed shell or agent |
 | Ctrl+C in CX | Exit the viewer; sessions keep running |
 
-Press **n** for a compact chooser. It shows Shell, Devcontainer, and only the Claude or Codex profiles currently available on the selected device; `h`/`l` or Left/Right move between options. It uses home from Devices and the current folder from Files. Use **Ctrl+P → New session** to choose a device and start a supported profile. Agent sessions offer a **Fresh session** or **Resume latest session** choice, followed by **Default** permissions or **YOLO** for that launch. Resume opens the provider’s native control panel (`codex resume --last` or `claude --continue`); YOLO bypasses the agent’s normal approval protections.
+Press **n** for a compact chooser. It shows Shell, Devcontainer, and only the Claude or Codex profiles currently available on the selected device; `h`/`l` or Left/Right move between options. It uses home from Devices and the current folder from Files. Use **Ctrl+P → New session** to choose a device and start a supported profile. Existing sessions in that folder appear by name, provider and observed state, with an explicit **New** choice. A new agent proceeds to **Default** permissions or **YOLO** for that launch; YOLO bypasses the agent’s normal approval protections. CX does not choose a conversation by recency.
+
+Sessions shows all observed work with pins first. Missing pinned terminals remain bookmarks: open their saved folder or refresh deliberately. Cached sessions and folders appear while CX refreshes; stale evidence stays labeled. Folder rows show observed Claude/Codex counts, and **s** opens their session picker. Badges indicate presence, not whether an agent is thinking or finished.
 
 In **Files**, Enter previews a file. To transfer files, select with Space, press `t`, choose the destination device/folder, then press Enter to confirm. Incoming conflicts rename by default; overwrite is explicit. See the [user guide](docs/user-guide.md) for file operations, previews, clipboard, scrolling and all controls.
 

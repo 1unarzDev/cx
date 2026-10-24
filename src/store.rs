@@ -4,6 +4,166 @@ use serde::{Deserialize, Serialize};
 use std::os::unix::fs::PermissionsExt;
 use std::{fs, path::PathBuf};
 
+/// A bookmark retains a runtime reference; it never authorizes restarting it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SessionPin {
+    pub device: Device,
+    pub session: crate::model::Session,
+    pub pinned_at: u64,
+}
+
+pub fn read_ui_state<T: serde::de::DeserializeOwned>(name: &str, limit: u64) -> Result<Option<T>> {
+    read_ui_state_at(&state_dir(), name, limit)
+}
+fn read_ui_state_at<T: serde::de::DeserializeOwned>(
+    dir: &std::path::Path,
+    name: &str,
+    limit: u64,
+) -> Result<Option<T>> {
+    use std::{
+        io::Read,
+        os::unix::fs::{MetadataExt, OpenOptionsExt},
+    };
+    anyhow::ensure!(
+        matches!(name, "session-pins.json" | "ui-navigation.json"),
+        "invalid UI state name"
+    );
+    let file = match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(dir.join(name))
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let m = file.metadata()?;
+    anyhow::ensure!(
+        m.is_file()
+            && m.uid() == unsafe { libc::geteuid() }
+            && m.mode() & 0o077 == 0
+            && m.len() <= limit,
+        "unsafe UI state file"
+    );
+    let mut bytes = Vec::new();
+    file.take(limit + 1).read_to_end(&mut bytes)?;
+    anyhow::ensure!(bytes.len() as u64 <= limit, "UI state exceeds limit");
+    Ok(Some(serde_json::from_slice(&bytes)?))
+}
+pub fn write_ui_state<T: Serialize>(name: &str, value: &T, limit: usize) -> Result<()> {
+    write_ui_state_at(&ensure()?, name, value, limit)
+}
+fn write_ui_state_at<T: Serialize>(
+    dir: &std::path::Path,
+    name: &str,
+    value: &T,
+    limit: usize,
+) -> Result<()> {
+    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    anyhow::ensure!(
+        matches!(name, "session-pins.json" | "ui-navigation.json"),
+        "invalid UI state name"
+    );
+    let bytes = serde_json::to_vec(value)?;
+    anyhow::ensure!(bytes.len() <= limit, "UI state exceeds limit");
+    let temporary = dir.join(format!(
+        "{name}.{}.{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)?;
+    let result = (|| -> Result<()> {
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        fs::rename(&temporary, dir.join(name))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
+}
+
+pub fn session_pins() -> Result<Vec<SessionPin>> {
+    let pins: Vec<SessionPin> = read_ui_state("session-pins.json", 512 * 1024)?.unwrap_or_default();
+    anyhow::ensure!(pins.len() <= 128, "too many pinned sessions");
+    Ok(pins)
+}
+
+/// Merge a single explicit pin change under a private lock so simultaneous viewers do not lose pins.
+pub fn change_session_pin(
+    pin: &SessionPin,
+    remove: bool,
+    matches: impl Fn(&SessionPin) -> bool,
+) -> Result<Vec<SessionPin>> {
+    use std::os::unix::{
+        fs::{MetadataExt, OpenOptionsExt},
+        io::AsRawFd,
+    };
+    let dir = ensure()?;
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(dir.join("session-pins.lock"))?;
+    let m = lock.metadata()?;
+    anyhow::ensure!(
+        m.is_file() && m.uid() == unsafe { libc::geteuid() } && m.mode() & 0o077 == 0,
+        "unsafe pin lock"
+    );
+    anyhow::ensure!(
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
+        "pins busy; retry"
+    );
+    let mut pins = session_pins()?;
+    pins.retain(|p| !matches(p));
+    if !remove {
+        anyhow::ensure!(pins.len() < 128, "pin limit reached");
+        pins.push(pin.clone());
+    }
+    write_ui_state_at(&dir, "session-pins.json", &pins, 512 * 1024)?;
+    Ok(pins)
+}
+
+#[cfg(test)]
+mod ui_state_tests {
+    use super::*;
+    #[test]
+    fn ui_state_survives_reopen_and_refuses_links_permissions_and_oversize() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let value = serde_json::json!({"runtime":"ended","folder":"/project"});
+        write_ui_state_at(dir.path(), "session-pins.json", &value, 1024).unwrap();
+        assert_eq!(
+            read_ui_state_at::<serde_json::Value>(dir.path(), "session-pins.json", 1024).unwrap(),
+            Some(value.clone())
+        );
+        assert!(read_ui_state_at::<serde_json::Value>(dir.path(), "session-pins.json", 2).is_err());
+        assert!(write_ui_state_at(dir.path(), "session-pins.json", &value, 2).is_err());
+        let path = dir.path().join("session-pins.json");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            read_ui_state_at::<serde_json::Value>(dir.path(), "session-pins.json", 1024).is_err()
+        );
+        fs::remove_file(&path).unwrap();
+        symlink("outside", &path).unwrap();
+        assert!(
+            read_ui_state_at::<serde_json::Value>(dir.path(), "session-pins.json", 1024).is_err()
+        );
+        assert!(write_ui_state_at(dir.path(), "../elsewhere", &value, 1024).is_err());
+    }
+}
+
 /// A device's access posture is a local enrollment decision. It is kept out of
 /// `Device` so the wire and persisted device schema remains compatible with
 /// older helpers. Core devices are approved for bidirectional access; directed

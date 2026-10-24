@@ -539,9 +539,8 @@ pub(super) fn render_at(
                     if index == app.selected {
                         selected_row = display_rows.len();
                     }
-                    let fresh = app.work[*i].fetched > 0
-                        && transport::now().saturating_sub(app.work[*i].fetched) <= 60
-                        && app.work[*i].error.is_none();
+                    let status = app.session_status(*i, s);
+                    let fresh = status.starts_with('+');
                     let badge = format!("[{}]", safe_label(menus::session_label(app, *i, s)));
                     let cells = vec![
                         Cell::from(badge).style(if std::env::var_os("NO_COLOR").is_some() {
@@ -555,42 +554,40 @@ pub(super) fn render_at(
                         }),
                         Cell::from(if compact && s.container.is_some() {
                             format!(
-                                "{} · {}",
+                                "{}{} · {}",
+                                if app.pinned(*i, s) { "* " } else { "" },
                                 menus::session_label(app, *i, s),
                                 safe_label(&s.name)
                             )
                         } else {
-                            safe_label(&s.name)
+                            format!(
+                                "{}{}",
+                                if app.pinned(*i, s) { "* " } else { "" },
+                                safe_label(&s.name)
+                            )
                         }),
                         Cell::from(identity(&app.devices[*i])),
-                        Cell::from(if !fresh {
-                            "? cached"
-                        } else if s.external {
-                            if ascii() {
-                                "+ ext"
-                            } else {
-                                "● ext"
-                            }
-                        } else {
-                            if ascii() {
-                                "+ live"
-                            } else {
-                                "● live"
-                            }
-                        })
-                        .style(if !fresh { muted() } else { accent() }),
+                        Cell::from(status).style(if !fresh { muted() } else { accent() }),
                     ];
-                    display_rows.push(Row::new(if compact {
-                        vec![cells[1].clone(), cells[3].clone()]
-                    } else {
-                        cells
-                    }));
+                    display_rows.push(
+                        Row::new(if compact {
+                            vec![cells[1].clone(), cells[3].clone()]
+                        } else {
+                            cells
+                        })
+                        .style(if fresh {
+                            Style::default()
+                        } else {
+                            muted()
+                        }),
+                    );
                 }
-                let mut state = TableState::default().with_selected(Some(selected_row));
+                let mut state = TableState::default()
+                    .with_selected((app.selected < rows.len()).then_some(selected_row));
                 let table = Table::new(
                     display_rows,
                     if compact {
-                        vec![Constraint::Min(10), Constraint::Length(8)]
+                        vec![Constraint::Min(10), Constraint::Length(9)]
                     } else {
                         vec![
                             Constraint::Length(
@@ -602,7 +599,7 @@ pub(super) fn render_at(
                             ),
                             Constraint::Min(10),
                             Constraint::Length(if workspace.width > 65 { 24 } else { 18 }),
-                            Constraint::Length(8),
+                            Constraint::Length(9),
                         ]
                     },
                 )
@@ -673,6 +670,7 @@ pub(super) fn render_at(
                         !app.destination_active && app.focus == Focus::Workspace,
                         "Source",
                         app.clipboard.as_ref(),
+                        &app.folder_agents(source),
                     );
                     render_browser(
                         frame,
@@ -682,6 +680,7 @@ pub(super) fn render_at(
                         app.destination_active && app.focus == Focus::Workspace,
                         &format!("Destination · {}", app.conflict_policy()),
                         app.clipboard.as_ref(),
+                        &app.folder_agents(destination),
                     );
                 } else {
                     let label = app
@@ -697,6 +696,7 @@ pub(super) fn render_at(
                         app.focus == Focus::Workspace,
                         &label,
                         app.clipboard.as_ref(),
+                        &app.folder_agents(b),
                     );
                 }
             }
@@ -865,12 +865,7 @@ pub(super) fn render_at(
     } else if app.view == View::Files {
         app.browser.as_ref().map(|b| b.entries.len()).unwrap_or(0)
     } else {
-        app.work
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| app.device == 0 || app.device == i + 1)
-            .map(|(_, w)| w.sessions.len())
-            .sum()
+        app.session_rows_for("").len()
     };
     let status_sections = Layout::default()
         .direction(Direction::Horizontal)
@@ -1169,6 +1164,7 @@ pub(super) fn render_at(
         ]
     } else if app.view == View::Files && app.focus == Focus::Workspace {
         vec![
+            ("s", "Sessions here"),
             ("Space", "Select"),
             ("c / x", "Copy / cut"),
             ("p / t", "Paste / transfer"),
@@ -1208,6 +1204,7 @@ pub(super) fn render_at(
             ("Enter", "Open"),
             ("n", "New session"),
             ("w", "Watch · read-only"),
+            ("p", "Pin / unpin"),
             ("d", "Stop · confirm"),
             ("Ctrl P", "Actions"),
             ("?", "Help"),
@@ -1504,11 +1501,6 @@ pub(super) fn render_at(
                 vec!["Default · existing host permissions".into(), "YOLO · bypass approvals".into()],
                 format!("{}\n{}Applies to this session only.\nYOLO bypasses approval prompts; Codex also disables its sandbox.\nEnter starts · Escape cancels", safe_label(path), if *resume { "Native resume: " } else { "Fresh session: " }),
             ),
-            Dialog::AgentStart(d, path, provider) => (
-                format!("{} session · {}", provider, identity(&app.devices[*d])),
-                vec!["Fresh session".into(), "Resume latest session".into()],
-                format!("{}\nFresh starts a new conversation. Resume uses the provider's native {} resume command in this folder.\nEnter chooses · Escape cancels", safe_label(path), if provider == "codex" { "Codex" } else { "Claude" }),
-            ),
             Dialog::StopShell(d, session) => (
                 format!("Stop {} session?", session.provider), vec!["Keep session".into(), "Stop session".into()],
                 format!("Running work in this session will end.\n{}\n{}\n{}", identity(&app.devices[*d]), safe_label(&session.name), safe_label(&session.directory)),
@@ -1525,14 +1517,15 @@ pub(super) fn render_at(
                 vec!["Stay · finish submitting".into(), "Quit · discard unsubmitted actions".into()],
                 format!("{count} actions have not been submitted.\nAlready detached transfers continue.\nEnter chooses · Escape stays"),
             ),
-            Dialog::Matching(d, path, provider, s) => (
-                format!("Matching {provider} · {}", identity(&app.devices[*d])),
-                vec![
-                    format!("Open existing · {}", safe_label(&s.name)),
-                    "Resume latest session".into(),
-                    "Create fresh session".into(),
-                ],
-                format!("{}\nResume uses the provider's native command in this folder; fresh starts a new conversation.", safe_label(path)),
+            Dialog::SessionPicker(d, path, scope, provider, rows) => (
+                format!("Sessions here · {}", identity(&app.devices[*d])),
+                rows.iter().map(|s| format!("{} · {} · {} · {}", safe_label(&s.provider), safe_label(&s.name), app.session_status(*d, s), safe_label(&s.id.chars().rev().take(6).collect::<String>().chars().rev().collect::<String>()))).chain(std::iter::once(format!("+ New {} session", if provider.is_empty() { "shell" } else { provider }))).collect(),
+                format!("{}{}\nEnter joins the selected runtime · New creates separate work\nNo conversation is selected by recency.", scope.as_ref().map(|c| format!("{} · ", safe_label(&c.name))).unwrap_or_default(), safe_label(if path.is_empty() { scope.as_ref().map(|c| c.folder.as_str()).unwrap_or("~") } else { path })),
+            ),
+            Dialog::PinnedEnded(d, s) => (
+                format!("{} · {}", if app.pinned(*d, s) { "Pinned work" } else { "Unavailable terminal" }, safe_label(&s.name)),
+                vec!["Open saved folder".into(), "Refresh sessions".into()],
+                format!("{} · {}\n{}\nOpening the saved folder does not restart this terminal.", identity(&app.devices[*d]), app.session_status(*d, s), safe_label(&s.directory)),
             ),
             Dialog::Peer(d) => (
                 format!("Device · {}", safe_label(&app.devices[*d].name)),
@@ -1806,6 +1799,7 @@ pub(super) fn render_at(
             key_row("Ctrl+C", "Quit cx; work keeps running"),
         ];
         if app.view == View::Work {
+            help.push(key_row("p", "Pin / unpin; keep an ended-work bookmark"));
             help.push(key_row("d", "Stop selected CX-managed session · confirm"));
             help.push(key_row("w", "Watch selected session · read-only"));
         }
@@ -1837,6 +1831,7 @@ pub(super) fn render_at(
         } else if app.view == View::Files {
             help.push(Line::from(Span::styled("Files", key_style)));
             for (keys, description) in [
+                ("s", "Sessions in selected / current folder"),
                 ("Left/h · Right/l", "Parent / enter directory"),
                 ("Space", "Select and advance"),
                 ("v · u", "Visual range / clear selection"),

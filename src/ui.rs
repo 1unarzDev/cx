@@ -5,6 +5,7 @@ use crate::{
 };
 mod filters;
 mod rendering;
+mod workspaces;
 #[cfg(test)]
 use rendering::render;
 use rendering::render_with_native;
@@ -311,6 +312,8 @@ enum Action {
     Jobs,
     Command,
     Observe,
+    PinSession,
+    FolderSessions,
     Refresh,
     Network,
     Work,
@@ -329,6 +332,8 @@ enum Action {
     Quit,
 }
 const ACTIONS: &[(Action, &str)] = &[
+    (Action::PinSession, "Pin / unpin selected session · p"),
+    (Action::FolderSessions, "Sessions in selected folder · s"),
     (
         Action::DevcontainerUp,
         "Start devcontainer workspace here · Files folder",
@@ -409,8 +414,8 @@ enum Dialog {
     Device(ChooseDevice),
     Provider(usize, Option<String>),
     Permissions(usize, String, String, bool),
-    AgentStart(usize, String, String),
-    Matching(usize, String, String, Session),
+    SessionPicker(usize, String, Option<ContainerScope>, String, Vec<Session>),
+    PinnedEnded(usize, Session),
     Jobs,
     Links(Vec<crate::markdown_links::Link>),
     Delete(usize, Vec<Entry>),
@@ -429,6 +434,7 @@ struct App {
     focus: Focus,
     view: View,
     work: Vec<Cached>,
+    pins: Vec<store::SessionPin>,
     selected: usize,
     side_selected: usize,
     search: String,
@@ -471,6 +477,7 @@ struct App {
     file_locations: HashMap<usize, String>,
     generation: u64,
     creating: bool,
+    device_generation_floor: u64,
     providers: HashMap<usize, (Vec<String>, u64)>,
     provider_loading: std::collections::HashSet<usize>,
     network: HashMap<usize, Value>,
@@ -501,6 +508,7 @@ struct App {
     transfer_drawer: bool,
     jobs: HashMap<usize, Value>,
     pending_attach: Option<(usize, Session, bool)>,
+    attach_check: Option<(usize, Session, bool, u64)>,
     command_target: Option<(usize, String)>,
     pending_command: Option<(Device, RunCommand)>,
     pending_terminal: Option<Device>,
@@ -555,6 +563,7 @@ impl App {
             focus: Focus::Workspace,
             view: View::Work,
             work,
+            pins: Vec::new(),
             selected: 0,
             side_selected: 0,
             search: String::new(),
@@ -597,6 +606,7 @@ impl App {
             file_locations: HashMap::new(),
             generation: 0,
             creating: false,
+            device_generation_floor: 0,
             providers: HashMap::new(),
             provider_loading: std::collections::HashSet::new(),
             network: HashMap::new(),
@@ -627,6 +637,7 @@ impl App {
             transfer_drawer: false,
             jobs: HashMap::new(),
             pending_attach: None,
+            attach_check: None,
             command_target: None,
             pending_command: None,
             pending_terminal: None,
@@ -709,6 +720,17 @@ impl App {
         }
     }
     fn remove_selected_device(&mut self) {
+        if self.file_busy
+            || !self.file_queue.is_empty()
+            || self.creating
+            || !self.rebuilding.is_empty()
+        {
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "Finish submitting work before removing a device".into(),
+            );
+            return;
+        }
         let Some(index) = self.device.checked_sub(1) else {
             self.set_notice_as(
                 NoticeKind::Warning,
@@ -719,19 +741,7 @@ impl App {
         let device = self.devices[index].clone();
         match store::remove_device(&device.id) {
             Ok(_) => {
-                self.browser = None;
-                self.other_browser = None;
-                self.destination_active = false;
-                self.devices.remove(index);
-                self.policies.remove(index);
-                self.work.remove(index);
-                self.providers.clear();
-                self.network.clear();
-                self.peer_evidence.clear();
-                self.peer_checks.clear();
-                self.device = self.device.min(self.devices.len());
-                self.view = View::Work;
-                self.focus = Focus::Devices;
+                self.forget_device_index(index);
                 self.set_notice_as(
                     NoticeKind::Success,
                     format!("Removed {} from this CX viewer", safe_label(&device.name)),
@@ -743,12 +753,37 @@ impl App {
             ),
         }
     }
+    fn forget_device_index(&mut self, index: usize) {
+        // All navigation/action indexes belong to the old device vector. Rebuild
+        // that state together; queued tasks keep their captured execution Device,
+        // but their replies must never address the newly shifted indexes.
+        let mut devices = self.devices.clone();
+        devices.remove(index);
+        let mut next = Self::new(devices, self.tx.clone());
+        next.generation = self.generation + 1;
+        next.device_generation_floor = next.generation;
+        next.pending_requests.set(self.pending_requests.get());
+        next.pins = std::mem::take(&mut self.pins);
+        self.work.remove(index);
+        next.work = std::mem::take(&mut self.work);
+        for work in &mut next.work {
+            work.loading = false;
+        }
+        next.submitted = std::mem::take(&mut self.submitted);
+        next.submitted_clipboards = std::mem::take(&mut self.submitted_clipboards);
+        next.watched_jobs = std::mem::take(&mut self.watched_jobs);
+        next.device = self.device.min(next.devices.len());
+        next.focus = Focus::Devices;
+        *self = next;
+    }
     fn focus_label(&self) -> &'static str {
         if self.help {
             return "Help";
         }
         if let Some(dialog) = &self.dialog {
             return match dialog {
+                Dialog::SessionPicker(..) => "Sessions here",
+                Dialog::PinnedEnded(..) => "Pinned work",
                 Dialog::DevcontainerUp(..) => "Start devcontainer workspace",
                 Dialog::ContainerActions(..) => "Container actions",
                 Dialog::ContainerProvider(..) => "Container session",
@@ -759,8 +794,6 @@ impl App {
                 Dialog::SessionChooser(..) => "New session",
                 Dialog::Provider(..) => "Provider",
                 Dialog::Permissions(..) => "Session permissions",
-                Dialog::AgentStart(..) => "Agent session",
-                Dialog::Matching(..) => "Session choice",
                 Dialog::Jobs => {
                     if self.dialog_detail_focus {
                         "Transfer details"
@@ -897,38 +930,65 @@ impl App {
         }
     }
     fn session_rows(&self) -> Vec<(usize, &Session)> {
-        let mut rows: Vec<_> = self
+        self.session_rows_for(&self.search)
+    }
+    fn session_rows_for(&self, search: &str) -> Vec<(usize, &Session)> {
+        let mut seen = BTreeSet::new();
+        let saved: Vec<_> = self
+            .pins
+            .iter()
+            .filter_map(|p| {
+                self.devices
+                    .iter()
+                    .position(|d| workspaces::device_matches(d, &p.device))
+                    .map(|d| (d, &p.session))
+            })
+            .collect();
+        let pinned: BTreeSet<_> = saved
+            .iter()
+            .map(|(d, s)| (*d, workspaces::runtime_key(s)))
+            .collect();
+        let live = self
             .work
             .iter()
             .enumerate()
-            .filter(|(i, _)| self.device == 0 || self.device == i + 1)
-            .flat_map(|(i, c)| c.sessions.iter().map(move |s| (i, s)))
-            .filter_map(|(i, s)| {
+            .flat_map(|(d, w)| w.sessions.iter().map(move |s| (d, s)));
+        let mut rows: Vec<_> = live
+            .chain(saved)
+            .filter(|(d, _)| self.device == 0 || self.device == d + 1)
+            .filter_map(|(d, s)| {
+                let key = workspaces::runtime_key(s);
+                let is_pinned = pinned.contains(&(d, key.clone()));
+                if !seen.insert((d, key)) {
+                    return None;
+                }
                 fuzzy_score(
-                    &self.search,
+                    search,
                     &format!(
-                        "{} {} {} {} {} {}",
+                        "{} {} {} {} {} {} {}",
                         s.name,
                         s.directory,
                         s.host,
                         s.account,
                         s.provider,
-                        menus::session_label(self, i, s)
+                        menus::session_label(self, d, s),
+                        s.container.as_ref().map(|c| c.name.as_str()).unwrap_or("")
                     ),
                 )
-                .map(|score| (score, i, s))
+                .map(|score| (is_pinned, score, d, s))
             })
             .collect();
-        rows.sort_by(|(a, i, x), (b, j, y)| {
-            b.cmp(a).then_with(|| {
-                (x.directory.as_str(), *i, x.id.as_str()).cmp(&(
+        rows.sort_by(|(p, a, i, x), (q, b, j, y)| {
+            q.cmp(p).then_with(|| b.cmp(a)).then_with(|| {
+                (x.directory.as_str(), *i, x.id.as_str(), &x.socket).cmp(&(
                     y.directory.as_str(),
                     *j,
                     y.id.as_str(),
+                    &y.socket,
                 ))
             })
         });
-        rows.into_iter().map(|(_, i, s)| (i, s)).collect()
+        rows.into_iter().map(|(_, _, d, s)| (d, s)).collect()
     }
     fn selected_session(&self) -> Option<(usize, Session)> {
         self.session_rows()
@@ -1212,7 +1272,13 @@ impl App {
             Action::Paste => {
                 self.view == View::Files && self.clipboard.is_some() && self.browser.is_some()
             }
-            Action::Observe => self.view == View::Work && self.selected_session().is_some(),
+            Action::Observe | Action::PinSession => {
+                self.view == View::Work && self.selected_session().is_some()
+            }
+            Action::FolderSessions => {
+                self.view == View::Files
+                    && self.browser.as_ref().is_some_and(|b| b.preview.is_none())
+            }
             _ => true,
         }
     }
@@ -1259,7 +1325,7 @@ impl App {
             } else {
                 self.file_locations.insert(old.device, old.path.clone());
             }
-            if self.browser_cache.len() >= 8 {
+            if self.browser_cache.len() >= 64 {
                 if let Some(key) = self.browser_cache.keys().next().cloned() {
                     self.browser_cache.remove(&key);
                 }
@@ -2198,9 +2264,11 @@ impl App {
                     self.send(d, Operation::TransferJobs);
                 }
             }
+            Action::PinSession => self.toggle_pin(),
+            Action::FolderSessions => self.sessions_here(),
             Action::Observe => {
                 if let Some((d, s)) = self.selected_session() {
-                    self.pending_attach = Some((d, s, true));
+                    self.open_session(d, s, true);
                 }
             }
             Action::Copy | Action::Cut => {
@@ -2430,7 +2498,7 @@ impl App {
                     self.open_container_actions();
                     return;
                 }
-                self.start_container_session(d, c.scope(), "shell".into(), false);
+                self.open_container_sessions(d, c.scope());
             }
             return;
         }
@@ -2566,24 +2634,14 @@ impl App {
             );
             return;
         }
-        if let Some(s) = self.work[d]
-            .sessions
-            .iter()
-            .find(|s| s.container.is_none() && s.directory == directory && s.provider == provider)
-            .cloned()
-        {
-            self.dialog = Some(Dialog::Matching(d, directory, provider, s));
+        let rows = self.scoped_sessions(d, &directory, None, &provider);
+        if !rows.is_empty() {
+            self.dialog = Some(Dialog::SessionPicker(d, directory, None, provider, rows));
             self.dialog_selected = 0;
-        } else if provider == "codex" || provider == "claude" {
-            self.dialog = Some(Dialog::AgentStart(d, directory, provider));
-            self.dialog_selected = 0;
+            self.refresh_sessions_on(d);
         } else {
             self.create_at(d, directory, provider);
         }
-    }
-    fn resume_at(&mut self, d: usize, directory: String, provider: String) {
-        self.dialog = Some(Dialog::Permissions(d, directory, provider, true));
-        self.dialog_selected = 0;
     }
     fn create_at(&mut self, d: usize, directory: String, provider: String) {
         if provider != "shell" {
@@ -2783,8 +2841,9 @@ impl App {
             Dialog::Links(links) => links.len(),
             Dialog::Device(purpose) => self.device_choices(*purpose).len(),
             Dialog::Provider(d, _) => self.provider_choices(*d).len(),
-            Dialog::AgentStart(..) | Dialog::Permissions(..) => 2,
-            Dialog::Matching(..) => 3,
+            Dialog::Permissions(..) => 2,
+            Dialog::SessionPicker(_, _, _, _, rows) => rows.len() + 1,
+            Dialog::PinnedEnded(..) => 2,
             Dialog::Jobs => self.job_rows().len(),
             Dialog::Delete(..) | Dialog::StopShell(..) => 2,
             Dialog::PendingExit(_) => 2,
@@ -3018,7 +3077,7 @@ impl App {
                         self.dialog = None;
                         match action {
                             "Shell" | "Devcontainer terminal" => {
-                                self.start_container_session(d, c.scope(), "shell".into(), false)
+                                self.open_container_sessions(d, c.scope())
                             }
                             "Files" => self.open_container_browser(d, c.scope()),
                             "Start" | "Stop" | "Rebuild" | "Enable access" | "Disable access" => {
@@ -3121,14 +3180,6 @@ impl App {
                         self.launch_provider = Some(provider);
                         self.open_browser(d, "~".into());
                     }
-                    Dialog::AgentStart(d, path, provider) => {
-                        self.dialog = None;
-                        if self.dialog_selected == 0 {
-                            self.create_at(d, path, provider);
-                        } else {
-                            self.resume_at(d, path, provider);
-                        }
-                    }
                     Dialog::Permissions(d, path, provider, resume) => {
                         let yolo = self.dialog_selected == 1;
                         if yolo
@@ -3145,14 +3196,31 @@ impl App {
                         self.dialog = None;
                         self.create_permission_session(d, path, provider, yolo, resume);
                     }
-                    Dialog::Matching(d, path, provider, session) => {
+                    Dialog::SessionPicker(d, path, scope, provider, rows) => {
                         self.dialog = None;
-                        if self.dialog_selected == 0 {
-                            self.pending_attach = Some((d, session, false));
-                        } else if self.dialog_selected == 1 {
-                            self.resume_at(d, path, provider);
+                        let provider = if provider.is_empty() {
+                            "shell".into()
+                        } else {
+                            provider
+                        };
+                        if let Some(session) = rows.get(self.dialog_selected) {
+                            self.open_session(d, session.clone(), false);
+                        } else if let Some(scope) = scope {
+                            self.start_container_session(d, scope, provider, false);
                         } else {
                             self.create_at(d, path, provider);
+                        }
+                    }
+                    Dialog::PinnedEnded(d, session) => {
+                        self.dialog = None;
+                        if self.dialog_selected == 0 {
+                            if let Some(scope) = session.container {
+                                self.open_container_browser(d, scope);
+                            } else {
+                                self.open_host_browser(d, session.directory);
+                            }
+                        } else {
+                            self.refresh_sessions_on(d);
                         }
                     }
                     Dialog::Jobs => {
@@ -3295,6 +3363,9 @@ impl App {
     fn apply(&mut self, mut reply: Reply) {
         self.pending_requests
             .set(self.pending_requests.get().saturating_sub(1));
+        if reply.generation < self.device_generation_floor || reply.device >= self.devices.len() {
+            return;
+        }
         if let Operation::ContainerFiles { scope, operation } = &reply.op {
             if self
                 .browser
@@ -3321,6 +3392,21 @@ impl App {
         if file_action {
             self.file_busy = false;
             self.start_next_file_action();
+        }
+        let failed_attachment_check = matches!(reply.op, Operation::Sessions)
+            && reply.result.is_err()
+            && self
+                .attach_check
+                .as_ref()
+                .is_some_and(|(d, _, _, generation)| {
+                    *d == reply.device && *generation == reply.generation
+                });
+        if failed_attachment_check {
+            self.attach_check = None;
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "Could not verify the selected terminal · no attachment started".into(),
+            );
         }
         let connection_failure = reply
             .result
@@ -3561,7 +3647,7 @@ impl App {
                                 ),
                             );
                         }
-                    } else if notify_error {
+                    } else if notify_error && !failed_attachment_check {
                         self.set_notice_as(NoticeKind::Error, message.clone());
                     }
                 }
@@ -3698,7 +3784,9 @@ impl App {
                 }
             }
             Operation::Sessions => {
-                let selected_identity = self.selected_session().map(|(d, s)| (d, s.id));
+                let selected_identity = self
+                    .selected_session()
+                    .map(|(d, s)| (d, workspaces::runtime_key(&s)));
                 let data = if value.is_array() {
                     value.clone()
                 } else {
@@ -3724,24 +3812,56 @@ impl App {
                             if let Some(index) = self
                                 .session_rows()
                                 .iter()
-                                .position(|(d, s)| *d == device && s.id == id)
+                                .position(|(d, s)| *d == device && workspaces::runtime_key(s) == id)
                             {
                                 self.selected = index;
                             } else {
-                                self.selected = self
-                                    .selected
-                                    .min(self.session_rows().len().saturating_sub(1));
+                                self.selected = self.session_rows().len();
+                                self.set_notice(
+                                    "Selected terminal no longer observed · choose another session"
+                                        .into(),
+                                );
                             }
                         }
                     }
                     Err(_) => {
-                        self.work[reply.device].error = Some("Invalid session metadata".into())
+                        self.work[reply.device].error = Some("Invalid session metadata".into());
+                    }
+                }
+                self.reconcile_picker(reply.device);
+                if self
+                    .attach_check
+                    .as_ref()
+                    .is_some_and(|(d, _, _, generation)| {
+                        *d == reply.device && *generation == reply.generation
+                    })
+                {
+                    let (d, expected, watch, _) = self.attach_check.take().unwrap();
+                    if self.work[d].error.is_none() {
+                        if let Some(current) = self.work[d]
+                            .sessions
+                            .iter()
+                            .find(|s| {
+                                workspaces::runtime_key(s) == workspaces::runtime_key(&expected)
+                            })
+                            .cloned()
+                        {
+                            self.pending_attach = Some((d, current, watch));
+                        } else {
+                            self.set_notice_as(
+                                NoticeKind::Warning,
+                                "Selected terminal ended or changed · no attachment started".into(),
+                            );
+                        }
                     }
                 }
             }
             Operation::Create(_) | Operation::CreateYolo(_) | Operation::ContainerCreate { .. } => {
                 match serde_json::from_value::<Session>(value) {
                     Ok(s) => {
+                        self.work[reply.device].sessions.retain(|current| {
+                            workspaces::runtime_key(current) != workspaces::runtime_key(&s)
+                        });
                         self.work[reply.device].sessions.push(s.clone());
                         self.pending_attach = Some((reply.device, s, false));
                     }
@@ -4187,6 +4307,13 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        if self.attach_check.take().is_some() || self.pending_attach.take().is_some() {
+            self.pending_attach = None;
+            self.set_notice("Attachment cancelled".into());
+            if key.code == KeyCode::Esc {
+                return;
+            }
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.request_quit();
             return;
@@ -4592,6 +4719,10 @@ impl App {
             && key.modifiers.is_empty()
         {
             if let Some((device, session)) = self.selected_session() {
+                if !self.observed(device, &session) {
+                    self.set_notice("This pinned runtime has ended; no process was stopped".into());
+                    return;
+                }
                 if session.external
                     || !["shell", "codex", "claude"].contains(&session.provider.as_str())
                 {
@@ -4700,6 +4831,12 @@ impl App {
                 self.dialog_selected = 0;
                 self.dialog = Some(Dialog::EditDevice(self.device - 1));
             }
+            KeyCode::Char('p') if self.view == View::Work && self.focus == Focus::Workspace => {
+                self.toggle_pin()
+            }
+            KeyCode::Char('s') if self.view == View::Files && self.focus == Focus::Workspace => {
+                self.sessions_here()
+            }
             KeyCode::Char('n') => self.session_shortcut(),
             KeyCode::Char('w') if self.view == View::Work && self.focus == Focus::Workspace => {
                 self.execute(Action::Observe)
@@ -4788,7 +4925,7 @@ impl App {
                         View::Containers => self.open_container_actions(),
                         View::Work => {
                             if let Some((d, s)) = self.selected_session() {
-                                self.pending_attach = Some((d, s, false));
+                                self.open_session(d, s, false);
                             } else if empty_work_can_create(self) {
                                 self.start_shell();
                             }
@@ -5206,6 +5343,13 @@ impl App {
         self.dialog = Some(Dialog::Links(links));
     }
     fn mouse(&mut self, mouse: MouseEvent, area: Rect) -> bool {
+        if matches!(
+            mouse.kind,
+            MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+        ) {
+            self.attach_check = None;
+            self.pending_attach = None;
+        }
         let delta = match mouse.kind {
             MouseEventKind::ScrollDown => 1,
             MouseEventKind::ScrollUp => -1,
@@ -6694,6 +6838,7 @@ fn render_browser(
     focused: bool,
     label: &str,
     clipboard: Option<&Clipboard>,
+    agents: &BTreeMap<String, String>,
 ) {
     let parts = Layout::default()
         .direction(Direction::Vertical)
@@ -6899,7 +7044,7 @@ fn render_browser(
                         Cell::from(if e.kind == "file" {
                             human_size(e.size)
                         } else {
-                            String::new()
+                            agents.get(&e.path).cloned().unwrap_or_default()
                         })
                         .style(if selected && focused {
                             Style::default()
@@ -6917,7 +7062,15 @@ fn render_browser(
                         Constraint::Length(1),
                         Constraint::Length(1),
                         Constraint::Min(1),
-                        Constraint::Length(8),
+                        Constraint::Length(
+                            agents
+                                .values()
+                                .map(|s| s.len() as u16)
+                                .max()
+                                .unwrap_or(8)
+                                .clamp(8, 24)
+                                .min(area.width / 3),
+                        ),
                     ],
                 )
                 .column_spacing(1)
@@ -7363,36 +7516,6 @@ fn load_cache(app: &mut App) {
         }
     }
 }
-fn save_cache(app: &App) {
-    // Only launch metadata is retained; no prompts, transcripts, environment or provider secrets.
-    let cache: HashMap<_, _> = app
-        .devices
-        .iter()
-        .zip(&app.work)
-        .map(|(d, w)| (d.id.clone(), w.sessions.clone()))
-        .collect();
-    if let Ok(data) = serde_json::to_vec(&cache) {
-        if data.len() > 1024 * 1024 {
-            return;
-        }
-        if let Ok(dir) = store::ensure() {
-            use std::{io::Write, os::unix::fs::OpenOptionsExt};
-            let temp = dir.join(format!("ui-sessions.{}.tmp", std::process::id()));
-            if let Ok(mut file) = std::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .mode(0o600)
-                .open(&temp)
-            {
-                if file.write_all(&data).is_ok() {
-                    let _ = std::fs::rename(&temp, dir.join("ui-sessions.json"));
-                }
-                let _ = std::fs::remove_file(temp);
-            }
-        }
-    }
-}
-
 // Secrets have their own short-lived editor; they never enter App/cache/snapshots.
 struct SecretInput(String);
 impl Drop for SecretInput {
@@ -7990,10 +8113,20 @@ fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender<Reply>) {
     }
     let shared = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
     let input = shared.clone();
+    let discarded_replies = replies.clone();
     thread::spawn(move || {
         let (lock, changed) = &*input;
         while let Ok(task) = rx.recv() {
             let mut queue = lock.lock().unwrap();
+            for old in workspaces::superseded_reads(&mut queue.tasks, &task) {
+                let _ = discarded_replies.send(Reply {
+                    preview: None,
+                    device: old.device,
+                    op: old.op,
+                    generation: old.generation,
+                    result: Ok(Value::Null),
+                });
+            }
             while queue.tasks.len() >= 32 {
                 queue = changed.wait(queue).unwrap();
             }
@@ -8165,6 +8298,13 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     start_task_workers(rx, result_tx);
     let mut app = App::new(devices, tx);
     load_cache(&mut app);
+    app.pins = store::session_pins().unwrap_or_default();
+    if let Ok(Some(cache)) =
+        store::read_ui_state::<workspaces::NavigationCache>("ui-navigation.json", 2 * 1024 * 1024)
+    {
+        cache.restore(&mut app);
+    }
+    let navigation_writer = workspaces::cache_writer();
     if let Some(name) = restore {
         if let Err(error) = restore_restart(&mut app, name) {
             app.set_notice(safe_text(&format!(
@@ -8312,12 +8452,18 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
         let mut cache_changed = false;
         while let Ok(reply) = result_rx.try_recv() {
-            cache_changed |= matches!(reply.op, Operation::Sessions) && reply.result.is_ok();
+            cache_changed |= matches!(
+                reply.op,
+                Operation::Sessions
+                    | Operation::List { .. }
+                    | Operation::ListPage { .. }
+                    | Operation::ContainerFiles { .. }
+            ) && reply.result.is_ok();
             app.apply(reply);
             dirty = true;
         }
         if cache_changed {
-            save_cache(&app);
+            navigation_writer.save(workspaces::NavigationCache::snapshot(&app));
         }
         if let Some(target) = app.pending_add.take() {
             cleanup_native_preview(&mut screen, &mut native_preview)?;
@@ -8418,7 +8564,8 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             }
             dirty = true;
         }
-        if let Some((d, session, observe)) = app.pending_attach.take() {
+        if app.pending_attach.is_some() && !event::poll(Duration::ZERO)? {
+            let (d, session, observe) = app.pending_attach.take().unwrap();
             cleanup_native_preview(&mut screen, &mut native_preview)?;
             screen.suspend()?;
             let result = sessions::attach(&app.devices[d], &session, observe);
@@ -8550,6 +8697,15 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             }
             if app.view == View::Work {
                 app.refresh_work();
+            } else if app.view == View::Files {
+                if let Some(d) = app
+                    .browser
+                    .as_ref()
+                    .map(|b| b.device)
+                    .filter(|d| app.background_checks_enabled(*d))
+                {
+                    app.refresh_sessions_on(d);
+                }
             } else if app.view == View::Network || app.view == View::Containers {
                 app.refresh();
             }
@@ -8562,6 +8718,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
     }
     cleanup_native_preview(&mut screen, &mut native_preview)?;
+    navigation_writer.finish(workspaces::NavigationCache::snapshot(&app));
     Ok(())
 }
 

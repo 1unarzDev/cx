@@ -4,6 +4,37 @@ Make existing work easy to find and join across machines, regardless of whether 
 
 The user identified agentic coding across machines as the leading workflow and clarified that weak external-session handling affects shells generally, not only containers. Three Astra specialists independently inspected workflow, performance and networking concerns. This proposal assesses committed source at `c60e1a2c0a5375717c1fd8e8bae7e31290ad0306`; the root checkout has unresolved merge conflicts and was preserved.
 
+## Implemented milestone — 2026-10-23
+
+The first slice now lives on `feat/session-workspace-20261023`. It adds a named runtime picker, all sessions with pins first, persistent ended-work bookmarks, exact-folder agent presence badges, bounded persistent navigation caches, obsolete-read coalescing, observation deduplication, dead-pane handling and generation-checked attachment. See [validation](../VALIDATION.md) for actual checks and remaining acceptance. The assessment below describes the original baseline; it is retained to explain the broader priorities, not to imply every proposed feature is implemented.
+
+The user's settled preferences are **show all; pins first** and **keep ended pins as bookmarks; reopen deliberately**. No inactive-work hiding or automatic provider restart is enabled. The existing conflicted root checkout is preserved; integration uses the isolated branch.
+
+## Next features, ranked by workflow value
+
+The user selected **container agent launch and resume parity** as the next implementation cycle. The broader ranking below describes workflow value; implementation proceeds with that selected priority.
+
+1. **Exact conversation continuation.** Show provider-native conversation ID, user-visible name and last observed time before resuming a stopped Claude/Codex thread. An attached shell, tmux runtime and provider conversation are separate identities. Avoid guessing from the folder or “latest”; do not merge distinct threads or kill duplicate-looking processes.
+2. **External endpoint coverage and nested switching.** Register custom tmux endpoints and define same-server switch/return behavior before offering a persistent terminal launch profile. Inner-container tmux needs its own endpoint adapter and scope validation.
+3. **Container agent parity.** Probe actual container/user capabilities; expose Claude/Codex and verified resume intent alongside existing shells. Preserve scope across stop/restart/rebuild and show missing evidence honestly.
+4. **Git worktree context.** Add branch/worktree labels to session and folder context, with a deliberate “start agent in this worktree” action. Keep Git mutations explicit.
+5. **Background build/test receipts.** Named command runs with actual exit status, completion time and selected artifacts make remote agent work reviewable after disconnection.
+6. **Local service forwards.** A deliberate loopback SSH forward for a remote web app/notebook, using the saved route and showing its actual listener state.
+
+## Dedicated QoL and visual ideation
+
+The QoL specialist's priority order was: identifiable session choices; pins that promote the same row; folder presence badges; stable cached views through refresh/failure; one runtime per row with execution context; honest empty/filtered/unavailable states; and a shortcut back to the previous exact runtime. The first six informed this milestone. Returning to previous work remains a proposal.
+
+Useful follow-on visual choices:
+
+- A compact recent-location trail (device → container → worktree → folder) with one-key return. Preserve scope rather than relying on matching path strings.
+- A quiet selected-session context card showing full name, origin, location and observation age, especially when table columns truncate names.
+- Worktree/branch labels beside folder badges, with a textual fallback in narrow or monochrome terminals.
+- Optional attention markers only from explicit provider events, such as “waiting for input” or a reported error. Process presence alone cannot establish thinking, idle, completion or task success.
+- A named build/test result marker that opens its exit receipt and artifacts. Avoid animated activity decorations that imply unobserved progress.
+
+The current folder badge is intentionally modest: `Claude 2 · Codex 1`, with `?` when evidence is stale. It does not claim to know which file an agent is editing. Pins remain visible after runtime disappearance; ordinary missing rows leave the inventory. Shared folders never establish shared conversation identity.
+
 ## What already exists
 
 CX is a Rust terminal workspace with native tmux attachment, persistent shells and agent launches, scoped file previews/transfers, Docker/devcontainer access, SSH jump routes and signed updates. Its framing and scope protections are substantial. The opportunity is to connect those mechanisms into consistent session workflows.

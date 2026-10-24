@@ -106,15 +106,26 @@ Updates check signed stable releases in the background, retain the running versi
 [Back to README](../README.md)
 
 
-### Session labels and screen snapshots
+### Integrated session terminals
 
 Sessions preserve provider-authored titles. Generic labels include folder, provider,
-and a short runtime identity; separate conversations are never merged by label.
-At 120 columns or wider, selecting a session shows its context and a read-only
-snapshot beside the list. Narrow terminals show a context footer. Snapshots refresh
-at most every two seconds while the session view is visible, with verified runtime
-evidence. They show up to 60 current-screen lines, with bounded clipped text; they
-are not interactive terminals and do not read scrollback, resize, or send keys.
-Preview text lives only in memory and is never saved in navigation caches or pins.
-Older helpers, ended bookmarks, and terminals outside supported tmux discovery
-remain navigable with metadata only. Remote snapshots need `session-preview-v1`.
+and a compact runtime identity; separate conversations are never merged by label.
+On wide terminals, selecting a session displays the actual styled tmux screen beside
+the list. **Enter focuses that terminal** and expands its viewport within CX. Keys
+then go to the same running shell or agent. **Ctrl+] returns to session navigation**;
+**Ctrl+O opens a native full-terminal attachment**. Escape and Ctrl+C go to the
+focused application. At narrow widths Enter still focuses the integrated terminal.
+
+The pane preserves colors, blank rows, alternate-screen content and cursor location.
+It refreshes at up to 4 Hz while browsing and 10 Hz while focused. Its viewport
+follows the cursor when the existing terminal is larger than the available space.
+CX does not resize the original terminal. Screen text stays in memory, never in
+navigation caches or pins. Remote interactive panes require `live-session-pane-v1`;
+older helpers retain native attachment. Input verifies the exact runtime and pane
+and is never retried automatically.
+
+Use **New session** (`n`) for Shell, Claude or Codex; Shell has no separate creation
+button. Bracketed paste and application cursor modes are honored. Pasted input is
+limited to 4096 bytes including bracket markers, with an explicit refusal for larger
+pastes. Mouse forwarding, scrollback and arbitrary terminal protocol emulation are
+not implemented in the pane; use Ctrl+O for the native terminal when needed.

@@ -4,6 +4,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.88
+
+- Replace clipped snapshots with live styled tmux screens and cursor-following viewports. Enter focuses the existing terminal inside CX; Ctrl+] returns to navigation, Ctrl+O opens native attachment.
+- Route keys and bounded bracketed paste to the exact verified pane; preserve application cursor mode and never retry input.
+- Remove separate New shell sidebar/palette entries. Shell is part of the normal New session chooser.
+
 ## v0.1.87
 
 - Add read-only selected-session screen snapshots beside the session list on wide terminals, with context on narrow terminals.

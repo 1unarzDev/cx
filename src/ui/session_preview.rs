@@ -111,7 +111,10 @@ impl App {
         true
     }
     pub(super) fn session_pane_key(&mut self, event: KeyEvent) {
-        if event.modifiers.contains(KeyModifiers::CONTROL) && event.code == KeyCode::Char(']') {
+        // Legacy terminals encode Ctrl+] as byte0x1d, which crossterm reports as Ctrl+5.
+        if event.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(event.code, KeyCode::Char(']') | KeyCode::Char('5'))
+        {
             self.session_preview.focused = None;
             return;
         }

@@ -1,4 +1,4 @@
-//! Read-only, ephemeral screen snapshots. Never resize, attach, read history or write state.
+//! Live tmux screens and explicitly focused input. No emulation, resize or scrollback.
 use super::*;
 use std::io::Read;
 use std::os::fd::AsRawFd;
@@ -29,7 +29,10 @@ fn bounded(mut command: Command) -> Result<String> {
             match pipe.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    anyhow::ensure!(bytes.len() + n <= 65536, "preview exceeds screen limit");
+                    anyhow::ensure!(
+                        bytes.len() + n <= 256 * 1024,
+                        "preview exceeds screen limit"
+                    );
                     bytes.extend_from_slice(&buf[..n]);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -79,26 +82,157 @@ pub fn preview(session: &Session) -> Result<serde_json::Value> {
         "-p",
         "-t",
         &before.pane_id,
-        "#{pane_height}",
+        "#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{cursor_flag} #{bracket_paste_flag} #{keypad_cursor_flag}",
     ]);
-    let height: u32 = bounded(size)?
-        .trim()
-        .parse()
-        .context("invalid pane height")?;
-    anyhow::ensure!(height > 0 && height <= 10000, "invalid pane height");
+    let meta = bounded(size)?;
+    let dims: Vec<u32> = meta
+        .split_whitespace()
+        .map(str::parse)
+        .collect::<std::result::Result<_, _>>()?;
+    anyhow::ensure!(
+        dims.len() == 7 && dims[0] > 0 && dims[0] <= 1000 && dims[1] > 0 && dims[1] <= 300,
+        "terminal dimensions exceed live view limits"
+    );
     let mut command = tmux(managed)?;
     command
-        .args(["capture-pane", "-p", "-t", &before.pane_id, "-S"])
-        .arg(height.saturating_sub(60).to_string())
-        .arg("-E")
-        .arg((height - 1).to_string());
+        .args([
+            "capture-pane",
+            "-e",
+            "-p",
+            "-t",
+            &before.pane_id,
+            "-S",
+            "0",
+            "-E",
+        ])
+        .arg((dims[1] - 1).to_string());
     let screen = bounded(command)?;
-    // Discard everything if the target changes during capture. Numeric pane IDs are
-    // server-unique; checking the server generation prevents ID reuse after restart.
     let after = observe(managed, &terminal.session_id)?;
     verify_attach_generation(&request, after.server_pid, &after.id, &after.created)?;
     anyhow::ensure!(before.pane_id == after.pane_id, "preview pane changed");
-    Ok(serde_json::json!({"lines": clean_screen(&screen)}))
+    Ok(serde_json::json!({
+        "lines": clean_screen(&screen), "styled_lines": styled_screen(&screen),
+        "pane_id": before.pane_id, "cols": dims[0], "rows": dims[1],
+        "cursor_x": dims[2], "cursor_y": dims[3], "cursor_visible": dims[4] != 0,
+        "bracketed_paste": dims[5] != 0, "application_cursor": dims[6] != 0,
+        "live": true
+    }))
+}
+
+/// Input is guarded on the same tmux command queue as send-keys, preventing
+/// server restarts from redirecting input between validation and delivery.
+pub fn session_pane_input(
+    session: &Session,
+    pane_id: &str,
+    hex: &str,
+) -> Result<serde_json::Value> {
+    anyhow::ensure!(
+        pane_id
+            .strip_prefix('%')
+            .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())),
+        "invalid pane identity"
+    );
+    anyhow::ensure!(
+        !hex.is_empty()
+            && hex.len() <= 8192
+            && hex.len() % 2 == 0
+            && hex.bytes().all(|b| b.is_ascii_hexdigit()),
+        "invalid input"
+    );
+    let request = CheckedAttach {
+        session: session.clone(),
+        observe: false,
+        guard: None,
+    };
+    let mut request = parse_attach_payload(&attach_payload(&request)?)?;
+    let terminal = request.session.terminal.clone().unwrap();
+    let current = observe(!session.external, &terminal.session_id)?;
+    verify_attach_generation(&request, current.server_pid, &current.id, &current.created)?;
+    anyhow::ensure!(
+        current.pane_id == pane_id,
+        "terminal pane changed; refocus before typing"
+    );
+    let mut guard = AttachGuard::new()?;
+    request.guard = Some(guard.token.clone());
+    let predicate = attach_predicate(&std::env::current_exe()?, &attach_payload(&request)?)?;
+    let bytes = hex
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|b| std::str::from_utf8(b).unwrap())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut command = tmux(!session.external)?;
+    command.args([
+        "if-shell",
+        "-t",
+        &terminal.session_id,
+        &predicate,
+        &format!("send-keys -t {pane_id} -H {bytes}"),
+        "",
+    ]);
+    bounded(command)?;
+    anyhow::ensure!(guard.passed()?, "terminal changed; input refused");
+    Ok(serde_json::json!({"delivered": true}))
+}
+
+/// Preserve screen rows and only SGR styling; discard OSC/DCS/other controls.
+fn styled_screen(text: &str) -> Vec<String> {
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            match chars.next() {
+                Some('[') => {
+                    let mut sequence = String::new();
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            if c == 'm'
+                                && sequence.len() <= 128
+                                && sequence
+                                    .bytes()
+                                    .all(|b| b.is_ascii_digit() || b == b';' || b == b':')
+                            {
+                                out.push_str("\x1b[");
+                                out.push_str(&sequence);
+                                out.push('m');
+                            }
+                            break;
+                        }
+                        if sequence.len() <= 128 {
+                            sequence.push(c);
+                        }
+                    }
+                }
+                Some(']') | Some('P') | Some('_') | Some('^') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\x07' {
+                            break;
+                        }
+                        if c == '\x1b' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        } else if c == '\n'
+            || c == '\t'
+            || (!c.is_control() && !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+        {
+            out.push(c);
+        }
+        if out.len() >= 256 * 1024 {
+            break;
+        }
+    }
+    // Drop only capture-pane's final separator, retaining blank screen rows.
+    out.strip_suffix('\n')
+        .unwrap_or(&out)
+        .split('\n')
+        .take(300)
+        .map(str::to_owned)
+        .collect()
 }
 
 fn clean_screen(text: &str) -> Vec<String> {
@@ -147,6 +281,19 @@ fn clean_screen(text: &str) -> Vec<String> {
 mod tests {
     use super::*;
     #[test]
+    fn live_screen_preserves_layout_and_sgr_only() {
+        assert_eq!(
+            styled_screen("\x1b[31mred\x1b[0m\n\nlast\n"),
+            vec!["\x1b[31mred\x1b[0m", "", "last"]
+        );
+        assert_eq!(
+            styled_screen("x\x1b]52;c;private\x07\x1b[2J\x1bPdiscard\x1b\\y\n"),
+            vec!["xy"]
+        );
+        assert_eq!(styled_screen("\n\n\n"), vec!["", "", ""]);
+        assert_eq!(styled_screen(&"line\n".repeat(400)).len(), 300);
+    }
+    #[test]
     fn snapshot_text_has_no_terminal_controls_and_is_bounded() {
         assert_eq!(
             clean_screen("ok\x1b[31m red\x1b[0m\x1b]52;c;hidden\x07\u{202e}\nnext"),
@@ -165,7 +312,7 @@ mod tests {
         assert!(bounded(cmd).is_err());
         assert!(start.elapsed() < Duration::from_secs(2));
         let mut cmd = Command::new("sh");
-        cmd.args(["-c", "head -c 70000 /dev/zero"]);
+        cmd.args(["-c", "head -c 270000 /dev/zero"]);
         assert!(bounded(cmd).is_err());
     }
 }

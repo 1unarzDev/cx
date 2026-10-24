@@ -159,6 +159,12 @@ pub enum Operation {
     SessionPreview {
         session: Session,
     },
+    /// Input to the exact pane shown in a verified live session view. Never retried.
+    SessionPaneInput {
+        session: Session,
+        pane_id: String,
+        hex: String,
+    },
     /// Terminals started outside CX, shown for adoption in the UI only.
     ExternalSessions,
     /// Move a terminal started outside CX into the managed tmux server.

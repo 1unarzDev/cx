@@ -1,5 +1,11 @@
 # CX status
 
+## Integrated session terminals and unified creation — 0.1.88
+
+The user rejected clipped text snapshots. The session pane now displays the full styled current tmux screen with blank rows, cursor and alternate-screen content; its viewport follows the cursor. Enter focuses the existing pane within CX, Ctrl+] returns navigation, Ctrl+O opens native attachment. Input binds to device/server/session/pane, not process identity or title, and a same-queue generation guard prevents stale input delivery. Focus survives a shell starting an agent. Shell is now a choice in New session, with duplicate sidebar/palette creation entries removed.
+
+Limits: original terminal geometry is preserved; oversized content is viewport-clipped. No mouse forwarding/scrollback/terminal emulation; native attach remains available. Pasted input is bounded to 4096 bytes including mode markers. Remote helpers need `live-session-pane-v1`; no remote deployment is included. Physical acceptance beyond synthetic PTYs and real provider-specific keybindings remains separate.
+
 ## Session labels and read-only previews — 0.1.87
 
 Implemented in `worktrees/session-previews-20261024` and installed locally from `0dd91e0` as 0.1.87. Installed SHA-256 matches the optimized build; previous binary saved at `~/.local/bin/cx.rollback-0.1.86-session-previews`. No remote rollout or session restart. Session titles retain exact provider metadata; generic labels show folder/provider/compact runtime identity. Wide session views show wrapped context and a read-only current-screen snapshot. Narrow layouts keep context below the list. Snapshot fetching is selected-only, bounded, asynchronous, separated from remote inventory traffic and discarded on selection/runtime change. No snapshot text is persisted. Mouse interaction over snapshots cannot activate or scroll session rows.

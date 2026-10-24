@@ -1,5 +1,16 @@
 # Validation record
 
+## Integrated live terminal panes — 0.1.88
+
+PASS — full offline Rust suite: **729 passed, 0 failed, 1 protected live test ignored** (`/tmp/cx-live-pane-full-final.log`). Final legacy Ctrl+] mapping correction passed the focused-input regression separately (`/tmp/cx-live-pane-return-key.log`). Source formatting, diff checks and optimized release build passed.
+
+PASS — real disposable managed/default tmux runtime tests against release (`/tmp/cx-live-pane-runtime-final.log`): full styled 100-row screen, actual cursor, no geometry/attachment mutation, input reaches existing shell, raw alternate-screen TUI colors/arrow/Ctrl+C bytes, malformed/wrong-pane/server-generation/ended-session refusal. No personal sessions or transcripts inspected.
+
+PASS — actual viewer PTY (`tests/live_session_pane_ui.py`, `/tmp/cx-live-pane-pty-final.log`): side pane rendered, Enter focused existing shell, bracketed paste plus Enter created synthetic proof, Ctrl+] returned navigation, n opened unified chooser with Shell, no duplicate New shell button, termios restored and exactly one original runtime remained. This caught crossterm's legacy Ctrl+]→Ctrl+5 mapping; both key encodings now return navigation.
+
+Limits: original tmux geometry is preserved; viewport follows cursor rather than resizing other clients. No mouse forwarding/scrollback/arbitrary terminal protocol emulation. Paste is bounded to 4096 bytes including bracket markers. Real provider-specific keybindings and remote-host live acceptance are not covered by synthetic PTYs. Remote input needs `live-session-pane-v1`; no fleet rollout is included.
+
+
 ## Session previews and labels — 0.1.87
 
 PASS — atomic local installation under the maintenance lock from `0dd91e0`; installed version 0.1.87 and build/installed SHA-256 match (`924854ef04fefa497e0c1c4503db5205b2d269fa4b92bb9c621ddc02bd86419c`). Rollback: `~/.local/bin/cx.rollback-0.1.86-session-previews`. Evidence `/tmp/cx-preview-install.log`.

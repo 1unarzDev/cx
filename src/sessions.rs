@@ -2,7 +2,7 @@
 mod preview;
 use crate::model::{CreateSession, Device, ProcessIdentity, RunCommand, Session, TerminalIdentity};
 use anyhow::{bail, Context, Result};
-pub use preview::preview;
+pub use preview::{preview, session_pane_input};
 use sha2::{Digest, Sha256};
 use std::{
     fs,

@@ -6425,7 +6425,7 @@ fn live_pane_focus_input_return_and_runtime_invalidation() {
         .collect();
     assert!(text.contains("live screen"));
     assert!(text.contains("Ctrl+]"));
-    a.key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL));
+    a.key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::CONTROL));
     assert!(!a.pane_focused());
     assert!(rx.try_recv().is_err());
     assert!(a.focus_session_pane());

@@ -52,6 +52,7 @@ not change Docker contexts, SSH trust, host networking, or provider credentials.
 | Fake Docker public helper | Same path on two IDs with different providers; engine/user/start changes after executable probe | Evidence remains specific to container/user/folder; post-probe change rejects instead of publishing old capabilities. |
 | Real owned container | Installed Codex+Claude; Claude made nonexecutable | Exact installed subset from that container; exact scope/time; no `/tmp/cx-tools-0` created by discovery. |
 | Real launch chain | Codex/Claude × fresh/native-history × Default/YOLO | All 8 actual argv vectors plus quoted/Unicode cwd survive host session → container-run → container-shell → provider. |
+| Public CLI flags | `container-providers --directory`; `container-new --provider codex --resume --yolo --directory` | CLI preserves exact scope and explicit native picker/permission arguments, in addition to direct framed-operation coverage. |
 | Idempotency | Repeat each exact creation key/request; change provider/resume/YOLO under one existing key | Same session ID on exact repeat; changed intent rejected; exactly one live runtime. |
 | Existing runtime | Watch one already-running history picker session | Same terminal, one session, no replacement agent argv, termios restored. |
 | Compatibility | New binary receives resume on old create op; agent create receives shell | Explicit refusal; no managed session created. |

@@ -22,6 +22,11 @@ from session_adversarial import Fixture, Failure, decode_frame, require
 
 
 class ParityFixture(Fixture):
+    def cli(self, *args, env=None):
+        return json.loads(self.run([self.binary, *args], env=env,
+                                   timeout=120 if self.live else 15,
+                                   label='container-cli:' + args[0]).stdout)
+
     def request(self, op, args):
         request = json.dumps(dict(version=1, id='adversarial', op=dict(op=op, args=args))).encode()
         wire = b'CX1 ' + str(len(request)).encode() + b'\n' + request
@@ -217,6 +222,8 @@ def live_checks(f, image):
         scope = dict(scope_of(container), folder=folder)
         observed = checked_reply(f, 'container_providers', dict(scope=scope))
         providers_match(observed, scope, ['shell', 'codex', 'claude'])
+        providers_match(f.cli('container-providers', owned, '--directory', folder),
+                        scope, ['shell', 'codex', 'claude'])
         # Discovery must not install private tooling; none exists before the first launch.
         require(engine('exec', owned, 'test', '!', '-d', '/tmp/cx-tools-0', check=False).returncode == 0,
                 'provider discovery installed private helper tooling')
@@ -270,6 +277,19 @@ def live_checks(f, image):
                     f.until(lambda: not f.rows(), 'owned agent session did not stop')
         checks.append('all eight provider/fresh-or-native-picker/default-or-YOLO argv combinations preserve cwd')
         checks.append('idempotent launch/watch avoid duplicates; changed provider/resume/permission key bindings refuse')
+
+        for path in (proof / 'argv', proof / 'cwd'):
+            path.unlink(missing_ok=True)
+        cli_session = f.cli('container-new', owned, '--provider', 'codex', '--resume', '--yolo',
+                            '--directory', folder)
+        f.until(lambda: (proof / 'cwd').exists(), 'public CLI resume did not reach synthetic provider', seconds=12)
+        cli_argv = (proof / 'argv').read_bytes().split(b'\0')[:-1]
+        require([v.decode() for v in cli_argv[1:]] == expected_args('codex', True, True),
+                'public container-new resume/yolo flags did not preserve native picker intent')
+        fields = {k: cli_session[k] for k in ('id', 'pid', 'started', 'boot_id')}
+        checked_reply(f, 'stop_agent_session', dict(fields, provider='codex'))
+        f.until(lambda: not f.rows(), 'public CLI fixture did not stop')
+        checks.append('public container-providers and container-new --resume --yolo preserve contract')
 
         # Dedicated resume op prevents an old handler silently accepting a fresh launch.
         legacy = launch(scope, 'codex', True, False, 'legacy-resume-refusal')

@@ -1,5 +1,11 @@
 # CX status
 
+## Session workflow exploration 2026 10 23
+
+The user prioritizes agentic coding across machines and native-feeling management of all shells/agents, including sessions created outside CX. Three Astra specialists reviewed committed snapshot `c60e1a2`; findings and ranked features are in [session management and feature priorities](docs/astra-improvement-proposals.md). This isolated branch contains proposals only. `cargo check --locked --offline` and all 175 selected UI tests passed; no live sessions, shell configuration or networking were changed.
+
+Before implementation: resolve the root checkout's existing integration conflicts; define attachment endpoint versus lifecycle ownership; demonstrate nested-client switching and physical terminal behavior before offering optional tmux-backed terminal integration. No further workflow-priority answer is needed.
+
 ## Device markers and session choices (v0.1.56)
 
 Only single-direction devices have an access marker: a leading `*`, kept visible before long names are truncated. The edit menu includes the access toggle. New-session buttons, movement and shortcuts use the selected device’s fresh capability evidence; unknown or unavailable agents are hidden.

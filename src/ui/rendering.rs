@@ -1060,7 +1060,9 @@ pub(super) fn render_at(
             ));
         }
     }
-    let mut hints = if app.help {
+    let mut hints = if app.pane_focused() {
+        vec![("Ctrl+]", "Sessions"), ("Ctrl+O", "Expand terminal")]
+    } else if app.help {
         vec![("↑↓", "Scroll"), ("PgUpDn", "Page"), ("Esc", "Close")]
     } else if let Some(dialog) = &app.dialog {
         if matches!(dialog, Dialog::AgentTasks(..)) {

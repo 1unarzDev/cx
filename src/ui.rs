@@ -350,7 +350,6 @@ const ACTIONS: &[(Action, &str)] = &[
     ),
     (Action::Add, "Add by SSH address · alias / user@host"),
     (Action::Files, "Files · choose device · browse home"),
-    (Action::Shell, "New shell · choose device · start in home"),
     (
         Action::New,
         "New session · choose device, provider and folder",
@@ -8383,6 +8382,7 @@ struct Screen {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
     active: bool,
     mouse: bool,
+    paste: bool,
 }
 impl Screen {
     fn new() -> Result<Self> {
@@ -8403,7 +8403,19 @@ impl Screen {
             terminal,
             active: true,
             mouse: false,
+            paste: false,
         })
+    }
+    fn bracketed_paste(&mut self, enabled: bool) -> Result<()> {
+        if enabled != self.paste {
+            if enabled {
+                execute!(self.terminal.backend_mut(), event::EnableBracketedPaste)?;
+            } else {
+                execute!(self.terminal.backend_mut(), event::DisableBracketedPaste)?;
+            }
+            self.paste = enabled;
+        }
+        Ok(())
     }
     fn mouse_capture(&mut self, enabled: bool) -> Result<()> {
         if enabled != self.mouse {
@@ -8423,6 +8435,7 @@ impl Screen {
     /// Final teardown (Drop) passes `false` so the user's own terminal is kept.
     fn suspend(&mut self, clear: bool) -> Result<()> {
         if self.active {
+            let paste = self.bracketed_paste(false);
             let mouse = self.mouse_capture(false);
             self.active = false;
             let raw = terminal::disable_raw_mode();
@@ -8437,6 +8450,7 @@ impl Screen {
                 Ok(())
             };
             let cursor = self.terminal.show_cursor();
+            paste?;
             mouse?;
             raw?;
             leave?;
@@ -9395,6 +9409,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         // Capture wheel reports throughout cx so the emulator does not replace
         // them with accelerated arrow-key bursts. suspend() releases this before
         // handing the terminal to SSH/tmux/native commands.
+        screen.bracketed_paste(app.pane_focused())?;
         screen.mouse_capture(true)?;
         dirty |= app.refresh_session_preview(screen.terminal.size()?.width);
         if dirty {

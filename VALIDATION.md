@@ -2,6 +2,8 @@
 
 ## Hover, availability and loader corrections — 0.1.89
 
+PASS — local atomic installation from `f91242a`; installed/build SHA-256 `2d1711b14c8604f5e88a16faddb68608d18c1fb009bd5a87a489dbf5bdcb8b22`, version0.1.89 (`/tmp/cx-hover-install.log`). Rollback `~/.local/bin/cx.rollback-0.1.88-hover-fix`.
+
 PASS — full offline suite **739 passed, 0 failed, 1 protected live test ignored** (`/tmp/cx-hover-full-final.log`). Final narrow-layout/hint changes: all **231 UI tests passed** (`/tmp/cx-hover-ui-final.log`). Formatting/diff and optimized build passed. One initial native-metadata test failed under concurrent build load, then passed independently and in the full rerun; no metadata implementation was changed.
 
 Reproduced/fixed: Info ingestion removed live-preview capabilities (`info_reply_keeps_live...`, red/green logs); mouse movement did not select rendered session rows (`session_hover_selects...`, red/green logs); adoption intent stopped at availability instead of continuing; loader content had unequal vertical padding. Relay version stall regression took 2s before correction; bounded subprocess suite passed in0.25s, including child-held pipe/output flood cleanup. New tests exercise the real UI dispatch/rendering paths, not only direct preview calls.

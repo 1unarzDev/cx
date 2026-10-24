@@ -2,6 +2,8 @@
 
 ## Hover previews, availability and loader alignment — 0.1.89
 
+Installed locally from `f91242a`; executable reports0.1.89 and matches build digest. Atomic maintenance-locked install, rollback `~/.local/bin/cx.rollback-0.1.88-hover-fix`. No remote rollout or personal session restart.
+
 Fixed a capability ingestion bug: Info replies discarded both live-preview capabilities, disabling previews as soon as availability returned. Added render-derived session-row mouse hit boxes, including group spacers and table scroll offset. Hover selects without attaching. Preview moves below the list in narrower layouts; outside-tmux rows explain that Enter moves the terminal before screen access.
 
 External-terminal open intent now survives its capability check and resumes automatically; navigation/Escape, endpoint changes, failures and a 12-second pending deadline cancel it. Capability probes have a separate scheduler/transport lane from inventory. Relay -v subprocesses are bounded to 250ms/128 bytes with owned process cleanup. Loader text is centered vertically inside its panel.

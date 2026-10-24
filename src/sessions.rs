@@ -1639,9 +1639,256 @@ pub fn refresh_managed_status(id: &str) -> Result<()> {
 fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
+const ATTACH_PAYLOAD_LIMIT: usize = 32768;
+const ATTACH_REFUSED: &str = "Session changed or ended; refresh before attaching";
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckedAttach {
+    session: Session,
+    observe: bool,
+    #[serde(default)]
+    guard: Option<String>,
+}
+fn attach_payload(request: &CheckedAttach) -> Result<String> {
+    use base64::Engine;
+    let payload = base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(request)?);
+    anyhow::ensure!(
+        payload.len() <= ATTACH_PAYLOAD_LIMIT,
+        "attachment metadata exceeds limit"
+    );
+    Ok(payload)
+}
+fn parse_attach_payload(payload: &str) -> Result<CheckedAttach> {
+    use base64::Engine;
+    anyhow::ensure!(
+        payload.len() <= ATTACH_PAYLOAD_LIMIT,
+        "attachment metadata exceeds limit"
+    );
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .context("invalid attachment metadata")?;
+    let request: CheckedAttach =
+        serde_json::from_slice(&bytes).context("invalid attachment metadata")?;
+    let terminal = request
+        .session
+        .terminal
+        .as_ref()
+        .context("terminal identity unavailable")?;
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    anyhow::ensure!(
+        terminal.server_pid > 0
+            && digits(&terminal.server_start)
+            && digits(&terminal.created)
+            && terminal.session_id.strip_prefix('$').is_some_and(digits)
+            && !request.session.boot_id.is_empty(),
+        "invalid terminal identity"
+    );
+    if request.session.external {
+        anyhow::ensure!(
+            request.session.id == terminal.session_id,
+            "invalid external terminal identity"
+        );
+    } else {
+        anyhow::ensure!(
+            request.session.id.len() == 67
+                && request.session.id.starts_with("cx-")
+                && request.session.id[3..]
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit()),
+            "invalid managed terminal identity"
+        );
+    }
+    if let Some(token) = &request.guard {
+        anyhow::ensure!(valid_attach_guard(token), "invalid attachment guard");
+    }
+    Ok(request)
+}
+fn valid_attach_guard(token: &str) -> bool {
+    token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit())
+}
+fn attach_guard_path(token: &str) -> Result<PathBuf> {
+    anyhow::ensure!(valid_attach_guard(token), "invalid attachment guard");
+    Ok(state()?.join(format!("attach-guard-{token}")))
+}
+struct AttachGuard {
+    token: String,
+    path: PathBuf,
+    file: fs::File,
+}
+impl AttachGuard {
+    fn new() -> Result<Self> {
+        use std::io::Read;
+        let mut random = [0u8; 32];
+        fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
+        let token: String = random.iter().map(|v| format!("{v:02x}")).collect();
+        let path = attach_guard_path(&token)?;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)?;
+        Ok(Self { token, path, file })
+    }
+    fn passed(&mut self) -> Result<bool> {
+        use std::io::{Read, Seek, SeekFrom};
+        validate_attach_guard_file(&self.file)?;
+        self.file.seek(SeekFrom::Start(0))?;
+        let mut bytes = Vec::new();
+        (&mut self.file).take(3).read_to_end(&mut bytes)?;
+        Ok(bytes == b"ok")
+    }
+}
+impl Drop for AttachGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+fn validate_attach_guard_file(file: &fs::File) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    anyhow::ensure!(
+        metadata.is_file()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o777 == 0o600
+            && metadata.nlink() == 1
+            && metadata.len() <= 2,
+        "invalid attachment guard file"
+    );
+    Ok(())
+}
+fn verify_attach_generation(
+    request: &CheckedAttach,
+    server_pid: u32,
+    session_id: &str,
+    created: &str,
+) -> Result<()> {
+    let expected = request
+        .session
+        .terminal
+        .as_ref()
+        .context("terminal identity unavailable")?;
+    anyhow::ensure!(
+        server_pid == expected.server_pid
+            && session_id == expected.session_id
+            && created == expected.created
+            && identity().2 == request.session.boot_id
+            && process_start_ticks(server_pid).as_ref() == Some(&expected.server_start),
+        ATTACH_REFUSED
+    );
+    Ok(())
+}
+/// Called only by the synchronous if-shell predicate on the attaching connection.
+pub fn native_attach_check(
+    payload: &str,
+    server_pid: u32,
+    session_id: &str,
+    created: &str,
+) -> Result<()> {
+    let request = parse_attach_payload(payload)?;
+    verify_attach_generation(&request, server_pid, session_id, created)?;
+    let token = request
+        .guard
+        .as_deref()
+        .context("attachment guard unavailable")?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(attach_guard_path(token)?)?;
+    validate_attach_guard_file(&file)?;
+    anyhow::ensure!(
+        file.metadata()?.len() == 0,
+        "attachment guard already consumed"
+    );
+    file.write_all(b"ok")?;
+    file.sync_all()?;
+    Ok(())
+}
+pub fn native_attach_checked(payload: &str) -> Result<()> {
+    let mut request = parse_attach_payload(payload)?;
+    anyhow::ensure!(request.guard.is_none(), "attachment guard is internal");
+    let expected = request
+        .session
+        .terminal
+        .clone()
+        .context("terminal identity unavailable")?;
+    verify_attach_generation(
+        &request,
+        expected.server_pid,
+        &expected.session_id,
+        &expected.created,
+    )?;
+    let mut guard = AttachGuard::new()?;
+    request.guard = Some(guard.token.clone());
+    let predicate_payload = attach_payload(&request)?;
+    if !request.session.external {
+        configure_managed()?;
+        refresh_managed_status(&request.session.id)?;
+    }
+    let executable = std::env::current_exe()?;
+    let predicate = format!(
+        "{} native-attach-check {} '#{{pid}}' '#{{session_id}}' '#{{session_created}}'",
+        quote(executable.to_str().context("helper path is not UTF-8")?),
+        quote(&predicate_payload)
+    );
+    // All interpolated target components are validated numeric values. The
+    // guard runs on this connection's server; never reconnect after checking it.
+    let attach = format!(
+        "attach-session -t {}{}",
+        quote(&expected.session_id),
+        if request.observe {
+            " -r -f ignore-size"
+        } else {
+            ""
+        }
+    );
+    let mut command = tmux(!request.session.external)?;
+    if let Some(terminal) = attach_terminal()? {
+        command.env("TERM", terminal);
+    }
+    command.args([
+        "if-shell",
+        "-t",
+        &expected.session_id,
+        &predicate,
+        &attach,
+        &format!("display-message -p {}", quote(ATTACH_REFUSED)),
+    ]);
+    let status = command
+        .status()
+        .context("checked terminal attachment failed")?;
+    anyhow::ensure!(status.success() && guard.passed()?, ATTACH_REFUSED);
+    Ok(())
+}
 pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
     if std::env::var_os("TMUX").is_some() {
         bail!("cx attachment from inside tmux requires leaving the outer client first; protected outer sessions are kept intact");
+    }
+    if session.terminal.is_some() {
+        let payload = attach_payload(&CheckedAttach {
+            session: session.clone(),
+            observe,
+            guard: None,
+        })?;
+        if let Some(target) = &device.target {
+            let routed = crate::store::ssh(target, true)?;
+            let mut command = Command::new("ssh");
+            command.arg("-t").args(routed.get_args());
+            command.arg(format!(
+                "~/.local/bin/cx native-attach-checked {}",
+                quote(&payload)
+            ));
+            anyhow::ensure!(
+                command
+                    .status()
+                    .context("checked remote attachment failed")?
+                    .success(),
+                ATTACH_REFUSED
+            );
+            return Ok(());
+        }
+        return native_attach_checked(&payload);
     }
     if session.external {
         if !session.id.starts_with('$') || !session.id[1..].bytes().all(|b| b.is_ascii_digit()) {
@@ -2043,12 +2290,14 @@ managed=0
 op=
 for arg do
     [ "$arg" = -S ] && managed=1
-    case "$arg" in list-sessions|display-message|set-option) op=$arg;; esac
+    case "$arg" in list-sessions|display-message|set-option|attach-session|if-shell|source-file) op=$arg;; esac
     last=$arg
 done
+printf '%s\n' "$op" >> "$HOME/tmux-ops"
 server=42
 [ "$CX_INVENTORY_CASE" = distinct ] && [ "$managed" = 0 ] && server=43
 [ "$CX_INVENTORY_CASE" = identity ] && server=$CX_INVENTORY_PID
+[ "$CX_INVENTORY_CASE" = checked ] && server=$CX_INVENTORY_PID
 pane=${CX_INVENTORY_PANE:-$CX_INVENTORY_PID}
 dead=0
 [ "$CX_INVENTORY_CASE" = dead ] && dead=1
@@ -2105,6 +2354,132 @@ esac
         std::env::set_var("CX_INVENTORY_PID", std::process::id().to_string());
         let sessions = list().unwrap();
         match case.as_str() {
+            "legacy_attach" => {
+                let mut session = sessions[0].clone();
+                session.id = "$1".into();
+                session.external = true;
+                session.socket = None;
+                session.terminal = None;
+                attach(&crate::store::local_device(), &session, false).unwrap();
+                let ops = fs::read_to_string(
+                    PathBuf::from(std::env::var_os("HOME").unwrap()).join("tmux-ops"),
+                )
+                .unwrap();
+                assert!(ops.lines().any(|op| op == "attach-session"));
+                assert!(!ops
+                    .lines()
+                    .any(|op| op == "if-shell" || op == "source-file"));
+            }
+            "checked" => {
+                let mut session = sessions[0].clone();
+                session.id = "$1".into();
+                session.external = true;
+                session.socket = None;
+                assert!(session.terminal.is_some());
+                let device = crate::store::local_device();
+                assert!(attach(&device, &session, false).is_err(), "a tmux command that never passes the generation guard must not report successful attachment");
+                let ops = fs::read_to_string(
+                    PathBuf::from(std::env::var_os("HOME").unwrap()).join("tmux-ops"),
+                )
+                .unwrap();
+                assert!(ops.lines().any(|op| op == "if-shell"));
+                assert!(
+                    !ops.lines().any(|op| op == "source-file"),
+                    "external servers must not be reconfigured"
+                );
+                assert!(
+                    !fs::read_dir(state().unwrap()).unwrap().any(|entry| entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("attach-guard-")),
+                    "failed attachment must clean its guard"
+                );
+                let expected = session.terminal.clone().unwrap();
+                let mut guard = AttachGuard::new().unwrap();
+                let guard_path = guard.path.clone();
+                let payload = attach_payload(&CheckedAttach {
+                    session: session.clone(),
+                    observe: false,
+                    guard: Some(guard.token.clone()),
+                })
+                .unwrap();
+                assert!(native_attach_check(
+                    &payload,
+                    expected.server_pid + 1,
+                    &expected.session_id,
+                    &expected.created
+                )
+                .is_err());
+                assert!(native_attach_check(
+                    &payload,
+                    expected.server_pid,
+                    "$999",
+                    &expected.created
+                )
+                .is_err());
+                assert!(native_attach_check(
+                    &payload,
+                    expected.server_pid,
+                    &expected.session_id,
+                    "0"
+                )
+                .is_err());
+                assert!(!guard.passed().unwrap());
+                native_attach_check(
+                    &payload,
+                    expected.server_pid,
+                    &expected.session_id,
+                    &expected.created,
+                )
+                .unwrap();
+                assert!(guard.passed().unwrap());
+                assert!(
+                    native_attach_check(
+                        &payload,
+                        expected.server_pid,
+                        &expected.session_id,
+                        &expected.created
+                    )
+                    .is_err(),
+                    "guard cannot be replayed"
+                );
+                drop(guard);
+                assert!(!guard_path.exists());
+
+                let guard = AttachGuard::new().unwrap();
+                let payload = attach_payload(&CheckedAttach {
+                    session: session.clone(),
+                    observe: true,
+                    guard: Some(guard.token.clone()),
+                })
+                .unwrap();
+                let destination = state().unwrap().join("guard-symlink-target");
+                fs::write(&destination, b"preserve").unwrap();
+                fs::remove_file(&guard.path).unwrap();
+                std::os::unix::fs::symlink(&destination, &guard.path).unwrap();
+                assert!(native_attach_check(
+                    &payload,
+                    expected.server_pid,
+                    &expected.session_id,
+                    &expected.created
+                )
+                .is_err());
+                assert_eq!(fs::read(&destination).unwrap(), b"preserve");
+                drop(guard);
+
+                let mut stale = session;
+                stale.boot_id = "different-boot".into();
+                assert!(native_attach_checked(
+                    &attach_payload(&CheckedAttach {
+                        session: stale,
+                        observe: false,
+                        guard: None
+                    })
+                    .unwrap()
+                )
+                .is_err());
+            }
             "identity" => {
                 assert_eq!(sessions.len(), 1);
                 let terminal = sessions[0]
@@ -2189,6 +2564,27 @@ esac
     #[test]
     fn runtime_inventory_terminal_identity_survives_pane_change() {
         inventory_fixture("identity");
+    }
+
+    #[test]
+    fn checked_attach_requires_guard_success_and_preserves_external_config() {
+        inventory_fixture("checked");
+    }
+
+    #[test]
+    fn checked_attach_preserves_old_helper_legacy_path() {
+        inventory_fixture("legacy_attach");
+    }
+
+    #[test]
+    fn checked_attach_metadata_is_bounded_and_guard_tokens_are_fixed() {
+        assert!(parse_attach_payload(&"A".repeat(ATTACH_PAYLOAD_LIMIT + 1)).is_err());
+        assert!(parse_attach_payload("not base64").is_err());
+        for token in ["", "../guard", "/tmp/guard", "$(false)"] {
+            assert!(!valid_attach_guard(token));
+        }
+        assert!(valid_attach_guard(&"a".repeat(64)));
+        assert!(!valid_attach_guard(&"g".repeat(64)));
     }
 
     #[test]

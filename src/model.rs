@@ -19,6 +19,13 @@ pub struct ContainerScope {
     pub started_at: String,
     pub folder: String,
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalIdentity {
+    pub server_pid: u32,
+    pub server_start: String,
+    pub session_id: String,
+    pub created: String,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -38,6 +45,9 @@ pub struct Session {
     pub process: Option<ProcessIdentity>,
     #[serde(default)]
     pub container: Option<ContainerScope>,
+    /// Stable terminal generation; pane/provider changes do not replace the terminal.
+    #[serde(default)]
+    pub terminal: Option<TerminalIdentity>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RunCommand {

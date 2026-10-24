@@ -637,6 +637,7 @@ fn inspect_observed(
         );
     }
     Ok(Session {
+        terminal: None,
         id: if managed { name } else { id.into() },
         name: display_name,
         directory: prior
@@ -1270,6 +1271,7 @@ fn create_with_permissions(
     ensure_server()?;
     let (host, account, boot_id) = identity();
     let pending = Session {
+        terminal: None,
         id: name.clone(),
         name: display_name.clone(),
         directory: container
@@ -2222,6 +2224,7 @@ esac
     #[test]
     fn generated_session_names_follow_provider_workspace_and_keep_custom_names() {
         let mut session = Session {
+            terminal: None,
             id: "fixture".into(),
             name: "shell · scaling-law".into(),
             directory: "/projects/scaling-law".into(),

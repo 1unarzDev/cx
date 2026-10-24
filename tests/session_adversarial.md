@@ -107,7 +107,10 @@ python3 -B tests/session_adversarial_attach.py /absolute/path/to/cx --run-owned-
 This supplement requires `native-attach-checked PAYLOAD` and
 `native-attach-check PAYLOAD SERVER_PID SESSION_ID CREATED`. PAYLOAD is standard
 base64 of JSON `{"session": <exact returned Session>, "observe": false}`.
-It validates the same-queue predicate, actual managed/external client attachment,
+The bare predicate must reject even exact identity: only the integrated checked
+entry creates the private per-attempt guard. The supplement rejects forged guard
+payloads at both interfaces and checks that completion/rejection leaves no guard
+file behind. It validates actual managed/external client attachment,
 read-only watch input rejection, termios restoration, external and managed global
 option/inventory preservation, changed server generation, wrong creation/numeric
 identity, renamed original with a new same-name peer, and dead selected runtime.

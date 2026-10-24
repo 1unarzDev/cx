@@ -23,9 +23,16 @@ sys.dont_write_bytecode = True
 from session_adversarial import Fixture, Failure, require
 
 
-def payload(session, observe=False):
+def payload(session, observe=False, guard=None):
     # Confirmed with the runtime owner; exact observed Session is not reconstructed.
-    return base64.b64encode(json.dumps({"session": session, "observe": observe}).encode()).decode()
+    request = {"session": session, "observe": observe}
+    if guard is not None:
+        request["guard"] = guard
+    return base64.b64encode(json.dumps(request).encode()).decode()
+
+
+def no_guards(f):
+    require(not list(f.state.glob("attach-guard-*")), "attachment left private guard state behind")
 
 
 def clients(f, default):
@@ -112,6 +119,7 @@ class Client:
                 self.process.wait(timeout=3)
         os.close(self.master)
         os.close(self.slave)
+        no_guards(self.f)
 
 
 def exercise(f):
@@ -130,12 +138,22 @@ def exercise(f):
     identity = external["terminal"]
     predicate = [f.binary, "native-attach-check", payload(external), str(identity["server_pid"]),
                  identity["session_id"], identity["created"]]
-    require(f.run(predicate, check=False).returncode == 0, "exact attachment predicate rejected current runtime")
+    require(f.run(predicate, check=False).returncode != 0,
+            "bare predicate accepted exact identity without private guard authority")
     for index, wrong in ((3, "1"), (4, "$999999"), (5, "wrong-created")):
         invalid = list(predicate)
         invalid[index] = wrong
         require(f.run(invalid, check=False).returncode != 0, "attachment predicate accepted wrong queue identity")
-    checks.append("same-queue predicate accepts exact identity and rejects changed server/session/creation")
+    for guard in ("a" * 64, "../forged-guard"):
+        forged = payload(external, guard=guard)
+        forged_predicate = list(predicate)
+        forged_predicate[2] = forged
+        require(f.run(forged_predicate, check=False).returncode != 0,
+                "predicate accepted forged or absent internal guard")
+        require(f.run([f.binary, "native-attach-checked", forged], check=False).returncode != 0,
+                "checked entry accepted caller-supplied internal guard")
+        no_guards(f)
+    checks.append("bare predicate lacks authority; forged guards reject at predicate and public entry")
     for default, row in ((False, managed), (True, external)):
         for watch in (False, True):
             client = Client(f, row, watch)
@@ -157,8 +175,8 @@ def exercise(f):
             require(len(f.rows()) == 2, "checked attach created or removed a session")
     checks.append("managed/external attach and watch target exact session, block watch input, restore termios")
 
-    for field, value in (("server_start", "wrong-start"), ("server_pid", 1),
-                         ("created", "wrong-created"), ("session_id", "$999999")):
+    for field, value in (("server_start", str(int(identity["server_start"]) + 1)), ("server_pid", 1),
+                         ("created", str(int(identity["created"]) + 1)), ("session_id", "$999999")):
         stale = copy.deepcopy(external)
         stale["terminal"][field] = value
         client = Client(f, stale)
@@ -196,6 +214,10 @@ class PayloadTests(unittest.TestCase):
     def test_payload_shape(self):
         session = {"name": "quote '\n unicode 日本語", "terminal": {"session_id": "$0"}}
         self.assertEqual(json.loads(base64.b64decode(payload(session, True))), {"session": session, "observe": True})
+
+    def test_forged_guard_is_explicit_test_input_only(self):
+        self.assertNotIn("guard", json.loads(base64.b64decode(payload({}))))
+        self.assertEqual(json.loads(base64.b64decode(payload({}, guard="a" * 64)))["guard"], "a" * 64)
 
 
 def main():

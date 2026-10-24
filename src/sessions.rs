@@ -1241,8 +1241,92 @@ pub fn create_container(
     scope: &crate::model::ContainerScope,
     yolo: bool,
 ) -> Result<Session> {
+    anyhow::ensure!(
+        request.directory == scope.folder,
+        "Container launch directory does not match the selected scope"
+    );
     crate::containers::prepare(scope, &request.provider)?;
     create_with_permissions(request, yolo, Some(scope))
+}
+fn container_run_payload(
+    scope: &crate::model::ContainerScope,
+    request: &CreateSession,
+    yolo: bool,
+) -> Result<String> {
+    use base64::Engine;
+    let value = if request.resume {
+        serde_json::json!([scope, request.provider, yolo, true])
+    } else {
+        serde_json::json!([scope, request.provider, yolo])
+    };
+    let payload = base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(&value)?);
+    anyhow::ensure!(
+        payload.len() < 65536,
+        "container launch payload exceeds limit"
+    );
+    Ok(payload)
+}
+#[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+struct LaunchIntent {
+    provider: String,
+    resume: bool,
+    yolo: bool,
+    directory: String,
+    container: Option<crate::model::ContainerScope>,
+}
+fn read_launch_record<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<T> {
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    anyhow::ensure!(
+        metadata.is_file()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.len() <= 65536,
+        "unsafe session launch record"
+    );
+    let mut bytes = Vec::new();
+    file.take(65537).read_to_end(&mut bytes)?;
+    anyhow::ensure!(bytes.len() <= 65536, "session launch record exceeds limit");
+    Ok(serde_json::from_slice(&bytes)?)
+}
+fn validate_launch_intent(
+    root: &std::path::Path,
+    name: &str,
+    expected: &LaunchIntent,
+) -> Result<()> {
+    let saved = match read_launch_record::<LaunchIntent>(&root.join(format!("{name}.launch"))) {
+        Ok(saved) => saved,
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            let original: Session = read_launch_record(&root.join(format!("{name}.json")))?;
+            // Old launches never recorded resume selection. Refuse any resumed
+            // retry rather than guessing which conversation an old key owns.
+            anyhow::ensure!(
+                !expected.resume,
+                "creation key has no recorded history selection; use a new key"
+            );
+            LaunchIntent {
+                provider: original.provider,
+                resume: false,
+                yolo: expected.yolo,
+                directory: original.directory,
+                container: original.container,
+            }
+        }
+        Err(error) => return Err(error),
+    };
+    anyhow::ensure!(
+        saved == *expected,
+        "creation key already belongs to different launch settings; use a new key"
+    );
+    Ok(())
 }
 fn create_with_permissions(
     request: &CreateSession,
@@ -1287,6 +1371,15 @@ fn create_with_permissions(
         bail!("session lock unavailable");
     }
     let name = format!("cx-{:x}", Sha256::digest(request.key.as_bytes()));
+    let launch = LaunchIntent {
+        provider: request.provider.clone(),
+        resume: request.resume,
+        yolo,
+        directory: container
+            .map(|c| c.folder.clone())
+            .unwrap_or_else(|| directory.to_string_lossy().into_owned()),
+        container: container.cloned(),
+    };
     let mut exists = tmux(true)?;
     exists.args(["has-session", "-t", &format!("={name}")]);
     let permissions_file = root.join(format!("{name}.permissions"));
@@ -1299,6 +1392,7 @@ fn create_with_permissions(
         if previous != if yolo { "yolo" } else { "default" } {
             bail!("creation key already belongs to a different permission mode; use a new key");
         }
+        validate_launch_intent(&root, &name, &launch)?;
         let current = inspect(true, &name)?;
         anyhow::ensure!(
             current.container.as_ref() == container,
@@ -1354,6 +1448,14 @@ fn create_with_permissions(
         .open(root.join(format!("{name}.json")))?;
     intent.write_all(&serde_json::to_vec(&pending)?)?;
     intent.sync_all()?;
+    let mut launch_file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(root.join(format!("{name}.launch")))?;
+    launch_file.write_all(&serde_json::to_vec(&launch)?)?;
+    launch_file.sync_all()?;
     let mut permissions = fs::OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -1378,12 +1480,7 @@ fn create_with_permissions(
         launcher.extend(["-i".into(), "-c".into(), agent_command]);
     }
     if let Some(scope) = container {
-        use base64::Engine;
-        let payload = base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(&(
-            scope,
-            &request.provider,
-            yolo,
-        ))?);
+        let payload = container_run_payload(scope, request, yolo)?;
         launcher = vec![
             std::env::current_exe()?.to_str().context("cx path")?.into(),
             "container-run".into(),
@@ -2288,6 +2385,37 @@ fn stopped_command_choice(fd: i32, pid: libc::pid_t) -> Result<bool> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn container_launcher_preserves_native_history_picker_intent() {
+        use base64::Engine;
+        let scope = crate::model::ContainerScope {
+            engine: "fixture".into(),
+            id: "a".repeat(64),
+            name: "fixture".into(),
+            user: "tester".into(),
+            started_at: "now".into(),
+            folder: "/work".into(),
+        };
+        let request = CreateSession {
+            key: "picker".into(),
+            directory: scope.folder.clone(),
+            provider: "codex".into(),
+            name: String::new(),
+            resume: true,
+        };
+        let value: serde_json::Value = serde_json::from_slice(
+            &base64::engine::general_purpose::STANDARD
+                .decode(container_run_payload(&scope, &request, true).unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            value[3], true,
+            "container-run must receive the selected native history picker intent"
+        );
+        assert_eq!(value[2], true);
+    }
+
     fn inventory_fixture(case: &str) {
         let fixture = tempfile::tempdir().unwrap();
         let bin = fixture.path().join(".local/bin");
@@ -2373,6 +2501,29 @@ esac
         std::env::set_var("CX_INVENTORY_PID", std::process::id().to_string());
         let sessions = list().unwrap();
         match case.as_str() {
+            "intent_conflict" => {
+                let mut prior = sessions[0].clone();
+                let key = "intent-fixture";
+                prior.id = format!("cx-{:x}", Sha256::digest(key.as_bytes()));
+                prior.directory = std::env::var("HOME").unwrap();
+                prior.provider = "shell".into();
+                fs::write(
+                    state().unwrap().join(format!("{}.json", prior.id)),
+                    serde_json::to_vec(&prior).unwrap(),
+                )
+                .unwrap();
+                let request = CreateSession {
+                    key: key.into(),
+                    directory: prior.directory,
+                    provider: "codex".into(),
+                    name: String::new(),
+                    resume: false,
+                };
+                assert!(
+                    create(&request).is_err(),
+                    "a creation key for a shell must not silently satisfy an agent launch"
+                );
+            }
             "legacy_attach" => {
                 let mut session = sessions[0].clone();
                 session.id = "$1".into();
@@ -2621,6 +2772,45 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
     #[test]
     fn runtime_inventory_terminal_identity_survives_pane_change() {
         inventory_fixture("identity");
+    }
+
+    #[test]
+    fn creation_key_rejects_changed_provider_intent() {
+        inventory_fixture("intent_conflict");
+    }
+
+    #[test]
+    fn creation_key_binds_history_mode_directory_scope_and_permissions() {
+        let fixture = tempfile::tempdir().unwrap();
+        let original = LaunchIntent {
+            provider: "codex".into(),
+            resume: false,
+            yolo: false,
+            directory: "/work".into(),
+            container: None,
+        };
+        fs::write(
+            fixture.path().join("fixture.launch"),
+            serde_json::to_vec(&original).unwrap(),
+        )
+        .unwrap();
+        assert!(validate_launch_intent(fixture.path(), "fixture", &original).is_ok());
+        for field in ["provider", "resume", "yolo", "directory", "container"] {
+            let mut value = serde_json::to_value(&original).unwrap();
+            value[field] = match field {
+                "provider" => serde_json::json!("claude"),
+                "directory" => serde_json::json!("/elsewhere"),
+                "container" => {
+                    serde_json::json!({"engine":"fixture","id":"a".repeat(64),"name":"fixture","user":"tester","started_at":"now","folder":"/work"})
+                }
+                _ => serde_json::json!(true),
+            };
+            let changed = serde_json::from_value(value).unwrap();
+            assert!(
+                validate_launch_intent(fixture.path(), "fixture", &changed).is_err(),
+                "{field}"
+            );
+        }
     }
 
     #[test]

@@ -604,6 +604,14 @@ pub fn list() -> Result<Value> {
 }
 fn check(scope: &ContainerScope) -> Result<Container> {
     let c = inspect(&scope.id)?;
+    check_observed(scope, &c)?;
+    Ok(c)
+}
+fn check_observed(scope: &ContainerScope, c: &Container) -> Result<()> {
+    anyhow::ensure!(
+        c.id == scope.id,
+        "Container identity changed; refresh its entry"
+    );
     anyhow::ensure!(
         !scope.engine.is_empty() && c.engine == scope.engine,
         "Docker engine changed; refresh this container before accessing it"
@@ -625,7 +633,7 @@ fn check(scope: &ContainerScope) -> Result<Container> {
         c.user == scope.user,
         "Container execution user changed; refresh its entry"
     );
-    Ok(c)
+    Ok(())
 }
 pub fn lifecycle(id: &str, engine: &str, started_at: &str, action: &str) -> Result<Value> {
     let c = inspect(id)?;
@@ -855,45 +863,177 @@ if command -v zsh >/dev/null 2>&1; then exec zsh -il; fi
 exec /bin/sh -i
 "#;
 pub fn prepare(scope: &ContainerScope, provider: &str) -> Result<()> {
-    let container = check(scope)?;
-    ensure_helper(scope)?;
     anyhow::ensure!(
         ["shell", "codex", "claude"].contains(&provider),
         "unsupported container session profile"
     );
-    let mut c = terminal_command(&container, scope, false)?;
-    c.args([
-        "/bin/sh",
-        "-c",
-        "if command -v bash >/dev/null 2>&1; then exec bash -ilc \"$1\"; elif command -v zsh >/dev/null 2>&1; then exec zsh -ilc \"$1\"; else exec /bin/sh -lc \"$1\"; fi",
-        "cx-provider-check",
-        if provider == "shell" {
-            "command -v bash || command -v zsh || command -v sh"
-        } else if provider == "codex" {
-            "command -v codex"
-        } else {
-            "command -v claude"
-        },
-    ]);
-    bounded(c, None, 30, 262144).with_context(|| {
-        format!("{provider} is unavailable in this container; no packages were installed")
-    })?;
+    require_provider(&providers(scope)?, provider)?;
+    ensure_helper(scope)?;
     Ok(())
 }
-pub fn run(scope: &ContainerScope, provider: &str, yolo: bool) -> Result<()> {
+fn require_provider(available: &Value, provider: &str) -> Result<()> {
+    anyhow::ensure!(
+        available["providers"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(provider))),
+        "{provider} is unavailable in this container; no packages were installed"
+    );
+    Ok(())
+}
+const PROVIDERS_SCRIPT: &str = r#"cx_profiles=shell
+for cx_provider in codex claude; do
+ if test -n "${BASH_VERSION:-}"; then cx_path=$(type -P "$cx_provider" 2>/dev/null)
+ elif test -n "${ZSH_VERSION:-}"; then cx_path=$(whence -p "$cx_provider" 2>/dev/null)
+ else cx_path=$(command -v "$cx_provider" 2>/dev/null); fi
+ if test -n "$cx_path" && test -f "$cx_path" && test -x "$cx_path"; then cx_profiles="$cx_profiles $cx_provider"; fi
+done
+printf '\nCXPROVIDERS1 %s\n' "$cx_profiles"
+"#;
+const PROVIDER_PROBE_WRAPPER: &str = r#"uid=$(id -u)
+while IFS=: read -r name password entry_uid gid gecos home shell; do
+ if test "$entry_uid" = "$uid"; then export HOME="$home"; break; fi
+done < /etc/passwd
+if command -v bash >/dev/null 2>&1; then exec bash -ilc "$1";
+elif command -v zsh >/dev/null 2>&1; then exec zsh -ilc "$1";
+else exec /bin/sh -lc "$1"; fi
+"#;
+fn parse_providers(bytes: &[u8]) -> Result<Vec<String>> {
+    let line = std::str::from_utf8(bytes)?
+        .lines()
+        .last()
+        .context("container provider evidence unavailable")?;
+    let values = line
+        .strip_prefix("CXPROVIDERS1 ")
+        .context("container provider evidence unavailable")?;
+    let providers: Vec<String> = values.split_whitespace().map(str::to_owned).collect();
+    anyhow::ensure!(
+        matches!(
+            providers
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            ["shell"] | ["shell", "codex"] | ["shell", "claude"] | ["shell", "codex", "claude"]
+        ),
+        "invalid container provider evidence"
+    );
+    Ok(providers)
+}
+/// Explicit scoped executable discovery: never installs a helper, runs a
+/// provider, or reads its configuration, history, or authentication state.
+pub fn providers(scope: &ContainerScope) -> Result<Value> {
+    let container = check(scope)?;
+    let mut command = terminal_command(&container, scope, false)?;
+    command.args([
+        "/bin/sh",
+        "-c",
+        PROVIDER_PROBE_WRAPPER,
+        "cx-provider-check",
+        PROVIDERS_SCRIPT,
+    ]);
+    let found = parse_providers(&bounded(command, None, 8, 32768)?)?;
+    check(scope)?;
+    let observed_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    Ok(json!({"scope": scope, "providers": found, "observed_at": observed_at}))
+}
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RunPayload {
+    Current((ContainerScope, String, bool, bool)),
+    Legacy((ContainerScope, String, bool)),
+}
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ShellPayload {
+    Current((String, bool, String, String, bool)),
+    Legacy((String, bool, String, String)),
+}
+fn decode_payload<T: serde::de::DeserializeOwned>(payload: &str) -> Result<T> {
     use base64::Engine;
+    anyhow::ensure!(
+        payload.len() < 65536,
+        "container launch payload exceeds limit"
+    );
+    Ok(serde_json::from_slice(
+        &base64::engine::general_purpose::STANDARD.decode(payload)?,
+    )?)
+}
+pub fn run_payload(payload: &str) -> Result<()> {
+    let (scope, provider, yolo, resume) = match decode_payload::<RunPayload>(payload)? {
+        RunPayload::Current(parts) => parts,
+        RunPayload::Legacy((scope, provider, yolo)) => (scope, provider, yolo, false),
+    };
+    run_with_resume(&scope, &provider, yolo, resume)
+}
+pub fn local_shell_payload(payload: &str) -> Result<()> {
+    let (provider, yolo, folder, id, resume) = match decode_payload::<ShellPayload>(payload)? {
+        ShellPayload::Current(parts) => parts,
+        ShellPayload::Legacy((provider, yolo, folder, id)) => (provider, yolo, folder, id, false),
+    };
+    local_shell_with_resume(&provider, yolo, &folder, &id, resume)
+}
+pub fn run(scope: &ContainerScope, provider: &str, yolo: bool) -> Result<()> {
+    run_with_resume(scope, provider, yolo, false)
+}
+fn shell_payload(
+    provider: &str,
+    yolo: bool,
+    folder: &str,
+    id: &str,
+    resume: bool,
+) -> Result<String> {
+    use base64::Engine;
+    let value = if resume {
+        json!([provider, yolo, folder, id, true])
+    } else {
+        json!([provider, yolo, folder, id])
+    };
+    let payload = base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(&value)?);
+    anyhow::ensure!(
+        payload.len() < 65536,
+        "container shell payload exceeds limit"
+    );
+    Ok(payload)
+}
+fn provider_args(provider: &str, yolo: bool, resume: bool) -> Result<Vec<&'static str>> {
+    let mut args = match provider {
+        "shell" => vec!["shell"],
+        "codex" => vec!["codex"],
+        "claude" => vec!["claude"],
+        _ => bail!("unsupported container profile"),
+    };
+    anyhow::ensure!(
+        provider != "shell" || (!yolo && !resume),
+        "Shell does not support agent permissions or history picker"
+    );
+    if resume {
+        args.push(if provider == "codex" {
+            "resume"
+        } else {
+            "--resume"
+        });
+    }
+    if yolo {
+        args.push(if provider == "codex" {
+            "--dangerously-bypass-approvals-and-sandbox"
+        } else {
+            "--dangerously-skip-permissions"
+        });
+    }
+    Ok(args)
+}
+fn run_with_resume(scope: &ContainerScope, provider: &str, yolo: bool, resume: bool) -> Result<()> {
+    provider_args(provider, yolo, resume)?;
     let container = check(scope)?;
     prepare(scope, provider)?;
     let helper = ensure_helper(scope)?;
     let id = std::env::var("CX_MANAGED_SESSION")
         .context("managed container session identity unavailable")?;
     anyhow::ensure!(valid_session(&id), "invalid container session identity");
-    let payload = base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(&(
-        provider,
-        yolo,
-        &scope.folder,
-        &id,
-    ))?);
+    let payload = shell_payload(provider, yolo, &scope.folder, &id, resume)?;
     let mut command = terminal_command(&container, scope, true)?;
     command.args([&helper, "container-shell", &payload]);
     Err(command.exec()).context("Container terminal could not start")
@@ -938,6 +1078,133 @@ fn terminal_command(container: &Container, scope: &ContainerScope, tty: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn container_picker_args_survive_both_payload_versions() {
+        use base64::Engine;
+        let encode = |value: Value| {
+            base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(&value).unwrap())
+        };
+        for (provider, picker, yolo_flag) in [
+            (
+                "codex",
+                "resume",
+                "--dangerously-bypass-approvals-and-sandbox",
+            ),
+            ("claude", "--resume", "--dangerously-skip-permissions"),
+        ] {
+            for yolo in [false, true] {
+                let payload =
+                    shell_payload(provider, yolo, "/folder with ' quotes", "cx-fixture", true)
+                        .unwrap();
+                let ShellPayload::Current((decoded, permission, folder, id, resume)) =
+                    decode_payload(&payload).unwrap()
+                else {
+                    panic!("picker must use current payload")
+                };
+                assert_eq!(folder, "/folder with ' quotes");
+                assert_eq!(id, "cx-fixture");
+                let args = provider_args(&decoded, permission, resume).unwrap();
+                assert_eq!(
+                    args,
+                    if yolo {
+                        vec![provider, picker, yolo_flag]
+                    } else {
+                        vec![provider, picker]
+                    }
+                );
+                assert!(!args.contains(&"--last") && !args.contains(&"--continue"));
+                assert!(matches!(
+                    decode_payload::<ShellPayload>(
+                        &shell_payload(provider, yolo, "/work", "cx-fixture", false).unwrap()
+                    )
+                    .unwrap(),
+                    ShellPayload::Legacy(..)
+                ));
+            }
+        }
+        let scope = json!({"engine":"engine","id":"a".repeat(64),"name":"name","user":"tester","started_at":"start","folder":"/work"});
+        assert!(matches!(
+            decode_payload::<RunPayload>(&encode(json!([scope, "codex", false]))).unwrap(),
+            RunPayload::Legacy(..)
+        ));
+        assert!(matches!(
+            decode_payload::<RunPayload>(&encode(json!([scope, "codex", false, true]))).unwrap(),
+            RunPayload::Current((_, _, false, true))
+        ));
+        assert!(decode_payload::<RunPayload>(&encode(json!([
+            scope, "codex", false, true, "extra"
+        ])))
+        .is_err());
+        assert!(decode_payload::<RunPayload>(&"A".repeat(65536)).is_err());
+        assert!(provider_args("shell", false, true).is_err());
+        assert!(provider_args("shell", true, false).is_err());
+    }
+
+    #[test]
+    fn container_provider_probe_only_reports_executable_paths_without_running_agents() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().unwrap();
+        let executable = fixture.path().join("codex");
+        let marker = fixture.path().join("MUST_NOT_RUN");
+        fs::write(
+            &executable,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(fixture.path().join("claude"), b"not executable").unwrap();
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", PROVIDERS_SCRIPT])
+            .env("PATH", fixture.path())
+            .env_remove("BASH_VERSION")
+            .env_remove("ZSH_VERSION");
+        let result = parse_providers(&bounded(command, None, 2, 32768).unwrap()).unwrap();
+        assert_eq!(result, ["shell", "codex"]);
+        assert!(!marker.exists());
+        let evidence = json!({"providers":result});
+        assert!(require_provider(&evidence, "codex").is_ok());
+        assert!(require_provider(&evidence, "claude")
+            .unwrap_err()
+            .to_string()
+            .contains("unavailable"));
+        for invalid in [
+            b"".as_slice(),
+            b"CXPROVIDERS1 shell unknown\n",
+            b"CXPROVIDERS1 shell codex codex\n",
+            b"CXPROVIDERS1 shell\nnoise\n",
+        ] {
+            assert!(parse_providers(invalid).is_err());
+        }
+        assert_eq!(
+            parse_providers(b"startup noise\nCXPROVIDERS1 shell\n").unwrap(),
+            ["shell"]
+        );
+    }
+
+    #[test]
+    fn container_provider_scope_validation_rejects_replaced_restart_user_and_access() {
+        let container: Container = serde_json::from_value(json!({"engine":"engine","id":"a".repeat(64),"name":"name","image":"fixture","state":"running","started_at":"start","devcontainer":true,"evidence":"fixture","user":"tester","folder":"/work","workspace":null,"config":null,"network":"none","networks":[],"ports":{},"allowed":false})).unwrap();
+        let scope = container.scope();
+        assert!(check_observed(&scope, &container).is_ok());
+        for field in [
+            "engine",
+            "id",
+            "started_at",
+            "user",
+            "state",
+            "devcontainer",
+        ] {
+            let mut changed = serde_json::to_value(&container).unwrap();
+            changed[field] = if field == "devcontainer" {
+                json!(false)
+            } else {
+                json!("changed")
+            };
+            let changed: Container = serde_json::from_value(changed).unwrap();
+            assert!(check_observed(&scope, &changed).is_err(), "{field}");
+        }
+    }
     #[test]
     fn jsonc_preserves_strings_and_accepts_comments_and_trailing_commas() {
         assert_eq!(
@@ -1054,6 +1321,16 @@ fn local_identity(id: &str) -> Result<crate::model::ProcessIdentity> {
     Ok(identity)
 }
 pub fn local_shell(provider: &str, yolo: bool, folder: &str, id: &str) -> Result<()> {
+    local_shell_with_resume(provider, yolo, folder, id, false)
+}
+fn local_shell_with_resume(
+    provider: &str,
+    yolo: bool,
+    folder: &str,
+    id: &str,
+    resume: bool,
+) -> Result<()> {
+    let args = provider_args(provider, yolo, resume)?;
     let original_xdg =
         ["XDG_CACHE_HOME", "XDG_STATE_HOME"].map(|name| (name, std::env::var_os(name)));
     container_home()?;
@@ -1079,14 +1356,7 @@ pub fn local_shell(provider: &str, yolo: bool, folder: &str, id: &str) -> Result
     let mut c = Command::new("/bin/sh");
     c.args(["-c", SHELL_SCRIPT, "cx-container"])
         .arg(folder)
-        .arg(provider);
-    if yolo {
-        c.arg(if provider == "codex" {
-            "--dangerously-bypass-approvals-and-sandbox"
-        } else {
-            "--dangerously-skip-permissions"
-        });
-    }
+        .args(args);
     for (name, value) in original_xdg {
         match value {
             Some(v) => {

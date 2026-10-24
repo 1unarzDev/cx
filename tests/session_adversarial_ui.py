@@ -82,6 +82,14 @@ def fixture_session():
                 terminal=dict(server_pid=4240, server_start='190', session_id='$0', created='100'))
 
 
+def fixture_listing():
+    # files::list serializes Identity as JSON inside the wire string field.
+    identity = json.dumps(dict(size=7, modified=123456789, device=1, inode=42))
+    return dict(path='/fixture-project', display_path='/fixture-project', parent='/',
+        entries=[dict(name='cached-proof.txt', path='/fixture-project/cached-proof.txt',
+                      kind='file', size=7, identity=identity, hidden=False)])
+
+
 def read_operations(f):
     path = f.root / 'remote-ops.jsonl'
     if not path.exists():
@@ -168,9 +176,7 @@ def exercise(f):
                     account='fixture', host='fixture-host', status='unknown', observed_at=0)]
     (f.state / 'devices.json').write_text(json.dumps(devices))
     session = fixture_session()
-    listing = dict(path='/fixture-project', display_path='/fixture-project', parent='/',
-        entries=[dict(name='cached-proof.txt', path='/fixture-project/cached-proof.txt',
-                      kind='file', size=7, identity='fresh-fixture-identity', hidden=False)])
+    listing = fixture_listing()
     state = f.root / 'remote-state.json'
     state.write_text(json.dumps(dict(sessions=[session], listing=listing, hold_listing=False)))
     viewer = Viewer(f)
@@ -184,6 +190,12 @@ def exercise(f):
         require(saved[0]['device']['id'] == 'remote-fixture', 'pin has wrong device')
         require(pins.stat().st_mode & 0o777 == 0o600, 'pin file permissions are not private')
         viewer.send(b'\x10Files\r')
+        viewer.wait(lambda: 'Files · choose device' in viewer.text(),
+                    'Files palette did not open its mandatory device chooser')
+        require(not any(r['op'] in ('list', 'list_page') for r in read_operations(f)),
+                'Files palette loaded a device before explicit confirmation')
+        # execute_palette selects actual_device(), which is the saved remote filter.
+        viewer.send(b'\r')
         viewer.wait(lambda: 'cached-proof.txt' in viewer.text(), 'saved-folder source listing did not display')
         viewer.quit()
     finally:
@@ -254,6 +266,11 @@ class PureTests(unittest.TestCase):
         row = fixture_session()
         self.assertEqual(row['terminal']['session_id'], row['id'])
         self.assertEqual(row['directory'], '/fixture-project')
+
+    def test_listing_identity_matches_serialized_wire_shape(self):
+        identity = fixture_listing()['entries'][0]['identity']
+        self.assertIsInstance(identity, str)
+        self.assertEqual(json.loads(identity), dict(size=7, modified=123456789, device=1, inode=42))
 
     def test_helper_frame_round_trip_without_subprocess(self):
         fixture = Fixture('/does-not-exist', live=False)

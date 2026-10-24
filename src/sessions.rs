@@ -1,4 +1,4 @@
-use crate::model::{CreateSession, Device, ProcessIdentity, RunCommand, Session};
+use crate::model::{CreateSession, Device, ProcessIdentity, RunCommand, Session, TerminalIdentity};
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::{
@@ -105,6 +105,7 @@ struct SessionSnapshot {
     pane_id: String,
     dead: bool,
     server_pid: u32,
+    server_start: Option<String>,
     windows: u32,
     panes: u32,
 }
@@ -148,11 +149,17 @@ fn parse_snapshot(raw: &str) -> Result<Vec<SessionSnapshot>> {
             );
             Ok(SessionSnapshot {
                 id: columns[0].into(),
-                pane_pid: number(columns[1])?,
+                // tmux clears pane_pid after an exited pane is retained.
+                pane_pid: if dead == 1 && columns[1].is_empty() {
+                    0
+                } else {
+                    number(columns[1])?
+                },
                 created: columns[2].into(),
                 pane_id: columns[3].into(),
                 dead: dead == 1,
                 server_pid,
+                server_start: None,
                 windows,
                 panes,
             })
@@ -177,7 +184,63 @@ fn snapshot(managed: bool) -> Result<Vec<SessionSnapshot>> {
         }
         bail!("cannot list tmux sessions: {}", e.trim());
     }
-    parse_snapshot(std::str::from_utf8(&out.stdout).context("invalid tmux inventory encoding")?)
+    let mut rows = parse_snapshot(
+        std::str::from_utf8(&out.stdout).context("invalid tmux inventory encoding")?,
+    )?;
+    let mut generations = std::collections::BTreeMap::new();
+    for row in &mut rows {
+        row.server_start = generations
+            .entry(row.server_pid)
+            .or_insert_with(|| process_start_ticks(row.server_pid))
+            .clone();
+    }
+    Ok(rows)
+}
+fn process_start_ticks(pid: u32) -> Option<String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    fs::File::open(format!("/proc/{pid}/stat"))
+        .ok()?
+        .take(4097)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > 4096 {
+        return None;
+    }
+    parse_process_start_ticks(pid, std::str::from_utf8(&bytes).ok()?)
+}
+fn parse_process_start_ticks(pid: u32, stat: &str) -> Option<String> {
+    let (prefix, rest) = stat.rsplit_once(')')?;
+    if prefix.split_once(" (")?.0.parse::<u32>().ok()? != pid {
+        return None;
+    }
+    let fields: Vec<_> = rest.split_whitespace().take(20).collect();
+    if matches!(*fields.first()?, "Z" | "X" | "x") {
+        return None;
+    }
+    let ticks = *fields.get(19)?;
+    if ticks.is_empty() || !ticks.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(ticks.into())
+}
+fn terminal_identity(
+    observed: &SessionSnapshot,
+    current_start: Option<String>,
+) -> Result<Option<TerminalIdentity>> {
+    let Some(start) = &observed.server_start else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        current_start.as_ref() == Some(start),
+        "tmux server changed during observation"
+    );
+    Ok(Some(TerminalIdentity {
+        server_pid: observed.server_pid,
+        server_start: start.clone(),
+        session_id: observed.id.clone(),
+        created: observed.created.clone(),
+    }))
 }
 fn process_identity(pane: u32, provider: &str) -> Option<ProcessIdentity> {
     let mut queue = std::collections::VecDeque::from([(pane, 0)]);
@@ -545,17 +608,20 @@ fn shell_activity(managed: bool, id: &str) -> Option<String> {
 }
 
 fn inspect(managed: bool, id: &str) -> Result<Session> {
-    inspect_observed(managed, id, None, &identity())
+    let mut rows = parse_snapshot(&field(managed, id, SNAPSHOT_FORMAT)?)?;
+    anyhow::ensure!(rows.len() == 1, "session metadata unavailable");
+    let mut observed = rows.remove(0);
+    observed.server_start = process_start_ticks(observed.server_pid);
+    inspect_observed(managed, &observed, &identity())
 }
 fn inspect_observed(
     managed: bool,
-    id: &str,
-    observed: Option<&SessionSnapshot>,
+    observed: &SessionSnapshot,
     host_identity: &(String, String, String),
 ) -> Result<Session> {
     let (host, account, boot_id) = host_identity.clone();
     // Pin metadata reads to the observed pane; selection can change during refresh.
-    let target = observed.map(|s| s.pane_id.as_str()).unwrap_or(id);
+    let target = observed.pane_id.as_str();
     let name = field(managed, target, "#{session_name}")?;
     let record = state()?.join(format!("{name}.json"));
     let prior: Option<Session> = if managed
@@ -569,11 +635,7 @@ fn inspect_observed(
     } else {
         None
     };
-    let pid = if let Some(s) = observed {
-        s.pane_pid
-    } else {
-        field(managed, target, "#{pane_pid}")?.parse().unwrap_or(0)
-    };
+    let pid = observed.pane_pid;
     let process_start = fs::read_to_string(format!("/proc/{pid}/stat"))
         .ok()
         .and_then(|v| {
@@ -581,14 +643,7 @@ fn inspect_observed(
                 .and_then(|(_, rest)| rest.split_whitespace().nth(19).map(str::to_owned))
         })
         .unwrap_or_else(|| "unknown".into());
-    let started = format!(
-        "{}:{process_start}",
-        if let Some(s) = observed {
-            s.created.clone()
-        } else {
-            field(managed, target, "#{session_created}")?
-        }
-    );
+    let started = format!("{}:{process_start}", observed.created);
     let original_provider = prior
         .as_ref()
         .map(|s| s.provider.as_str())
@@ -622,7 +677,8 @@ fn inspect_observed(
     } else {
         saved_name
     };
-    if let Some(expected) = observed {
+    {
+        let expected = observed;
         // A pane can move between sessions while enrichment is in flight. Never
         // return its new metadata under the old attachment/ownership identity.
         let current = parse_snapshot(&field(managed, target, SNAPSHOT_FORMAT)?)?;
@@ -636,9 +692,10 @@ fn inspect_observed(
             "session changed during observation"
         );
     }
+    let terminal = terminal_identity(observed, process_start_ticks(observed.server_pid))?;
     Ok(Session {
-        terminal: None,
-        id: if managed { name } else { id.into() },
+        terminal,
+        id: if managed { name } else { observed.id.clone() },
         name: display_name,
         directory: prior
             .as_ref()
@@ -670,14 +727,14 @@ pub fn list() -> Result<Vec<Session>> {
         for observed in snapshot(managed)? {
             let runtime = (
                 observed.server_pid,
+                observed.server_start.clone(),
                 observed.id.clone(),
                 observed.created.clone(),
             );
             if observed.ended() || seen.contains(&runtime) {
                 continue;
             }
-            if let Ok(s) = inspect_observed(managed, &observed.id, Some(&observed), &host_identity)
-            {
+            if let Ok(s) = inspect_observed(managed, &observed, &host_identity) {
                 seen.insert(runtime);
                 result.push(s);
             }
@@ -1991,18 +2048,21 @@ for arg do
 done
 server=42
 [ "$CX_INVENTORY_CASE" = distinct ] && [ "$managed" = 0 ] && server=43
+[ "$CX_INVENTORY_CASE" = identity ] && server=$CX_INVENTORY_PID
+pane=${CX_INVENTORY_PANE:-$CX_INVENTORY_PID}
 dead=0
 [ "$CX_INVENTORY_CASE" = dead ] && dead=1
 panes=1
 [ "$CX_INVENTORY_CASE" = expanded ] && { dead=1; panes=2; }
+[ "$dead" = 1 ] && pane=
 case "$op" in
 list-sessions)
     if [ "$last" = '#{session_id}' ]; then printf '$1\n'
-    else printf '$1\t%s\t100\t%%1\t%s\t%s\t1\t%s\n' "$CX_INVENTORY_PID" "$dead" "$server" "$panes"; fi;;
+    else printf '$1\t%s\t100\t%%1\t%s\t%s\t1\t%s\n' "$pane" "$dead" "$server" "$panes"; fi;;
 display-message)
     case "$last" in
     '#{session_name}') printf 'cx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n';;
-    '#{pane_pid}') printf '%s\n' "$CX_INVENTORY_PID";;
+    '#{pane_pid}') printf '%s\n' "$pane";;
     '#{session_created}') printf '100\n';;
     '#{pane_current_path}') printf '/same-project\n';;
     '#{pane_current_command}') printf 'bash\n';;
@@ -2011,7 +2071,7 @@ display-message)
     '#{session_id}'*)
         selected=1
         [ "$CX_INVENTORY_CASE" = moved ] && selected=2
-        printf '$%s\t%s\t100\t%%1\t%s\t%s\t1\t%s\n' "$selected" "$CX_INVENTORY_PID" "$dead" "$server" "$panes";;
+        printf '$%s\t%s\t100\t%%1\t%s\t%s\t1\t%s\n' "$selected" "$pane" "$dead" "$server" "$panes";;
     *) printf '\n';;
     esac;;
 esac
@@ -2045,6 +2105,29 @@ esac
         std::env::set_var("CX_INVENTORY_PID", std::process::id().to_string());
         let sessions = list().unwrap();
         match case.as_str() {
+            "identity" => {
+                assert_eq!(sessions.len(), 1);
+                let terminal = sessions[0]
+                    .terminal
+                    .clone()
+                    .expect("verified tmux server must expose terminal generation");
+                assert_eq!(terminal.server_pid, std::process::id());
+                assert_eq!(terminal.session_id, "$1");
+                let fresh = inspect(true, &sessions[0].id).unwrap();
+                assert_eq!(
+                    fresh.terminal.as_ref(),
+                    Some(&terminal),
+                    "creation inspection and refresh must produce the same key"
+                );
+                std::env::set_var("CX_INVENTORY_PANE", "99999999");
+                let changed = list().unwrap();
+                assert_ne!(changed[0].pid, sessions[0].pid);
+                assert_eq!(
+                    changed[0].terminal.as_ref(),
+                    Some(&terminal),
+                    "active pane changes must preserve terminal generation"
+                );
+            }
             "alias" => {
                 assert_eq!(
                     sessions.len(),
@@ -2104,6 +2187,53 @@ esac
     }
 
     #[test]
+    fn runtime_inventory_terminal_identity_survives_pane_change() {
+        inventory_fixture("identity");
+    }
+
+    #[test]
+    fn terminal_generation_rejects_replaced_or_exited_server() {
+        let mut observed = parse_snapshot("$1\t10\t100\t%2\t0\t42\t1\t1")
+            .unwrap()
+            .remove(0);
+        observed.server_start = Some("700".into());
+        let first = terminal_identity(&observed, Some("700".into()))
+            .unwrap()
+            .unwrap();
+        assert!(terminal_identity(&observed, Some("701".into())).is_err());
+        assert!(terminal_identity(&observed, None).is_err());
+        observed.server_start = Some("701".into());
+        let replacement = terminal_identity(&observed, Some("701".into()))
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            replacement, first,
+            "reused server PID/session number must produce a new generation"
+        );
+        observed.server_start = None;
+        assert!(
+            terminal_identity(&observed, Some("701".into()))
+                .unwrap()
+                .is_none(),
+            "one observation cannot establish a stable generation"
+        );
+    }
+
+    #[test]
+    fn server_start_ticks_require_matching_live_process_metadata() {
+        let stat = format!(
+            "42 (name ) with (parens)) S {} 700",
+            vec!["0"; 18].join(" ")
+        );
+        assert_eq!(parse_process_start_ticks(42, &stat).as_deref(), Some("700"));
+        assert!(parse_process_start_ticks(43, &stat).is_none());
+        assert!(parse_process_start_ticks(42, &stat.replace(") S ", ") Z ")).is_none());
+        assert!(parse_process_start_ticks(42, &stat.replace("700", "unknown")).is_none());
+        assert!(parse_process_start_ticks(42, "42 (short) S 0").is_none());
+        assert!(process_start_ticks(std::process::id()).is_some());
+    }
+
+    #[test]
     fn runtime_snapshot_rejects_malformed_identity_and_framing() {
         let valid = "$1\t10\t100\t%2\t0\t42\t1\t1";
         assert_eq!(parse_snapshot(valid).unwrap().len(), 1);
@@ -2118,6 +2248,20 @@ esac
         ] {
             assert!(parse_snapshot(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn runtime_snapshot_accepts_cleared_pid_only_for_dead_pane() {
+        let dead = parse_snapshot("$1\t\t100\t%2\t1\t42\t1\t1")
+            .unwrap()
+            .remove(0);
+        assert_eq!(dead.pane_pid, 0);
+        assert!(dead.ended());
+        let expanded = parse_snapshot("$1\t\t100\t%2\t1\t42\t1\t2")
+            .unwrap()
+            .remove(0);
+        assert!(!expanded.ended());
+        assert!(parse_snapshot("$1\t\t100\t%2\t0\t42\t1\t1").is_err());
     }
 
     #[test]

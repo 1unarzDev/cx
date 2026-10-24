@@ -6434,3 +6434,139 @@ fn live_pane_focus_input_return_and_runtime_invalidation() {
     assert!(!a.pane_focused());
     assert!(rx.try_recv().is_err());
 }
+
+#[test]
+fn info_reply_keeps_live_terminal_capability_and_preview_enabled() {
+    let (mut a, rx) = queued_app();
+    let mut s = disposable_shell();
+    s.terminal = Some(crate::model::TerminalIdentity {
+        server_pid: 42,
+        server_start: "10".into(),
+        session_id: "$1".into(),
+        created: "20".into(),
+    });
+    a.work[0].sessions = vec![s];
+    a.work[0].fetched = transport::now();
+    a.apply(Reply { device_id: None, execution_target: None, preview: None, device: 0,
+        op: Operation::Info, generation: a.generation,
+        result: Ok(serde_json::json!({"capabilities":["shell","session-preview-v1","live-session-pane-v1"]})) });
+    assert!(
+        a.providers[&0]
+            .0
+            .iter()
+            .any(|s| s == "live-session-pane-v1"),
+        "Info reply discarded live terminal support"
+    );
+    a.refresh_session_preview(160);
+    assert!(
+        rx.try_iter()
+            .any(|t| matches!(t.op, Operation::SessionPreview { .. })),
+        "valid helper never receives preview request"
+    );
+}
+
+#[test]
+fn session_hover_selects_rendered_row_without_opening() {
+    let (mut a, _) = queued_app();
+    let mut one = disposable_shell();
+    one.name = "hover-one".into();
+    one.directory = "/aaa".into();
+    let mut two = one.clone();
+    two.id = "hover-two-id".into();
+    two.name = "hover-two".into();
+    two.directory = "/zzz".into();
+    a.work[0].sessions = vec![one, two];
+    let mut terminal = ratatui::Terminal::new(TestBackend::new(160, 30)).unwrap();
+    terminal.draw(|f| render(f, &a)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let y = (0..30)
+        .find(|y| {
+            (22..80)
+                .map(|x| buffer[(x, *y)].symbol())
+                .collect::<String>()
+                .contains("hover-two")
+        })
+        .expect("second row rendered");
+    a.mouse(
+        MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 30,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        },
+        Rect::new(0, 0, 160, 30),
+    );
+    assert_eq!(
+        a.selected, 1,
+        "hover did not select actual rendered session"
+    );
+    assert!(a.pending_attach.is_none() && !a.pane_focused());
+}
+
+#[test]
+fn adoption_continues_after_availability_without_second_enter() {
+    let (mut a, rx) = queued_app();
+    a.providers.clear();
+    let mut s = disposable_shell();
+    s.id = "ext-proof".into();
+    s.external = true;
+    s.origin = Some(crate::model::ExternalOrigin {
+        kind: "terminal".into(),
+        tty: "/dev/pts/1".into(),
+        leader: crate::model::ProcessIdentity {
+            pid: 42,
+            start_ticks: "1".into(),
+            native_id: None,
+        },
+        holder: Some(crate::model::ProcessIdentity {
+            pid: 40,
+            start_ticks: "1".into(),
+            native_id: None,
+        }),
+    });
+    a.work[0].sessions = vec![s.clone()];
+    a.open_session(0, s, false);
+    let task = rx.try_recv().unwrap();
+    assert!(matches!(task.op, Operation::Info));
+    a.apply(Reply {
+        device_id: None,
+        execution_target: None,
+        preview: None,
+        device: 0,
+        op: Operation::Info,
+        generation: task.generation,
+        result: Ok(serde_json::json!({"capabilities":["adopt-reptyr-v1"]})),
+    });
+    assert!(
+        rx.try_iter()
+            .any(|t| matches!(t.op, Operation::AdoptSession { .. })),
+        "availability finished but open intent was lost"
+    );
+}
+#[test]
+fn loader_content_has_equal_vertical_padding_inside_panel() {
+    let (mut a, _) = queued_app();
+    a.creating = true;
+    let text = capture_app(&a, 120);
+    let lines: Vec<_> = text.lines().collect();
+    let top = lines
+        .iter()
+        .position(|l| l.contains("New session") && l.contains('─'))
+        .unwrap();
+    let first = lines
+        .iter()
+        .position(|l| l.contains("Starting terminal"))
+        .unwrap();
+    let last = lines
+        .iter()
+        .position(|l| l.contains("Preparing the first screen"))
+        .unwrap();
+    let bottom = (last + 1..lines.len())
+        .find(|i| lines[*i].contains(&"─".repeat(40)))
+        .unwrap();
+    assert_eq!(
+        first - top - 1,
+        bottom - last - 1,
+        "loader content is not vertically centered"
+    );
+}

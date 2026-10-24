@@ -14,6 +14,8 @@ def run(binary):
         f.env.update(HTTPS_PROXY='http://127.0.0.1:9', HTTP_PROXY='http://127.0.0.1:9', ALL_PROXY='http://127.0.0.1:9')
         f.start_managed()
         f.create('live-ui', name='Synthetic interactive terminal')
+        second = f.create('hover-ui', name='Hover terminal proof')
+        f.send(second['id'], "printf '\\033[2J\\033[HHOVER-SCREEN-PROOF\\n'")
         (f.state / 'devices.json').write_text(json.dumps([dict(id='local',name='local-fixture',target=None,account='fixture',host='fixture-host',status='unknown',observed_at=0)]))
         original = ui.restart_state
         def local_restart():
@@ -23,7 +25,11 @@ def run(binary):
         ui.restart_state = local_restart
         viewer = ui.Viewer(f)
         viewer.wait(lambda: 'focus terminal' in viewer.text(), 'live terminal pane not shown')
+        viewer.pump(2) # Allow actual Info reply to arrive; it must not disable previews.
         require('New shell' not in viewer.text(), 'duplicate shell button remains')
+        target_row = next(i for i,line in enumerate(viewer.screen.display) if 'Hover terminal proof' in line[22:65])
+        viewer.send(f'\x1b[<35;31;{target_row+1}M'.encode())
+        viewer.wait(lambda: 'HOVER-SCREEN-PROOF' in viewer.text(), 'mouse hover did not display actual selected terminal after Info')
         viewer.send(b'\r')
         viewer.wait(lambda: 'back to sessions' in viewer.text(), 'Enter did not focus pane')
         proof = f.root / 'focused-proof'
@@ -39,7 +45,7 @@ def run(binary):
         viewer.wait(lambda: 'Shell' in viewer.text() and 'Session' in viewer.text(), 'unified New session chooser missing Shell')
         viewer.send(b'\x1b')
         viewer.quit()
-        require(len(f.rows()) == 1, 'focus created or killed a session')
+        require(len(f.rows()) == 2, 'focus created or killed a session')
         print(json.dumps(dict(status='PASS',checks=['actual live pane in viewer PTY','Enter focuses same running shell','bracketed paste and Enter delivered','Ctrl+] returns navigation','unified New session chooser','termios restored; runtime preserved'])))
     finally:
         if viewer: viewer.close()

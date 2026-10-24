@@ -548,12 +548,14 @@ struct App {
     pending_panel_expand: Option<(usize, Session)>,
     command_panel_label: Option<String>,
     pending_ptrace: Option<usize>,
+    pending_adoption: Option<(Device, Session, Instant)>,
     pending_terminal: Option<Device>,
     pending_add: Option<String>,
     quit: bool,
     force_update: bool,
     pending_requests: std::cell::Cell<usize>,
     panels: std::cell::RefCell<Vec<(Focus, bool, Rect)>>,
+    session_hits: std::cell::RefCell<Vec<(Rect, usize)>>,
     tx: mpsc::SyncSender<Task>,
 }
 impl App {
@@ -685,12 +687,14 @@ impl App {
             pending_panel_expand: None,
             command_panel_label: None,
             pending_ptrace: None,
+            pending_adoption: None,
             pending_terminal: None,
             pending_add: None,
             quit: false,
             force_update: false,
             pending_requests: std::cell::Cell::new(0),
             panels: std::cell::RefCell::new(Vec::new()),
+            session_hits: std::cell::RefCell::new(Vec::new()),
             tx,
         };
         if let Ok(message) = std::env::var("CX_STARTUP_NOTICE") {
@@ -800,6 +804,7 @@ impl App {
         self.jobs.clear();
         self.pending_attach = None;
         self.attach_check = None;
+        self.pending_adoption = None;
         self.container_profiles.clear();
         self.container_profile_loading.clear();
         self.pending_command = None;
@@ -1422,10 +1427,12 @@ impl App {
             .filter(|(_, checked)| transport::now().saturating_sub(*checked) < 60)
             .map(|(caps, _)| caps.clone())
         else {
+            self.pending_adoption = Some((self.devices[device].clone(), session, Instant::now()));
             self.check_providers(device);
-            self.set_notice("Checking whether this terminal can move · press Enter again".into());
+            self.set_notice("Checking terminal availability… · Esc cancels".into());
             return;
         };
+        self.pending_adoption = None;
         if caps.iter().any(|c| c == "adopt-reptyr-v1") {
             if origin.holder.is_none() {
                 self.set_notice_as(
@@ -4069,6 +4076,20 @@ impl App {
                 }
                 if matches!(reply.op, Operation::Info) {
                     self.providers.remove(&reply.device);
+                    if self
+                        .pending_adoption
+                        .as_ref()
+                        .is_some_and(|(d, _, _)| d.id == self.devices[reply.device].id)
+                    {
+                        self.pending_adoption = None;
+                        self.set_notice_as(
+                            NoticeKind::Error,
+                            format!(
+                                "Terminal availability check failed: {}",
+                                safe_text(&e.to_string())
+                            ),
+                        );
+                    }
                 }
                 if is_sessions {
                     // Failed contact is not evidence that a cached terminal is attachable.
@@ -4183,6 +4204,8 @@ impl App {
                                     "claude",
                                     "codex",
                                     "native-command-v1",
+                                    "session-preview-v1",
+                                    "live-session-pane-v1",
                                     "stop-session-v1",
                                     "stop-agent-session-v1",
                                     "session-yolo-v1",
@@ -4201,6 +4224,21 @@ impl App {
                     .unwrap_or_default();
                 self.providers
                     .insert(reply.device, (available, transport::now()));
+                if self
+                    .pending_adoption
+                    .as_ref()
+                    .is_some_and(|(d, _, _)| d.id == self.devices[reply.device].id)
+                {
+                    let (device, session, started) = self.pending_adoption.take().unwrap();
+                    if device.target == self.devices[reply.device].target
+                        && started.elapsed() < Duration::from_secs(12)
+                        && self.work[reply.device].sessions.iter().any(|s| {
+                            workspaces::runtime_key(s) == workspaces::runtime_key(&session)
+                        })
+                    {
+                        self.adopt_external_session(reply.device, session);
+                    }
+                }
                 if let Some(Dialog::ContainerProvider(d, scope)) = self.dialog.clone() {
                     if d == reply.device {
                         self.check_container_profiles(d, &scope);
@@ -4872,6 +4910,9 @@ impl App {
     fn key(&mut self, key: KeyEvent) {
         if key.kind == KeyEventKind::Release {
             return;
+        }
+        if key.code != KeyCode::Enter {
+            self.pending_adoption = None;
         }
         if self.pane_focused() {
             self.session_pane_key(key);
@@ -5922,6 +5963,34 @@ impl App {
     fn mouse(&mut self, mouse: MouseEvent, area: Rect) -> bool {
         if self.pane_focused() {
             return true;
+        }
+        if self.view == View::Work
+            && !self.help
+            && self.dialog.is_none()
+            && self.input.is_none()
+            && matches!(
+                mouse.kind,
+                MouseEventKind::Moved | MouseEventKind::Down(event::MouseButton::Left)
+            )
+        {
+            let target = self
+                .session_hits
+                .borrow()
+                .iter()
+                .find(|(rect, _)| {
+                    rect.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
+                })
+                .map(|(_, index)| *index);
+            if let Some(index) = target {
+                if self.selected != index {
+                    self.attach_check = None;
+                    self.pending_attach = None;
+                    self.pending_adoption = None;
+                    self.selected = index;
+                }
+                self.focus = Focus::Workspace;
+                return true;
+            }
         }
         if matches!(
             mouse.kind,
@@ -8741,6 +8810,12 @@ fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender<Reply>) {
                 | Operation::PaneInput { .. }
                 | Operation::PaneClose { .. }
         );
+        if matches!(task.op, Operation::Info) {
+            return format!(
+                "capabilities:{}",
+                task.execution.target.as_deref().unwrap_or("<local>")
+            );
+        }
         match &task.execution.target {
             Some(target) if panel => format!("panel:{target}"),
             Some(target) => target.clone(),
@@ -9040,6 +9115,18 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
         for update in transport::drain_host_updates() {
             app.host_updated(update);
+            dirty = true;
+        }
+        if app
+            .pending_adoption
+            .as_ref()
+            .is_some_and(|(_, _, at)| at.elapsed() >= Duration::from_secs(12))
+        {
+            app.pending_adoption = None;
+            app.set_notice_as(
+                NoticeKind::Warning,
+                "Terminal availability timed out · no move was started".into(),
+            );
             dirty = true;
         }
         app.start_next_file_action();

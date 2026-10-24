@@ -181,6 +181,7 @@ pub(super) fn render_at(
             Constraint::Min(0),
         ])
         .split(content[0]);
+    app.session_hits.borrow_mut().clear();
     *app.panels.borrow_mut() = vec![
         (Focus::Devices, false, sidebar[0]),
         (Focus::Actions, false, sidebar[1]),
@@ -525,6 +526,7 @@ pub(super) fn render_at(
                     8
                 };
                 let mut display_rows = Vec::new();
+                let mut session_display_rows = Vec::new();
                 let mut selected_row = 0;
                 let mut last_project = None;
                 for (index, (i, s)) in rows.iter().enumerate() {
@@ -551,6 +553,7 @@ pub(super) fn render_at(
                         );
                         last_project = Some(s.directory.as_str());
                     }
+                    session_display_rows.push((display_rows.len(), index));
                     if index == app.selected {
                         selected_row = display_rows.len();
                     }
@@ -670,6 +673,23 @@ pub(super) fn render_at(
                 .row_highlight_style(selected_style())
                 .highlight_symbol(if ascii() { "> " } else { "› " });
                 frame.render_stateful_widget(table, table_area, &mut state);
+                // Table offset includes group headers/spacers. Hit boxes must use
+                // the rendered rows, not index arithmetic over logical sessions.
+                let body_y = table_area.y.saturating_add(3); // border + header + margin
+                let bottom = table_area.bottom().saturating_sub(1);
+                let mut hits = app.session_hits.borrow_mut();
+                for (row, index) in session_display_rows {
+                    if row < state.offset() {
+                        continue;
+                    }
+                    let y = body_y.saturating_add((row - state.offset()) as u16);
+                    if y < bottom {
+                        hits.push((
+                            Rect::new(table_area.x + 1, y, table_area.width.saturating_sub(2), 1),
+                            index,
+                        ));
+                    }
+                }
             }
         }
         View::Files => {
@@ -1344,8 +1364,17 @@ pub(super) fn render_at(
         );
     }
     if app.creating && app.dialog.is_none() && app.input.is_none() {
-        let rect = popup(workspace, 44, 5);
+        let rect = popup(workspace, 44, 6);
         frame.render_widget(Clear, rect);
+        let outer = block("New session".into(), true);
+        let inner = outer.inner(rect);
+        frame.render_widget(outer, rect);
+        let body = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(2) / 2,
+            inner.width,
+            inner.height.min(2),
+        );
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(Span::styled(
@@ -1357,9 +1386,8 @@ pub(super) fn render_at(
                 )),
                 Line::from("Preparing the first screen…"),
             ])
-            .alignment(ratatui::layout::Alignment::Center)
-            .block(block("New session".into(), true)),
-            rect,
+            .alignment(ratatui::layout::Alignment::Center),
+            body,
         );
     }
     render_command_panel(frame, app, area);

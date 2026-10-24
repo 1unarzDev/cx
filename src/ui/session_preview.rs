@@ -306,11 +306,17 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
         return area;
     };
     let focused = app.pane_focused();
-    if !focused && (area.width < 90 || frame.area().width < 120) {
+    if !focused && (area.width < 28 || area.height < 12) {
         return area;
     }
     let (list, pane) = if focused {
         (Rect::new(area.x, area.y, 0, 0), area)
+    } else if area.width < 90 || frame.area().width < 120 {
+        let parts = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area);
+        (parts[0], parts[1])
     } else {
         let parts = Layout::default()
             .direction(Direction::Horizontal)
@@ -333,6 +339,10 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
     frame.render_widget(
         Paragraph::new(if focused {
             "Ctrl+] · back to sessions · Ctrl+O · expand"
+        } else if outside_tmux(&s) {
+            "External terminal · Enter to move into CX"
+        } else if app.session_preview.status.is_empty() {
+            "Loading terminal…"
         } else {
             &app.session_preview.status
         })

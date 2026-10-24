@@ -301,14 +301,79 @@ pub fn reptyr() -> Result<Relay, &'static str> {
         .ok_or("install cx-reptyr (cx device ptrace enable) to move terminals")
 }
 fn version(path: &Path) -> Option<String> {
-    let out = std::process::Command::new(path)
+    use std::{io::Read, os::fd::AsRawFd, os::unix::process::CommandExt, process::Stdio};
+    // Availability checks must not wait indefinitely for an obsolete/broken
+    // relay, nor for a wrapper's descendants retaining its output pipe.
+    let mut child = std::process::Command::new(path)
         .arg("-v")
-        .stdin(std::process::Stdio::null())
-        .output()
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    let mut stdout = child.stdout.take()?;
+    let fd = stdout.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    let nonblocking =
+        flags >= 0 && unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } >= 0;
+    let deadline = Instant::now() + Duration::from_millis(250);
+    let mut bytes = Vec::new();
+    let mut completed = false;
+    if nonblocking {
+        loop {
+            let mut chunk = [0; 129];
+            match stdout.read(&mut chunk) {
+                Ok(n) => {
+                    bytes.extend_from_slice(&chunk[..n]);
+                    if bytes.len() > 128 {
+                        break;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+            // Keep the leader unreaped until group cleanup so its PID cannot
+            // be recycled into an unrelated process group.
+            let mut status: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            let observed = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    child.id(),
+                    &mut status,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if observed == 0 && unsafe { status.si_pid() } != 0 {
+                // Drain output written between the read and the exit check.
+                if stdout
+                    .take(129)
+                    .read_to_end(&mut bytes)
+                    .is_err_and(|e| e.kind() != std::io::ErrorKind::WouldBlock)
+                {
+                    break;
+                }
+                completed = bytes.len() <= 128;
+                break;
+            }
+            if observed != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)
+            {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    let status = child.wait().ok()?;
+    (completed && status.success()).then(|| String::from_utf8_lossy(&bytes).trim().to_string())
 }
 /// File capability grants effective+permitted CAP_SYS_PTRACE on a mount that honors it.
 fn ptrace_capability(path: &Path) -> bool {
@@ -517,6 +582,83 @@ mod tests {
             executables: vec![],
             sessions: vec![],
             managed_socket: None,
+        }
+    }
+
+    #[test]
+    fn relay_version_preflight_is_bounded() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().unwrap();
+        let relay = fixture.path().join("cx-reptyr");
+        fs::write(
+            &relay,
+            "#!/bin/sh\nsleep 2\nprintf 'cx-reptyr 1 (reptyr 0.10.0)\\n'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&relay, fs::Permissions::from_mode(0o700)).unwrap();
+        let started = Instant::now();
+        let result = version(&relay);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "availability waited for a stalled relay"
+        );
+        assert!(result.is_none(), "a timed-out relay must not be advertised");
+    }
+
+    #[test]
+    fn relay_version_does_not_wait_for_wrapper_descendants() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().unwrap();
+        let relay = fixture.path().join("cx-reptyr");
+        fs::write(
+            &relay,
+            format!(
+                "#!/bin/sh\nsleep 2 &\necho $! > '{}'/child\nprintf '%s\\n' '{}'\n",
+                fixture.path().display(),
+                REPTYR_VERSION
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&relay, fs::Permissions::from_mode(0o700)).unwrap();
+        let started = Instant::now();
+        assert_eq!(version(&relay).as_deref(), Some(REPTYR_VERSION));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        let pid = fs::read_to_string(fixture.path().join("child")).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let running = fs::read_to_string(format!("/proc/{}/stat", pid.trim())).is_ok_and(|s| {
+                s.rsplit_once(')')
+                    .is_some_and(|(_, fields)| !fields.trim_start().starts_with('Z'))
+            });
+            if !running {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "probe descendant survived cleanup"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn relay_version_bounds_output_and_requires_success() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().unwrap();
+        let relay = fixture.path().join("cx-reptyr");
+        for (script, expected) in [
+            (
+                format!("printf '%s\\n' '{}'", REPTYR_VERSION),
+                Some(REPTYR_VERSION),
+            ),
+            (format!("printf '%s\\n' '{}'; exit 1", REPTYR_VERSION), None),
+            ("while :; do printf '0123456789'; done".into(), None),
+        ] {
+            fs::write(&relay, format!("#!/bin/sh\n{script}\n")).unwrap();
+            fs::set_permissions(&relay, fs::Permissions::from_mode(0o700)).unwrap();
+            let started = Instant::now();
+            assert_eq!(version(&relay).as_deref(), expected);
+            assert!(started.elapsed() < Duration::from_secs(1));
         }
     }
 

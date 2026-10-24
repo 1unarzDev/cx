@@ -110,8 +110,8 @@ Updates check signed stable releases in the background, retain the running versi
 
 Sessions preserve provider-authored titles. Generic labels include folder, provider,
 and a compact runtime identity; separate conversations are never merged by label.
-On wide terminals, selecting a session displays the actual styled tmux screen beside
-the list. **Enter focuses that terminal** and expands its viewport within CX. Keys
+Hovering over a session selects it and displays its styled tmux screen beside
+the list on wide terminals, or below it on narrower layouts. **Enter focuses that terminal** and expands its viewport within CX. Keys
 then go to the same running shell or agent. **Ctrl+] returns to session navigation**;
 **Ctrl+O opens a native full-terminal attachment**. Escape and Ctrl+C go to the
 focused application. At narrow widths Enter still focuses the integrated terminal.

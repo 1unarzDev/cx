@@ -4,6 +4,13 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.89
+
+- Keep live-preview support after capability refresh; hover over actual session rows to show their terminal, including a stacked layout on narrower screens.
+- Continue external-terminal opening after availability returns; cancel stale intent and report timed-out checks.
+- Keep capability checks independent of slow inventory; bound stalled relay-version subprocesses.
+- Center terminal loader content vertically inside its panel.
+
 ## v0.1.88
 
 - Replace clipped snapshots with live styled tmux screens and cursor-following viewports. Enter focuses the existing terminal inside CX; Ctrl+] returns to navigation, Ctrl+O opens native attachment.

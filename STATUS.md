@@ -1,5 +1,13 @@
 # CX status
 
+## Hover previews, availability and loader alignment — 0.1.89
+
+Fixed a capability ingestion bug: Info replies discarded both live-preview capabilities, disabling previews as soon as availability returned. Added render-derived session-row mouse hit boxes, including group spacers and table scroll offset. Hover selects without attaching. Preview moves below the list in narrower layouts; outside-tmux rows explain that Enter moves the terminal before screen access.
+
+External-terminal open intent now survives its capability check and resumes automatically; navigation/Escape, endpoint changes, failures and a 12-second pending deadline cancel it. Capability probes have a separate scheduler/transport lane from inventory. Relay -v subprocesses are bounded to 250ms/128 bytes with owned process cleanup. Loader text is centered vertically inside its panel.
+
+Local installed relay was observed as user-local without file capabilities; its version returned immediately. A read-only actual local Info check returned in113ms with Claude/Codex and password-requiring adoption available. Disposable actual adoption and fake-sudo/askpass fixtures passed; no personal shells or privileges were changed. Real user terminal/emulator specifics remain unvalidated. The earlier hypothetical capability-relay dumpability issue was not reproduced and no privileged helper policy was changed.
+
 ## Integrated session terminals and unified creation — 0.1.88
 
 Deployed locally from `6fc6411` to `~/.local/bin/cx` under the maintenance lock. Installed version and build digest verified; rollback `~/.local/bin/cx.rollback-0.1.87-live-pane`. Existing sessions remain running.

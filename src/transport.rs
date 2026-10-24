@@ -241,6 +241,8 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
             Operation::SessionPreview { .. } | Operation::SessionPaneInput { .. }
         ) {
             format!("session-preview:{target}")
+        } else if matches!(&op, Operation::Info) {
+            format!("capabilities:{target}")
         } else {
             target.clone()
         };

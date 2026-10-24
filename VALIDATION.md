@@ -1,5 +1,18 @@
 # Validation record
 
+## Hover, availability and loader corrections — 0.1.89
+
+PASS — full offline suite **739 passed, 0 failed, 1 protected live test ignored** (`/tmp/cx-hover-full-final.log`). Final narrow-layout/hint changes: all **231 UI tests passed** (`/tmp/cx-hover-ui-final.log`). Formatting/diff and optimized build passed. One initial native-metadata test failed under concurrent build load, then passed independently and in the full rerun; no metadata implementation was changed.
+
+Reproduced/fixed: Info ingestion removed live-preview capabilities (`info_reply_keeps_live...`, red/green logs); mouse movement did not select rendered session rows (`session_hover_selects...`, red/green logs); adoption intent stopped at availability instead of continuing; loader content had unequal vertical padding. Relay version stall regression took 2s before correction; bounded subprocess suite passed in0.25s, including child-held pipe/output flood cleanup. New tests exercise the real UI dispatch/rendering paths, not only direct preview calls.
+
+PASS — release viewer PTY, with two disposable real tmux sessions: wait for Info, send an SGR mouse-move event over the second row, observe that terminal's synthetic screen, Enter focus, bracketed paste/command, Ctrl+] return and no session recreation (`/tmp/cx-hover-pty-final.log`). One earlier combined debug PTY run timed out on input; an identical rerun and final release run passed; this does not establish exhaustive latency behavior under load.
+
+PASS — existing disposable bare-terminal adoption acceptance using a preinstalled relay and private user namespace: adoption0.08s, input/output/job control, duplicate prevention and cleanup (`/tmp/cx-adopt-live-attempt.log`). PASS — release fake-sudo/askpass fixture: password-required capabilities, successful move, no-prompt refusal, wrong-password refusal preserving terminal, live input/output and single managed row (`/tmp/cx-hover-adopt-release.log`). No sudo policy/capability changes or personal terminal takeover.
+
+Read-only real local Info returned113ms with both providers and the password-requiring relay. Actual user-terminal adoption remains unvalidated; remote hosts unchanged. Unreproduced capability-relay dumpability concern remains a follow-up only, not a claimed diagnosis. Startup capability reads now have an independent worker/transport lane; abandoned adoption intent is never resumed after12s/navigation/cancellation.
+
+
 ## Integrated live terminal panes — 0.1.88
 
 PASS — atomic local installation from `6fc6411`; version0.1.88 and installed/build SHA-256 `4b5da5b22fb8c4beeee4c8062f0ba460f9875a5ced6e11bdd1af8278adf7a4c0` match (`/tmp/cx-live-pane-install.log`). Rollback `~/.local/bin/cx.rollback-0.1.87-live-pane`. No remote deployment or live-session restart.

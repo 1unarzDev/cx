@@ -1805,6 +1805,19 @@ pub fn native_attach_check(
     file.sync_all()?;
     Ok(())
 }
+fn attach_predicate(executable: &std::path::Path, payload: &str) -> Result<String> {
+    // if-shell inherits the server's environment, which may predate this
+    // viewer's HOME/XDG settings. Pin only this predicate's state location.
+    let root = state()?.canonicalize()?;
+    let parent = root.parent().context("state parent unavailable")?;
+    let format_quote = |value: &str| quote(value).replace('#', "##");
+    Ok(format!(
+        "XDG_STATE_HOME={} {} native-attach-check {} '#{{pid}}' '#{{session_id}}' '#{{session_created}}'",
+        format_quote(parent.to_str().context("state path is not UTF-8")?),
+        format_quote(executable.to_str().context("helper path is not UTF-8")?),
+        quote(payload)
+    ))
+}
 pub fn native_attach_checked(payload: &str) -> Result<()> {
     let mut request = parse_attach_payload(payload)?;
     anyhow::ensure!(request.guard.is_none(), "attachment guard is internal");
@@ -1827,11 +1840,7 @@ pub fn native_attach_checked(payload: &str) -> Result<()> {
         refresh_managed_status(&request.session.id)?;
     }
     let executable = std::env::current_exe()?;
-    let predicate = format!(
-        "{} native-attach-check {} '#{{pid}}' '#{{session_id}}' '#{{session_created}}'",
-        quote(executable.to_str().context("helper path is not UTF-8")?),
-        quote(&predicate_payload)
-    );
+    let predicate = attach_predicate(&executable, &predicate_payload)?;
     // All interpolated target components are validated numeric values. The
     // guard runs on this connection's server; never reconnect after checking it.
     let attach = format!(
@@ -2348,6 +2357,16 @@ esac
 
     #[test]
     fn runtime_inventory_fixture_child() {
+        if let Ok(payload) = std::env::var("CX_CHECK_PAYLOAD") {
+            native_attach_check(
+                &payload,
+                std::env::var("CX_CHECK_PID").unwrap().parse().unwrap(),
+                &std::env::var("CX_CHECK_SESSION").unwrap(),
+                &std::env::var("CX_CHECK_CREATED").unwrap(),
+            )
+            .unwrap();
+            return;
+        }
         let Ok(case) = std::env::var("CX_INVENTORY_CASE") else {
             return;
         };
@@ -2446,6 +2465,44 @@ esac
                 );
                 drop(guard);
                 assert!(!guard_path.exists());
+
+                let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+                let shim = home.join("check-shim");
+                fs::write(
+                    &shim,
+                    r#"#!/bin/sh
+export CX_CHECK_PAYLOAD="$2" CX_CHECK_PID="$3" CX_CHECK_SESSION="$4" CX_CHECK_CREATED="$5"
+exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child --nocapture
+"#,
+                )
+                .unwrap();
+                fs::set_permissions(&shim, fs::Permissions::from_mode(0o700)).unwrap();
+                let mut guard = AttachGuard::new().unwrap();
+                let payload = attach_payload(&CheckedAttach {
+                    session: session.clone(),
+                    observe: false,
+                    guard: Some(guard.token.clone()),
+                })
+                .unwrap();
+                let predicate = attach_predicate(&shim, &payload)
+                    .unwrap()
+                    .replace("#{pid}", &expected.server_pid.to_string())
+                    .replace("#{session_id}", &expected.session_id)
+                    .replace("#{session_created}", &expected.created);
+                let result = Command::new("/bin/sh")
+                    .args(["-c", &predicate])
+                    .env("CX_CHECK_EXEC", std::env::current_exe().unwrap())
+                    .env("HOME", home.join("old-server-home"))
+                    .env("XDG_STATE_HOME", home.join("old-server-state"))
+                    .output()
+                    .unwrap();
+                assert!(
+                    result.status.success(),
+                    "guard predicate must use the initiating helper's state root: {}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                assert!(guard.passed().unwrap());
+                drop(guard);
 
                 let guard = AttachGuard::new().unwrap();
                 let payload = attach_payload(&CheckedAttach {

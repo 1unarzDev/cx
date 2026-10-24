@@ -104,3 +104,17 @@ For a robot reachable through another device, select that observer in Network; i
 Updates check signed stable releases in the background, retain the running version when offline, and restore the viewer when idle. The workspace also checks accessed SSH devices without authentication prompts; their own updater verifies the correct architecture and installs under its maintenance lock. If a remote device cannot download releases, the viewer downloads and verifies the signed artifact for that host architecture and transfers it over the existing SSH route. This supports ARM64 CoreOS and Jetson without replacing OS packages or changing their network. Remote checks run when a viewer accesses the host; a robot does not need its own running viewer or public egress. After a verified helper upgrade, metadata reconnects and previews reload without restarting terminals or jobs. Checks coalesce per host and back off when unavailable. Run `cx update --check` to check explicitly, or `cx update --device NAME` to update an enrolled SSH host. Sessions/jobs keep running independently. A lost metadata connection retries read-only session/device checks once; mutations are never replayed. Cached rows are unconfirmed until a successful Refresh; absent unpinned rows disappear, while pins remain saved references. Connection errors identify SSH access problems separately from terminal state.
 
 [Back to README](../README.md)
+
+
+### Session labels and screen snapshots
+
+Sessions preserve provider-authored titles. Generic labels include folder, provider,
+and a short runtime identity; separate conversations are never merged by label.
+At 120 columns or wider, selecting a session shows its context and a read-only
+snapshot beside the list. Narrow terminals show a context footer. Snapshots refresh
+at most every two seconds while the session view is visible, with verified runtime
+evidence. They show up to 60 current-screen lines, with bounded clipped text; they
+are not interactive terminals and do not read scrollback, resize, or send keys.
+Preview text lives only in memory and is never saved in navigation caches or pins.
+Older helpers, ended bookmarks, and terminals outside supported tmux discovery
+remain navigable with metadata only. Remote snapshots need `session-preview-v1`.

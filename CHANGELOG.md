@@ -4,6 +4,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.87
+
+- Add read-only selected-session screen snapshots beside the session list on wide terminals, with context on narrow terminals.
+- Preserve conversation titles and distinguish generic labels by folder/provider/runtime.
+- Bound preview memory and subprocess time, reject stale runtime/replies, and keep snapshots out of persisted caches.
+
 ## v0.1.86
 
 ### Improvements

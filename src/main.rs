@@ -370,6 +370,7 @@ fn info() -> Result<serde_json::Value> {
     caps.push("session-yolo-v1");
     caps.push("containers-v1");
     caps.push("container-agents-v1");
+    caps.push("session-preview-v1");
     caps.push("container-transfers-v1");
     caps.push("devcontainer-rebuild-v1");
     caps.push("stable-update-v1");
@@ -465,6 +466,7 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
         Operation::TransferJobs => transfers::jobs(),
         Operation::TransferCancel { key } => transfers::cancel(&key),
         Operation::TransferRetry { key } => transfers::retry(&key),
+        Operation::SessionPreview { ref session } => sessions::preview(session),
         Operation::Sessions => Ok(serde_json::to_value(sessions::list()?)?),
         Operation::ExternalSessions => Ok(serde_json::to_value(sessions::external_list()?)?),
         Operation::AdoptSession {

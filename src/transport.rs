@@ -235,7 +235,13 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
         let mut all = CONNECTIONS
             .lock()
             .map_err(|_| anyhow!("transport lock unavailable"))?;
-        all.entry(target.clone())
+        // Screen reads must not queue behind inventory on the metadata channel.
+        let channel = if matches!(&op, Operation::SessionPreview { .. }) {
+            format!("session-preview:{target}")
+        } else {
+            target.clone()
+        };
+        all.entry(channel)
             .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(None)))
             .clone()
     };
@@ -257,7 +263,9 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
     if slot.is_none() {
         *slot = Some(Connection::open(target)?);
     }
-    let response_timeout = if matches!(
+    let response_timeout = if matches!(&op, Operation::SessionPreview { .. }) {
+        3
+    } else if matches!(
         &op,
         Operation::DevcontainerUp { .. } | Operation::DevcontainerRebuild { .. }
     ) {

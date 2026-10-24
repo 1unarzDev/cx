@@ -1,5 +1,8 @@
+#[path = "sessions/preview.rs"]
+mod preview;
 use crate::model::{CreateSession, Device, ProcessIdentity, RunCommand, Session, TerminalIdentity};
 use anyhow::{bail, Context, Result};
+pub use preview::preview;
 use sha2::{Digest, Sha256};
 use std::{
     fs,

@@ -1,5 +1,11 @@
 # CX status
 
+## Session labels and read-only previews — 0.1.87
+
+Implemented in `worktrees/session-previews-20261024`. Session titles retain exact provider metadata; generic labels show folder/provider/compact runtime identity. Wide session views show wrapped context and a read-only current-screen snapshot. Narrow layouts keep context below the list. Snapshot fetching is selected-only, bounded, asynchronous, separated from remote inventory traffic and discarded on selection/runtime change. No snapshot text is persisted. Mouse interaction over snapshots cannot activate or scroll session rows.
+
+Limits: no interactive embedded terminal or scrollback; screen text is clipped and plain, up to 60 current-screen lines/24 KiB, with a two-second refresh interval. Unsupported helpers and bare terminals remain metadata-only. Container tmux screens work through their managed host runtime; inner-container/custom sockets remain future work. Remote helpers require `session-preview-v1`. Provider history selection remains native; this does not introduce a transcript index or guessed conversation matching.
+
 ## Local deployment integration — 0.1.86
 
 Integrated container parity (`5863f5a`) and session workspace (`970f9f8`) with the installed release baseline `v0.1.85` (`ff7ebdc`) on `deploy/session-workspace-20261024`. This preserves external terminal adoption, task/activity metadata, command panel and startup/handoff improvements. A failed session refresh now retains stale navigation rows, clears transient activity, and requires a new successful check before attachment.

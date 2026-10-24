@@ -1,5 +1,14 @@
 # Validation record
 
+## Session previews and labels — 0.1.87
+
+PASS — full offline Rust suite: **726 passed, 0 failed, 1 protected live test ignored** (`/tmp/cx-preview-full-final.log`). Includes bounded capture timeout/output/control sanitization, selected-runtime late-response rejection, hidden/narrow/unsupported-helper gating, wrapped metadata, compact list labels and snapshot/footer mouse isolation. Older rendering tests were scoped to the list because the side pane repeats selected metadata.
+
+PASS — optimized release build, formatting and diff checks. `tests/session_preview_live.py` passed against the release using exact disposable managed/default tmux sockets: current-screen bottom capture on 100-row panes, no size/attachment/process changes, 60-line/24KiB limits, wrong generation/creation/target refusal and ended-session refusal (`/tmp/cx-preview-live-final.log`). No personal terminals or provider transcripts inspected. Cache/pin viewer-restart PTY passed against release (`/tmp/cx-preview-cache-pty.log`).
+
+Limits: no real-provider history/index validation or remote-host live acceptance. Remote helpers must advertise `session-preview-v1`; unsupported sessions remain metadata-only. Screens are ephemeral plain clipped text, never persisted; no emulation, input forwarding, scrollback or terminal resizing. Physical visual acceptance remains: reopen CX, widen to at least 120 columns, select a session; narrower terminals show context below the list.
+
+
 ## Local 0.1.86 integration
 
 Installed integration commit `bef1def` locally under the maintenance lock, preserving a 0.1.85 rollback binary. Installed version and container CLI help passed; installed/build SHA-256 both `4fd42cccc6e40c6aff21e0ee5f88efa04811d05b8dd0108cac834d3dc9c61db6` (`/tmp/cx-deploy-install.log`). No live viewer or remote helper was restarted. Full staged whitespace check reports only unchanged v0.1.85 patch-file context lines in `scripts/reptyr/cx-reptyr.patch`; edited source checks passed.

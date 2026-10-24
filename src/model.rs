@@ -155,6 +155,10 @@ pub enum Operation {
         shell: String,
     },
     Sessions,
+    /// Read-only current-screen snapshot for one verified terminal.
+    SessionPreview {
+        session: Session,
+    },
     /// Terminals started outside CX, shown for adoption in the UI only.
     ExternalSessions,
     /// Move a terminal started outside CX into the managed tmux server.

@@ -2,6 +2,8 @@
 
 ## Session previews and labels — 0.1.87
 
+PASS — atomic local installation under the maintenance lock from `0dd91e0`; installed version 0.1.87 and build/installed SHA-256 match (`924854ef04fefa497e0c1c4503db5205b2d269fa4b92bb9c621ddc02bd86419c`). Rollback: `~/.local/bin/cx.rollback-0.1.86-session-previews`. Evidence `/tmp/cx-preview-install.log`.
+
 PASS — full offline Rust suite: **726 passed, 0 failed, 1 protected live test ignored** (`/tmp/cx-preview-full-final.log`). Includes bounded capture timeout/output/control sanitization, selected-runtime late-response rejection, hidden/narrow/unsupported-helper gating, wrapped metadata, compact list labels and snapshot/footer mouse isolation. Older rendering tests were scoped to the list because the side pane repeats selected metadata.
 
 PASS — optimized release build, formatting and diff checks. `tests/session_preview_live.py` passed against the release using exact disposable managed/default tmux sockets: current-screen bottom capture on 100-row panes, no size/attachment/process changes, 60-line/24KiB limits, wrong generation/creation/target refusal and ended-session refusal (`/tmp/cx-preview-live-final.log`). No personal terminals or provider transcripts inspected. Cache/pin viewer-restart PTY passed against release (`/tmp/cx-preview-cache-pty.log`).

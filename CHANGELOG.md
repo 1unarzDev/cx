@@ -4,6 +4,11 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.88
+
+### Fixes
+- cx no longer spins at full CPU after its terminal disappears. When the pty hung up while cx ran in its own process group (so no SIGHUP arrived), the UI loop kept busy-polling the dead terminal and ignored SIGTERM. It now exits when the terminal is gone or it has been reparented to init without a tty, and a watchdog force-exits if a stop signal is not honoured within three seconds.
+
 ## v0.1.87
 
 ### Fixes

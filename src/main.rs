@@ -1384,6 +1384,11 @@ fn run() -> Result<()> {
                     .map(|pair| pair[1].as_str())
                     .context("native attachment requires a session target")?;
                 sessions::refresh_managed_status(target)?;
+                // A focus attach cancels a leftover scrollback (copy-mode) view so
+                // it lands live; a read-only watch (`-r`) keeps it. See exit_copy_mode.
+                if !args.iter().any(|a| a == "-r") {
+                    sessions::exit_copy_mode(target);
+                }
                 c.arg("-S").arg(sessions::socket()?);
             }
             let status = c.args(args).status()?;

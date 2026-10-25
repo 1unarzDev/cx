@@ -4,8 +4,11 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.87
+
 ### Fixes
 - Opening a session now lands you live and ready to type. If the pane was left in scrollback (tmux copy-mode, entered by scrolling the wheel), re-entering it used to show that read-only view until you pressed a key to dismiss it; a focus attach now cancels copy-mode so input works immediately. The read-only watch (`w`) still preserves the scrollback view.
+
 
 ## v0.1.86
 

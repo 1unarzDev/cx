@@ -8163,6 +8163,33 @@ impl WheelReports {
 // Timestamp a bounded wheel burst before rendering/backend replies can separate
 // duplicate reports. Stop after the first non-wheel event: never pre-read input
 // intended for a native terminal that an Enter key is about to open.
+// A terminal whose pty hung up (or whose session leader died and left us
+// reparented to init) must not keep the UI spinning: nothing will ever deliver
+// SIGHUP to a process in its own group.
+fn terminal_gone() -> bool {
+    // SAFETY: tcgetattr only reads into a zeroed termios; getppid has no preconditions.
+    unsafe {
+        let mut t: libc::termios = std::mem::zeroed();
+        libc::tcgetattr(0, &mut t) != 0 || (libc::getppid() == 1 && libc::isatty(0) == 0)
+    }
+}
+// Backstop for a main thread stuck inside a terminal read/poll: exit when the
+// terminal is gone, or when a requested stop (SIGHUP/SIGTERM/SIGINT) is not honoured.
+fn spawn_exit_watchdog(stopping: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    thread::spawn(move || {
+        let mut stop_seen = 0u32;
+        loop {
+            thread::sleep(Duration::from_millis(500));
+            if stopping.load(std::sync::atomic::Ordering::Relaxed) {
+                stop_seen += 1;
+            }
+            if terminal_gone() || stop_seen >= 6 {
+                // SAFETY: _exit is async-signal-safe and skips destructors on purpose.
+                unsafe { libc::_exit(1) }
+            }
+        }
+    });
+}
 fn read_input_batch() -> Result<Vec<(Event, Instant)>> {
     let first = event::read()?;
     let wheel = wheel_report(&first).is_some();
@@ -8764,6 +8791,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         app.send(d, Operation::TransferJobs);
     }
     let mut screen = Screen::new().context("open terminal workspace")?;
+    spawn_exit_watchdog(stopping.clone());
     // Drop ordering cleans owned bitmaps before Screen restores the original terminal.
     let mut native_preview = crate::terminal_preview::NativePreview::detect();
     let mut dirty = true;
@@ -8786,7 +8814,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         std::env::set_var("CX_ASKPASS_SOCKET", broker.socket());
         std::env::set_var("CX_ASKPASS_NONCE", broker.nonce());
     }
-    while !app.quit && !stopping.load(std::sync::atomic::Ordering::Relaxed) {
+    while !app.quit && !stopping.load(std::sync::atomic::Ordering::Relaxed) && !terminal_gone() {
         // Service one pending password prompt per iteration, if any.
         if let Some((prompt, pending)) = askpass.as_ref().and_then(|b| b.accept()) {
             let answer =

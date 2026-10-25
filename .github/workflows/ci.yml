@@ -25,6 +25,7 @@ jobs:
           python3 tests/startup_directory_pty.py target/debug/cx
           python3 tests/terminal_startup_loader_pty.py target/debug/cx
           python3 tests/focus_exits_copy_mode_pty.py target/debug/cx
+          python3 tests/mouse_scrollback_pty.py target/debug/cx
           python3 tests/terminal_startup_readiness_live.py target/debug/cx
           python3 tests/session_runtime_live.py target/debug/cx
           python3 tests/container_discovery_fixtures.py target/debug/cx

@@ -8,6 +8,9 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 - Keep a robot's `.local` name as its enrolled target when adding it through a gateway, instead of pinning one of its DHCP addresses. The gateway resolves the name on each connect, so an address change needs no re-enrollment. Existing IP-pinned devices keep working; remove and re-add them to switch.
 - Match the shared-LAN preview rules by robot subnet instead of interface names, and never forward or masquerade into `docker0`.
 
+### Fixes
+- Speed up container discovery and attachment. Discovery now inspects all containers in a single `docker` call instead of one per container — the slow part, because every Sessions refresh reconciles container scopes through it — and attaching no longer repeats the same container check and helper-setup round-trips several times. On a host with many containers this turns seconds of waiting into a fraction of a second.
+
 ## v0.1.85
 
 ### Fixes

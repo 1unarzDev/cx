@@ -458,6 +458,38 @@ fn inspect_on(id: &str, engine: &str) -> Result<Container> {
     )?;
     let v: Value = serde_json::from_slice(&raw)?;
     anyhow::ensure!(v["id"].as_str() == Some(id), "container identity changed");
+    container_from_value(v, engine)
+}
+/// Inspect several containers in one `docker inspect` call. The INSPECT template
+/// prints one JSON object per container (embedded newlines are escaped by
+/// `{{json}}`), so output splits cleanly by line. Any failure — a container that
+/// vanished between `ps` and `inspect` (non-zero exit), a timeout or oversized
+/// output — returns Err so the caller can fall back to the per-id scan.
+fn inspect_batch(ids: &[&str], engine: &str) -> Result<Vec<Container>> {
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut command = docker(&["inspect", "--type", "container", "--format", INSPECT]);
+    command.args(ids);
+    let raw = bounded(command, None, 30, 32 * 1024 * 1024)?;
+    let mut items = Vec::with_capacity(ids.len());
+    for line in text(raw)?.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        items.push(container_from_value(serde_json::from_str(line)?, engine)?);
+    }
+    Ok(items)
+}
+/// Build a Container from one `docker inspect` result in the INSPECT format,
+/// shared by single-id inspection and the batched scan. The id comes from the
+/// result itself and is revalidated.
+fn container_from_value(v: Value, engine: &str) -> Result<Container> {
+    let id = v["id"]
+        .as_str()
+        .context("container inspection missing id")?;
+    anyhow::ensure!(valid_id(id), "choose a full, verified container ID");
     let mut c = Container {
         engine: engine.into(),
         id: id.into(),
@@ -600,22 +632,41 @@ pub fn list() -> Result<Value> {
         65536,
     )?)?;
     let engine = engine_identity()?;
-    let deadline = Instant::now() + Duration::from_secs(40);
     let mut truncated = ids.lines().count() > 256;
     let mut failed_inspections = 0usize;
     let mut items = vec![];
-    for id in ids.lines().take(256) {
-        if Instant::now() >= deadline {
-            truncated = true;
-            break;
-        }
-        match inspect_on(id, &engine) {
-            Ok(c) => items.push(c),
-            Err(_) => {
-                // An instance may disappear between ps and inspect, or the
-                // engine may become unavailable. Neither proves a full scan.
-                failed_inspections += 1;
+    let scanned: Vec<&str> = ids.lines().take(256).collect();
+    let valid: Vec<&str> = scanned.iter().copied().filter(|id| valid_id(id)).collect();
+    // One batched `docker inspect` collapses N subprocess round-trips into one;
+    // every Sessions refresh reconciles container scopes through here, so the
+    // per-id fan-out dominated discovery time. Any batch failure falls back to
+    // the per-id scan, which also records partial results and failures.
+    match inspect_batch(&valid, &engine) {
+        Ok(found) if found.len() == valid.len() => {
+            items = found;
+            failed_inspections += scanned.len() - valid.len();
+            if failed_inspections > 0 {
                 truncated = true;
+            }
+        }
+        _ => {
+            let deadline = Instant::now() + Duration::from_secs(40);
+            items.clear();
+            failed_inspections = 0;
+            for id in &scanned {
+                if Instant::now() >= deadline {
+                    truncated = true;
+                    break;
+                }
+                match inspect_on(id, &engine) {
+                    Ok(c) => items.push(c),
+                    Err(_) => {
+                        // An instance may disappear between ps and inspect, or the
+                        // engine may become unavailable. Neither proves a full scan.
+                        failed_inspections += 1;
+                        truncated = true;
+                    }
+                }
             }
         }
     }
@@ -707,8 +758,9 @@ fn helper_location(scope: &ContainerScope) -> Result<String> {
         env!("CARGO_PKG_VERSION")
     ))
 }
+/// Callers verify the scope with `check` immediately before this, so it does not
+/// re-inspect; it re-checks only after staging a freshly installed helper.
 fn ensure_helper(scope: &ContainerScope) -> Result<String> {
-    check(scope)?;
     let mut c = exec(scope, false)?;
     c.args(["/bin/sh", "-c", "uname -m"]);
     let arch = text(bounded(c, None, 5, 65536)?)?;
@@ -883,9 +935,12 @@ if command -v bash >/dev/null 2>&1; then exec bash -il; fi
 if command -v zsh >/dev/null 2>&1; then exec zsh -il; fi
 exec /bin/sh -i
 "#;
-pub fn prepare(scope: &ContainerScope, provider: &str) -> Result<()> {
+/// Verify the scope, ensure the helper, and confirm the provider binary, all in
+/// one pass. Returns the verified container and helper path so an immediate
+/// `run` need not repeat the checks.
+pub fn prepare(scope: &ContainerScope, provider: &str) -> Result<(Container, String)> {
     let container = check(scope)?;
-    ensure_helper(scope)?;
+    let helper = ensure_helper(scope)?;
     anyhow::ensure!(
         ["shell", "codex", "claude"].contains(&provider),
         "unsupported container session profile"
@@ -907,13 +962,13 @@ pub fn prepare(scope: &ContainerScope, provider: &str) -> Result<()> {
     bounded(c, None, 30, 262144).with_context(|| {
         format!("{provider} is unavailable in this container; no packages were installed")
     })?;
-    Ok(())
+    Ok((container, helper))
 }
 pub fn run(scope: &ContainerScope, provider: &str, yolo: bool) -> Result<()> {
     use base64::Engine;
-    let container = check(scope)?;
-    prepare(scope, provider)?;
-    let helper = ensure_helper(scope)?;
+    // prepare already verifies the scope, ensures the helper and confirms the
+    // provider; reuse its results instead of checking and installing again.
+    let (container, helper) = prepare(scope, provider)?;
     let id = std::env::var("CX_MANAGED_SESSION")
         .context("managed container session identity unavailable")?;
     anyhow::ensure!(valid_session(&id), "invalid container session identity");

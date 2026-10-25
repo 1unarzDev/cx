@@ -2514,11 +2514,7 @@ pub fn quote(s: &str) -> String {
 /// id is not a managed session; failures never block the attach.
 pub fn exit_copy_mode(id: &str) {
     let id = id.strip_prefix('=').unwrap_or(id);
-    let managed = (id.starts_with("cx-")
-        && id.len() == 67
-        && id[3..].bytes().all(|b| b.is_ascii_hexdigit()))
-        || valid_pane_name(id);
-    if !managed {
+    if !managed_session_name(id) && !valid_pane_name(id) {
         return;
     }
     let in_mode = tmux(true)
@@ -2618,6 +2614,10 @@ fn command_pane_name() -> Result<String> {
 }
 fn valid_pane_name(id: &str) -> bool {
     id.len() == 38 && id.starts_with("cxcmd-") && id[6..].bytes().all(|b| b.is_ascii_hexdigit())
+}
+/// A persistent managed session name: `cx-` plus 64 lowercase-hex characters.
+fn managed_session_name(id: &str) -> bool {
+    id.starts_with("cx-") && id.len() == 67 && id[3..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 fn clamp_size(cols: u16, rows: u16) -> (u16, u16) {
     (cols.clamp(20, 500), rows.clamp(4, 300))

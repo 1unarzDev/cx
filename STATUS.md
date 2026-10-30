@@ -2,6 +2,8 @@
 
 ## Preview fidelity and paged history — 0.1.92
 
+Installed locally from `f7c90f3`; version **0.1.92**, SHA-256 `e8424f77ae80e42ed9cc0867e480c5113344d3773ee013bebf1e8947c828a954` matches the optimized candidate. Atomic maintenance-locked replacement; rollback `/home/lunarz/.local/bin/cx.rollback-0.1.91-preview-fidelity`. Restart only the CX viewer. No remote rollout or personal-session restart.
+
 Reproduced the remaining prompt highlight as missing trailing painted cells and lost SGR state between captured rows. Preview rendering now preserves both, including explicit color resets. Synthetic actual-viewer tests verify muted backgrounds behind letters and adjacent blanks at 80/120 columns. Native contrast behavior remains verified.
 
 History requests now page through all retained tmux rows with absolute row coordinates rather than stopping at the latest 500. Each page stays bounded and in memory; reading pauses polling. Full-screen applications with mouse tracking receive identity-checked wheel events to navigate application-owned history. Keyboard/paste focus behavior is unchanged. Protocol v1 adds defaulted `history_start` and additive history/mouse metadata; older helpers retain earlier behavior.

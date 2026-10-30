@@ -2,6 +2,8 @@
 
 ## Preview fidelity and paged history — 0.1.92
 
+Installed locally from `f7c90f3`; version **0.1.92**, SHA-256 `e8424f77ae80e42ed9cc0867e480c5113344d3773ee013bebf1e8947c828a954` matches the optimized candidate. Atomic maintenance-locked replacement; rollback `/home/lunarz/.local/bin/cx.rollback-0.1.91-preview-fidelity`. Restart only the CX viewer. No remote rollout or personal-session restart.
+
 PASS final full locked offline Rust suite: **744 passed, 0 failed, 1 protected live test ignored** (`/tmp/cx-fidelity-complete.log`). Added cross-row color/trailing-cell regression and viewport-origin checks including history beyond 65,535 rows. Explicit reset assertions now check Color::Reset rather than inherited/default styling.
 
 RED: `uv run --with pyte python -B tests/preview_fidelity_live.py ~/.local/bin/cx` on0.1.91 failed “prompt background only paints behind letters” (`/tmp/cx-fidelity-red.log`). Independent synthetic 1,200-row helper reproduction could not reach row1 using an older-page request.

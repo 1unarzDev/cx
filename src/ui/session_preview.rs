@@ -12,6 +12,7 @@ pub(super) struct Snapshot {
     live: bool,
     cursor: (u16, u16),
     cursor_visible: bool,
+    palette8: Option<Color>,
     bracketed_paste: bool,
     application_cursor: bool,
     pub(super) focused: Option<(Device, Session, String)>,
@@ -255,6 +256,14 @@ impl App {
                     self.session_preview.focused = None;
                 }
                 self.session_preview.pane = pane;
+                self.session_preview.palette8 = value["palette8"].as_str().and_then(|s| {
+                    let hex = s.strip_prefix('#')?;
+                    if hex.len() != 6 {
+                        return None;
+                    }
+                    let rgb = u32::from_str_radix(hex, 16).ok()?;
+                    Some(Color::Rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8))
+                });
                 self.session_preview.live = value["live"].as_bool() == Some(true);
                 if !self.session_preview.live {
                     self.session_preview.focused = None;
@@ -357,7 +366,7 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
             .session_preview
             .lines
             .iter()
-            .map(|s| rendering::ansi_line(s))
+            .map(|s| rendering::ansi_line_with_palette(s, app.session_preview.palette8))
             .collect();
         frame.render_widget(Paragraph::new(lines).scroll((top, left)), screen);
         if focused && app.session_preview.cursor_visible && screen.width > 0 && screen.height > 0 {

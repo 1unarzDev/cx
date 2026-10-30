@@ -2298,6 +2298,20 @@ fn render_command_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 /// Parse a tmux `capture-pane -e` line (SGR escapes) into a styled Line.
+pub(super) fn ansi_line_with_palette(raw: &str, palette8: Option<Color>) -> Line<'static> {
+    let mut line = ansi_line(raw);
+    if let Some(colour) = palette8 {
+        for span in &mut line.spans {
+            if matches!(span.style.fg, Some(Color::DarkGray | Color::Indexed(8))) {
+                span.style.fg = Some(colour);
+            }
+            if matches!(span.style.bg, Some(Color::DarkGray | Color::Indexed(8))) {
+                span.style.bg = Some(colour);
+            }
+        }
+    }
+    line
+}
 pub(super) fn ansi_line(raw: &str) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut style = Style::default();
@@ -2372,10 +2386,21 @@ fn apply_sgr(mut style: Style, params: &str) -> Style {
         match parts[k] {
             0 => style = Style::default(),
             1 => style = style.add_modifier(Modifier::BOLD),
-            2 | 22 => style = style.remove_modifier(Modifier::BOLD),
+            2 => style = style.add_modifier(Modifier::DIM),
+            22 => style = style.remove_modifier(Modifier::BOLD | Modifier::DIM),
             3 => style = style.add_modifier(Modifier::ITALIC),
             4 => style = style.add_modifier(Modifier::UNDERLINED),
+            5 => style = style.add_modifier(Modifier::SLOW_BLINK),
+            6 => style = style.add_modifier(Modifier::RAPID_BLINK),
             7 => style = style.add_modifier(Modifier::REVERSED),
+            8 => style = style.add_modifier(Modifier::HIDDEN),
+            9 => style = style.add_modifier(Modifier::CROSSED_OUT),
+            23 => style = style.remove_modifier(Modifier::ITALIC),
+            24 => style = style.remove_modifier(Modifier::UNDERLINED),
+            25 => style = style.remove_modifier(Modifier::SLOW_BLINK | Modifier::RAPID_BLINK),
+            27 => style = style.remove_modifier(Modifier::REVERSED),
+            28 => style = style.remove_modifier(Modifier::HIDDEN),
+            29 => style = style.remove_modifier(Modifier::CROSSED_OUT),
             30..=37 => style = style.fg(ansi_color(parts[k] as u8 - 30)),
             90..=97 => style = style.fg(ansi_color(parts[k] as u8 - 90 + 8)),
             40..=47 => style = style.bg(ansi_color(parts[k] as u8 - 40)),
@@ -2441,5 +2466,42 @@ mod ansi_tests {
         let line = ansi_line("just text");
         let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(joined, "just text");
+    }
+}
+
+#[cfg(test)]
+mod contrast_regressions {
+    use super::*;
+    #[test]
+    fn prompt_selection_end_restores_normal_foreground_and_muted_background() {
+        let line = ansi_line("\x1b[7mselected\x1b[27;36;48;2;36;39;46mprior prompt");
+        let prior = &line.spans[1].style;
+        assert!(
+            !prior.add_modifier.contains(Modifier::REVERSED),
+            "accent foreground is still inverted into the background"
+        );
+        assert_eq!(prior.fg, Some(Color::Cyan));
+        assert_eq!(prior.bg, Some(Color::Rgb(36, 39, 46)));
+    }
+    #[test]
+    fn pane_palette_is_applied_to_both_prompt_background_and_dim_text() {
+        let neutral = Color::Rgb(48, 48, 48);
+        let line = ansi_line_with_palette("\x1b[48;5;8mprompt\x1b[49;90mdim", Some(neutral));
+        assert_eq!(line.spans[0].style.bg, Some(neutral));
+        assert_eq!(line.spans[1].style.fg, Some(neutral));
+        assert_eq!(line.spans[1].style.bg, None);
+    }
+    #[test]
+    fn dim_and_attribute_end_sequences_preserve_native_contrast() {
+        let line = ansi_line("\x1b[2mdim\x1b[22mnormal\x1b[3;4;7mselected\x1b[23;24;27mplain");
+        assert!(line.spans[0].style.add_modifier.contains(Modifier::DIM));
+        assert!(!line.spans[1]
+            .style
+            .add_modifier
+            .intersects(Modifier::DIM | Modifier::BOLD));
+        assert!(!line.spans[3]
+            .style
+            .add_modifier
+            .intersects(Modifier::ITALIC | Modifier::UNDERLINED | Modifier::REVERSED));
     }
 }

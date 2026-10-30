@@ -107,6 +107,22 @@ pub fn preview(session: &Session) -> Result<serde_json::Value> {
         ])
         .arg((dims[1] - 1).to_string());
     let screen = bounded(command)?;
+    let mut colours = tmux(managed)?;
+    colours.args([
+        "show-options",
+        "-p",
+        "-A",
+        "-qv",
+        "-t",
+        &before.pane_id,
+        "pane-colours[8]",
+    ]);
+    let palette8 = bounded(colours)
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| {
+            s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit())
+        });
     let after = observe(managed, &terminal.session_id)?;
     verify_attach_generation(&request, after.server_pid, &after.id, &after.created)?;
     anyhow::ensure!(before.pane_id == after.pane_id, "preview pane changed");
@@ -115,7 +131,7 @@ pub fn preview(session: &Session) -> Result<serde_json::Value> {
         "pane_id": before.pane_id, "cols": dims[0], "rows": dims[1],
         "cursor_x": dims[2], "cursor_y": dims[3], "cursor_visible": dims[4] != 0,
         "bracketed_paste": dims[5] != 0, "application_cursor": dims[6] != 0,
-        "live": true
+        "palette8": palette8, "live": true
     }))
 }
 

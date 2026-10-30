@@ -2561,6 +2561,66 @@ fn wait_for_first_screen(id: &str) -> Result<()> {
     }
 }
 
+// Codex uses ANSI bright-black (index8) for prompt/answer backgrounds when
+// terminal background discovery is unavailable. User palettes may make that an
+// accent colour. Scope a neutral fallback to our pane, never the user's terminal.
+fn restore_codex_contrast(session: &Session) -> Result<()> {
+    if session.external {
+        return Ok(());
+    }
+    let pane = field(true, &session.id, "#{pane_id}")?;
+    let mut query = tmux(true)?;
+    query.args(["show-options", "-p", "-qv", "-t", &pane, "@cx_codex_dim_bg"]);
+    let owned = output(query)?.trim().to_owned();
+    let mut query = tmux(true)?;
+    query.args([
+        "show-options",
+        "-p",
+        "-A",
+        "-qv",
+        "-t",
+        &pane,
+        "pane-colours[8]",
+    ]);
+    let current = output(query)?.trim().to_owned();
+    if session.provider == "codex" {
+        if !current.is_empty() && current != owned {
+            return Ok(());
+        }
+        let theme = field(true, &session.id, "#{client_theme}").unwrap_or_default();
+        let neutral = if theme.trim() == "light" {
+            "#e4e4e4"
+        } else {
+            "#303030"
+        };
+        let mut set = tmux(true)?;
+        set.args([
+            "set-option",
+            "-p",
+            "-t",
+            &pane,
+            "pane-colours[8]",
+            neutral,
+            ";",
+            "set-option",
+            "-p",
+            "-t",
+            &pane,
+            "@cx_codex_dim_bg",
+            neutral,
+        ]);
+        output(set)?;
+    } else if !owned.is_empty() {
+        let mut clear = tmux(true)?;
+        if current == owned {
+            clear.args(["set-option", "-pu", "-t", &pane, "pane-colours[8]", ";"]);
+        }
+        clear.args(["set-option", "-pu", "-t", &pane, "@cx_codex_dim_bg"]);
+        output(clear)?;
+    }
+    Ok(())
+}
+
 fn restore_managed_style(session: &Session) -> Result<()> {
     // Match the private server's terminal defaults, including transparency.
     // Also clear opaque per-window overrides left by older CX versions.
@@ -2784,6 +2844,9 @@ pub fn refresh_managed_status(id: &str) -> Result<()> {
     }
     let session = inspect(true, id)?;
     restore_managed_style(&session)?;
+    // Older tmux builds may lack pane-colours; optional styling must not
+    // prevent reaching a working terminal.
+    let _ = restore_codex_contrast(&session);
     set_managed_status(&session)
 }
 

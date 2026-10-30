@@ -129,3 +129,10 @@ button. Bracketed paste and application cursor modes are honored. Pasted input i
 limited to 4096 bytes including bracket markers, with an explicit refusal for larger
 pastes. Mouse forwarding, scrollback and arbitrary terminal protocol emulation are
 not implemented in the pane; use Ctrl+O for the native terminal when needed.
+
+
+Codex native attachments keep fallback prompt/answer highlights neutral within
+CX-managed panes. Explicit per-pane palettes win, and the fallback is removed when
+reattaching after returning to a shell. To apply a contrast update to an existing
+Codex session, return to CX and reopen the native terminal; the conversation need
+not be restarted. Embedded panes honor the same palette and native dim/reset styling.

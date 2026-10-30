@@ -1,5 +1,11 @@
 # CX status
 
+## Codex terminal contrast — 0.1.90
+
+Native Codex prompt backgrounds were observed using ANSI index8 while actual clients already advertised RGB. Private synthetic native-attach acceptance reproduces dependence on that palette slot and verifies outgoing muted RGB after correction. On native attach, managed Codex panes receive a pane-local neutral index8 fallback (#303030 for dark, #e4e4e4 for detected light); explicit pane palette entries take precedence. Returning to shell removes only CX's own fallback. No global terminal palette/provider config changes. Existing sessions take the change on next native attachment.
+
+Embedded previews receive the pane's effective index8 RGB override. SGR handling now honors DIM and attribute-reset codes, including 27 ending reverse video; tests reproduced accent foreground remaining inverted before the fix. Remaining acceptance: confirm the exact user's appearance after reattachment; synthetic color output is verified, but no real provider conversations were emitted in logs.
+
 ## Hover previews, availability and loader alignment — 0.1.89
 
 Installed locally from `f91242a`; executable reports0.1.89 and matches build digest. Atomic maintenance-locked install, rollback `~/.local/bin/cx.rollback-0.1.88-hover-fix`. No remote rollout or personal session restart.

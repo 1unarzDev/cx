@@ -1,5 +1,16 @@
 # Validation record
 
+## Codex contrast — 0.1.90
+
+PASS — full offline Rust suite **742 passed, 0 failed, 1 protected live test ignored** (`/tmp/cx-contrast-full.log`). SGR regressions failed before the fix: reverse-video persisted after27, and DIM was discarded. Corrected attribute application/reset and pane palette RGB rendering pass. Source formatting and diff checks pass.
+
+Evidence: read-only color-only sampling of two live Codex screens showed prompt background `48;5;8`; both attached foot clients already advertised RGB. No transcripts or user content were printed. Native truecolor negotiation test already passed before the change, so no global RGB override was introduced.
+
+PASS — new disposable synthetic Codex native-attach test fails on0.1.89 and passes on corrected build: native PTY receives `48;2;48;48;48`, embedded response carries the same pane override, explicit palette remains untouched, and returning to shell removes CX's owned fallback (`/tmp/cx-codex-native-red.log`, `/tmp/cx-contrast-native-final.log`). Existing native RGB foreground/background preservation and checked managed/external attach/watch lifecycle pass (`/tmp/cx-contrast-rgb-final.log`, `/tmp/cx-contrast-attach-final.log`). No actual providers launched, no credentials/config modified, no personal sessions restarted.
+
+Limits: the neutral fallback applies to managed native Codex panes on reattachment; explicit pane palette settings win. Detected light clients use #e4e4e4, otherwise #303030. Older tmux lacking palette support retains native attachment even if optional styling is unavailable. Actual user visual acceptance and light-theme end-to-end rendering remain unvalidated. Embedded handling covers effective pane index8 RGB and attributes; arbitrary OSC palette emulation is outside this change.
+
+
 ## Hover, availability and loader corrections — 0.1.89
 
 PASS — local atomic installation from `f91242a`; installed/build SHA-256 `2d1711b14c8604f5e88a16faddb68608d18c1fb009bd5a87a489dbf5bdcb8b22`, version0.1.89 (`/tmp/cx-hover-install.log`). Rollback `~/.local/bin/cx.rollback-0.1.88-hover-fix`.

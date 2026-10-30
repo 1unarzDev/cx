@@ -4,6 +4,11 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.1.90
+
+- Keep Codex's fallback prompt/answer backgrounds muted in CX-managed native terminals instead of inheriting an accent-colored ANSI slot8. Preserve explicit pane palettes and remove the fallback on return to a shell.
+- Preserve that pane palette in embedded terminals; correctly apply dim text and clear reverse, italic, underline and other SGR attributes.
+
 ## v0.1.89
 
 - Keep live-preview support after capability refresh; hover over actual session rows to show their terminal, including a stacked layout on narrower screens.

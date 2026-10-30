@@ -160,6 +160,8 @@ pub enum Operation {
         session: Session,
         #[serde(default)]
         scrollback: bool,
+        #[serde(default)]
+        history_start: Option<u32>,
     },
     /// Input to the exact pane shown in a verified live session view. Never retried.
     SessionPaneInput {

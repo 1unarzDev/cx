@@ -1,5 +1,14 @@
 # CX status
 
+## Preview fidelity and paged history — 0.1.92
+
+Reproduced the remaining prompt highlight as missing trailing painted cells and lost SGR state between captured rows. Preview rendering now preserves both, including explicit color resets. Synthetic actual-viewer tests verify muted backgrounds behind letters and adjacent blanks at 80/120 columns. Native contrast behavior remains verified.
+
+History requests now page through all retained tmux rows with absolute row coordinates rather than stopping at the latest 500. Each page stays bounded and in memory; reading pauses polling. Full-screen applications with mouse tracking receive identity-checked wheel events to navigate application-owned history. Keyboard/paste focus behavior is unchanged. Protocol v1 adds defaulted `history_start` and additive history/mouse metadata; older helpers retain earlier behavior.
+
+Remaining acceptance: user's actual terminal appearance and provider-specific scrolling. Retention remains controlled by tmux; evictions can shift older page positions, and discarded history cannot be recovered. Applications without terminal history or enabled mouse scrolling require their own navigation controls. Remote helpers need updating; no fleet rollout.
+
+
 ## Terminal preview scrolling — 0.1.91
 
 Installed locally from `39a49ba`; version **0.1.91**, SHA-256 `1e3179641bbbaaf54c2fa5c1fa903e163cdd8c44eecc06abe9e875630187a02c` matches the release candidate. Atomic maintenance-locked replacement; rollback `/home/lunarz/.local/bin/cx.rollback-0.1.90-preview-scroll`. Restart the CX viewer to use scrolling; terminal sessions keep running. No remote rollout.

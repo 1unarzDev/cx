@@ -2298,23 +2298,52 @@ fn render_command_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 /// Parse a tmux `capture-pane -e` line (SGR escapes) into a styled Line.
+fn palette_style(mut style: Style, palette8: Option<Color>) -> Style {
+    if let Some(colour) = palette8 {
+        if matches!(style.fg, Some(Color::DarkGray | Color::Indexed(8))) {
+            style.fg = Some(colour);
+        }
+        if matches!(style.bg, Some(Color::DarkGray | Color::Indexed(8))) {
+            style.bg = Some(colour);
+        }
+    }
+    style
+}
+#[cfg(test)]
 pub(super) fn ansi_line_with_palette(raw: &str, palette8: Option<Color>) -> Line<'static> {
     let mut line = ansi_line(raw);
-    if let Some(colour) = palette8 {
-        for span in &mut line.spans {
-            if matches!(span.style.fg, Some(Color::DarkGray | Color::Indexed(8))) {
-                span.style.fg = Some(colour);
-            }
-            if matches!(span.style.bg, Some(Color::DarkGray | Color::Indexed(8))) {
-                span.style.bg = Some(colour);
-            }
-        }
+    for span in &mut line.spans {
+        span.style = palette_style(span.style, palette8);
     }
     line
 }
+/// capture-pane emits one continuous SGR stream, including across newline boundaries.
+pub(super) fn ansi_screen(
+    raw: &[String],
+    palette8: Option<Color>,
+    cols: u16,
+) -> Vec<Line<'static>> {
+    let mut style = Style::reset();
+    raw.iter()
+        .map(|row| {
+            let mut line = ansi_line_state(row, &mut style);
+            let padding = usize::from(cols).saturating_sub(line.width());
+            if padding > 0 {
+                line.spans.push(Span::styled(" ".repeat(padding), style));
+            }
+            for span in &mut line.spans {
+                span.style = palette_style(span.style, palette8);
+            }
+            line
+        })
+        .collect()
+}
 pub(super) fn ansi_line(raw: &str) -> Line<'static> {
+    ansi_line_state(raw, &mut Style::default())
+}
+fn ansi_line_state(raw: &str, current: &mut Style) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut style = Style::default();
+    let mut style = *current;
     let mut text = String::new();
     let bytes = raw.as_bytes();
     let mut i = 0;
@@ -2350,6 +2379,7 @@ pub(super) fn ansi_line(raw: &str) -> Line<'static> {
     if spans.is_empty() {
         spans.push(Span::raw(""));
     }
+    *current = style;
     Line::from(spans)
 }
 
@@ -2384,7 +2414,7 @@ fn apply_sgr(mut style: Style, params: &str) -> Style {
     let mut k = 0;
     while k < parts.len() {
         match parts[k] {
-            0 => style = Style::default(),
+            0 => style = Style::reset(),
             1 => style = style.add_modifier(Modifier::BOLD),
             2 => style = style.add_modifier(Modifier::DIM),
             22 => style = style.remove_modifier(Modifier::BOLD | Modifier::DIM),
@@ -2405,8 +2435,8 @@ fn apply_sgr(mut style: Style, params: &str) -> Style {
             90..=97 => style = style.fg(ansi_color(parts[k] as u8 - 90 + 8)),
             40..=47 => style = style.bg(ansi_color(parts[k] as u8 - 40)),
             100..=107 => style = style.bg(ansi_color(parts[k] as u8 - 100 + 8)),
-            39 => style.fg = None,
-            49 => style.bg = None,
+            39 => style.fg = Some(Color::Reset),
+            49 => style.bg = Some(Color::Reset),
             38 | 48 => {
                 let fg = parts[k] == 38;
                 if parts.get(k + 1) == Some(&5) {
@@ -2448,7 +2478,10 @@ mod ansi_tests {
         assert_eq!(spans[0].1.fg, Some(Color::Red));
         assert!(spans[0].1.add_modifier.contains(Modifier::BOLD));
         // The reset clears bold and color for the following text.
-        assert!(spans[1].1.fg.is_none() && !spans[1].1.add_modifier.contains(Modifier::BOLD));
+        assert!(
+            spans[1].1.fg == Some(Color::Reset)
+                && !spans[1].1.add_modifier.contains(Modifier::BOLD)
+        );
         // The cursor-move sequence is dropped, its literal text kept.
         let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(joined, "red plainmoved");
@@ -2473,6 +2506,27 @@ mod ansi_tests {
 mod contrast_regressions {
     use super::*;
     #[test]
+    fn captured_rows_share_style_and_paint_trailing_cells() {
+        let rows = vec![
+            "\x1b[48;5;8mfirst".into(),
+            "second".into(),
+            "\x1b[49mplain".into(),
+        ];
+        let lines = ansi_screen(&rows, Some(Color::Rgb(48, 48, 48)), 20);
+        for row in &lines[..2] {
+            assert_eq!(row.width(), 20);
+            assert!(row
+                .spans
+                .iter()
+                .all(|s| s.style.bg == Some(Color::Rgb(48, 48, 48))));
+        }
+        assert!(lines[2]
+            .spans
+            .iter()
+            .all(|s| s.style.bg == Some(Color::Reset)));
+    }
+
+    #[test]
     fn prompt_selection_end_restores_normal_foreground_and_muted_background() {
         let line = ansi_line("\x1b[7mselected\x1b[27;36;48;2;36;39;46mprior prompt");
         let prior = &line.spans[1].style;
@@ -2489,7 +2543,7 @@ mod contrast_regressions {
         let line = ansi_line_with_palette("\x1b[48;5;8mprompt\x1b[49;90mdim", Some(neutral));
         assert_eq!(line.spans[0].style.bg, Some(neutral));
         assert_eq!(line.spans[1].style.fg, Some(neutral));
-        assert_eq!(line.spans[1].style.bg, None);
+        assert_eq!(line.spans[1].style.bg, Some(Color::Reset));
     }
     #[test]
     fn dim_and_attribute_end_sequences_preserve_native_contrast() {

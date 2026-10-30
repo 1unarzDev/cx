@@ -127,12 +127,23 @@ and is never retried automatically.
 Use **New session** (`n`) for Shell, Claude or Codex; Shell has no separate creation
 button. Bracketed paste and application cursor modes are honored. Pasted input is
 limited to 4096 bytes including bracket markers, with an explicit refusal for larger
-pastes. Wheel over the preview (including while focused) to scroll through up to
-500 recent tmux history rows. Reading freezes the view; scroll down to return live.
-Focusing or typing also resumes live output. History loads only on demand and stays
-in memory. Older remote helpers support scrolling within the current screen only;
-update their helper for history. Mouse forwarding and arbitrary terminal protocol
-emulation are not implemented; use Ctrl+O for the native terminal when needed.
+pastes. Wheel over the preview (including while focused) to read the terminal's
+retained history. CX loads bounded pages on demand, so scrolling is no longer
+limited to the most recent 500 lines. Reading holds the current page steady;
+scroll down to return live. Focusing or typing also resumes live output. History
+stays in memory. tmux's own retention limit still applies; discarded output cannot
+be recovered by scrolling. While output is evicting tmux's oldest history, earlier
+page positions may shift.
+
+Full-screen applications that enable mouse tracking receive wheel reports in the
+preview, letting the application navigate its own conversation history. Other
+mouse input is not forwarded. Applications that do not expose history through
+terminal scrollback or mouse scrolling still need their own history controls.
+Older remote helpers keep their earlier preview behavior; update the helper for
+paged history and application wheel support. Use Ctrl+O for native attachment.
+
+Prompt backgrounds preserve trailing painted cells and SGR styling across rows,
+so muted prompt blocks render consistently instead of highlighting only letters.
 
 
 Codex native attachments keep fallback prompt/answer highlights neutral within

@@ -470,7 +470,8 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
         Operation::SessionPreview {
             ref session,
             scrollback,
-        } => sessions::preview(session, scrollback),
+            history_start,
+        } => sessions::preview(session, scrollback, history_start),
         Operation::SessionPaneInput {
             ref session,
             ref pane_id,

@@ -4,9 +4,14 @@ use super::*;
 pub(super) struct Snapshot {
     key: Option<String>,
     screen: std::cell::Cell<Rect>,
-    scroll_top: Option<u16>,
+    scroll_top: Option<u32>,
     history_loaded: bool,
-    history_rows: u16,
+    history_total: u32,
+    line_start: u32,
+    cols: u16,
+    rows: u16,
+    application_mouse: bool,
+    mouse_sgr: bool,
     serial: u64,
     inflight: bool,
     last: Option<Instant>,
@@ -61,12 +66,27 @@ pub(super) fn label(s: &Session) -> String {
     )
 }
 impl App {
-    fn live_top(&self) -> u16 {
-        self.session_preview
-            .cursor
-            .1
-            .saturating_add(self.session_preview.history_rows)
-            .saturating_sub(self.session_preview.screen.get().height.saturating_sub(1))
+    fn live_top(&self) -> u32 {
+        live_view_top(
+            self.session_preview.history_total,
+            self.session_preview.cursor.1,
+            self.session_preview.screen.get().height,
+        )
+    }
+    fn preview_page_contains(&self, top: u32) -> bool {
+        let end = self
+            .session_preview
+            .line_start
+            .saturating_add(self.session_preview.lines.len() as u32);
+        top >= self.session_preview.line_start
+            && top
+                .saturating_add(u32::from(self.session_preview.screen.get().height))
+                .min(
+                    self.session_preview
+                        .history_total
+                        .saturating_add(u32::from(self.session_preview.rows)),
+                )
+                <= end
     }
     fn resume_session_preview(&mut self) {
         self.session_preview.scroll_top = None;
@@ -91,6 +111,50 @@ impl App {
             MouseEventKind::ScrollDown => false,
             _ => return false,
         };
+        // Full-screen TUIs may keep history inside the application rather than tmux.
+        // Forward only wheel reports, only when that application explicitly enabled mouse tracking.
+        if self.session_preview.application_mouse && self.session_preview.live {
+            if let Some((d, session)) = self.preview_selection() {
+                let area = self.session_preview.screen.get();
+                let x = mouse
+                    .column
+                    .saturating_sub(area.x)
+                    .saturating_add(
+                        self.session_preview
+                            .cursor
+                            .0
+                            .saturating_sub(area.width.saturating_sub(1)),
+                    )
+                    .saturating_add(1)
+                    .min(self.session_preview.cols);
+                let y = u32::from(mouse.row.saturating_sub(area.y))
+                    .saturating_add(self.live_top())
+                    .saturating_add(1)
+                    .min(u32::from(self.session_preview.rows)) as u16;
+                let button = if up { 64 } else { 65 };
+                let bytes = if self.session_preview.mouse_sgr {
+                    format!("\x1b[<{button};{x};{y}M").into_bytes()
+                } else if x <= 223 && y <= 223 {
+                    vec![27, b'[', b'M', button + 32, x as u8 + 32, y as u8 + 32]
+                } else {
+                    return true;
+                };
+                let pane_id = self.session_preview.pane.clone();
+                let hex = bytes.iter().map(|b| format!("{b:02x}")).collect();
+                if !self.send(
+                    d,
+                    Operation::SessionPaneInput {
+                        session,
+                        pane_id,
+                        hex,
+                    },
+                ) {
+                    self.set_notice("Terminal scroll was not queued".into());
+                }
+                self.session_preview.last = None;
+            }
+            return true;
+        }
         let live = self.live_top();
         let current = self.session_preview.scroll_top.unwrap_or(live);
         if up {
@@ -253,7 +317,12 @@ impl App {
         let Some((device, session)) = selection else {
             return changed;
         };
-        if self.session_preview.scroll_top.is_some() && self.session_preview.history_loaded {
+        if self
+            .session_preview
+            .scroll_top
+            .is_some_and(|top| self.preview_page_contains(top))
+            && self.session_preview.history_loaded
+        {
             return changed;
         }
         let interval = if self.pane_focused() { 100 } else { 250 };
@@ -274,6 +343,10 @@ impl App {
                 op: Operation::SessionPreview {
                     session,
                     scrollback: self.session_preview.scroll_top.is_some(),
+                    history_start: self
+                        .session_preview
+                        .scroll_top
+                        .map(|top| top.saturating_sub(150)),
                 },
                 generation: self.session_preview.serial,
             })
@@ -289,6 +362,7 @@ impl App {
         let Operation::SessionPreview {
             session,
             scrollback,
+            ..
         } = &reply.op
         else {
             return;
@@ -303,6 +377,10 @@ impl App {
             return;
         }
         self.session_preview.inflight = false;
+        if *scrollback && self.session_preview.scroll_top.is_none() {
+            self.session_preview.last = None;
+            return; // A late history page must not replace the resumed live screen.
+        }
         match reply.result {
             Ok(value) => {
                 let pane = value["pane_id"].as_str().unwrap_or("").to_owned();
@@ -337,17 +415,31 @@ impl App {
                     value["application_cursor"].as_bool().unwrap_or(false);
                 self.session_preview.cursor_visible =
                     value["cursor_visible"].as_bool().unwrap_or(false);
-                let history = value["history_rows"].as_u64().unwrap_or(0).min(500) as u16;
-                if let Some(top) = &mut self.session_preview.scroll_top {
-                    *top = top
-                        .saturating_sub(self.session_preview.history_rows)
-                        .saturating_add(history);
-                    // Include the initial upward wheel movement when already at screen top.
-                    if *scrollback && !self.session_preview.history_loaded && *top == history {
-                        *top = top.saturating_sub(3);
+                let history = value["history_rows"].as_u64().unwrap_or(0).min(500) as u32;
+                if value.get("history_total").is_none() {
+                    // Older helpers expose only a recent-history window.
+                    if let Some(top) = &mut self.session_preview.scroll_top {
+                        *top = top
+                            .saturating_sub(self.session_preview.history_total)
+                            .saturating_add(history);
                     }
                 }
-                self.session_preview.history_rows = history;
+                self.session_preview.history_total = value["history_total"]
+                    .as_u64()
+                    .unwrap_or(u64::from(history))
+                    .min(u64::from(u32::MAX))
+                    as u32;
+                self.session_preview.line_start = value["line_start"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .min(u64::from(u32::MAX))
+                    as u32;
+                self.session_preview.cols = value["cols"].as_u64().unwrap_or(0).min(1000) as u16;
+                self.session_preview.rows = value["rows"].as_u64().unwrap_or(0).min(300) as u16;
+                self.session_preview.application_mouse = value["alternate"].as_bool() == Some(true)
+                    && value["mouse_tracking"].as_bool() == Some(true);
+                self.session_preview.mouse_sgr = value["mouse_sgr"].as_bool() == Some(true);
+
                 self.session_preview.history_loaded = *scrollback;
                 self.session_preview.lines.clear();
                 let lines = value.get("styled_lines").unwrap_or(&value["lines"]);
@@ -435,19 +527,25 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
     );
     if app.session_preview.key.as_ref() == Some(&key(&app.devices[d], &s)) {
         let (cx, cy) = app.session_preview.cursor;
-        let cy = cy.saturating_add(app.session_preview.history_rows);
+        let cy = u32::from(cy).saturating_add(app.session_preview.history_total);
         let top = app
             .session_preview
             .scroll_top
             .unwrap_or_else(|| app.live_top());
-        let left = cx.saturating_sub(screen.width.saturating_sub(1));
-        let lines: Vec<_> = app
-            .session_preview
-            .lines
-            .iter()
-            .map(|s| rendering::ansi_line_with_palette(s, app.session_preview.palette8))
-            .collect();
-        frame.render_widget(Paragraph::new(lines).scroll((top, left)), screen);
+        let left = if app.session_preview.scroll_top.is_some() {
+            0
+        } else {
+            cx.saturating_sub(screen.width.saturating_sub(1))
+        };
+        let lines = rendering::ansi_screen(
+            &app.session_preview.lines,
+            app.session_preview.palette8,
+            app.session_preview.cols,
+        );
+        let relative_top = top
+            .saturating_sub(app.session_preview.line_start)
+            .min(u32::from(u16::MAX)) as u16;
+        frame.render_widget(Paragraph::new(lines).scroll((relative_top, left)), screen);
         if focused
             && app.session_preview.scroll_top.is_none()
             && app.session_preview.cursor_visible
@@ -456,9 +554,23 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
         {
             frame.set_cursor_position((
                 screen.x + cx.saturating_sub(left).min(screen.width - 1),
-                screen.y + cy.saturating_sub(top).min(screen.height - 1),
+                screen.y + cy.saturating_sub(top).min(u32::from(screen.height - 1)) as u16,
             ));
         }
     }
     list
+}
+
+fn live_view_top(history: u32, cursor_y: u16, height: u16) -> u32 {
+    history.saturating_add(u32::from(cursor_y.saturating_sub(height.saturating_sub(1))))
+}
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+    #[test]
+    fn cursor_at_home_does_not_skip_recent_history() {
+        assert_eq!(live_view_top(1200, 0, 20), 1200);
+        assert_eq!(live_view_top(1200, 39, 20), 1220);
+        assert_eq!(live_view_top(100_000, 0, 20), 100_000);
+    }
 }

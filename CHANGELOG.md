@@ -1,5 +1,11 @@
 # Release notes
 
+## 0.1.92
+
+- Preserve prompt background blocks and multiline terminal colors in previews.
+- Page through all tmux-retained history instead of stopping after 500 rows; forward wheel scrolling to full-screen applications that enable mouse tracking.
+
+
 ## 0.1.91
 
 - Scroll terminal previews with the mouse wheel, including while focused. Load up to 500 recent tmux history rows on demand; keep the reading position steady and resume live output at the bottom or on input.

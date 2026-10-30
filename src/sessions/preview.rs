@@ -64,7 +64,11 @@ fn observe(managed: bool, id: &str) -> Result<SessionSnapshot> {
     Ok(rows.into_iter().next().unwrap())
 }
 
-pub fn preview(session: &Session, scrollback: bool) -> Result<serde_json::Value> {
+pub fn preview(
+    session: &Session,
+    scrollback: bool,
+    history_start: Option<u32>,
+) -> Result<serde_json::Value> {
     // Reuse the exact checked-attachment identity validation, without its stateful guard.
     let request = CheckedAttach {
         session: session.clone(),
@@ -82,7 +86,7 @@ pub fn preview(session: &Session, scrollback: bool) -> Result<serde_json::Value>
         "-p",
         "-t",
         &before.pane_id,
-        "#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{cursor_flag} #{bracket_paste_flag} #{keypad_cursor_flag} #{history_size}",
+        "#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{cursor_flag} #{bracket_paste_flag} #{keypad_cursor_flag} #{history_size} #{alternate_on} #{mouse_any_flag} #{mouse_sgr_flag}",
     ]);
     let meta = bounded(size)?;
     let dims: Vec<u32> = meta
@@ -90,28 +94,42 @@ pub fn preview(session: &Session, scrollback: bool) -> Result<serde_json::Value>
         .map(str::parse)
         .collect::<std::result::Result<_, _>>()?;
     anyhow::ensure!(
-        dims.len() == 8 && dims[0] > 0 && dims[0] <= 1000 && dims[1] > 0 && dims[1] <= 300,
+        dims.len() == 11 && dims[0] > 0 && dims[0] <= 1000 && dims[1] > 0 && dims[1] <= 300,
         "terminal dimensions exceed live view limits"
     );
-    let history = if scrollback { dims[7].min(500) } else { 0 };
-    let start = format!("-{history}");
-    let mut command = tmux(managed)?;
-    command
-        .args([
-            "capture-pane",
-            "-e",
-            "-p",
-            "-t",
-            &before.pane_id,
-            "-S",
-            &start,
-            "-E",
-        ])
-        .arg((dims[1] - 1).to_string());
-    let screen = bounded(command)?;
+    // Coordinates are retained-history row numbers, not offsets from the cursor.
+    // Fetch bounded pages rather than retaining an entire conversation in the UI.
+    let history_total = if dims[8] == 0 { dims[7] } else { 0 };
+    let total = history_total.saturating_add(dims[1]);
+    let line_start = if scrollback {
+        history_start
+            .unwrap_or(history_total.saturating_sub(500))
+            .min(total.saturating_sub(1))
+    } else {
+        history_total
+    };
+    let line_end = if history_start.is_some() && scrollback {
+        line_start.saturating_add(500).min(total)
+    } else {
+        total
+    };
+    let start = (i64::from(line_start) - i64::from(history_total)).to_string();
+    let end = (i64::from(line_end) - i64::from(history_total) - 1).to_string();
+    let capture = |padding: bool| -> Result<String> {
+        let mut command = tmux(managed)?;
+        command.args(["capture-pane", "-e", "-p"]);
+        if padding {
+            command.arg("-N");
+        }
+        command.args(["-t", &before.pane_id, "-S", &start, "-E", &end]);
+        bounded(command)
+    };
+    // -N preserves painted trailing cells. Older tmux is padded by the renderer.
+    let screen = capture(true).or_else(|_| capture(false))?;
     let styled = styled_screen(&screen);
-    // Alternate screens may expose less history than history_size reports.
-    let history = styled.len().saturating_sub(dims[1] as usize);
+    let history = history_total
+        .saturating_sub(line_start)
+        .min(styled.len() as u32);
     let mut colours = tmux(managed)?;
     colours.args([
         "show-options",
@@ -136,7 +154,8 @@ pub fn preview(session: &Session, scrollback: bool) -> Result<serde_json::Value>
         "pane_id": before.pane_id, "cols": dims[0], "rows": dims[1],
         "cursor_x": dims[2], "cursor_y": dims[3], "cursor_visible": dims[4] != 0,
         "bracketed_paste": dims[5] != 0, "application_cursor": dims[6] != 0,
-        "palette8": palette8, "live": true, "history_rows": history
+        "palette8": palette8, "live": true, "history_rows": history,
+        "history_total": history_total, "line_start": line_start, "alternate": dims[8] != 0, "mouse_tracking": dims[9] != 0, "mouse_sgr": dims[10] != 0
     }))
 }
 

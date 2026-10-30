@@ -1,5 +1,16 @@
 # Validation record
 
+## Preview fidelity and paged history — 0.1.92
+
+PASS final full locked offline Rust suite: **744 passed, 0 failed, 1 protected live test ignored** (`/tmp/cx-fidelity-complete.log`). Added cross-row color/trailing-cell regression and viewport-origin checks including history beyond 65,535 rows. Explicit reset assertions now check Color::Reset rather than inherited/default styling.
+
+RED: `uv run --with pyte python -B tests/preview_fidelity_live.py ~/.local/bin/cx` on0.1.91 failed “prompt background only paints behind letters” (`/tmp/cx-fidelity-red.log`). Independent synthetic 1,200-row helper reproduction could not reach row1 using an older-page request.
+
+PASS final optimized viewer PTY (`/tmp/cx-fidelity-acceptance.log`): full-width muted prompt blocks at80/120 columns, multiline color continuity, wheel paging through1,200 rows to oldest and back to live, and scrolling a synthetic alternate-screen application's own history. PASS existing managed/external runtime and alternate-screen/input-identity fixtures, native Codex contrast, and hover/focus/paste/frozen-history/termios fixtures (`/tmp/cx-fidelity-{runtime,native,input}-final.log`). Build, formatting and diff checks pass. Only synthetic panes and fixture-owned sockets were mutated; no real provider conversations logged.
+
+Memory/wire bounds retained: at most500 rows per explicit history page, up to800 for legacy-compatible recent-history captures, 256KiB captured output. `capture-pane -N` preserves painted blank cells; older tmux falls back to ordinary capture plus renderer padding. New metadata is additive, and missing history_start defaults to existing recent-screen behavior. No personal-session restart, provider configuration, SSH trust or networking changes. Real provider-specific history controls, physical visual acceptance, and legacy tmux end-to-end compatibility remain unvalidated.
+
+
 ## Terminal preview scrolling — 0.1.91
 
 Installed locally from `39a49ba`; version **0.1.91**, SHA-256 `1e3179641bbbaaf54c2fa5c1fa903e163cdd8c44eecc06abe9e875630187a02c` matches the release candidate. Atomic maintenance-locked replacement; rollback `/home/lunarz/.local/bin/cx.rollback-0.1.90-preview-scroll`. Restart the CX viewer to use scrolling; terminal sessions keep running. No remote rollout.

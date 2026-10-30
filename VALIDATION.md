@@ -2,6 +2,8 @@
 
 ## Codex contrast — 0.1.90
 
+Installed locally from `0b2b928`: `~/.local/bin/cx` reports **0.1.90**, SHA-256 `2398c8bc29ca489972668a75ef8249dec2b6de4de15bd6f8a10277df4a109fdc` matches the optimized candidate. Atomic replacement held the maintenance lock; rollback `/home/lunarz/.local/bin/cx.rollback-0.1.89-codex-contrast`. Final optimized native contrast and managed/external attach fixtures passed after the optional-styling compatibility adjustment. No remote rollout or personal-session restart. Reopen CX and detach/reopen native Codex to apply; physical visual acceptance remains pending.
+
 PASS — full offline Rust suite **742 passed, 0 failed, 1 protected live test ignored** (`/tmp/cx-contrast-full.log`). SGR regressions failed before the fix: reverse-video persisted after27, and DIM was discarded. Corrected attribute application/reset and pane palette RGB rendering pass. Source formatting and diff checks pass.
 
 Evidence: read-only color-only sampling of two live Codex screens showed prompt background `48;5;8`; both attached foot clients already advertised RGB. No transcripts or user content were printed. Native truecolor negotiation test already passed before the change, so no global RGB override was introduced.

@@ -2,6 +2,8 @@
 
 ## Codex terminal contrast — 0.1.90
 
+Installed locally from `0b2b928`: `~/.local/bin/cx` reports **0.1.90**, SHA-256 `2398c8bc29ca489972668a75ef8249dec2b6de4de15bd6f8a10277df4a109fdc` matches the optimized candidate. Atomic replacement held the maintenance lock; rollback `/home/lunarz/.local/bin/cx.rollback-0.1.89-codex-contrast`. Final optimized native contrast and managed/external attach fixtures passed after the optional-styling compatibility adjustment. No remote rollout or personal-session restart. Reopen CX and detach/reopen native Codex to apply; physical visual acceptance remains pending.
+
 Native Codex prompt backgrounds were observed using ANSI index8 while actual clients already advertised RGB. Private synthetic native-attach acceptance reproduces dependence on that palette slot and verifies outgoing muted RGB after correction. On native attach, managed Codex panes receive a pane-local neutral index8 fallback (#303030 for dark, #e4e4e4 for detected light); explicit pane palette entries take precedence. Returning to shell removes only CX's own fallback. No global terminal palette/provider config changes. Existing sessions take the change on next native attachment.
 
 Embedded previews receive the pane's effective index8 RGB override. SGR handling now honors DIM and attribute-reset codes, including 27 ending reverse video; tests reproduced accent foreground remaining inverted before the fix. Remaining acceptance: confirm the exact user's appearance after reattachment; synthetic color output is verified, but no real provider conversations were emitted in logs.

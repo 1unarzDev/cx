@@ -2,6 +2,8 @@
 
 ## Terminal preview scrolling — 0.1.91
 
+Installed locally from `39a49ba`; version **0.1.91**, SHA-256 `1e3179641bbbaaf54c2fa5c1fa903e163cdd8c44eecc06abe9e875630187a02c` matches the release candidate. Atomic maintenance-locked replacement; rollback `/home/lunarz/.local/bin/cx.rollback-0.1.90-preview-scroll`. Restart the CX viewer to use scrolling; terminal sessions keep running. No remote rollout.
+
 PASS full locked offline Rust suite: 742 passed, 1 protected test ignored (`/tmp/cx-scroll-full.log`). PASS optimized actual viewer PTY: wheel reveals older output, incoming output leaves reading position fixed, scrolling down resumes live updates, focused scrolling works, paste resumes and reaches the same shell (`/tmp/cx-scroll-pty-final.log`). PASS managed/external helper runtime fixtures, including alternate-screen history coordinates, bounds, unchanged geometry and stale input refusal (`/tmp/cx-scroll-runtime-final.log`). Final runtime checks include the actual captured-history count correction made after the full suite started. Format/diff checks pass. Fixtures use disposable tmux sockets and synthetic content only.
 
 Protocol v1 retains compatibility through a default-false optional `scrollback` request field and additive `history_rows` response. Capture remains bounded to 256 KiB, with up to 500 history plus 300 screen rows. Reading pauses refresh; it is not an indefinitely growing history buffer. Physical mouse/trackpad acceptance remains pending; remote helpers are not deployed.

@@ -2,6 +2,8 @@
 
 ## Terminal preview scrolling — 0.1.91
 
+Installed locally from `39a49ba`; version **0.1.91**, SHA-256 `1e3179641bbbaaf54c2fa5c1fa903e163cdd8c44eecc06abe9e875630187a02c` matches the release candidate. Atomic maintenance-locked replacement; rollback `/home/lunarz/.local/bin/cx.rollback-0.1.90-preview-scroll`. Restart the CX viewer to use scrolling; terminal sessions keep running. No remote rollout.
+
 Mouse wheel over either preview layout or the focused pane scrolls recent terminal output. Up to 500 history rows load on demand, then polling pauses to keep the reading position fixed. Scrolling to the live position, focusing or typing resumes live output. Selection changes discard history. History remains memory-only; original pane geometry and process input are unchanged. Remote helpers need this version for history; older helpers retain current-screen scrolling. Physical user acceptance remains pending.
 
 

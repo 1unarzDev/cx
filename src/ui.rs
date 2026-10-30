@@ -5961,6 +5961,9 @@ impl App {
         self.dialog = Some(Dialog::Links(links));
     }
     fn mouse(&mut self, mouse: MouseEvent, area: Rect) -> bool {
+        if self.scroll_session_preview(mouse) {
+            return true;
+        }
         if self.pane_focused() {
             return true;
         }

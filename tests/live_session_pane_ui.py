@@ -30,8 +30,24 @@ def run(binary):
         target_row = next(i for i,line in enumerate(viewer.screen.display) if 'Hover terminal proof' in line[22:65])
         viewer.send(f'\x1b[<35;31;{target_row+1}M'.encode())
         viewer.wait(lambda: 'HOVER-SCREEN-PROOF' in viewer.text(), 'mouse hover did not display actual selected terminal after Info')
+        f.send(second['id'], "for i in $(seq 1 100); do printf 'HISTORY-ROW-%03d\\n' $i; done")
+        viewer.wait(lambda: 'HISTORY-ROW-100' in viewer.text(), 'history fixture not ready')
+        for _ in range(12):
+            viewer.send(b'\x1b[<64;100;15M')
+            viewer.pump(0.03)
+        viewer.wait(lambda: 'HISTORY-ROW-060' in viewer.text(), 'wheel did not reveal actual scrollback')
+        frozen = viewer.text()
+        f.send(second['id'], "printf 'NEW-LIVE-OUTPUT\\n'")
+        viewer.pump(0.5)
+        require(viewer.text() == frozen, 'scrollback moved while reading')
+        for _ in range(40):
+            viewer.send(b'\x1b[<65;100;15M')
+            viewer.pump(0.01)
+        viewer.wait(lambda: 'NEW-LIVE-OUTPUT' in viewer.text(), 'scroll down did not resume live output')
         viewer.send(b'\r')
         viewer.wait(lambda: 'back to sessions' in viewer.text(), 'Enter did not focus pane')
+        viewer.send(b'\x1b[<64;100;15M')
+        viewer.wait(lambda: 'Scrollback' in viewer.text(), 'focused pane did not scroll')
         proof = f.root / 'focused-proof'
         # Real bracketed paste into the viewer, then explicit Enter to submit.
         command = 'printf integrated > ' + str(proof)
@@ -46,7 +62,7 @@ def run(binary):
         viewer.send(b'\x1b')
         viewer.quit()
         require(len(f.rows()) == 2, 'focus created or killed a session')
-        print(json.dumps(dict(status='PASS',checks=['actual live pane in viewer PTY','Enter focuses same running shell','bracketed paste and Enter delivered','Ctrl+] returns navigation','unified New session chooser','termios restored; runtime preserved'])))
+        print(json.dumps(dict(status='PASS',checks=['wheel reveals scrollback', 'reading position stays fixed', 'scroll down resumes live output', 'focused pane scrolling and paste resume', 'actual live pane in viewer PTY','Enter focuses same running shell','bracketed paste and Enter delivered','Ctrl+] returns navigation','unified New session chooser','termios restored; runtime preserved'])))
     finally:
         if viewer: viewer.close()
         f.close()

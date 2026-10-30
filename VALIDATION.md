@@ -1,5 +1,12 @@
 # Validation record
 
+## Terminal preview scrolling — 0.1.91
+
+PASS full locked offline Rust suite: 742 passed, 1 protected test ignored (`/tmp/cx-scroll-full.log`). PASS optimized actual viewer PTY: wheel reveals older output, incoming output leaves reading position fixed, scrolling down resumes live updates, focused scrolling works, paste resumes and reaches the same shell (`/tmp/cx-scroll-pty-final.log`). PASS managed/external helper runtime fixtures, including alternate-screen history coordinates, bounds, unchanged geometry and stale input refusal (`/tmp/cx-scroll-runtime-final.log`). Final runtime checks include the actual captured-history count correction made after the full suite started. Format/diff checks pass. Fixtures use disposable tmux sockets and synthetic content only.
+
+Protocol v1 retains compatibility through a default-false optional `scrollback` request field and additive `history_rows` response. Capture remains bounded to 256 KiB, with up to 500 history plus 300 screen rows. Reading pauses refresh; it is not an indefinitely growing history buffer. Physical mouse/trackpad acceptance remains pending; remote helpers are not deployed.
+
+
 ## Codex contrast — 0.1.90
 
 Installed locally from `0b2b928`: `~/.local/bin/cx` reports **0.1.90**, SHA-256 `2398c8bc29ca489972668a75ef8249dec2b6de4de15bd6f8a10277df4a109fdc` matches the optimized candidate. Atomic replacement held the maintenance lock; rollback `/home/lunarz/.local/bin/cx.rollback-0.1.89-codex-contrast`. Final optimized native contrast and managed/external attach fixtures passed after the optional-styling compatibility adjustment. No remote rollout or personal-session restart. Reopen CX and detach/reopen native Codex to apply; physical visual acceptance remains pending.

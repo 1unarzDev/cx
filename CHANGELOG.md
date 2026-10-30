@@ -1,5 +1,10 @@
 # Release notes
 
+## 0.1.91
+
+- Scroll terminal previews with the mouse wheel, including while focused. Load up to 500 recent tmux history rows on demand; keep the reading position steady and resume live output at the bottom or on input.
+
+
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
 ## Unreleased

@@ -127,8 +127,12 @@ and is never retried automatically.
 Use **New session** (`n`) for Shell, Claude or Codex; Shell has no separate creation
 button. Bracketed paste and application cursor modes are honored. Pasted input is
 limited to 4096 bytes including bracket markers, with an explicit refusal for larger
-pastes. Mouse forwarding, scrollback and arbitrary terminal protocol emulation are
-not implemented in the pane; use Ctrl+O for the native terminal when needed.
+pastes. Wheel over the preview (including while focused) to scroll through up to
+500 recent tmux history rows. Reading freezes the view; scroll down to return live.
+Focusing or typing also resumes live output. History loads only on demand and stays
+in memory. Older remote helpers support scrolling within the current screen only;
+update their helper for history. Mouse forwarding and arbitrary terminal protocol
+emulation are not implemented; use Ctrl+O for the native terminal when needed.
 
 
 Codex native attachments keep fallback prompt/answer highlights neutral within

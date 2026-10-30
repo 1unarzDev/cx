@@ -1,5 +1,10 @@
 # CX status
 
+## Terminal preview scrolling — 0.1.91
+
+Mouse wheel over either preview layout or the focused pane scrolls recent terminal output. Up to 500 history rows load on demand, then polling pauses to keep the reading position fixed. Scrolling to the live position, focusing or typing resumes live output. Selection changes discard history. History remains memory-only; original pane geometry and process input are unchanged. Remote helpers need this version for history; older helpers retain current-screen scrolling. Physical user acceptance remains pending.
+
+
 ## Codex terminal contrast — 0.1.90
 
 Installed locally from `0b2b928`: `~/.local/bin/cx` reports **0.1.90**, SHA-256 `2398c8bc29ca489972668a75ef8249dec2b6de4de15bd6f8a10277df4a109fdc` matches the optimized candidate. Atomic replacement held the maintenance lock; rollback `/home/lunarz/.local/bin/cx.rollback-0.1.89-codex-contrast`. Final optimized native contrast and managed/external attach fixtures passed after the optional-styling compatibility adjustment. No remote rollout or personal-session restart. Reopen CX and detach/reopen native Codex to apply; physical visual acceptance remains pending.

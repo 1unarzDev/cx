@@ -31,6 +31,9 @@ def run(binary):
             require(len(lines) == 100 and sum(len(s.encode()) for s in lines) <= 262144, 'preview not bounded')
             after = f.tmux('display-message', '-p', '-t', target, fmt, default=default).stdout
             require(before == after, 'preview mutated geometry, attachment or process')
+            history = f.request('session_preview', dict(session=row, scrollback=True))['result']
+            require(len(history['styled_lines']) == history['rows'] + history['history_rows'], 'history coordinates do not match capture')
+            require(history['history_rows'] <= 500, 'history exceeds bound')
             pane = result['result']['pane_id']
             require(result['result']['live'] and result['result']['rows'] == 100, 'live dimensions missing')
             # Send only synthetic fixture input; never print terminal content.
@@ -52,6 +55,8 @@ def run(binary):
             rendered = f.request('session_preview', dict(session=row))['result']
             require(any('TUI-PROOF' in line and '\x1b[' in line for line in rendered['styled_lines']), 'styled alternate screen missing')
             require(rendered['cursor_y'] == 2, 'actual cursor position missing')
+            alternate = f.request('session_preview', dict(session=row, scrollback=True))['result']
+            require(len(alternate['styled_lines']) == alternate['rows'] + alternate['history_rows'], 'alternate-screen history coordinates incorrect')
             typed = b'\x1b[A\x03'
             require(not f.request('session_pane_input', dict(session=row,pane_id=pane,hex=typed.hex())).get('error'), 'raw keys refused')
             f.until(keys.exists, 'raw application did not receive keys')

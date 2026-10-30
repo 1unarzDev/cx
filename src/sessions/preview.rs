@@ -1,4 +1,4 @@
-//! Live tmux screens and explicitly focused input. No emulation, resize or scrollback.
+//! Live tmux screens and explicitly focused input. Bounded read-only scrollback; no emulation or resize.
 use super::*;
 use std::io::Read;
 use std::os::fd::AsRawFd;
@@ -64,7 +64,7 @@ fn observe(managed: bool, id: &str) -> Result<SessionSnapshot> {
     Ok(rows.into_iter().next().unwrap())
 }
 
-pub fn preview(session: &Session) -> Result<serde_json::Value> {
+pub fn preview(session: &Session, scrollback: bool) -> Result<serde_json::Value> {
     // Reuse the exact checked-attachment identity validation, without its stateful guard.
     let request = CheckedAttach {
         session: session.clone(),
@@ -82,7 +82,7 @@ pub fn preview(session: &Session) -> Result<serde_json::Value> {
         "-p",
         "-t",
         &before.pane_id,
-        "#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{cursor_flag} #{bracket_paste_flag} #{keypad_cursor_flag}",
+        "#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{cursor_flag} #{bracket_paste_flag} #{keypad_cursor_flag} #{history_size}",
     ]);
     let meta = bounded(size)?;
     let dims: Vec<u32> = meta
@@ -90,9 +90,11 @@ pub fn preview(session: &Session) -> Result<serde_json::Value> {
         .map(str::parse)
         .collect::<std::result::Result<_, _>>()?;
     anyhow::ensure!(
-        dims.len() == 7 && dims[0] > 0 && dims[0] <= 1000 && dims[1] > 0 && dims[1] <= 300,
+        dims.len() == 8 && dims[0] > 0 && dims[0] <= 1000 && dims[1] > 0 && dims[1] <= 300,
         "terminal dimensions exceed live view limits"
     );
+    let history = if scrollback { dims[7].min(500) } else { 0 };
+    let start = format!("-{history}");
     let mut command = tmux(managed)?;
     command
         .args([
@@ -102,11 +104,14 @@ pub fn preview(session: &Session) -> Result<serde_json::Value> {
             "-t",
             &before.pane_id,
             "-S",
-            "0",
+            &start,
             "-E",
         ])
         .arg((dims[1] - 1).to_string());
     let screen = bounded(command)?;
+    let styled = styled_screen(&screen);
+    // Alternate screens may expose less history than history_size reports.
+    let history = styled.len().saturating_sub(dims[1] as usize);
     let mut colours = tmux(managed)?;
     colours.args([
         "show-options",
@@ -127,11 +132,11 @@ pub fn preview(session: &Session) -> Result<serde_json::Value> {
     verify_attach_generation(&request, after.server_pid, &after.id, &after.created)?;
     anyhow::ensure!(before.pane_id == after.pane_id, "preview pane changed");
     Ok(serde_json::json!({
-        "lines": clean_screen(&screen), "styled_lines": styled_screen(&screen),
+        "lines": clean_screen(&screen), "styled_lines": styled,
         "pane_id": before.pane_id, "cols": dims[0], "rows": dims[1],
         "cursor_x": dims[2], "cursor_y": dims[3], "cursor_visible": dims[4] != 0,
         "bracketed_paste": dims[5] != 0, "application_cursor": dims[6] != 0,
-        "palette8": palette8, "live": true
+        "palette8": palette8, "live": true, "history_rows": history
     }))
 }
 
@@ -246,7 +251,7 @@ fn styled_screen(text: &str) -> Vec<String> {
     out.strip_suffix('\n')
         .unwrap_or(&out)
         .split('\n')
-        .take(300)
+        .take(800)
         .map(str::to_owned)
         .collect()
 }
@@ -307,7 +312,7 @@ mod tests {
             vec!["xy"]
         );
         assert_eq!(styled_screen("\n\n\n"), vec!["", "", ""]);
-        assert_eq!(styled_screen(&"line\n".repeat(400)).len(), 300);
+        assert_eq!(styled_screen(&"line\n".repeat(900)).len(), 800);
     }
     #[test]
     fn snapshot_text_has_no_terminal_controls_and_is_bounded() {

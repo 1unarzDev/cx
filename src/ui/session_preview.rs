@@ -3,6 +3,10 @@ use super::*;
 #[derive(Default)]
 pub(super) struct Snapshot {
     key: Option<String>,
+    screen: std::cell::Cell<Rect>,
+    scroll_top: Option<u16>,
+    history_loaded: bool,
+    history_rows: u16,
     serial: u64,
     inflight: bool,
     last: Option<Instant>,
@@ -57,6 +61,48 @@ pub(super) fn label(s: &Session) -> String {
     )
 }
 impl App {
+    fn live_top(&self) -> u16 {
+        self.session_preview
+            .cursor
+            .1
+            .saturating_add(self.session_preview.history_rows)
+            .saturating_sub(self.session_preview.screen.get().height.saturating_sub(1))
+    }
+    fn resume_session_preview(&mut self) {
+        self.session_preview.scroll_top = None;
+        self.session_preview.history_loaded = false;
+        self.session_preview.last = None;
+    }
+    pub(super) fn scroll_session_preview(&mut self, mouse: MouseEvent) -> bool {
+        if self.view != View::Work
+            || self.dialog.is_some()
+            || self.help
+            || self.command_panel.is_some()
+            || !self
+                .session_preview
+                .screen
+                .get()
+                .contains((mouse.column, mouse.row).into())
+        {
+            return false;
+        }
+        let up = match mouse.kind {
+            MouseEventKind::ScrollUp => true,
+            MouseEventKind::ScrollDown => false,
+            _ => return false,
+        };
+        let live = self.live_top();
+        let current = self.session_preview.scroll_top.unwrap_or(live);
+        if up {
+            self.session_preview.scroll_top = Some(current.saturating_sub(3));
+            self.session_preview.last = None;
+        } else if current.saturating_add(3) >= live {
+            self.resume_session_preview();
+        } else {
+            self.session_preview.scroll_top = Some(current + 3);
+        }
+        true
+    }
     pub(super) fn pane_focused(&self) -> bool {
         self.session_preview.focused.is_some()
     }
@@ -104,6 +150,7 @@ impl App {
         {
             return false;
         }
+        self.resume_session_preview();
         self.session_preview.focused = Some((
             self.devices[d].clone(),
             s,
@@ -129,6 +176,7 @@ impl App {
             self.open_session(d, session, false);
             return;
         }
+        self.resume_session_preview();
         if let Some(mut bytes) = encode_key(event) {
             if self.session_preview.application_cursor
                 && event.modifiers.is_empty()
@@ -160,6 +208,7 @@ impl App {
         }
     }
     pub(super) fn session_pane_paste(&mut self, text: &str) {
+        self.resume_session_preview();
         let text = if self.session_preview.bracketed_paste {
             format!("\x1b[200~{text}\x1b[201~")
         } else {
@@ -204,6 +253,9 @@ impl App {
         let Some((device, session)) = selection else {
             return changed;
         };
+        if self.session_preview.scroll_top.is_some() && self.session_preview.history_loaded {
+            return changed;
+        }
         let interval = if self.pane_focused() { 100 } else { 250 };
         if self.session_preview.inflight
             || self
@@ -219,7 +271,10 @@ impl App {
             .try_send(Task {
                 device,
                 execution: self.devices[device].clone(),
-                op: Operation::SessionPreview { session },
+                op: Operation::SessionPreview {
+                    session,
+                    scrollback: self.session_preview.scroll_top.is_some(),
+                },
                 generation: self.session_preview.serial,
             })
             .is_ok();
@@ -231,7 +286,11 @@ impl App {
         changed || sent
     }
     pub(super) fn apply_session_preview(&mut self, reply: Reply) {
-        let Operation::SessionPreview { session } = &reply.op else {
+        let Operation::SessionPreview {
+            session,
+            scrollback,
+        } = &reply.op
+        else {
             return;
         };
         let current = self
@@ -278,6 +337,18 @@ impl App {
                     value["application_cursor"].as_bool().unwrap_or(false);
                 self.session_preview.cursor_visible =
                     value["cursor_visible"].as_bool().unwrap_or(false);
+                let history = value["history_rows"].as_u64().unwrap_or(0).min(500) as u16;
+                if let Some(top) = &mut self.session_preview.scroll_top {
+                    *top = top
+                        .saturating_sub(self.session_preview.history_rows)
+                        .saturating_add(history);
+                    // Include the initial upward wheel movement when already at screen top.
+                    if *scrollback && !self.session_preview.history_loaded && *top == history {
+                        *top = top.saturating_sub(3);
+                    }
+                }
+                self.session_preview.history_rows = history;
+                self.session_preview.history_loaded = *scrollback;
                 self.session_preview.lines.clear();
                 let lines = value.get("styled_lines").unwrap_or(&value["lines"]);
                 let mut budget = 256 * 1024;
@@ -285,7 +356,7 @@ impl App {
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .take(300)
+                    .take(800)
                     .filter_map(|v| v.as_str())
                 {
                     if line.len() > budget {
@@ -295,7 +366,7 @@ impl App {
                     self.session_preview.lines.push(line.to_owned());
                 }
                 self.session_preview.status = if self.session_preview.live {
-                    "Enter · focus terminal"
+                    "Enter · focus terminal · Wheel · scroll"
                 } else {
                     "Enter · attach"
                 }
@@ -311,6 +382,7 @@ impl App {
     }
 }
 pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
+    app.session_preview.screen.set(Rect::default());
     let Some((d, s)) = app.preview_selection().or_else(|| app.selected_session()) else {
         return area;
     };
@@ -345,9 +417,12 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
         inner.width,
         inner.height.saturating_sub(1),
     );
+    app.session_preview.screen.set(screen);
     frame.render_widget(
-        Paragraph::new(if focused {
-            "Ctrl+] · back to sessions · Ctrl+O · expand"
+        Paragraph::new(if app.session_preview.scroll_top.is_some() {
+            "Scrollback · scroll down to return live"
+        } else if focused {
+            "Wheel · scroll · Ctrl+] · back to sessions · Ctrl+O · expand"
         } else if outside_tmux(&s) {
             "External terminal · Enter to move into CX"
         } else if app.session_preview.status.is_empty() {
@@ -360,7 +435,11 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
     );
     if app.session_preview.key.as_ref() == Some(&key(&app.devices[d], &s)) {
         let (cx, cy) = app.session_preview.cursor;
-        let top = cy.saturating_sub(screen.height.saturating_sub(1));
+        let cy = cy.saturating_add(app.session_preview.history_rows);
+        let top = app
+            .session_preview
+            .scroll_top
+            .unwrap_or_else(|| app.live_top());
         let left = cx.saturating_sub(screen.width.saturating_sub(1));
         let lines: Vec<_> = app
             .session_preview
@@ -369,7 +448,12 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
             .map(|s| rendering::ansi_line_with_palette(s, app.session_preview.palette8))
             .collect();
         frame.render_widget(Paragraph::new(lines).scroll((top, left)), screen);
-        if focused && app.session_preview.cursor_visible && screen.width > 0 && screen.height > 0 {
+        if focused
+            && app.session_preview.scroll_top.is_none()
+            && app.session_preview.cursor_visible
+            && screen.width > 0
+            && screen.height > 0
+        {
             frame.set_cursor_position((
                 screen.x + cx.saturating_sub(left).min(screen.width - 1),
                 screen.y + cy.saturating_sub(top).min(screen.height - 1),

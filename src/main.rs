@@ -467,7 +467,10 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
         Operation::TransferJobs => transfers::jobs(),
         Operation::TransferCancel { key } => transfers::cancel(&key),
         Operation::TransferRetry { key } => transfers::retry(&key),
-        Operation::SessionPreview { ref session } => sessions::preview(session),
+        Operation::SessionPreview {
+            ref session,
+            scrollback,
+        } => sessions::preview(session, scrollback),
         Operation::SessionPaneInput {
             ref session,
             ref pane_id,

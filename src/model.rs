@@ -158,6 +158,8 @@ pub enum Operation {
     /// Read-only current-screen snapshot for one verified terminal.
     SessionPreview {
         session: Session,
+        #[serde(default)]
+        scrollback: bool,
     },
     /// Input to the exact pane shown in a verified live session view. Never retried.
     SessionPaneInput {

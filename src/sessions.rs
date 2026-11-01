@@ -2129,6 +2129,56 @@ pub fn refresh_provider_environment() -> Result<()> {
     }
     Ok(())
 }
+fn server_responds(attempts: u32) -> Result<bool> {
+    for _ in 0..attempts {
+        let mut c = tmux(true)?;
+        c.args(["show-options", "-g"]);
+        if c.output()?.status.success() {
+            return Ok(true);
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    Ok(false)
+}
+/// True when the named user unit is loaded but neither running nor starting.
+fn stale_unit(unit: &str) -> bool {
+    let Ok(out) = Command::new("systemctl")
+        .args([
+            "--user",
+            "show",
+            "-p",
+            "LoadState",
+            "-p",
+            "ActiveState",
+            "--",
+            unit,
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return false;
+    };
+    unit_is_stale(&String::from_utf8_lossy(&out.stdout))
+}
+fn unit_is_stale(show: &str) -> bool {
+    let field = |key: &str| {
+        show.lines()
+            .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
+            .unwrap_or("")
+    };
+    field("LoadState") == "loaded" && matches!(field("ActiveState"), "inactive" | "failed")
+}
+/// First line of a child's stderr, trimmed to a short printable summary.
+fn bounded_stderr(raw: &[u8]) -> String {
+    let text = String::from_utf8_lossy(raw);
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    line.chars().filter(|c| !c.is_control()).take(200).collect()
+}
 fn ensure_server() -> Result<()> {
     // An owned server may persist after its last session ends. New binaries
     // must reload its configuration too, rather than reusing old key bindings.
@@ -2146,15 +2196,15 @@ fn ensure_server() -> Result<()> {
     let bus = PathBuf::from(format!("/run/user/{}/bus", unsafe { libc::geteuid() }));
     if bus.exists() {
         let unit = format!(
-            "--unit=cx-tmux-{:x}",
+            "cx-tmux-{:x}.service",
             Sha256::digest(sock.as_os_str().as_encoded_bytes())
         );
-        let status = Command::new("systemd-run")
+        let run = Command::new("systemd-run")
             .args([
                 "--user",
                 "--quiet",
                 "--collect",
-                &unit,
+                &format!("--unit={unit}"),
                 "--property=Restart=no",
             ])
             .arg(tmux_executable())
@@ -2164,19 +2214,38 @@ fn ensure_server() -> Result<()> {
             .arg(&sock)
             .arg("-f")
             .arg(&conf)
+            .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()?;
+            .stderr(Stdio::piped())
+            .output()?;
         // An existing owned service is acceptable if its socket responds.
-        for _ in 0..40 {
-            let mut c = tmux(true)?;
-            c.args(["show-options", "-g"]);
-            if c.output()?.status.success() {
+        if server_responds(40)? {
+            return configure_managed();
+        }
+        // A stopped transient unit stays loaded while any member it owns is
+        // alive (pane scopes are PartOf it and may outlive the server), so
+        // systemd-run refuses the fixed name. Start that same unit instead.
+        if stale_unit(&unit) {
+            let start = Command::new("systemctl")
+                .args(["--user", "start", "--", &unit])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()?;
+            if start.success() && server_responds(40)? {
                 return configure_managed();
             }
-            thread::sleep(Duration::from_millis(25));
         }
-        bail!("persistent tmux user service did not start (systemd-run {status}); check user-service access");
+        let detail = bounded_stderr(&run.stderr);
+        bail!(
+            "persistent tmux user service did not start (systemd-run {}{}); check user-service access",
+            run.status,
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        );
     }
     let cgroup = fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
     if cgroup.contains(".service") {
@@ -4304,6 +4373,29 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
         service.devcontainer = false;
         service.allowed = false;
         assert!(recovered_container("workspace", &[service]).is_none());
+    }
+
+    #[test]
+    fn only_a_loaded_stopped_tmux_unit_is_restarted() {
+        assert!(unit_is_stale("LoadState=loaded\nActiveState=inactive\n"));
+        assert!(unit_is_stale("ActiveState=failed\nLoadState=loaded\n"));
+        assert!(!unit_is_stale("LoadState=loaded\nActiveState=active\n"));
+        assert!(!unit_is_stale("LoadState=loaded\nActiveState=activating\n"));
+        assert!(!unit_is_stale(
+            "LoadState=not-found\nActiveState=inactive\n"
+        ));
+        assert!(!unit_is_stale(""));
+    }
+
+    #[test]
+    fn systemd_run_errors_are_summarized_and_bounded() {
+        assert_eq!(
+            bounded_stderr(b"\nFailed to start transient service unit: Unit cx-tmux-1.service was already loaded or has a fragment file.\nmore\n"),
+            "Failed to start transient service unit: Unit cx-tmux-1.service was already loaded or has a fragment file."
+        );
+        assert_eq!(bounded_stderr(&[b'x'; 1000]).len(), 200);
+        assert_eq!(bounded_stderr(b"a\x1b[31mb"), "a[31mb");
+        assert_eq!(bounded_stderr(b""), "");
     }
 
     #[test]

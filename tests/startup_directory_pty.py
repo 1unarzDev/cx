@@ -14,7 +14,8 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-directory-') as temporary:
     bins = root / 'bin'
     bins.mkdir()
     ssh = bins / 'ssh'
-    ssh.write_text('#!/bin/sh\nexit 255\n')
+    contacted = root / 'offline-contacted'
+    ssh.write_text('#!/bin/sh\n: > ' + "'" + str(contacted).replace("'", "'\\''") + "'" + '\nexit 255\n')
     ssh.chmod(0o700)
     devices = [dict(id='local', name='fixture-local', target=None, account='tester', host='fixture-local', status='unknown', observed_at=0),
                dict(id='offline', name='fixture-offline', target='fixture-offline', account='tester', host='fixture-offline', status='unknown', observed_at=0)]
@@ -49,16 +50,21 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-directory-') as temporary:
         while time.monotonic()<deadline:
             read()
             saved = json.loads((state/'ui-sessions.json').read_text())
-            if 'launch-directory-proof.txt' in '\n'.join(screen.display) and not saved.get('offline'):
+            if 'launch-directory-proof.txt' in '\n'.join(screen.display) and contacted.exists():
                 break
         assert 'launch-directory-proof.txt' in '\n'.join(screen.display), 'launch directory did not open'
-        assert not saved.get('offline'), 'offline shell remained in persistent cache'
+        assert contacted.exists(), 'offline cached device was not checked'
+        read(1)
+        saved = json.loads((state/'ui-sessions.json').read_text())
+        # A failed refresh retains cached rows as navigation context; it never
+        # rewrites them as freshly observed or attachable.
+        assert saved.get('offline') == [cached], ('failed refresh changed the cached offline row', saved.get('offline'))
         os.write(master, b'\x03')
         process.wait(timeout=5)
         assert process.returncode == 0
         assert termios.tcgetattr(slave) == before, 'terminal modes not restored'
         print(json.dumps(dict(result='PASS', checks=['launch cwd opened in Files', 'offline cached device checked while browsing local Files',
-                                                     'unattachable cached shell removed from disk', 'terminal modes restored'])))
+                                                     'failed refresh retained the cached row unchanged', 'terminal modes restored'])))
     finally:
         if process.poll() is None:
             process.terminate()

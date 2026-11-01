@@ -32,8 +32,8 @@ pub enum GatewayAction {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Observation {
     pub observed_at: u64,
-    pub downstream: String,
-    pub upstream: String,
+    /// Robot LAN as an aligned IPv4 CIDR; rules match it by address, not interface.
+    pub subnet: String,
     pub gateway: Ipv4Addr,
     pub recipients: Vec<Recipient>,
     pub mesh_addresses: Vec<Ipv4Addr>,
@@ -51,12 +51,13 @@ pub struct Plan {
     pub ready_for_apply: bool,
     pub verification: Vec<String>,
 }
-fn iface(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 15
-        && s != "lo"
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+fn subnet(s: &str) -> bool {
+    s.split_once('/').is_some_and(|(ip, len)| {
+        let (Ok(ip), Ok(len)) = (ip.parse::<Ipv4Addr>(), len.parse::<u32>()) else {
+            return false;
+        };
+        (8..=30).contains(&len) && u32::from(ip).trailing_zeros() >= 32 - len
+    })
 }
 fn unicast(ip: Ipv4Addr) -> bool {
     !ip.is_unspecified()
@@ -76,10 +77,7 @@ pub fn preview(id: &str, obs: Observation, now: u64) -> Result<Plan> {
         now >= obs.observed_at && now - obs.observed_at <= 30,
         "refresh downstream evidence"
     );
-    ensure!(
-        iface(&obs.downstream) && iface(&obs.upstream) && obs.downstream != obs.upstream,
-        "invalid sharing interfaces"
-    );
+    ensure!(subnet(&obs.subnet), "invalid sharing subnet");
     ensure!(
         unicast(obs.gateway)
             && (1..=32).contains(&obs.recipients.len())
@@ -120,7 +118,8 @@ pub fn preview(id: &str, obs: Observation, now: u64) -> Result<Plan> {
         .join(", ");
     // Dedicated tables; policy accept never claims to supersede another firewall.
     // Reject new reverse SSH only. Established replies and robotics traffic are preserved.
-    let nft_rules = format!("table inet cx_{id} {{\n set robots {{ type ipv4_addr; elements = {{ {sources} }} }}\n set mesh {{ type ipv4_addr; elements = {{ {mesh} }} }}\n chain input {{ type filter hook input priority -10; policy accept;\n  iifname \"{down}\" ip saddr @robots tcp dport 22 ct state new reject with tcp reset;\n }}\n chain forward {{ type filter hook forward priority -10; policy accept;\n  iifname \"{down}\" ip saddr @robots ip daddr @mesh tcp dport 22 ct state new reject with tcp reset;\n  iifname \"{down}\" oifname \"{up}\" ip saddr @robots counter accept;\n  iifname \"{up}\" oifname \"{down}\" ip daddr @robots ct state established,related counter accept;\n }}\n}}\ntable ip cx_{id}_nat {{\n chain postrouting {{ type nat hook postrouting priority srcnat; policy accept;\n  oifname \"{up}\" ip saddr {{ {sources} }} counter masquerade;\n }}\n}}\n", down=obs.downstream,up=obs.upstream);
+    // Rules match the robot subnet, so they survive an interface change; docker0 is never a target.
+    let nft_rules = format!("table inet cx_{id} {{\n set robots {{ type ipv4_addr; elements = {{ {sources} }} }}\n set mesh {{ type ipv4_addr; elements = {{ {mesh} }} }}\n chain input {{ type filter hook input priority -10; policy accept;\n  ip saddr @robots tcp dport 22 ct state new reject with tcp reset;\n }}\n chain forward {{ type filter hook forward priority -10; policy accept;\n  ip saddr @robots ip daddr @mesh tcp dport 22 ct state new reject with tcp reset;\n  ip saddr @robots oifname != \"docker0\" counter accept;\n  ip daddr @robots ct state established,related counter accept;\n }}\n}}\ntable ip cx_{id}_nat {{\n chain postrouting {{ type nat hook postrouting priority srcnat; policy accept;\n  ip saddr {{ {sources} }} ip daddr != {subnet} oifname != \"docker0\" counter masquerade;\n }}\n}}\n", subnet=obs.subnet);
     let gateway_actions = obs
         .recipients
         .iter()
@@ -172,8 +171,7 @@ mod tests {
     fn observation() -> Observation {
         Observation {
             observed_at: 100,
-            downstream: "enp63s0".into(),
-            upstream: "CloudflareWARP".into(),
+            subnet: "192.168.0.0/24".into(),
             gateway: "192.168.0.2".parse().unwrap(),
             recipients: vec![Recipient {
                 id: "blastoise".into(),
@@ -194,13 +192,20 @@ mod tests {
         assert_eq!(p.required_dns_configuration, ["blastoise"]);
         assert!(p.nft_rules.contains("ct state new reject"));
         assert!(p.nft_rules.contains("ct state established,related"));
+        assert!(p
+            .nft_rules
+            .contains("ip daddr != 192.168.0.0/24 oifname != \"docker0\""));
+        assert!(!p.nft_rules.contains("iifname") && !p.nft_rules.contains("\"enp"));
         assert!(!p.nft_rules.contains("flush ruleset") && !p.nft_rules.contains("policy drop"));
     }
     #[test]
     fn stale_injected_and_overlapping_inputs_fail_closed() {
         assert!(preview("robot_lan", observation(), 131).is_err());
         let mut o = observation();
-        o.upstream = "eth0\"; flush ruleset".into();
+        o.subnet = "192.168.0.0/24\"; flush ruleset".into();
+        assert!(preview("robot_lan", o, 100).is_err());
+        let mut o = observation();
+        o.subnet = "192.168.0.5/24".into();
         assert!(preview("robot_lan", o, 100).is_err());
         let mut o = observation();
         o.recipients[0].address = o.mesh_addresses[0];

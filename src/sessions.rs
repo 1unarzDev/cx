@@ -3121,6 +3121,11 @@ pub fn native_attach_checked(payload: &str) -> Result<()> {
     if !request.session.external {
         configure_managed()?;
         refresh_managed_status(&request.session.id)?;
+        // A focus attach lands live rather than in leftover copy-mode; a
+        // read-only watch keeps the scrollback view. Best effort.
+        if !request.observe {
+            exit_copy_mode(&request.session.id);
+        }
     }
     let executable = std::env::current_exe()?;
     let predicate = attach_predicate(&executable, &predicate_payload)?;
@@ -3152,6 +3157,31 @@ pub fn native_attach_checked(payload: &str) -> Result<()> {
         .context("checked terminal attachment failed")?;
     anyhow::ensure!(status.success() && guard.passed()?, ATTACH_REFUSED);
     Ok(())
+}
+/// Scrolling the wheel puts the pane in tmux copy-mode, which persists across
+/// detach. Re-attaching then lands in that read-only scrollback view, which
+/// swallows input until it is cancelled — so a focus attach looks like it opened
+/// read-only until a key dismisses the mode. Cancel it first so focus lands live.
+/// Read-only watches keep the mode. A no-op when the pane is not in a mode or the
+/// id is not a managed session; failures never block the attach.
+pub fn exit_copy_mode(id: &str) {
+    let id = id.strip_prefix('=').unwrap_or(id);
+    if !managed_session_name(id) && !valid_pane_name(id) {
+        return;
+    }
+    let in_mode = tmux(true)
+        .and_then(|mut c| {
+            c.args(["display-message", "-p", "-t", id, "#{pane_in_mode}"]);
+            output(c)
+        })
+        .map(|s| s.trim() == "1")
+        .unwrap_or(false);
+    if in_mode {
+        if let Ok(mut c) = tmux(true) {
+            c.args(["send-keys", "-t", id, "-X", "cancel"]);
+            let _ = output(c);
+        }
+    }
 }
 pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
     if std::env::var_os("TMUX").is_some() {
@@ -3196,6 +3226,9 @@ pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
     if !session.external && device.target.is_none() {
         configure_managed()?;
         refresh_managed_status(&session.id)?;
+        if !observe {
+            exit_copy_mode(&session.id);
+        }
     }
     let mut args = vec![
         "attach-session".to_string(),
@@ -3258,6 +3291,10 @@ fn command_pane_name() -> Result<String> {
 }
 fn valid_pane_name(id: &str) -> bool {
     id.len() == 38 && id.starts_with("cxcmd-") && id[6..].bytes().all(|b| b.is_ascii_hexdigit())
+}
+/// A persistent managed session name: `cx-` plus 64 lowercase-hex characters.
+fn managed_session_name(id: &str) -> bool {
+    id.starts_with("cx-") && id.len() == 67 && id[3..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 fn clamp_size(cols: u16, rows: u16) -> (u16, u16) {
     (cols.clamp(20, 500), rows.clamp(4, 300))

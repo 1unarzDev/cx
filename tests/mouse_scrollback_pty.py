@@ -68,12 +68,18 @@ while True:
         os.write(master,b'\x1d'); client.wait(timeout=5)
         assert client.returncode==0 and state('#{pane_pid}')==pid
         client = subprocess.Popen([binary, 'native-attach', 'attach-session', '-t', session['id']], stdin=slave, stdout=slave, stderr=slave, env=env, preexec_fn=tty)
-        wait(lambda: state('#{pane_in_mode}')=='1', 'scrollback lost on reattach')
+        # A focus attach lands live: a retained scrollback (copy-mode) view is
+        # cancelled so input works immediately instead of opening read-only.
+        wait(lambda: state('#{pane_in_mode}')=='0', 'focus reattach did not land live')
         time.sleep(.1); drain()
+        # The transcript history still survives; the wheel reaches it again.
+        os.write(master,wheel_up)
+        wait(lambda: state('#{pane_in_mode}')=='1', 'retained transcript not reachable by wheel after reattach')
+        assert 'TRANSCRIPT_LINE_' in tmux('capture-pane', '-p', '-t', pane), 'transcript lost on reattach'
         os.write(master,b'\x1b')
         wait(lambda: state('#{pane_in_mode}')=='0', 'Escape did not return to live application')
         time.sleep(.15); drain()
-        checks.append('wheel enters retained transcript scrollback without prompt-history input; Escape returns live')
+        checks.append('focus reattach lands live; retained transcript still reached by wheel; Escape returns live')
         for keys in ('emacs', 'vi'):
             tmux('set-window-option', '-t', session['id'], 'mode-keys', keys)
             expected=log.read_bytes()+b'a'

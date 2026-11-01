@@ -80,7 +80,9 @@ for view in ['Files','Work']:
    send(b'\x1b[<65;40;1M');assert current()[0]==ordered[5]
    if view=='Work':
     socket=str(state/'managed.sock')
-    before_native=len(raw);send(b'\r')
+    # Enter focuses the live terminal inside CX; Ctrl+O expands it to native attachment.
+    send(b'\r');wait(lambda:'Ctrl+O · expand' in '\n'.join(screen.display))
+    before_native=len(raw);send(b'\x0f')
     target=next(r['id'] for r in sessions if r['name']==ordered[5])
     def clients():return subprocess.check_output(['tmux','-S',socket,'list-clients','-F','#{session_name}'],env=env,text=True).splitlines()
     wait(lambda:clients()==[target] and b'Return: Ctrl+]' in raw[before_native:])

@@ -34,6 +34,7 @@ jobs:
           CX_TEST_SHELL=/usr/bin/fish python3 tests/folder_command_ui_pty.py target/debug/cx /usr/bin/fish
           python3 tests/startup_directory_pty.py target/debug/cx
           python3 tests/terminal_startup_loader_pty.py target/debug/cx
+          python3 tests/focus_exits_copy_mode_pty.py target/debug/cx
           python3 tests/terminal_startup_readiness_live.py target/debug/cx
           python3 tests/session_runtime_live.py target/debug/cx
           python3 tests/container_discovery_fixtures.py target/debug/cx

@@ -22,8 +22,7 @@ def run(*args, text=None):
 
 with tempfile.TemporaryDirectory(prefix="cx-preserve-lan-") as temporary:
     path = pathlib.Path(temporary) / "observation.json"
-    path.write_text(json.dumps(dict(observed_at=int(time.time()), downstream="robotlan",
-        upstream="uplink", gateway="192.168.0.2", forwarding_enabled=True,
+    path.write_text(json.dumps(dict(observed_at=int(time.time()), subnet="192.168.0.0/24", gateway="192.168.0.2", forwarding_enabled=True,
         mesh_addresses=["100.96.0.12", "100.96.0.27", "100.96.0.28"],
         recipients=[dict(id="blastoise", address="192.168.0.147", gateway="192.168.0.2", dns=["1.1.1.1"])])))
     for interface in ("robotlan", "uplink"):

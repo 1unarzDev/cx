@@ -14,7 +14,7 @@ Future requests discard helper channels when the stored path changes. Separate n
 
 ## Gateway selection without changing robot profiles
 
-The intended sharing gateway is tranquility's existing `192.168.0.2`. DD-WRT at `.1` owns its address; CX must never adopt `.1` as an alias. Fresh tranquility DHCP observation advertised routers `.1`, despite the intended `.2` setting. This discrepancy requires measurement, not guessing or a router reset.
+The intended sharing gateway is tranquility's existing `192.168.0.2`. DD-WRT at `.1` owns its address; CX must never adopt `.1` as an alias. Fresh tranquility DHCP observation advertised routers `.1`, despite the intended `.2` setting. Root cause: DD-WRT's dnsmasq adds an interface-tagged `dhcp-option=br0,3,<lan_ipaddr>` that outranks an untagged option 3, so the router option must be tagged `br0` too. Verify with the lease a client actually receives.
 
 Choose the smallest effective change:
 

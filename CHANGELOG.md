@@ -1,57 +1,46 @@
 # Release notes
 
-## 0.1.93
-
-- Start the managed tmux server again when a stopped cx-tmux unit is still loaded because a pane outlived it, instead of failing with "persistent tmux user service did not start". The error now includes systemd-run's reason.
-
-## 0.1.92
-
-- Preserve prompt background blocks and multiline terminal colors in previews.
-- Page through all tmux-retained history instead of stopping after 500 rows; forward wheel scrolling to full-screen applications that enable mouse tracking.
-
-
-## 0.1.91
-
-- Scroll terminal previews with the mouse wheel, including while focused. Load up to 500 recent tmux history rows on demand; keep the reading position steady and resume live output at the bottom or on input.
-
-
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
 ## Unreleased
 
-## v0.1.90
+## v0.1.93
 
-- Keep Codex's fallback prompt/answer backgrounds muted in CX-managed native terminals instead of inheriting an accent-colored ANSI slot8. Preserve explicit pane palettes and remove the fallback on return to a shell.
-- Preserve that pane palette in embedded terminals; correctly apply dim text and clear reverse, italic, underline and other SGR attributes.
+Includes every change from v0.1.86–v0.1.88 plus the work below, which was previously only deployed locally.
 
-## v0.1.89
+### Features
+- Show live, styled tmux screens beside the session list with cursor-following viewports (stacked on narrower screens), and hover over session rows to preview them. Enter focuses the existing terminal inside CX; Ctrl+] returns to navigation and Ctrl+O opens native attachment. Keys and bounded bracketed paste go only to the verified pane.
+- Scroll terminal previews with the mouse wheel, including while focused, and page through all tmux-retained history; forward wheel scrolling to full-screen applications that enable mouse tracking.
+- Show identifiable existing sessions with explicit new/history choices, persistent pins first, and saved-folder bookmarks after terminals end; restore bounded navigation caches immediately and mark observed agent presence beside folders.
+- Launch installed Claude/Codex agents inside the exact container, user and folder with Default/YOLO permissions and native conversation pickers. Shell is part of the normal New session chooser, which offers only profiles available on the device.
+- Preserve conversation titles and distinguish generic labels by folder, provider and runtime.
 
-- Keep live-preview support after capability refresh; hover over actual session rows to show their terminal, including a stacked layout on narrower screens.
-- Continue external-terminal opening after availability returns; cancel stale intent and report timed-out checks.
-- Keep capability checks independent of slow inventory; bound stalled relay-version subprocesses.
-- Center terminal loader content vertically inside its panel.
+### Fixes
+- Start the managed tmux server again when a stopped cx-tmux unit is still loaded because a pane outlived it, instead of failing with "persistent tmux user service did not start". The error now includes systemd-run's reason.
+- Preserve prompt background blocks, multiline terminal colors, pane palettes, dim text and cleared SGR attributes in previews; keep Codex's fallback prompt backgrounds muted in CX-managed terminals.
+- Collapse duplicate runtime observations, handle dead panes without hiding live peers, and verify terminal generations before native attachment; reject stale scopes, replies and mismatched creation keys.
+- Keep live-preview support after capability refresh, continue external-terminal opening after availability returns, and bound stalled capability and relay-version checks.
 
 ## v0.1.88
 
-- Replace clipped snapshots with live styled tmux screens and cursor-following viewports. Enter focuses the existing terminal inside CX; Ctrl+] returns to navigation, Ctrl+O opens native attachment.
-- Route keys and bounded bracketed paste to the exact verified pane; preserve application cursor mode and never retry input.
-- Remove separate New shell sidebar/palette entries. Shell is part of the normal New session chooser.
+### Fixes
+- cx no longer spins at full CPU after its terminal disappears. When the pty hung up while cx ran in its own process group (so no SIGHUP arrived), the UI loop kept busy-polling the dead terminal and ignored SIGTERM. It now exits when the terminal is gone or it has been reparented to init without a tty, and a watchdog force-exits if a stop signal is not honoured within three seconds.
 
 ## v0.1.87
 
-- Add read-only selected-session screen snapshots beside the session list on wide terminals, with context on narrow terminals.
-- Preserve conversation titles and distinguish generic labels by folder/provider/runtime.
-- Bound preview memory and subprocess time, reject stale runtime/replies, and keep snapshots out of persisted caches.
+### Fixes
+- Opening a session now lands you live and ready to type. If the pane was left in scrollback (tmux copy-mode, entered by scrolling the wheel), re-entering it used to show that read-only view until you pressed a key to dismiss it; a focus attach now cancels copy-mode so input works immediately. The read-only watch (`w`) still preserves the scrollback view.
+
 
 ## v0.1.86
 
-### Improvements
-- Show identifiable existing sessions with explicit new/history choices, persistent pins first, and saved-folder bookmarks after terminals end.
-- Restore bounded session/folder navigation caches immediately and retain stale views through failed refreshes; mark observed agent presence beside folders.
-- Collapse duplicate runtime observations, handle dead panes without hiding live peers, and verify terminal generations before native attachment.
-- Launch installed Claude/Codex agents inside the exact container/user/folder with Default/YOLO permissions and native conversation pickers; reject stale scopes and mismatched creation keys.
-- Preserve v0.1.85 external-terminal adoption, agent tasks, command panels, startup readiness, and clean handoff behavior.
+### Changes
+- Keep a robot's `.local` name as its enrolled target when adding it through a gateway, instead of pinning one of its DHCP addresses. The gateway resolves the name on each connect, so an address change needs no re-enrollment. Existing IP-pinned devices keep working; remove and re-add them to switch.
+- Match the shared-LAN preview rules by robot subnet instead of interface names, and never forward or masquerade into `docker0`.
 
+### Fixes
+- Pressing `f` to filter, typing, then Esc now clears the filter instead of leaving the half-typed text applied, so the next `f` starts a fresh search. Refining an existing filter and then pressing Esc restores the previous filter rather than discarding it.
+- Speed up container discovery and attachment. Discovery now inspects all containers in a single `docker` call instead of one per container — the slow part, because every Sessions refresh reconciles container scopes through it — and attaching no longer repeats the same container check and helper-setup round-trips several times. On a host with many containers this turns seconds of waiting into a fraction of a second.
 
 ## v0.1.85
 

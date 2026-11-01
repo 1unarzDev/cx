@@ -5,6 +5,7 @@ use std::os::fd::AsRawFd;
 use std::process::Stdio;
 use std::time::Instant;
 
+const LIVE_VIEW_FORMAT: &str = "#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{?cursor_flag,1,0} #{?bracket_paste_flag,1,0} #{?keypad_cursor_flag,1,0} #{history_size} #{?alternate_on,1,0} #{?mouse_any_flag,1,0} #{?mouse_sgr_flag,1,0}";
 fn bounded(mut command: Command) -> Result<String> {
     let mut child = command
         .stdin(Stdio::null())
@@ -86,7 +87,10 @@ pub fn preview(
         "-p",
         "-t",
         &before.pane_id,
-        "#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{cursor_flag} #{bracket_paste_flag} #{keypad_cursor_flag} #{history_size} #{alternate_on} #{mouse_any_flag} #{mouse_sgr_flag}",
+        // Flags are written as conditionals so every field prints a digit: a
+        // variable this tmux lacks (bracket_paste_flag before 3.5) reads false
+        // instead of expanding to nothing and shifting the field count.
+        LIVE_VIEW_FORMAT,
     ]);
     let meta = bounded(size)?;
     let dims: Vec<u32> = meta
@@ -320,6 +324,22 @@ fn clean_screen(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn live_view_flags_always_print_a_digit_on_older_tmux() {
+        // tmux expands an unknown variable to nothing but treats it as false in a
+        // conditional; bare flags dropped a field on tmux 3.4 (no bracket_paste_flag).
+        let fields: Vec<&str> = LIVE_VIEW_FORMAT.split(' ').collect();
+        assert_eq!(fields.len(), 11);
+        for field in fields {
+            let name = field.trim_start_matches("#{").trim_end_matches('}');
+            if name.contains("flag") || name == "?alternate_on,1,0" {
+                assert!(
+                    field.starts_with("#{?") && field.ends_with(",1,0}"),
+                    "{field} must be a conditional"
+                );
+            }
+        }
+    }
     #[test]
     fn live_screen_preserves_layout_and_sgr_only() {
         assert_eq!(

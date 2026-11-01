@@ -4,9 +4,9 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
-## v0.1.94
+## v0.1.95
 
-Includes every change from v0.1.86–v0.1.88 plus the work below, which was previously only deployed locally. (v0.1.93 was tagged but not published.)
+Includes every change from v0.1.86–v0.1.88 plus the work below, which was previously only deployed locally. (v0.1.93 and v0.1.94 were tagged but not published.)
 
 ### Features
 - Show live, styled tmux screens beside the session list with cursor-following viewports (stacked on narrower screens), and hover over session rows to preview them. Enter focuses the existing terminal inside CX; Ctrl+] returns to navigation and Ctrl+O opens native attachment. Keys and bounded bracketed paste go only to the verified pane.
@@ -16,6 +16,7 @@ Includes every change from v0.1.86–v0.1.88 plus the work below, which was prev
 - Preserve conversation titles and distinguish generic labels by folder, provider and runtime.
 
 ### Fixes
+- Show live terminal previews with tmux older than 3.5 (such as Ubuntu 24.04's tmux 3.4), which lacks a format flag CX read; previews previously failed with "Terminal unavailable".
 - Start the managed tmux server again when a stopped cx-tmux unit is still loaded because a pane outlived it, instead of failing with "persistent tmux user service did not start". The error now includes systemd-run's reason.
 - Preserve prompt background blocks, multiline terminal colors, pane palettes, dim text and cleared SGR attributes in previews; keep Codex's fallback prompt backgrounds muted in CX-managed terminals.
 - Collapse duplicate runtime observations, handle dead panes without hiding live peers, and verify terminal generations before native attachment; reject stale scopes, replies and mismatched creation keys.

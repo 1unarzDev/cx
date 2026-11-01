@@ -1,5 +1,9 @@
 # Release notes
 
+## 0.1.93
+
+- Start the managed tmux server again when a stopped cx-tmux unit is still loaded because a pane outlived it, instead of failing with "persistent tmux user service did not start". The error now includes systemd-run's reason.
+
 ## 0.1.92
 
 - Preserve prompt background blocks and multiline terminal colors in previews.

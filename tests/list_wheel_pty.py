@@ -80,7 +80,9 @@ for view in ['Files','Work']:
    send(b'\x1b[<65;40;1M');assert current()[0]==ordered[5]
    if view=='Work':
     socket=str(state/'managed.sock')
-    # Enter focuses the live terminal inside CX; Ctrl+O expands it to native attachment.
+    # Enter focuses the live terminal inside CX once its preview has loaded (before
+    # that it falls back to native attachment); Ctrl+O expands focus to native.
+    wait(lambda:f'{ordered[5]} · ' in '\n'.join(screen.display) and 'Enter · focus terminal' in '\n'.join(screen.display))
     send(b'\r');wait(lambda:'Ctrl+O · expand' in '\n'.join(screen.display))
     before_native=len(raw);send(b'\x0f')
     target=next(r['id'] for r in sessions if r['name']==ordered[5])

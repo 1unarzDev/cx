@@ -2064,6 +2064,45 @@ fn restart_rejects_unsafe_names_symlinks_and_expires() {
     assert!(restore_restart_at(&mut restored, &name, fixture.path()).is_err());
 }
 #[test]
+fn failed_restart_handoffs_are_consumed_and_stale_ones_swept() {
+    let fixture = tempfile::tempdir().unwrap();
+    let (a, _) = queued_app();
+    let name = save_restart_at(&a, fixture.path()).unwrap();
+    let mut value: Value =
+        serde_json::from_slice(&std::fs::read(fixture.path().join(&name)).unwrap()).unwrap();
+    value["expires_at"] = serde_json::json!(0);
+    std::fs::write(
+        fixture.path().join(&name),
+        serde_json::to_vec(&value).unwrap(),
+    )
+    .unwrap();
+    let (mut restored, _) = queued_app();
+    assert!(restore_restart_at(&mut restored, &name, fixture.path()).is_err());
+    assert!(
+        !fixture.path().join(&name).exists(),
+        "expired handoff left behind"
+    );
+    let fresh = save_restart_at(&a, fixture.path()).unwrap();
+    let old = fixture.path().join("viewer-restart-1-2.json");
+    std::fs::write(&old, b"{}").unwrap();
+    let unrelated = fixture.path().join("devices.json");
+    std::fs::write(&unrelated, b"[]").unwrap();
+    let past = std::time::SystemTime::now() - Duration::from_secs(3600);
+    for path in [&old, &unrelated] {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+    }
+    assert_eq!(
+        sweep_stale_restarts(fixture.path(), Duration::from_secs(600)),
+        1
+    );
+    assert!(!old.exists() && unrelated.exists() && fixture.path().join(fresh).exists());
+}
+#[test]
 fn queued_palette_input_prevents_restart_before_and_after_dispatch() {
     let (mut a, _) = queued_app();
     assert!(restart_ready(&a, Duration::from_secs(4), false));

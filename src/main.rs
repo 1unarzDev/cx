@@ -8,6 +8,7 @@ mod markdown_math;
 mod markdown_tables;
 mod model;
 mod network;
+mod orphans;
 mod peer_ssh;
 mod peers;
 mod session_titles;
@@ -61,6 +62,14 @@ enum Cmd {
     },
     /// Restart CX's managed tmux server and provider sessions on this device.
     Reset,
+    /// List this user's stray cx processes (orphaned, terminal gone, spinning) and stale
+    /// restart handoffs; --clean stops the strays and removes the handoffs.
+    Orphans {
+        #[arg(long)]
+        clean: bool,
+        #[arg(long)]
+        json: bool,
+    },
     #[command(hide = true)]
     Restart {
         state: String,
@@ -1360,6 +1369,7 @@ fn run() -> Result<()> {
             }
             Ok(())
         }
+        Some(Cmd::Orphans { clean, json }) => orphans::run(clean, json),
         Some(Cmd::Reset) => {
             println!("{}", serde_json::to_string_pretty(&sessions::reset()?)?);
             Ok(())

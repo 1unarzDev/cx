@@ -8666,20 +8666,51 @@ fn save_restart_at(app: &App, directory: &std::path::Path) -> Result<String> {
 fn restore_restart(app: &mut App, name: &str) -> Result<()> {
     restore_restart_at(app, name, &store::ensure()?)
 }
+// A restart handoff is single-use: whether it restores or not (expired, unsafe,
+// unreadable), consume it so a failed handoff never lingers in the state directory.
 fn restore_restart_at(app: &mut App, name: &str, directory: &std::path::Path) -> Result<()> {
+    let result = restore_restart_inner(app, name, directory);
+    if restart_name_valid(name) {
+        let _ = std::fs::remove_file(directory.join(name));
+    }
+    result
+}
+fn restart_name_valid(name: &str) -> bool {
+    name.starts_with("viewer-restart-")
+        && name.ends_with(".json")
+        && name.len() < 100
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b"viewer-sta.json".contains(&b))
+}
+/// Remove restart handoffs older than their 300 s validity window that no viewer consumed.
+pub(crate) fn sweep_stale_restarts(directory: &std::path::Path, max_age: Duration) -> usize {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !restart_name_valid(name) {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t.elapsed().is_ok_and(|age| age > max_age));
+        if stale && std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+fn restore_restart_inner(app: &mut App, name: &str, directory: &std::path::Path) -> Result<()> {
     use std::{
         io::Read,
         os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     };
-    anyhow::ensure!(
-        name.starts_with("viewer-restart-")
-            && name.ends_with(".json")
-            && name.len() < 100
-            && name
-                .bytes()
-                .all(|b| b.is_ascii_digit() || b"viewer-sta.json".contains(&b)),
-        "Invalid restart state name"
-    );
+    anyhow::ensure!(restart_name_valid(name), "Invalid restart state name");
     let path = directory.join(name);
     let mut file = std::fs::OpenOptions::new()
         .read(true)
@@ -8758,7 +8789,6 @@ fn restore_restart_at(app: &mut App, name: &str, directory: &std::path::Path) ->
     app.conflict = state.conflict.min(2);
     app.launch_provider = state.launch_provider;
     app.submitted = state.submitted;
-    std::fs::remove_file(path)?;
     Ok(())
 }
 fn can_restart(app: &App) -> bool {
@@ -9096,6 +9126,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         cache.restore(&mut app);
     }
     let navigation_writer = workspaces::cache_writer();
+    let _ = sweep_stale_restarts(&store::state_dir(), Duration::from_secs(600));
     if let Some(name) = restore {
         if let Err(error) = restore_restart(&mut app, name) {
             app.set_notice(safe_text(&format!(

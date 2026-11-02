@@ -49,6 +49,12 @@ fn terminal_gone(stdin: Option<&str>) -> bool {
     })
 }
 
+fn live_terminal(stdin: Option<&str>) -> bool {
+    stdin.is_some_and(|t| {
+        (t.starts_with("/dev/pts/") || t.starts_with("/dev/tty")) && Path::new(t).exists()
+    })
+}
+
 /// Pure classification so it can be tested without real processes.
 pub fn classify(proc: Proc, cpu_percent: f64, own_lineage: &[i32]) -> Finding {
     let role = role(&proc.args);
@@ -58,7 +64,9 @@ pub fn classify(proc: Proc, cpu_percent: f64, own_lineage: &[i32]) -> Finding {
     // finishing after its ssh dropped) only when their terminal is gone or they spin.
     let evidence = match role {
         "transfer-worker" => false,
-        "viewer" | "helper" => gone || orphaned,
+        // A viewer still on a live terminal is in use even if its launcher exited.
+        "viewer" => gone || (orphaned && !live_terminal(proc.stdin.as_deref())),
+        "helper" => gone || orphaned,
         _ => gone || (orphaned && cpu_percent >= SPINNING),
     };
     let stray = evidence && !own_lineage.contains(&proc.pid);
@@ -337,6 +345,9 @@ mod tests {
             &[],
         );
         assert!(f.stray && f.terminal_gone && f.role == "viewer");
+        // Orphaned viewer still on a live terminal: kept; without one: stray.
+        assert!(!classify(proc(17, 1, &["cx"], Some("/dev/tty")), 0.0, &[]).stray);
+        assert!(classify(proc(18, 1, &["cx"], Some("/dev/null")), 0.0, &[]).stray);
         // Orphaned helper (ssh session died): stray.
         assert!(classify(proc(12, 1, &["cx", "helper"], Some("pipe:[1]")), 0.0, &[]).stray);
         // Detached transfer worker: never stray.

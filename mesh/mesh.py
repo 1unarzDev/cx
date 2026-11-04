@@ -135,7 +135,7 @@ class Mesh:
         self.state_file = self.dir / f"{cfg['name']}.state.json"
         self.state = json.loads(self.state_file.read_text()) if self.state_file.exists() else {}
         self._token = token
-        self.account = cfg.get("account") or ""
+        self.account = cfg.get("account") or self.state.get("account") or ""
 
     # ---- plumbing
     def say(self, m: str) -> None:

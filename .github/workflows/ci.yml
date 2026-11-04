@@ -47,5 +47,9 @@ jobs:
       - run: python3 tests/peer_mesh_cli.py target/debug/cx
       - run: python3 tests/peer_managed_ssh.py target/debug/cx
       - run: python3 tests/device_policy_cli.py target/debug/cx
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22 # node:sqlite, for the mesh Worker's in-memory D1
+      - run: python3 tests/mesh_util.py && node tests/mesh_worker.mjs
   portable:
     uses: ./.github/workflows/portable.yml

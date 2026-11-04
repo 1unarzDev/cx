@@ -1,5 +1,9 @@
 # CX status
 
+## Mesh one-line joins (Unreleased, `mesh-oneliner`)
+- `cx mesh setup | invite | devices | audit | revoke | teardown` and the standalone `mesh/mesh.py` (docs/mesh.md). Devices join with `curl -sL <endpoint>/<code>|sh` or `irm …|iex`, with no cx.
+- Tested offline: the profile, setup against a fake API (idempotent, dry run, teardown) and the Worker against an in-memory D1. Live: two throwaway Linux devices joined, registered, got mesh addresses and left cleanly on a real account. macOS and Windows joins are untested on hardware.
+
 ## Preview fidelity and paged history — 0.1.92
 
 Installed locally from `f7c90f3`; version **0.1.92**, SHA-256 `e8424f77ae80e42ed9cc0867e480c5113344d3773ee013bebf1e8947c828a954` matches the optimized candidate. Atomic maintenance-locked replacement; rollback `/home/lunarz/.local/bin/cx.rollback-0.1.91-preview-fidelity`. Restart only the CX viewer. No remote rollout or personal-session restart.

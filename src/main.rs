@@ -6,6 +6,7 @@ mod files;
 mod markdown_links;
 mod markdown_math;
 mod markdown_tables;
+mod mesh;
 mod model;
 mod network;
 mod orphans;
@@ -92,6 +93,13 @@ enum Cmd {
     Device {
         #[command(subcommand)]
         command: DeviceCommand,
+    },
+    /// A WARP mesh on your own Cloudflare account, joined by one line (docs/mesh.md): setup, invite,
+    /// devices, revoke, audit, teardown, join, leave; --json for tools.
+    #[command(disable_help_flag = true)]
+    Mesh {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     /// Open an ordinary login terminal; exit returns without requiring tmux.
     Terminal {
@@ -1550,6 +1558,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Terminal { device: d }) => sessions::login_terminal(&device(d)?),
+        Some(Cmd::Mesh { args }) => mesh::run(&args),
         Some(Cmd::Device { command }) => {
             match command {
                 DeviceCommand::Edit { name, target } => {

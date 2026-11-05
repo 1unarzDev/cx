@@ -99,3 +99,5 @@ even when the selection is unchanged. The diff is empty, but ratatui still write
 - The 20k listing should either load in full or state the cap honestly, and should sort
   across all entries.
 - Preview scrolling must stay under about 10 ms p95 once the whole file is reachable.
+
+Files load-time benchmark (directory open, previews, scrolling, helper protocol, local and SSH): `docs/design/files-bench.md`.

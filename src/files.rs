@@ -342,6 +342,7 @@ fn list_page(path: &Path, offset: u64, limit: u32) -> Result<Value> {
     }
     let path = fs::canonicalize(path).context("open directory")?;
     let (snapshot, incomplete) = snapshot(&path, offset)?;
+    let parent_dev = fs::metadata(&path).ok().map(|m| m.dev());
     let mut entries = Vec::new();
     let mut bytes = 0;
     let mut counted = 0;
@@ -389,7 +390,13 @@ fn list_page(path: &Path, offset: u64, limit: u32) -> Result<Value> {
             "hidden":hidden,"rename_name":rename_name,"identity":identity,"modified":modified});
         // Only the first page: directories sort first, so it holds the rows a user
         // sees, and later pages of a huge listing stay one lstat per entry.
-        if kind == "directory" && offset == 0 && counted < ITEM_COUNT_DIRS {
+        // Never open a mount point (or an unmounted autofs/systemd automount, which
+        // has its own device): reading it would mount it or block on a dead share.
+        if kind == "directory"
+            && offset == 0
+            && counted < ITEM_COUNT_DIRS
+            && parent_dev == Some(metadata.dev())
+        {
             counted += 1;
             if let Some(items) = child_count(&child) {
                 entry["items"] = items.into();
@@ -1946,6 +1953,25 @@ mod tests {
         assert_eq!(find("one")["items"], 1);
         assert_eq!(find("many")["items"], ITEM_COUNT_CAP as u64);
         assert!(find("file").get("items").is_none());
+    }
+    #[test]
+    fn child_counts_never_open_mount_points() {
+        // /proc is always its own filesystem; counting it would mean opening a mount
+        // point, which for an automount mounts it (or blocks on an unreachable share).
+        let root = fs::metadata("/").unwrap().dev();
+        if fs::symlink_metadata("/proc").map_or(true, |m| m.dev() == root) {
+            return;
+        }
+        let page = list(Path::new("/")).unwrap();
+        let proc = page["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == "proc")
+            .unwrap()
+            .clone();
+        assert_eq!(proc["kind"], "directory");
+        assert!(proc.get("items").is_none(), "{proc}");
     }
     #[test]
     fn twenty_thousand_entry_listing_is_fast_sorted_and_matches_old_pages() {

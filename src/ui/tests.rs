@@ -7240,3 +7240,259 @@ fn loading_peek_capture_dump() {
         .unwrap();
     }
 }
+
+/// A file app whose first rows are folders `/files/dir0..dirN`, drawn wide enough for
+/// the inline peek.
+fn folder_app(count: usize) -> (App, mpsc::Receiver<Task>) {
+    let (mut a, rx) = file_app();
+    let b = a.browser.as_mut().unwrap();
+    let mut entries: Vec<Entry> = (0..count)
+        .map(|i| Entry {
+            name: format!("dir{i}"),
+            path: format!("/files/dir{i}"),
+            kind: "directory".into(),
+            size: 4096,
+            identity: None,
+            hidden: false,
+            rename_name: Some(format!("dir{i}")),
+            modified: None,
+            items: None,
+        })
+        .collect();
+    entries.extend(b.entries.iter().cloned());
+    b.entries = entries.into();
+    (a, rx)
+}
+fn draw_text(a: &App) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    terminal.draw(|frame| render(frame, a)).unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect()
+}
+fn settle_files(a: &mut App) {
+    let now = std::time::Instant::now();
+    a.files_tick(now);
+    a.files_tick(now + std::time::Duration::from_millis(200));
+}
+fn listed(rx: &mpsc::Receiver<Task>) -> Vec<(String, u64)> {
+    rx.try_iter()
+        .filter_map(|t| match t.op {
+            Operation::List { path } => Some((path, t.generation)),
+            _ => None,
+        })
+        .collect()
+}
+fn list_reply(a: &mut App, path: &str, generation: u64, result: Result<Value>) {
+    a.apply(Reply {
+        device_id: None,
+        execution_target: None,
+        device: 0,
+        generation,
+        op: Operation::List { path: path.into() },
+        preview: None,
+        result,
+    });
+}
+
+/// Review: an uncached folder's peek showed "Empty folder" and was never filled by
+/// its prefetch reply. It must read as loading, then show the prefetched children.
+#[test]
+fn folder_peek_loads_then_shows_prefetched_children() {
+    let (mut a, rx) = folder_app(1);
+    draw_text(&a);
+    settle_files(&mut a);
+    let sent = listed(&rx);
+    assert_eq!(sent, vec![("/files/dir0".into(), a.generation)]);
+    let screen = draw_text(&a);
+    assert!(
+        !screen.contains("Empty folder"),
+        "uncached peek claims empty"
+    );
+    assert!(screen.contains("Loading"));
+    let child = serde_json::json!({"entries":[{"name":"inner.txt","path":"/files/dir0/inner.txt","kind":"file","size":1}]});
+    let generation = a.generation;
+    list_reply(&mut a, "/files/dir0", generation, Ok(child));
+    let screen = draw_text(&a);
+    assert!(screen.contains("inner.txt"), "prefetched children shown");
+    assert!(!screen.contains("Empty folder"));
+    let b = a.browser.as_ref().unwrap();
+    assert!(b.prefetch.is_empty());
+    assert!(a
+        .browser_cache
+        .keys()
+        .any(|(_, path, _)| path == "/files/dir0"));
+    // A really empty folder still says so once its listing arrives.
+    let (mut a, rx) = folder_app(1);
+    draw_text(&a);
+    settle_files(&mut a);
+    let generation = listed(&rx)[0].1;
+    list_reply(
+        &mut a,
+        "/files/dir0",
+        generation,
+        Ok(serde_json::json!({"entries":[]})),
+    );
+    assert!(draw_text(&a).contains("Empty folder"));
+}
+
+/// Folder prefetch (review: untested): a settled folder queues one List; outdated,
+/// cancelled and failed replies are never cached (and outdated ones ask again); at
+/// most 4 prefetches are in flight, and a skipped folder is retried once a slot frees.
+#[test]
+fn folder_prefetch_caches_valid_replies_and_stays_bounded() {
+    let (mut a, rx) = folder_app(6);
+    draw_text(&a);
+    settle_files(&mut a);
+    let (path, generation) = listed(&rx).pop().unwrap();
+    assert_eq!(path, "/files/dir0");
+    // A refresh outdates it; the stale (or cancelled `Ok(Null)`) reply is dropped and
+    // the peek asks again instead of caching nothing as an empty folder.
+    a.generation += 1;
+    list_reply(&mut a, &path, generation, Ok(Value::Null));
+    assert!(a.browser_cache.is_empty());
+    a.files_tick(std::time::Instant::now() + std::time::Duration::from_millis(400));
+    let again = listed(&rx);
+    assert_eq!(again, vec![(path.clone(), a.generation)]);
+    // A failure is dropped silently: no cache entry, no notice, no "Empty folder".
+    let generation = a.generation;
+    list_reply(&mut a, &path, generation, Err(anyhow::anyhow!("denied")));
+    assert!(a.browser_cache.is_empty());
+    assert!(a.notice.is_empty(), "{}", a.notice);
+    assert!(!draw_text(&a).contains("Empty folder"));
+    // Bound: dir1..dir4 fill the 4 slots; dir5 waits.
+    for _ in 1..6 {
+        press(&mut a, 'j');
+        settle_files(&mut a);
+    }
+    let sent: Vec<String> = listed(&rx).into_iter().map(|(p, _)| p).collect();
+    assert_eq!(
+        sent,
+        ["/files/dir1", "/files/dir2", "/files/dir3", "/files/dir4"]
+    );
+    assert_eq!(a.browser.as_ref().unwrap().prefetch.len(), 4);
+    let entries = serde_json::json!({"entries":[]});
+    let generation = a.generation;
+    list_reply(&mut a, "/files/dir1", generation, Ok(entries));
+    assert!(a
+        .browser_cache
+        .keys()
+        .any(|(_, path, _)| path == "/files/dir1"));
+    a.files_tick(std::time::Instant::now() + std::time::Duration::from_millis(400));
+    assert_eq!(listed(&rx), vec![("/files/dir5".into(), a.generation)]);
+}
+
+/// Perf 4: a code preview paints as plain text first; the worker's later `highlight`
+/// reply styles it without counting as a request, and never styles other text.
+#[test]
+fn code_preview_paints_plain_then_highlights() {
+    let (mut a, _rx) = file_app();
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let path = "/files/alpha.txt";
+    let text = "fn main() {}\n";
+    let value = serde_json::json!({"kind":"code","text":text,"path":"x.rs"});
+    let generation = a.generation;
+    let reply = |preview, result| Reply {
+        device_id: None,
+        execution_target: None,
+        device: 0,
+        generation,
+        op: Operation::Preview { path: path.into() },
+        preview: Some(preview),
+        result,
+    };
+    a.apply(reply(RichPreview::plain(&value), Ok(value.clone())));
+    let b = a.browser.as_ref().unwrap();
+    assert_eq!(b.preview.as_deref(), Some(text));
+    assert!(
+        b.preview_rich.as_ref().unwrap().styled.is_none(),
+        "plain first"
+    );
+    let pending = a.pending_requests.get();
+    // Highlighting of some other text (an older read of the file) is ignored.
+    a.apply(reply(
+        highlighted_preview("fn old() {}\n".into(), "x.rs"),
+        Ok(Value::Null),
+    ));
+    assert!(a
+        .browser
+        .as_ref()
+        .unwrap()
+        .preview_rich
+        .as_ref()
+        .unwrap()
+        .styled
+        .is_none());
+    a.apply(reply(
+        highlighted_preview(text.into(), "x.rs"),
+        Ok(Value::Null),
+    ));
+    let b = a.browser.as_ref().unwrap();
+    let styled = b
+        .preview_rich
+        .as_ref()
+        .unwrap()
+        .styled
+        .as_ref()
+        .expect("highlighted");
+    assert!(styled
+        .iter()
+        .flat_map(|l| &l.spans)
+        .any(|s| s.style.fg.is_some()));
+    assert_eq!(b.preview.as_deref(), Some(text));
+    assert_eq!(
+        a.pending_requests.get(),
+        pending,
+        "a highlight is not a request"
+    );
+}
+
+/// Perf 4 (worker side): the request worker replies with the plain preview before it
+/// highlights, then sends the highlighting as a second reply.
+#[test]
+fn preview_worker_replies_before_highlighting() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("main.rs");
+    std::fs::write(&file, "fn main() {\n    println!(\"hi\");\n}\n").unwrap();
+    let (tx, rx) = mpsc::sync_channel(4);
+    let (reply_tx, replies) = mpsc::channel();
+    start_task_workers(rx, reply_tx);
+    tx.send(Task {
+        device: 0,
+        execution: app().devices[0].clone(),
+        op: Operation::Preview {
+            path: crate::files::encode_path(&file),
+        },
+        generation: 7,
+    })
+    .unwrap();
+    let wait = std::time::Duration::from_secs(10);
+    let first = replies.recv_timeout(wait).unwrap();
+    let rich = first.preview.as_ref().unwrap();
+    assert_eq!(rich.kind, "code");
+    assert!(rich.styled.is_none(), "first reply is plain");
+    let second = replies.recv_timeout(wait).unwrap();
+    assert_eq!(second.generation, 7);
+    let chunk = second.preview.unwrap().chunk.unwrap();
+    assert_eq!(
+        Some(chunk.text.as_str()),
+        first.result.as_ref().unwrap()["text"].as_str()
+    );
+    assert!(chunk.lines.is_some());
+}
+
+/// Perf 1: replies are drained only between input polls, so while requests are in
+/// flight the loop must not sleep a full idle interval (100 ms) before showing them.
+#[test]
+fn input_wait_is_short_while_replies_are_pending() {
+    let (a, _rx) = file_app();
+    let now = std::time::Instant::now();
+    let idle = input_wait(&a, now);
+    assert!(idle >= std::time::Duration::from_millis(50), "{idle:?}");
+    a.pending_requests.set(1);
+    assert!(input_wait(&a, now) <= std::time::Duration::from_millis(10));
+}

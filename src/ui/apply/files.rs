@@ -434,6 +434,13 @@ impl App {
                     return false;
                 }
                 if reply.generation != self.generation {
+                    // Outdated or cancelled (`Ok(Null)` from a superseded read): a peek
+                    // still waiting on this folder asks again after the debounce.
+                    if b.peek.as_ref().is_some_and(|p| p.path == path && p.loading) {
+                        if let Some(settle) = b.settle.as_mut().filter(|s| s.0 == path) {
+                            settle.2 = false;
+                        }
+                    }
                     return true;
                 }
                 let key = (
@@ -443,6 +450,17 @@ impl App {
                 );
                 let container = b.container.clone();
                 let show_hidden = b.show_hidden;
+                if b.peek.as_ref().is_some_and(|p| p.path == path && p.loading) {
+                    match &reply.result {
+                        Ok(value) => {
+                            let peek = b.peek.as_mut().unwrap();
+                            peek.entries = parse_entries(value).into();
+                            peek.loading = false;
+                        }
+                        // The peek falls back to the plain folder card.
+                        Err(_) => b.peek = None,
+                    }
+                }
                 if let Ok(value) = &reply.result {
                     if !self.browser_cache.contains_key(&key) {
                         let mut cached = Browser::new(reply.device, path);

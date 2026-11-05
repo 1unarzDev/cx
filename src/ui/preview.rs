@@ -1163,8 +1163,8 @@ pub(super) struct PreviewChunk {
     /// Raw bytes covered by `text` (whole lines unless `eof`).
     pub(super) consumed: u64,
     eof: bool,
-    text: String,
-    lines: Option<Vec<Line<'static>>>,
+    pub(super) text: String,
+    pub(super) lines: Option<Vec<Line<'static>>>,
 }
 /// Worker-side: turn a preview `ReadChunk` reply into display-ready text off the UI
 /// thread. Only whole lines are consumed, so the next request starts on a line.
@@ -1208,7 +1208,58 @@ pub(super) fn stream_chunk(op: &Operation, value: &Value) -> Option<RichPreview>
     })
 }
 
+/// Worker-side: the source highlighting of a code preview, delivered after its plain
+/// first paint as a `"highlight"` reply whose chunk carries the text it highlights.
+pub(super) fn highlighted_preview(text: String, path: &str) -> RichPreview {
+    let lines = crate::syntax_preview::highlight(&text, path);
+    RichPreview {
+        kind: "highlight".into(),
+        title: String::new(),
+        raster: None,
+        styled: None,
+        page: 1,
+        pages: None,
+        chunk: Some(PreviewChunk {
+            consumed: 0,
+            eof: true,
+            text,
+            lines: Some(lines),
+        }),
+    }
+}
+/// Installs late highlighting on a still-plain code preview of exactly that text.
+/// Returns false when the preview moved on (other file, new text, streamed chunk).
+pub(super) fn apply_highlight(b: &mut Browser, chunk: PreviewChunk) -> bool {
+    let Some(rich) = b
+        .preview_rich
+        .as_mut()
+        .filter(|r| r.kind == "code" && r.styled.is_none())
+    else {
+        return false;
+    };
+    if b.preview.as_deref() != Some(chunk.text.as_str()) {
+        return false;
+    }
+    rich.styled = chunk.lines;
+    b.preview_revision = b.preview_revision.wrapping_add(1);
+    true
+}
+
 impl App {
+    /// A `"highlight"` follow-up reply: style the main or peek preview it belongs to.
+    pub(super) fn apply_highlight_reply(&mut self, reply: Reply) {
+        let Some(chunk) = reply.preview.and_then(|p| p.chunk) else {
+            return;
+        };
+        let Some(b) = self.browser.as_mut().filter(|b| b.device == reply.device) else {
+            return;
+        };
+        if !apply_highlight(b, chunk.clone()) {
+            if let Some(peek) = b.peek.as_deref_mut() {
+                apply_highlight(peek, chunk);
+            }
+        }
+    }
     /// After a text preview arrives truncated, stream the rest of the file in chunks.
     pub(super) fn start_preview_stream(&mut self, value: &Value) {
         let Some(b) = self.browser.as_mut() else {

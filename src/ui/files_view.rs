@@ -1093,7 +1093,9 @@ fn render_peek(frame: &mut Frame<'_>, b: &Browser, area: Rect) {
             let inner = border.inner(area);
             frame.render_widget(border, area);
             let children = browser_entries(peek);
-            let lines: Vec<Line> = if children.is_empty() {
+            let lines: Vec<Line> = if children.is_empty() && peek.loading {
+                vec![Line::styled(glyph_text(" Loading…".to_owned()), muted())]
+            } else if children.is_empty() {
                 vec![Line::styled(" Empty folder", muted())]
             } else {
                 children
@@ -1306,24 +1308,31 @@ impl App {
             );
             let cached = self.browser_cache.get(&key).map(|c| c.entries.clone());
             let b = self.browser.as_mut().unwrap();
-            if peek {
+            let current = b.peek.as_ref().is_some_and(|p| {
+                p.path == entry.path && p.preview.is_none() && !(p.loading && cached.is_some())
+            });
+            if peek && !current {
                 let mut child = Browser::new(device, entry.path.clone());
                 child.show_hidden = b.show_hidden;
+                // Uncached: "loading" until the prefetch reply fills it (never "Empty folder").
+                child.loading = cached.is_none();
                 if let Some(entries) = &cached {
                     child.entries = entries.clone();
                 }
                 b.peek = Some(Box::new(child));
                 dirty = true;
             }
-            if cached.is_none()
-                && !b.loading
-                && b.prefetch.len() < 4
-                && b.prefetch.insert(entry.path.clone())
-            {
+            if cached.is_none() && !b.prefetch.contains(&entry.path) {
                 let path = entry.path.clone();
-                if !self.send(device, Operation::List { path: path.clone() }) {
-                    if let Some(b) = self.browser.as_mut() {
-                        b.prefetch.remove(&path);
+                let sent = !b.loading
+                    && b.prefetch.len() < 4
+                    && self.send(device, Operation::List { path: path.clone() });
+                if let Some(b) = self.browser.as_mut() {
+                    if sent {
+                        b.prefetch.insert(path);
+                    } else {
+                        // Listing or prefetch slots busy: ask again after another debounce.
+                        b.settle = Some((path, now, false));
                     }
                 }
             }

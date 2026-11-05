@@ -139,6 +139,18 @@ struct RichPreview {
 }
 impl RichPreview {
     fn from_value(value: &Value) -> Self {
+        let mut preview = Self::plain(value);
+        if preview.kind == "code" {
+            preview.styled = Some(crate::syntax_preview::highlight(
+                &safe_text(value["text"].as_str().unwrap_or("")),
+                value["path"].as_str().unwrap_or(""),
+            ));
+        }
+        preview
+    }
+    /// Everything but source highlighting, which the request worker delivers after the
+    /// plain first paint (`Highlight` replies; see `runtime::start_task_workers`).
+    fn plain(value: &Value) -> Self {
         use base64::Engine;
         let raster = (|| {
             let image = value.get("image")?;
@@ -195,10 +207,6 @@ impl RichPreview {
                 .and_then(|v| u32::try_from(v).ok())
                 .filter(|v| (1..=10000).contains(v)),
             styled: match value["kind"].as_str() {
-                Some("code") => Some(crate::syntax_preview::highlight(
-                    &safe_text(value["text"].as_str().unwrap_or("")),
-                    value["path"].as_str().unwrap_or(""),
-                )),
                 Some("markdown") => Some(preview_lines(
                     value["text"].as_str().unwrap_or(""),
                     "markdown",

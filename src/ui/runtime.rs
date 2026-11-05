@@ -787,7 +787,8 @@ pub(super) fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender
                     },
                     Operation::Preview { .. } | Operation::PreviewPage { .. }
                 ) {
-                    result.as_ref().ok().map(RichPreview::from_value)
+                    // Plain text paints first; source highlighting follows below.
+                    result.as_ref().ok().map(RichPreview::plain)
                 } else if matches!(task.op, Operation::ReadChunk { .. }) {
                     // Streamed text previews: decode and highlight off the UI thread.
                     result
@@ -797,25 +798,64 @@ pub(super) fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender
                 } else {
                     None
                 };
+                let source = preview
+                    .as_ref()
+                    .filter(|p| p.kind == "code")
+                    .and(result.as_ref().ok())
+                    .map(|value| {
+                        let text = safe_text(value["text"].as_str().unwrap_or(""));
+                        (text, value["path"].as_str().unwrap_or("").to_owned())
+                    });
+                let reply = |preview, op, result| Reply {
+                    device_id: Some(task.execution.id.clone()),
+                    execution_target: Some(task.execution.target.clone()),
+                    preview,
+                    device: task.device,
+                    op,
+                    generation: task.generation,
+                    result,
+                };
                 let delivered = replies
-                    .send(Reply {
-                        device_id: Some(task.execution.id.clone()),
-                        execution_target: Some(task.execution.target.clone()),
-                        preview,
-                        device: task.device,
-                        op: task.op,
-                        generation: task.generation,
-                        result,
-                    })
+                    .send(reply(preview, task.op.clone(), result))
                     .is_ok();
                 lock.lock().unwrap().busy.remove(&host);
                 changed.notify_all();
                 if !delivered {
                     return;
                 }
+                if let Some((text, path)) = source {
+                    let highlighted = highlighted_preview(text, &path);
+                    if replies
+                        .send(reply(Some(highlighted), task.op, Ok(Value::Null)))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
             }
         });
     }
+}
+/// Replies are drained only between input polls, so while requests are in flight the
+/// poll is cut short to pick each reply up within `REPLY_POLL` instead of a full idle
+/// interval later.
+const REPLY_POLL: Duration = Duration::from_millis(8);
+/// How long the event loop may block waiting for input.
+pub(super) fn input_wait(app: &App, now: Instant) -> Duration {
+    let mut wait = notifications::poll_interval(app.notice_started, app.notice_deadline, now);
+    if app.view == View::Work {
+        wait = wait.min(Duration::from_millis(250));
+    }
+    if app.command_panel.as_ref().is_some_and(|p| p.alive) {
+        wait = wait.min(Duration::from_millis(80));
+    }
+    if let Some(due) = app.files_due(now) {
+        wait = wait.min(due);
+    }
+    if app.pending_requests.get() > 0 {
+        wait = wait.min(REPLY_POLL);
+    }
+    wait
 }
 /// Geometry mirrors the existing workspace layout; no preview owns another location.
 pub(super) fn native_preview_area(app: &App, area: Rect) -> Option<Rect> {
@@ -1405,18 +1445,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 .draw(|frame| render_with_native(frame, &app, Some(&mut native_preview)))?;
             dirty = false;
         }
-        let mut wait =
-            notifications::poll_interval(app.notice_started, app.notice_deadline, Instant::now());
-        if app.view == View::Work {
-            wait = wait.min(Duration::from_millis(250));
-        }
-        if app.command_panel.as_ref().is_some_and(|p| p.alive) {
-            wait = wait.min(Duration::from_millis(80));
-        }
-        if let Some(due) = app.files_due(Instant::now()) {
-            wait = wait.min(due);
-        }
-        if event::poll(wait)? {
+        if event::poll(input_wait(&app, Instant::now()))? {
             for (input, observed) in read_input_batch()? {
                 if !wheel_reports.accepts(&input, observed) {
                     continue;

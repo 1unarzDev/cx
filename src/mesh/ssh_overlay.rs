@@ -968,8 +968,7 @@ impl MeshBackend for SshOverlay {
         Ok(out)
     }
     fn revoke(&self, name: &str) -> Result<Value> {
-        let removed = store::remove_device(name)?;
-        let unpinned = peer_ssh::unpin(&removed.id)?;
+        let (removed, unpinned) = peer_ssh::remove_device(name)?;
         let cancelled = {
             let l = lock()?;
             let mut inv = read_invites(&l)?;

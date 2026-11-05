@@ -611,6 +611,14 @@ fn remove_authorized_at(
     result.map(|()| removed)
 }
 
+/// Remove an enrolled device and revoke the SSH access cx installed for it
+/// (known_hosts pin and `cx-managed-peer` authorized_keys line). Every device
+/// removal path uses this so a removed device cannot keep logging in.
+pub fn remove_device(name: &str) -> Result<(Device, Value)> {
+    let removed = store::remove_device(name)?;
+    let ssh = unpin(&removed.id)?;
+    Ok((removed, ssh))
+}
 /// Forget a paired device: its endpoint pins (known_hosts regenerated) and the exact
 /// `cx-managed-peer` authorization of its client key. Other keys are untouched.
 pub fn unpin(device_id: &str) -> Result<Value> {

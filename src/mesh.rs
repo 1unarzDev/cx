@@ -1,10 +1,12 @@
 //! `cx mesh`: runs the standalone mesh util (mesh/mesh.py, docs/mesh.md) from a copy embedded in this binary,
-//! so it works wherever cx is installed; the util itself needs only python3 and no cx.
+//! so it works wherever cx is installed; the util itself needs only python3 and no cx. `cx claude` runs its
+//! neighbour mesh/claude.py (docs/claude.md), whose codes the same Worker serves.
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 const FILES: &[(&str, &str)] = &[
     ("mesh.py", include_str!("../mesh/mesh.py")),
+    ("claude.py", include_str!("../mesh/claude.py")),
     ("worker/worker.js", include_str!("../mesh/worker/worker.js")),
     (
         "worker/schema.sql",
@@ -14,6 +16,11 @@ const FILES: &[(&str, &str)] = &[
     ("worker/leave.sh", include_str!("../mesh/worker/leave.sh")),
     ("worker/join.ps1", include_str!("../mesh/worker/join.ps1")),
     ("worker/leave.ps1", include_str!("../mesh/worker/leave.ps1")),
+    ("worker/claude.sh", include_str!("../mesh/worker/claude.sh")),
+    (
+        "worker/claude.ps1",
+        include_str!("../mesh/worker/claude.ps1"),
+    ),
 ];
 
 fn unpack() -> Result<PathBuf> {
@@ -35,12 +42,19 @@ fn unpack() -> Result<PathBuf> {
 }
 
 pub fn run(args: &[String]) -> Result<()> {
-    let script = unpack()?;
+    python(unpack()?, args)
+}
+
+pub fn run_claude(args: &[String]) -> Result<()> {
+    python(unpack()?.with_file_name("claude.py"), args)
+}
+
+fn python(script: PathBuf, args: &[String]) -> Result<()> {
     let status = std::process::Command::new("python3")
         .arg(&script)
         .args(args)
         .status()
-        .context("cx mesh needs python3")?;
+        .context("cx mesh and cx claude need python3")?;
     std::process::exit(status.code().unwrap_or(1));
 }
 
@@ -49,7 +63,7 @@ mod tests {
     #[test]
     fn embeds_every_asset_the_util_uploads() {
         let py = super::FILES[0].1;
-        for (name, _) in &super::FILES[1..] {
+        for (name, _) in super::FILES[2..].iter() {
             let base = name.trim_start_matches("worker/");
             assert!(py.contains(base), "mesh.py does not reference {base}");
         }

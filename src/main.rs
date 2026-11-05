@@ -101,6 +101,13 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Lend your Claude Code gateway with one line (docs/claude.md): lend NAME [--hours H | --days D],
+    /// revoke NAME, list; the teammate runs `curl -sL <mesh endpoint>/claude/<code>|sh`. --json for tools.
+    #[command(disable_help_flag = true)]
+    Claude {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Open an ordinary login terminal; exit returns without requiring tmux.
     Terminal {
         #[arg(long)]
@@ -1559,6 +1566,7 @@ fn run() -> Result<()> {
         }
         Some(Cmd::Terminal { device: d }) => sessions::login_terminal(&device(d)?),
         Some(Cmd::Mesh { args }) => mesh::run(&args),
+        Some(Cmd::Claude { args }) => mesh::run_claude(&args),
         Some(Cmd::Device { command }) => {
             match command {
                 DeviceCommand::Edit { name, target } => {

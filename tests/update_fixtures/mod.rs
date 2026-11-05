@@ -631,3 +631,40 @@ fn release_page_redirect_rejects_downgrades_prereleases_and_other_origins() {
         ReleaseLookup::Current
     ));
 }
+#[test]
+fn relay_and_portable_tool_members_extract_but_other_members_are_refused() {
+    // 21632fc (v0.1.84): the member allowlist only knew `cx` and `tmux`, so the
+    // signed `cx-reptyr` relay failed with "unsupported artifact member" and
+    // terminal moving could never be enabled.
+    let f = Fixture::new();
+    let dir = state_dir(f.home.path(), &f.state)
+        .unwrap()
+        .child("update", true)
+        .unwrap();
+    let staged = |members: &[(&str, tar::EntryType, &[u8])]| {
+        let s = stage(Dir(dir.0.try_clone().unwrap())).unwrap();
+        let mut a = new_file(&s.dir.path("archive")).unwrap();
+        a.write_all(&archive(members)).unwrap();
+        (s, a)
+    };
+    for member in ["cx", "tmux", "cx-reptyr"] {
+        let (s, a) = staged(&[(member, tar::EntryType::Regular, b"signed member")]);
+        let mut out = String::new();
+        extract_member(a, &s.dir, member)
+            .unwrap_or_else(|e| panic!("{member}: {e:#}"))
+            .read_to_string(&mut out)
+            .unwrap();
+        assert_eq!(out, "signed member", "{member}");
+    }
+    // The archive must hold exactly the requested member.
+    let (s, a) = staged(&[("cx", tar::EntryType::Regular, b"x")]);
+    assert!(extract_member(a, &s.dir, "cx-reptyr").is_err());
+    for member in ["sh", "reptyr", "cx-reptyr2", "tmux.conf"] {
+        let (s, a) = staged(&[(member, tar::EntryType::Regular, b"x")]);
+        let error = extract_member(a, &s.dir, member).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("unsupported artifact member"),
+            "{member:?}: {error:#}"
+        );
+    }
+}

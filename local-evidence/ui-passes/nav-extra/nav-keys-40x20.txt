@@ -1,5 +1,5 @@
  cx · Keys                            … 
-[All] [●laptop] [●* lab-arm]            
+[All] [●laptop] [●* lab-arm]          1›
 ╭ ▸ Keys ──────────────────────────────╮
 │                                      │
 │ Keys and secrets                     │

@@ -225,7 +225,9 @@ fn right_click_and_long_press_open_the_keymap_context_menu() {
     let cmds: Vec<_> = menu.items.iter().map(|i| i.2).collect();
     assert!(cmds.contains(&Cmd::Watch) && cmds.contains(&Cmd::Pin) && cmds.contains(&Cmd::Primary));
     let text = draw(&a, 120, 30);
-    assert!(text.contains("Watch selected session"), "{text}");
+    // Short chip labels, so rows fit the box.
+    assert!(text.contains("Watch · read-only"), "{text}");
+    assert!(!text.contains("Inspect selected session"), "{text}");
     // Same labels as the keymap: Esc closes, nothing else ran.
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(a.context_menu.is_none() && a.dialog.is_none());
@@ -524,4 +526,212 @@ fn secrets_placeholder_and_keys_tab_render_everywhere() {
     sessions(&mut a, 0, 4);
     a.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     assert_eq!(a.selected, 0);
+}
+
+#[test]
+fn colon_runs_in_every_view_even_with_a_file_search_active() {
+    // Regression: `:` was gated on any file search, so it silently did
+    // nothing after `/` in Files or after switching to Sessions.
+    let (mut a, _rx) = file_app();
+    a.focus = Focus::Workspace;
+    a.browser.as_mut().unwrap().search = "alpha".into();
+    press(&mut a, ':');
+    assert!(a.palette_run_mode(), "Files + search");
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(a.input.is_none() && a.command_target.is_none());
+    press(&mut a, 'g');
+    press(&mut a, 's');
+    assert!(a.view == View::Work);
+    press(&mut a, ':');
+    assert!(a.palette_run_mode(), "Sessions after search");
+    // The footer chip still yields to the search's `n / N` in Files.
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    a.view = View::Files;
+    a.focus = Focus::Workspace;
+    assert!(!keymap::hints(&a).iter().any(|(h, _)| h.key == "n / :"));
+}
+
+#[test]
+fn colon_is_the_palette_in_run_mode_and_ctrl_p_never_lists_run() {
+    let (mut a, _rx) = file_app();
+    a.focus = Focus::Workspace;
+    press(&mut a, ':');
+    assert_eq!(a.text, "run: ");
+    let view = a.palette_view();
+    assert_eq!(view.len(), 1);
+    assert_eq!(view[0].section, "Run command");
+    for c in "echo hi".chars() {
+        press(&mut a, c);
+    }
+    let text = draw(&a, 120, 40);
+    assert!(
+        text.contains("run: echo hi") && text.contains("Run command"),
+        "{text}"
+    );
+    assert!(text.contains("/files"), "run row shows its folder: {text}");
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let (device, command) = a.pending_command_panel.take().expect("dispatched");
+    assert_eq!((device, command.command.as_str()), (0, "echo hi"));
+    assert_eq!(command.directory, "/files");
+    assert!(a.input.is_none() && a.command_target.is_none());
+    // Backspacing past the prefix turns it back into the ordinary palette.
+    press(&mut a, ':');
+    for _ in 0..5 {
+        a.key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    }
+    assert!(!a.palette_run_mode() && a.input == Some(Input::Palette));
+    assert!(a.palette_view().iter().all(|i| i.section != "Run command"));
+    // Ctrl+P keeps the user's direction: no run-command entry.
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    a.key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+    assert!(a
+        .palette_view()
+        .iter()
+        .all(|i| i.target != super::super::actions::PaletteTarget::Run));
+}
+
+#[test]
+fn palette_fits_its_results_aligns_details_and_dims_the_backdrop() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 2);
+    a.file_locations.insert(0, "/home/user/projects/nav".into());
+    a.key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+    for c in "nav".chars() {
+        press(&mut a, c);
+    }
+    let items = a.palette_view();
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|f| render(f, &a)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let rows: Vec<String> = buffer
+        .content
+        .chunks(120)
+        .map(|row| row.iter().map(|c| c.symbol()).collect())
+        .collect();
+    // Height follows the results: rows plus one header per section plus borders.
+    let top = rows
+        .iter()
+        .position(|r| r.contains("╭ > nav"))
+        .expect("palette top");
+    let left = rows[top]
+        .find("╭ > nav")
+        .map(|b| rows[top][..b].chars().count())
+        .unwrap();
+    let bottom = (top + 1..rows.len())
+        .find(|&y| rows[y].chars().nth(left) == Some('╰'))
+        .unwrap();
+    let sections = items
+        .iter()
+        .enumerate()
+        .filter(|(i, it)| *i == 0 || items[*i - 1].section != it.section)
+        .count();
+    assert_eq!(
+        bottom - top - 1,
+        items.len() + sections,
+        "{}",
+        rows.join("\n")
+    );
+    // Details start at one fixed column for every row that has one.
+    let columns: std::collections::BTreeSet<usize> = items
+        .iter()
+        .filter(|i| !i.detail.is_empty())
+        .filter_map(|i| {
+            let detail: String = i.detail.chars().take(6).collect();
+            rows[top + 1..bottom]
+                .iter()
+                .map(|r| r.chars().skip(left).collect::<String>())
+                .find(|r| r.contains(&format!(" {} ", i.label)) && r.contains(&detail))
+                .and_then(|r| r.rfind(&detail).map(|b| r[..b].chars().count()))
+        })
+        .collect();
+    assert!(!columns.is_empty());
+    let palette: Vec<_> = rows[top..=bottom]
+        .iter()
+        .map(|r| r.chars().skip(left).collect::<String>())
+        .collect();
+    assert_eq!(
+        columns.len(),
+        1,
+        "ragged detail column: {columns:?}\n{}",
+        palette.join("\n")
+    );
+    // Backdrop is dimmed.
+    let cell = &buffer[(0, 0)];
+    assert!(cell.modifier.contains(Modifier::DIM));
+}
+
+#[test]
+fn help_covers_the_frame_below_100_columns() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 3);
+    a.view = View::Work;
+    a.help = true;
+    let text = draw(&a, 80, 24);
+    let lines: Vec<_> = text.lines().collect();
+    assert!(
+        lines[0].starts_with('╭') && lines[0].contains("Help"),
+        "{text}"
+    );
+    for line in &lines[1..lines.len() - 1] {
+        assert!(
+            line.starts_with('│') && line.ends_with('│'),
+            "bleed: {text}"
+        );
+    }
+}
+
+#[test]
+fn context_menu_rows_use_short_labels() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 2);
+    a.view = View::Work;
+    a.focus = Focus::Workspace;
+    let labels: Vec<_> = keymap::context_menu(&a)
+        .into_iter()
+        .map(|(_, label, _)| label)
+        .collect();
+    assert!(labels.contains(&"Agent tasks"), "{labels:?}");
+    assert!(labels.iter().all(|l| l.chars().count() <= 24), "{labels:?}");
+}
+
+#[test]
+fn phone_device_strip_marks_and_reaches_hidden_devices() {
+    let (tx, _rx) = mpsc::sync_channel(64);
+    let mut devices = app().devices;
+    for name in ["laptop", "lab-arm", "field-rover", "jetson-01"] {
+        let mut d = devices[0].clone();
+        d.id = name.into();
+        d.name = name.into();
+        d.target = Some(name.into());
+        devices.push(d);
+    }
+    let mut a = App::new(devices, tx);
+    a.view = View::Work;
+    let text = draw(&a, 40, 20);
+    let strip = text.lines().nth(1).unwrap().to_owned();
+    assert!(strip.contains("›"), "no overflow marker: {strip}");
+    let hidden: usize = strip
+        .trim_end()
+        .trim_end_matches('›')
+        .rsplit(' ')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(hidden >= 1);
+    // The marker is a tap target that steps to the first hidden device.
+    let (rect, hit) = hitmap::with(|m| m.all())
+        .into_iter()
+        .filter(|(r, h)| r.y == 1 && matches!(h, Hit::Row(ListId::Devices, _)))
+        .max_by_key(|(r, _)| r.x)
+        .unwrap();
+    let Hit::Row(_, value) = hit else {
+        unreachable!()
+    };
+    click(&mut a, rect.x, rect.y, Rect::new(0, 0, 40, 20));
+    assert_eq!(a.device, value);
+    let strip = draw(&a, 40, 20).lines().nth(1).unwrap().to_owned();
+    assert!(strip.contains('‹'), "left marker after scrolling: {strip}");
+    let name = &a.devices[value - 1].name;
+    assert!(strip.contains(name.as_str()), "{name} not visible: {strip}");
 }

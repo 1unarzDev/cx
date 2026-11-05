@@ -48,6 +48,7 @@ impl App {
             PaletteTarget::Device(_) => return "Enter scopes views to this device".into(),
             PaletteTarget::Folder(..) => return "Enter opens the folder in Files".into(),
             PaletteTarget::Cmd(_) => return "Enter goes there · Esc cancel".into(),
+            PaletteTarget::Run => return "Enter runs in a panel · Esc cancel".into(),
         };
         if matches!(
             action,
@@ -227,38 +228,10 @@ impl App {
                 self.refresh();
             }
             Action::Command => {
-                if let Some((d, path)) = self.command_context() {
-                    if self.devices[d].target.is_some()
-                        && self.providers.get(&d).is_none_or(|(_, checked)| {
-                            transport::now().saturating_sub(*checked) >= 60
-                        })
-                    {
-                        self.check_providers(d);
-                        self.set_notice(
-                            "Checking command support on this device · press : again shortly"
-                                .into(),
-                        );
-                        return;
-                    }
-                    let supported = self.devices[d].target.is_none()
-                        || self.providers.get(&d).is_some_and(|(caps, checked)| {
-                            transport::now().saturating_sub(*checked) < 60
-                                && caps.iter().any(|c| c == "native-command-v1")
-                        });
-                    if !supported {
-                        self.check_providers(d);
-                        self.set_notice_as(NoticeKind::Warning, "Run command needs a current cx helper on this device · update it and retry".into());
-                        return;
-                    }
-                    self.rename_cursor = 0;
-                    self.command_target = Some((d, path));
-                    self.text.clear();
-                    self.input = Some(Input::Command);
-                } else {
-                    self.set_notice_as(
-                        NoticeKind::Warning,
-                        "Select a device or open its files first".into(),
-                    );
+                // Spec 6.6: `:` is the palette in run mode.
+                if let Some(target) = self.command_ready() {
+                    self.command_target = Some(target);
+                    self.open_palette(RUN_PREFIX);
                 }
             }
             Action::New => {
@@ -522,6 +495,8 @@ pub(super) enum PaletteTarget {
     Session(usize, String),
     /// Device index and folder path.
     Folder(usize, String),
+    /// Run the typed command (palette run mode).
+    Run,
 }
 #[derive(Clone, Debug)]
 pub(super) struct PaletteItem {
@@ -668,6 +643,9 @@ impl App {
     /// Ranked palette rows for the current query: fuzzy score plus recency,
     /// grouped by section (sections ordered by their best row).
     pub(super) fn palette_view(&self) -> Vec<PaletteItem> {
+        if self.palette_run_mode() {
+            return vec![self.palette_run_item()];
+        }
         let query = self.text.trim();
         let mut scored: Vec<(i64, usize, PaletteItem)> = self
             .palette_sources()
@@ -716,6 +694,10 @@ impl App {
         let Some(item) = self.palette_view().into_iter().nth(self.palette_selected) else {
             return;
         };
+        if item.target == PaletteTarget::Run {
+            return self.run_palette_command();
+        }
+        self.command_target = None;
         self.palette_mru.retain(|id| *id != item.id);
         self.palette_mru.push_front(item.id.clone());
         self.palette_mru.truncate(PALETTE_MRU);
@@ -767,6 +749,7 @@ impl App {
                 self.open_host_browser(device, path);
                 self.focus = Focus::Workspace;
             }
+            PaletteTarget::Run => {}
         }
     }
     /// Tab in the palette: jump to the first row of the next section.
@@ -792,5 +775,116 @@ impl App {
             starts[(at + 1) % starts.len()]
         };
         self.palette_selected = next;
+    }
+}
+
+/// The palette query prefix that turns the palette into the run-command field.
+pub(super) const RUN_PREFIX: &str = "run: ";
+
+impl App {
+    /// Open the palette with a prefilled query (empty for Ctrl+P).
+    pub(super) fn open_palette(&mut self, query: &str) {
+        self.input = Some(Input::Palette);
+        self.text = query.to_owned();
+        self.rename_cursor = self.text.len();
+        self.palette_selected = 0;
+    }
+    /// The palette is in run mode (`:` or a typed `run:` prefix).
+    pub(super) fn palette_run_mode(&self) -> bool {
+        self.input == Some(Input::Palette) && self.text.starts_with("run:")
+    }
+    /// The command typed after the `run:` prefix.
+    pub(super) fn palette_run_command(&self) -> &str {
+        self.text
+            .strip_prefix("run:")
+            .map(|rest| rest.strip_prefix(' ').unwrap_or(rest))
+            .unwrap_or("")
+    }
+    /// Where a command would run now, after the remote capability check.
+    /// Sets a notice and returns None when it cannot run yet.
+    pub(super) fn command_ready(&mut self) -> Option<(usize, String)> {
+        let Some((d, path)) = self.command_context() else {
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "Select a device or open its files first".into(),
+            );
+            return None;
+        };
+        if self.devices[d].target.is_some()
+            && self
+                .providers
+                .get(&d)
+                .is_none_or(|(_, checked)| transport::now().saturating_sub(*checked) >= 60)
+        {
+            self.check_providers(d);
+            self.set_notice(
+                "Checking command support on this device · press : again shortly".into(),
+            );
+            return None;
+        }
+        let supported = self.devices[d].target.is_none()
+            || self.providers.get(&d).is_some_and(|(caps, checked)| {
+                transport::now().saturating_sub(*checked) < 60
+                    && caps.iter().any(|c| c == "native-command-v1")
+            });
+        if !supported {
+            self.check_providers(d);
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "Run command needs a current cx helper on this device · update it and retry".into(),
+            );
+            return None;
+        }
+        Some((d, path))
+    }
+    /// Enter on the run row: start the typed command in the floating panel.
+    fn run_palette_command(&mut self) {
+        let command = self.palette_run_command().to_owned();
+        if command.trim().is_empty() {
+            return;
+        }
+        let Some((d, directory)) = self.command_target.clone().or_else(|| self.command_ready())
+        else {
+            return;
+        };
+        self.command_target = None;
+        self.input = None;
+        self.text.clear();
+        self.rename_cursor = 0;
+        self.pending_command_panel = Some((d, RunCommand { directory, command }));
+    }
+    /// The single row the palette shows in run mode.
+    fn palette_run_item(&self) -> PaletteItem {
+        let command = self.palette_run_command();
+        let detail = self
+            .command_target
+            .clone()
+            .or_else(|| self.command_context())
+            .map(|(d, path)| {
+                format!(
+                    "{} · {}",
+                    identity(&self.devices[d]),
+                    safe_label(
+                        self.browser
+                            .as_ref()
+                            .filter(|b| b.device == d && b.path == path)
+                            .map(|b| b.display_path.as_str())
+                            .unwrap_or(&path)
+                    )
+                )
+            })
+            .unwrap_or_else(|| "select a device or open its files first".into());
+        PaletteItem {
+            section: "Run command",
+            label: if command.trim().is_empty() {
+                "type a command, Enter runs it in a panel".into()
+            } else {
+                command.to_owned()
+            },
+            detail,
+            key: "Enter".into(),
+            id: "run".into(),
+            target: PaletteTarget::Run,
+        }
     }
 }

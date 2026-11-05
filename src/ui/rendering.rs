@@ -1187,12 +1187,12 @@ pub(super) fn render_at(
         vec![("Enter", "Connect"), ("Esc", "Cancel"), ("Ctrl U", "Clear")]
     } else if matches!(
         app.input,
-        Some(Input::Rename | Input::Mkdir | Input::Palette | Input::Command)
+        Some(Input::Rename | Input::Mkdir | Input::Palette)
     ) {
         vec![
             (
                 "Enter",
-                if app.input == Some(Input::Command) {
+                if app.palette_run_mode() {
                     "Run"
                 } else {
                     "Confirm"
@@ -1352,7 +1352,7 @@ pub(super) fn render_at(
         let rect = popup(
             area,
             if input == Input::Add { 64 } else { 76 },
-            if matches!(input, Input::Rename | Input::Command | Input::Add) {
+            if matches!(input, Input::Rename | Input::Add) {
                 3
             } else {
                 5
@@ -1362,7 +1362,7 @@ pub(super) fn render_at(
             render_palette(frame, app, area, phone);
         } else {
             frame.render_widget(Clear, rect);
-            let editing = matches!(input, Input::Rename | Input::Command | Input::Add);
+            let editing = matches!(input, Input::Rename | Input::Add);
             let cursor_width = if editing {
                 Span::raw(safe_label(if input == Input::Add {
                     &app.text
@@ -1376,33 +1376,14 @@ pub(super) fn render_at(
             };
             let scroll = cursor_width.saturating_sub(rect.width.saturating_sub(3));
             frame.render_widget(
-                Paragraph::new(
-                    if matches!(input, Input::Rename | Input::Command | Input::Add) {
-                        format!("> {}", safe_label(&app.text))
-                    } else {
-                        format!("> {}\nEnter confirm · Escape cancel", safe_label(&app.text))
-                    },
-                )
+                Paragraph::new(if matches!(input, Input::Rename | Input::Add) {
+                    format!("> {}", safe_label(&app.text))
+                } else {
+                    format!("> {}\nEnter confirm · Escape cancel", safe_label(&app.text))
+                })
                 .scroll((0, scroll))
                 .block(block(
-                    if input == Input::Command {
-                        app.command_target
-                            .as_ref()
-                            .map(|(d, path)| {
-                                format!(
-                                    "Run command · {} · {}",
-                                    identity(&app.devices[*d]),
-                                    safe_label(
-                                        app.browser
-                                            .as_ref()
-                                            .filter(|b| b.device == *d && b.path == *path)
-                                            .map(|b| b.display_path.as_str())
-                                            .unwrap_or(path)
-                                    )
-                                )
-                            })
-                            .unwrap_or_else(|| "Run command".into())
-                    } else if input == Input::Add && app.network_add_target.is_some() {
+                    if input == Input::Add && app.network_add_target.is_some() {
                         let (d, address) = app.network_add_target.as_ref().unwrap();
                         format!(
                             "SSH account · {} via {}",
@@ -1419,7 +1400,6 @@ pub(super) fn render_at(
                             Input::Search | Input::PreviewSearch => "Search",
                             Input::Add => "Add by SSH address · alias or user@host",
                             Input::Rename => "Rename",
-                            Input::Command => "Run command",
                             _ => "Directory name",
                         }
                         .into()
@@ -1829,7 +1809,11 @@ pub(super) fn render_at(
     }
     if app.help {
         hitmap::modal();
-        let rect = if phone {
+        // One box over a dimmed backdrop (P12). Below 100 columns a centered
+        // box would leave 1-2 column slivers of the panels at the edges, so
+        // the overlay takes the full frame there.
+        dim_backdrop(frame);
+        let rect = if phone || area.width < 100 {
             Rect::new(area.x, area.y, area.width, area.height)
         } else {
             popup(area, 76, area.height.saturating_sub(4).clamp(20, 40))
@@ -2143,23 +2127,63 @@ fn render_device_strip(frame: &mut Frame<'_>, app: &App, area: Rect) {
         })
         .collect();
     let selected = rows.iter().position(|v| *v == app.device).unwrap_or(0);
+    // Hidden chips are never silent: `‹N` / `N›` markers count them and are
+    // tap targets that step to the nearest hidden device.
+    let marker = |n: usize, left: bool| -> String {
+        match (left, ascii()) {
+            (true, true) => format!("<{n} "),
+            (true, false) => format!("‹{n} "),
+            (false, true) => format!(" {n}>"),
+            (false, false) => format!(" {n}›"),
+        }
+    };
+    let marker_width = |n: usize| marker(n, true).chars().count() as u16;
+    // Last chip shown when the strip starts at `first`, leaving room for the
+    // markers it needs.
+    let fit = |first: usize| -> usize {
+        let left = if first > 0 { marker_width(first) } else { 0 };
+        let mut x = left;
+        let mut last = first;
+        for (index, (_, _, width)) in chips.iter().enumerate().skip(first) {
+            let remaining = chips.len() - index - 1;
+            let reserve = if remaining > 0 {
+                marker_width(remaining)
+            } else {
+                0
+            };
+            if index > first && x + width + reserve > area.width {
+                break;
+            }
+            last = index;
+            x += width + 1;
+        }
+        last
+    };
     // Scroll the strip so the selected chip is always visible.
     let mut first = 0;
-    while first < selected
-        && chips[first..=selected]
-            .iter()
-            .map(|(_, _, w)| w + 1)
-            .sum::<u16>()
-            > area.width
-    {
+    while first < selected && fit(first) < selected {
         first += 1;
     }
+    let last = fit(first);
     let mut x = area.x;
     let mut line = Vec::new();
+    if first > 0 {
+        let text = marker(first, true);
+        let width = text.chars().count() as u16;
+        line.push(Span::styled(text, accent()));
+        hitmap::register(
+            Rect::new(x, area.y, width, 1),
+            hitmap::Hit::Row(hitmap::ListId::Devices, chips[first - 1].0),
+        );
+        x += width;
+    }
+    let hidden_after = chips.len().saturating_sub(last + 1);
+    let next_hidden = chips.get(last + 1).map(|(value, _, _)| *value);
     for (index, (value, spans, width)) in chips.into_iter().enumerate().skip(first) {
-        if x + width > area.right() {
+        if index > last {
             break;
         }
+        let width = width.min(area.right().saturating_sub(x));
         let chosen = index == selected;
         let style = if chosen && focused {
             selected_style().add_modifier(Modifier::REVERSED)
@@ -2168,10 +2192,7 @@ fn render_device_strip(frame: &mut Frame<'_>, app: &App, area: Rect) {
         } else {
             Style::default()
         };
-        line.push(Span::styled(
-            if ascii() || !chosen { "[" } else { "[" },
-            style,
-        ));
+        line.push(Span::styled("[", style));
         for span in spans {
             let merged = span.style.patch(style);
             line.push(Span::styled(span.content, merged));
@@ -2183,6 +2204,19 @@ fn render_device_strip(frame: &mut Frame<'_>, app: &App, area: Rect) {
             hitmap::Hit::Row(hitmap::ListId::Devices, value),
         );
         x += width + 1;
+    }
+    if let Some(next) = next_hidden {
+        let text = marker(hidden_after, false);
+        let width = text.chars().count() as u16;
+        let at = area.right().saturating_sub(width);
+        let used: u16 = line.iter().map(|s| s.width() as u16).sum();
+        let gap = at.saturating_sub(area.x + used);
+        line.push(Span::raw(" ".repeat(gap as usize)));
+        line.push(Span::styled(text, accent()));
+        hitmap::register(
+            Rect::new(at, area.y, width, 1),
+            hitmap::Hit::Row(hitmap::ListId::Devices, next),
+        );
     }
     frame.render_widget(Paragraph::new(Line::from(line)), area);
 }
@@ -2212,23 +2246,117 @@ fn render_secrets(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 /// The command palette: one box, dimmed background, sections, MRU ranking.
-fn render_palette(frame: &mut Frame<'_>, app: &App, area: Rect, phone: bool) {
-    // Dim everything beneath; nothing bleeds through the box edges (P12).
+/// Dim everything already drawn so an overlay reads as the only live layer
+/// (P12): DIM plus, with color, the muted fg so terminals that ignore SGR 2
+/// still recede.
+pub(super) fn dim_backdrop(frame: &mut Frame<'_>) {
+    let colored = !no_color();
     for cell in frame.buffer_mut().content.iter_mut() {
         cell.modifier.insert(Modifier::DIM);
+        cell.modifier.remove(Modifier::BOLD | Modifier::REVERSED);
+        if colored {
+            cell.fg = Color::DarkGray;
+            cell.bg = Color::Reset;
+        }
     }
+}
+/// Fit a `head · path` detail: the path keeps its tail (spec 7), the head
+/// gets what is left.
+fn fit_detail(detail: &str, width: usize) -> String {
+    let detail = safe_label(detail);
+    let tail = |text: &str, width: usize| -> String {
+        let count = text.chars().count();
+        if count <= width {
+            return text.to_owned();
+        }
+        let keep: String = text.chars().skip(count + 1 - width.max(1)).collect();
+        format!("{}{keep}", if ascii() { "~" } else { "…" })
+    };
+    if detail.chars().count() <= width {
+        return detail;
+    }
+    match detail.rsplit_once(" · ") {
+        Some((head, path)) if path.chars().count() + 3 + 4 <= width => {
+            let head_width = width - path.chars().count() - 3;
+            format!("{} · {path}", fit_label(head, head_width))
+        }
+        // Long path: the head (device) keeps up to 10 columns, the path
+        // keeps its tail in the rest.
+        Some((head, path)) if width >= 20 => {
+            let head = fit_label(head, head.chars().count().min(10));
+            let rest = width - head.chars().count() - 3;
+            format!("{head} · {}", tail(path, rest))
+        }
+        Some((_, path)) => tail(path, width),
+        None => tail(&detail, width),
+    }
+}
+/// Tail-preserving fit for paths (spec 7: `…/cx-demo`, never `/home/p…`).
+fn fit_path(path: &str, width: usize) -> String {
+    let path = safe_label(path);
+    let count = path.chars().count();
+    if count <= width {
+        return path;
+    }
+    let keep: String = path.chars().skip(count + 1 - width.max(1)).collect();
+    format!("{}{keep}", if ascii() { "~" } else { "…" })
+}
+fn render_palette(frame: &mut Frame<'_>, app: &App, area: Rect, phone: bool) {
+    // Dim everything beneath; nothing bleeds through the box edges (P12).
+    dim_backdrop(frame);
     hitmap::modal();
     let items = app.palette_view();
-    let rect = if phone {
-        let height = area.height.saturating_sub(2).min(16);
-        Rect::new(area.x, area.bottom() - height, area.width, height)
+    let width = if phone {
+        area.width
     } else {
-        popup(area, 76, area.height.saturating_sub(4).min(19))
+        76.min(area.width.saturating_sub(2))
+    };
+    // Rows: one per item plus one header per section.
+    let sections = items
+        .iter()
+        .enumerate()
+        .filter(|(i, item)| *i == 0 || items[*i - 1].section != item.section)
+        .count();
+    let content = (items.len() + sections).max(1) as u16;
+    let max_height = if phone {
+        area.height.saturating_sub(2).min(16)
+    } else {
+        area.height.saturating_sub(4).min(19)
+    };
+    let height = (content + 2).min(max_height);
+    let rect = if phone {
+        Rect::new(area.x, area.bottom() - height, width, height)
+    } else {
+        // Anchor the top edge where a full box would start, so the box
+        // grows downwards as results appear instead of jumping around.
+        let full = popup(area, width, max_height);
+        Rect::new(full.x, full.y, full.width, height)
     };
     frame.render_widget(Clear, rect);
     let cursor = if ascii() { "_" } else { "█" };
     let search = ">";
-    let footer = format!(" {} · Tab section ", app.palette_scope());
+    let footer = if app.palette_run_mode() {
+        format!(" {} ", app.palette_scope())
+    } else {
+        format!(" {} · Tab section ", app.palette_scope())
+    };
+    let at = app.rename_cursor.min(app.text.len());
+    let at = if app.text.is_char_boundary(at) {
+        at
+    } else {
+        app.text.len()
+    };
+    let before = safe_text(&app.text[..at]);
+    let after = safe_text(&app.text[at..]);
+    // Keep the cursor in view for long commands: show the tail before it.
+    let room = (rect.width as usize).saturating_sub(8);
+    let before_chars = before.chars().count();
+    let before = if before_chars > room {
+        before.chars().skip(before_chars - room).collect::<String>()
+    } else {
+        before
+    };
+    let after = fit_label(&after, room.saturating_sub(before.chars().count()));
     let outer = Block::default()
         .borders(Borders::ALL)
         .border_type(if ascii() {
@@ -2239,8 +2367,9 @@ fn render_palette(frame: &mut Frame<'_>, app: &App, area: Rect, phone: bool) {
         .border_style(accent())
         .title(Line::from(vec![
             Span::styled(format!(" {search} "), accent().add_modifier(Modifier::BOLD)),
-            Span::raw(safe_text(&app.text)),
-            Span::styled(format!("{cursor} "), accent()),
+            Span::raw(before),
+            Span::styled(cursor.to_string(), accent()),
+            Span::raw(format!("{after} ")),
         ]))
         .title_bottom(Line::styled(
             fit_label(&footer, rect.width.saturating_sub(2) as usize),
@@ -2259,6 +2388,16 @@ fn render_palette(frame: &mut Frame<'_>, app: &App, area: Rect, phone: bool) {
     let mut lines: Vec<(Option<usize>, Line<'static>)> = Vec::new();
     let key_width = 6usize;
     let width = inner.width as usize;
+    let room = width.saturating_sub(2 + key_width + 1);
+    // One fixed label column for every row with a detail, so details align
+    // across sections (spec 7: columns are fixed).
+    let label_column = items
+        .iter()
+        .filter(|i| !i.detail.is_empty())
+        .map(|i| Span::raw(safe_label(&i.label)).width())
+        .max()
+        .unwrap_or(0)
+        .clamp(room.min(12), (room * 3 / 5).max(room.min(12)));
     for (index, item) in items.iter().enumerate() {
         if index == 0 || items[index - 1].section != item.section {
             lines.push((
@@ -2279,18 +2418,26 @@ fn render_palette(frame: &mut Frame<'_>, app: &App, area: Rect, phone: bool) {
         } else {
             "  "
         };
-        let room = width.saturating_sub(2 + key_width + 1);
         let label_width = if item.detail.is_empty() {
             room
         } else {
-            (room * 3 / 5).max(room.min(12))
+            label_column
         };
-        let label = fit_label(&safe_label(&item.label), label_width);
+        let label = if item.section == "Folders" {
+            fit_path(&item.label, label_width)
+        } else {
+            fit_label(&safe_label(&item.label), label_width)
+        };
+        let label = if item.detail.is_empty() {
+            label
+        } else {
+            format!("{label:<label_column$}")
+        };
         let detail_width = room.saturating_sub(label.chars().count() + 2);
         let detail = if item.detail.is_empty() || detail_width < 4 {
             String::new()
         } else {
-            format!("  {}", fit_label(&item.detail, detail_width))
+            format!("  {}", fit_detail(&item.detail, detail_width))
         };
         let used = 2 + label.chars().count() + detail.chars().count();
         let pad = width.saturating_sub(used + key_width.min(width));

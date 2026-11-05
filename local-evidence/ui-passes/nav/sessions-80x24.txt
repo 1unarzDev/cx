@@ -17,7 +17,7 @@
  Host fixture@laptop │[xxxxxx@xxxxxxxxxx cx-demo]$                             │
  Folder /tmp/cx-cap… │                                                         │
  Enter open · n new  │                                                         │
-                     ╰─────────────────────────────────────────────────────────╯
+╯                    ╰─────────────────────────────────────────────────────────╯
  ● 2/3 devices            Focus: Sessions · 2/2                           ↔ idle
  Enter Open                 n New session             w Watch · read-only       
  p Pin / unpin              s Agent tasks             ? Help                    

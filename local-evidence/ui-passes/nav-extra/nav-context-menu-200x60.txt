@@ -4,11 +4,11 @@
 │ › All devices     ││  AGENT      SESSION                       EXECUTION                 STATE     ││Enter · focus terminal · Wheel · scroll                                                         │
 │   ●  laptop       ││                                                                               ││started roslaunch server http://lab-arm:41011/                                                  │
 │   ●  * lab-arm    ││             /home/xxxxxx                                                      ││process[master]: started                                                                        │
-│   ○  * field-rov… ││  [shell]    shell · xxxxxx · terminal     fixture@laptop            idle      ││[xxxxxx@xxxxxxxxxx catkin_ws]$                                                                  │
-╰───────────────────╯│  [shell]    shell · xxxxxx · terminal     fixture@laptop            idle      ││                                                                                                │
-╭ Actions ──────────╮│  [shell]    shell · xxxxxx · terminal     fixture@laptop            idle      ││                                                                                                │
-│ Files             ││  [shell]    shell · xxxxxx · terminal     fixture@laptop            idle      ││                                                                                                │
-│ Network           ││  [shell]    shell · xxxxxx · terminal     fixture@laptop            idle      ││                                                                                                │
+│   ○  * field-rov… ││  [shell]    shell · xxxxxx · terminal     fixture@laptop            ● ext     ││[xxxxxx@xxxxxxxxxx catkin_ws]$                                                                  │
+╰───────────────────╯│  [shell]    shell · xxxxxx · terminal     fixture@laptop            ● ext     ││                                                                                                │
+╭ Actions ──────────╮│  [shell]    shell · xxxxxx · terminal     fixture@laptop            ● ext     ││                                                                                                │
+│ Files             ││  [shell]    shell · xxxxxx · terminal     fixture@laptop            ● ext     ││                                                                                                │
+│ Network           ││  [shell]    shell · xxxxxx · terminal     fixture@laptop            ● ext     ││                                                                                                │
 │ Containers        ││  [shell]    shell · xxxxxx · terminal     robot@lab-arm             ● ext     ││                                                                                                │
 │ Transfers         ││  [shell]    shell · xxxxxx · terminal     robot@lab-arm             ● ext     ││                                                                                                │
 │ Watch · read-only ││  [shell]    shell · xxxxxx · terminal     robot@lab-arm             ● ext     ││                                                                                                │
@@ -23,15 +23,15 @@
                      │                                                                               ││                                                                                                │
                      │             /tmp/tmp-xxxxxx                                                   ││                                                                                                │
                      │› [shell]    ros core                      robot@lab-arm             idle      ││                                                                                                │
-                     │             ╭ Actions ───────────────────────────────────────────╮            ││                                                                                                │
-                     │             │▌ Open the selected session                    Enter│            ││                                                                                                │
-                     │             │  Watch selected session · read-only               w│            ││                                                                                                │
-                     │             │  Pin / unpin; keep an ended-work bookmark         p│            ││                                                                                                │
-                     │             │  Inspect selected session's tasks and subag…      s│            ││                                                                                                │
-                     │             │  Stop selected CX-managed session · confirm       d│            ││                                                                                                │
-                     │             │  New session in current folder                    n│            ││                                                                                                │
-                     │             │  Actions, sessions, devices and folders      Ctrl+P│            ││                                                                                                │
-                     │             ╰────────────────────────────────────────────────────╯            ││                                                                                                │
+                     │             ╭ Actions ──────────────────╮                                     ││                                                                                                │
+                     │             │▌ Open                Enter│                                     ││                                                                                                │
+                     │             │  Watch · read-only       w│                                     ││                                                                                                │
+                     │             │  Pin / unpin             p│                                     ││                                                                                                │
+                     │             │  Agent tasks             s│                                     ││                                                                                                │
+                     │             │  Stop · confirm          d│                                     ││                                                                                                │
+                     │             │  New session             n│                                     ││                                                                                                │
+                     │             │  Actions            Ctrl+P│                                     ││                                                                                                │
+                     │             ╰───────────────────────────╯                                     ││                                                                                                │
                      │                                                                               ││                                                                                                │
                      │                                                                               ││                                                                                                │
                      │                                                                               ││                                                                                                │

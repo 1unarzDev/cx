@@ -17,7 +17,7 @@
  …/cx-capture-matri… │                                                         │
   home/              │                                                         │
    └─ projects/      ╰─────────────────────────────────────────────────────────╯
-     └─ cx-demo/      Space select · v range · . hidden                         
+╯    └─ cx-demo/      Space select · v range · . hidden                         
  ● 2/3 devices             Focus: Files · 2/2                             ↔ idle
  s Sessions here            Space Select              c / x Copy / cut          
  p / t Paste / transfer     n / : Session / command   ? Help                    

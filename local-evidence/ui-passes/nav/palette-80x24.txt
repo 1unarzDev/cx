@@ -2,9 +2,9 @@
                                                                                 
 ╭ ╭ > █ ─────────────────────────────────────────────────────────────────────╮─╮
 │ │ Sessions                                                                 │ │
-│ │▌ build watcher  laptop · /tmp/tmp-xxxxxx                /home/pro…  Enter│ │
-│ │  New shell  laptop · /tmp/tmp-xxxxxx                /home/project…  Enter│ │
-│ │  ros core  lab-arm · /tmp/tmp-xxxxxx                /remote/catki…  Enter│ ┃
+│ │▌ build watcher                            laptop · …ojects/cx-demo  Enter│ │
+│ │  New shell                                laptop · …cts/robot-logs  Enter│ │
+│ │  ros core                                 lab-arm · …ote/catkin_ws  Enter│ ┃
 ╰─│ Actions                                                                  │ ┃
 ╭ │  Pin / unpin selected session                                           p│ ┃
 │ │  Containers · choose device / All devices                                │ ┃

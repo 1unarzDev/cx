@@ -1287,6 +1287,10 @@ fn file_device_selection_retargets_only_the_focused_location() {
     a.other_browser = Some(Browser::new(0, "/destination".into()));
     press(&mut a, 'j');
     assert_eq!(a.device, 2);
+    // Moving is a pure state change (P17): no listing until it settles.
+    assert_eq!(a.browser.as_ref().unwrap().device, 0);
+    assert!(rx.try_recv().is_err(), "moving must not list");
+    assert!(a.settle_device_refresh(Instant::now() + Duration::from_secs(1)));
     assert_eq!(
         a.browser.as_ref().unwrap().device,
         1,
@@ -1332,8 +1336,10 @@ fn device_switch_restores_folder_and_does_not_consume_cut_clipboard() {
     a.focus = Focus::Devices;
     a.browser.as_mut().unwrap().preview = Some("preview".into());
     press(&mut a, 'j');
+    a.settle_device_refresh(Instant::now() + Duration::from_secs(1));
     assert_eq!(a.browser.as_ref().unwrap().device, 1);
     press(&mut a, 'k');
+    a.settle_device_refresh(Instant::now() + Duration::from_secs(1));
     assert_eq!(a.browser.as_ref().unwrap().device, 0);
     assert_eq!(a.browser.as_ref().unwrap().path, "/files");
     assert!(a.clipboard.as_ref().unwrap().cut);
@@ -2346,7 +2352,7 @@ fn actions_are_workspace_only_and_do_not_duplicate_shell_launch() {
         .any(|(_, label)| label.contains("Start here")));
     assert!(a.palette_scope().contains("Next:") || a.palette_scope().contains("Current:"));
     press(&mut a, ':');
-    assert!(a.input == Some(Input::Command));
+    assert!(a.input == Some(Input::Palette) && a.palette_run_mode() && a.text == "run: ");
 }
 #[test]
 fn new_shortcut_chooses_profile_and_preserves_focused_folder() {
@@ -2390,7 +2396,8 @@ fn command_input_pins_host_folder_and_owns_printable_shortcuts() {
     for c in "printf n:hjl".chars() {
         press(&mut a, c);
     }
-    assert_eq!(a.text, "printf n:hjl");
+    assert_eq!(a.text, "run: printf n:hjl");
+    assert_eq!(a.palette_run_command(), "printf n:hjl");
     a.browser = Some(Browser::new(1, "/elsewhere".into()));
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let (device, command) = a.pending_command_panel.as_ref().unwrap();
@@ -2417,12 +2424,14 @@ fn long_command_scrolls_and_supports_cursor_edits() {
     a.key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
     a.key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
     assert!(a.text.ends_with("TAI"));
+    // Home lands at the start of the command, after the `run: ` prefix.
     a.key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
     press(&mut a, '☃');
-    assert!(a.text.starts_with('☃'));
+    assert!(a.palette_run_command().starts_with('☃'), "{}", a.text);
     a.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     a.key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
-    assert!(a.text.starts_with("☃x"));
+    assert!(a.palette_run_command().starts_with("☃x"));
+    assert!(a.palette_run_mode());
 }
 fn container_fixture(tag: char, dev: bool) -> crate::containers::Container {
     serde_json::from_value(serde_json::json!({"engine":"fixture","id":tag.to_string().repeat(64),"name":if dev{"roboboat_dev"}else{"server_service"},"image":"fixture:latest","state":"running","started_at":"fingerprint","devcontainer":dev,"evidence":if dev{"Dev Containers labels"}else{"Docker container"},"user":"robot","folder":"/workspace","workspace":null,"config":null,"network":"host","networks":["host"],"ports":{},"allowed":false})).unwrap()
@@ -2846,7 +2855,7 @@ fn real_info_response_retains_native_command_capability() {
     assert_eq!(a.provider_choices(1), vec!["shell"]);
     assert_eq!(a.providers[&1].0, vec!["native-command-v1"]);
     press(&mut a, ':');
-    assert!(a.input == Some(Input::Command));
+    assert!(a.input == Some(Input::Palette) && a.palette_run_mode() && a.text == "run: ");
     assert_eq!(a.command_target, Some((1, "/remote/folder".into())));
 }
 #[test]
@@ -2866,7 +2875,7 @@ fn command_cancel_and_unsupported_remote_never_dispatch() {
     a.providers
         .insert(1, (vec!["native-command-v1".into()], transport::now()));
     press(&mut a, ':');
-    assert!(a.input == Some(Input::Command));
+    assert!(a.input == Some(Input::Palette) && a.palette_run_mode() && a.text == "run: ");
 }
 #[test]
 fn new_session_from_all_explicitly_selects_execution_provider_directory() {

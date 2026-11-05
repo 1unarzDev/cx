@@ -83,7 +83,10 @@ impl Target for Devices<'_> {
             .map(|(d, s)| (d, super::workspaces::runtime_key(&s)));
         self.app.device = next;
         if self.app.view == View::Files {
-            self.app.select_file_device();
+            // The browser switch lists a (possibly remote) directory, so it
+            // waits for the selection to settle like every other scope change.
+            self.app.device_refresh_due =
+                Some(std::time::Instant::now() + super::DEVICE_REFRESH_SETTLE);
             return;
         }
         // Keep the selected session when it is still in scope, by identity.

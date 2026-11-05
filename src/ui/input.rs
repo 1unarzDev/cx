@@ -4,6 +4,9 @@ use super::*;
 impl App {
     pub(super) fn input_key(&mut self, key: KeyEvent, mode: Input) {
         self.navigation.reset();
+        if self.rename_cursor > self.text.len() || !self.text.is_char_boundary(self.rename_cursor) {
+            self.rename_cursor = self.text.len();
+        }
         let before_text = self.text.clone();
         match key.code {
             KeyCode::Esc => {
@@ -25,7 +28,7 @@ impl App {
                 self.pending_edit = None;
             }
             KeyCode::Backspace => {
-                if matches!(mode, Input::Rename | Input::Command) {
+                if matches!(mode, Input::Rename | Input::Palette) {
                     if let Some((at, _)) = self.text[..self.rename_cursor].char_indices().last() {
                         self.text.replace_range(at..self.rename_cursor, "");
                         self.rename_cursor = at;
@@ -39,25 +42,26 @@ impl App {
                 self.text.clear();
                 self.rename_cursor = 0;
             }
-            KeyCode::Left if matches!(mode, Input::Rename | Input::Command) => {
+            KeyCode::Left if matches!(mode, Input::Rename | Input::Palette) => {
                 self.rename_cursor = self.text[..self.rename_cursor]
                     .char_indices()
                     .last()
                     .map(|(at, _)| at)
                     .unwrap_or(0);
             }
-            KeyCode::Right if matches!(mode, Input::Rename | Input::Command) => {
+            KeyCode::Right if matches!(mode, Input::Rename | Input::Palette) => {
                 if let Some(c) = self.text[self.rename_cursor..].chars().next() {
                     self.rename_cursor += c.len_utf8();
                 }
             }
-            KeyCode::Home if matches!(mode, Input::Rename | Input::Command) => {
-                self.rename_cursor = 0
+            KeyCode::Home if matches!(mode, Input::Rename | Input::Palette) => {
+                // In run mode Home means the start of the command.
+                self.rename_cursor = self.text.len() - self.palette_run_command().len()
             }
-            KeyCode::End if matches!(mode, Input::Rename | Input::Command) => {
+            KeyCode::End if matches!(mode, Input::Rename | Input::Palette) => {
                 self.rename_cursor = self.text.len()
             }
-            KeyCode::Delete if matches!(mode, Input::Rename | Input::Command) => {
+            KeyCode::Delete if matches!(mode, Input::Rename | Input::Palette) => {
                 if let Some(c) = self.text[self.rename_cursor..].chars().next() {
                     self.text
                         .replace_range(self.rename_cursor..self.rename_cursor + c.len_utf8(), "");
@@ -68,9 +72,9 @@ impl App {
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                if self.text.len() + c.len_utf8() <= if mode == Input::Command { 8192 } else { 256 }
-                {
-                    if matches!(mode, Input::Rename | Input::Command) {
+                let limit = if self.palette_run_mode() { 8192 } else { 256 };
+                if self.text.len() + c.len_utf8() <= limit {
+                    if matches!(mode, Input::Rename | Input::Palette) {
                         self.text.insert(self.rename_cursor, c);
                         self.rename_cursor += c.len_utf8();
                     } else {
@@ -128,20 +132,6 @@ impl App {
             ),
             KeyCode::Enter => match mode {
                 Input::Palette => self.run_palette_selected(),
-                Input::Command => {
-                    if !self.text.trim().is_empty() {
-                        if let Some((d, directory)) = self.command_target.take() {
-                            self.pending_command_panel = Some((
-                                d,
-                                RunCommand {
-                                    directory,
-                                    command: std::mem::take(&mut self.text),
-                                },
-                            ));
-                            self.input = None;
-                        }
-                    }
-                }
                 Input::Search => {
                     self.input = None;
                     self.focus = Focus::Workspace;

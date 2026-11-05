@@ -217,9 +217,6 @@ macro_rules! goto {
 fn files_search(app: &App) -> bool {
     app.browser.as_ref().is_some_and(|b| !b.search.is_empty())
 }
-fn files_no_search(app: &App) -> bool {
-    !files_search(app)
-}
 fn not_files_search(app: &App) -> bool {
     !(app.view == View::Files && app.focus == Focus::Workspace && files_search(app))
 }
@@ -861,7 +858,17 @@ pub(super) const BINDINGS: &[Binding] = &[
         Cmd::RunCommand,
         "Run command in current folder",
         hint("n / :", "Session / command", 5),
-        Some(files_no_search)
+        Some(not_files_search)
+    ),
+    // `:` always runs; only its footer chip yields to the search's `n / N`.
+    alias!(
+        Global,
+        [ch(':')],
+        ":",
+        Cmd::RunCommand,
+        "Run command in current folder",
+        None,
+        None
     ),
     bind!(
         Global,
@@ -1026,6 +1033,21 @@ pub(super) fn help_sections(app: &App) -> Vec<(&'static str, Vec<(&'static str, 
 }
 
 /// Context-menu entries for the focused selection: the same commands as its keys.
+/// The short name of a binding: its footer-chip label, else the help text
+/// up to its first clause (context menu rows must fit a narrow box).
+pub(super) fn short_label(binding: &'static Binding) -> &'static str {
+    if let Some(hint) = binding.hint {
+        return hint.label;
+    }
+    let help = binding.help;
+    let end = [" · ", "; ", " (", ", "]
+        .iter()
+        .filter_map(|sep| help.find(sep))
+        .min()
+        .unwrap_or(help.len());
+    &help[..end]
+}
+
 pub(super) fn context_menu(app: &App) -> Vec<(&'static str, &'static str, Cmd)> {
     let mut out: Vec<(&'static str, &'static str, Cmd)> = Vec::new();
     for ctx in contexts(app) {
@@ -1046,7 +1068,7 @@ pub(super) fn context_menu(app: &App) -> Vec<(&'static str, &'static str, Cmd)> 
                     continue;
                 }
             }
-            out.push((binding.label, binding.help, binding.cmd));
+            out.push((binding.label, short_label(binding), binding.cmd));
         }
     }
     for cmd in [Cmd::New, Cmd::Palette] {
@@ -1055,7 +1077,7 @@ pub(super) fn context_menu(app: &App) -> Vec<(&'static str, &'static str, Cmd)> 
             .find(|b| b.ctx == Ctx::Global && b.cmd == cmd)
         {
             if available(app, b) && !out.iter().any(|(_, _, c)| *c == cmd) {
-                out.push((b.label, b.help, cmd));
+                out.push((b.label, short_label(b), cmd));
             }
         }
     }

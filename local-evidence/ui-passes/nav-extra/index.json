@@ -28,6 +28,13 @@
   "png": "nav-files-40x20.png"
  },
  {
+  "view": "nav-run-command",
+  "cols": 40,
+  "rows": 20,
+  "txt": "nav-run-command-40x20.txt",
+  "png": "nav-run-command-40x20.png"
+ },
+ {
   "view": "nav-help",
   "cols": 40,
   "rows": 20,
@@ -68,6 +75,13 @@
   "rows": 24,
   "txt": "nav-files-80x24.txt",
   "png": "nav-files-80x24.png"
+ },
+ {
+  "view": "nav-run-command",
+  "cols": 80,
+  "rows": 24,
+  "txt": "nav-run-command-80x24.txt",
+  "png": "nav-run-command-80x24.png"
  },
  {
   "view": "nav-help",
@@ -126,6 +140,13 @@
   "png": "nav-files-120x40.png"
  },
  {
+  "view": "nav-run-command",
+  "cols": 120,
+  "rows": 40,
+  "txt": "nav-run-command-120x40.txt",
+  "png": "nav-run-command-120x40.png"
+ },
+ {
   "view": "nav-help",
   "cols": 120,
   "rows": 40,
@@ -180,6 +201,13 @@
   "rows": 60,
   "txt": "nav-files-200x60.txt",
   "png": "nav-files-200x60.png"
+ },
+ {
+  "view": "nav-run-command",
+  "cols": 200,
+  "rows": 60,
+  "txt": "nav-run-command-200x60.txt",
+  "png": "nav-run-command-200x60.png"
  },
  {
   "view": "nav-help",

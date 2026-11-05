@@ -1,5 +1,5 @@
  cx · Files                           … 
-[All] [●laptop] [●* lab-arm]            
+[All] [●laptop] [●* lab-arm]          1›
  Files  fixture@laptop                  
  NORMAL 0 selected · hidden off         
 ╭ ▸ 69 bytes · Escape back ────────────╮

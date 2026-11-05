@@ -28,10 +28,10 @@
                      │                                                                                                 │
                      │                                                                                                 │
                      │                                                                                                 │
+                     │                                                                                                 │
                      │                                     ╭ Error ───────────────────────────────────────────────────╮│
                      │                                     │ robot@field-rover: Device unreachable over SSH · check   ││
-                     │                                     │ its connection, then Refresh: helper closed before       ││
-                     │                                     │ response                                                 ││
+                     │                                     │ its connection, then Refresh: Broken pipe (os error 32)  ││
                      ╰─────────────────────────────────────╰──────────────────────────────────────────────────────────╯╯
                       Space select · v range · . hidden                                                                 
  ● 2/3 devices                               Focus: Files · 2/5                                                   ↔ idle

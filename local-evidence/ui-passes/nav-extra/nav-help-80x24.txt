@@ -1,24 +1,24 @@
- cx   Sessions  ▸Files   Network   Keys               viewing fixture@laptop  … 
-                                                                                
-╭ ╭ ▸ Help · Esc close ──────────────────────────────────────────────────────╮  
-│ │Files                                                                     │  
-│ │Space              Select and advance                                     │─╮
-│ │v                  Visual range selection                                 │ │
-│ │u                  Clear selection                                        │ │
-╰─│.                  Show / hide hidden files                               │ │
-╭ │f                  Filter names                                           │ │
-│ │c / y              Copy, then choose another folder or device             │ │
-│ │x                  Cut, then choose another folder or device              │ │
-│ │p                  Paste here                                             │ │
-│ │Y                  Clear clipboard · files unchanged                      │ │
-╰─│t                  Transfer to… choose device, folder, then Enter         │ │
- S│r                  Rename the selected file                               │ │
- l│d                  Delete · confirm permanently                           │ │
- t│M                  New folder                                             │ │
-  │                                                                          │ │
-  │Files and previews                                                        │─╯
-  │Enter              Open folder / preview file                             │  
- ●│n                  New session in this folder                             │le
- ↑╰──────────────────────────────────────────────────────────────────────────╯  
-                                                                                
-                                                                                
+╭ ▸ Help · Esc close ──────────────────────────────────────────────────────────╮
+│Files                                                                         │
+│Space              Select and advance                                         │
+│v                  Visual range selection                                     │
+│u                  Clear selection                                            │
+│.                  Show / hide hidden files                                   │
+│f                  Filter names                                               │
+│c / y              Copy, then choose another folder or device                 │
+│x                  Cut, then choose another folder or device                  │
+│p                  Paste here                                                 │
+│Y                  Clear clipboard · files unchanged                          │
+│t                  Transfer to… choose device, folder, then Enter             │
+│r                  Rename the selected file                                   │
+│d                  Delete · confirm permanently                               │
+│M                  New folder                                                 │
+│                                                                              │
+│Files and previews                                                            │
+│Enter              Open folder / preview file                                 │
+│n                  New session in this folder                                 │
+│s                  Sessions in selected / current folder                      │
+│Esc                Clear selection / filter / search, then back to Sessions   │
+│                                                                              │
+│Everywhere                                                                    │
+╰──────────────────────────────────────────────────────────────────────────────╯

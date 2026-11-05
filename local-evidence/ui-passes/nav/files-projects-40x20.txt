@@ -1,8 +1,8 @@
  cx · Files                           … 
-[All] [●laptop] [●* lab-arm]            
+[All] [●laptop] [●* lab-arm]          1›
  Files  fixture@laptop                  
  NORMAL 0 selected · hidden off         
-╭ ▸ …3yyp6/home/projects · 2 ──────────╮
+╭ ▸ …vbcxo/home/projects · 2 ──────────╮
 │  / ▸ cx-demo                         │
 │  /   robot-logs                      │
 │                                      │

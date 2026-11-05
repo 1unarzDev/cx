@@ -23,15 +23,15 @@
                      │                                           ││                                                    │
                      │  /tmp/tmp-xxxxxx                          ││                                                    │
                      │› ros core                       idle      ││                                                    │
-                     │  ╭ Actions ───────────────────────────────────────────╮                                         │
-                     │  │▌ Open the selected session                    Enter│                                         │
-                     │  │  Watch selected session · read-only               w│                                         │
-                     │  │  Pin / unpin; keep an ended-work bookmark         p│                                         │
-                     │  │  Inspect selected session's tasks and subag…      s│                                         │
-                     │  │  Stop selected CX-managed session · confirm       d│                                         │
-                     │  │  New session in current folder                    n│                                         │
-                     │  │  Actions, sessions, devices and folders      Ctrl+P│                                         │
-                     │  ╰────────────────────────────────────────────────────╯                                         │
+                     │  ╭ Actions ──────────────────╮            ││                                                    │
+                     │  │▌ Open                Enter│            ││                                                    │
+                     │  │  Watch · read-only       w│            ││                                                    │
+                     │  │  Pin / unpin             p│            ││                                                    │
+                     │  │  Agent tasks             s│            ││                                                    │
+                     │  │  Stop · confirm          d│            ││                                                    │
+                     │  │  New session             n│            ││                                                    │
+                     │  │  Actions            Ctrl+P│            ││                                                    │
+                     │  ╰───────────────────────────╯            ││                                                    │
                      │                                           ││                                                    │
                      ╰───────────────────────────────────────────╯╰────────────────────────────────────────────────────╯
  ● 2/3 devices                             Focus: Sessions · 13/13                                                ↔ idle

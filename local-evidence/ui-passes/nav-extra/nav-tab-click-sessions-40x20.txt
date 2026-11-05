@@ -1,5 +1,5 @@
  cx · Files                           … 
-[All] [●laptop] [●* lab-arm]            
+[All] [●laptop] [●* lab-arm]          1›
  ╭ ▸ Sessions here · fixture@laptop ──╮ 
  │+ New shell session                 │ 
 ╭╰────────────────────────────────────╯╮

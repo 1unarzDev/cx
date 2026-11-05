@@ -1,5 +1,5 @@
  cx · Sessions                        … 
-[All] [●laptop] [●* lab-arm]            
+[All] [●laptop] [●* lab-arm]          1›
 ╭ ▸ Sessions · 2 sessions ─────────────╮
 │  SESSION                   STATE     │
 │                                      │

@@ -91,7 +91,6 @@ enum Input {
     Search,
     PreviewSearch,
     Palette,
-    Command,
     Mkdir,
     Filter,
     Rename,
@@ -1026,8 +1025,8 @@ impl App {
         if let Some(input) = self.input {
             return match input {
                 Input::Search | Input::PreviewSearch => "Search",
-                Input::Palette => "Actions",
-                Input::Command => "Run command",
+                Input::Palette if self.palette_run_mode() => "Run command",
+                Input::Palette => "Palette",
                 Input::Add => {
                     if self.pending_edit.is_some() {
                         "Edit SSH address"

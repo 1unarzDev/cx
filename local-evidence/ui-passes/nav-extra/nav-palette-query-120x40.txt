@@ -10,23 +10,23 @@
 │ Files             ││  shell · xxxxxx · terminal      ● ext     ││                                                    │
 │ Network           ││╭ > ros█ ──────────────────────────────────────────────────────────────────╮                     │
 │ Containers        │││ Sessions                                                                 │                     │
-│ Transfers         │││▌ ros core  lab-arm · /tmp/tmp-xxxxxx                /remote/catki…  Enter│                     │
-│ Watch · read-only │││  New shell  laptop · /tmp/tmp-xxxxxx                /home/project…  Enter│                     │
-╰───────────────────╯││  build watcher  laptop · /tmp/tmp-xxxxxx                /home/pro…  Enter│                     │
+│ Transfers         │││▌ ros core                                 lab-arm · …ote/catkin_ws  Enter│                     │
+│ Watch · read-only │││  build watcher                            laptop · …ojects/cx-demo  Enter│                     │
+╰───────────────────╯││  New shell                                laptop · …cts/robot-logs  Enter│                     │
  Selected ───────────││ Folders                                                                  │                     │
- Host robot@lab-arm  ││  /tmp/tmp-xxxxxx                /home/p…  laptop                         │                     │
- Folder /tmp/cx-cap… ││  /tmp/tmp-xxxxxx                /home/p…  laptop                         │                     │
- Enter open · n new  ││  /tmp/tmp-xxxxxx                /remote…  lab-arm                        │                     │
-                     ││                                                                          │                     │
-                     ││                                                                          │                     │
-                     ││                                                                          │                     │
-                     ││                                                                          │                     │
-                     ││                                                                          │                     │
-                     ││                                                                          │                     │
-                     ││                                                                          │                     │
-                     ││                                                                          │                     │
-                     ││                                                                          │                     │
+ Host robot@lab-arm  ││  …-matrix-sqtk4_vt/home/projects/cx-demo  laptop                         │                     │
+ Folder /tmp/cx-cap… ││  …trix-sqtk4_vt/home/projects/robot-logs  laptop                         │                     │
+ Enter open · n new  ││  …pture-matrix-sqtk4_vt/remote/catkin_ws  lab-arm                        │                     │
                      │╰ Enter attaches · Esc cancel · Tab section ───────────────────────────────╯                     │
+                     │  /tmp/tmp-xxxxxx                          ││                                                    │
+                     │  New shell                      idle      ││                                                    │
+                     │                                           ││                                                    │
+                     │  /tmp/tmp-xxxxxx                          ││                                                    │
+                     │› ros core                       idle      ││                                                    │
+                     │                                           ││                                                    │
+                     │                                           ││                                                    │
+                     │                                           ││                                                    │
+                     │                                           ││                                                    │
                      │                                           ││                                                    │
                      │                                           ││                                                    │
                      │                                           ││                                                    │
@@ -34,7 +34,7 @@
                      │                                           ││                                                    │
                      │                                           ││                                                    │
                      ╰───────────────────────────────────────────╯╰────────────────────────────────────────────────────╯
- ● 2/3 devices                             Focus: Actions · 13/13                                                 ↔ idle
+ ● 2/3 devices                             Focus: Palette · 13/13                                                 ↔ idle
  Enter Confirm                           Esc Cancel                              Ctrl U Clear                           
                                                                                                                         
                                                                                                                         

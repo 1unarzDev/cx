@@ -373,12 +373,20 @@ pub(super) fn render_context_menu(frame: &mut Frame<'_>, app: &App, area: Rect) 
         return;
     };
     modal();
+    // Bar (2) + widest label + gap (1) + widest key, plus a cell of air.
     let label_width = menu
         .items
         .iter()
-        .map(|(key, help, _)| key.chars().count() + help.chars().count() + 5)
+        .map(|(_, help, _)| help.chars().count())
         .max()
-        .unwrap_or(10);
+        .unwrap_or(8)
+        + menu
+            .items
+            .iter()
+            .map(|(key, _, _)| key.chars().count())
+            .max()
+            .unwrap_or(1)
+        + 4;
     let width = (label_width as u16 + 2)
         .min(area.width.saturating_sub(2))
         .max(12);

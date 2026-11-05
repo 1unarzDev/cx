@@ -125,6 +125,12 @@ impl App {
     /// all arrive here, so a tap and its key share one implementation.
     pub(super) fn run_cmd(&mut self, cmd: keymap::Cmd) {
         use keymap::Cmd;
+        // Any command other than a motion acts on what the user sees as
+        // scoped, so a pending Files device switch lands first.
+        if cmd != Cmd::Motion && self.view == View::Files && self.device_refresh_due.is_some() {
+            self.device_refresh_due = None;
+            self.settle_file_device();
+        }
         match cmd {
             Cmd::Motion => {}
             Cmd::Goto(view) => self.goto_view(view),
@@ -133,11 +139,7 @@ impl App {
             Cmd::NextPanel => self.cycle_focus(false),
             Cmd::PrevPanel => self.cycle_focus(true),
             Cmd::FocusDir(dx, dy) => self.directional_focus(i32::from(dx), i32::from(dy)),
-            Cmd::Palette => {
-                self.input = Some(Input::Palette);
-                self.text.clear();
-                self.palette_selected = 0;
-            }
+            Cmd::Palette => self.open_palette(""),
             Cmd::RunCommand => self.execute(Action::Command),
             Cmd::Help => {
                 self.help = true;
@@ -483,9 +485,16 @@ impl App {
                 self.restore_network_selection(selection);
             }
             View::Containers => self.refresh_containers(),
-            View::Files | View::Secrets => {}
+            View::Files => self.settle_file_device(),
+            View::Secrets => {}
         }
         true
+    }
+    /// Switch the Files browser to the scoped device without moving focus.
+    pub(super) fn settle_file_device(&mut self) {
+        let focus = self.focus;
+        self.select_file_device();
+        self.focus = focus;
     }
     pub(super) fn switch_pane(&mut self) {
         std::mem::swap(&mut self.browser, &mut self.other_browser);

@@ -10,9 +10,9 @@
 │ Files             ││› New shell                      idle      ││run-05 step 6 ok  lidar=16Hz                        │
 │ Network           ││╭ > █ ─────────────────────────────────────────────────────────────────────╮                     │
 │ Containers        │││ Sessions                                                                 │                     │
-│ Transfers         │││▌ build watcher  laptop · /tmp/tmp-xxxxxx                /home/pro…  Enter│                     │
-│ Watch · read-only │││  New shell  laptop · /tmp/tmp-xxxxxx                /home/project…  Enter│                     │
-╰───────────────────╯││  ros core  lab-arm · /tmp/tmp-xxxxxx                /remote/catki…  Enter│                     │
+│ Transfers         │││▌ build watcher                            laptop · …ojects/cx-demo  Enter│                     │
+│ Watch · read-only │││  New shell                                laptop · …cts/robot-logs  Enter│                     │
+╰───────────────────╯││  ros core                                 lab-arm · …ote/catkin_ws  Enter│                     │
  Selected ───────────││ Actions                                                                  │                     │
  Host fixture@laptop ││  Pin / unpin selected session                                           p│                     │
  Folder /tmp/cx-cap… ││  Containers · choose device / All devices                                │                     │
@@ -34,7 +34,7 @@
                      │                                           ││                                                    │
                      │                                           ││                                                    │
                      ╰───────────────────────────────────────────╯╰────────────────────────────────────────────────────╯
- ● 2/3 devices                              Focus: Actions · 3/3                                                  ↔ idle
+ ● 2/3 devices                              Focus: Palette · 3/3                                                  ↔ idle
  Enter Confirm                           Esc Cancel                              Ctrl U Clear                           
                                                                                                                         
                                                                                                                         

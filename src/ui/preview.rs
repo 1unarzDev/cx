@@ -60,7 +60,7 @@ pub(super) fn preview_inline_tagged(text: &str, tagged: bool) -> Vec<Span<'stati
     let mut at = 0;
     for link in crate::markdown_links::links(text) {
         spans.extend(preview_emphasis(&text[at..link.start]));
-        let mut style = tint(Color::Cyan).add_modifier(Modifier::UNDERLINED);
+        let mut style = info().add_modifier(Modifier::UNDERLINED);
         // Tags exist only in a private hit-test layout, never the visible frame.
         if tagged {
             style.bg = Some(markdown_link_tag(&link.target));
@@ -203,7 +203,7 @@ pub(super) fn preview_emphasis(text: &str) -> Vec<Span<'static>> {
                 if !ascii() {
                     if let Some(rendered) = crate::markdown_math::render_math(expression) {
                         spans.extend(preview_emphasis_only(&text[plain..at]));
-                        spans.push(Span::styled(rendered, tint(Color::Magenta)));
+                        spans.push(Span::styled(rendered, tok(Tok::Code)));
                         at += open.len() + end + close.len();
                         plain = at;
                         slashes = 0;
@@ -294,7 +294,7 @@ pub(super) fn preview_emphasis_only(text: &str) -> Vec<Span<'static>> {
         };
         if let Some(end) = end {
             let style = match token {
-                "`" => tint(Color::Yellow),
+                "`" => tok(Tok::Code),
                 "**" | "__" => Style::default().add_modifier(Modifier::BOLD),
                 _ => Style::default().add_modifier(Modifier::ITALIC),
             };
@@ -537,11 +537,9 @@ pub(super) fn markdown_layout_lines(
                                 *line = Line::raw("");
                             }
                             if row + 1 < end {
-                                lines[row + 1] =
-                                    Line::from(Span::styled(rendered, tint(Color::Magenta)));
+                                lines[row + 1] = Line::from(Span::styled(rendered, tok(Tok::Code)));
                             } else {
-                                lines[row] =
-                                    Line::from(Span::styled(rendered, tint(Color::Magenta)));
+                                lines[row] = Line::from(Span::styled(rendered, tok(Tok::Code)));
                             }
                             row = end + 1;
                             continue;
@@ -708,10 +706,10 @@ pub(super) fn highlight_preview_matches(lines: &mut [Line<'static>], find: &Prev
                 if flags[position] > 0 {
                     style = style.add_modifier(Modifier::UNDERLINED);
                     if !ascii() && !no_color() {
-                        style = style.fg(if flags[position] == 2 {
-                            Color::Cyan
+                        style = style.patch(if flags[position] == 2 {
+                            accent()
                         } else {
-                            Color::Yellow
+                            tok(Tok::Match)
                         });
                     }
                     if flags[position] == 2 {

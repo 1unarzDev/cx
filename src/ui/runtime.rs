@@ -101,7 +101,7 @@ pub(super) fn authentication_modal(
                     } else {
                         "↓ Review fingerprint   n Cancel"
                     })
-                    .style(Style::default().fg(Color::Yellow)),
+                    .style(warn()),
                     footer,
                 );
             } else {
@@ -132,7 +132,7 @@ pub(super) fn authentication_modal(
                 f.render_widget(
                     Paragraph::new(Line::from(vec![
                         Span::raw("> "),
-                        Span::styled(shown, Style::default().fg(Color::Cyan)),
+                        Span::styled(shown, accent()),
                     ])),
                     field,
                 );

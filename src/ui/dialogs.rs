@@ -696,24 +696,20 @@ pub(super) fn confirmation_buttons(
         frame.render_widget(
             Block::default()
                 .borders(Borders::ALL)
-                .border_type(if ascii() {
-                    BorderType::Plain
-                } else {
-                    BorderType::Rounded
-                })
-                .border_style(muted()),
+                .border_set(overlay_border())
+                .border_style(faint()),
             area,
         );
     }
     for (i, label) in labels.into_iter().enumerate() {
         let active = selected == i && !detail_focus;
-        let color = if i == 1 { Color::Red } else { Color::Cyan };
+        let tone = if i == 1 { err() } else { accent() };
         let emphasis = if active {
             Modifier::BOLD
         } else {
             Modifier::empty()
         };
-        let style = tint(color).add_modifier(emphasis);
+        let style = tone.add_modifier(emphasis);
         let line = Line::from(vec![
             Span::styled(
                 if active {
@@ -729,7 +725,7 @@ pub(super) fn confirmation_buttons(
             ),
             Span::styled(
                 format!("{} ", if i == 0 { "n" } else { "y" }),
-                tint(color).add_modifier(Modifier::BOLD),
+                tone.add_modifier(Modifier::BOLD),
             ),
             Span::styled(label, style),
         ]);
@@ -747,12 +743,8 @@ pub(super) fn confirmation_buttons(
                         .block(
                             Block::default()
                                 .borders(Borders::ALL)
-                                .border_type(if ascii() {
-                                    BorderType::Plain
-                                } else {
-                                    BorderType::Rounded
-                                })
-                                .border_style(if active { style } else { muted() }),
+                                .border_set(border_set(active))
+                                .border_style(if active { style } else { faint() }),
                         ),
                     button,
                 );

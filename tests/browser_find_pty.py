@@ -63,7 +63,8 @@ for width, height in [(120, 40), (80, 24), (48, 24)]:
             row=next(y for y,line in enumerate(screen.display) if 'alpha.txt' in line)
             col=screen.display[row].index('alpha.txt')
             assert screen.buffer[row][col].underscore, text()
-            assert screen.buffer[row][col].bg=='default'
+            # Transparent except the selection tokens (accent.bg / select.dim.bg; 16-color uses reverse).
+            assert screen.buffer[row][col].bg in ('default', '1d3a42', '262b33', '005f5f', '303030')
             send(b'\r'); assert 'alpha fixture' not in text()
             send(b'nN'); assert 'alpha fixture' not in text()
             send(b'/\x15a\r')
@@ -71,7 +72,7 @@ for width, height in [(120, 40), (80, 24), (48, 24)]:
             capture('find')
             def selected_name():
                 for line in screen.display:
-                    if ('▸ ' in line or '> ' in line) and any(name in line for name in ['alpha.txt','beta.txt','directory']):
+                    if ('▌ ' in line or '▸ ' in line or '> ' in line) and any(name in line for name in ['alpha.txt','beta.txt','directory']):
                         return next(name for name in ['alpha.txt','beta.txt','directory'] if name in line)
                 return None
             first=selected_name(); assert first, text()

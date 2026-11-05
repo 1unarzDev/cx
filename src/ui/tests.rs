@@ -1781,6 +1781,12 @@ fn rejected_cut_retains_clipboard_and_late_mutation_errors_remain_visible() {
     });
     assert!(a.notice.contains("destination exists"));
 }
+/// Terminal transparency: only selected rows may paint a background (spec 4),
+/// and only with the selection tokens.
+fn transparent_except_selection(buffer: &ratatui::buffer::Buffer) -> bool {
+    let allowed = [Some(Color::Reset), selection(true).bg, selection(false).bg];
+    buffer.content.iter().all(|c| allowed.contains(&Some(c.bg)))
+}
 fn capture_app(a: &App, width: u16) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
     terminal.draw(|f| render(f, a)).unwrap();
@@ -1874,7 +1880,7 @@ fn update_notice_capture_matrix_aligns_and_preserves_default_background() {
                 assert_eq!(popup.right(), width - 1);
                 assert_eq!(popup.bottom(), available.bottom() - 1);
                 assert!(text.lines().last().unwrap().trim().is_empty());
-                assert!(buffer.content.iter().all(|cell| cell.bg == Color::Reset));
+                assert!(transparent_except_selection(buffer));
                 if let Some(directory) = std::env::var_os("CX_UPDATE_CAPTURE_DIR") {
                     let directory = std::path::PathBuf::from(directory);
                     std::fs::create_dir_all(&directory).unwrap();
@@ -2809,11 +2815,7 @@ fn containers_ui_capture_matrix_and_default_background() {
             } else {
                 assert!(text.contains("roboboat_dev"), "{width} {mode}");
             }
-            assert!(buffer
-                .content
-                .iter()
-                .filter(|c| c.symbol() == " ")
-                .all(|c| c.bg == Color::Reset));
+            assert!(transparent_except_selection(buffer));
             if let Some(directory) = std::env::var_os("CX_CONTAINER_CAPTURE_DIR") {
                 let path = std::path::PathBuf::from(directory);
                 std::fs::create_dir_all(&path).unwrap();
@@ -3138,7 +3140,7 @@ fn transfer_sidebar_animation_frames_are_transparent_and_fit() {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|f| render(f, &a)).unwrap();
             let buffer = terminal.backend().buffer();
-            assert!(buffer.content.iter().all(|c| c.bg == Color::Reset));
+            assert!(transparent_except_selection(buffer));
             let text = buffer
                 .content
                 .chunks(width as usize)
@@ -3769,7 +3771,7 @@ fn workspace_polish_capture_matrix() {
                     .collect::<Vec<_>>()
                     .join("\n");
                 assert!(
-                    buffer.content.iter().all(|c| c.bg == Color::Reset),
+                    transparent_except_selection(buffer),
                     "{state} {width}x{height}: opaque background"
                 );
                 if state == "sessions" {
@@ -5228,10 +5230,10 @@ fn notices_expire_and_repeated_messages_restart_the_timeout() {
 fn floating_notifications_are_typed_bounded_and_restore_the_scene() {
     for width in [48, 80, 120] {
         for (kind, label, color) in [
-            (NoticeKind::Info, "Info", Color::Rgb(80, 200, 210)),
-            (NoticeKind::Success, "Success", Color::Rgb(110, 200, 120)),
-            (NoticeKind::Warning, "Warning", Color::Rgb(220, 180, 70)),
-            (NoticeKind::Error, "Error", Color::Rgb(220, 90, 90)),
+            (NoticeKind::Info, "Info", tok(Tok::Info).fg),
+            (NoticeKind::Success, "Success", tok(Tok::Ok).fg),
+            (NoticeKind::Warning, "Warning", tok(Tok::Warn).fg),
+            (NoticeKind::Error, "Error", tok(Tok::Err).fg),
         ] {
             let (mut app, _rx) = file_app();
             let baseline = capture_app(&app, width);
@@ -5242,9 +5244,9 @@ fn floating_notifications_are_typed_bounded_and_restore_the_scene() {
             let text = capture_app(&app, width);
             assert!(text.contains(label));
             assert!(text.contains("notification") && text.contains("type"));
-            assert!(buffer.content.iter().all(|cell| cell.bg == Color::Reset));
+            assert!(transparent_except_selection(buffer));
             if std::env::var_os("NO_COLOR").is_none() {
-                assert!(buffer.content.iter().any(|cell| cell.fg == color));
+                assert!(buffer.content.iter().any(|cell| Some(cell.fg) == color));
             }
             if let Some(dir) = std::env::var_os("CX_NOTIFICATION_CAPTURE_DIR") {
                 let dir = std::path::PathBuf::from(dir);
@@ -6628,7 +6630,7 @@ fn loader_content_has_equal_vertical_padding_inside_panel() {
     let lines: Vec<_> = text.lines().collect();
     let top = lines
         .iter()
-        .position(|l| l.contains("New session") && l.contains('─'))
+        .position(|l| l.contains("New session") && (l.contains('─') || l.contains('━')))
         .unwrap();
     let first = lines
         .iter()
@@ -6639,11 +6641,49 @@ fn loader_content_has_equal_vertical_padding_inside_panel() {
         .position(|l| l.contains("Preparing the first screen"))
         .unwrap();
     let bottom = (last + 1..lines.len())
-        .find(|i| lines[*i].contains(&"─".repeat(40)))
+        .find(|i| lines[*i].contains(&"─".repeat(40)) || lines[*i].contains(&"━".repeat(40)))
         .unwrap();
     assert_eq!(
         first - top - 1,
         bottom - last - 1,
         "loader content is not vertically centered"
     );
+}
+
+#[test]
+fn ascii_capability_renders_no_unicode_and_keeps_focus_cues() {
+    use super::caps::{with_caps, Caps, ColorDepth};
+    let ascii = Caps {
+        unicode: false,
+        color: ColorDepth::None,
+        ..Caps::default()
+    };
+    let (files, _rx) = file_app();
+    let (sessions, _rx2) = queued_app();
+    for (name, app) in [("files", &files), ("sessions", &sessions)] {
+        for (w, h) in [(40, 20), (80, 24), (120, 40)] {
+            with_caps(ascii, || {
+                let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+                t.draw(|f| render(f, app)).unwrap();
+                let buffer = t.backend().buffer();
+                let text = buffer
+                    .content
+                    .chunks(w as usize)
+                    .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(text.is_ascii(), "{name} {w}x{h}:\n{text}");
+                // Focused panel: `#=#` border with a reversed `[ title ]` chip.
+                assert!(text.contains("#[ "), "{name} {w}x{h}:\n{text}");
+                assert!(buffer
+                    .content
+                    .iter()
+                    .any(|c| c.symbol() == "[" && c.modifier.contains(Modifier::REVERSED)));
+                assert!(buffer
+                    .content
+                    .iter()
+                    .all(|c| c.fg == Color::Reset && c.bg == Color::Reset));
+            });
+        }
+    }
 }

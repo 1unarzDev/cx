@@ -18,13 +18,13 @@ impl Kind {
             Self::Error => "Error",
         }
     }
-    fn style(self) -> Style {
-        tint(match self {
-            Self::Info => Color::Cyan,
-            Self::Success => Color::Green,
-            Self::Warning => Color::Yellow,
-            Self::Error => Color::Red,
-        })
+    fn token(self) -> Tok {
+        match self {
+            Self::Info => Tok::Info,
+            Self::Success => Tok::Ok,
+            Self::Warning => Tok::Warn,
+            Self::Error => Tok::Err,
+        }
     }
 }
 
@@ -110,23 +110,6 @@ pub(super) fn poll_interval(
         Duration::from_millis(100)
     }
 }
-fn fade(style: Style, opacity: f32) -> Style {
-    if no_color() {
-        return style;
-    }
-    if opacity >= 1.0 && style.fg.is_none_or(|color| color == Color::Reset) {
-        return style;
-    }
-    let (r, g, b) = match style.fg.unwrap_or(Color::Reset) {
-        Color::Cyan => (80, 200, 210),
-        Color::Green => (110, 200, 120),
-        Color::Yellow => (220, 180, 70),
-        Color::Red => (220, 90, 90),
-        _ => (208, 208, 208),
-    };
-    let blend = |v: u8| (64.0 + (v as f32 - 64.0) * opacity).round() as u8;
-    style.fg(Color::Rgb(blend(r), blend(g), blend(b)))
-}
 
 pub(super) fn render(
     frame: &mut Frame<'_>,
@@ -148,14 +131,10 @@ pub(super) fn render(
     // Text wrapping stays stable throughout the animation and never touches the sidebar/footer.
     let local = Rect::new(0, 0, rect.width, rect.height);
     let mut buffer = ratatui::buffer::Buffer::empty(local);
-    let style = fade(kind.style(), appearance.opacity);
+    let style = faded(kind.token(), appearance.opacity);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(if ascii() {
-            BorderType::Plain
-        } else {
-            BorderType::Rounded
-        })
+        .border_set(overlay_border())
         .border_style(style)
         .title(Line::from(Span::styled(
             format!(" {} ", kind.label()),
@@ -165,7 +144,12 @@ pub(super) fn render(
     let inner = block.inner(local);
     let paragraph = Paragraph::new(text)
         .wrap(Wrap { trim: false })
-        .style(fade(Style::default(), appearance.opacity));
+        // Body text stays the terminal default; it only dims while fading.
+        .style(if appearance.opacity < 1.0 {
+            muted()
+        } else {
+            Style::default()
+        });
     let clipped = paragraph.line_count(inner.width) > inner.height as usize;
     block.render(local, &mut buffer);
     paragraph.render(inner, &mut buffer);

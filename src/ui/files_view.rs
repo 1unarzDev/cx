@@ -182,10 +182,10 @@ pub(super) fn render_browser(
                             "NORMAL"
                         }
                     ),
-                    tint(if b.visual_anchor.is_some() {
-                        Color::Magenta
+                    (if b.visual_anchor.is_some() {
+                        tok(Tok::Code)
                     } else {
-                        Color::Green
+                        ok()
                     })
                     .add_modifier(Modifier::BOLD),
                 ),
@@ -201,11 +201,7 @@ pub(super) fn render_browser(
                             String::new()
                         }
                     }),
-                    if b.marked.is_empty() {
-                        muted()
-                    } else {
-                        tint(Color::Yellow)
-                    },
+                    if b.marked.is_empty() { muted() } else { warn() },
                 ),
                 Span::styled(
                     format!(
@@ -248,9 +244,9 @@ pub(super) fn render_browser(
                     } else if index == b.selected {
                         Style::default().add_modifier(Modifier::BOLD)
                     } else if matched_rows.contains(&index) {
-                        tint(Color::Yellow).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                        tok(Tok::Match).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
                     } else if e.kind == "directory" {
-                        tint(Color::Blue).add_modifier(Modifier::BOLD)
+                        dir()
                     } else {
                         Style::default()
                     };
@@ -287,11 +283,11 @@ pub(super) fn render_browser(
                             c.device == b.device && c.entries.iter().any(|x| x.path == e.path)
                         });
                     let (marker, style) = if b.marked.contains(&e.path) {
-                        (if ascii() { "*" } else { "●" }, tint(Color::Yellow))
+                        (if ascii() { "*" } else { "●" }, warn())
                     } else if let Some(c) = clip {
                         (
                             if c.cut { "x" } else { "c" },
-                            tint(if c.cut { Color::Magenta } else { Color::Green }),
+                            if c.cut { warn() } else { info() },
                         )
                     } else {
                         (" ", Style::default())
@@ -302,16 +298,12 @@ pub(super) fn render_browser(
                     } else if selected {
                         Style::default().add_modifier(Modifier::BOLD)
                     } else if e.kind == "directory" {
-                        tint(Color::Blue).add_modifier(Modifier::BOLD)
+                        dir()
                     } else {
                         Style::default()
                     };
                     let cursor = if selected {
-                        if ascii() {
-                            "> "
-                        } else {
-                            "▸ "
-                        }
+                        selection_symbol(focused)
                     } else {
                         "  "
                     };
@@ -368,7 +360,7 @@ pub(super) fn render_browser(
                 )
                 .column_spacing(1)
                 .block(block(format!("{} items", rows.len()), focused))
-                .row_highlight_style(Style::default()),
+                .row_highlight_style(selection(focused)),
                 parts[2],
                 &mut state,
             );
@@ -418,11 +410,7 @@ pub(super) fn render_browser(
         }
     };
     frame.render_widget(
-        Paragraph::new(bottom).style(if clipboard.is_some() {
-            tint(Color::Yellow)
-        } else {
-            muted()
-        }),
+        Paragraph::new(bottom).style(if clipboard.is_some() { warn() } else { muted() }),
         parts[3],
     );
 }

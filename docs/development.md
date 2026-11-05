@@ -32,7 +32,8 @@ Record changes in [CHANGELOG.md](../CHANGELOG.md). Before tagging a stable versi
 | `preview.rs` | File preview state and rendering: text, markdown layout/links, raster fallback, in-preview find |
 | `network_view.rs` | Network/neighbor state, probes and the network render |
 | `containers_view.rs` | Container panel state, tree rows and container sessions |
-| `theme.rs` | Shared styles (`accent`, `muted`, `block`, `tint`) and the `no_color()`/`ascii()` switches; restyle here |
+| `caps.rs` | Terminal capability detection (spec section 9): color depth, UTF-8/ASCII, light/dark (`CX_THEME`, `COLORFGBG`), tmux, Termux/phone, hyperlinks. Pure `Caps::detect(env, probe)`, computed once; tests override with `with_caps` |
+| `theme.rs` | Semantic tokens (`Tok`, `tok()`, `accent`/`muted`/`faint`/`ok`/`warn`/`err`/`info`/`dir`/`provider`/`swatch`) downgraded per depth, glyph sets (`glyphs()`), selection styles, `block()` focus treatment (heavy accent + title chip vs rounded faint; ASCII `#=#` vs `+-+`) and the ASCII glyph pass. Widgets never use raw `Color::` values |
 | `navigation.rs` | Counted key motions and the `Target` interface; no requests or rendering |
 | `panels.rs` | List, device and file adapters, including refresh/selection effects |
 | `filters.rs` | Scoped filter state, device identity mapping and fuzzy matching |

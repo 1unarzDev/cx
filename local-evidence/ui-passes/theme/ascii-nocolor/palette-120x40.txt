@@ -1,0 +1,40 @@
+ cx   [Sessions]  Network                                                                         viewing fixture@laptop
+                                                                                                                        
++ Devices ----------+#[ Sessions . 3 sessions ]==================#+ New shell . fixture@laptop ------------------------+
+| : All devices     |#  SESSION                        STATE     #|Enter . focus terminal . Wheel . scroll             |
+|   +  laptop       |#                                           #|run-05 step 1 ok  lidar=11Hz                        |
+|   +  * lab-arm    |#  /tmp/tmp-xxxxxx                          #|run-05 step 2 ok  lidar=12Hz                        |
+|   x  * field-rov~ |#  build watcher                  idle      #|run-05 step 3 ok  lidar=13Hz                        |
++-------------------+#                                           #|run-05 step 4 ok  lidar=14Hz                        |
++ Actions ----------+#  /tmp/tmp-xxxxxx                          #|run-05 step 5 ok  lidar=15Hz                        |
+| Files             |#> New shell                      idle      #|run-05 step 6 ok  lidar=16Hz                        |
+| Network           |##[ Actions . type to filter ]==============================================#                     |
+| Containers        |##>                                                                         #                     |
+| Transfers         |##==========================================================================#                     |
+| Watch . read-only |#+--------------------------------------------------------------------------+                     |
++-------------------+#|Pin / unpin selected session . p                                          |                     |
+ Selected -----------#|Containers . choose device / All devices                                  |                     |
+ Host fixture@laptop #|Add by SSH address . alias / user@host                                    |                     |
+ Folder /tmp/cx-cap~ #|Files . choose device . browse home                                       |                     |
+ Enter open . n new  #|New session . choose device, provider and folder                          |                     |
+                     #|Transfers . progress / cancel / retry                                     |                     |
+                     #|Run command here . :                                                      |                     |
+                     #|Watch session . read-only terminal, no input                              |                     |
+                     #|Network . choose device / All devices                                     |                     |
+                     #|Sessions . choose device / All devices                                    |                     |
+                     #|Refresh                                                                   |                     |
+                     #+--------------------------------------------------------------------------+                     |
+                     #+--------------------------------------------------------------------------+                     |
+                     #|Current: laptop . /tmp/tmp-xxxxxx                /home/projects/robot-logs|                     |
+                     #+--------------------------------------------------------------------------+                     |
+                     #                                           #|                                                    |
+                     #                                           #|                                                    |
+                     #                                           #|                                                    |
+                     #                                           #|                                                    |
+                     #                                           #|                                                    |
+                     #                                           #|                                                    |
+                     #===========================================#+----------------------------------------------------+
+ + 2/3 devices                              Focus: Actions . 3/3                                                  ~ idle
+ Enter Confirm                           Esc Cancel                              Ctrl U Clear                           
+                                                                                                                        
+                                                                                                                        

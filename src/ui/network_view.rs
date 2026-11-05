@@ -175,7 +175,7 @@ pub(super) fn render_network(frame: &mut Frame<'_>, app: &App, area: Rect) {
         })
         .style(muted()),
     )
-    .row_highlight_style(selected_style());
+    .row_highlight_style(selection(app.focus == Focus::Workspace));
     let mut state = TableState::default().with_selected(Some(app.network_selected));
     frame.render_stateful_widget(table, sections[1], &mut state);
     if !detail.is_empty() {

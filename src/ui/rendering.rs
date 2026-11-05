@@ -24,6 +24,19 @@ pub(super) fn render_at(
     native: Option<&mut crate::terminal_preview::NativePreview>,
     now: Instant,
 ) {
+    render_frame(frame, app, native, now);
+    if ascii() {
+        // ASCII parity (spec C11): UI glyphs from every view, in one place.
+        let area = frame.area();
+        asciify(frame.buffer_mut(), area);
+    }
+}
+fn render_frame(
+    frame: &mut Frame<'_>,
+    app: &App,
+    native: Option<&mut crate::terminal_preview::NativePreview>,
+    now: Instant,
+) {
     let area = frame.area();
     if area.width < 36 || area.height < 10 {
         frame.render_widget(
@@ -144,16 +157,12 @@ pub(super) fn render_at(
             }
             _ => "?",
         };
-        let dot_style = if no_color() {
-            Style::default()
-        } else {
-            Style::default().fg(match status {
-                "ready" => Color::Green,
-                "checking" => Color::Cyan,
-                "unavailable" => Color::Yellow,
-                "down" => Color::DarkGray,
-                _ => Color::Reset,
-            })
+        let dot_style = match status {
+            "ready" => ok(),
+            "checking" => info(),
+            "unavailable" => warn(),
+            "down" => muted(),
+            _ => Style::default(),
         };
         let access_marker = match app.device_policy(i).access {
             store::AccessMode::Core => "",
@@ -206,12 +215,8 @@ pub(super) fn render_at(
                 )
                 .padding(Padding::horizontal(1)),
             )
-            .highlight_style(if app.focus == Focus::Devices {
-                selected_style()
-            } else {
-                accent().add_modifier(Modifier::BOLD)
-            })
-            .highlight_symbol(if ascii() { "> " } else { "› " }),
+            .highlight_style(selection(app.focus == Focus::Devices))
+            .highlight_symbol(selection_symbol(app.focus == Focus::Devices)),
         sidebar[0],
         &mut state,
     );
@@ -396,11 +401,10 @@ pub(super) fn render_at(
             selected_content.wrap(Wrap { trim: false }).block(
                 Block::default()
                     .padding(Padding::horizontal(1))
-                    .title(Line::from(Span::styled(
-                        " Selected ",
-                        accent().add_modifier(Modifier::BOLD),
-                    )))
-                    .borders(Borders::TOP),
+                    .title(Line::from(Span::styled(" Selected ", muted())))
+                    .borders(Borders::TOP)
+                    .border_set(overlay_border())
+                    .border_style(faint()),
             ),
             sidebar[2],
         );
@@ -450,10 +454,7 @@ pub(super) fn render_at(
                     lines.push(Line::from(Span::styled("Checking sessions…", accent())));
                     lines.push(Line::from("Waiting for device evidence"));
                 } else if !errors.is_empty() {
-                    lines.push(Line::from(Span::styled(
-                        "Device unavailable",
-                        tint(Color::Yellow),
-                    )));
+                    lines.push(Line::from(Span::styled("Device unavailable", warn())));
                     for error in errors {
                         lines.push(Line::from(safe_text(error)));
                     }
@@ -575,15 +576,7 @@ pub(super) fn render_at(
                         None => name,
                     };
                     let cells = vec![
-                        Cell::from(badge).style(if no_color() {
-                            Style::default()
-                        } else {
-                            Style::default().fg(match s.provider.as_str() {
-                                "claude" => Color::Yellow,
-                                "codex" => Color::Cyan,
-                                _ => Color::Gray,
-                            })
-                        }),
+                        Cell::from(badge).style(provider(&s.provider)),
                         Cell::from(if compact && s.container.is_some() {
                             format!("{} · {}", menus::session_label(app, *i, s), name)
                         } else {
@@ -670,8 +663,8 @@ pub(super) fn render_at(
                     format!("Sessions · {} sessions", rows.len()),
                     app.focus == Focus::Workspace,
                 ))
-                .row_highlight_style(selected_style())
-                .highlight_symbol(if ascii() { "> " } else { "› " });
+                .row_highlight_style(selection(app.focus == Focus::Workspace))
+                .highlight_symbol(selection_symbol(app.focus == Focus::Workspace));
                 frame.render_stateful_widget(table, table_area, &mut state);
                 // Table offset includes group headers/spacers. Hit boxes must use
                 // the rendered rows, not index arithmetic over logical sessions.
@@ -783,13 +776,13 @@ pub(super) fn render_at(
                 Line::from(vec![
                     Span::styled(
                         format!(" {} ", transfer_status(j)),
-                        tint(if j["status"] == "failed" {
-                            Color::Red
+                        if j["status"] == "failed" {
+                            err()
                         } else if j["status"] == "complete" {
-                            Color::Green
+                            ok()
                         } else {
-                            Color::Yellow
-                        }),
+                            warn()
+                        },
                     ),
                     Span::raw(format!(
                         "{} {}",
@@ -827,7 +820,7 @@ pub(super) fn render_at(
                         app.file_errors.len(),
                         app.file_errors.last().unwrap()
                     ),
-                    tint(Color::Red),
+                    err(),
                 )),
             );
             lines.truncate(2);
@@ -953,16 +946,8 @@ pub(super) fn render_at(
             ]
         })
         .split(footer[status_row]);
-    let healthy = if no_color() {
-        Style::default()
-    } else {
-        Style::default().fg(Color::Green)
-    };
-    let warning = if no_color() {
-        Style::default()
-    } else {
-        Style::default().fg(Color::Yellow)
-    };
+    let healthy = ok();
+    let warning = warn();
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
             format!(
@@ -1350,11 +1335,7 @@ pub(super) fn render_at(
             .direction(Direction::Horizontal)
             .constraints(vec![Constraint::Ratio(1, columns as u32); columns])
             .split(rows[i / columns]);
-        let key_style = if no_color() {
-            Style::default().add_modifier(Modifier::BOLD)
-        } else {
-            accent().add_modifier(Modifier::BOLD)
-        };
+        let key_style = accent().add_modifier(Modifier::BOLD);
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(format!(" {key} "), key_style),
@@ -1439,7 +1420,7 @@ pub(super) fn render_at(
                 ratatui::widgets::ListState::default().with_selected(Some(app.palette_selected));
             frame.render_stateful_widget(
                 List::new(items)
-                    .block(Block::default().borders(Borders::ALL))
+                    .block(plain_block())
                     .highlight_style(selected_style()),
                 parts[1],
                 &mut state,
@@ -1447,7 +1428,7 @@ pub(super) fn render_at(
             frame.render_widget(
                 Paragraph::new(app.palette_scope())
                     .wrap(Wrap { trim: false })
-                    .block(Block::default().borders(Borders::ALL)),
+                    .block(plain_block()),
                 parts[2],
             );
         } else {
@@ -1748,15 +1729,11 @@ pub(super) fn render_at(
             frame.render_widget(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_type(if ascii() {
-                        ratatui::widgets::BorderType::Plain
-                    } else {
-                        ratatui::widgets::BorderType::Rounded
-                    })
-                    .border_style(tint(Color::Red))
+                    .border_set(overlay_border())
+                    .border_style(err())
                     .title(Line::from(Span::styled(
                         format!(" {title} "),
-                        tint(Color::Red).add_modifier(Modifier::BOLD),
+                        err().add_modifier(Modifier::BOLD),
                     ))),
                 rect,
             );
@@ -1824,11 +1801,7 @@ pub(super) fn render_at(
                     ]
                 })
                 .split(rect);
-            let selection_style = if app.dialog_detail_focus {
-                accent()
-            } else {
-                selected_style()
-            };
+            let selection_style = selection(!app.dialog_detail_focus);
             if matches!(dialog, Dialog::Jobs) {
                 let progress_width = if parts[0].width < 60 { 10 } else { 18 };
                 let file_width = parts[0].width.saturating_sub(progress_width + 15) as usize;
@@ -1836,10 +1809,10 @@ pub(super) fn render_at(
                     .job_rows()
                     .into_iter()
                     .map(|(_, job)| {
-                        let status_color = match job["status"].as_str() {
-                            Some("failed" | "incomplete") => Color::Red,
-                            Some("complete") => Color::Green,
-                            _ => Color::Yellow,
+                        let status_style = match job["status"].as_str() {
+                            Some("failed" | "incomplete") => err(),
+                            Some("complete") => ok(),
+                            _ => warn(),
                         };
                         let operation = if job["operation"] == "move" {
                             "move"
@@ -1849,16 +1822,12 @@ pub(super) fn render_at(
                         Row::new(vec![
                             Cell::from(Span::styled(
                                 safe_label(job["status"].as_str().unwrap_or("unknown")),
-                                tint(status_color),
+                                status_style,
                             )),
                             Cell::from(Line::from(vec![
                                 Span::styled(
                                     format!("{operation} "),
-                                    tint(if operation == "move" {
-                                        Color::Magenta
-                                    } else {
-                                        Color::Cyan
-                                    }),
+                                    if operation == "move" { warn() } else { info() },
                                 ),
                                 Span::raw(compact_path(
                                     &transfer_name(&job),
@@ -2112,11 +2081,7 @@ fn render_containers(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 ]))
             }
             Some(c) => {
-                let state = if c.state == "running" {
-                    Color::Green
-                } else {
-                    Color::Yellow
-                };
+                let state = if c.state == "running" { ok() } else { warn() };
                 ListItem::new(Line::from(vec![
                     Span::raw(if ascii() { "  +- " } else { "  ├─ " }),
                     Span::raw(safe_label(&c.name)),
@@ -2140,7 +2105,7 @@ fn render_containers(frame: &mut Frame<'_>, app: &App, area: Rect) {
                                 safe_label(&c.state)
                             }
                         ),
-                        tint(state),
+                        state,
                     ),
                     Span::styled(
                         if !c.devcontainer && !c.allowed {
@@ -2162,7 +2127,7 @@ fn render_containers(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 "Containers · Enter actions · n session".into(),
                 app.focus == Focus::Workspace,
             ))
-            .highlight_style(selected_style()),
+            .highlight_style(selection(app.focus == Focus::Workspace)),
         area,
         &mut state,
     );

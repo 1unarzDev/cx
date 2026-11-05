@@ -1,0 +1,20 @@
+ cx   Sessions      viewing fixture@lapt
+                                        
++ Devices ------+#[ Sessions . 3 sessio#
+| : All devices |#  SESSION    STATE   #
+|   ~  laptop   |#                     #
+|   ~  * lab-a~ |#  /tmp/cx-ca         #
+|   ~  * field~ |#> build watc idle    #
++---------------+#                     #
++ Actions ------+#  /tmp/cx-ca         #
+| Files         |#  New shell  idle    #
+| Network       |#                     #
+| Containers    |#  /tmp/cx-ca         #
++---------------+#  ros core   idle    #
+                 #                     #
+                 #                     #
+                 #=====================#
+ Focus: Sessions . 3/3            ~ idle
+ Enter Open          n New session      
+ w Watch . read-only p Pin / unpin      
+                                        

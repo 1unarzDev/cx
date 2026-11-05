@@ -189,6 +189,7 @@ fn plan(cx: &Cx, band: Rect) -> Plan {
         (Mode::Name, 22),
         (Mode::Name, 16),
         (Mode::Name, 12),
+        (Mode::Name, 8),
         (Mode::Chip, 8),
     ];
     for (m, nm) in tries {
@@ -205,7 +206,11 @@ fn plan(cx: &Cx, band: Rect) -> Plan {
                     .max(4)
             })
             .collect();
-        let min_gap = if m == Mode::Chip { 4 } else { 8 };
+        let min_gap = match (m, nm) {
+            (Mode::Chip, _) => 4,
+            (_, 8) => 6,
+            _ => 8,
+        };
         let need = 2 + pill_w(cx, m) + widths.iter().sum::<u16>() + min_gap * widths.len() as u16;
         if need <= band.width {
             break;
@@ -570,7 +575,7 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, sel: Sel) {
     };
     for n in &p.nodes {
         let Some(d) = s.device(&n.id) else { continue };
-        let rows = if p.tall { 2 } else { 1 };
+        let rows = if p.tall && p.mode == Mode::Full { 2 } else { 1 };
         let area = Rect::new(n.x, n.y, n.w, rows);
         let picked = sel_id == Some(n.id.as_str());
         if picked && cx.has_surface() {

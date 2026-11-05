@@ -848,3 +848,48 @@ fn palette_spans_the_frame_below_100_columns() {
     let below: Vec<char> = lines[input + 1].chars().collect();
     assert!(below[0] == '│' && !"│╭╰".contains(below[1]), "{text}");
 }
+
+#[test]
+fn palette_query_ranks_on_labels_and_ignores_scattered_path_letters() {
+    let (mut a, _rx) = queued_app();
+    let mut watcher = disposable_shell();
+    watcher.id = "watcher".into();
+    watcher.name = "build watcher".into();
+    watcher.directory = "/home/tester/projects/robot-logs".into();
+    let mut core = disposable_shell();
+    core.id = "core".into();
+    core.name = "ros core".into();
+    a.work[0].sessions = vec![watcher, core];
+    a.work[0].fetched = transport::now();
+    a.key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+    for c in "ros".chars() {
+        press(&mut a, c);
+    }
+    let labels: Vec<_> = a.palette_view().into_iter().map(|i| i.label).collect();
+    assert_eq!(
+        labels.first().map(String::as_str),
+        Some("ros core"),
+        "{labels:?}"
+    );
+    // 'r..o..s' scattered across "projects/robot-logs" is not a match.
+    assert!(!labels.iter().any(|l| l == "build watcher"), "{labels:?}");
+    // A contiguous detail match (the device name) still finds the session.
+    a.text.clear();
+    for c in "robot-logs".chars() {
+        press(&mut a, c);
+    }
+    let labels: Vec<_> = a.palette_view().into_iter().map(|i| i.label).collect();
+    assert!(labels.iter().any(|l| l == "build watcher"), "{labels:?}");
+}
+
+#[test]
+fn event_loop_wakes_promptly_while_a_reply_is_pending() {
+    let (mut a, _rx) = queued_app();
+    a.view = View::Files;
+    let now = Instant::now();
+    let idle = loop_wait(&a, now, None);
+    assert!(idle >= Duration::from_millis(50), "{idle:?}");
+    assert!(a.send(0, Operation::Sessions));
+    let waiting = loop_wait(&a, now, None);
+    assert!(waiting <= REPLY_POLL, "{waiting:?}");
+}

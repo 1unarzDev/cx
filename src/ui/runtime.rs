@@ -312,6 +312,32 @@ const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
 const SYNC_END: &[u8] = b"\x1b[?2026l";
 /// At most one frame per this interval (~60 fps); bursts are coalesced.
 pub(super) const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+/// While requests are in flight the loop polls this often, so a reply is
+/// applied within a few milliseconds instead of after the idle poll timeout.
+pub(super) const REPLY_POLL: Duration = Duration::from_millis(4);
+/// How long the event loop may block on terminal input before its next pass.
+pub(super) fn loop_wait(app: &App, now: Instant, frame_wait: Option<Duration>) -> Duration {
+    let mut wait = notifications::poll_interval(app.notice_started, app.notice_deadline, now);
+    if app.view == View::Work {
+        wait = wait.min(Duration::from_millis(250));
+    }
+    if app.command_panel.as_ref().is_some_and(|p| p.alive) {
+        wait = wait.min(Duration::from_millis(80));
+    }
+    if app.pending_requests.get() > 0 {
+        wait = wait.min(REPLY_POLL);
+    }
+    if let Some(frame_wait) = frame_wait {
+        wait = wait.min(frame_wait);
+    }
+    for deadline in [app.press_deadline(), app.device_refresh_due]
+        .into_iter()
+        .flatten()
+    {
+        wait = wait.min(deadline.saturating_duration_since(now));
+    }
+    wait
+}
 
 /// What ratatui's crossterm backend writes after every frame's cell updates
 /// (colour/attribute resets), derived from the backend itself so it tracks
@@ -1539,24 +1565,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 frame_wait = Some(FRAME_INTERVAL - since);
             }
         }
-        let mut wait =
-            notifications::poll_interval(app.notice_started, app.notice_deadline, Instant::now());
-        if app.view == View::Work {
-            wait = wait.min(Duration::from_millis(250));
-        }
-        if app.command_panel.as_ref().is_some_and(|p| p.alive) {
-            wait = wait.min(Duration::from_millis(80));
-        }
-        if let Some(frame_wait) = frame_wait {
-            wait = wait.min(frame_wait);
-        }
-        for deadline in [app.press_deadline(), app.device_refresh_due]
-            .into_iter()
-            .flatten()
-        {
-            wait = wait.min(deadline.saturating_duration_since(now));
-        }
-        if event::poll(wait)? {
+        if event::poll(loop_wait(&app, now, frame_wait))? {
             for (input, observed) in read_input_batch()? {
                 if !wheel_reports.accepts(&input, observed) {
                     continue;

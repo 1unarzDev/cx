@@ -652,7 +652,16 @@ impl App {
             .into_iter()
             .enumerate()
             .filter_map(|(order, item)| {
-                let score = fuzzy_score(query, &format!("{} {}", item.label, item.detail))?;
+                // Fuzzy on the label; the detail (device, path) only counts as a
+                // contiguous match, ranked below label hits, so scattered path
+                // letters do not pull in unrelated rows.
+                let score = fuzzy_score(query, &item.label).or_else(|| {
+                    let needle = query.to_lowercase();
+                    item.detail
+                        .to_lowercase()
+                        .contains(&needle)
+                        .then(|| fuzzy_score(query, &item.detail).unwrap_or(0) - 100)
+                })?;
                 let recency = self
                     .palette_mru
                     .iter()

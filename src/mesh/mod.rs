@@ -247,12 +247,26 @@ pub fn iso(secs: u64) -> String {
 
 /// Run a child with `input` on stdin; stdout bounded to `limit`; killed at `timeout`.
 /// stderr is discarded (it may carry banners or secrets-adjacent noise).
+///
+/// The child leads its own process group, so a timeout kills everything it spawned (mesh.py's
+/// curl, wrangler, ...), not only the direct child. Being outside the terminal's group, it would
+/// miss a Ctrl+C aimed at cx, so on Linux it also gets SIGTERM when cx goes away.
 pub(crate) fn run_bounded(
     mut cmd: Command,
     input: &[u8],
     limit: usize,
     timeout: Duration,
 ) -> Result<(bool, Vec<u8>)> {
+    use std::os::unix::process::CommandExt;
+    cmd.process_group(0);
+    #[cfg(target_os = "linux")]
+    // SAFETY: prctl is async-signal-safe and touches no memory of the parent.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
+    }
     let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -276,6 +290,10 @@ pub(crate) fn run_bounded(
             break s;
         }
         if Instant::now() >= deadline {
+            // SAFETY: plain syscall; the group id is the child's pid (process_group(0) above).
+            unsafe {
+                libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
+            }
             let _ = child.kill();
             let _ = child.wait();
             bail!("timed out");
@@ -310,6 +328,23 @@ fn interfaces_json() -> Value {
         .unwrap_or(Value::Array(Vec::new()))
 }
 
+/// The overlay an interface address belongs to. WARP's 100.96/12 sits inside Tailscale's
+/// 100.64/10, so the interface name decides first (when its overlay claims the address), then
+/// the most specific range.
+fn attribute(claims: &[ranges::Claim], ifname: &str, ip: &std::net::IpAddr) -> Option<String> {
+    let n = ifname.to_ascii_lowercase();
+    let hint = if n.starts_with("tailscale") || n == "utun-tailscale" {
+        Some(tailscale::ID)
+    } else if n.contains("warp") {
+        Some(cloudflare::ID)
+    } else {
+        None
+    };
+    hint.filter(|h| claims.iter().any(|c| c.owner == *h && c.range.contains(ip)))
+        .map(str::to_owned)
+        .or_else(|| ranges::classify(claims, ip).map(|c| c.owner.clone()))
+}
+
 /// Claims of every overlay that is present here (configured, installed, or with an interface in
 /// its ranges), plus the observed LANs.
 fn claims(backends: &[Value], interfaces: &Value) -> (Vec<ranges::Claim>, Vec<ranges::Claim>) {
@@ -331,29 +366,14 @@ fn claims(backends: &[Value], interfaces: &Value) -> (Vec<ranges::Claim>, Vec<ra
             }
         }
     }
-    // An interface address in overlay ranges makes that overlay observed. WARP's 100.96/12 sits
-    // inside Tailscale's 100.64/10, so the interface name decides first, then the most specific.
-    let hint = |ifname: &str| -> Option<&'static str> {
-        let n = ifname.to_ascii_lowercase();
-        if n.starts_with("tailscale") || n == "utun-tailscale" {
-            Some(tailscale::ID)
-        } else if n.contains("warp") {
-            Some(cloudflare::ID)
-        } else {
-            None
-        }
-    };
+    // An interface address in overlay ranges makes that overlay observed.
     for item in interfaces.as_array().into_iter().flatten() {
         let ifname = item["ifname"].as_str().unwrap_or_default();
         for a in item["addr_info"].as_array().into_iter().flatten() {
             let Some(ip) = a["local"].as_str().and_then(|s| s.parse().ok()) else {
                 continue;
             };
-            let hit = hint(ifname)
-                .filter(|h| all.iter().any(|c| c.owner == *h && c.range.contains(&ip)))
-                .map(str::to_owned)
-                .or_else(|| ranges::classify(&all, &ip).map(|c| c.owner.clone()));
-            if let Some(owner) = hit {
+            if let Some(owner) = attribute(&all, ifname, &ip) {
                 if !present.contains(&owner) {
                     present.push(owner);
                 }
@@ -390,7 +410,10 @@ pub fn report_with(list: &[Box<dyn MeshBackend>], interfaces: &Value) -> Value {
 /// with ranges is provisioned, no interface seen), or "none". ssh-overlay claims no range, so it
 /// is listed but never makes the state.
 pub fn overlay(interfaces: &Value) -> (String, Value) {
-    let list = backends();
+    overlay_with(&backends(), interfaces)
+}
+
+pub fn overlay_with(list: &[Box<dyn MeshBackend>], interfaces: &Value) -> (String, Value) {
     let values: Vec<Value> = list.iter().map(|b| backend_value(b.as_ref())).collect();
     let (overlays, lans) = claims(&values, interfaces);
     let mut on = Vec::new();
@@ -399,8 +422,9 @@ pub fn overlay(interfaces: &Value) -> (String, Value) {
             let Some(ip) = a["local"].as_str().and_then(|s| s.parse().ok()) else {
                 continue;
             };
-            if let Some(c) = ranges::classify(&overlays, &ip) {
-                on.push(json!({"ifname": item["ifname"], "address": ip.to_string(), "backend": c.owner}));
+            let ifname = item["ifname"].as_str().unwrap_or_default();
+            if let Some(owner) = attribute(&overlays, ifname, &ip) {
+                on.push(json!({"ifname": ifname, "address": ip.to_string(), "backend": owner}));
             }
         }
     }
@@ -752,6 +776,131 @@ mod tests {
         );
         assert_eq!(both["collisions"][0]["kind"], "nested");
         assert_eq!(both["collisions"][0]["a"]["owner"], "cloudflare-warp");
+    }
+
+    /// Ranged, but with real evidence (provisioned), like a configured WARP and a running tailnet.
+    struct Present(&'static str, &'static str);
+    impl super::MeshBackend for Present {
+        fn id(&self) -> &'static str {
+            self.0
+        }
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn capabilities(&self) -> Vec<&'static str> {
+            vec![]
+        }
+        fn status(&self) -> anyhow::Result<super::Status> {
+            Ok(super::Status {
+                backend: self.0.into(),
+                available: true,
+                provisioned: true,
+                ..Default::default()
+            })
+        }
+        fn provision(&self, _: bool) -> anyhow::Result<super::Plan> {
+            unimplemented!()
+        }
+        fn teardown(&self, _: bool) -> anyhow::Result<super::Plan> {
+            unimplemented!()
+        }
+        fn invite(&self, _: u32, _: f64, _: Option<&str>) -> anyhow::Result<super::Invite> {
+            unimplemented!()
+        }
+        fn members(&self) -> anyhow::Result<Vec<super::Member>> {
+            Ok(vec![])
+        }
+        fn revoke(&self, _: &str) -> anyhow::Result<serde_json::Value> {
+            unimplemented!()
+        }
+        fn address_ranges(&self) -> Vec<super::IpNet> {
+            vec![super::ranges::net(self.1)]
+        }
+        fn audit(&self, _: usize) -> anyhow::Result<Vec<super::AuditEntry>> {
+            Ok(vec![])
+        }
+    }
+
+    #[test]
+    fn network_overlay_interfaces_use_the_interface_name_first() {
+        let list: Vec<Box<dyn super::MeshBackend>> = vec![
+            Box::new(Present("cloudflare-warp", "100.96.0.0/12")),
+            Box::new(Present("tailscale", "100.64.0.0/10")),
+        ];
+        let (state, v) = super::overlay_with(
+            &list,
+            &serde_json::json!([
+                {"ifname":"tailscale0","addr_info":[{"local":"100.100.1.1","prefixlen":32}]},
+                {"ifname":"CloudflareWARP","addr_info":[{"local":"100.96.0.5","prefixlen":32}]},
+                {"ifname":"wg9","addr_info":[{"local":"100.97.0.9","prefixlen":32}]}
+            ]),
+        );
+        assert_eq!(state, "observed");
+        let by: Vec<(String, String)> = v["interfaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| {
+                (
+                    i["ifname"].as_str().unwrap().to_owned(),
+                    i["backend"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            by,
+            vec![
+                ("tailscale0".into(), "tailscale".into()),
+                ("CloudflareWARP".into(), "cloudflare-warp".into()),
+                // No name hint: the most specific range decides.
+                ("wg9".into(), "cloudflare-warp".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn available_but_unprovisioned_backends_without_interfaces_claim_nothing() {
+        // Ranged reports available=false, provisioned=false: no evidence, no claim, no collision.
+        let list: Vec<Box<dyn super::MeshBackend>> = vec![
+            Box::new(Ranged("cloudflare-warp", "100.96.0.0/12")),
+            Box::new(Present("tailscale", "100.64.0.0/10")),
+        ];
+        let (state, v) = super::overlay_with(&list, &serde_json::json!([]));
+        assert_eq!(state, "configured");
+        assert!(v["collisions"].as_array().unwrap().is_empty(), "{v}");
+        assert_eq!(v["claims"][0]["owner"], "tailscale");
+        assert_eq!(v["claims"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn timeout_kills_the_whole_process_group() {
+        let d = tempfile::tempdir().unwrap();
+        let pidfile = d.path().join("grandchild");
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c")
+            .arg("sleep 30 & echo $! > \"$1\"; wait")
+            .arg("sh")
+            .arg(&pidfile);
+        let started = std::time::Instant::now();
+        let e = super::run_bounded(cmd, b"", 1024, std::time::Duration::from_millis(300));
+        assert_eq!(e.unwrap_err().to_string(), "timed out");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        let pid: i32 = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // The grandchild is gone (reaped by init shortly after SIGKILL).
+        let mut alive = true;
+        for _ in 0..200 {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            if stat.is_empty() || stat.contains(") Z ") {
+                alive = false;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!alive, "grandchild {pid} survived the timeout");
     }
 
     #[test]

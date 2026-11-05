@@ -115,6 +115,25 @@ SetEnv {setenv}
         assert f"{binary} join --redeem " in line[0]
 
         daemon = start("host")
+        # Takeover: an invite holder claiming an enrolled identity (here a directed device with no
+        # SSH pins) is refused, and the record keeps its target and access. Runs before any pairing
+        # so that no 127.0.0.1 endpoint pin masks the identity check.
+        victim = {"id": f"victim-machine:{account}", "name": "victim", "target": f"{account}@10.9.9.9",
+                  "account": account, "host": "victim", "status": "seeded", "observed_at": 1}
+        (viewer / "state/cx/devices.json").write_text(json.dumps([d for d in devices(viewer)] + [victim]))
+        policy_file = viewer / "state/cx/device-policies.json"
+        policies_before = policy_file.read_text() if policy_file.exists() else None
+        intruder, ienv = side("intruder", "victim-machine")
+        r = cx(ienv, "join", invite()["code"], "--name", "mallory", check=False)
+        assert r.returncode != 0 and "already enrolled" in r.stderr, r.stderr
+        assert [d for d in devices(viewer) if d["id"] == victim["id"]] == [victim], devices(viewer)
+        assert (policy_file.read_text() if policy_file.exists() else None) == policies_before
+        assert not any(l.endswith(" cx-managed-peer") for l in authorized(viewer).splitlines())
+        pins = viewer / "state/cx/peer-ssh/peers.json"
+        assert not pins.exists() or "victim-machine" not in pins.read_text()
+        (viewer / "state/cx/devices.json").write_text(json.dumps([d for d in devices(viewer) if d["id"] != victim["id"]]))
+        result["takeover_refused"] = True
+
         r = cx(jenv, "join", code, "--json")
         joined = json.loads(r.stdout)
         assert joined["joined"] and joined["target"] == f"{account}@127.0.0.1" and joined["as"] != "", joined
@@ -183,6 +202,51 @@ SetEnv {setenv}
         assert [a["action"] for a in audit][:2] == ["revoke", "teardown"], audit
         assert "join" in [a["action"] for a in audit]
         result["revoke_and_teardown"] = True
+
+        # --short end to end: cx -> embedded mesh.py -> the mesh Worker (local HTTPS fake) -> cx join <host>/<code>.
+        node = shutil.which("node")
+        assert node, "node is needed for the Worker fixture"
+        daemon.terminate()
+        daemon.wait(timeout=3)
+        daemon = start("host")
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
+                        "-keyout", str(root / "tls.key"), "-out", str(root / "tls.crt"), "-days", "1", "-subj", "/CN=localhost",
+                        "-addext", "subjectAltName=DNS:localhost"], check=True, capture_output=True, timeout=30)
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            wport = sock.getsockname()[1]
+        owner = "owner-test-token"
+        worker = subprocess.Popen([node, str(pathlib.Path(__file__).resolve().parent / "mesh_worker_server.mjs"),
+                                   str(root / "tls.crt"), str(root / "tls.key"), str(wport), owner],
+                                  stdout=subprocess.PIPE, stderr=log, text=True)
+        try:
+            assert worker.stdout.readline().strip() == "ready"
+            mesh_dir = viewer / "config/cx/mesh"
+            mesh_dir.mkdir(parents=True)
+            (mesh_dir / "config.toml").write_text('name = "demo"\naccount = "acct"\n')
+            (mesh_dir / "demo.state.json").write_text(json.dumps({"url": f"https://localhost:{wport}", "account": "acct"}))
+            tls = {"SSL_CERT_FILE": str(root / "tls.crt")}
+            senv = dict(venv, CLOUDFLARE_API_TOKEN=owner, **tls)
+            short = json.loads(cx(senv, "mesh", "invite", "--backend", "ssh-overlay", "--address",
+                                                                 f"127.0.0.1:{port}", "--host-key", str(root / "host.pub"),
+                                                                 "--short", "--json").stdout)
+            sc = short["short_code"]
+            assert len(sc.replace("-", "")) == 12 and short["one_liner_sh"] == f"cx join localhost:{wport}/{sc}", short
+            assert short["url"] == f"https://localhost:{wport}/p/{sc}", short
+            assert short["code"] not in json.dumps(short["one_liner_sh"])
+            shorty, shenv = side("shorty", "shorty-machine")
+            shenv.update(tls)
+            r = cx(shenv, "join", f"localhost:{wport}/{sc}", "--name", "shorty", "--json")
+            j = json.loads(r.stdout)
+            assert j["joined"] and j["target"] == f"{account}@127.0.0.1", j
+            assert [d["name"] for d in devices(viewer) if d.get("target")] == ["shorty"], devices(viewer)
+            again = cx(shenv, "join", f"localhost:{wport}/{sc}", check=False)
+            assert again.returncode != 0 and "already used" in again.stderr, again.stderr
+            result["short_code_end_to_end"] = True
+        finally:
+            worker.terminate()
+            worker.wait(timeout=3)
+            shutil.rmtree(viewer / "config/cx/mesh", ignore_errors=True)
     finally:
         if daemon is not None and daemon.poll() is None:
             daemon.terminate()
@@ -208,6 +272,11 @@ EOF
     assert by["tailscale"]["ranges"] == ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
     assert by["ssh-overlay"]["ranges"] == [] and "coexists-with-vpn" in by["ssh-overlay"]["capabilities"]
     assert by["cloudflare-warp"]["status"]["provisioned"] is False
+    # No WARP config (and no WARP interface here): WARP claims nothing, so no false nested collision.
+    assert by["cloudflare-warp"]["status"]["available"] is False, by["cloudflare-warp"]
+    if not any(c["owner"] == "cloudflare-warp" for c in report["claims"]):
+        assert not any("cloudflare-warp" in json.dumps(c) for c in report["collisions"]), report["collisions"]
+    assert "tailscale" in [c["owner"] for c in report["claims"]], report["claims"]
     members = json.loads(cx(env, "mesh", "members", "--backend", "tailscale", "--json").stdout)
     assert [(m["name"], m["dns_name"]) for m in members] == [("me", "me.tail1.ts.net"), ("pi", "pi.tail1.ts.net")], members
     r = cx(env, "mesh", "revoke", "pi", "--backend", "tailscale", "--yes", check=False)

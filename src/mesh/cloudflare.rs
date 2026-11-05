@@ -312,6 +312,25 @@ fn plan(v: Value, dry_run: bool) -> Plan {
     }
 }
 
+/// `available` is evidence, not tooling: a mesh config exists here. An unconfigured host makes
+/// no claim on WARP's range (an observed WARP interface still does, through `claims`).
+fn status_from(q: &Quick) -> Status {
+    Status {
+        backend: ID.into(),
+        available: q.configured,
+        provisioned: q.provisioned,
+        members: None,
+        endpoint: q.endpoint.clone(),
+        detail: match (&q.name, q.provisioned) {
+            (None, _) => "not set up (cx mesh setup --name N)".into(),
+            (Some(n), false) => format!("mesh {n} configured, not deployed"),
+            (Some(n), true) => {
+                format!("mesh {n} deployed; members need `cx mesh devices` (network)")
+            }
+        },
+    }
+}
+
 impl MeshBackend for CloudflareWarp {
     fn id(&self) -> &'static str {
         ID
@@ -332,21 +351,7 @@ impl MeshBackend for CloudflareWarp {
         ]
     }
     fn status(&self) -> Result<Status> {
-        let q = quick_status();
-        Ok(Status {
-            backend: ID.into(),
-            available: true,
-            provisioned: q.provisioned,
-            members: None,
-            endpoint: q.endpoint.clone(),
-            detail: match (&q.name, q.provisioned) {
-                (None, _) => "not set up (cx mesh setup --name N)".into(),
-                (Some(n), false) => format!("mesh {n} configured, not deployed"),
-                (Some(n), true) => {
-                    format!("mesh {n} deployed; members need `cx mesh devices` (network)")
-                }
-            },
-        })
+        Ok(status_from(&quick_status()))
     }
     fn provision(&self, dry_run: bool) -> Result<Plan> {
         anyhow::ensure!(
@@ -389,6 +394,11 @@ impl MeshBackend for CloudflareWarp {
         Ok(members_from(&mesh_json(&["devices"], None, QUICK)?))
     }
     fn revoke(&self, name: &str) -> Result<Value> {
+        // A name reaches mesh.py as argv and the Worker as a path segment: no flags, no dots-only.
+        anyhow::ensure!(
+            super::ssh_overlay::valid_name(name) && name.bytes().any(|b| b != b'.'),
+            "invalid device name"
+        );
         mesh_json(&["revoke", name, "--yes"], None, QUICK)
     }
     fn address_ranges(&self) -> Vec<IpNet> {
@@ -458,6 +468,23 @@ mod tests {
         assert_eq!(m[0].overlay_ipv4.as_deref(), Some("100.96.0.2"));
         assert_eq!(m[1].role.as_deref(), Some("connector"));
         assert_eq!(m[1].state, "healthy");
+    }
+
+    #[test]
+    fn revoke_refuses_flag_like_and_path_like_names() {
+        for bad in ["-h", "--yes", "..", ".", "a/b", "", "a b"] {
+            let e = CloudflareWarp.revoke(bad).unwrap_err();
+            assert_eq!(e.to_string(), "invalid device name", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn available_means_a_config_exists() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(!status_from(&quick_status_at(d.path())).available);
+        std::fs::write(d.path().join("config.toml"), "name = \"team\"\n").unwrap();
+        let s = status_from(&quick_status_at(d.path()));
+        assert!(s.available && !s.provisioned);
     }
 
     #[test]

@@ -150,9 +150,13 @@ ranges and collisions. Any subcommand takes `--backend ID` (`status`, `members`,
 | `cloudflare-warp` | This document's WARP mesh, driven through `mesh.py --json` | `profile.mesh` (default `100.96.0.0/12`) |
 | `tailscale` | Read-only adoption of `tailscale status --json` when the binary is on PATH: members, MagicDNS names | `100.64.0.0/10`, `fd7a:115c:a1e0::/48` |
 
-WARP's `100.96.0.0/12` lies inside Tailscale's `100.64.0.0/10`. The report shows that as a `nested` collision when
-both are present. An interface address is attributed by interface name first (`tailscale0`, `CloudflareWARP`),
-then by the most specific range. The network observation's `overlay` field is now `observed`, `configured` or
+A backend claims its ranges only on evidence: `cloudflare-warp` when a mesh config exists here
+(`~/.config/cx/mesh/config.toml`), `tailscale` when its binary answers, either one when an interface address is
+attributed to it. An unconfigured host with no WARP interface makes no WARP claim. WARP's `100.96.0.0/12` lies
+inside Tailscale's `100.64.0.0/10`. The report shows that as a `nested` collision when both are present. An
+interface address is attributed by interface name first (`tailscale0`, `CloudflareWARP`), then by the most
+specific range. The same rule fills `overlays.interfaces` in the network observation, so a `tailscale0` address
+in `100.100.0.0/16` stays Tailscale's. The network observation's `overlay` field is now `observed`, `configured` or
 `none`, and `overlays` carries the details.
 
 ## ssh-overlay: `cx join`
@@ -200,10 +204,12 @@ direct code (SHA-256 keystream with HMAC-SHA256, keys derived from the short cod
    - It installs the joiner's own Ed25519 key as `no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc
      … cx-managed-peer`.
    - It pins the joiner's host key and enrolls the joiner as a **core** device, at `account@<SSH_CONNECTION
-     source>`.
+     source>`. The device id is the joiner's claimed `machine-id:account`. An id that is already enrolled is
+     refused before any key is installed (see the threat model).
    - It answers with the viewer's identity and its cx client key.
 5. **The joiner pairs back.** It pins the code-verified host key and authorizes the viewer's client key the same
-   way, then enrolls the viewer as core. `cx device sync` then verifies both directions with the existing pairing.
+   way, then enrolls the viewer as core. If the viewer's id is already enrolled here, the joiner refuses too.
+   The viewer has then recorded the joiner already, and the error says to revoke it there before joining again. `cx device sync` then verifies both directions with the existing pairing.
 
 `cx mesh revoke NAME --backend ssh-overlay --yes` removes the device, its pins and exactly its `cx-managed-peer`
 line. `cx mesh teardown --backend ssh-overlay --yes` cancels pending invites and removes their lines. Invites,
@@ -233,6 +239,14 @@ that an SSH alias is needed.
 - **Short codes.** The Worker sees only a hash of the short code and the seal, and gives the seal out once. An
   operator of the Worker (you, the account owner) could brute-force the 50-bit code offline within its lifetime.
   The account owner is already trusted with the mesh. Rate limits and single use stop online guessing.
+- **Identity claims.** The joiner names its own `machine-id:account`, and nothing proves it. An invite holder
+  could claim the id of a device that is already enrolled, for example a directed device or an alias with no SSH
+  pins. Overwriting that record would move its target to the attacker's address and promote it to core. So an
+  invite only ever adds a **new** device: an enrolled id is refused, and the existing record, its target and its
+  access are left alone. The refusal happens before any key is pinned or authorized, and the invite is still
+  burnt. Re-pairing a known device means removing it first (`cx mesh revoke NAME --backend ssh-overlay --yes`
+  or `cx device remove`). A new endpoint already enrolled for another device is refused as well. On the joiner
+  side, the viewer's identity comes from a host whose key matched the code. The same new-only rule applies there.
 - **Out of scope.** A compromised viewer or joiner, and a viewer whose sshd host key was stolen.
 
 ## Tests
@@ -240,12 +254,15 @@ that an SSH alias is needed.
 `python3 tests/mesh_ssh_overlay.py target/debug/cx` runs `cx join` end to end against a disposable loopback sshd,
 with two temporary cx identities:
 
+- an invite holder claiming an already-enrolled device id, refused with that record untouched
 - the join, and the pins and keys it leaves on both sides
 - a replay, refused
 - a changed host key, refused before authentication
 - a mistyped code, refused offline
 - teardown and revoke
-- `cx mesh backends` with a fake `tailscale` on PATH
+- `--short` end to end: cx, the embedded mesh.py and the Worker (`tests/mesh_worker_server.mjs`, the real
+  worker.js over local HTTPS with an in-memory D1), then `cx join <host>/<code>` and its single use
+- `cx mesh backends` with a fake `tailscale` on PATH, and no WARP claim without a WARP config
 
 The Rust unit tests cover code encoding, decoding, the checksum and expiry, Ed25519 derivation (RFC 8032 vectors
 and `ssh-keygen -Y` signatures), ranges and collisions, and backend mapping.

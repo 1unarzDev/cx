@@ -231,7 +231,7 @@ fn parse_address(s: &str, port: u16) -> Result<SocketAddr> {
     Ok(SocketAddr::new(ip, port))
 }
 
-fn valid_name(n: &str) -> bool {
+pub(super) fn valid_name(n: &str) -> bool {
     !n.is_empty()
         && n.len() <= 63
         && !n.starts_with('-')
@@ -425,19 +425,32 @@ fn bracket(ip: IpAddr) -> String {
     }
 }
 
-/// Insert or refresh a joined device as core. An endpoint enrolled for another identity is
-/// refused; a name another device already uses (the local hostname included) gets a `-2`, `-3`
-/// suffix. Returns the name the device got.
+/// Refuse a join for an identity this device already enrolled. An invite only ever adds a new
+/// device: it never retargets an existing record or changes its access (re-pairing means
+/// revoking or removing the old record first).
+fn ensure_new(devices: &[Device], id: &str) -> Result<()> {
+    if let Some(d) = devices.iter().find(|d| d.id == id) {
+        bail!(
+            "{} is already enrolled here; an invite only adds new devices (revoke or remove it first to re-pair)",
+            crate::files::display(&d.name)
+        );
+    }
+    Ok(())
+}
+
+/// Insert a newly joined device as core. An identity already enrolled is refused (see
+/// [`ensure_new`]), as is an endpoint enrolled for another identity; a name another device
+/// already uses (the local hostname included) gets a `-2`, `-3` suffix. Returns the name the
+/// device got.
 fn enroll_joined(peer: &Device) -> Result<String> {
     let _guard = store::device_guard()?;
     let mut devices = store::devices()?;
+    ensure_new(&devices, &peer.id)?;
     anyhow::ensure!(
-        !devices
-            .iter()
-            .any(|d| d.id != peer.id && d.target == peer.target),
+        !devices.iter().any(|d| d.target == peer.target),
         "that address is already enrolled for another device"
     );
-    let taken = |n: &str| devices.iter().any(|d| d.id != peer.id && d.name == n);
+    let taken = |n: &str| devices.iter().any(|d| d.name == n);
     let mut name = peer.name.clone();
     let mut n = 2;
     while taken(&name) {
@@ -445,20 +458,26 @@ fn enroll_joined(peer: &Device) -> Result<String> {
         name = format!("{}-{n}", peer.name);
         n += 1;
     }
+    anyhow::ensure!(devices.len() < 128, "device enrollment limit reached");
     let mut peer = peer.clone();
     peer.name = name.clone();
-    if let Some(d) = devices.iter_mut().find(|d| d.id == peer.id) {
-        d.target = peer.target.clone();
-        d.status = peer.status.clone();
-        d.observed_at = peer.observed_at;
-        name = d.name.clone();
-    } else {
-        anyhow::ensure!(devices.len() < 128, "device enrollment limit reached");
-        devices.push(peer.clone());
-    }
+    devices.push(peer.clone());
     store::save_devices(&devices)?;
     store::set_access(&peer, store::AccessMode::Core)?;
     Ok(name)
+}
+
+/// Pin, authorize and enroll a new peer; the pins are undone if enrollment is refused (a race
+/// with another enrollment of the same identity or endpoint).
+fn pair_new(peer: &Device, host_key: &str, client_key: &str) -> Result<String> {
+    ensure_new(&store::devices()?, &peer.id)?;
+    store::allow_explicit_enrollment(&peer.id)?;
+    peer_ssh::configure(peer, host_key, client_key)?;
+    enroll_joined(peer).inspect_err(|_| {
+        if !store::devices().is_ok_and(|d| d.iter().any(|d| d.id == peer.id)) {
+            let _ = peer_ssh::unpin(&peer.id);
+        }
+    })
 }
 
 /// The forced command (`cx join --redeem <id>`), on the viewer, under sshd: stdin/stdout carry
@@ -545,9 +564,7 @@ fn redeem_request(id: &str, req: JoinRequest) -> Result<Peer> {
         status: "joined by invite (reverse unverified)".into(),
         observed_at: now,
     };
-    store::allow_explicit_enrollment(&peer.id)?;
-    peer_ssh::configure(&peer, &req.host_key, &req.client_key)?;
-    let name = enroll_joined(&peer)?;
+    let name = pair_new(&peer, &req.host_key, &req.client_key)?;
     {
         let l = lock()?;
         let mut inv = read_invites(&l)?;
@@ -761,9 +778,9 @@ pub fn join(text: &str, opts: &JoinOptions) -> Result<Value> {
                     && device.id != request_id(&request),
                 "invalid viewer identity"
             );
-            store::allow_explicit_enrollment(&device.id)?;
-            peer_ssh::configure(&device, &host_key, &viewer.client_key)?;
-            let viewer_name = enroll_joined(&device)?;
+            let viewer_name = pair_new(&device, &host_key, &viewer.client_key).context(
+                "the viewer enrolled this device, but pairing it here failed; revoke this device on the viewer, fix the cause, then join again",
+            )?;
             let digest = super::code::host_key_digest(&host_key)?;
             Ok(json!({
                 "joined": true,

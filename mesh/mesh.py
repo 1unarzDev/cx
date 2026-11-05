@@ -8,9 +8,16 @@ Owner side (a trusted machine: one holding the account's API token):
     mesh.py revoke NAME [--yes]                             take a device (or a connector host) off the mesh
     mesh.py profile                                         the device profile setup applies, without applying
     mesh.py deploy                                          redeploy only the Worker and its schema (after a cx update)
-    mesh.py teardown [--yes]                                remove everything setup created
+    mesh.py teardown [--yes] [--dry-run]                    remove everything setup created
+    mesh.py status                                          config and deployment, from local files only
+    mesh.py pair-stash --lookup H --hours H                 hold a sealed `cx join` invite (stdin) for a short code
+Onboarding (no config needed):
+    mesh.py token-url [--with-domain]                       the dashboard link that creates the setup token
+    mesh.py verify [--token-stdin]                          is the token valid? (GET /user/tokens/verify)
+    mesh.py zones [--token-stdin]                           the zones (domains) the token can use
 Device side (no cx needed; the one-liners do the same):
     mesh.py join CODE | mesh.py leave
+    mesh.py pair-redeem --url URL --lookup H                take a short code's sealed invite (cx join does this)
 Every command takes --json (machine-readable output) and --config PATH (default
 $XDG_CONFIG_HOME/cx/mesh/config.toml). The API token comes from $CLOUDFLARE_API_TOKEN, else the credentials file
 setup writes (mode 600). Stdlib only; usable as a library: `Mesh(load_config()).devices()`.
@@ -26,6 +33,7 @@ import subprocess
 import sys
 import tomllib
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -55,6 +63,85 @@ DEFAULT_PROFILE = {
         ]
     ],
 }
+
+# The setup token's dashboard template (docs/mesh.md, "Setup token"). Keys are the short permission-group
+# keys of Cloudflare's API token template URLs (developers.cloudflare.com/fundamentals/api/how-to/
+# account-owned-token-template/); user-token URLs accept only these keys and silently drop unknown ones.
+TOKEN_TEMPLATE = "https://dash.cloudflare.com/profile/api-tokens"
+TOKEN_PERMISSIONS = [  # (template key, type, the permission as docs/mesh.md names it)
+    ("teams", "edit", "Zero Trust Write"),
+    ("access", "edit", "Access: Apps and Policies Write"),
+    ("access_acct", "read", "Access: Organizations, Identity Providers, and Groups Read"),
+    ("d1", "edit", "D1 Write"),
+    ("workers_scripts", "edit", "Workers Scripts Write"),
+    ("account_api_tokens", "edit", "Account API Tokens Write"),
+]
+DOMAIN_PERMISSIONS = [("workers_routes", "edit", "Workers Routes Write"), ("zone", "read", "Zone Read")]
+# No template key exists for these; the dashboard form needs them added by hand.
+MANUAL_PERMISSIONS = ["Access: Service Tokens Write", "Cloudflare One Connector: WARP Write"]
+
+
+def token_url(with_domain: bool = False, name: str = "cx-mesh") -> dict:
+    """The dashboard link that opens a pre-filled "create token" form (no network, no secret)."""
+    perms = TOKEN_PERMISSIONS + (DOMAIN_PERMISSIONS if with_domain else [])
+    keys = json.dumps([{"key": k, "type": t} for k, t, _ in perms], separators=(",", ":"))
+    q = urllib.parse.urlencode({"permissionGroupKeys": keys, "accountId": "*", "zoneId": "all", "name": name}, quote_via=urllib.parse.quote)
+    return {"url": f"{TOKEN_TEMPLATE}?{q}", "permissions": [d for _, _, d in perms], "manual": MANUAL_PERMISSIONS, "name": name}
+
+
+def request(method: str, url: str, token: str | None = None, body=None, timeout: int = 30) -> dict:
+    """One JSON request; HTTP errors come back as {"success": False, "status": code, ...}."""
+    data = json.dumps(body).encode() if body is not None else None
+    h = {"user-agent": "cx-mesh", **({"authorization": f"Bearer {token}"} if token else {}), **({"content-type": "application/json"} if data is not None else {})}
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method=method, data=data, headers=h), timeout=timeout) as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        text = e.read().decode(errors="replace")
+        try:
+            return {"success": False, "status": e.code, **json.loads(text)}
+        except ValueError:
+            return {"success": False, "status": e.code, "errors": [text[:300]]}
+
+
+def verify_token(token: str, account: str | None = None) -> dict:
+    """Is the token active? User tokens verify at /user/tokens/verify, account-owned ones under the account."""
+    if not token:
+        raise MeshError("no API token: set CLOUDFLARE_API_TOKEN or pass --token-stdin")
+    urls = [("user", f"{API}/user/tokens/verify")] + ([("account", f"{API}/accounts/{account}/tokens/verify")] if account else [])
+    last = {}
+    for kind, url in urls:
+        d = request("GET", url, token)
+        r = d.get("result") or {}
+        if d.get("success") and r.get("status"):
+            return {"valid": r["status"] == "active", "status": r["status"], "id": r.get("id"), "expires_on": r.get("expires_on"), "kind": kind}
+        last = d
+    return {"valid": False, "status": "invalid", "id": None, "expires_on": None, "kind": None,
+            "errors": [e.get("message", str(e)) if isinstance(e, dict) else str(e) for e in last.get("errors", [])][:3]}
+
+
+def list_zones(token: str) -> dict:
+    """The zones the token can see (one page of 50), for picking the mesh domain."""
+    if not token:
+        raise MeshError("no API token: set CLOUDFLARE_API_TOKEN or pass --token-stdin")
+    d = request("GET", f"{API}/zones?per_page=50", token)
+    if not d.get("success"):
+        raise MeshError(f"GET /zones: {d.get('errors') or d.get('status')}")
+    zones = [{"id": z["id"], "name": z["name"], "status": z.get("status"), "account": {"id": (z.get("account") or {}).get("id"), "name": (z.get("account") or {}).get("name")}} for z in d.get("result") or []]
+    return {"zones": zones, "more": (d.get("result_info") or {}).get("total_pages", 1) > 1}
+
+
+def status(cfg_path: str | None = None) -> dict:
+    """Configured? Deployed? From the config and state files only."""
+    path = config_path(cfg_path)
+    if not path.exists():
+        return {"configured": False, "provisioned": False, "config": str(path)}
+    c = load_config(cfg_path)
+    st_file = path.parent / f"{c['name']}.state.json"
+    st = json.loads(st_file.read_text()) if st_file.exists() else {}
+    return {"configured": True, "provisioned": bool(st.get("url")), "config": str(path), "name": c["name"], "domain": c.get("domain", ""),
+            "endpoint": st.get("url"), "account": st.get("account") or c.get("account") or None, "mesh": c["profile"]["mesh"], "dns_suffix": c["dns_suffix"]}
+
 
 TEMPLATE = """# cx mesh instance (docs/mesh.md). Edit, then run `cx mesh setup` again to apply.
 name = "{name}"                 # names the Cloudflare resources: worker/D1 {name}-mesh, profile {name}-mesh
@@ -380,8 +467,15 @@ class Mesh:
     def revoke(self, name: str) -> dict:
         return self.worker_api("POST", f"/v1/admin/devices/{name}/revoke")
 
-    def teardown(self) -> dict:
+    def pair_stash(self, lookup: str, sealed: str, hours: float) -> dict:
+        """Hold a `cx join` invite that cx sealed under its short code; the Worker sees only the seal."""
+        return self.worker_api("POST", "/v1/admin/pairs", {"lookup": lookup, "sealed": sealed, "hours": hours})
+
+    def teardown(self, dry_run: bool = False) -> dict:
         st, gone = self.state, []
+        if dry_run:
+            keys = ["domain_id", "worker", "d1_id", "worker_token_id", "policy_id", "sentinel_token_id", "profile_id"]
+            return {"would_remove": [k for k in keys if st.get(k)], "devices": "every enrolled device is revoked first", "dry_run": True}
         if st.get("url"):
             try:
                 for d in self.devices().get("enrolled", []):
@@ -413,6 +507,16 @@ class Mesh:
         elif app:
             self.attach(app, pid, add=False)
         self.cf("DELETE", f"/access/policies/{pid}", ok404=True)
+
+
+def pair_redeem(url: str, lookup: str) -> dict:
+    """Take a short code's sealed invite, once (device side: no config, no token)."""
+    if not url.startswith("https://"):
+        raise MeshError("the mesh URL must be https")
+    d = request("POST", url.rstrip("/") + "/v1/pair/redeem", None, {"lookup": lookup})
+    if d.get("status", 200) >= 400 or d.get("error") or not d.get("sealed"):
+        raise MeshError(d.get("error") or "the mesh endpoint gave no invite")
+    return {"sealed": d["sealed"]}
 
 
 def device_script(url: str, leaving: bool) -> int:
@@ -451,6 +555,22 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--yes", action="store_true")
     t = sp.add_parser("teardown")
     t.add_argument("--yes", action="store_true")
+    t.add_argument("--dry-run", action="store_true", help="list what would be removed, remove nothing")
+    sp.add_parser("status")
+    tu = sp.add_parser("token-url")
+    tu.add_argument("--with-domain", action="store_true", help="add the zone permissions a domain needs")
+    tu.add_argument("--name", default="cx-mesh")
+    for n in ("verify", "zones"):
+        v = sp.add_parser(n)
+        v.add_argument("--token-stdin", action="store_true", help="read the token from stdin instead of $CLOUDFLARE_API_TOKEN")
+        v.add_argument("--account", default=None)
+    ps = sp.add_parser("pair-stash")
+    ps.add_argument("--lookup", required=True)
+    ps.add_argument("--hours", type=float, default=1.0)
+    ps.add_argument("--sealed-stdin", action="store_true")
+    pr = sp.add_parser("pair-redeem")
+    pr.add_argument("--url", required=True)
+    pr.add_argument("--lookup", required=True)
     j = sp.add_parser("join")
     j.add_argument("code", help="the invite code, or the whole URL")
     sp.add_parser("leave").add_argument("--url")
@@ -468,6 +588,32 @@ def main(argv: list[str] | None = None) -> int:
             if a.dry_run and not path.exists():
                 raise MeshError("a dry run needs a config: run `cx mesh setup --name N` once, or pass --config")
             out(Mesh(load_config(a.config), dry_run=a.dry_run).setup())
+            return 0
+        if a.cmd == "token-url":
+            d = token_url(a.with_domain, a.name)
+            out(d) if a.json else print(d["url"] + "\n\nAlso add by hand: " + ", ".join(d["manual"]))
+            return 0
+        if a.cmd in ("verify", "zones"):
+            tok = sys.stdin.readline().strip() if a.token_stdin else os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
+            if a.cmd == "verify":
+                acct = a.account
+                if acct is None and config_path(a.config).exists():
+                    acct = load_config(a.config).get("account") or None
+                d = verify_token(tok, acct)
+                out(d) if a.json else print(f"{'valid' if d['valid'] else 'not valid'}: {d['status']}{' (' + d['kind'] + ' token)' if d['kind'] else ''}")
+                return 0 if d["valid"] else 1
+            d = list_zones(tok)
+            if not a.json:
+                for z in d["zones"]:
+                    print(f"{z['name']:32} {z['status'] or '':10} {z['account']['name'] or ''}")
+            out(d)
+            return 0
+        if a.cmd == "status":
+            d = status(a.config)
+            out(d) if a.json else print(json.dumps(d, indent=1))
+            return 0
+        if a.cmd == "pair-redeem":
+            out(pair_redeem(a.url, a.lookup))
             return 0
         if a.cmd in ("join", "leave"):
             if a.cmd == "join":
@@ -508,6 +654,13 @@ def main(argv: list[str] | None = None) -> int:
                     raise MeshError("not confirmed (pass --yes)")
             d = m.revoke(a.name)
             out(d) if a.json else print(f"{a.name}: {', '.join(d['revoked']) or 'nothing to revoke'}")
+        elif a.cmd == "pair-stash":
+            sealed = sys.stdin.read().strip() if a.sealed_stdin else ""
+            if not sealed:
+                raise MeshError("pass the sealed invite on stdin (--sealed-stdin)")
+            out(m.pair_stash(a.lookup, sealed, a.hours))
+        elif a.cmd == "teardown" and a.dry_run:
+            out(m.teardown(dry_run=True)) if a.json else print("would remove: " + ", ".join(m.teardown(dry_run=True)["would_remove"]))
         elif a.cmd == "teardown":
             if not a.yes and (not sys.stdin.isatty() or input(f"remove the {m.cfg['name']} mesh and every device it enrolled? type the name: ") != m.cfg["name"]):
                 raise MeshError("not confirmed (pass --yes)")

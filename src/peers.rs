@@ -198,7 +198,7 @@ pub fn configure(peer: &Device, host_key: &str, client_key: &str) -> Result<serd
     crate::peer_ssh::configure(peer, host_key, client_key)
 }
 
-fn local_addresses() -> Result<Vec<std::net::IpAddr>> {
+pub(crate) fn local_addresses() -> Result<Vec<std::net::IpAddr>> {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     let mut head = std::ptr::null_mut();
     anyhow::ensure!(

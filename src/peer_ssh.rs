@@ -374,12 +374,7 @@ fn endpoint(target: &str) -> Result<(&str, &str)> {
 /// Public metadata authenticated through the existing CX helper connection.
 pub fn identity() -> Result<Value> {
     let locked = Locked::new(root())?;
-    let host = fs::symlink_metadata("/etc/ssh/ssh_host_ed25519_key.pub")?;
-    anyhow::ensure!(
-        host.is_file() && host.len() <= 1024 && host.uid() == 0 && host.mode() & 0o022 == 0,
-        "unsafe SSH host public key"
-    );
-    let host_key = public_key(&fs::read_to_string("/etc/ssh/ssh_host_ed25519_key.pub")?)?;
+    let host_key = host_public_key()?;
     Ok(json!({"client_key": locked.identity()?, "host_key": host_key}))
 }
 pub fn configure(peer: &Device, host_key: &str, authorized_key: &str) -> Result<Value> {
@@ -506,6 +501,154 @@ pub fn options(target: &str) -> Result<Option<(PathBuf, PathBuf)>> {
         locked.root.join("id_ed25519"),
         locked.root.join("known_hosts"),
     )))
+}
+
+fn ssh_dir() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME").context("HOME is unavailable")?;
+    Ok(PathBuf::from(home).join(".ssh"))
+}
+
+/// Validated public key in canonical `ssh-ed25519 <base64>` form (for callers outside this module).
+pub(crate) fn ed25519_public(input: &str) -> Result<String> {
+    public_key(input)
+}
+
+/// The host's own SSH Ed25519 public key (root-owned, not writable by others).
+pub(crate) fn host_public_key() -> Result<String> {
+    let host = fs::symlink_metadata("/etc/ssh/ssh_host_ed25519_key.pub")?;
+    anyhow::ensure!(
+        host.is_file() && host.len() <= 1024 && host.uid() == 0 && host.mode() & 0o022 == 0,
+        "unsafe SSH host public key"
+    );
+    public_key(&fs::read_to_string("/etc/ssh/ssh_host_ed25519_key.pub")?)
+}
+
+/// Append one restricted authorized_keys line (a mesh join invite). Unrelated lines stay intact.
+pub(crate) fn authorize_line(line: &str) -> Result<()> {
+    authorize_line_at(root(), &ssh_dir()?, line)
+}
+fn authorize_line_at(root: PathBuf, ssh: &Path, line: &str) -> Result<()> {
+    anyhow::ensure!(
+        !line.is_empty() && line.len() <= 2048 && !line.contains(['\n', '\r', '\0']),
+        "invalid authorized_keys line"
+    );
+    let _locked = Locked::new(root)?;
+    private_dir(ssh)?;
+    let authorized = read(&ssh.join("authorized_keys"))?;
+    if authorized.lines().any(|l| l == line) {
+        return Ok(());
+    }
+    let prefix = if !authorized.is_empty() && !authorized.ends_with('\n') {
+        "\n"
+    } else {
+        ""
+    };
+    let addition = format!("{prefix}{line}\n");
+    anyhow::ensure!(
+        (authorized.len() + addition.len()) as u64 <= MAX,
+        "authorized_keys too large"
+    );
+    let mut file = open(&ssh.join("authorized_keys"), true)?;
+    file.write_all(addition.as_bytes())?;
+    file.sync_all()?;
+    Ok(())
+}
+
+/// Remove the authorized_keys lines `drop` selects (atomic rewrite; every other line is kept
+/// byte-for-byte). Returns how many were removed.
+pub(crate) fn remove_authorized(drop: impl Fn(&str) -> bool) -> Result<usize> {
+    let locked = Locked::new(root())?;
+    remove_authorized_at(&locked, &ssh_dir()?, drop)
+}
+fn remove_authorized_at(
+    _locked: &Locked,
+    ssh: &Path,
+    drop: impl Fn(&str) -> bool,
+) -> Result<usize> {
+    let path = ssh.join("authorized_keys");
+    let authorized = read(&path)?;
+    let mut removed = 0;
+    let mut kept = String::with_capacity(authorized.len());
+    for line in authorized.split_inclusive('\n') {
+        if drop(line.trim_end_matches(['\n', '\r'])) {
+            removed += 1;
+        } else {
+            kept.push_str(line);
+        }
+    }
+    if removed == 0 {
+        return Ok(0);
+    }
+    private_dir(ssh)?;
+    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temporary = ssh.join(format!(
+        ".authorized_keys.cx.{}.{sequence}.tmp",
+        std::process::id()
+    ));
+    let result = (|| -> Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&temporary)?;
+        file.write_all(kept.as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&temporary, &path)?;
+        File::open(ssh)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result.map(|()| removed)
+}
+
+/// Forget a paired device: its endpoint pins (known_hosts regenerated) and the exact
+/// `cx-managed-peer` authorization of its client key. Other keys are untouched.
+pub fn unpin(device_id: &str) -> Result<Value> {
+    unpin_at(root(), &ssh_dir()?, device_id)
+}
+fn unpin_at(root: PathBuf, ssh: &Path, device_id: &str) -> Result<Value> {
+    if !root.try_exists()? {
+        return Ok(json!({"unpinned": 0, "authorizations_removed": 0}));
+    }
+    let locked = Locked::new(root)?;
+    let mut pins = locked.pins()?;
+    let keys: Vec<String> = pins
+        .endpoints
+        .values()
+        .filter(|p| p.device_id == device_id)
+        .map(|p| p.client_key.clone())
+        .collect();
+    let before = pins.endpoints.len();
+    pins.endpoints.retain(|_, p| p.device_id != device_id);
+    let unpinned = before - pins.endpoints.len();
+    // A client key still pinned for another endpoint of another device stays authorized.
+    let still: Vec<&String> = pins.endpoints.values().map(|p| &p.client_key).collect();
+    let lines: Vec<String> = keys
+        .iter()
+        .filter(|k| !still.contains(k))
+        .map(|k| format!("no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc {k} cx-managed-peer"))
+        .collect();
+    let removed = if lines.is_empty() {
+        0
+    } else {
+        remove_authorized_at(&locked, ssh, |l| lines.iter().any(|m| m == l))?
+    };
+    let hosts: BTreeMap<_, _> = pins.endpoints.values().map(|p| (&p.host, &p.key)).collect();
+    let known = hosts
+        .into_iter()
+        .map(|(host, key)| {
+            format!(
+                "{} {key}\n",
+                host.trim_start_matches('[').trim_end_matches(']')
+            )
+        })
+        .collect::<String>();
+    locked.write("known_hosts", &known)?;
+    locked.write("peers.json", &serde_json::to_string(&pins)?)?;
+    Ok(json!({"unpinned": unpinned, "authorizations_removed": removed}))
 }
 
 #[cfg(test)]
@@ -787,5 +930,52 @@ mod tests {
             Duration::from_secs(2)
         )
         .is_err());
+    }
+    #[test]
+    fn unpin_removes_only_the_managed_line_and_pin() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let root = temp.path().join("state");
+        let ssh = temp.path().join(".ssh");
+        fs::create_dir(&ssh).unwrap();
+        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700)).unwrap();
+        let unrelated = format!("command=\"x\" {} me@laptop\n", key(9));
+        fs::write(ssh.join("authorized_keys"), &unrelated).unwrap();
+        fs::set_permissions(
+            ssh.join("authorized_keys"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        configure_at(root.clone(), &ssh, &peer(), &key(1), &key(2)).unwrap();
+        authorize_line_at(
+            root.clone(),
+            &ssh,
+            &format!("restrict {} cx-join-invite:ab", key(3)),
+        )
+        .unwrap();
+        authorize_line_at(
+            root.clone(),
+            &ssh,
+            &format!("restrict {} cx-join-invite:ab", key(3)),
+        )
+        .unwrap();
+        let text = fs::read_to_string(ssh.join("authorized_keys")).unwrap();
+        assert_eq!(text.lines().count(), 3, "invite line added once");
+        {
+            let locked = Locked::new(root.clone()).unwrap();
+            assert_eq!(
+                remove_authorized_at(&locked, &ssh, |l| l.ends_with("cx-join-invite:ab")).unwrap(),
+                1
+            );
+        }
+        let result = unpin_at(root.clone(), &ssh, "machine:alice").unwrap();
+        assert_eq!(result["unpinned"], 1);
+        assert_eq!(result["authorizations_removed"], 1);
+        assert_eq!(
+            fs::read_to_string(ssh.join("authorized_keys")).unwrap(),
+            unrelated
+        );
+        assert_eq!(fs::read_to_string(root.join("known_hosts")).unwrap(), "");
+        assert!(authorize_line_at(root, &ssh, "a\nb").is_err());
     }
 }

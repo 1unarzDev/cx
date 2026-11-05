@@ -95,11 +95,27 @@ enum Cmd {
         command: DeviceCommand,
     },
     /// A WARP mesh on your own Cloudflare account, joined by one line (docs/mesh.md): setup, invite,
-    /// devices, revoke, audit, teardown, join, leave; --json for tools.
+    /// devices, revoke, audit, teardown, join, leave; --json for tools. `backends [--json]` lists the
+    /// mesh backends (ssh-overlay, cloudflare-warp, tailscale); `--backend ID` picks one.
     #[command(disable_help_flag = true)]
     Mesh {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+    /// Join a mesh with a code from `cx mesh invite --backend ssh-overlay` (docs/mesh.md): pins the
+    /// inviting device's host key from the code and pairs both ways.
+    Join {
+        /// The code, or <mesh host>/<short code>.
+        #[arg(required_unless_present = "redeem")]
+        code: Option<String>,
+        /// The name this device gets on the viewer (default: the hostname).
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        json: bool,
+        /// The viewer side, run by sshd as the invite key's forced command.
+        #[arg(long, hide = true, conflicts_with = "code")]
+        redeem: Option<String>,
     },
     /// Lend your Claude Code gateway with one line (docs/claude.md): lend NAME [--hours H | --days D],
     /// revoke NAME, list; the teammate runs `curl -sL <mesh endpoint>/claude/<code>|sh`. --json for tools.
@@ -1566,6 +1582,12 @@ fn run() -> Result<()> {
         }
         Some(Cmd::Terminal { device: d }) => sessions::login_terminal(&device(d)?),
         Some(Cmd::Mesh { args }) => mesh::run(&args),
+        Some(Cmd::Join {
+            code,
+            name,
+            json,
+            redeem,
+        }) => mesh::join(code.as_deref(), name.as_deref(), redeem.as_deref(), json),
         Some(Cmd::Claude { args }) => mesh::run_claude(&args),
         Some(Cmd::Device { command }) => {
             match command {

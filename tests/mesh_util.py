@@ -391,5 +391,150 @@ class ClaudeScript(unittest.TestCase):
             self.assertEqual(self.seen, [], "nothing claimed")
 
 
+class Onboarding(unittest.TestCase):
+    """token-url, verify, zones and status: what cx's onboarding calls through mesh.py --json."""
+
+    def fake_api(self, routes):
+        seen = []
+
+        def request(method, url, token=None, body=None, timeout=30):
+            seen.append((method, url.split("/client/v4")[-1], token, body))
+            for prefix, reply in routes:
+                if url.split("/client/v4")[-1].startswith(prefix):
+                    return reply(token) if callable(reply) else reply
+            return {"success": False, "status": 404, "errors": [{"message": "no route"}]}
+
+        return request, seen
+
+    def test_token_url_prefills_the_documented_permissions(self):
+        import urllib.parse as up
+        d = mesh.token_url()
+        u = up.urlparse(d["url"])
+        self.assertEqual((u.scheme, u.netloc, u.path), ("https", "dash.cloudflare.com", "/profile/api-tokens"))
+        q = up.parse_qs(u.query)
+        self.assertEqual((q["accountId"], q["zoneId"], q["name"]), (["*"], ["all"], ["cx-mesh"]))
+        keys = json.loads(q["permissionGroupKeys"][0])
+        self.assertEqual([k["key"] for k in keys], ["teams", "access", "access_acct", "d1", "workers_scripts", "account_api_tokens"])
+        self.assertTrue(all(k["type"] in ("read", "edit") for k in keys), "the template takes edit, not write")
+        self.assertNotIn(" ", d["url"])
+        self.assertEqual(d["manual"], ["Access: Service Tokens Write", "Cloudflare One Connector: WARP Write"])
+        docs = (ROOT / "docs" / "mesh.md").read_text()
+        for name in d["permissions"] + d["manual"] + ["Workers Routes Write", "Zone Read"]:
+            self.assertIn(name.split(", Identity")[0], docs, f"docs/mesh.md names {name}")
+        wd = json.loads(up.parse_qs(up.urlparse(mesh.token_url(True)["url"]).query)["permissionGroupKeys"][0])
+        self.assertEqual(wd[-2:], [{"key": "workers_routes", "type": "edit"}, {"key": "zone", "type": "read"}])
+        r = subprocess.run([sys.executable, str(ROOT / "mesh" / "mesh.py"), "token-url", "--json"], capture_output=True, text=True, env={**os.environ, "CLOUDFLARE_API_TOKEN": ""})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["url"], d["url"])
+
+    def test_verify_user_then_account_and_never_echoes_the_token(self):
+        req, seen = self.fake_api([
+            ("/user/tokens/verify", {"success": False, "status": 401, "errors": [{"message": "Invalid API Token"}]}),
+            ("/accounts/acct/tokens/verify", lambda t: {"success": True, "result": {"id": "tid", "status": "active" if t == "sekrit-acct" else "disabled"}}),
+        ])
+        old, mesh.request = mesh.request, req
+        try:
+            d = mesh.verify_token("sekrit-acct", "acct")
+            self.assertEqual((d["valid"], d["status"], d["kind"], d["id"]), (True, "active", "account", "tid"))
+            self.assertNotIn("sekrit", json.dumps(d))
+            self.assertEqual([x[1] for x in seen], ["/user/tokens/verify", "/accounts/acct/tokens/verify"])
+            d = mesh.verify_token("other", None)
+            self.assertEqual((d["valid"], d["status"]), (False, "invalid"))
+            self.assertEqual(d["errors"], ["Invalid API Token"])
+            mesh.request = self.fake_api([("/user/tokens/verify", {"success": True, "result": {"id": "u", "status": "active", "expires_on": "2027-01-01T00:00:00Z"}})])[0]
+            d = mesh.verify_token("t")
+            self.assertEqual((d["valid"], d["kind"], d["expires_on"]), (True, "user", "2027-01-01T00:00:00Z"))
+            with self.assertRaises(mesh.MeshError):
+                mesh.verify_token("")
+        finally:
+            mesh.request = old
+
+    def test_zones_for_the_domain_choice(self):
+        req, seen = self.fake_api([("/zones", {"success": True, "result": [{"id": "z1", "name": "example.org", "status": "active", "account": {"id": "acct", "name": "Me"}, "name_servers": ["x"]}], "result_info": {"total_pages": 1}})])
+        old, mesh.request = mesh.request, req
+        try:
+            d = mesh.list_zones("t")
+            self.assertEqual(d, {"zones": [{"id": "z1", "name": "example.org", "status": "active", "account": {"id": "acct", "name": "Me"}}], "more": False})
+            self.assertEqual(seen[0][:3], ("GET", "/zones?per_page=50", "t"))
+            mesh.request = self.fake_api([("/zones", {"success": False, "status": 403, "errors": ["denied"]})])[0]
+            with self.assertRaises(mesh.MeshError):
+                mesh.list_zones("t")
+        finally:
+            mesh.request = old
+
+    def test_verify_cli_reads_the_token_from_stdin(self):
+        # A stub module replaces urllib's network: the CLI path, argument parsing and exit status.
+        with tempfile.TemporaryDirectory() as d:
+            stub = Path(d) / "run.py"
+            stub.write_text(
+                "import json,sys\nsys.path.insert(0, %r)\nimport mesh\n"
+                "mesh.request = lambda m, u, t=None, b=None, timeout=30: {'success': True, 'result': {'id': 'x', 'status': 'active' if t == 'good' else 'expired'}}\n"
+                "sys.exit(mesh.main(sys.argv[1:]))\n" % str(ROOT / "mesh"))
+            env = {**os.environ, "CLOUDFLARE_API_TOKEN": "", "XDG_CONFIG_HOME": d}
+            r = subprocess.run([sys.executable, str(stub), "verify", "--token-stdin", "--json"], input="good\n", capture_output=True, text=True, env=env)
+            self.assertEqual((r.returncode, json.loads(r.stdout)["valid"]), (0, True), r.stderr)
+            self.assertNotIn("good", r.stdout.replace('"valid": true', ""))
+            r = subprocess.run([sys.executable, str(stub), "verify", "--token-stdin", "--json"], input="bad\n", capture_output=True, text=True, env=env)
+            self.assertEqual((r.returncode, json.loads(r.stdout)["status"]), (1, "expired"))
+
+    def test_status_reads_local_files_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.toml"
+            self.assertEqual(mesh.status(str(p))["configured"], False)
+            mesh.write_config(p, "demo", "acct", "example.org")
+            st = mesh.status(str(p))
+            self.assertEqual((st["configured"], st["provisioned"], st["name"], st["mesh"]), (True, False, "demo", ["100.96.0.0/12"]))
+            (Path(d) / "demo.state.json").write_text(json.dumps({"url": "https://mesh.example.org", "account": "acct"}))
+            st = mesh.status(str(p))
+            self.assertEqual((st["provisioned"], st["endpoint"]), (True, "https://mesh.example.org"))
+
+
+class Pairs(unittest.TestCase):
+    """A `cx join` short code: the owner stashes the seal on the Worker, a device takes it once."""
+
+    def test_stash_and_redeem_through_the_worker_api(self):
+        calls = []
+
+        class Fake(FakeCloudflare):
+            def __call__(self, method, url, body=None, headers=None, raw=None, ctype=None):
+                if "/v1/admin/pairs" in url:
+                    calls.append((method, url, body))
+                    return {"url": "https://demo-mesh.owner.workers.dev", "expires": "2026-11-04T01:00:00Z"}
+                return super().__call__(method, url, body, headers, raw, ctype)
+
+        fake = Fake()
+        with tempfile.TemporaryDirectory() as d:
+            mesh.write_config(Path(d) / "config.toml", "demo", "", "")
+            m = MeshSetup.run_mesh(None, d, fake)
+            m.setup()
+            r = m.pair_stash("ab" * 32, "c2VhbGVk" * 6, 1.5)
+            self.assertEqual(r["url"], "https://demo-mesh.owner.workers.dev")
+            self.assertEqual(calls[-1][2], {"lookup": "ab" * 32, "sealed": "c2VhbGVk" * 6, "hours": 1.5})
+        seen = []
+        old = mesh.request
+        mesh.request = lambda m, u, t=None, b=None, timeout=30: (seen.append((m, u, t, b)), {"sealed": "SEAL"})[1]
+        try:
+            self.assertEqual(mesh.pair_redeem("https://mesh.example.org/", "ab" * 32), {"sealed": "SEAL"})
+            self.assertEqual(seen, [("POST", "https://mesh.example.org/v1/pair/redeem", None, {"lookup": "ab" * 32})], "no token on the device side")
+            mesh.request = lambda *a, **k: {"success": False, "status": 403, "error": "this join code is unknown, already used or expired"}
+            with self.assertRaises(mesh.MeshError):
+                mesh.pair_redeem("https://mesh.example.org", "ab" * 32)
+            with self.assertRaises(mesh.MeshError):
+                mesh.pair_redeem("http://mesh.example.org", "ab" * 32)
+        finally:
+            mesh.request = old
+
+    def test_teardown_dry_run_lists_without_calls(self):
+        fake = FakeCloudflare()
+        with tempfile.TemporaryDirectory() as d:
+            mesh.write_config(Path(d) / "config.toml", "demo", "", "")
+            MeshSetup.run_mesh(None, d, fake).setup()
+            before = len(fake.calls)
+            r = MeshSetup.run_mesh(None, d, fake).teardown(dry_run=True)
+            self.assertEqual(len(fake.calls), before, "a dry run calls nothing")
+            self.assertIn("worker", r["would_remove"])
+            self.assertTrue((Path(d) / "demo.state.json").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

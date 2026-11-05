@@ -1,5 +1,9 @@
 # CX status
 
+## Claude gateway lends (Unreleased)
+- `cx claude lend | revoke | list` (mesh/claude.py, docs/claude.md): a better-ccflare key, an Access service token and policy, and a single-use code; the teammate runs `curl -sL <endpoint>/claude/<code>|sh` or `irm …|iex`. `cx mesh deploy` redeploys only the Worker.
+- Tested offline (fake Cloudflare, fake gateway, claude.sh against a local stand-in) and live: a throwaway lend over the Access route and the mesh route, Claude Code answering with the written settings, then revoke (the key refused, token and policy gone). claude.ps1 is untested on Windows.
+
 ## Mesh one-line joins (Unreleased, `mesh-oneliner`)
 - `cx mesh setup | invite | devices | audit | revoke | teardown` and the standalone `mesh/mesh.py` (docs/mesh.md). Devices join with `curl -sL <endpoint>/<code>|sh` or `irm …|iex`, with no cx.
 - Tested offline: the profile, setup against a fake API (idempotent, dry run, teardown) and the Worker against an in-memory D1. Live: two throwaway Linux devices joined, registered, got mesh addresses and left cleanly on a real account. macOS and Windows joins are untested on hardware.

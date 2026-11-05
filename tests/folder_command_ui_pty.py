@@ -77,4 +77,9 @@ for shell in sys.argv[2:] or ['/bin/bash']:
         finally:
             if process.poll() is None: process.kill(); process.wait(timeout=5)
             os.close(master); os.close(slave)
+            # The command panel starts this fixture's private managed server (a
+            # transient cx-tmux user unit); stop it so it does not outlive the
+            # deleted state directory. Only the fixture's own socket is targeted.
+            subprocess.run(['tmux','-S',str(state/'managed.sock'),'kill-server'],env=env,
+                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10)
 print(json.dumps(results))

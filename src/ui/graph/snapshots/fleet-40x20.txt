@@ -1,0 +1,20 @@
+▌t ● tranquility  ⌂ you  ◆ cloudflare
+ c ├┄▶ ● nas  pwd →  3ms
+ i ├━▶ ● innovation  ◆ cloudflare  key ⇄
+ d ├━▶ ✕ field-rover  ◆ ssh-overlay  key
+ b ├━▶ ● lab-arm  ◆ ssh-overlay  key ⇄
+ o │ └─▶ ● jetson-01  ◆ ssh-overlay  one
+   └─▶ ~ 4 LAN (enp5s0 · 1 ssh)
+
+
+
+
+
+
+
+
+
+
+
+
+

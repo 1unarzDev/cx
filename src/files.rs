@@ -21,7 +21,6 @@ use std::{
 const PATH_PREFIX: &str = "cx-bytes:";
 #[path = "file_preview.rs"]
 mod file_preview;
-const LIST_LIMIT: usize = 1000;
 
 /// Escape all terminal controls, including C1 controls. Metadata must not render escapes.
 pub fn display(text: &str) -> String {
@@ -179,27 +178,175 @@ pub fn handle(op: &Operation) -> Result<Value> {
         _ => bail!("unsupported filesystem operation"),
     }
 }
+/// First-page size for `Operation::List`; continuation pages accept up to this many too.
+/// Old helpers reject `ListPage` limits above 1000, so clients only ask for more after
+/// seeing `"order"` in a reply (the field this helper version adds).
+const FIRST_PAGE_LIMIT: usize = 4000;
+/// Serialized bytes of entries per page. The 1 MiB frame also carries three paths and the
+/// response envelope (and may be nested inside a container relay), so stay well under it.
+const LIST_BYTES: usize = 768 * 1024;
+/// One read_dir pass never holds more names than this; old helpers stopped at offset 100000.
+const SNAPSHOT_ENTRIES: usize = 131_072;
+/// Bound on snapshots and total names kept for continuation pages.
+const SNAPSHOT_CACHE: usize = 8;
+const SNAPSHOT_CACHE_ENTRIES: usize = 262_144;
+const SNAPSHOT_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+/// Order of `entries` across all pages: directories first, then display name, then raw name.
+/// This is the UI's own sort key, so a client that sees it may append pages without re-sorting.
+const LIST_ORDER: &str = "directories-first-name";
+
+#[derive(Clone, PartialEq, Eq)]
+struct SnapshotKey {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+    modified: i128,
+    changed: i128,
+    size: u64,
+}
+struct SnapshotEntry {
+    name: std::ffi::OsString,
+    display: String,
+    directory: bool,
+}
+struct Snapshot {
+    key: SnapshotKey,
+    taken: std::time::Instant,
+    entries: std::sync::Arc<Vec<SnapshotEntry>>,
+    incomplete: bool,
+}
+static SNAPSHOTS: std::sync::Mutex<Vec<Snapshot>> = std::sync::Mutex::new(Vec::new());
+
+fn snapshot_key(path: &Path) -> Result<SnapshotKey> {
+    let m = fs::metadata(path).context("open directory")?;
+    if !m.is_dir() {
+        bail!("open directory: not a directory");
+    }
+    #[cfg(unix)]
+    let key = SnapshotKey {
+        path: path.to_path_buf(),
+        device: m.dev(),
+        inode: m.ino(),
+        modified: m.mtime() as i128 * 1_000_000_000 + m.mtime_nsec() as i128,
+        changed: m.ctime() as i128 * 1_000_000_000 + m.ctime_nsec() as i128,
+        size: m.len(),
+    };
+    #[cfg(not(unix))]
+    let key = SnapshotKey {
+        path: path.to_path_buf(),
+        device: 0,
+        inode: 0,
+        modified: m
+            .modified()?
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as i128),
+        changed: 0,
+        size: m.len(),
+    };
+    Ok(key)
+}
+/// One read_dir pass, sorted in the UI's order. Uses the dirent type only (no stat per entry,
+/// except where the filesystem reports DT_UNKNOWN and std falls back to lstat).
+fn read_snapshot(key: SnapshotKey) -> Result<Snapshot> {
+    let mut entries = Vec::new();
+    let mut incomplete = false;
+    for entry in fs::read_dir(&key.path).context("open directory")? {
+        if entries.len() == SNAPSHOT_ENTRIES {
+            incomplete = true;
+            break;
+        }
+        let entry = entry?;
+        let name = entry.file_name();
+        let directory = match entry.file_type() {
+            Ok(t) => t.is_dir(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        };
+        entries.push(SnapshotEntry {
+            display: display(&name.to_string_lossy()),
+            name,
+            directory,
+        });
+    }
+    entries.sort_unstable_by(|a, b| {
+        (!a.directory, a.display.as_str(), a.name.as_os_str()).cmp(&(
+            !b.directory,
+            b.display.as_str(),
+            b.name.as_os_str(),
+        ))
+    });
+    Ok(Snapshot {
+        key,
+        taken: std::time::Instant::now(),
+        entries: std::sync::Arc::new(entries),
+        incomplete,
+    })
+}
+/// A fresh snapshot for offset 0 (every open or refresh rereads); continuation pages reuse
+/// the snapshot their first page came from while the directory's identity and times match.
+fn snapshot(path: &Path, offset: u64) -> Result<(std::sync::Arc<Vec<SnapshotEntry>>, bool)> {
+    let key = snapshot_key(path)?;
+    let mut cache = SNAPSHOTS.lock().unwrap_or_else(|e| e.into_inner());
+    cache.retain(|s| s.taken.elapsed() < SNAPSHOT_TTL);
+    if offset > 0 {
+        if let Some(i) = cache.iter().position(|s| s.key == key) {
+            let s = cache.remove(i);
+            let found = (s.entries.clone(), s.incomplete);
+            cache.push(s);
+            return Ok(found);
+        }
+    }
+    cache.retain(|s| s.key.path != key.path);
+    drop(cache);
+    let s = read_snapshot(key)?;
+    let found = (s.entries.clone(), s.incomplete);
+    let mut cache = SNAPSHOTS.lock().unwrap_or_else(|e| e.into_inner());
+    cache.retain(|c| c.key.path != s.key.path);
+    cache.push(s);
+    while cache.len() > SNAPSHOT_CACHE
+        || cache.iter().map(|s| s.entries.len()).sum::<usize>() > SNAPSHOT_CACHE_ENTRIES
+    {
+        cache.remove(0);
+    }
+    Ok(found)
+}
+/// Keys, punctuation, the longest kind, a u64 size, a bool and the separating comma.
+const ENTRY_JSON_OVERHEAD: usize = 128;
+/// Serialized length of `text` as a JSON string, quotes included.
+fn json_string_len(text: &str) -> usize {
+    2 + text
+        .chars()
+        .map(|c| match c {
+            '"' | '\\' | '\n' | '\r' | '\t' | '\u{8}' | '\u{c}' => 2,
+            c if (c as u32) < 0x20 => 6,
+            c => c.len_utf8(),
+        })
+        .sum::<usize>()
+}
 fn list(path: &Path) -> Result<Value> {
-    list_page(path, 0, LIST_LIMIT as u32)
+    list_page(path, 0, FIRST_PAGE_LIMIT as u32)
 }
 fn list_page(path: &Path, offset: u64, limit: u32) -> Result<Value> {
-    if limit == 0 || limit > LIST_LIMIT as u32 || offset > 100000 {
+    if limit == 0 || limit > FIRST_PAGE_LIMIT as u32 || offset > 100000 {
         bail!("listing pagination exceeds bounds");
     }
     let path = fs::canonicalize(path).context("open directory")?;
+    let (snapshot, incomplete) = snapshot(&path, offset)?;
     let mut entries = Vec::new();
-    let mut truncated = false;
-    let mut budget = 0;
-    for entry in fs::read_dir(&path)?.skip(offset as usize) {
-        let entry = entry?;
-        let metadata = fs::symlink_metadata(entry.path())?;
-        let name = display(&entry.file_name().to_string_lossy());
-        let opaque = encode_path(&entry.path());
-        budget += name.len() + opaque.len() + entry.file_name().as_bytes().len() + 256;
-        if entries.len() == limit as usize || budget > 512 * 1024 {
-            truncated = true;
-            break;
-        }
+    let mut bytes = 0;
+    let mut index = (offset as usize).min(snapshot.len());
+    while index < snapshot.len() && entries.len() < limit as usize {
+        let item = &snapshot[index];
+        let child = path.join(&item.name);
+        // Size and identity are reported, so each returned entry needs exactly one lstat.
+        let metadata = match fs::symlink_metadata(&child) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                index += 1;
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+        };
         let kind = if metadata.is_symlink() {
             "symlink"
         } else if metadata.is_dir() {
@@ -209,23 +356,40 @@ fn list_page(path: &Path, offset: u64, limit: u32) -> Result<Value> {
         } else {
             "other"
         };
-        let filename = entry.file_name();
-        let rename_name = filename
+        let rename_name = item
+            .name
             .to_str()
             .filter(|s| !s.chars().any(char::is_control));
-        let hidden = filename.as_bytes().first() == Some(&b'.');
-        entries.push(json!({"name":name,"path":opaque,"kind":kind,"size":metadata.len(),
-            "hidden":hidden,"rename_name":rename_name,"identity":serde_json::to_string(&identity(&metadata)?)?}));
+        let hidden = item.name.as_bytes().first() == Some(&b'.');
+        let opaque = encode_path(&child);
+        let identity = serde_json::to_string(&identity(&metadata)?)?;
+        // Upper bound of the entry's serialized size without serializing it twice.
+        let size = ENTRY_JSON_OVERHEAD
+            + json_string_len(&item.display)
+            + json_string_len(&opaque)
+            + json_string_len(&identity)
+            + rename_name.map_or(4, json_string_len);
+        let entry = json!({"name":item.display,"path":opaque,"kind":kind,"size":metadata.len(),
+            "hidden":hidden,"rename_name":rename_name,"identity":identity});
+        if !entries.is_empty() && bytes + size > LIST_BYTES {
+            break;
+        }
+        bytes += size;
+        entries.push(entry);
+        index += 1;
     }
-    entries.sort_by(|a, b| {
-        let group = |v: &Value| if v["kind"] == "directory" { 0 } else { 1 };
-        group(a)
-            .cmp(&group(b))
-            .then_with(|| a["name"].as_str().cmp(&b["name"].as_str()))
-    });
-    Ok(
-        json!({"path":encode_path(&path),"display_path":display(&path.to_string_lossy()),"parent":path.parent().map(encode_path),"next_offset":if truncated{Some(offset+entries.len() as u64)}else{None},"entries":entries,"truncated":truncated}),
-    )
+    let next_offset = (index < snapshot.len()).then_some(index as u64);
+    Ok(json!({
+        "path":encode_path(&path),
+        "display_path":display(&path.to_string_lossy()),
+        "parent":path.parent().map(encode_path),
+        "next_offset":next_offset,
+        "entries":entries,
+        "truncated":next_offset.is_some() || incomplete,
+        "order":LIST_ORDER,
+        "total":snapshot.len(),
+        "incomplete":incomplete,
+    }))
 }
 fn open_read(path: &Path) -> Result<File> {
     // Reject special files before opening them: opening a device can itself have
@@ -1662,6 +1826,221 @@ fn valid_symlink_request(conflict: &str, key: &str) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+    /// transport::MAX_MESSAGE; files.rs is also compiled into integration tests without transport.
+    const FRAME_LIMIT: usize = 1024 * 1024;
+    /// The pre-snapshot helper listing (readdir order, skip(offset), lstat each), kept to prove
+    /// the new pages contain exactly what the old pages plus the UI's sort produced.
+    fn old_list_page(path: &Path, offset: u64, limit: u32) -> Value {
+        let path = fs::canonicalize(path).unwrap();
+        let mut entries = Vec::new();
+        let mut truncated = false;
+        let mut budget = 0;
+        for entry in fs::read_dir(&path).unwrap().skip(offset as usize) {
+            let entry = entry.unwrap();
+            let metadata = fs::symlink_metadata(entry.path()).unwrap();
+            let name = display(&entry.file_name().to_string_lossy());
+            let opaque = encode_path(&entry.path());
+            budget += name.len() + opaque.len() + entry.file_name().as_bytes().len() + 256;
+            if entries.len() == limit as usize || budget > 512 * 1024 {
+                truncated = true;
+                break;
+            }
+            let kind = if metadata.is_symlink() {
+                "symlink"
+            } else if metadata.is_dir() {
+                "directory"
+            } else if metadata.is_file() {
+                "file"
+            } else {
+                "other"
+            };
+            let filename = entry.file_name();
+            let rename_name = filename
+                .to_str()
+                .filter(|s| !s.chars().any(char::is_control));
+            let hidden = filename.as_bytes().first() == Some(&b'.');
+            entries.push(json!({"name":name,"path":opaque,"kind":kind,"size":metadata.len(),
+                "hidden":hidden,"rename_name":rename_name,"identity":serde_json::to_string(&identity(&metadata).unwrap()).unwrap()}));
+        }
+        json!({"next_offset":if truncated{Some(offset+entries.len() as u64)}else{None},"entries":entries})
+    }
+    /// Pages the way the UI does: List, then ListPage limit 1000 from each next_offset.
+    fn all_pages(path: &Path, first: impl Fn() -> Value, limit: u32) -> (Vec<Value>, usize) {
+        let mut page = first();
+        let mut entries = Vec::new();
+        let mut requests = 1;
+        loop {
+            entries.extend(page["entries"].as_array().unwrap().iter().cloned());
+            let Some(offset) = page["next_offset"].as_u64() else {
+                break;
+            };
+            page = handle(&Operation::ListPage {
+                path: encode_path(path),
+                offset,
+                limit,
+            })
+            .unwrap_or_else(|_| old_list_page(path, offset, limit));
+            requests += 1;
+        }
+        (entries, requests)
+    }
+    fn ui_sort(entries: &mut [Value]) {
+        entries.sort_by(|a, b| {
+            (a["kind"] != "directory", a["name"].as_str())
+                .cmp(&(b["kind"] != "directory", b["name"].as_str()))
+        });
+    }
+    #[test]
+    fn twenty_thousand_entry_listing_is_fast_sorted_and_matches_old_pages() {
+        let d = tempdir().unwrap();
+        for i in 0..20_000u32 {
+            let name = format!("entry-{:05}-{}", (i * 7919) % 20_000, i % 3);
+            if i % 97 == 0 {
+                fs::create_dir(d.path().join(&name)).unwrap();
+            } else {
+                fs::write(d.path().join(&name), vec![b'x'; (i % 5) as usize]).unwrap();
+            }
+        }
+        std::os::unix::fs::symlink("entry-00000-0", d.path().join("link")).unwrap();
+        fs::write(d.path().join(".hidden"), b"h").unwrap();
+        // Old helper: readdir order with skip(offset), 1000 per page, sorted by the UI after.
+        let started = std::time::Instant::now();
+        let mut old = Vec::new();
+        let mut offset = 0;
+        loop {
+            let page = old_list_page(d.path(), offset, 1000);
+            old.extend(page["entries"].as_array().unwrap().iter().cloned());
+            match page["next_offset"].as_u64() {
+                Some(next) => offset = next,
+                None => break,
+            }
+        }
+        let old_time = started.elapsed();
+        ui_sort(&mut old);
+        let started = std::time::Instant::now();
+        let (new, requests) = all_pages(d.path(), || list(d.path()).unwrap(), 1000);
+        let new_time = started.elapsed();
+        eprintln!(
+            "20002-entry listing: old {old_time:?} (21 requests), new {new_time:?} ({requests} requests)"
+        );
+        assert_eq!(new.len(), 20_002);
+        assert_eq!(new, old, "pages arrive pre-sorted with the same contents");
+        let mut resorted = new.clone();
+        ui_sort(&mut resorted);
+        assert_eq!(
+            resorted, new,
+            "the UI's sort is a no-op on the helper's order"
+        );
+        assert!(new_time < std::time::Duration::from_secs(1), "{new_time:?}");
+        let first = list(d.path()).unwrap();
+        assert_eq!(first["order"], LIST_ORDER);
+        assert_eq!(first["total"], 20_002);
+        assert!(first["entries"].as_array().unwrap().len() > 1000);
+        assert!(serde_json::to_vec(&first).unwrap().len() < FRAME_LIMIT);
+        assert!(requests < 21);
+    }
+    #[test]
+    fn listing_pages_fit_the_frame_with_long_names() {
+        let d = tempdir().unwrap();
+        let deep = d.path().join("d".repeat(200)).join("e".repeat(200));
+        fs::create_dir_all(&deep).unwrap();
+        for i in 0..5000 {
+            fs::write(deep.join(format!("{i:05}{}\u{7f}", "n".repeat(240))), b"").unwrap();
+        }
+        let (entries, requests) =
+            all_pages(&deep, || list(&deep).unwrap(), FIRST_PAGE_LIMIT as u32);
+        assert_eq!(entries.len(), 5000);
+        assert!(requests > 1, "byte budget split the listing");
+        let mut offset = 0;
+        loop {
+            let page = list_page(&deep, offset, FIRST_PAGE_LIMIT as u32).unwrap();
+            let response = crate::model::Response {
+                version: 1,
+                id: "x".repeat(64),
+                result: Some(page.clone()),
+                error: None,
+            };
+            assert!(serde_json::to_vec(&response).unwrap().len() < FRAME_LIMIT / 4 * 3 + 64 * 1024);
+            let bytes: usize = page["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| serde_json::to_string(e).unwrap().len() + 1)
+                .sum();
+            assert!(bytes <= LIST_BYTES, "{bytes}");
+            match page["next_offset"].as_u64() {
+                Some(next) => {
+                    assert!(next > offset);
+                    offset = next
+                }
+                None => break,
+            }
+        }
+    }
+    #[test]
+    fn json_size_estimate_bounds_serialized_entries() {
+        for text in [
+            "plain",
+            "q\"b\\s",
+            "c\u{1}\u{1f}\n\t\u{7f}",
+            "\u{e9}\u{1f600}",
+            "",
+        ] {
+            assert_eq!(
+                json_string_len(text),
+                serde_json::to_string(text).unwrap().len()
+            );
+        }
+        let d = tempdir().unwrap();
+        fs::write(d.path().join("\"\\\u{1}\u{1b}[2J\n"), b"x").unwrap();
+        fs::create_dir(d.path().join("dir")).unwrap();
+        let page = list(d.path()).unwrap();
+        for e in page["entries"].as_array().unwrap() {
+            let estimate = ENTRY_JSON_OVERHEAD
+                + json_string_len(e["name"].as_str().unwrap())
+                + json_string_len(e["path"].as_str().unwrap())
+                + json_string_len(e["identity"].as_str().unwrap())
+                + e["rename_name"].as_str().map_or(4, json_string_len);
+            assert!(serde_json::to_string(e).unwrap().len() + 1 <= estimate);
+        }
+    }
+    #[test]
+    fn listing_snapshot_is_fresh_on_open_and_rereads_when_directory_changes() {
+        let d = tempdir().unwrap();
+        for i in 0..1500 {
+            fs::write(d.path().join(format!("f{i:04}")), b"").unwrap();
+        }
+        let first = list_page(d.path(), 0, 1000).unwrap();
+        assert_eq!(first["next_offset"], 1000);
+        fs::write(d.path().join("zzzz-new"), b"").unwrap();
+        // Directory mtime/ctime/size changed, so the continuation rereads and sees the file.
+        let rest = list_page(d.path(), 1000, 1000).unwrap();
+        assert_eq!(rest["total"], 1501);
+        assert!(rest["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["name"] == "zzzz-new"));
+        // An entry removed after the snapshot is skipped, not an error.
+        let _ = list_page(d.path(), 0, 1000).unwrap();
+        fs::remove_file(d.path().join("f1499")).unwrap();
+        let key = snapshot_key(&fs::canonicalize(d.path()).unwrap()).unwrap();
+        let mut cache = SNAPSHOTS.lock().unwrap();
+        if let Some(s) = cache.iter_mut().find(|s| s.key.path == key.path) {
+            s.key = key; // pretend the change landed inside one timestamp tick
+        }
+        drop(cache);
+        let rest = list_page(d.path(), 1000, 1000).unwrap();
+        assert_eq!(rest["entries"].as_array().unwrap().len(), 500);
+        assert!(rest["next_offset"].is_null());
+        // Opening again always rereads.
+        assert_eq!(list(d.path()).unwrap()["total"], 1500);
+        assert!(list_page(d.path(), 0, FIRST_PAGE_LIMIT as u32 + 1).is_err());
+        assert_eq!(
+            list_page(d.path(), 99_999, 10).unwrap()["entries"],
+            json!([])
+        );
+    }
     #[test]
     fn hostile_preview_and_listing() {
         let d = tempdir().unwrap();

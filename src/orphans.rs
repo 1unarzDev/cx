@@ -225,8 +225,238 @@ fn stop(proc: &Proc) -> bool {
     !same()
 }
 
+/// A cx-owned OpenSSH master: a detached `ssh` session leader whose ControlPath
+/// lies in cx's private socket directory. Masters normally end on their own
+/// ControlPersist idle timer; one is stray only when it is idle (no
+/// multiplexed client) and can never be reused: its socket name is gone, or
+/// it belongs to a device that is no longer enrolled.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Master {
+    pub pid: i32,
+    /// Private socket directory the master's ControlPath names.
+    pub directory: std::path::PathBuf,
+    pub start_ticks: u64,
+    /// Expanded socket file name inside the private directory, when bound.
+    pub socket: Option<String>,
+    pub socket_present: bool,
+    pub clients: usize,
+    pub enrolled: bool,
+}
+
+impl Master {
+    pub fn stray(&self) -> bool {
+        self.clients == 0 && (!self.socket_present || !self.enrolled)
+    }
+}
+
+/// Unescape one `ControlPath="..."` argument written by `store::ssh_mode`.
+fn control_path_arg(arg: &str) -> Option<String> {
+    let value = arg.strip_prefix("ControlPath=")?;
+    let value = value
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .unwrap_or(value);
+    let mut out = String::new();
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => out.push(chars.next()?),
+            '%' => match chars.next()? {
+                '%' => out.push('%'),
+                other => {
+                    out.push('%');
+                    out.push(other);
+                }
+            },
+            c => out.push(c),
+        }
+    }
+    Some(out)
+}
+
+/// `/proc/net/unix` rows: inode -> (listening, bound path).
+fn unix_sockets(table: &str) -> std::collections::HashMap<u64, (bool, String)> {
+    table
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let flags = u64::from_str_radix(fields.get(3)?, 16).ok()?;
+            let inode = fields.get(6)?.parse().ok()?;
+            let path = fields.get(7)?.to_string();
+            Some((inode, (flags & 0x10000 != 0, path)))
+        })
+        .collect()
+}
+
+/// Pure: classify one master from its socket inodes and the unix socket table.
+pub fn describe_master(
+    pid: i32,
+    start_ticks: u64,
+    inodes: &[u64],
+    table: &std::collections::HashMap<u64, (bool, String)>,
+    directory: &Path,
+    enrolled_tags: &[String],
+    exists: impl Fn(&Path) -> bool,
+) -> Master {
+    let prefix = format!("{}/", directory.display());
+    let mut listener = None;
+    let mut accepted = Vec::new();
+    for inode in inodes {
+        if let Some((listening, path)) = table.get(inode) {
+            if !path.starts_with(&prefix) {
+                continue;
+            }
+            if *listening {
+                listener = Some(path.clone());
+            } else {
+                accepted.push(path.clone());
+            }
+        }
+    }
+    // OpenSSH binds `<name>.<16 random>` and renames it to `<name>`.
+    let socket = listener.as_deref().map(|bound| {
+        let name = &bound[prefix.len()..];
+        match name.rsplit_once('.') {
+            Some((base, random)) if random.len() == 16 => base.to_owned(),
+            _ => name.to_owned(),
+        }
+    });
+    let clients = listener
+        .as_ref()
+        .map_or(0, |bound| accepted.iter().filter(|p| *p == bound).count());
+    let socket_present = socket.as_deref().is_some_and(|name| {
+        crate::store::control_socket_name(name) && exists(&directory.join(name))
+    });
+    let enrolled = socket.as_deref().is_some_and(|name| {
+        enrolled_tags
+            .iter()
+            .any(|tag| name.starts_with(tag.as_str()))
+    });
+    Master {
+        pid,
+        directory: directory.to_path_buf(),
+        start_ticks,
+        socket,
+        socket_present,
+        clients,
+        enrolled,
+    }
+}
+
+fn read_master(
+    pid: i32,
+    directories: &[std::path::PathBuf],
+) -> Option<(u64, Vec<u64>, std::path::PathBuf)> {
+    let base = Path::new("/proc").join(pid.to_string());
+    if fs::read_to_string(base.join("comm")).ok()?.trim() != "ssh" {
+        return None;
+    }
+    let stat = fs::read_to_string(base.join("stat")).ok()?;
+    let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
+    // Detached masters lead their own session (daemon(3)); clients never do.
+    if fields.get(3)?.parse::<i32>().ok()? != pid {
+        return None;
+    }
+    let start_ticks = fields.get(19)?.parse().ok()?;
+    let directory = fs::read(base.join("cmdline"))
+        .ok()?
+        .split(|b| *b == 0)
+        .filter_map(|a| control_path_arg(&String::from_utf8_lossy(a)))
+        .find_map(|path| {
+            let parent = Path::new(&path).parent()?;
+            directories.iter().find(|d| d.as_path() == parent).cloned()
+        })?;
+    let inodes = fs::read_dir(base.join("fd"))
+        .ok()?
+        .flatten()
+        .take(256)
+        .filter_map(|fd| {
+            let link = fs::read_link(fd.path()).ok()?;
+            link.to_str()?
+                .strip_prefix("socket:[")?
+                .strip_suffix(']')?
+                .parse()
+                .ok()
+        })
+        .collect();
+    Some((start_ticks, inodes, directory))
+}
+
+/// Every cx-owned master of this user, classified.
+pub fn scan_masters() -> Vec<Master> {
+    use std::os::unix::fs::MetadataExt;
+    let directories = crate::store::control_dirs();
+    let uid = unsafe { libc::geteuid() };
+    let table = unix_sockets(&fs::read_to_string("/proc/net/unix").unwrap_or_default());
+    let tags: Vec<String> = crate::store::devices()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|d| d.target.as_deref())
+        .map(crate::store::control_target_tag)
+        .collect();
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|e| e.metadata().is_ok_and(|m| m.uid() == uid))
+        .filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok())
+        .take(65536)
+        .filter_map(|pid| {
+            let (start, inodes, directory) = read_master(pid, &directories)?;
+            Some(describe_master(
+                pid,
+                start,
+                &inodes,
+                &table,
+                &directory,
+                &tags,
+                |path| fs::symlink_metadata(path).is_ok(),
+            ))
+        })
+        .collect()
+}
+
+/// Ask a stray master to exit through its socket, else signal it if it is
+/// still the same process.
+fn stop_master(master: &Master) -> bool {
+    if master.socket_present {
+        if let Some(name) = &master.socket {
+            if crate::store::control_exit(&master.directory.join(name)) {
+                return true;
+            }
+        }
+    }
+    let same = || {
+        fs::read_to_string(format!("/proc/{}/stat", master.pid))
+            .ok()
+            .and_then(|s| {
+                s.rsplit_once(')')?
+                    .1
+                    .split_whitespace()
+                    .nth(19)?
+                    .parse::<u64>()
+                    .ok()
+            })
+            == Some(master.start_ticks)
+    };
+    if !same() {
+        return true;
+    }
+    unsafe { libc::kill(master.pid, libc::SIGTERM) };
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_millis(100));
+        if !same() {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn run(clean: bool, as_json: bool) -> Result<()> {
     let findings = scan(Duration::from_secs(1));
+    let masters = scan_masters();
     let state = crate::store::state_dir();
     let handoffs = stale_handoffs(&state);
     let mut stopped = Vec::new();
@@ -237,8 +467,22 @@ pub fn run(clean: bool, as_json: bool) -> Result<()> {
                 stopped.push(f.proc.pid);
             }
         }
+        for m in masters.iter().filter(|m| m.stray()) {
+            if stop_master(m) {
+                stopped.push(m.pid);
+            }
+        }
         removed = crate::ui::sweep_stale_restarts(&state, Duration::from_secs(600));
     }
+    let master_rows: Vec<Value> = masters
+        .iter()
+        .map(|m| {
+            json!({
+                "pid": m.pid, "clients": m.clients, "socket_present": m.socket_present,
+                "enrolled": m.enrolled, "stray": m.stray(), "stopped": stopped.contains(&m.pid),
+            })
+        })
+        .collect();
     let rows: Vec<Value> = findings
         .iter()
         .map(|f| {
@@ -255,11 +499,12 @@ pub fn run(clean: bool, as_json: bool) -> Result<()> {
     if as_json {
         println!(
             "{}",
-            json!({"processes": rows, "stale_handoffs": handoffs, "removed_handoffs": removed})
+            json!({"processes": rows, "ssh_masters": master_rows, "stale_handoffs": handoffs, "removed_handoffs": removed})
         );
         return Ok(());
     }
-    let strays = findings.iter().filter(|f| f.stray).count();
+    let strays =
+        findings.iter().filter(|f| f.stray).count() + masters.iter().filter(|m| m.stray()).count();
     for f in &findings {
         let mut flags = Vec::new();
         if f.orphaned {
@@ -291,9 +536,35 @@ pub fn run(clean: bool, as_json: bool) -> Result<()> {
             flags.join(" ")
         );
     }
+    for m in &masters {
+        let mut flags = vec![format!("{} clients", m.clients)];
+        if !m.socket_present {
+            flags.push("socket-gone".into());
+        }
+        if !m.enrolled {
+            flags.push("not-enrolled".into());
+        }
+        if m.stray() {
+            flags.push(if stopped.contains(&m.pid) {
+                "STOPPED".into()
+            } else {
+                "STRAY".into()
+            });
+        } else if m.clients == 0 {
+            flags.push("idle; expires via ControlPersist".into());
+        }
+        println!(
+            "{:>8} {:>13} {:<15} {}",
+            m.pid,
+            "",
+            "ssh-master",
+            flags.join(" ")
+        );
+    }
     println!(
-        "{} cx processes, {} stray, {} stale restart handoffs{}",
+        "{} cx processes, {} ssh masters, {} stray, {} stale restart handoffs{}",
         findings.len(),
+        masters.len(),
         strays,
         handoffs.len(),
         if clean {
@@ -364,6 +635,53 @@ mod tests {
         assert!(classify(proc(16, 1, &["cx", "update"], None), 60.0, &[]).stray);
         // Never ourselves or an ancestor.
         assert!(!classify(proc(14, 1, &["cx"], Some(gone)), 0.0, &[14]).stray);
+    }
+    #[test]
+    fn masters_are_stray_only_when_idle_and_unreusable() {
+        let dir = Path::new("/state/cx/ssh");
+        let tag = "abcde".to_string();
+        let name = format!("{tag}{}", "1".repeat(45));
+        let bound = format!("/state/cx/ssh/{name}.0123456789abcdef");
+        let mut table = std::collections::HashMap::new();
+        table.insert(1, (true, bound.clone()));
+        table.insert(2, (false, bound.clone()));
+        table.insert(3, (true, "/elsewhere/sock".to_string()));
+        let tags = [tag.clone()];
+        let present = |_: &Path| true;
+        let gone = |_: &Path| false;
+        // Busy master: kept even when its device was removed.
+        let busy = describe_master(9, 1, &[1, 2, 3], &table, dir, &[], present);
+        assert_eq!(
+            (busy.clients, busy.socket.as_deref()),
+            (1, Some(name.as_str()))
+        );
+        assert!(!busy.stray());
+        // Idle, reachable and enrolled: expires on its own ControlPersist.
+        let idle = describe_master(9, 1, &[1], &table, dir, &tags, present);
+        assert!(idle.socket_present && idle.enrolled && !idle.stray());
+        // Idle and unreachable, or idle for a removed device: stray.
+        assert!(describe_master(9, 1, &[1], &table, dir, &tags, gone).stray());
+        assert!(describe_master(9, 1, &[1], &table, dir, &[], present).stray());
+        // A socket outside the private directory is never treated as ours.
+        let foreign = describe_master(9, 1, &[3], &table, dir, &tags, present);
+        assert!(foreign.socket.is_none());
+    }
+    #[test]
+    fn control_path_arguments_and_unix_table_parse() {
+        assert_eq!(
+            control_path_arg("ControlPath=\"/a b/%%x/abc%C\"").as_deref(),
+            Some("/a b/%x/abc%C")
+        );
+        assert_eq!(control_path_arg("ControlMaster=no"), None);
+        let table = unix_sockets(
+            "Num RefCount Protocol Flags Type St Inode Path\n\
+             0000: 00000002 00000000 00010000 0001 01 77 /s/ssh/x.0123456789abcdef\n\
+             0000: 00000003 00000000 00000000 0001 03 78 /s/ssh/x.0123456789abcdef\n\
+             0000: 00000003 00000000 00000000 0001 03 79\n",
+        );
+        assert_eq!(table.get(&77).map(|e| e.0), Some(true));
+        assert_eq!(table.get(&78).map(|e| e.0), Some(false));
+        assert!(!table.contains_key(&79));
     }
     #[test]
     fn scan_sees_this_test_binary_is_not_cx() {

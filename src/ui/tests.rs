@@ -48,6 +48,7 @@ fn file_app() -> (App, mpsc::Receiver<Task>) {
             hidden: name.starts_with('.'),
             rename_name: Some((*name).into()),
             modified: None,
+            items: None,
         })
         .collect();
     a.browser = Some(b);
@@ -1737,6 +1738,7 @@ fn restart_restores_browser_host_search_focus_and_copy_without_preview_content()
         hidden: false,
         rename_name: None,
         modified: None,
+        items: None,
     });
     a.clipboard = Some(Clipboard {
         container: None,
@@ -2036,6 +2038,7 @@ fn restored_file_identity_survives_page_one_clamping() {
             hidden: false,
             rename_name: None,
             modified: None,
+            items: None,
         })
         .collect();
     browser.selected = 1100;
@@ -2778,6 +2781,7 @@ fn containers_ui_capture_matrix_and_default_background() {
                         hidden: false,
                         rename_name: None,
                         modified: None,
+                        items: None,
                     },
                     Entry {
                         name: "README.md".into(),
@@ -2788,6 +2792,7 @@ fn containers_ui_capture_matrix_and_default_background() {
                         hidden: false,
                         rename_name: None,
                         modified: None,
+                        items: None,
                     },
                     Entry {
                         name: "devcontainer.json".into(),
@@ -2798,6 +2803,7 @@ fn containers_ui_capture_matrix_and_default_background() {
                         hidden: false,
                         rename_name: None,
                         modified: None,
+                        items: None,
                     },
                 ]
                 .into();
@@ -3073,6 +3079,7 @@ fn destination_transfer_fixture() -> (App, mpsc::Receiver<Task>) {
         hidden: false,
         rename_name: None,
         modified: None,
+        items: None,
     });
     a.browser = Some(source);
     a.execute(Action::Copy);
@@ -3088,6 +3095,7 @@ fn destination_transfer_fixture() -> (App, mpsc::Receiver<Task>) {
         hidden: false,
         rename_name: None,
         modified: None,
+        items: None,
     });
     a.browser = Some(destination);
     a.destination_active = true;
@@ -3230,6 +3238,7 @@ fn transfer_locations_stay_independent_and_submit_real_spec() {
         hidden: false,
         rename_name: None,
         modified: None,
+        items: None,
     });
     a.browser = Some(source);
     a.execute(Action::Copy);
@@ -3361,6 +3370,7 @@ fn horizontal_folder_keys_enter_and_leave_without_previewing_files() {
             hidden: false,
             rename_name: None,
             modified: None,
+            items: None,
         }]
         .into();
         a.key(KeyEvent::new(forward, KeyModifiers::NONE));
@@ -3452,6 +3462,7 @@ fn file_find_highlights_without_filtering_and_wraps_between_files() {
             hidden: name.starts_with('.'),
             rename_name: None,
             modified: None,
+            items: None,
         })
         .collect();
     b.marked.insert("/fixture/1".into());
@@ -3520,6 +3531,7 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             hidden: false,
             rename_name: None,
             modified: None,
+            items: None,
         },
         Entry {
             name: "recording-second.bin".into(),
@@ -3530,6 +3542,7 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             hidden: false,
             rename_name: None,
             modified: None,
+            items: None,
         },
         Entry {
             name: "other".into(),
@@ -3540,6 +3553,7 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             hidden: false,
             rename_name: None,
             modified: None,
+            items: None,
         },
     ]
     .into();
@@ -3605,6 +3619,7 @@ fn enter_file_previews_never_launches() {
         hidden: false,
         rename_name: None,
         modified: None,
+        items: None,
     }]
     .into();
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -3926,6 +3941,7 @@ fn selected_context_is_a_bounded_folder_and_item_hierarchy() {
         identity: None,
         rename_name: None,
         modified: None,
+        items: None,
     };
     for height in [3, 4, 6, 12] {
         let lines = file_context_hierarchy(
@@ -6764,6 +6780,7 @@ fn file_rows_are_windowed_and_clickable_with_breadcrumb_targets() {
             hidden: false,
             rename_name: None,
             modified: None,
+            items: None,
         })
         .collect();
     b.selected = 2500;
@@ -6969,6 +6986,144 @@ fn stale_peek_reply_never_opens_the_full_preview() {
     assert_eq!(a.browser.as_ref().unwrap().preview, None);
 }
 
+/// Regression: the runtime answers a queued read it cancelled (superseded by a newer
+/// navigation read) with `Ok(Null)` at the old generation. For an inline peek that is
+/// a cancellation: neither the peek nor the next Enter may show "Preview unavailable",
+/// and the peek is requested again.
+#[test]
+fn superseded_peek_reply_is_a_cancellation_not_content() {
+    use std::time::{Duration, Instant};
+    let (mut a, rx) = file_app();
+    let draw = |a: &App| {
+        let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+        terminal.draw(|frame| render(frame, a)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>()
+    };
+    let settle = |a: &mut App| {
+        let now = Instant::now();
+        a.files_tick(now);
+        a.files_tick(now + Duration::from_millis(200));
+    };
+    let cancelled = |a: &mut App, generation: u64| {
+        a.apply(Reply {
+            device_id: None,
+            execution_target: None,
+            device: 0,
+            generation,
+            op: Operation::Preview {
+                path: "/files/alpha.txt".into(),
+            },
+            preview: None,
+            result: Ok(Value::Null),
+        });
+    };
+    let peek_requests = |rx: &mpsc::Receiver<Task>| {
+        rx.try_iter()
+            .filter(|t| matches!(&t.op, Operation::Preview { path } if path == "/files/alpha.txt"))
+            .map(|t| t.generation)
+            .collect::<Vec<_>>()
+    };
+    draw(&a);
+    settle(&mut a);
+    let first = peek_requests(&rx);
+    assert_eq!(first.len(), 1, "peek requested once");
+    // (a) A refresh supersedes the queued peek while the selection stays put.
+    a.refresh_browser();
+    let _ = rx.try_iter().count();
+    cancelled(&mut a, first[0]);
+    let b = a.browser.as_ref().unwrap();
+    assert!(b.peek.as_ref().is_none_or(|p| !p
+        .preview
+        .as_deref()
+        .unwrap_or("")
+        .contains("unavailable")));
+    assert!(!draw(&a).contains("Preview unavailable"));
+    a.files_tick(Instant::now() + Duration::from_millis(200));
+    let again = peek_requests(&rx);
+    assert_eq!(again.len(), 1, "cancelled peek is requested again");
+    // (b) Enter supersedes the queued peek; after Esc, Enter must read the file again.
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let opened = peek_requests(&rx);
+    assert_eq!(opened.len(), 1, "Enter reads the file");
+    cancelled(&mut a, again[0]);
+    let b = a.browser.as_ref().unwrap();
+    assert!(!b.preview.as_deref().unwrap_or("").contains("unavailable"));
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(a.browser.as_ref().unwrap().preview, None, "Esc closes");
+    assert!(!draw(&a).contains("Preview unavailable"));
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let b = a.browser.as_ref().unwrap();
+    assert!(
+        !b.preview.as_deref().unwrap_or("").contains("unavailable"),
+        "open_preview reused a cancelled peek"
+    );
+    assert!(!draw(&a).contains("Preview unavailable"));
+}
+
+/// Spec 7.3/C5/C6: a directory row shows its child count (`1 item`) in the size
+/// column, in the bold `dir` token (256-color 111, not ANSI bright blue), and the
+/// unknown-file icon is not the `·` unknown-value glyph.
+#[test]
+fn directory_rows_show_item_count_and_dir_token() {
+    let (mut a, _rx) = file_app();
+    let b = a.browser.as_mut().unwrap();
+    let mut entries: Vec<Entry> = b.entries.iter().cloned().collect();
+    entries.insert(
+        0,
+        Entry {
+            name: "docs".into(),
+            path: "/files/docs".into(),
+            kind: "directory".into(),
+            size: 4096,
+            identity: None,
+            hidden: false,
+            rename_name: Some("docs".into()),
+            modified: None,
+            items: Some(1),
+        },
+    );
+    entries.push(Entry {
+        name: "data".into(),
+        path: "/files/data".into(),
+        kind: "file".into(),
+        size: 3,
+        identity: None,
+        hidden: false,
+        rename_name: Some("data".into()),
+        modified: None,
+        items: None,
+    });
+    b.entries = entries.into();
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|frame| render(frame, &a)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let width = buffer.area.width as usize;
+    let rows: Vec<String> = buffer
+        .content
+        .chunks(width)
+        .map(|row| row.iter().map(|c| c.symbol()).collect())
+        .collect();
+    let docs = rows
+        .iter()
+        .position(|r| r.contains("docs/"))
+        .expect("docs row");
+    assert!(rows[docs].contains("1 item"), "{}", rows[docs]);
+    let x = rows[docs].find("docs/").unwrap();
+    let x = rows[docs][..x].chars().count();
+    let cell = &buffer.content[docs * width + x];
+    assert_eq!(cell.fg, Color::Indexed(111));
+    assert!(cell.modifier.contains(ratatui::style::Modifier::BOLD));
+    let data = rows.iter().find(|r| r.contains("data ")).expect("data row");
+    let before = &data[..data.find("data ").unwrap()];
+    assert!(!before.contains('·'), "{data}");
+}
+
 /// Spec 6.2/7.3: optional columns come from the space left after the names really
 /// needed, so M/L list widths keep the type tag and size bar beside short names.
 #[test]
@@ -6981,7 +7136,7 @@ fn file_row_columns_follow_needed_name_width() {
             c.show_size && c.show_age && c.show_type && c.show_bar,
             "{width}: {c:?}"
         );
-        assert_eq!(c.name_width + 4 + 1 + 5 + 8 + 2 + 5, width);
+        assert_eq!(c.name_width + 4 + 1 + 5 + 9 + 2 + 5, width);
     }
     // Long names keep at least 16 cells before columns are added.
     let narrow = RowColumns::fit(36, 40, 0);
@@ -6989,4 +7144,99 @@ fn file_row_columns_follow_needed_name_width() {
     assert!(narrow.name_width >= 16);
     let tiny = RowColumns::fit(20, 40, 0);
     assert!(!tiny.show_size && tiny.name_width >= 4);
+}
+
+/// Evidence dump (not a check): renders the dimmed loading peek (spec 12.5) and the
+/// directory item counts at the review sizes, as JSON cell grids for
+/// tests/render_buffer_png.py (pyte drops SGR 2, so PTY captures cannot show dim).
+/// Run: CX_FILES_CAPTURE_DIR=dir cargo test loading_peek_capture_dump -- --ignored
+#[test]
+#[ignore]
+fn loading_peek_capture_dump() {
+    use std::time::{Duration, Instant};
+    let Some(dir) = std::env::var_os("CX_FILES_CAPTURE_DIR") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let entry = |name: &str, kind: &str, size: u64, items: Option<u64>| Entry {
+        name: name.into(),
+        path: format!("/home/fixture/projects/cx-demo/{name}"),
+        kind: kind.into(),
+        size,
+        identity: None,
+        hidden: name.starts_with('.'),
+        rename_name: Some(name.into()),
+        modified: Some(transport::now() as i64 - 120),
+        items,
+    };
+    for (cols, rows) in [(40u16, 20u16), (80, 24), (120, 40), (200, 60)] {
+        let (mut a, _rx) = queued_app();
+        let mut b = Browser::new(0, "/home/fixture/projects/cx-demo".into());
+        b.entries = vec![
+            entry("docs", "directory", 4096, Some(1)),
+            entry("src", "directory", 4096, Some(12)),
+            entry(".gitignore", "file", 9, None),
+            entry("Cargo.toml", "file", 312, None),
+            entry("README.md", "file", 1840, None),
+            entry("data.bin", "file", 14_000, None),
+        ]
+        .into();
+        b.selected = 2;
+        a.browser = Some(b);
+        a.view = View::Files;
+        let settle = |a: &mut App| {
+            let now = Instant::now();
+            a.files_tick(now);
+            a.files_tick(now + Duration::from_millis(200));
+        };
+        let mut terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();
+        terminal.draw(|f| render(f, &a)).unwrap();
+        settle(&mut a);
+        let generation = a.generation;
+        a.apply(Reply {
+            device_id: None,
+            execution_target: None,
+            device: 0,
+            generation,
+            op: Operation::Preview {
+                path: "/home/fixture/projects/cx-demo/Cargo.toml".into(),
+            },
+            preview: None,
+            result: Ok(serde_json::json!({"kind":"text","text":
+                "[package]\nname = \"cx-demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"})),
+        });
+        press(&mut a, 'j');
+        settle(&mut a);
+        terminal.draw(|f| render(f, &a)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let cells: Vec<_> = buffer
+            .content
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "s": c.symbol(),
+                    "fg": format!("{:?}", c.fg),
+                    "bg": format!("{:?}", c.bg),
+                    "m": format!("{:?}", c.modifier),
+                })
+            })
+            .collect();
+        let doc = serde_json::json!({"cols": cols, "rows": rows, "cells": cells});
+        std::fs::write(
+            dir.join(format!("files-loading-peek-{cols}x{rows}.json")),
+            doc.to_string(),
+        )
+        .unwrap();
+        let text: Vec<String> = buffer
+            .content
+            .chunks(cols as usize)
+            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+            .collect();
+        std::fs::write(
+            dir.join(format!("files-loading-peek-{cols}x{rows}.txt")),
+            text.join("\n") + "\n",
+        )
+        .unwrap();
+    }
 }

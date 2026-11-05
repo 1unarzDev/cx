@@ -1,0 +1,40 @@
+ cx   Sessions / Files  Network                                                                   viewing fixture@laptop
+                                                                                                                        
+┌ Devices ──────────┐┌ > laptop > ~ > projects ─────────────┐┌ cx-demo/ ───────────────────────────────────────────────┐
+│   All devices     ││>   cx-demo/     dir   6 items    33s ││   docs/                                                 │
+│ > +  laptop       ││    robot-logs/  dir   6 items    33s ││   src/                                                  │
+│   +  * lab-arm    ││                                      ││   Cargo.toml                                            │
+│   x  * field-rov~ ││                                      ││   README.md                                             │
+└───────────────────┘│                                      ││   data.bin                                              │
+┌ Actions ──────────┐│                                      ││                                                         │
+│ Sessions          ││                                      ││                                                         │
+│ Network           ││                                      ││                                                         │
+│ Containers        ││                                      ││                                                         │
+│ Transfers         ││                                      ││                                                         │
+└───────────────────┘│                                      ││                                                         │
+ Selected ───────────│                                      ││                                                         │
+ laptop              │                                      ││                                                         │
+ tmp/                │                                      ││                                                         │
+  cx-capture-matrix~ │                                      ││                                                         │
+   home/             │                                      ││                                                         │
+    +- projects/     │                                      ││                                                         │
+      +- cx-demo/    │                                      ││                                                         │
+                     │                                      ││                                                         │
+                     │                                      ││                                                         │
+                     │                                      ││                                                         │
+                     │                                      ││                                                         │
+                     │                                      ││                                                         │
+                     │                                      ││                                                         │
+                     │                                      ││                                                         │
+                     │                                      ││                                                         │
+                     │                                      ││                                                         │
+                     │                                      ││                                                         │
+                     │                                      ││                                                         │
+                     │                                      ││                                                         │
+                     │                                      ││                                                         │
+                     │                                      ││                                                         │
+                     └─ 2 items ────────────────────────────┘└─────────────────────────────────────────────────────────┘
+ + 2/3 devices                               Focus: Files · 2/2                                                   ~ idle
+ s Sessions here                         Space Select                            c / x Copy / cut                       
+ p / t Paste / transfer                  n / : Session / command                 r / d Rename / delete                  
+                                                                                                                        

@@ -110,6 +110,9 @@ struct Entry {
     /// Modification time (Unix seconds); from the helper's `modified`, else its identity.
     #[serde(default)]
     modified: Option<i64>,
+    /// Child count of a directory (helper's optional `items`, capped at 1000).
+    #[serde(default)]
+    items: Option<u64>,
 }
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Clipboard {

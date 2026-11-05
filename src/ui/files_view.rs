@@ -197,9 +197,26 @@ fn category_style(category: Category) -> Style {
         Category::Other => muted(),
     }
 }
-/// Directory names: bright blue + bold (plain blue fails contrast on dark backgrounds).
+/// Directory names: the spec `dir` token (256-color 111 = `#87afff` dark, 25 = `#005faf`
+/// light) in bold. ANSI bright blue (index 12) is `#5c5cff` in xterm-like palettes,
+/// about 3.7:1 on a dark background, which fails the 4.5:1 rubric (spec P9/C5).
 fn dir_style() -> Style {
-    tint(Color::LightBlue).add_modifier(Modifier::BOLD)
+    tint(Color::Indexed(if light_theme() { 25 } else { 111 })).add_modifier(Modifier::BOLD)
+}
+/// Directory size column: `1 item`, `12 items`, `999+` past the helper's count cap;
+/// a compact `12 it` when the column is narrow.
+fn item_count_label(items: u64, width: usize) -> String {
+    let count = if items >= 1000 {
+        "999+".to_owned()
+    } else {
+        items.to_string()
+    };
+    let full = format!("{count} {}", if items == 1 { "item" } else { "items" });
+    if cell_width(&full) <= width {
+        full
+    } else {
+        format!("{count} it")
+    }
 }
 /// Nerd Font icons appear only with the `CX_ICONS=1` escape hatch (wrong guesses are tofu).
 fn nerd_icons() -> bool {
@@ -261,7 +278,8 @@ fn icon(category: Category) -> &'static str {
         Category::Archive => "⊞",
         Category::Image => "▣",
         Category::Media => "♪",
-        Category::Other => "·",
+        // Not `·`: that glyph means "unknown" in the size and age columns (spec C6).
+        Category::Other => "□",
     }
 }
 fn type_tag(entry: &Entry, category: Category) -> String {
@@ -360,6 +378,11 @@ fn size_bar(size: u64, largest: u64) -> &'static str {
         return " ";
     }
     let ratio = size as f64 / largest as f64;
+    // Under a quarter of the largest file the bar stays empty: a thin `▏`/`▎` right
+    // after the size reads like a column separator (`45 B │`).
+    if ratio < 0.25 {
+        return " ";
+    }
     if ascii() {
         return if ratio >= 0.5 { "#" } else { "." };
     }
@@ -952,7 +975,10 @@ fn render_list(
             let (text, style) = if category == Category::Directory {
                 match agents.get(&entry.path) {
                     Some(agent) => (agent.clone(), accent()),
-                    None => (unknown_glyph().to_owned(), muted()),
+                    None => match entry.items {
+                        Some(items) => (item_count_label(items, size_width), muted()),
+                        None => (unknown_glyph().to_owned(), muted()),
+                    },
                 }
             } else if entry.kind == "file" {
                 (short_size(entry.size), muted())
@@ -1017,7 +1043,8 @@ impl RowColumns {
     /// type, bar. The name column then takes all remaining width, so metadata sits
     /// at the right edge with no dead zone after it.
     pub(super) fn fit(width: usize, longest: usize, agent_width: usize) -> Self {
-        let size_width = 7.max(agent_width.min(width / 4));
+        // 8 cells fit `12.3 KiB` and `12 items`.
+        let size_width = 8.max(agent_width.min(width / 4));
         let need = (longest + 1).max(4);
         // Below the needed width, keep at least this much name before adding columns.
         let floor = need.min(16);

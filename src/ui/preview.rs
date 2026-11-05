@@ -1433,7 +1433,10 @@ impl App {
             let loaded = b.peek.as_mut().filter(|p| {
                 p.preview_path.as_ref() == Some(&path) && p.preview_pending_page.is_none()
             });
-            if let Some(value) = loaded.and_then(|p| p.peek_value.take()) {
+            if let Some(value) = loaded
+                .and_then(|p| p.peek_value.take())
+                .filter(|v| !v.is_null())
+            {
                 let rich = b.peek.as_mut().and_then(|p| p.preview_rich.take());
                 b.peek = None;
                 let shown = matches!(

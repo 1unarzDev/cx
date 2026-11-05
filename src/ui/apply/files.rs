@@ -45,6 +45,7 @@ pub(in crate::ui) fn parse_entries(value: &Value) -> Vec<Entry> {
                             .and_then(Value::as_str)
                             .map(str::to_owned),
                         modified: entry_modified(e),
+                        items: e.get("items").and_then(Value::as_u64),
                     })
                 })
                 .collect()
@@ -474,6 +475,23 @@ impl App {
                 };
                 b.peek_inflight.remove(slot);
                 let path = path.clone();
+                // The runtime answers a read it cancelled (superseded by a newer navigation
+                // read) with `Ok(Null)`. That is a cancellation, not content: re-arm the peek
+                // so the settle tick asks again instead of showing "Preview unavailable".
+                if matches!(reply.result, Ok(Value::Null)) {
+                    if let Some(peek) = b
+                        .peek
+                        .as_mut()
+                        .filter(|p| p.preview_path.as_ref() == Some(&path))
+                    {
+                        peek.preview_path = None;
+                        peek.peek_value = None;
+                    }
+                    if let Some(settle) = b.settle.as_mut().filter(|s| s.0 == path) {
+                        settle.2 = false;
+                    }
+                    return true;
+                }
                 // A peek reply only ever feeds the peek; an outdated one is dropped.
                 let Some(peek) = b
                     .peek

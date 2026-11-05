@@ -1,9 +1,6 @@
 //! Active-panel adapters: keyboard and mouse motions share the same selection effects.
 use super::navigation::{List, Target};
-use super::{
-    browser_entries, preview_display_lines, preview_max_scroll, shift, sidebar_actions, App, Focus,
-    View,
-};
+use super::{doc_max_scroll, shift, sidebar_actions, App, Focus, View};
 
 pub(super) struct Active<'a> {
     app: &'a mut App,
@@ -104,14 +101,18 @@ impl Target for Files<'_> {
                     }
                     return;
                 }
-                let (width, height) = b.preview_viewport.get();
-                let lines = preview_display_lines(b, b.preview.as_deref().unwrap_or(""));
-                let max = preview_max_scroll(&lines, width.max(1), height.max(1));
+                // The retained layout knows the wrapped row count; nothing re-wraps here.
+                let max = doc_max_scroll(b);
                 b.preview_scroll.set(
                     (i64::from(b.preview_scroll.get()) + delta as i64).clamp(0, i64::from(max))
-                        as u16,
+                        as u32,
                 );
                 b.preview_find.reveal.set(false);
+                // End follows a streaming preview to its end; nearer scrolling loads ahead.
+                if let Some(stream) = &mut b.stream {
+                    stream.follow = delta >= 1000 && b.preview_scroll.get() >= max;
+                }
+                self.app.pump_preview_stream();
                 return;
             }
         }
@@ -122,7 +123,7 @@ impl Target for Files<'_> {
             b.selected = shift(b.selected, delta, len);
             if let Some(anchor) = b.visual_anchor {
                 b.marked = b.visual_base.clone();
-                let entries = browser_entries(b);
+                let entries = super::browser_entries(b);
                 let start = anchor.min(b.selected);
                 let end = anchor.max(b.selected);
                 for entry in entries.iter().skip(start).take(end - start + 1) {

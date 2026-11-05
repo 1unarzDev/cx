@@ -788,6 +788,12 @@ pub(super) fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender
                     Operation::Preview { .. } | Operation::PreviewPage { .. }
                 ) {
                     result.as_ref().ok().map(RichPreview::from_value)
+                } else if matches!(task.op, Operation::ReadChunk { .. }) {
+                    // Streamed text previews: decode and highlight off the UI thread.
+                    result
+                        .as_ref()
+                        .ok()
+                        .and_then(|value| stream_chunk(&task.op, value))
                 } else {
                     None
                 };
@@ -1392,6 +1398,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         screen.bracketed_paste(app.pane_focused())?;
         screen.mouse_capture(true)?;
         dirty |= app.refresh_session_preview(screen.terminal.size()?.width);
+        dirty |= app.files_tick(Instant::now());
         if dirty {
             screen
                 .terminal
@@ -1405,6 +1412,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
         if app.command_panel.as_ref().is_some_and(|p| p.alive) {
             wait = wait.min(Duration::from_millis(80));
+        }
+        if let Some(due) = app.files_due(Instant::now()) {
+            wait = wait.min(due);
         }
         if event::poll(wait)? {
             for (input, observed) in read_input_batch()? {

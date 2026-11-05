@@ -23,6 +23,8 @@ use notifications::Kind as NoticeKind;
 use theme::*;
 mod preview;
 use preview::*;
+mod file_index;
+use file_index::{Entries, ViewIndex, VisibleRows};
 mod files_view;
 use files_view::*;
 mod network_view;
@@ -105,6 +107,9 @@ struct Entry {
     hidden: bool,
     #[serde(default)]
     rename_name: Option<String>,
+    /// Modification time (Unix seconds); from the helper's `modified`, else its identity.
+    #[serde(default)]
+    modified: Option<i64>,
 }
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Clipboard {
@@ -126,6 +131,8 @@ struct RichPreview {
     styled: Option<Vec<Line<'static>>>,
     page: u32,
     pages: Option<u32>,
+    /// A streamed text continuation, prepared off the UI thread (`ReadChunk` replies).
+    chunk: Option<PreviewChunk>,
 }
 impl RichPreview {
     fn from_value(value: &Value) -> Self {
@@ -195,6 +202,7 @@ impl RichPreview {
                 )),
                 _ => None,
             },
+            chunk: None,
         };
         app
     }
@@ -215,7 +223,7 @@ struct Browser {
     path: String,
     display_path: String,
     parent: Option<String>,
-    entries: Vec<Entry>,
+    entries: Entries,
     selected: usize,
     search: String,
     #[serde(default)]
@@ -236,33 +244,62 @@ struct Browser {
     preview_rich: Option<RichPreview>,
     #[serde(skip)]
     preview_revision: u64,
+    /// Wrapped preview layout, keyed on (revision, width, source); see `preview::DocCache`.
     #[serde(skip)]
-    markdown_cache: std::cell::RefCell<Option<(u64, u16, String, Vec<Line<'static>>)>>,
+    doc: std::cell::RefCell<Option<DocCache>>,
     #[serde(skip)]
     preview_path: Option<String>,
     #[serde(skip)]
     preview_requested_page: u32,
     #[serde(skip)]
     preview_pending_page: Option<u32>,
-    preview_scroll: std::cell::Cell<u16>,
+    preview_scroll: std::cell::Cell<u32>,
     #[serde(skip)]
     preview_viewport: std::cell::Cell<(u16, u16)>,
     #[serde(skip)]
     preview_link_cells: std::cell::RefCell<Vec<(u16, u16, Color)>>,
     #[serde(skip)]
-    markdown_hit_lines: std::cell::RefCell<Vec<Line<'static>>>,
-    #[serde(skip)]
     markdown_anchor_rows: std::cell::RefCell<BTreeMap<String, usize>>,
     #[serde(skip)]
     preview_find: PreviewFind,
     #[serde(skip)]
-    preview_history: Vec<(String, u16, PreviewFind)>,
+    preview_history: Vec<(String, u32, PreviewFind)>,
     #[serde(skip)]
-    preview_restore: Option<(u16, PreviewFind)>,
+    preview_restore: Option<(u32, PreviewFind)>,
     #[serde(skip)]
     preview_anchor: Option<String>,
     #[serde(default)]
     restore_selection: Option<String>,
+    /// Derived listing caches (visible rows, lowercase names, search matches).
+    #[serde(skip)]
+    index: std::cell::RefCell<ViewIndex>,
+    /// First visible list row (scrolloff-maintained by `render_browser`).
+    #[serde(skip)]
+    list_offset: std::cell::Cell<usize>,
+    /// Entries the helper reported for the whole directory (`total`), when known.
+    #[serde(skip)]
+    total: Option<u64>,
+    /// Click/tap targets drawn by the last `render_browser`.
+    #[serde(skip)]
+    hits: std::cell::RefCell<Vec<(Rect, FileHit)>>,
+    /// Child folders whose first listing page is being prefetched.
+    #[serde(skip)]
+    prefetch: BTreeSet<String>,
+    /// Selected path and when it was first highlighted (prefetch/peek debounce).
+    #[serde(skip)]
+    settle: Option<(String, Instant, bool)>,
+    /// Inline preview of the highlighted file on wide layouts (preview fields only).
+    #[serde(skip)]
+    peek: Option<Box<Browser>>,
+    /// Whether the last render had room for the inline preview.
+    #[serde(skip)]
+    peek_shown: std::cell::Cell<bool>,
+    /// The raw reply behind a loaded peek, so Enter can open it without a re-read.
+    #[serde(skip)]
+    peek_value: Option<Value>,
+    /// Streaming state for text previews larger than the helper's first window.
+    #[serde(skip)]
+    stream: Option<PreviewStream>,
 }
 impl Browser {
     fn new(device: usize, path: String) -> Self {
@@ -272,7 +309,7 @@ impl Browser {
             display_path: path.clone(),
             path,
             parent: None,
-            entries: vec![],
+            entries: Entries::default(),
             selected: 0,
             search: String::new(),
             filter: String::new(),
@@ -284,20 +321,29 @@ impl Browser {
             preview: None,
             preview_rich: None,
             preview_revision: 0,
-            markdown_cache: std::cell::RefCell::new(None),
+            doc: std::cell::RefCell::new(None),
             preview_path: None,
             preview_requested_page: 1,
             preview_pending_page: None,
             preview_scroll: std::cell::Cell::new(0),
             preview_viewport: std::cell::Cell::new((0, 0)),
             preview_link_cells: std::cell::RefCell::new(Vec::new()),
-            markdown_hit_lines: std::cell::RefCell::new(Vec::new()),
             markdown_anchor_rows: std::cell::RefCell::new(BTreeMap::new()),
             preview_find: PreviewFind::default(),
             preview_history: Vec::new(),
             preview_restore: None,
             preview_anchor: None,
             restore_selection: None,
+            index: Default::default(),
+            list_offset: std::cell::Cell::new(0),
+            total: None,
+            hits: Default::default(),
+            prefetch: BTreeSet::new(),
+            settle: None,
+            peek: None,
+            peek_shown: std::cell::Cell::new(false),
+            peek_value: None,
+            stream: None,
         }
     }
 }

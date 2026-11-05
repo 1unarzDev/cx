@@ -310,8 +310,8 @@ fn snapshot(path: &Path, offset: u64) -> Result<(std::sync::Arc<Vec<SnapshotEntr
     }
     Ok(found)
 }
-/// Keys, punctuation, the longest kind, a u64 size, a bool and the separating comma.
-const ENTRY_JSON_OVERHEAD: usize = 128;
+/// Keys, punctuation, the longest kind, a u64 size, a u64 mtime, a bool and the comma.
+const ENTRY_JSON_OVERHEAD: usize = 160;
 /// Serialized length of `text` as a JSON string, quotes included.
 fn json_string_len(text: &str) -> usize {
     2 + text
@@ -369,8 +369,13 @@ fn list_page(path: &Path, offset: u64, limit: u32) -> Result<Value> {
             + json_string_len(&opaque)
             + json_string_len(&identity)
             + rename_name.map_or(4, json_string_len);
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs());
         let entry = json!({"name":item.display,"path":opaque,"kind":kind,"size":metadata.len(),
-            "hidden":hidden,"rename_name":rename_name,"identity":identity});
+            "hidden":hidden,"rename_name":rename_name,"identity":identity,"modified":modified});
         if !entries.is_empty() && bytes + size > LIST_BYTES {
             break;
         }
@@ -408,6 +413,15 @@ fn open_read(path: &Path) -> Result<File> {
         bail!("only regular files are supported");
     }
     Ok(f)
+}
+/// The helper's preview text normalization (lossy UTF-8, CR/LF, tabs, escaped controls),
+/// so viewer-streamed continuations match the first preview window exactly.
+pub(crate) fn preview_text(bytes: &[u8]) -> String {
+    file_preview::safe_text(bytes)
+}
+/// The helper's text preview kind for a name: "markdown", "code" or "text".
+pub(crate) fn preview_kind(path: &Path) -> &'static str {
+    file_preview::text_kind(path)
 }
 fn preview(path: &Path) -> Result<Value> {
     file_preview::render(path, open_read(path)?)
@@ -1918,8 +1932,13 @@ mod tests {
         let old_time = started.elapsed();
         ui_sort(&mut old);
         let started = std::time::Instant::now();
-        let (new, requests) = all_pages(d.path(), || list(d.path()).unwrap(), 1000);
+        let (mut new, requests) = all_pages(d.path(), || list(d.path()).unwrap(), 1000);
         let new_time = started.elapsed();
+        // The additive `modified` field (Unix seconds) is the only difference from old pages.
+        for entry in &mut new {
+            assert!(entry["modified"].is_u64(), "{entry}");
+            entry.as_object_mut().unwrap().remove("modified");
+        }
         eprintln!(
             "20002-entry listing: old {old_time:?} (21 requests), new {new_time:?} ({requests} requests)"
         );

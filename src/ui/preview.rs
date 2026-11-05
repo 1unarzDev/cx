@@ -15,18 +15,13 @@ pub(super) fn markdown_heading_slug(text: &str) -> String {
         })
         .collect()
 }
-pub(super) fn markdown_anchor_scroll(browser: &Browser, anchor: &str) -> Option<u16> {
-    let lines = preview_display_lines(browser, browser.preview.as_deref()?);
-    let row = *browser
-        .markdown_anchor_rows
-        .borrow()
-        .get(&markdown_heading_slug(anchor))?;
-    Some(
-        Paragraph::new(lines[..row].to_vec())
-            .wrap(Wrap { trim: false })
-            .line_count(browser.preview_viewport.get().0.max(1))
-            .min(u16::MAX as usize) as u16,
-    )
+pub(super) fn markdown_anchor_scroll(browser: &Browser, anchor: &str) -> Option<u32> {
+    let slug = markdown_heading_slug(anchor);
+    with_doc(browser, |doc| {
+        let row = *browser.markdown_anchor_rows.borrow().get(&slug)?;
+        Some(doc.row_of(row) as u32)
+    })
+    .flatten()
 }
 pub(super) fn markdown_preview_links(source: &str) -> Vec<crate::markdown_links::Link> {
     let safe = safe_text(source);
@@ -436,24 +431,6 @@ pub(super) fn raster_lines(w: usize, h: usize, bytes: &[u8], area: Rect) -> Vec<
         })
         .collect()
 }
-pub(super) fn markdown_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
-    let width = browser.preview_viewport.get().0;
-    if let Some((revision, cached_width, source, lines)) = browser.markdown_cache.borrow().as_ref()
-    {
-        if *revision == browser.preview_revision && *cached_width == width && source == text {
-            return lines.clone();
-        }
-    }
-    let lines = markdown_layout_lines(browser, text, false);
-    *browser.markdown_hit_lines.borrow_mut() = markdown_layout_lines(browser, text, true);
-    *browser.markdown_cache.borrow_mut() = Some((
-        browser.preview_revision,
-        width,
-        text.to_owned(),
-        lines.clone(),
-    ));
-    lines
-}
 pub(super) fn markdown_layout_lines(
     browser: &Browser,
     text: &str,
@@ -606,19 +583,14 @@ pub(super) fn markdown_layout_lines(
     }
     wrapped
 }
-pub(super) fn preview_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
+/// Logical display lines for `text`, without caching (used when `text` is not the
+/// browser's current preview, e.g. by tests probing an alternative source).
+fn uncached_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
     let rich = browser.preview_rich.as_ref();
     if rich.is_some_and(|p| p.kind == "markdown") {
-        let mut lines = markdown_display_lines(browser, text);
+        let mut lines = markdown_layout_lines(browser, text, false);
         if ascii() || no_color() {
-            for line in &mut lines {
-                line.style.fg = None;
-                line.style.bg = None;
-                for span in &mut line.spans {
-                    span.style.fg = None;
-                    span.style.bg = None;
-                }
-            }
+            strip_colors(&mut lines);
         }
         lines
     } else if !ascii() && !no_color() {
@@ -631,6 +603,29 @@ pub(super) fn preview_display_lines(browser: &Browser, text: &str) -> Vec<Line<'
             .collect()
     }
 }
+fn strip_colors(lines: &mut [Line<'static>]) {
+    for line in lines {
+        line.style.fg = None;
+        line.style.bg = None;
+        for span in &mut line.spans {
+            span.style.fg = None;
+            span.style.bg = None;
+        }
+    }
+}
+#[cfg(test)]
+pub(super) fn preview_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
+    if browser
+        .preview
+        .as_deref()
+        .is_some_and(|p| std::ptr::eq(p, text))
+    {
+        if let Some(lines) = with_doc(browser, |doc| doc.lines.clone()) {
+            return lines;
+        }
+    }
+    uncached_display_lines(browser, text)
+}
 pub(super) fn preview_max_scroll(lines: &[Line<'static>], width: u16, height: u16) -> u16 {
     Paragraph::new(lines.to_vec())
         .wrap(Wrap { trim: false })
@@ -638,52 +633,240 @@ pub(super) fn preview_max_scroll(lines: &[Line<'static>], width: u16, height: u1
         .saturating_sub(usize::from(height))
         .min(u16::MAX as usize) as u16
 }
-pub(super) fn preview_matches(lines: &[Line<'static>], query: &str) -> Vec<(usize, Vec<usize>)> {
-    let needle: Vec<_> = query.chars().flat_map(char::to_lowercase).collect();
+/// Every contiguous occurrence of `needle` (lowercase chars) in one line, else one
+/// fuzzy subsequence; positions are character indices into the line.
+pub(super) fn line_matches(chars: impl Iterator<Item = char>, needle: &[char]) -> Vec<Vec<usize>> {
     if needle.is_empty() {
         return Vec::new();
     }
+    let text: Vec<_> = chars
+        .enumerate()
+        .flat_map(|(i, c)| c.to_lowercase().map(move |c| (c, i)))
+        .collect();
     let mut result = Vec::new();
-    for (row, line) in lines.iter().enumerate() {
-        let text: Vec<_> = line
-            .spans
-            .iter()
-            .flat_map(|s| s.content.chars())
-            .enumerate()
-            .flat_map(|(i, c)| c.to_lowercase().map(move |c| (c, i)))
-            .collect();
-        // Prefer every contiguous occurrence; otherwise use one fuzzy subsequence per line.
-        let mut exact = false;
-        for (start, window) in text.windows(needle.len()).enumerate() {
-            if window.iter().map(|(c, _)| *c).eq(needle.iter().copied()) {
-                result.push((
-                    row,
-                    text[start..start + needle.len()]
-                        .iter()
-                        .map(|(_, i)| *i)
-                        .collect(),
-                ));
-                exact = true;
-            }
+    for (start, window) in text.windows(needle.len()).enumerate() {
+        if window.iter().map(|(c, _)| *c).eq(needle.iter().copied()) {
+            result.push(
+                text[start..start + needle.len()]
+                    .iter()
+                    .map(|(_, i)| *i)
+                    .collect(),
+            );
         }
-        if !exact {
-            let mut positions = Vec::new();
-            let mut next = 0;
-            for (c, i) in text {
-                if c == needle[next] {
-                    positions.push(i);
-                    next += 1;
-                    if next == needle.len() {
-                        break;
-                    }
+    }
+    if result.is_empty() {
+        let mut positions = Vec::new();
+        let mut next = 0;
+        for (c, i) in text {
+            if c == needle[next] {
+                positions.push(i);
+                next += 1;
+                if next == needle.len() {
+                    break;
                 }
             }
-            if next == needle.len() {
-                result.push((row, positions));
-            }
+        }
+        if next == needle.len() {
+            result.push(positions);
         }
     }
     result
+}
+pub(super) fn preview_matches(lines: &[Line<'static>], query: &str) -> Vec<(usize, Vec<usize>)> {
+    let needle: Vec<_> = query.chars().flat_map(char::to_lowercase).collect();
+    let mut result = Vec::new();
+    for (row, line) in lines.iter().enumerate() {
+        for positions in line_matches(line.spans.iter().flat_map(|s| s.content.chars()), &needle) {
+            result.push((row, positions));
+        }
+    }
+    result
+}
+
+/// What a cached preview layout was built from. Pointers identify the exact source
+/// and highlighted lines, so replacing either (even without a revision bump) rebuilds.
+#[derive(Clone, PartialEq)]
+struct DocKey {
+    revision: u64,
+    text: (usize, usize),
+    kind: String,
+    styled: (usize, usize),
+    plain: bool,
+}
+fn doc_key(browser: &Browser) -> Option<DocKey> {
+    let text = browser.preview.as_deref()?;
+    let rich = browser.preview_rich.as_ref();
+    Some(DocKey {
+        revision: browser.preview_revision,
+        text: (text.as_ptr() as usize, text.len()),
+        kind: rich.map(|p| p.kind.clone()).unwrap_or_default(),
+        styled: rich
+            .and_then(|p| p.styled.as_ref())
+            .map_or((0, 0), |s| (s.as_ptr() as usize, s.len())),
+        plain: ascii() || no_color(),
+    })
+}
+/// Width the preview is laid out for: the last rendered viewport, else 80 columns.
+fn layout_width(browser: &Browser) -> u16 {
+    match browser.preview_viewport.get().0 {
+        0 => 80,
+        width => width,
+    }
+}
+fn wrapped_rows(line: &Line<'static>, width: u16) -> usize {
+    if line.width() <= usize::from(width) {
+        1
+    } else {
+        Paragraph::new(line.clone())
+            .wrap(Wrap { trim: false })
+            .line_count(width)
+            .max(1)
+    }
+}
+
+/// Retained preview layout: display lines, the visual row where each starts at the
+/// current width, search matches per query and whether link hit-testing is needed.
+/// Scrolling renders only the visible slice; nothing here is recomputed per frame.
+#[derive(Clone)]
+pub(super) struct DocCache {
+    key: DocKey,
+    width: u16,
+    lines: Vec<Line<'static>>,
+    /// Tagged markdown layout for link hit-testing (empty when the preview has no links).
+    hit_lines: Vec<Line<'static>>,
+    /// `starts[i]` is the first visual row of line `i`; `starts[lines.len()]` is the total.
+    starts: Vec<usize>,
+    search: Option<(String, std::sync::Arc<Vec<(usize, Vec<usize>)>>)>,
+    links: bool,
+    /// (scroll, area) of the last link hit map, so unchanged frames skip the rebuild.
+    link_frame: std::cell::Cell<Option<(u32, Rect)>>,
+}
+impl DocCache {
+    fn build(browser: &Browser, key: DocKey, text: &str) -> Self {
+        let markdown = key.kind == "markdown";
+        let width = layout_width(browser);
+        let links = markdown && !markdown_preview_links(text).is_empty();
+        let lines = uncached_display_lines(browser, text);
+        let hit_lines = if links {
+            markdown_layout_lines(browser, text, true)
+        } else {
+            Vec::new()
+        };
+        let mut doc = Self {
+            key,
+            width,
+            lines,
+            hit_lines,
+            starts: Vec::new(),
+            search: None,
+            links,
+            link_frame: std::cell::Cell::new(None),
+        };
+        doc.measure();
+        doc
+    }
+    fn measure(&mut self) {
+        self.starts.clear();
+        self.starts.reserve(self.lines.len() + 1);
+        let mut row = 0;
+        for line in &self.lines {
+            self.starts.push(row);
+            row += wrapped_rows(line, self.width);
+        }
+        self.starts.push(row);
+    }
+    /// Lines appended to a non-markdown preview: extend lines, rows and any search.
+    fn append(&mut self, key: DocKey, more: Vec<Line<'static>>) {
+        let first = self.lines.len();
+        let mut row = self.total_rows();
+        self.starts.pop();
+        for line in &more {
+            self.starts.push(row);
+            row += wrapped_rows(line, self.width);
+        }
+        self.starts.push(row);
+        self.lines.extend(more);
+        if let Some((query, matches)) = &mut self.search {
+            let added = preview_matches(&self.lines[first..], query);
+            std::sync::Arc::make_mut(matches)
+                .extend(added.into_iter().map(|(r, p)| (r + first, p)));
+        }
+        self.key = key;
+        self.link_frame.set(None);
+    }
+    pub(super) fn total_rows(&self) -> usize {
+        self.starts.last().copied().unwrap_or(0)
+    }
+    /// Visual row where logical line `line` starts.
+    pub(super) fn row_of(&self, line: usize) -> usize {
+        self.starts
+            .get(line.min(self.lines.len()))
+            .copied()
+            .unwrap_or(0)
+    }
+    pub(super) fn max_scroll(&self, height: u16) -> u32 {
+        self.total_rows()
+            .saturating_sub(usize::from(height))
+            .min(u32::MAX as usize) as u32
+    }
+    pub(super) fn matches(&mut self, query: &str) -> std::sync::Arc<Vec<(usize, Vec<usize>)>> {
+        if let Some((cached, matches)) = &self.search {
+            if cached == query {
+                return matches.clone();
+            }
+        }
+        let matches = std::sync::Arc::new(preview_matches(&self.lines, query));
+        self.search = Some((query.to_owned(), matches.clone()));
+        matches
+    }
+    /// The logical line range covering visual rows `scroll..scroll+height`, and the
+    /// rows of the first line that lie above the viewport.
+    fn window(&self, scroll: usize, height: usize) -> (usize, usize, usize) {
+        let first = self
+            .starts
+            .partition_point(|&start| start <= scroll)
+            .saturating_sub(1)
+            .min(self.lines.len());
+        let mut last = first;
+        while last < self.lines.len() && self.starts[last] < scroll + height {
+            last += 1;
+        }
+        let skip = scroll.saturating_sub(self.starts.get(first).copied().unwrap_or(0));
+        (first, last, skip)
+    }
+}
+/// Run `f` on the up-to-date layout of the browser's current preview.
+pub(super) fn with_doc<R>(browser: &Browser, f: impl FnOnce(&mut DocCache) -> R) -> Option<R> {
+    let key = doc_key(browser)?;
+    let width = layout_width(browser);
+    let mut slot = browser.doc.borrow_mut();
+    let fresh = match slot.as_mut() {
+        Some(doc) if doc.key == key && doc.width == width => true,
+        // Only markdown lays out to the width; other kinds just re-measure rows.
+        Some(doc) if doc.key == key && key.kind != "markdown" => {
+            doc.width = width;
+            doc.measure();
+            doc.link_frame.set(None);
+            true
+        }
+        _ => false,
+    };
+    if !fresh {
+        drop(slot);
+        let doc = DocCache::build(browser, key, browser.preview.as_deref().unwrap_or(""));
+        slot = browser.doc.borrow_mut();
+        *slot = Some(doc);
+    }
+    slot.as_mut().map(f)
+}
+/// Search matches of the current preview for `query` (cached per layout and query).
+pub(super) fn doc_matches(browser: &Browser, query: &str) -> Vec<(usize, Vec<usize>)> {
+    with_doc(browser, |doc| doc.matches(query).as_ref().clone()).unwrap_or_default()
+}
+/// Largest scroll offset of the current preview at the last rendered viewport.
+pub(super) fn doc_max_scroll(browser: &Browser) -> u32 {
+    let height = browser.preview_viewport.get().1.max(1);
+    with_doc(browser, |doc| doc.max_scroll(height)).unwrap_or(0)
 }
 pub(super) fn highlight_preview_matches(lines: &mut [Line<'static>], find: &PreviewFind) {
     let mut matches = find.matches.iter().enumerate().peekable();
@@ -738,6 +921,45 @@ pub(super) fn render_preview(
 ) {
     render_preview_with_native(frame, area, browser, text, focused, None)
 }
+/// Preview panel title: name · size · kind, plus paging/streaming state.
+pub(super) fn preview_title(browser: &Browser) -> String {
+    let rich = browser.preview_rich.as_ref();
+    if let Some(p) = rich.filter(|p| p.kind == "pdf") {
+        return format!(
+            "PDF · {}/{}{}",
+            p.page,
+            p.pages.map(|n| n.to_string()).unwrap_or("?".into()),
+            browser
+                .preview_pending_page
+                .map(|page| format!(" · {} page {}", if ascii() { "~" } else { "◌" }, page))
+                .unwrap_or_default()
+        );
+    }
+    let entry = browser.preview_path.as_ref().and_then(|path| {
+        browser
+            .entries
+            .iter()
+            .find(|e| &e.path == path)
+            .map(|e| (e.name.clone(), e.size))
+    });
+    let mut parts = Vec::new();
+    if let Some((name, size)) = &entry {
+        parts.push(safe_label(name));
+        parts.push(human_size(*size));
+    }
+    match rich.map(|p| p.kind.as_str()) {
+        Some("image") => parts.push(rich.map(|p| p.title.clone()).unwrap_or_default()),
+        Some(kind) if kind != "binary" => parts.push(kind.to_owned()),
+        Some(_) => parts.push("binary".into()),
+        None if entry.is_none() => parts.push("Preview".into()),
+        None => {}
+    }
+    if let Some(stream) = &browser.stream {
+        parts.push(stream.label());
+    }
+    parts.retain(|p| !p.is_empty());
+    parts.join(" · ")
+}
 pub(super) fn render_preview_with_native(
     frame: &mut Frame,
     area: Rect,
@@ -747,27 +969,9 @@ pub(super) fn render_preview_with_native(
     native: Option<&mut crate::terminal_preview::NativePreview>,
 ) {
     let rich = browser.preview_rich.as_ref();
-    let pdf_title = rich.filter(|p| p.kind == "pdf").map(|p| {
-        format!(
-            "PDF · {}/{}{}",
-            p.page,
-            p.pages.map(|n| n.to_string()).unwrap_or("?".into()),
-            browser
-                .preview_pending_page
-                .map(|page| format!(" · {} page {}", if ascii() { "~" } else { "◌" }, page))
-                .unwrap_or_default()
-        )
-    });
-    let title = pdf_title
-        .as_deref()
-        .or_else(|| rich.map(|p| p.title.as_str()))
-        .filter(|t| !t.is_empty())
-        .unwrap_or("Preview");
+    let title = preview_title(browser);
     let border = block(
-        format!(
-            "{} · Escape back",
-            fit_label(title, usize::from(area.width.saturating_sub(22)))
-        ),
+        fit_label(&title, usize::from(area.width.saturating_sub(6))),
         focused,
     );
     let inner = border.inner(area);
@@ -781,16 +985,15 @@ pub(super) fn render_preview_with_native(
             return;
         }
     }
-    let fallback;
-    let text = if rich.is_some_and(|p| p.raster.is_some()) {
-        fallback = format!(
+    if rich.is_some_and(|p| p.raster.is_some()) {
+        let fallback = format!(
             "{}\n{}\nColor thumbnail unavailable in ASCII/monochrome mode.",
-            title, text
+            rich.map(|p| p.title.as_str()).unwrap_or("Preview"),
+            text
         );
-        fallback.as_str()
-    } else {
-        text
-    };
+        frame.render_widget(Paragraph::new(fallback).wrap(Wrap { trim: false }), inner);
+        return;
+    }
     if browser
         .preview_viewport
         .replace((inner.width, inner.height))
@@ -799,34 +1002,98 @@ pub(super) fn render_preview_with_native(
     {
         browser.preview_find.reveal.set(true);
     }
-    let mut lines = preview_display_lines(browser, text);
-    let mut find = browser.preview_find.clone();
-    find.matches = preview_matches(&lines, &find.query);
-    find.selected = find.selected.min(find.matches.len().saturating_sub(1));
-    let max = preview_max_scroll(&lines, inner.width, inner.height);
-    let mut scroll = browser.preview_scroll.get().min(max);
-    if browser.preview_find.reveal.replace(false) {
-        if let Some((line, positions)) = find.matches.get(find.selected) {
-            let before = Paragraph::new(lines[..*line].to_vec())
-                .wrap(Wrap { trim: false })
-                .line_count(inner.width.max(1));
-            // Prefix line_count uses Ratatui's exact wrapping, including Unicode widths.
-            let prefix: String = lines[*line]
-                .spans
-                .iter()
-                .flat_map(|s| s.content.chars())
-                .take(positions.first().copied().unwrap_or(0) + 1)
-                .collect();
-            let within = Paragraph::new(prefix)
-                .wrap(Wrap { trim: false })
-                .line_count(inner.width.max(1))
-                .saturating_sub(1);
-            scroll = (before + within).min(usize::from(max)) as u16;
-        }
+    let cached = browser
+        .preview
+        .as_deref()
+        .is_some_and(|p| std::ptr::eq(p, text));
+    if !cached {
+        // A caller-supplied text (not the browser's preview): lay it out directly.
+        frame.render_widget(
+            Paragraph::new(uncached_display_lines(browser, text)).wrap(Wrap { trim: false }),
+            inner,
+        );
+        return;
     }
-    browser.preview_scroll.set(scroll);
+    let query = browser.preview_find.query.clone();
+    let reveal = browser.preview_find.reveal.replace(false);
+    let height = usize::from(inner.height);
+    let rendered = with_doc(browser, |doc| {
+        let matches = doc.matches(&query);
+        let selected = browser
+            .preview_find
+            .selected
+            .min(matches.len().saturating_sub(1));
+        let max = doc.max_scroll(inner.height);
+        let mut scroll = browser.preview_scroll.get().min(max);
+        if reveal {
+            if let Some((line, positions)) = matches.get(selected) {
+                let before = doc.row_of(*line);
+                // Prefix line_count uses Ratatui's exact wrapping, including Unicode widths.
+                let prefix: String = doc.lines[*line]
+                    .spans
+                    .iter()
+                    .flat_map(|s| s.content.chars())
+                    .take(positions.first().copied().unwrap_or(0) + 1)
+                    .collect();
+                let within = Paragraph::new(prefix)
+                    .wrap(Wrap { trim: false })
+                    .line_count(inner.width.max(1))
+                    .saturating_sub(1);
+                scroll = ((before + within) as u64).min(u64::from(max)) as u32;
+            }
+        }
+        browser.preview_scroll.set(scroll);
+        let (first, last, skip) = doc.window(scroll as usize, height);
+        let mut lines = doc.lines[first..last].to_vec();
+        // Only the matches inside the window are highlighted; indices stay global for
+        // the selected-match check.
+        let begin = matches.partition_point(|(row, _)| *row < first);
+        let end = matches.partition_point(|(row, _)| *row < last);
+        let find = PreviewFind {
+            query: query.clone(),
+            matches: matches[begin..end]
+                .iter()
+                .map(|(row, positions)| (row - first, positions.clone()))
+                .collect(),
+            selected: selected.wrapping_sub(begin),
+            reveal: std::cell::Cell::new(false),
+        };
+        highlight_preview_matches(&mut lines, &find);
+        if doc.links {
+            let frame_key = Some((scroll, inner));
+            if doc.link_frame.get() != frame_key || browser.preview_link_cells.borrow().is_empty() {
+                doc.link_frame.set(frame_key);
+                // Hit-test the unhighlighted presentation. Search underlines are not links.
+                let mut buffer = ratatui::buffer::Buffer::empty(inner);
+                let hit_end = last.min(doc.hit_lines.len());
+                ratatui::widgets::Widget::render(
+                    Paragraph::new(doc.hit_lines[first.min(hit_end)..hit_end].to_vec())
+                        .wrap(Wrap { trim: false })
+                        .scroll((skip.min(u16::MAX as usize) as u16, 0)),
+                    inner,
+                    &mut buffer,
+                );
+                let mut cells = browser.preview_link_cells.borrow_mut();
+                cells.clear();
+                for y in inner.y..inner.bottom() {
+                    for x in inner.x..inner.right() {
+                        let cell = &buffer[(x, y)];
+                        if cell.modifier.contains(Modifier::UNDERLINED) {
+                            cells.push((x, y, cell.bg));
+                        }
+                    }
+                }
+            }
+        } else {
+            browser.preview_link_cells.borrow_mut().clear();
+        }
+        (lines, skip, scroll, max)
+    });
+    let Some((lines, skip, scroll, max)) = rendered else {
+        return;
+    };
     if max > 0 {
-        let position = format!(" {}% ", u32::from(scroll) * 100 / u32::from(max));
+        let position = format!(" {}% ", u64::from(scroll) * 100 / u64::from(max));
         let width = (position.len() as u16).min(area.width.saturating_sub(2));
         if width > 0 && area.height > 0 {
             frame.render_widget(
@@ -840,37 +1107,301 @@ pub(super) fn render_preview_with_native(
             );
         }
     }
-    browser.preview_link_cells.borrow_mut().clear();
-    if rich.is_some_and(|p| p.kind == "markdown") && !markdown_preview_links(text).is_empty() {
-        // Hit-test the unhighlighted presentation. Search underlines are not links.
-        let mut buffer = ratatui::buffer::Buffer::empty(inner);
-        ratatui::widgets::Widget::render(
-            Paragraph::new(browser.markdown_hit_lines.borrow().clone())
-                .wrap(Wrap { trim: false })
-                .scroll((scroll, 0)),
-            inner,
-            &mut buffer,
-        );
-        let mut cells = browser.preview_link_cells.borrow_mut();
-        for y in inner.y..inner.bottom() {
-            for x in inner.x..inner.right() {
-                let cell = &buffer[(x, y)];
-                if cell.modifier.contains(Modifier::UNDERLINED) {
-                    cells.push((x, y, cell.bg));
-                }
-            }
-        }
-    }
-    highlight_preview_matches(&mut lines, &find);
     frame.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
-            .scroll((scroll, 0)),
+            .scroll((skip.min(u16::MAX as usize) as u16, 0)),
         inner,
     );
 }
 
+/// Bytes per streamed preview request (the helper's `ReadChunk` maximum).
+pub(super) const STREAM_CHUNK: u32 = 128 * 1024;
+/// How much of a text/code file a preview streams; markdown is laid out whole, so less.
+const STREAM_LIMIT: u64 = 4 * 1024 * 1024;
+const STREAM_MARKDOWN_LIMIT: u64 = 1024 * 1024;
+
+/// A text preview being extended beyond the helper's first window with `ReadChunk`
+/// (identity-checked reads of the same regular file).
+#[derive(Clone)]
+pub(super) struct PreviewStream {
+    path: String,
+    identity: String,
+    /// Next raw byte offset; everything before it is in the preview text.
+    next: u64,
+    size: u64,
+    limit: u64,
+    inflight: bool,
+    done: bool,
+    failed: bool,
+    /// Keep the view pinned to the end while chunks arrive (End/G).
+    pub(super) follow: bool,
+}
+impl PreviewStream {
+    pub(super) fn label(&self) -> String {
+        if self.failed {
+            format!("first {}", human_size(self.next))
+        } else if self.done {
+            if self.next < self.size {
+                format!("first {}", human_size(self.next))
+            } else {
+                String::new()
+            }
+        } else {
+            format!(
+                "loading {}%",
+                (self.next.max(1) * 100 / self.size.max(1)).min(99)
+            )
+        }
+    }
+}
+/// A streamed continuation prepared by the request worker (decode, normalize, highlight).
+#[derive(Clone)]
+pub(super) struct PreviewChunk {
+    /// Raw bytes covered by `text` (whole lines unless `eof`).
+    consumed: u64,
+    eof: bool,
+    text: String,
+    lines: Option<Vec<Line<'static>>>,
+}
+/// Worker-side: turn a preview `ReadChunk` reply into display-ready text off the UI
+/// thread. Only whole lines are consumed, so the next request starts on a line.
+pub(super) fn stream_chunk(op: &Operation, value: &Value) -> Option<RichPreview> {
+    use base64::Engine;
+    let Operation::ReadChunk { path, limit, .. } = op else {
+        return None;
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(value["data"].as_str()?)
+        .ok()?;
+    if bytes.len() > *limit as usize {
+        return None;
+    }
+    let eof = bytes.len() < *limit as usize;
+    let cut = if eof {
+        bytes.len()
+    } else {
+        bytes
+            .iter()
+            .rposition(|b| *b == b'\n')
+            .map_or(bytes.len(), |i| i + 1)
+    };
+    let text = safe_text(&crate::files::preview_text(&bytes[..cut]));
+    let code =
+        crate::files::decode_path(path).is_ok_and(|p| crate::files::preview_kind(&p) == "code");
+    let lines = code.then(|| crate::syntax_preview::highlight(&text, path));
+    Some(RichPreview {
+        kind: "chunk".into(),
+        title: String::new(),
+        raster: None,
+        styled: None,
+        page: 1,
+        pages: None,
+        chunk: Some(PreviewChunk {
+            consumed: cut as u64,
+            eof,
+            text,
+            lines,
+        }),
+    })
+}
+
 impl App {
+    /// After a text preview arrives truncated, stream the rest of the file in chunks.
+    pub(super) fn start_preview_stream(&mut self, value: &Value) {
+        let Some(b) = self.browser.as_mut() else {
+            return;
+        };
+        b.stream = None;
+        let kind = b
+            .preview_rich
+            .as_ref()
+            .map(|p| p.kind.clone())
+            .unwrap_or_default();
+        if value["truncated"] != Value::Bool(true)
+            || value["binary"] == Value::Bool(true)
+            || !matches!(kind.as_str(), "text" | "code" | "markdown")
+            || b.container.is_some()
+        {
+            return;
+        }
+        let Some(path) = b.preview_path.clone() else {
+            return;
+        };
+        let Some(entry) = b
+            .entries
+            .iter()
+            .find(|e| e.path == path && e.kind == "file")
+        else {
+            return;
+        };
+        let Some(identity) = entry.identity.clone() else {
+            return;
+        };
+        b.stream = Some(PreviewStream {
+            path,
+            identity,
+            next: 0,
+            size: entry.size,
+            limit: if kind == "markdown" {
+                STREAM_MARKDOWN_LIMIT
+            } else {
+                STREAM_LIMIT
+            },
+            inflight: false,
+            done: false,
+            failed: false,
+            follow: false,
+        });
+        self.pump_preview_stream();
+    }
+    /// Request the next chunk when the view nears the loaded end (or follows End).
+    pub(super) fn pump_preview_stream(&mut self) {
+        let Some(b) = self.browser.as_ref() else {
+            return;
+        };
+        let Some(stream) = b.stream.as_ref() else {
+            return;
+        };
+        if stream.inflight
+            || stream.done
+            || b.preview_path.as_ref() != Some(&stream.path)
+            || b.preview.is_none()
+        {
+            return;
+        }
+        let height = u64::from(b.preview_viewport.get().1.max(1));
+        let near_end = stream.next == 0
+            || stream.follow
+            || with_doc(b, |doc| doc.total_rows() as u64)
+                .is_some_and(|total| u64::from(b.preview_scroll.get()) + 4 * height >= total);
+        if !near_end {
+            return;
+        }
+        let op = Operation::ReadChunk {
+            path: stream.path.clone(),
+            offset: stream.next,
+            limit: STREAM_CHUNK,
+            identity: stream.identity.clone(),
+        };
+        let device = b.device;
+        if self.send_explicit(device, op) {
+            if let Some(stream) = self.browser.as_mut().and_then(|b| b.stream.as_mut()) {
+                stream.inflight = true;
+            }
+        }
+    }
+    pub(super) fn apply_preview_chunk(
+        &mut self,
+        device: usize,
+        path: &str,
+        offset: u64,
+        result: Result<Value>,
+        prepared: Option<RichPreview>,
+    ) {
+        let Some(b) = self.browser.as_mut().filter(|b| b.device == device) else {
+            return;
+        };
+        let Some(stream) = b
+            .stream
+            .as_mut()
+            .filter(|s| s.path == path && s.next == offset && s.inflight)
+        else {
+            return;
+        };
+        stream.inflight = false;
+        let chunk = match (&result, prepared.and_then(|p| p.chunk)) {
+            (Ok(_), Some(chunk)) => chunk,
+            (Ok(_), None) => {
+                stream.done = true;
+                stream.failed = true;
+                return;
+            }
+            (Err(e), _) => {
+                stream.done = true;
+                stream.failed = true;
+                let message = format!(
+                    "Preview stopped at {} · {}",
+                    human_size(stream.next),
+                    safe_text(&format!("{e:#}"))
+                );
+                self.set_notice_as(NoticeKind::Warning, message);
+                return;
+            }
+        };
+        let kind = b
+            .preview_rich
+            .as_ref()
+            .map(|p| p.kind.clone())
+            .unwrap_or_default();
+        let old_key = doc_key(b);
+        if offset == 0 {
+            // The first chunk covers (at least) the helper's window: replace it.
+            b.preview = Some(chunk.text.clone());
+            if let Some(rich) = b.preview_rich.as_mut() {
+                rich.styled = if kind == "code" {
+                    chunk.lines.clone()
+                } else {
+                    None
+                };
+            }
+            b.preview_revision = b.preview_revision.wrapping_add(1);
+        } else {
+            let plain = ascii() || no_color();
+            let added: Vec<Line<'static>> = if plain {
+                chunk
+                    .text
+                    .lines()
+                    .map(|l| Line::raw(l.to_owned()))
+                    .collect()
+            } else if kind == "code" {
+                chunk
+                    .lines
+                    .clone()
+                    .unwrap_or_else(|| preview_lines(&chunk.text, "code"))
+            } else {
+                preview_lines(&chunk.text, &kind)
+            };
+            if let Some(text) = b.preview.as_mut() {
+                if !text.is_empty() && !text.ends_with('\n') {
+                    text.push('\n');
+                }
+                text.push_str(&chunk.text);
+            }
+            if kind == "code" {
+                if let Some(styled) = b.preview_rich.as_mut().and_then(|p| p.styled.as_mut()) {
+                    styled.extend(added.iter().cloned());
+                }
+            }
+            b.preview_revision = b.preview_revision.wrapping_add(1);
+            // Non-markdown layouts extend in place; markdown re-lays out on next use.
+            if kind != "markdown" {
+                if let (Some(old), Some(new)) = (old_key, doc_key(b)) {
+                    if let Some(doc) = b.doc.borrow_mut().as_mut().filter(|d| d.key == old) {
+                        doc.append(new, added);
+                    }
+                }
+            }
+        }
+        let stream = b.stream.as_mut().unwrap();
+        stream.next += chunk.consumed;
+        if chunk.eof
+            || chunk.consumed == 0
+            || stream.next >= stream.limit
+            || stream.next >= stream.size
+        {
+            stream.done = true;
+        }
+        let follow = stream.follow;
+        if !b.preview_find.query.is_empty() {
+            let query = b.preview_find.query.clone();
+            b.preview_find.matches = doc_matches(b, &query);
+        }
+        if follow {
+            b.preview_scroll.set(u32::MAX);
+        }
+        self.pump_preview_stream();
+    }
     pub(super) fn pdf_preview_active(&self) -> bool {
         self.view == View::Files
             && self.focus == Focus::Workspace
@@ -894,6 +1425,24 @@ impl App {
             b.preview_scroll.set(0);
             b.preview_find = PreviewFind::default();
             b.preview = Some("Loading preview…".into());
+            b.stream = None;
+            b.doc.borrow_mut().take();
+            // The inline peek already holds this file: show it now instead of re-reading.
+            let loaded = b.peek.as_mut().filter(|p| {
+                p.preview_path.as_ref() == Some(&path) && p.preview_pending_page.is_none()
+            });
+            if let Some(value) = loaded.and_then(|p| p.peek_value.take()) {
+                let rich = b.peek.as_mut().and_then(|p| p.preview_rich.take());
+                b.peek = None;
+                let shown = matches!(
+                    super::apply::files::apply_preview(b, &path, 1, rich, &value),
+                    super::apply::files::PreviewApplied::Shown { .. }
+                );
+                if shown {
+                    self.start_preview_stream(&value);
+                }
+                return;
+            }
         }
         if !self.send(device, Operation::Preview { path }) {
             if let Some(b) = &mut self.browser {
@@ -964,20 +1513,14 @@ impl App {
     pub(super) fn update_preview_search(&mut self) {
         if let Some(b) = &mut self.browser {
             b.preview_find.query = self.text.clone();
-            b.preview_find.matches = preview_matches(
-                &preview_display_lines(b, b.preview.as_deref().unwrap_or("")),
-                &self.text,
-            );
+            b.preview_find.matches = doc_matches(b, &self.text);
             b.preview_find.selected = 0;
             b.preview_find.reveal.set(true);
         }
     }
     pub(super) fn next_preview_match(&mut self, direction: isize) {
         if let Some(b) = &mut self.browser {
-            b.preview_find.matches = preview_matches(
-                &preview_display_lines(b, b.preview.as_deref().unwrap_or("")),
-                &b.preview_find.query,
-            );
+            b.preview_find.matches = doc_matches(b, &b.preview_find.query);
             let count = b.preview_find.matches.len();
             if count > 0 {
                 b.preview_find.selected = b.preview_find.selected.min(count - 1);

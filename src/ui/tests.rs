@@ -47,6 +47,7 @@ fn file_app() -> (App, mpsc::Receiver<Task>) {
             identity: Some(format!("identity-{name}")),
             hidden: name.starts_with('.'),
             rename_name: Some((*name).into()),
+            modified: None,
         })
         .collect();
     a.browser = Some(b);
@@ -57,6 +58,18 @@ fn press(a: &mut App, c: char) {
     a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
 }
 
+/// The terminal background stays transparent: only the selected file row paints the
+/// selection token (`accent.bg` / `select.dim.bg`), and only on rows with a selection bar.
+fn transparent_except_selection(buffer: &ratatui::buffer::Buffer) -> bool {
+    let width = buffer.area.width as usize;
+    buffer.content.chunks(width).all(|row| {
+        let marked = row.iter().any(|c| matches!(c.symbol(), "▌" | "▏" | ">" | ":"));
+        row.iter().all(|c| {
+            c.bg == Color::Reset
+                || (marked && matches!(c.bg, Color::Indexed(23 | 236 | 195 | 255)))
+        })
+    })
+}
 #[test]
 fn device_access_marker_and_toggle_guard_are_clear() {
     let (mut a, _) = queued_app();
@@ -1716,6 +1729,7 @@ fn restart_restores_browser_host_search_focus_and_copy_without_preview_content()
         identity: None,
         hidden: false,
         rename_name: None,
+        modified: None,
     });
     a.clipboard = Some(Clipboard {
         container: None,
@@ -2014,6 +2028,7 @@ fn restored_file_identity_survives_page_one_clamping() {
             identity: None,
             hidden: false,
             rename_name: None,
+            modified: None,
         })
         .collect();
     browser.selected = 1100;
@@ -2755,6 +2770,7 @@ fn containers_ui_capture_matrix_and_default_background() {
                         identity: None,
                         hidden: false,
                         rename_name: None,
+                        modified: None,
                     },
                     Entry {
                         name: "README.md".into(),
@@ -2764,6 +2780,7 @@ fn containers_ui_capture_matrix_and_default_background() {
                         identity: None,
                         hidden: false,
                         rename_name: None,
+                        modified: None,
                     },
                     Entry {
                         name: "devcontainer.json".into(),
@@ -2773,8 +2790,10 @@ fn containers_ui_capture_matrix_and_default_background() {
                         identity: None,
                         hidden: false,
                         rename_name: None,
+                        modified: None,
                     },
-                ];
+                ]
+                .into();
             }
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|f| render(f, &a)).unwrap();
@@ -2809,11 +2828,7 @@ fn containers_ui_capture_matrix_and_default_background() {
             } else {
                 assert!(text.contains("roboboat_dev"), "{width} {mode}");
             }
-            assert!(buffer
-                .content
-                .iter()
-                .filter(|c| c.symbol() == " ")
-                .all(|c| c.bg == Color::Reset));
+            assert!(transparent_except_selection(buffer));
             if let Some(directory) = std::env::var_os("CX_CONTAINER_CAPTURE_DIR") {
                 let path = std::path::PathBuf::from(directory);
                 std::fs::create_dir_all(&path).unwrap();
@@ -3050,6 +3065,7 @@ fn destination_transfer_fixture() -> (App, mpsc::Receiver<Task>) {
         identity: None,
         hidden: false,
         rename_name: None,
+        modified: None,
     });
     a.browser = Some(source);
     a.execute(Action::Copy);
@@ -3064,6 +3080,7 @@ fn destination_transfer_fixture() -> (App, mpsc::Receiver<Task>) {
         identity: None,
         hidden: false,
         rename_name: None,
+        modified: None,
     });
     a.browser = Some(destination);
     a.destination_active = true;
@@ -3138,7 +3155,7 @@ fn transfer_sidebar_animation_frames_are_transparent_and_fit() {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|f| render(f, &a)).unwrap();
             let buffer = terminal.backend().buffer();
-            assert!(buffer.content.iter().all(|c| c.bg == Color::Reset));
+            assert!(transparent_except_selection(buffer));
             let text = buffer
                 .content
                 .chunks(width as usize)
@@ -3205,6 +3222,7 @@ fn transfer_locations_stay_independent_and_submit_real_spec() {
         identity: None,
         hidden: false,
         rename_name: None,
+        modified: None,
     });
     a.browser = Some(source);
     a.execute(Action::Copy);
@@ -3335,7 +3353,9 @@ fn horizontal_folder_keys_enter_and_leave_without_previewing_files() {
             identity: None,
             hidden: false,
             rename_name: None,
-        }];
+            modified: None,
+        }]
+        .into();
         a.key(KeyEvent::new(forward, KeyModifiers::NONE));
         assert_eq!(a.browser.as_ref().unwrap().path, "/fixture/child");
         a.browser.as_mut().unwrap().parent = Some("/fixture".into());
@@ -3424,6 +3444,7 @@ fn file_find_highlights_without_filtering_and_wraps_between_files() {
             identity: None,
             hidden: name.starts_with('.'),
             rename_name: None,
+            modified: None,
         })
         .collect();
     b.marked.insert("/fixture/1".into());
@@ -3491,6 +3512,7 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             identity: None,
             hidden: false,
             rename_name: None,
+            modified: None,
         },
         Entry {
             name: "recording-second.bin".into(),
@@ -3500,6 +3522,7 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             identity: None,
             hidden: false,
             rename_name: None,
+            modified: None,
         },
         Entry {
             name: "other".into(),
@@ -3509,8 +3532,10 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             identity: None,
             hidden: false,
             rename_name: None,
+            modified: None,
         },
-    ];
+    ]
+    .into();
     a.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
     for c in "rcb".chars() {
         a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
@@ -3572,7 +3597,9 @@ fn enter_file_previews_never_launches() {
         identity: None,
         hidden: false,
         rename_name: None,
-    }];
+        modified: None,
+    }]
+    .into();
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(a.pending_attach.is_none());
 }
@@ -3769,7 +3796,7 @@ fn workspace_polish_capture_matrix() {
                     .collect::<Vec<_>>()
                     .join("\n");
                 assert!(
-                    buffer.content.iter().all(|c| c.bg == Color::Reset),
+                    transparent_except_selection(buffer),
                     "{state} {width}x{height}: opaque background"
                 );
                 if state == "sessions" {
@@ -3852,7 +3879,11 @@ fn stacked_path_is_only_in_sidebar_and_keeps_current_folder_visible() {
                 .collect::<Vec<_>>()
                 .join("\n");
             assert!(left.contains("recordings"), "{width}: {left}");
-            assert!(!right.contains("recordings"), "{right}");
+            // The breadcrumb title may name the folder; no staircase repeats it below.
+            assert!(
+                !right.lines().skip(3).any(|row| row.contains("recordings")),
+                "{right}"
+            );
             assert!(right.contains("alpha.txt"), "file list obscured: {right}");
             if let Some(dir) = std::env::var_os("CX_HIERARCHY_CAPTURE_DIR") {
                 let dir = std::path::PathBuf::from(dir);
@@ -3887,6 +3918,7 @@ fn selected_context_is_a_bounded_folder_and_item_hierarchy() {
         hidden: false,
         identity: None,
         rename_name: None,
+        modified: None,
     };
     for height in [3, 4, 6, 12] {
         let lines = file_context_hierarchy(
@@ -5242,7 +5274,7 @@ fn floating_notifications_are_typed_bounded_and_restore_the_scene() {
             let text = capture_app(&app, width);
             assert!(text.contains(label));
             assert!(text.contains("notification") && text.contains("type"));
-            assert!(buffer.content.iter().all(|cell| cell.bg == Color::Reset));
+            assert!(transparent_except_selection(buffer));
             if std::env::var_os("NO_COLOR").is_none() {
                 assert!(buffer.content.iter().any(|cell| cell.fg == color));
             }

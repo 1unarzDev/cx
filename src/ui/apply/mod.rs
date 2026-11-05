@@ -1,6 +1,6 @@
 //! Task reply dispatch: shared bookkeeping, then per-operation-group handlers.
 mod containers;
-mod files;
+pub(super) mod files;
 mod network;
 mod sessions;
 use super::*;
@@ -85,6 +85,11 @@ impl App {
         if let Operation::ContainerFileAction { operation, .. } = &reply.op {
             // Mutation replies release the serialized queue even after navigating away.
             reply.op = *operation.clone();
+        }
+        // Folder prefetch, the inline peek and streamed preview chunks never touch the
+        // visible listing or raise error notices of their own.
+        if self.apply_files_side_reply(&mut reply) {
+            return;
         }
         let failed_attachment_check = matches!(reply.op, Operation::Sessions)
             && reply.result.is_err()

@@ -157,7 +157,7 @@ pub fn state_glyph(state: NodeState, glyphs: GlyphSet) -> &'static str {
         (NodeState::Stale, false) => "◐",
         (NodeState::Down, false) => "✕",
         (NodeState::Unknown, false) => "◌",
-        (NodeState::Up, true) => "+",
+        (NodeState::Up, true) => "o",
         (NodeState::Stale, true) => "~",
         (NodeState::Down, true) => "x",
         (NodeState::Unknown, true) => ".",
@@ -183,6 +183,23 @@ pub fn age(secs: u64) -> String {
 
 /// Short policy label drawn beside an edge (`None` = unlabeled).
 pub fn edge_label(e: &Edge, selected: bool, glyphs: GlyphSet) -> Option<String> {
+    let base = edge_label_plain(e, selected, glyphs);
+    if e.kind != EdgeKind::Jump {
+        return base;
+    }
+    let jump = if glyphs == GlyphSet::Ascii {
+        "^"
+    } else {
+        "↳"
+    };
+    Some(match base {
+        Some(b) => format!("{jump} {b}"),
+        None => format!("{jump} jump"),
+    })
+}
+
+/// [`edge_label`] without the jump cue (fallback when the slot is short).
+pub fn edge_label_plain(e: &Edge, selected: bool, glyphs: GlyphSet) -> Option<String> {
     let g = G {
         ascii: glyphs == GlyphSet::Ascii,
     };
@@ -190,7 +207,7 @@ pub fn edge_label(e: &Edge, selected: bool, glyphs: GlyphSet) -> Option<String> 
         Direction::Both => g.pick("⇄", "<>"),
         Direction::Forward => g.pick("→", "->"),
         Direction::Reverse => g.pick("←", "<-"),
-        Direction::Neither => g.pick("⊘", "x"),
+        Direction::Neither => g.pick("⊘", "/"),
     };
     match (e.policy, selected) {
         (Policy::Password, _) => Some(format!("pwd {arrow}")),
@@ -390,8 +407,10 @@ impl GraphView<'_> {
                     };
                 }
                 let mut cst = st;
-                let arrow_in = k == last && e.direction.forward();
-                let arrow_out = k == 0 && e.direction.reverse();
+                // Mutual (two-way) edges stay unarrowed; heads mark one direction only.
+                let one_dir = e.direction != Direction::Both;
+                let arrow_in = one_dir && k == last && e.direction.forward();
+                let arrow_out = one_dir && k == 0 && e.direction.reverse();
                 if arrow_in || arrow_out {
                     let d = if arrow_in {
                         (r.dst_port.2.trailing_zeros() as usize + 2) % 4
@@ -403,7 +422,7 @@ impl GraphView<'_> {
                 } else if (k == 0 && e.policy == Policy::OneWay)
                     || (k == mid && e.policy == Policy::None)
                 {
-                    ch = if g.ascii { 'x' } else { '⊘' };
+                    ch = if g.ascii { '/' } else { '⊘' };
                 }
                 if owner[i].map(|o| o.0) == Some(r.edge) || single {
                     put_char(buf, ax, ay, ch, cst);
@@ -413,7 +432,10 @@ impl GraphView<'_> {
                 }
             }
             if let Some(slot) = r.label {
-                if let Some(text) = edge_label(e, selected, self.glyphs) {
+                let text = edge_label(e, selected, self.glyphs)
+                    .filter(|t| t.chars().count() as u16 <= slot.len)
+                    .or_else(|| edge_label_plain(e, selected, self.glyphs));
+                if let Some(text) = text {
                     let len = text.chars().count() as u16;
                     if len <= slot.len {
                         let x = slot.x + (slot.len - len) / 2;
@@ -510,9 +532,23 @@ impl GraphView<'_> {
                         ("↳", "jump", Role::Muted),
                     ]
                 };
+                // The jump cue only appears when something on screen carries it.
+                let jumps = self
+                    .layout
+                    .routes
+                    .iter()
+                    .any(|r| self.graph.edges[r.edge].kind == EdgeKind::Jump)
+                    || self
+                        .layout
+                        .nodes
+                        .iter()
+                        .any(|p| self.graph.nodes[p.node].kind == NodeKind::Jump);
                 let mut x = ax;
                 let end = area.x + w;
                 for (glyph, text, role) in items {
+                    if text == "jump" && !jumps {
+                        continue;
+                    }
                     let need = (glyph.chars().count() + text.len() + 3) as u16;
                     if x + need > end {
                         break;

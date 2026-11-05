@@ -79,6 +79,22 @@ pub enum Policy {
     Unknown,
 }
 
+impl Policy {
+    /// Adapter seam for the edge-policy store and its effective-access view:
+    /// accepts the `edges::Policy::label()` / `edges::Access` labels and their
+    /// CLI aliases. `refused` maps to `None`; anything else is `Unknown`, so a
+    /// new upstream label degrades to "unchecked" instead of a wrong claim.
+    pub fn from_label(label: &str) -> Policy {
+        match label.trim().to_ascii_lowercase().as_str() {
+            "key" | "key-auto" | "auto" => Policy::Key,
+            "password" | "pwd" | "password-required" => Policy::Password,
+            "one-way" | "one_way" | "oneway" => Policy::OneWay,
+            "none" | "refused" => Policy::None,
+            _ => Policy::Unknown,
+        }
+    }
+}
+
 /// Which way access is proven or allowed, relative to `from -> to`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Direction {

@@ -608,9 +608,13 @@ fn try_graph(
                 .unwrap_or(max);
             let (blo, bhi) = (lo.saturating_sub(1), hi + 1);
             let want = (blo as i32 + bhi as i32 - min_p as i32 - max_p as i32) / 2;
-            let shift = want.clamp(lo as i32 - min as i32, hi as i32 - max as i32);
+            // When the composition is taller than the band (a > b) there is no
+            // valid centring shift: pin it to the band start and let the bounds
+            // check below reject the attempt so the caller folds or falls back.
+            let (a, b) = (lo as i32 - min as i32, hi as i32 - max as i32);
+            let shift = if a <= b { want.clamp(a, b) } else { a };
             for &it in &live {
-                start_o[it] = (start_o[it] as i32 + shift) as u16;
+                start_o[it] = (start_o[it] as i32 + shift).clamp(0, u16::MAX as i32) as u16;
             }
         }
     }

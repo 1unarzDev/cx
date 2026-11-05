@@ -3,7 +3,7 @@
  i ├━▶ ● innovation  ◆ cloudflare  key ⇄
  d ├━▶ ✕ field-rover  ◆ ssh-overlay  key
  b ├━▶ ● lab-arm  ◆ ssh-overlay  key ⇄
- o │ └─▶ ● jetson-01  ◆ ssh-overlay  one
+ o │ └─▶ ● jetson-01  ◆ ssh-overlay  ↳ o
    └─▶ ~ 4 LAN (enp5s0 · 1 ssh)
 
 

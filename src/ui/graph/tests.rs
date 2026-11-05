@@ -300,6 +300,25 @@ fn builder_creates_jump_nodes_expands_lan_and_reads_access_graph() {
 }
 
 #[test]
+fn policy_labels_from_edge_store_map_conservatively() {
+    for (label, want) in [
+        ("key", Policy::Key),
+        ("KEY-AUTO", Policy::Key),
+        ("password", Policy::Password),
+        ("pwd", Policy::Password),
+        ("one-way", Policy::OneWay),
+        ("one_way", Policy::OneWay),
+        ("none", Policy::None),
+        ("refused", Policy::None),
+        ("unmanaged", Policy::Unknown),
+        ("", Policy::Unknown),
+        ("future-mode", Policy::Unknown),
+    ] {
+        assert_eq!(Policy::from_label(label), want, "{label}");
+    }
+}
+
+#[test]
 fn status_strings_map_to_evidence_states() {
     assert_eq!(state_from_status("reachable", NOW, NOW), NodeState::Up);
     assert_eq!(state_from_status("unreachable", NOW, NOW), NodeState::Down);
@@ -663,13 +682,13 @@ fn ports_merge_with_node_borders_and_arrows_point_into_targets() {
         .unwrap();
     let port = buf[(r.src_port.0, r.src_port.1)].symbol().to_string();
     assert!("┝┥┯┷├┤┬┴".contains(&port), "port glyph {port}");
-    // Two-way edge: arrowheads at both ends.
+    // Two-way edge: mutual access stays unarrowed at both ends.
     let first = buf[(r.cells[0].0, r.cells[0].1)].symbol().to_string();
     let last = buf[(r.cells.last().unwrap().0, r.cells.last().unwrap().1)]
         .symbol()
         .to_string();
     assert!(
-        "▶◀▲▼".contains(&first) && "▶◀▲▼".contains(&last),
+        !"▶◀▲▼".contains(&first) && !"▶◀▲▼".contains(&last),
         "{first} {last}"
     );
     // Password edge is dashed, one-way has a single head and ⊘ at the source end.
@@ -891,6 +910,103 @@ fn layout_and_routing_30_nodes_within_budget() {
     );
 }
 
+/// Regression for the centring-shift `clamp(min > max)` panic: every area
+/// from 0x0 to 400x100 in both glyph sets, for every fixture graph, must lay
+/// out without panicking, keep valid geometry, and render / hit / navigate.
+#[test]
+fn every_area_lays_out_renders_and_hits_without_panic() {
+    let mut lan = fleet_sources();
+    lan.expanded.insert("lan:tranquility:enp5s0".into());
+    let mut lan = build(&lan);
+    assign_hotkeys(&mut lan, &BTreeMap::new());
+    let mut empty = build(&Sources {
+        now: NOW,
+        ..Default::default()
+    });
+    assign_hotkeys(&mut empty, &BTreeMap::new());
+    let mut one = build(&Sources {
+        devices: vec![device("viewer", None, "local", 1)],
+        now: NOW,
+        ..Default::default()
+    });
+    assign_hotkeys(&mut one, &BTreeMap::new());
+    let mut dense = thirty_nodes();
+    assign_hotkeys(&mut dense, &BTreeMap::new());
+    let graphs = [
+        ("fleet", fleet()),
+        ("lan-expanded", lan),
+        ("empty", empty),
+        ("one-node", one),
+        ("dense-30", dense),
+    ];
+    let widths: Vec<u16> = (0..=400).collect();
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(1, 16);
+    let chunk = widths.len().div_ceil(threads);
+    let graphs = &graphs;
+    std::thread::scope(|scope| {
+        for ws in widths.chunks(chunk) {
+            scope.spawn(move || {
+                for (name, g) in graphs.iter() {
+                    for &w in ws {
+                        for h in 0..=100u16 {
+                            for glyphs in [GlyphSet::Unicode, GlyphSet::Ascii] {
+                                sweep_one(name, g, w, h, glyphs);
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+}
+
+fn sweep_one(name: &str, g: &Graph, w: u16, h: u16, glyphs: GlyphSet) {
+    let l = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        compute(g, w, h, glyphs, None)
+    }))
+    .unwrap_or_else(|_| panic!("{name}: compute panicked at {w}x{h} {glyphs:?}"));
+    assert_eq!((l.width, l.height), (w, h), "{name} {w}x{h}");
+    if l.mode == Mode::Graph {
+        assert_geometry(g, &l);
+    }
+    let sel = Selection {
+        node: g.nodes.first().map(|_| 0),
+        edge: g.edges.first().map(|_| 0),
+    };
+    let area = Rect::new(0, 0, w, h);
+    let mut buf = Buffer::empty(area);
+    let style = DefaultStyle { color: true };
+    GraphView {
+        graph: g,
+        layout: &l,
+        style: &style,
+        selection: sel,
+        glyphs,
+        hotkeys: true,
+    }
+    .render(area, &mut buf);
+    for (x, y) in [
+        (0, 0),
+        (w / 2, h / 2),
+        (w.saturating_sub(1), h.saturating_sub(1)),
+        (w, h),
+    ] {
+        if let Some(HitId::Node(n)) = hit_at(&l, sel, x, y) {
+            assert!(n < g.nodes.len(), "{name} {w}x{h}");
+        }
+    }
+    for from in 0..g.nodes.len().min(3) {
+        for d in [Dir::Up, Dir::Down, Dir::Left, Dir::Right] {
+            if let Some(n) = nearest(&l, from, d) {
+                assert!(n < g.nodes.len() && n != from, "{name} {w}x{h}");
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Snapshots and evidence
 // ---------------------------------------------------------------------------
@@ -958,6 +1074,18 @@ fn fleet_snapshots() {
     let g = fleet();
     for (w, h) in SIZES {
         let l = compute(&g, w, h, GlyphSet::Unicode, None);
+        let sel = Selection {
+            node: Some(idx(&g, "tranquility")),
+            edge: None,
+        };
+        let (buf, text) = render_text(&g, &l, sel, GlyphSet::Unicode, true);
+        check_snapshot(&format!("fleet-{w}x{h}"), &buf, &text, w, h);
+    }
+    // Short-and-wide terminals (these used to panic in the centring shift).
+    for (w, h) in [(120, 24), (200, 24)] {
+        let l = compute(&g, w, h, GlyphSet::Unicode, None);
+        assert_eq!(l.mode, Mode::Graph, "{w}x{h}");
+        assert_geometry(&g, &l);
         let sel = Selection {
             node: Some(idx(&g, "tranquility")),
             edge: None,

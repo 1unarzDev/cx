@@ -8,7 +8,7 @@ one-way A->B keeps A's cx key on B and removes B's cx key on A; password
 removes A's cx key on B and BatchMode fails without prompting; restoring key
 then fails with a precise hint and is re-planned on rerun; the receiver refuses
 to authorize a peer it keeps directed or removed, even selected by client key;
-none refuses before any SSH, including core sync; users' own authorized_keys
+none refuses before any SSH, including core sync and transport requests; users' own authorized_keys
 lines stay byte-for-byte.
 """
 import json
@@ -282,6 +282,10 @@ AllowUsers {account}
         sync = cx("device", "sync")
         assert sync.returncode == 0, sync.stderr
         assert [r["device"] for r in json.loads(sync.stdout)["refused"]] == ["peer-b"], sync.stdout
+        # The shared transport refuses too, so UI and helper-initiated requests
+        # (here a reachability probe) open no SSH over the refused direction.
+        operation("a", "transfer_reachability", dict(destination=device_b),
+                  refused="edge policy refuses")
         assert calls() == before, "refused edge still opened SSH"
         [edge] = json.loads(cx("edge", "list", "--json").stdout)
         assert edge["label"] == "⊘" and edge["forward"]["enforced"].startswith("failed:"), edge

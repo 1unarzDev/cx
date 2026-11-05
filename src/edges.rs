@@ -4,8 +4,9 @@
 //! - `key`: `from` may log in to `to` with its cx-managed peer key;
 //! - `password`: cx removes `from`'s cx-managed key on `to`; other SSH keys the
 //!   user configured may still authenticate, so status never claims otherwise;
-//! - `none`: refused; cx opens no SSH over it (core sync, pairing, jumps), except
-//!   the one enforcement step that removes the viewer's own key on the receiver.
+//! - `none`: refused; cx opens no SSH over it (transport requests, core sync,
+//!   pairing, jumps), except the one enforcement step that removes the viewer's
+//!   own key on the receiver.
 //!
 //! `one-way A B` is a request shorthand stored as `A -> B key` plus `B -> A none`.
 //! Records live in `edges.json` (0600, atomic, bounded, under the device lock).
@@ -161,14 +162,15 @@ fn valid_id(id: &str) -> bool {
 
 /// Everything plan computation needs; pure functions operate on it in tests.
 #[derive(Clone, Debug, Default)]
-struct Snapshot {
+pub struct Snapshot {
     devices: Vec<Device>,
     core: BTreeSet<String>,
     file: EdgeFile,
     routes: BTreeMap<String, Vec<String>>,
     now: u64,
 }
-fn load() -> Result<Snapshot> {
+/// Load one snapshot so a caller's decisions all come from the same files.
+pub fn load() -> Result<Snapshot> {
     let devices = store::devices()?;
     let mut core = BTreeSet::new();
     for d in devices.iter().filter(|d| d.target.is_some()) {
@@ -281,8 +283,9 @@ impl Snapshot {
         }
         edges
     }
-    /// Gates cx key setup: only recorded edges.json decisions refuse it.
-    fn explicit_key(&self, from: &str, to: &str) -> bool {
+    /// Whether `from -> to` may use a cx-managed key (core sync and pairing gate):
+    /// only recorded edges.json decisions refuse it.
+    pub fn key_allowed(&self, from: &str, to: &str) -> bool {
         let (access, source) = self.access(from, to);
         source != Source::Recorded || access == Access::Key
     }
@@ -784,22 +787,19 @@ fn graph_with(s: &Snapshot) -> Vec<EdgeView> {
 }
 
 /// Every edge the viewer knows, with intent, enforcement and evidence per direction.
-/// Reads local files only, so it is cheap enough for the UI's render path.
+/// Reads several state files: load it on refresh or after a policy change and
+/// keep it in view state; never call it from render.
 pub fn graph() -> Result<Vec<EdgeView>> {
     Ok(graph_with(&load()?))
 }
 
-/// Whether `from -> to` may use a cx-managed key (core sync and pairing gate).
-pub fn key_allowed(from: &str, to: &str) -> Result<bool> {
-    Ok(load()?.explicit_key(from, to))
-}
 /// Refuse an explicit action (e.g. pairing) only on a recorded edge decision.
 /// Migrated postures describe today's behaviour; explicit pairing may change them.
 pub fn require_key(from: &str, to: &str, what: &str) -> Result<()> {
     let s = load()?;
     let (access, _) = s.access(from, to);
     anyhow::ensure!(
-        s.explicit_key(from, to),
+        s.key_allowed(from, to),
         "edge policy refuses {what}: {} → {} is {}",
         s.name(from),
         s.name(to),
@@ -1178,13 +1178,13 @@ mod tests {
     fn only_recorded_decisions_gate_key_setup() {
         let s = snapshot();
         // Directed today refuses jetson → laptop, but explicit pairing may promote it.
-        assert!(s.explicit_key("m2:robot", LOCAL));
+        assert!(s.key_allowed("m2:robot", LOCAL));
         let one = s.with_edges(s.changed(&change(LOCAL, "m1:robot", Policy::OneWay)));
-        assert!(one.explicit_key(LOCAL, "m1:robot"));
-        assert!(!one.explicit_key("m1:robot", LOCAL));
+        assert!(one.key_allowed(LOCAL, "m1:robot"));
+        assert!(!one.key_allowed("m1:robot", LOCAL));
         let pwd = s.with_edges(s.changed(&change(LOCAL, "m1:robot", Policy::Password)));
-        assert!(!pwd.explicit_key(LOCAL, "m1:robot"));
-        assert!(pwd.explicit_key("m1:robot", LOCAL));
+        assert!(!pwd.key_allowed(LOCAL, "m1:robot"));
+        assert!(pwd.key_allowed("m1:robot", LOCAL));
     }
     #[test]
     fn key_on_directed_device_keeps_reverse_migrated_and_pairable() {
@@ -1198,7 +1198,7 @@ mod tests {
             next.access("m2:robot", LOCAL),
             (Access::Refused, Source::MigratedDirected)
         );
-        assert!(next.explicit_key("m2:robot", LOCAL));
+        assert!(next.key_allowed("m2:robot", LOCAL));
     }
     #[test]
     fn failed_install_is_replanned_on_rerun() {

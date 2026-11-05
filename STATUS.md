@@ -142,6 +142,11 @@ back to a neutral provider label; Claude preserves terminal transparency.
   checks. Physical reconnect/attach acceptance needs them online and updated helpers.
 - Silent model/network waits and silent inner-container commands have unknown
   activity; unsupported or ambiguous native metadata remains unavailable.
+- Root sign-off pending (ui-revamp Q2): `revamp/w3-edge-policy` adds root-owned
+  contract changes: `Operation::PeerAuthorize`, `PeerConfigure.authorize` (serde
+  default true, omitted when true), capability `peer-authorize-v1`, `edges.json`,
+  the `cx edge` CLI and an edge guard in `transport::request`. All are additive;
+  root re-lands or accepts them before merge.
 
 Removal/demotion prevents future enrollment but does not revoke existing SSH keys.
 Automatic setup requires supported helpers and direct port-22 connectivity; offline

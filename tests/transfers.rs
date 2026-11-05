@@ -13,6 +13,12 @@ mod transfers;
 mod transport;
 #[path = "../src/update.rs"]
 mod update;
+/// Transfers here use local devices only, which the edge guard always allows.
+mod edges {
+    pub fn guard(_: &crate::model::Device) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
 static MUTATE_SOURCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static MUTATE_DESTINATION: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);

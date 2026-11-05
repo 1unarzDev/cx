@@ -124,7 +124,7 @@ pub fn pair(device: &Device, return_target: &str) -> Result<serde_json::Value> {
     // Pairing opens SSH viewer -> device, and the remote helper then registers
     // its route back to this viewer: both directions must allow it.
     crate::edges::guard(device)?;
-    crate::edges::require_key(&device.id, "local", "pairing")?;
+    crate::edges::require_key(&device.id, crate::edges::LOCAL, "pairing")?;
     let local_info = crate::info()?;
     let mut local = store::local_device();
     local.id = identity(&local_info)?;
@@ -228,7 +228,7 @@ pub fn authorization(
 /// Edge-policy identity of a device: the viewer's own execution device is `local`.
 pub fn edge_id(device: &Device) -> &str {
     if device.target.is_none() {
-        "local"
+        crate::edges::LOCAL
     } else {
         &device.id
     }
@@ -464,6 +464,8 @@ pub fn sync() -> Result<serde_json::Value> {
         );
         Ok(())
     };
+    // One edge-policy snapshot decides every pair of this sync.
+    let policy = crate::edges::load()?;
     let mut ready = Vec::new();
     for a in 0..nodes.len() {
         for b in a + 1..nodes.len() {
@@ -498,9 +500,9 @@ pub fn sync() -> Result<serde_json::Value> {
             // Edge policy decides each direction: `x -> y` installs x's key on y
             // and lets x enroll y. A refused direction pins only, never authorizes.
             let key = |from: &CoreNode, to: &CoreNode| {
-                crate::edges::key_allowed(edge_id(&from.connection), edge_id(&to.connection))
+                policy.key_allowed(edge_id(&from.connection), edge_id(&to.connection))
             };
-            let (forward, reverse) = (key(&first, &second)?, key(&second, &first)?);
+            let (forward, reverse) = (key(&first, &second), key(&second, &first));
             if !forward && !reverse {
                 refused.push(json!({"from":first.peer.name,"to":second.peer.name,"reason":"edge policy refuses cx keys in both directions"}));
                 continue;
@@ -509,7 +511,7 @@ pub fn sync() -> Result<serde_json::Value> {
                 for (receiver, sender) in [(&first, &second), (&second, &first)] {
                     selected(receiver)?;
                     selected(sender)?;
-                    let authorize = key(sender, receiver)?;
+                    let authorize = key(sender, receiver);
                     let operation = Operation::PeerConfigure {
                         peer: sender.peer.clone(),
                         host_key: sender.metadata["host_key"]
@@ -530,7 +532,7 @@ pub fn sync() -> Result<serde_json::Value> {
                     }
                 }
                 for (receiver, sender) in [(&first, &second), (&second, &first)] {
-                    if !key(receiver, sender)? {
+                    if !key(receiver, sender) {
                         continue;
                     }
                     selected(receiver)?;

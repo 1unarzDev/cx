@@ -342,15 +342,19 @@ def source_fixture(lines):
     return '\n'.join(out[:lines - 1] + ['// ' + END_MARKER]) + '\n'
 
 
-def preview_region(viewer):
-    """Rows inside the preview box (between its titled top border and its bottom border)."""
+def preview_region(viewer, name):
+    """Rows inside the preview box: its top border carries the file name as the title."""
     display = viewer.screen.display
-    top = next((y for y, line in enumerate(display) if '╭ ▸' in line and 'bytes' in line), None)
+    corners = '╭┏+#┌'
+    top = next((y for y, line in enumerate(display)
+                if name in line and any(c in line[:line.index(name)] for c in corners)), None)
     if top is None:
         return None
-    column = display[top].index('╭ ▸')
+    line = display[top]
+    column = max(line.rfind(c, 0, line.index(name)) for c in corners)
+    bottom_corners = '╰┗+#└'
     bottom = next((y for y in range(top + 1, len(display))
-                   if len(display[y]) > column and display[y][column] == '╰'), len(display))
+                   if len(display[y]) > column and display[y][column] in bottom_corners), len(display))
     return top, bottom, column
 
 
@@ -372,7 +376,7 @@ def scenario_preview(binary, iterations):
                 viewer.quiesce()
                 open_ms, open_stats = viewer.measure(b'\r', lambda: probe in viewer.text(), timeout=TIMEOUT)
                 viewer.quiesce()
-                region = preview_region(viewer)
+                region = preview_region(viewer, name)
                 assert region, 'preview box not found'
                 top, bottom, column = region
 
@@ -436,11 +440,12 @@ def scenario_directory(binary, entries=20000):
             viewer.wait(lambda: '▸ many' in viewer.text() or ' many' in viewer.text(), what='directory row')
             viewer.quiesce()
             row = re.compile(r'entry-\d{5}\.txt')
-            count = re.compile(r'▸ (\d+) items')
+            # "N items", or "loaded/total items" while pages are still arriving.
+            count = re.compile(r'(?:(\d+)/)?(\d+) items')
 
             def shown():
                 match = count.search(viewer.text())
-                return int(match.group(1)) if match else 0
+                return int(match.group(1) or match.group(2)) if match else 0
             t0 = time.monotonic()
             os.write(viewer.master, b'\r')
             viewer.wait(lambda: row.search(viewer.text()) is not None, what='first rows')

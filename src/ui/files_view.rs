@@ -469,6 +469,12 @@ fn fit_breadcrumb(
         if shown.len() == segments.len() + 1 {
             shown.remove(1);
         }
+        // Still too wide (phones): drop the device too, keeping `… › folder`.
+        let refs: Vec<&(String, Option<String>)> = shown.iter().collect();
+        if total(&refs) > width && shown.len() > 2 {
+            let last = shown.last().cloned().unwrap();
+            shown = vec![(ellipsis.to_owned(), None), last];
+        }
     }
     let mut text = String::new();
     let mut spans = Vec::new();
@@ -480,8 +486,21 @@ fn fit_breadcrumb(
         text.push_str(label);
     }
     if cell_width(&text) > width {
-        text = middle_ellipsis(&text, width);
-        spans.retain(|(start, label, _)| start + cell_width(label) <= width.saturating_sub(1));
+        // Keep the deepest folder readable: cut it in the middle, never the separators.
+        if let Some((start, label, _)) = spans.last().cloned() {
+            let room = width.saturating_sub(start);
+            if room >= 4 {
+                let cut = middle_ellipsis(&label, room);
+                text = format!("{}{cut}", &text[..text.len() - label.len()]);
+                if let Some(last) = spans.last_mut() {
+                    last.1 = cut;
+                }
+            }
+        }
+        if cell_width(&text) > width {
+            text = middle_ellipsis(&text, width);
+        }
+        spans.retain(|(start, label, _)| start + cell_width(label) <= width);
     }
     (text, spans)
 }
@@ -658,22 +677,24 @@ fn render_list(
         }
     }
     let rows = browser_entries(b);
-    let (largest, bytes) = {
+    let (largest, bytes, longest) = {
         let mut index = b.index.borrow_mut();
         (
             index.largest(&b.entries, b.show_hidden, &b.filter),
             index.bytes(),
+            index.longest(),
         )
     };
     // Bottom border: counts and only the state that differs from the default.
-    let mut state = vec![if rows.len() == b.entries.len() {
-        match b.total.filter(|t| *t as usize > b.entries.len()) {
-            Some(total) => format!("{}/{} items", b.entries.len(), total),
-            None => format!("{} items", rows.len()),
-        }
-    } else {
-        format!("{}/{} items", rows.len(), b.entries.len())
+    let mut state = vec![match b.total.filter(|t| *t as usize > b.entries.len()) {
+        // Still paging: loaded/total.
+        Some(total) => format!("{}/{} items", b.entries.len(), total),
+        None if !b.filter.is_empty() => format!("{}/{} items", rows.len(), b.entries.len()),
+        None => format!("{} items", rows.len()),
     }];
+    if b.filter.is_empty() && !b.show_hidden && rows.len() < b.entries.len() {
+        state.push(format!("{} hidden", b.entries.len() - rows.len()));
+    }
     if bytes > 0 && area.width >= 50 {
         state.push(human_size(bytes));
     }
@@ -747,9 +768,9 @@ fn render_list(
     // Columns by width: bar, mark, icon, name, [type], [size], [bar], [age].
     let width = usize::from(inner.width);
     let show_type = width >= 64;
-    let show_size = width >= 30;
+    let show_size = width >= 26;
     let show_bar = width >= 72;
-    let show_age = width >= 44;
+    let show_age = width >= 40;
     let agent_width = agents
         .values()
         .map(|s| cell_width(s))
@@ -765,7 +786,9 @@ fn render_list(
         + if show_bar { 2 } else { 0 }
         + if show_age { 5 } else { 0 }
         + 1;
-    let name_width = width.saturating_sub(fixed).max(4);
+    // Names take what they need (up to the space left), so metadata sits next to them
+    // instead of across an empty gap on wide terminals.
+    let name_width = width.saturating_sub(fixed).min(longest.max(28) + 2).max(4);
     let now = now_seconds();
     let mut hits = b.hits.borrow_mut();
     let mut lines = Vec::with_capacity(height);
@@ -924,6 +947,11 @@ fn render_list(
                 format!("{age:>4} "),
                 base.patch(if recent { Style::default() } else { muted() }),
             ));
+        }
+        // The selection band spans the whole row, not just the columns.
+        let used: usize = spans.iter().map(|s| s.width()).sum();
+        if is_selected && used < width {
+            spans.push(Span::styled(" ".repeat(width - used), base));
         }
         let y = inner.y + lines.len() as u16;
         hits.push((Rect::new(inner.x, y, inner.width, 1), FileHit::Row(row)));

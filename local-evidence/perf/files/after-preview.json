@@ -1,0 +1,204 @@
+{
+ "schema": 1,
+ "harness": "tests/perf_harness.py",
+ "binary_version": "cx 0.1.95",
+ "build": "rvfiles",
+ "host": {
+  "kernel": "7.2.9-arch1-1",
+  "cpus": 20,
+  "python": "3.14.8",
+  "tmux": "tmux 3.8"
+ },
+ "terminal": {
+  "cols": 120,
+  "rows": 40
+ },
+ "quiet_ms": 60.0,
+ "burst_gap_ms": 3.0,
+ "iterations": 20,
+ "repeat": 1,
+ "detach_key": "Ctrl+]",
+ "result": "PASS",
+ "cleanup_failures": [],
+ "errors": [],
+ "aggregate": null,
+ "runs": [
+  {
+   "preview_scroll": {
+    "markdown": {
+     "lines": 5000,
+     "bytes": 244555,
+     "open_ms": 26.97,
+     "open_bytes": 7333,
+     "keys": {
+      "j": {
+       "settled_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 1.26,
+        "p95": 1.54,
+        "max": 1.58
+       },
+       "visible_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 1.26,
+        "p95": 1.54,
+        "max": 1.58
+       },
+       "bytes_median": 1471.5,
+       "bursts_median": 1.0
+      },
+      "pagedown": {
+       "settled_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 1.36,
+        "p95": 1.56,
+        "max": 1.95
+       },
+       "visible_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 1.36,
+        "p95": 1.56,
+        "max": 1.95
+       },
+       "bytes_median": 1685.5,
+       "bursts_median": 1.0
+      },
+      "wheel": {
+       "settled_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 2.72,
+        "p95": 4.99,
+        "max": 5.24
+       },
+       "visible_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 2.67,
+        "p95": 2.8,
+        "max": 2.87
+       },
+       "bytes_median": 1454.0,
+       "bursts_median": 1.0
+      },
+      "repeat_30hz": {
+       "keys": 30,
+       "settle_after_last_key_ms": 0,
+       "bytes": 45285,
+       "bursts": 30,
+       "changed": true
+      },
+      "end": {
+       "latency_ms": 3.01,
+       "last_line_visible": true,
+       "last_line_reachable": 4999
+      }
+     },
+     "viewer": {
+      "clean_exit": true,
+      "termios_restored": true
+     },
+     "cleanup": {
+      "pids_observed": 1,
+      "survivors_killed": 0,
+      "remaining": 0,
+      "orphans_ours": 0,
+      "orphans_ours_stray": 0,
+      "stale_handoffs": 0
+     }
+    },
+    "source": {
+     "lines": 5000,
+     "bytes": 196552,
+     "open_ms": 4.84,
+     "open_bytes": 6986,
+     "keys": {
+      "j": {
+       "settled_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 3.77,
+        "p95": 7.35,
+        "max": 7.61
+       },
+       "visible_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 1.0,
+        "p95": 1.54,
+        "max": 1.56
+       },
+       "bytes_median": 4157.0,
+       "bursts_median": 1.0
+      },
+      "pagedown": {
+       "settled_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 4.11,
+        "p95": 7.27,
+        "max": 7.65
+       },
+       "visible_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 1.12,
+        "p95": 1.6,
+        "max": 1.81
+       },
+       "bytes_median": 4606.0,
+       "bursts_median": 1.0
+      },
+      "wheel": {
+       "settled_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 5.21,
+        "p95": 6.98,
+        "max": 8.03
+       },
+       "visible_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 2.45,
+        "p95": 2.59,
+        "max": 2.66
+       },
+       "bytes_median": 4154.0,
+       "bursts_median": 1.0
+      },
+      "repeat_30hz": {
+       "keys": 30,
+       "settle_after_last_key_ms": 0,
+       "bytes": 124298,
+       "bursts": 30,
+       "changed": true
+      },
+      "end": {
+       "latency_ms": 2.58,
+       "last_line_visible": true,
+       "last_line_reachable": 4999
+      }
+     },
+     "viewer": {
+      "clean_exit": true,
+      "termios_restored": true
+     },
+     "cleanup": {
+      "pids_observed": 1,
+      "survivors_killed": 0,
+      "remaining": 0,
+      "orphans_ours": 0,
+      "orphans_ours_stray": 0,
+      "stale_handoffs": 0
+     }
+    },
+    "wall_s": 14.93
+   }
+  }
+ ]
+}

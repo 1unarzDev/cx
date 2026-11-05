@@ -1120,6 +1120,8 @@ pub(super) const STREAM_CHUNK: u32 = 128 * 1024;
 /// How much of a text/code file a preview streams; markdown is laid out whole, so less.
 const STREAM_LIMIT: u64 = 4 * 1024 * 1024;
 const STREAM_MARKDOWN_LIMIT: u64 = 1024 * 1024;
+/// Loaded in the background right after opening; beyond this, chunks load on scroll.
+const STREAM_READ_AHEAD: u64 = 1024 * 1024;
 
 /// A text preview being extended beyond the helper's first window with `ReadChunk`
 /// (identity-checked reads of the same regular file).
@@ -1159,7 +1161,7 @@ impl PreviewStream {
 #[derive(Clone)]
 pub(super) struct PreviewChunk {
     /// Raw bytes covered by `text` (whole lines unless `eof`).
-    consumed: u64,
+    pub(super) consumed: u64,
     eof: bool,
     text: String,
     lines: Option<Vec<Line<'static>>>,
@@ -1271,7 +1273,7 @@ impl App {
             return;
         }
         let height = u64::from(b.preview_viewport.get().1.max(1));
-        let near_end = stream.next == 0
+        let near_end = stream.next < STREAM_READ_AHEAD
             || stream.follow
             || with_doc(b, |doc| doc.total_rows() as u64)
                 .is_some_and(|total| u64::from(b.preview_scroll.get()) + 4 * height >= total);

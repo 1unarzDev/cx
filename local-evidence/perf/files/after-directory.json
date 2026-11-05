@@ -1,0 +1,245 @@
+{
+ "schema": 1,
+ "harness": "tests/perf_harness.py",
+ "binary_version": "cx 0.1.95",
+ "build": "rvfiles",
+ "host": {
+  "kernel": "7.2.9-arch1-1",
+  "cpus": 20,
+  "python": "3.14.8",
+  "tmux": "tmux 3.8"
+ },
+ "terminal": {
+  "cols": 120,
+  "rows": 40
+ },
+ "quiet_ms": 60.0,
+ "burst_gap_ms": 3.0,
+ "iterations": 20,
+ "repeat": 1,
+ "detach_key": "Ctrl+]",
+ "result": "PASS",
+ "cleanup_failures": [],
+ "errors": [],
+ "aggregate": null,
+ "runs": [
+  {
+   "preview_scroll": {
+    "markdown": {
+     "lines": 5000,
+     "bytes": 244555,
+     "open_ms": 21.33,
+     "open_bytes": 7333,
+     "keys": {
+      "j": {
+       "settled_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 1.54,
+        "p95": 1.68,
+        "max": 1.69
+       },
+       "visible_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 1.54,
+        "p95": 1.68,
+        "max": 1.69
+       },
+       "bytes_median": 1471.5,
+       "bursts_median": 1.0
+      },
+      "pagedown": {
+       "settled_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 1.0,
+        "p95": 1.35,
+        "max": 1.6
+       },
+       "visible_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 1.0,
+        "p95": 1.35,
+        "max": 1.6
+       },
+       "bytes_median": 1703.5,
+       "bursts_median": 1.0
+      },
+      "wheel": {
+       "settled_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 2.69,
+        "p95": 3.97,
+        "max": 4.22
+       },
+       "visible_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 2.67,
+        "p95": 2.76,
+        "max": 2.79
+       },
+       "bytes_median": 1454.0,
+       "bursts_median": 1.0
+      },
+      "repeat_30hz": {
+       "keys": 30,
+       "settle_after_last_key_ms": 0,
+       "bytes": 45287,
+       "bursts": 30,
+       "changed": true
+      },
+      "end": {
+       "latency_ms": 2.05,
+       "last_line_visible": false,
+       "last_line_reachable": 2691
+      }
+     },
+     "viewer": {
+      "clean_exit": true,
+      "termios_restored": true
+     },
+     "cleanup": {
+      "pids_observed": 2,
+      "survivors_killed": 0,
+      "remaining": 0,
+      "orphans_ours": 0,
+      "orphans_ours_stray": 0,
+      "stale_handoffs": 0
+     }
+    },
+    "source": {
+     "lines": 5000,
+     "bytes": 196552,
+     "open_ms": 5.57,
+     "open_bytes": 6986,
+     "keys": {
+      "j": {
+       "settled_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 3.75,
+        "p95": 7.48,
+        "max": 7.66
+       },
+       "visible_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 1.31,
+        "p95": 1.64,
+        "max": 1.76
+       },
+       "bytes_median": 4157.0,
+       "bursts_median": 1.0
+      },
+      "pagedown": {
+       "settled_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 4.25,
+        "p95": 7.04,
+        "max": 7.52
+       },
+       "visible_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 1.08,
+        "p95": 1.63,
+        "max": 1.72
+       },
+       "bytes_median": 4612.0,
+       "bursts_median": 2.0
+      },
+      "wheel": {
+       "settled_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 4.28,
+        "p95": 6.11,
+        "max": 7.0
+       },
+       "visible_ms": {
+        "n": 20,
+        "failed": 0,
+        "p50": 2.45,
+        "p95": 2.56,
+        "max": 2.56
+       },
+       "bytes_median": 4154.0,
+       "bursts_median": 1.0
+      },
+      "repeat_30hz": {
+       "keys": 30,
+       "settle_after_last_key_ms": 0,
+       "bytes": 124298,
+       "bursts": 31,
+       "changed": true
+      },
+      "end": {
+       "latency_ms": 8.84,
+       "last_line_visible": false,
+       "last_line_reachable": 3340
+      }
+     },
+     "viewer": {
+      "clean_exit": true,
+      "termios_restored": true
+     },
+     "cleanup": {
+      "pids_observed": 1,
+      "survivors_killed": 0,
+      "remaining": 0,
+      "orphans_ours": 0,
+      "orphans_ours_stray": 0,
+      "stale_handoffs": 0
+     }
+    },
+    "wall_s": 14.72
+   },
+   "directory_list": {
+    "entries": 20000,
+    "first_rows_ms": 5.62,
+    "first_count": 2434,
+    "final_count_ms": 884.76,
+    "final_count": 20000,
+    "all_entries_listed": true,
+    "cap_notice": false,
+    "bytes": 9010,
+    "j": {
+     "settled_ms": {
+      "n": 20,
+      "failed": 0,
+      "p50": 1.46,
+      "p95": 1.78,
+      "max": 1.8
+     },
+     "visible_ms": {
+      "n": 20,
+      "failed": 0,
+      "p50": 1.46,
+      "p95": 1.78,
+      "max": 1.8
+     },
+     "bytes_median": 315.0,
+     "bursts_median": 1.0
+    },
+    "viewer": {
+     "clean_exit": true,
+     "termios_restored": true
+    },
+    "cleanup": {
+     "pids_observed": 2,
+     "survivors_killed": 0,
+     "remaining": 0,
+     "orphans_ours": 0,
+     "orphans_ours_stray": 0,
+     "stale_handoffs": 0
+    },
+    "wall_s": 5.07
+   }
+  }
+ ]
+}

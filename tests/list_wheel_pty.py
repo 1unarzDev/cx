@@ -29,6 +29,9 @@ for view in ['Files','Work']:
     if select.select([master],[],[],.02)[0]:
      data=os.read(master,65536);raw.extend(data);stream.feed(data.decode(errors='replace'))
   def current():
+   # The selection bar marks the selected row; older layouts used a chevron.
+   for row,line in enumerate(screen.display):
+    if '▌' in line and re.search(pattern,line):return re.search(pattern,line).group(),row
    for row,line in enumerate(screen.display):
     if ('▸' in line or '›' in line) and re.search(pattern,line):return re.search(pattern,line).group(),row
    return None

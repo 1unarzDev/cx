@@ -28,8 +28,9 @@ Record changes in [CHANGELOG.md](../CHANGELOG.md). Before tagging a stable versi
 | `dialogs.rs` | Modal dialog keys, Enter handling per dialog family, confirmation button layout |
 | `apply/` | Task replies: `mod.rs` shared bookkeeping and dispatch; `sessions.rs`, `files.rs`, `network.rs`, `containers.rs` per operation group |
 | `launch.rs` | Session launch flows: device/provider choice, permission prompts, shells, adoption |
-| `files_view.rs` | File browser state, transfers and `render_browser` |
-| `preview.rs` | File preview state and rendering: text, markdown layout/links, raster fallback, in-preview find |
+| `files_view.rs` | File browser state, transfers, `render_browser` (windowed rows, breadcrumb, inline peek, tap targets) and the prefetch/peek debounce (`files_tick`) |
+| `file_index.rs` | `Entries` (Arc-shared listing with revisions) and `ViewIndex` (visible rows, lowercase names, search matches), extended incrementally per page |
+| `preview.rs` | File preview state and rendering: text, markdown layout/links, raster fallback, in-preview find; `DocCache` (retained wrapped layout, slice rendering) and chunked streaming of large text previews |
 | `network_view.rs` | Network/neighbor state, probes and the network render |
 | `containers_view.rs` | Container panel state, tree rows and container sessions |
 | `theme.rs` | Shared styles (`accent`, `muted`, `block`, `tint`) and the `no_color()`/`ascii()` switches; restyle here |

@@ -1,0 +1,20 @@
+ cx   Files         viewing fixture@lapt
+                                        
+╭ Devices ───╮╭ ▸ laptop › ~ ──────────╮
+│   All devi ││▌ ▸ Downloads/          │
+│ › ●  lapt… ││  ▸ projects/           │
+│   ●  * la… ││                        │
+│   ○  * fi… ││                        │
+╰────────────╯│                        │
+╭ Actions ───╮│                        │
+│ Sessions   ││                        │
+│ Network    ││                        │
+│ Containers ││                        │
+╰────────────╯│                        │
+              │                        │
+              │                        │
+              ╰─ 2 items · 3 hidden ───╯
+  Focus: Files · 2/5              ↔ idle
+ s Sessions here     Space Select       
+ c / x Copy / cut    t / T Send / jobs  
+                                        

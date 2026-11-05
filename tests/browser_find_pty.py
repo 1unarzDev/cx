@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Real file-find PTYs: preserve rows, highlight names and navigate matches."""
-import fcntl, json, os, pathlib, pty, select, struct, subprocess, sys, tempfile, termios, time
+import fcntl, json, os, pathlib, pty, re, select, struct, subprocess, sys, tempfile, termios, time
 import pyte
 
 binary = str(pathlib.Path(sys.argv[1]).resolve())
@@ -60,18 +60,33 @@ for width, height in [(120, 40), (80, 24), (48, 24)]:
             send(b'/alpha')
             wait_for(lambda: 'n/N matches' in text())
             assert 'beta.txt' in text() and 'directory' in text(), text()
-            row=next(y for y,line in enumerate(screen.display) if 'alpha.txt' in line)
-            col=screen.display[row].index('alpha.txt')
+            # The list row, not the inline preview's title or the sidebar's path tree.
+            def list_occurrence(line):
+                at = line.find('alpha.txt')
+                while at >= 0:
+                    before = line[max(0, at - 3):at]
+                    if not any(mark in before for mark in ('╭', '┏', '+ ', '─', '-', '=')):
+                        return at
+                    at = line.find('alpha.txt', at + 1)
+                return -1
+            row=next(y for y,line in enumerate(screen.display) if list_occurrence(line) >= 0)
+            col=list_occurrence(screen.display[row])
             assert screen.buffer[row][col].underscore, text()
-            assert screen.buffer[row][col].bg=='default'
-            send(b'\r'); assert 'alpha fixture' not in text()
-            send(b'nN'); assert 'alpha fixture' not in text()
+            # Find highlights underline, never paint: only the selection band has a background.
+            selected_row = any(screen.buffer[row][x].data in ('▌', '>') for x in range(col))
+            assert screen.buffer[row][col].bg=='default' or selected_row, text()
+            # Enter finishes the search; it never opens the file (the list stays; an inline
+            # peek on wide layouts may show the content beside it).
+            def preview_opened(): return 'beta.txt' not in text()
+            send(b'\r'); assert not preview_opened(), text()
+            send(b'nN'); assert not preview_opened(), text()
             send(b'/\x15a\r')
             wait_for(lambda: 'n/N matches' in text())
             capture('find')
             def selected_name():
                 for line in screen.display:
-                    if ('▸ ' in line or '> ' in line) and any(name in line for name in ['alpha.txt','beta.txt','directory']):
+                    # The selection bar is the first cell inside the list border.
+                    if re.search(r'[│|#┃+][▌>]', line) and any(name in line for name in ['alpha.txt','beta.txt','directory']):
                         return next(name for name in ['alpha.txt','beta.txt','directory'] if name in line)
                 return None
             first=selected_name(); assert first, text()
@@ -80,6 +95,7 @@ for width, height in [(120, 40), (80, 24), (48, 24)]:
             send(b'/\x15missing\r')
             wait_for(lambda: '0/0' in text())
             assert 'alpha.txt' in text() and 'beta.txt' in text(), text()
+            read(.6)  # let the debounced inline peek settle before comparing frames
             before_no_match=text(); send(b'n'); assert text()==before_no_match, text()
             send(b'\x1b'); wait_for(lambda: 'n/N matches' not in text())
             filter_name('beta'); assert 'alpha.txt' not in text(), text()

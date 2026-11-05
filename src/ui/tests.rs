@@ -63,10 +63,11 @@ fn press(a: &mut App, c: char) {
 fn transparent_except_selection(buffer: &ratatui::buffer::Buffer) -> bool {
     let width = buffer.area.width as usize;
     buffer.content.chunks(width).all(|row| {
-        let marked = row.iter().any(|c| matches!(c.symbol(), "▌" | "▏" | ">" | ":"));
+        let marked = row
+            .iter()
+            .any(|c| matches!(c.symbol(), "▌" | "▏" | ">" | ":"));
         row.iter().all(|c| {
-            c.bg == Color::Reset
-                || (marked && matches!(c.bg, Color::Indexed(23 | 236 | 195 | 255)))
+            c.bg == Color::Reset || (marked && matches!(c.bg, Color::Indexed(23 | 236 | 195 | 255)))
         })
     })
 }
@@ -6677,5 +6678,207 @@ fn loader_content_has_equal_vertical_padding_inside_panel() {
         first - top - 1,
         bottom - last - 1,
         "loader content is not vertically centered"
+    );
+}
+
+fn page(dir: &str, from: usize, to: usize, next: Option<usize>, total: usize) -> Value {
+    let entries = (from..to)
+        .map(|i| serde_json::json!({"name":format!("e{i:06}"),"path":format!("{dir}/e{i:06}"),"kind":"file","size":i,"modified":1}))
+        .collect::<Vec<_>>();
+    serde_json::json!({"path":dir,"display_path":dir,"entries":entries,"next_offset":next,
+        "order":"directories-first-name","total":total})
+}
+#[test]
+fn ordered_listing_pages_append_incrementally_beyond_the_old_cap() {
+    let (mut a, rx) = queued_app();
+    a.browser = Some(Browser::new(0, "/big".into()));
+    a.view = View::Files;
+    let total = 24_000;
+    let mut offset = 0;
+    while offset < total {
+        let end = (offset + 4000).min(total);
+        let next = (end < total).then_some(end);
+        a.apply(Reply {
+            device_id: None,
+            execution_target: None,
+            preview: None,
+            device: 0,
+            op: if offset == 0 {
+                Operation::List {
+                    path: "/big".into(),
+                }
+            } else {
+                Operation::ListPage {
+                    path: "/big".into(),
+                    offset: offset as u64,
+                    limit: 4000,
+                }
+            },
+            generation: a.generation,
+            result: Ok(page("/big", offset, end, next, total)),
+        });
+        // Search caches extend with each page instead of being rebuilt from scratch.
+        a.browser.as_mut().unwrap().search = "e0000".into();
+        assert!(!browser_matches(a.browser.as_ref().unwrap()).is_empty());
+        a.browser.as_mut().unwrap().search.clear();
+        offset = end;
+    }
+    let b = a.browser.as_ref().unwrap();
+    assert_eq!(a.visible_entries().len(), total);
+    assert_eq!(b.entries[total - 1].name, "e023999");
+    assert_eq!(b.entries[0].modified, Some(1));
+    // Continuations asked for the larger page once the helper reported its order.
+    let limits: Vec<u32> = rx
+        .try_iter()
+        .filter_map(|t| match t.op {
+            Operation::ListPage { limit, .. } => Some(limit),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !limits.is_empty() && limits.iter().all(|l| *l == 4000),
+        "{limits:?}"
+    );
+}
+#[test]
+fn file_rows_are_windowed_and_clickable_with_breadcrumb_targets() {
+    let (mut a, _rx) = queued_app();
+    let mut b = Browser::new(0, "/srv/data/big".into());
+    b.display_path = "/srv/data/big".into();
+    b.entries = (0..5000)
+        .map(|i| Entry {
+            name: format!("row-{i:05}.log"),
+            path: format!("/srv/data/big/row-{i:05}.log"),
+            kind: "file".into(),
+            size: i,
+            identity: None,
+            hidden: false,
+            rename_name: None,
+            modified: None,
+        })
+        .collect();
+    b.selected = 2500;
+    a.browser = Some(b);
+    a.view = View::Files;
+    a.focus = Focus::Workspace;
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|f| render(f, &a)).unwrap();
+    let b = a.browser.as_ref().unwrap();
+    let rows: Vec<usize> = b
+        .hits
+        .borrow()
+        .iter()
+        .filter_map(|(_, hit)| match hit {
+            FileHit::Row(i) => Some(*i),
+            _ => None,
+        })
+        .collect();
+    assert!(rows.len() < 30 && rows.contains(&2500), "{rows:?}");
+    let crumb = b
+        .hits
+        .borrow()
+        .iter()
+        .find(|(_, hit)| matches!(hit, FileHit::Crumb(p) if p == "/srv/data"))
+        .map(|(rect, _)| *rect)
+        .expect("parent breadcrumb is a target");
+    // A click on another row selects it; a second click on it opens (Enter).
+    let (rect, _) = b.hits.borrow()[b.hits.borrow().len() - 1].clone();
+    let target = rows[rows.len() - 1];
+    assert!(a.file_click(rect.x + 3, rect.y));
+    assert_eq!(a.browser.as_ref().unwrap().selected, target);
+    assert!(a.file_click(crumb.x, crumb.y));
+    assert_eq!(a.browser.as_ref().unwrap().path, "/srv/data");
+}
+#[test]
+fn streamed_preview_chunks_extend_the_retained_layout() {
+    let (mut a, rx) = file_app();
+    let b = a.browser.as_mut().unwrap();
+    b.entries[0].size = 300_000;
+    let first: String = (0..10).map(|i| format!("line {i}\n")).collect();
+    b.preview_path = Some("/files/alpha.txt".into());
+    a.apply(Reply {
+        device_id: None,
+        execution_target: None,
+        preview: None,
+        device: 0,
+        op: Operation::Preview { path: "/files/alpha.txt".into() },
+        generation: a.generation,
+        result: Ok(serde_json::json!({"text":first,"truncated":true,"binary":false,"kind":"text","title":"x"})),
+    });
+    let read = rx
+        .try_iter()
+        .find_map(|t| match t.op {
+            Operation::ReadChunk {
+                offset, identity, ..
+            } => Some((offset, identity)),
+            _ => None,
+        })
+        .expect("truncated text starts streaming");
+    assert_eq!(read, (0, "identity-alpha.txt".into()));
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|f| render(f, &a)).unwrap();
+    let chunk = |offset: u64, from: usize, to: usize, limit: u32| {
+        let text: String = (from..to).map(|i| format!("line {i}\n")).collect();
+        let mut data = text.clone().into_bytes();
+        data.resize(limit as usize, b'x'); // a partial trailing line is not consumed
+        let op = Operation::ReadChunk {
+            path: "/files/alpha.txt".into(),
+            offset,
+            limit,
+            identity: "identity-alpha.txt".into(),
+        };
+        use base64::Engine;
+        let value =
+            serde_json::json!({"data":base64::engine::general_purpose::STANDARD.encode(&data)});
+        (stream_chunk(&op, &value), op, value, text.len() as u64)
+    };
+    let (prepared, op, value, consumed) = chunk(0, 0, 2000, 20_000);
+    assert_eq!(
+        prepared.as_ref().unwrap().chunk.as_ref().unwrap().consumed,
+        consumed
+    );
+    a.apply(Reply {
+        device_id: None,
+        execution_target: None,
+        preview: prepared,
+        device: 0,
+        op,
+        generation: a.generation,
+        result: Ok(value),
+    });
+    let b = a.browser.as_ref().unwrap();
+    assert!(b.preview.as_deref().unwrap().contains("line 1999\n"));
+    assert!(!b.preview.as_deref().unwrap().contains('x'));
+    // End follows the stream; the retained layout's row count drives the scroll.
+    a.key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    let next = rx
+        .try_iter()
+        .find_map(|t| match t.op {
+            Operation::ReadChunk { offset, .. } => Some(offset),
+            _ => None,
+        })
+        .expect("next chunk requested");
+    assert_eq!(next, consumed);
+    let (prepared, op, value, _) = chunk(consumed, 2000, 2100, 131_072);
+    a.apply(Reply {
+        device_id: None,
+        execution_target: None,
+        preview: prepared,
+        device: 0,
+        op,
+        generation: a.generation,
+        result: Ok(value),
+    });
+    terminal.draw(|f| render(f, &a)).unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect::<String>();
+    assert!(
+        text.contains("line 2099"),
+        "end of the streamed file is reachable"
     );
 }

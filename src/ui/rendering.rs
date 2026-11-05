@@ -144,7 +144,7 @@ pub(super) fn render_at(
             }
             _ => "?",
         };
-        let dot_style = if std::env::var_os("NO_COLOR").is_some() {
+        let dot_style = if no_color() {
             Style::default()
         } else {
             Style::default().fg(match status {
@@ -575,7 +575,7 @@ pub(super) fn render_at(
                         None => name,
                     };
                     let cells = vec![
-                        Cell::from(badge).style(if std::env::var_os("NO_COLOR").is_some() {
+                        Cell::from(badge).style(if no_color() {
                             Style::default()
                         } else {
                             Style::default().fg(match s.provider.as_str() {
@@ -953,12 +953,12 @@ pub(super) fn render_at(
             ]
         })
         .split(footer[status_row]);
-    let healthy = if std::env::var_os("NO_COLOR").is_some() {
+    let healthy = if no_color() {
         Style::default()
     } else {
         Style::default().fg(Color::Green)
     };
-    let warning = if std::env::var_os("NO_COLOR").is_some() {
+    let warning = if no_color() {
         Style::default()
     } else {
         Style::default().fg(Color::Yellow)
@@ -1350,7 +1350,7 @@ pub(super) fn render_at(
             .direction(Direction::Horizontal)
             .constraints(vec![Constraint::Ratio(1, columns as u32); columns])
             .split(rows[i / columns]);
-        let key_style = if std::env::var_os("NO_COLOR").is_some() {
+        let key_style = if no_color() {
             Style::default().add_modifier(Modifier::BOLD)
         } else {
             accent().add_modifier(Modifier::BOLD)

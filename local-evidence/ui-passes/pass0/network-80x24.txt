@@ -1,0 +1,24 @@
+ cx   Sessions  [Network]                                 viewing fixture@laptop
+                                                                                
+╭ Devices ──────────╮╭ ▸ Network · fixture@laptop ─────────────────────────────╮
+│   All devices     ││fixture@laptop · Internet reachable (ICMP)               │
+│ › ●  laptop       ││Interfaces: enp5s0 UP · wlp0s20f3 DOWN · CloudflareWARP  │
+│   ●  * lab-arm    ││UNKNOWN · eth0 UP                                        │
+│   ○  * field-rov… ││Device / LAN neighbor                   Execution / link │
+╰───────────────────╯│  ? laptop · 10 LAN                     fixture@laptop   │
+╭ Actions ──────────╮│  ! xxx.xxx.x.x                         enp5s0           │
+│ Sessions          ││  ? xxx.xxx.x.x                         enp5s0           │
+│ Files             ││laptop · fixture@laptop                                  │
+│ Containers        ││Route found: viewer → laptop                             │
+│ Transfers         ││cached helper · 4s ago · helper evidence from viewer     │
+╰───────────────────╯│SSH jumps (saved): none saved                            │
+ Selected ───────────│Via another observer: unknown                            │
+ Route               │                                                         │
+ viewer → laptop     │Internet ● · reachable (ICMP) · 29s ago                  │
+                     │DNS / HTTPS and overlay access: unknown                  │
+                     │Backend: linux-iproute2                                  │
+                     ╰─────────────────────────────────────────────────────────╯
+ ● 2/3 devices           Focus: Network · 11/11                           ↔ idle
+ j/k Devices / LAN          Enter Open / connect      Home Host details         
+ J / K Scroll details       Ctrl P Actions            ? Help                    
+                                                                                

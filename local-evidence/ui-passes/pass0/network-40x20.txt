@@ -1,0 +1,20 @@
+ cx   Network       viewing fixture@lapt
+                                        
+╭ Devices ──────╮╭ ▸ Network · fixture@╮
+│   All devices ││fixture@laptop ·     │
+│ › ●  laptop   ││Internet reachable   │
+│   ●  * lab-a… ││(ICMP)               │
+│   ○  * field… ││Device / LAN neighbor│
+╰───────────────╯│  ? laptop · 10 LAN  │
+╭ Actions ──────╮│  ! xxx.xxx.x.x      │
+│ Sessions      ││  ? xxx.xxx.x.x      │
+│ Files         ││laptop ·             │
+│ Containers    ││fixture@laptop       │
+╰───────────────╯│Route found: viewer →│
+                 │laptop               │
+                 │cached helper · 3s   │
+                 ╰─────────────────────╯
+Focus: Network · 11/11            ↔ idle
+ j/k Devices / LAN   Enter Open / connec
+ Home Host details   J / K Scroll detail
+                                        

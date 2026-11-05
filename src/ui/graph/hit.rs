@@ -1,6 +1,5 @@
 //! Per-cell hit map and spatial keyboard navigation (spec 10.4).
 use super::layout::{GraphLayout, Mode};
-use super::model::Graph;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HitId {
@@ -45,22 +44,14 @@ impl HitMap {
             self.cells[i] = Some(id);
         }
     }
+    /// Graph mode only (outline rows scroll; [`super::hit_at`] handles them).
     /// Priority: nodes and pills, then edge cells, then the enclosure title,
     /// then a 1-cell halo around edges (touch targets).
-    pub fn build(g: &Graph, layout: &GraphLayout) -> HitMap {
+    pub fn build(layout: &GraphLayout) -> HitMap {
         let mut m = HitMap::new(layout.width, layout.height);
         if layout.mode == Mode::Outline {
-            for (row, r) in layout.outline.iter().enumerate() {
-                if row >= layout.height as usize {
-                    break;
-                }
-                for x in 0..layout.width {
-                    m.set(x as i32, row as i32, HitId::Node(r.node), true);
-                }
-            }
             return m;
         }
-        let _ = g;
         for p in &layout.nodes {
             for y in p.rect.y..p.rect.bottom() {
                 for x in p.rect.x..p.rect.right() {

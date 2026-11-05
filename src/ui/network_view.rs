@@ -20,9 +20,10 @@ pub(super) fn normalized_mac(value: &str) -> Option<String> {
 pub(super) fn neighbor_connectable(candidate: &Value) -> bool {
     !matches!(candidate["address"].as_str().and_then(|s| s.parse::<std::net::IpAddr>().ok()), Some(std::net::IpAddr::V6(ip)) if ip.is_unicast_link_local())
 }
-pub(super) fn neighbor_ssh(candidate: &Value) -> &'static str {
+/// SSH port evidence of one candidate at `now`: `port open`, `port closed` or `unknown`.
+pub(super) fn neighbor_ssh(candidate: &Value, now: u64) -> &'static str {
     let observed = candidate["observed_at"].as_u64().unwrap_or(0);
-    if observed == 0 || transport::now().saturating_sub(observed) > 90 {
+    if observed == 0 || now.saturating_sub(observed) > 90 {
         return "unknown";
     }
     match candidate["ssh"]["state"].as_str() {
@@ -36,7 +37,7 @@ pub(super) fn neighbor_detail(candidate: &Value) -> String {
         "Host {} · link {}\nSSH {} · authentication unknown\nInternet unknown · source {}",
         safe_label(candidate["hostname"].as_str().unwrap_or("unknown")),
         safe_label(candidate["link_state"].as_str().unwrap_or("unknown")),
-        neighbor_ssh(candidate),
+        neighbor_ssh(candidate, transport::now()),
         safe_label(candidate["source"].as_str().unwrap_or("unknown"))
     )
 }
@@ -125,7 +126,7 @@ pub(super) fn render_network(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 "?"
             }
         } else {
-            match neighbor_ssh(row) {
+            match neighbor_ssh(row, transport::now()) {
                 "port open" => "+",
                 "port closed" => "!",
                 _ => "?",
@@ -544,7 +545,7 @@ impl App {
                 )
             })
             .unwrap_or_default();
-        format!("{name}{hostname}Enter: connect via observer and add to All devices\nDiscovery: {} · {} · {age}\nRoute found: viewer{arrow}{}{arrow}{} / {}\nSSH jumps to observer (saved): {hops}\nSSH {} · authentication unknown\nInternet unknown · source {} · link {}", safe_label(&observer.name), safe_label(row["source"].as_str().unwrap_or("unknown")), safe_label(&observer.name), safe_label(row["address"].as_str().unwrap_or("unknown")), safe_label(row["interface"].as_str().unwrap_or("unknown")), neighbor_ssh(row), safe_label(row["source"].as_str().unwrap_or("unknown")), safe_label(row["link_state"].as_str().unwrap_or("unknown")))
+        format!("{name}{hostname}Enter: connect via observer and add to All devices\nDiscovery: {} · {} · {age}\nRoute found: viewer{arrow}{}{arrow}{} / {}\nSSH jumps to observer (saved): {hops}\nSSH {} · authentication unknown\nInternet unknown · source {} · link {}", safe_label(&observer.name), safe_label(row["source"].as_str().unwrap_or("unknown")), safe_label(&observer.name), safe_label(row["address"].as_str().unwrap_or("unknown")), safe_label(row["interface"].as_str().unwrap_or("unknown")), neighbor_ssh(row, transport::now()), safe_label(row["source"].as_str().unwrap_or("unknown")), safe_label(row["link_state"].as_str().unwrap_or("unknown")))
     }
     pub(super) fn network_action_device(&self) -> Option<usize> {
         self.network_rows()

@@ -122,10 +122,6 @@ pub struct GraphLayout {
     pub key: CacheKey,
     pub mode: Mode,
     pub orientation: Orientation,
-    /// Card size class actually used: the width's class, or a more compact
-    /// one when the area is too short for its cards (`key.class` stays the
-    /// width's class).
-    pub class: SizeClass,
     pub width: u16,
     pub height: u16,
     pub nodes: Vec<Placed>,
@@ -150,9 +146,10 @@ impl GraphLayout {
     }
 }
 
-/// Graphs with more visible nodes than this use the outline (spec 6.4).
+/// Graphs with more nodes than this use the outline (spec 6.4). LAN
+/// neighbour leaves do not count: the overflow ladder collapses them first
+/// (spec 10.2.5).
 pub const MAX_GRAPH_NODES: usize = 24;
-const LAN_EXTRA_RANK: usize = 1;
 
 /// Computes the layout for an area of `width` x `height` cells.
 pub fn compute(
@@ -170,7 +167,12 @@ pub fn compute(
         class,
         glyphs,
     };
-    if class != SizeClass::XS && g.nodes.len() <= MAX_GRAPH_NODES {
+    let counted = g
+        .nodes
+        .iter()
+        .filter(|n| n.kind != NodeKind::Neighbor)
+        .count();
+    if class != SizeClass::XS && counted <= MAX_GRAPH_NODES {
         if let Some(l) = graph_with_overflow(g, key, prev) {
             return l;
         }
@@ -179,7 +181,7 @@ pub fn compute(
 }
 
 /// Graph mode with the overflow ladder; `None` when even the folded graph does not fit.
-pub(super) fn graph_with_overflow(
+fn graph_with_overflow(
     g: &Graph,
     key: CacheKey,
     prev: Option<&GraphLayout>,
@@ -257,7 +259,6 @@ fn bfs_ranks(g: &Graph, adj: &[Vec<usize>], visible: &[bool]) -> Vec<usize> {
             *r = 1;
         }
     }
-    let _ = LAN_EXTRA_RANK;
     rank
 }
 
@@ -674,7 +675,6 @@ fn try_graph(
         key,
         mode: Mode::Graph,
         orientation,
-        class,
         width: w,
         height: h,
         nodes: placed,
@@ -711,7 +711,7 @@ fn try_graph(
     }
     // A mesh that cannot be shown as one connected region does not fit.
     layout.bridges = route::bridge_all(&layout)?;
-    layout.hits = HitMap::build(g, &layout);
+    layout.hits = HitMap::build(&layout);
     Some(layout)
 }
 
@@ -956,7 +956,6 @@ fn outline_layout(g: &Graph, key: CacheKey) -> GraphLayout {
         key,
         mode: Mode::Outline,
         orientation: Orientation::TopBottom,
-        class: key.class,
         width: key.width,
         height: key.height,
         nodes: Vec::new(),
@@ -974,7 +973,7 @@ fn outline_layout(g: &Graph, key: CacheKey) -> GraphLayout {
             .order
             .insert(g.nodes[row.node].id.clone(), (row.depth, p));
     }
-    layout.hits = HitMap::build(g, &layout);
+    layout.hits = HitMap::build(&layout);
     layout
 }
 
@@ -1033,10 +1032,8 @@ pub fn outline_rows(g: &Graph) -> Vec<OutlineRow> {
             }
         }
     }
-    for i in 0..n {
-        if !seen[i] {
-            children[root].push((i, None));
-        }
+    for (i, _) in seen.iter().enumerate().filter(|(_, s)| !**s) {
+        children[root].push((i, None));
     }
     let mut rows = Vec::new();
     fn walk(

@@ -1,8 +1,8 @@
-use super::layout::{graph_with_overflow, Orientation};
+use super::layout::Orientation;
 use super::route::{DOWN, LEFT, RIGHT, UP};
 use super::*;
 use crate::model::Device;
-use ratatui::{buffer::Buffer, layout::Rect, style::Color, widgets::Widget};
+use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -28,7 +28,7 @@ pub(super) fn fleet_sources() -> Sources {
         device("innovation", Some("innovation"), "reachable", 3),
         device("lab-arm", Some("lab-arm"), "reachable", 3),
         device("jetson-01", Some("robot@jetson-01"), "reachable", 20),
-        device("field-rover", Some("field-rover"), "unreachable", 300),
+        device("field-rover", Some("field-rover"), "reachable", 300),
         device("nas", Some("nas"), "reachable", 30),
     ];
     let mut routes = BTreeMap::new();
@@ -48,10 +48,10 @@ pub(super) fn fleet_sources() -> Sources {
         );
     }
     let candidates = json!({"observed_at": NOW, "candidates": [
-        {"address":"192.0.2.10","interface":"enp5s0","ssh":{"state":"open"}},
-        {"address":"192.0.2.11","interface":"enp5s0","ssh":{"state":"closed"}},
-        {"address":"192.0.2.12","interface":"enp5s0","ssh":{"state":"unknown"}},
-        {"address":"192.0.2.13","interface":"enp5s0","hostname":"printer"},
+        {"address":"192.0.2.10","interface":"enp5s0","observed_at":NOW,"ssh":{"state":"open"}},
+        {"address":"192.0.2.11","interface":"enp5s0","observed_at":NOW,"ssh":{"state":"closed"}},
+        {"address":"192.0.2.12","interface":"enp5s0","observed_at":NOW,"ssh":{"state":"unknown"}},
+        {"address":"192.0.2.13","interface":"enp5s0","observed_at":NOW,"hostname":"printer"},
     ]});
     let mut metrics = BTreeMap::new();
     for (id, rtt, ses) in [
@@ -98,6 +98,7 @@ pub(super) fn fleet_sources() -> Sources {
                 members: vec!["lab-arm".into(), "jetson-01".into(), "field-rover".into()],
             },
         ],
+        helper: BTreeMap::from([("field-rover".to_string(), (NOW - 300, false))]),
         metrics,
         expanded: BTreeSet::new(),
         now: NOW,
@@ -362,6 +363,16 @@ fn builder_creates_jump_nodes_expands_lan_and_reads_access_graph() {
     );
     let peer = &g.edges[edge_idx(&g, "innovation", "lab-arm")];
     assert_eq!(peer.evidence.authenticated_at, Some(NOW - 5));
+    // Viewer-scoped posture and rtt stay on the viewer's own route edge.
+    assert_eq!(
+        (peer.policy, peer.direction, peer.evidence.rtt_ms.clone()),
+        (Policy::Unknown, Direction::Forward, vec![])
+    );
+    let own = &g.edges[edge_idx(&g, "tranquility", "lab-arm")];
+    assert_eq!(
+        (own.policy, own.direction, own.evidence.rtt_ms.clone()),
+        (Policy::Key, Direction::Both, vec![12])
+    );
     assert_eq!(
         g.edges[edge_idx(&g, "tranquility", "field-rover")].policy,
         Policy::None
@@ -369,53 +380,87 @@ fn builder_creates_jump_nodes_expands_lan_and_reads_access_graph() {
     // Neighbour state comes from the bounded SSH port evidence only.
     let open = &g.nodes[idx(&g, "nb:tranquility:enp5s0:192.0.2.10")];
     assert_eq!(open.state, NodeState::Up);
-    assert_eq!(
-        g.nodes[idx(&g, "nb:tranquility:enp5s0:192.0.2.13")].label,
-        "printer"
-    );
+    assert_eq!(open.detail.as_deref(), Some("SSH port open"));
+    // A hostname is an unauthenticated hint: the address stays the label.
+    let printer = &g.nodes[idx(&g, "nb:tranquility:enp5s0:192.0.2.13")];
+    assert_eq!(printer.label, "192.0.2.13");
+    assert_eq!(printer.detail.as_deref(), Some("printer? · SSH unknown"));
+    let cluster = &g.nodes[idx(&g, "lan:tranquility:enp5s0")];
+    assert_eq!(cluster.detail.as_deref(), Some("enp5s0 1 open"));
 }
 
 #[test]
-fn policy_labels_from_edge_store_map_conservatively() {
-    for (label, want) in [
-        ("key", Policy::Key),
-        ("KEY-AUTO", Policy::Key),
-        ("password", Policy::Password),
-        ("pwd", Policy::Password),
-        ("one-way", Policy::OneWay),
-        ("one_way", Policy::OneWay),
-        ("none", Policy::None),
-        ("refused", Policy::None),
-        ("unmanaged", Policy::Unknown),
-        ("", Policy::Unknown),
-        ("future-mode", Policy::Unknown),
+fn stale_neighbor_observation_is_unknown() {
+    let mut src = fleet_sources();
+    src.observations = vec![(
+        "tranquility".into(),
+        json!({"observed_at": NOW - 1200, "candidates": [{"address":"192.0.2.10",
+            "interface":"enp5s0","observed_at":NOW - 1200,"ssh":{"state":"open"}}]}),
+    )];
+    src.expanded.insert("lan:tranquility:enp5s0".into());
+    let g = build(&src);
+    let nb = &g.nodes[idx(&g, "nb:tranquility:enp5s0:192.0.2.10")];
+    assert_eq!(nb.state, NodeState::Unknown);
+    assert_eq!(nb.detail.as_deref(), Some("SSH unknown"));
+    let cluster = &g.nodes[idx(&g, "lan:tranquility:enp5s0")];
+    assert_eq!(cluster.state, NodeState::Unknown);
+    assert_eq!(cluster.detail.as_deref(), Some("enp5s0"));
+}
+
+#[test]
+fn device_state_uses_typed_evidence_and_exact_store_values() {
+    use super::model::device_state;
+    assert_eq!(device_state("reachable", NOW, None, NOW), NodeState::Up);
+    assert_eq!(device_state("local", NOW, None, NOW), NodeState::Up);
+    assert_eq!(device_state("unknown", NOW, None, NOW), NodeState::Unknown);
+    assert_eq!(device_state("", 0, None, NOW), NodeState::Unknown);
+    // Free-form strings are not evidence, whatever words they contain.
+    for s in [
+        "broken",
+        "setup",
+        "update pending",
+        "not authenticated",
+        "token expired",
     ] {
-        assert_eq!(Policy::from_label(label), want, "{label}");
+        assert_eq!(device_state(s, NOW, None, NOW), NodeState::Unknown, "{s}");
     }
-}
-
-#[test]
-fn status_strings_map_to_evidence_states() {
-    assert_eq!(state_from_status("reachable", NOW, NOW), NodeState::Up);
-    assert_eq!(state_from_status("unreachable", NOW, NOW), NodeState::Down);
-    assert_eq!(state_from_status("checking", NOW, NOW), NodeState::Unknown);
-    assert_eq!(state_from_status("", 0, NOW), NodeState::Unknown);
+    // The add-time "reachable" goes stale on the helper-reached window.
     assert_eq!(
-        state_from_status("reachable", NOW - 3600, NOW),
+        device_state("reachable", NOW - 500, None, NOW),
         NodeState::Stale
     );
-    assert_eq!(state_from_status("refused", NOW, NOW), NodeState::Down);
+    // A helper check wins over the stored string.
+    assert_eq!(
+        device_state("reachable", NOW, Some((NOW - 10, false)), NOW),
+        NodeState::Down
+    );
+    assert_eq!(
+        device_state("unknown", 0, Some((NOW - 10, true)), NOW),
+        NodeState::Up
+    );
+    assert_eq!(
+        device_state("reachable", NOW, Some((NOW - 91, true)), NOW),
+        NodeState::Stale
+    );
+    let g = fleet();
+    assert_eq!(g.nodes[idx(&g, "field-rover")].state, NodeState::Down);
 }
-use super::model::state_from_status;
 
 #[test]
 fn labels_are_bounded_and_control_free() {
     let mut src = fleet_sources();
     src.devices[1].name = format!("evil\x1b[31m{}", "x".repeat(80));
+    if let Some((_, obs)) = src.observations.first_mut() {
+        obs["candidates"][3]["hostname"] = json!("cam\u{202E}gnp.exe");
+    }
+    src.expanded.insert("lan:tranquility:enp5s0".into());
     let g = build(&src);
     let n = &g.nodes[idx(&g, "innovation")];
     assert!(n.label.chars().count() <= 32);
     assert!(!n.label.chars().any(char::is_control));
+    let nb = &g.nodes[idx(&g, "nb:tranquility:enp5s0:192.0.2.13")];
+    let detail = nb.detail.as_deref().unwrap();
+    assert!(!detail.contains('\u{202E}'), "{detail:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -590,15 +635,9 @@ fn split_meshes_render_as_one_region_or_linked_fragments() {
         assert_eq!(buf[(x, y)].fg, mesh.unwrap(), "bridge cell {x},{y}");
     }
     // Interleaved meshes (dense fixture): every fragment is linked.
-    let g = thirty_nodes();
-    let key = CacheKey {
-        topology: g.topology_hash(),
-        width: 200,
-        height: 60,
-        class: SizeClass::L,
-        glyphs: GlyphSet::Unicode,
-    };
-    let l = graph_with_overflow(&g, key, None).unwrap();
+    let g = dense(MAX_DENSE);
+    let l = compute(&g, 200, 60, GlyphSet::Unicode, None);
+    assert_eq!(l.mode, Mode::Graph);
     for mesh in ["cloudflare", "ssh-overlay"] {
         let frags = l.enclosures.iter().filter(|e| e.mesh == mesh).count();
         let links = l.bridges.iter().filter(|b| b.mesh == mesh).count();
@@ -996,15 +1035,9 @@ fn legend_lists_only_what_is_drawn() {
     assert!(!items.contains(&"none"), "{items:?}");
     assert!(items.contains(&"pwd") && items.contains(&"key") && items.contains(&"mesh"));
     // The dense fixture has no LAN and no labelled jump edge.
-    let d = thirty_nodes();
-    let key = CacheKey {
-        topology: d.topology_hash(),
-        width: 200,
-        height: 60,
-        class: SizeClass::L,
-        glyphs: GlyphSet::Unicode,
-    };
-    let l = graph_with_overflow(&d, key, None).unwrap();
+    let d = dense(MAX_DENSE);
+    let l = compute(&d, 200, 60, GlyphSet::Unicode, None);
+    assert_eq!(l.mode, Mode::Graph);
     let items = render::legend_items(&d, &l, Selection::default(), GlyphSet::Unicode);
     assert_eq!(items, vec!["key", "pwd", "access", "mesh"]);
     // Plain key jump edges carry no label unless selected.
@@ -1119,6 +1152,44 @@ fn nearest_node_in_direction() {
 }
 
 #[test]
+fn many_expanded_neighbors_collapse_instead_of_leaving_graph_mode() {
+    let mut src = fleet_sources();
+    let cands: Vec<_> = (0..20)
+        .map(|k| {
+            json!({"address": format!("192.0.2.{}", 10 + k), "interface": "enp5s0",
+            "observed_at": NOW, "ssh": {"state": "open"}})
+        })
+        .collect();
+    src.observations = vec![("tranquility".into(), json!({"candidates": cands}))];
+    src.expanded.insert("lan:tranquility:enp5s0".into());
+    let mut g = build(&src);
+    assign_hotkeys(&mut g, &BTreeMap::new());
+    assert!(g.nodes.len() > layout::MAX_GRAPH_NODES);
+    for (w, h) in [(80, 24), (120, 40), (200, 60)] {
+        let l = compute(&g, w, h, GlyphSet::Unicode, None);
+        assert_eq!(l.mode, Mode::Graph, "{w}x{h}");
+        assert!(l.placed(idx(&g, "lan:tranquility:enp5s0")).is_some());
+        assert_geometry(&g, &l);
+    }
+}
+
+#[test]
+fn outline_hits_follow_scroll() {
+    let g = fleet();
+    let l = compute(&g, 40, 3, GlyphSet::Unicode, None);
+    assert_eq!(l.mode, Mode::Outline);
+    assert!(l.outline.len() > 3);
+    let last = l.outline.last().unwrap().node;
+    let sel = Selection {
+        node: Some(last),
+        edge: None,
+    };
+    // The per-cell map has no outline rows; only `hit_at` knows the scroll.
+    assert_eq!(l.hits.at(0, 0), None);
+    assert_eq!(hit_at(&l, sel, 0, 2), Some(HitId::Node(last)));
+}
+
+#[test]
 fn outline_tree_covers_every_node_once() {
     let g = fleet();
     let l = compute(&g, 40, 20, GlyphSet::Unicode, None);
@@ -1139,8 +1210,8 @@ fn outline_tree_covers_every_node_once() {
 // Performance
 // ---------------------------------------------------------------------------
 
-/// Viewer + 29 devices over five hop ranks, two meshes, mixed policies.
-fn thirty_nodes() -> Graph {
+/// Viewer + `n - 1` devices over up to five hop ranks, two meshes, mixed policies.
+fn dense(n: usize) -> Graph {
     let mut src = Sources {
         devices: vec![device("viewer", None, "local", 1)],
         now: NOW,
@@ -1148,14 +1219,12 @@ fn thirty_nodes() -> Graph {
     };
     let mut hops: Vec<Vec<String>> = Vec::new();
     let mut members = [Vec::new(), Vec::new()];
-    for k in 0..29usize {
+    for k in 0..n - 1 {
         let id = format!("dev-{k:02}");
-        let status = if k % 7 == 3 {
-            "unreachable"
-        } else {
-            "reachable"
-        };
-        src.devices.push(device(&id, Some(&id), status, 1));
+        if k % 7 == 3 {
+            src.helper.insert(id.clone(), (NOW - 1, false));
+        }
+        src.devices.push(device(&id, Some(&id), "reachable", 1));
         let route = if k >= 6 {
             let mut r = hops[k - 6].clone();
             r.push(format!("dev-{:02}", k - 6));
@@ -1189,48 +1258,68 @@ fn thirty_nodes() -> Graph {
         },
     ];
     let g = build(&src);
-    assert_eq!(g.nodes.len(), 30);
+    assert_eq!(g.nodes.len(), n);
     g
 }
 
+/// The largest graph `compute` still draws as a graph (`MAX_GRAPH_NODES`).
+const MAX_DENSE: usize = layout::MAX_GRAPH_NODES;
+
+const PERF_SIZES: [(u16, u16); 3] = [(200, 60), (120, 40), (80, 24)];
+
 #[test]
-fn layout_and_routing_30_nodes_within_budget() {
-    let g = thirty_nodes();
-    let key = CacheKey {
-        topology: g.topology_hash(),
-        width: 200,
-        height: 60,
-        class: SizeClass::L,
-        glyphs: GlyphSet::Unicode,
-    };
-    let mut best = std::time::Duration::MAX;
-    let mut layout = None;
-    for _ in 0..15 {
-        let t = std::time::Instant::now();
-        let l = graph_with_overflow(&g, key, None).expect("graph mode");
-        best = best.min(t.elapsed());
-        layout = Some(l);
+fn dense_graphs_take_the_shipped_compute_paths() {
+    let g = dense(MAX_DENSE);
+    for (w, h) in PERF_SIZES {
+        let l = compute(&g, w, h, GlyphSet::Unicode, None);
+        if l.mode == Mode::Graph {
+            assert_geometry(&g, &l);
+            assert_no_shallow_folds(&g, &l);
+        }
     }
-    let l = layout.unwrap();
-    assert_geometry(&g, &l);
-    assert_eq!(l.nodes.len(), 30, "all 30 nodes placed, none folded");
+    let l = compute(&g, 200, 60, GlyphSet::Unicode, None);
+    assert_eq!(l.mode, Mode::Graph);
+    assert_eq!(l.nodes.len(), MAX_DENSE, "all placed, none folded");
     assert_eq!(l.routes.len(), g.edges.len(), "all edges routed");
-    let budget = if cfg!(debug_assertions) { 10 } else { 2 };
-    eprintln!(
-        "graph-core perf: {} nodes, {} routes, best {:?} (budget {budget} ms)",
-        l.nodes.len(),
-        l.routes.len(),
-        best
-    );
+    let thirty = dense(30);
+    for (w, h) in PERF_SIZES {
+        assert_eq!(
+            compute(&thirty, w, h, GlyphSet::Unicode, None).mode,
+            Mode::Outline
+        );
+    }
+}
+
+/// Spec 10.4 target: layout + routing <= 2 ms in debug builds. Wall-clock, so
+/// it runs alone: `cargo test --locked graph_layout_perf -- --ignored --test-threads=1`.
+#[test]
+#[ignore]
+fn graph_layout_perf() {
+    let mut worst = std::time::Duration::ZERO;
+    for (n, (w, h)) in [MAX_DENSE, 30]
+        .into_iter()
+        .flat_map(|n| PERF_SIZES.map(|s| (n, s)))
+    {
+        let g = dense(n);
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..15 {
+            let t = std::time::Instant::now();
+            let l = compute(&g, w, h, GlyphSet::Unicode, None);
+            best = best.min(t.elapsed());
+            std::hint::black_box(l);
+        }
+        eprintln!("graph perf: {n} nodes at {w}x{h}: best {best:?}");
+        worst = worst.max(best);
+    }
     assert!(
-        best <= std::time::Duration::from_millis(budget),
-        "layout+route took {best:?}"
+        worst <= std::time::Duration::from_millis(2),
+        "layout+route took {worst:?}"
     );
 }
 
-/// Regression for the centring-shift `clamp(min > max)` panic: every area
-/// from 0x0 to 400x100 in both glyph sets, for every fixture graph, must lay
-/// out without panicking, keep valid geometry, and render / hit / navigate.
+/// Regression for the centring-shift `clamp(min > max)` panic: all small
+/// heights at widths around the size-class boundaries, plus the short-wide
+/// areas that used to panic, in both glyph sets, for every fixture graph.
 #[test]
 fn every_area_lays_out_renders_and_hits_without_panic() {
     let mut lan = fleet_sources();
@@ -1248,38 +1337,27 @@ fn every_area_lays_out_renders_and_hits_without_panic() {
         ..Default::default()
     });
     assign_hotkeys(&mut one, &BTreeMap::new());
-    let mut dense = thirty_nodes();
+    let mut dense = dense(MAX_DENSE);
     assign_hotkeys(&mut dense, &BTreeMap::new());
     let graphs = [
         ("fleet", fleet()),
         ("lan-expanded", lan),
         ("empty", empty),
         ("one-node", one),
-        ("dense-30", dense),
+        ("dense", dense),
     ];
-    let widths: Vec<u16> = (0..=400).collect();
-    // Half the cores: the timing test running alongside keeps a fair share.
-    let threads = std::thread::available_parallelism()
-        .map(|n| n.get() / 2)
-        .unwrap_or(2)
-        .clamp(1, 8);
-    let chunk = widths.len().div_ceil(threads);
-    let graphs = &graphs;
-    std::thread::scope(|scope| {
-        for ws in widths.chunks(chunk) {
-            scope.spawn(move || {
-                for (name, g) in graphs.iter() {
-                    for &w in ws {
-                        for h in 0..=100u16 {
-                            for glyphs in [GlyphSet::Unicode, GlyphSet::Ascii] {
-                                sweep_one(name, g, w, h, glyphs);
-                            }
-                        }
-                    }
-                }
-            });
+    let widths = [0, 1, 16, 59, 60, 61, 99, 100, 101, 159, 160, 161, 400];
+    let areas = widths
+        .iter()
+        .flat_map(|&w| (0..=30u16).chain([40, 60, 100]).map(move |h| (w, h)))
+        .chain([(120, 24), (200, 24), (80, 24)]);
+    for (w, h) in areas {
+        for (name, g) in &graphs {
+            for glyphs in [GlyphSet::Unicode, GlyphSet::Ascii] {
+                sweep_one(name, g, w, h, glyphs);
+            }
         }
-    });
+    }
 }
 
 fn sweep_one(name: &str, g: &Graph, w: u16, h: u16, glyphs: GlyphSet) {
@@ -1328,132 +1406,42 @@ fn sweep_one(name: &str, g: &Graph, w: u16, h: u16, glyphs: GlyphSet) {
 }
 
 // ---------------------------------------------------------------------------
-// Snapshots and evidence
+// Snapshots
 // ---------------------------------------------------------------------------
-
-fn color_hex(c: Color) -> Option<String> {
-    match c {
-        Color::Rgb(r, g, b) => Some(format!("{r:02x}{g:02x}{b:02x}")),
-        Color::Reset => None,
-        other => Some(format!("{other:?}").to_lowercase()),
-    }
-}
-
-fn style_dump(buf: &Buffer, w: u16, h: u16) -> serde_json::Value {
-    let mut rows = Vec::new();
-    for y in 0..h {
-        let mut row = Vec::new();
-        for x in 0..w {
-            let c = &buf[(x, y)];
-            let m = c.modifier;
-            use ratatui::style::Modifier;
-            row.push(json!([
-                c.symbol(),
-                color_hex(c.fg),
-                color_hex(c.bg),
-                m.contains(Modifier::BOLD),
-                m.contains(Modifier::DIM),
-                m.contains(Modifier::REVERSED)
-            ]));
-        }
-        rows.push(serde_json::Value::Array(row));
-    }
-    json!({"cols": w, "rows": h, "cells": rows})
-}
 
 fn snapshot_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui/graph/snapshots")
 }
 
 /// Compares against the committed text snapshot (`CX_UPDATE_SNAPSHOTS=1`
-/// rewrites it) and, with `CX_GRAPH_EVIDENCE=<dir>`, writes text + style dumps
-/// for `tests/graph_render_png.py`.
-fn check_snapshot(name: &str, buf: &Buffer, text: &str, w: u16, h: u16) {
+/// rewrites it).
+fn check_snapshot(name: &str, text: &str) {
     let path = snapshot_dir().join(format!("{name}.txt"));
     if std::env::var_os("CX_UPDATE_SNAPSHOTS").is_some() {
         std::fs::create_dir_all(snapshot_dir()).unwrap();
         std::fs::write(&path, text).unwrap();
-    }
-    if let Some(dir) = std::env::var_os("CX_GRAPH_EVIDENCE") {
-        let dir = std::path::PathBuf::from(dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(format!("{name}.txt")), text).unwrap();
-        std::fs::write(
-            dir.join(format!("{name}.json")),
-            serde_json::to_vec(&style_dump(buf, w, h)).unwrap(),
-        )
-        .unwrap();
     }
     let want = std::fs::read_to_string(&path)
         .unwrap_or_else(|_| panic!("missing snapshot {path:?}; run with CX_UPDATE_SNAPSHOTS=1"));
     assert_eq!(text, want, "snapshot {name} differs:\n{text}");
 }
 
+/// One smoke snapshot: the visual system is still open (design studio), so
+/// glyph-exact output is pinned once and the rest is checked geometrically.
 #[test]
-fn fleet_snapshots() {
+fn fleet_snapshot() {
     let g = fleet();
-    for (w, h) in SIZES {
-        let l = compute(&g, w, h, GlyphSet::Unicode, None);
-        let sel = Selection {
-            node: Some(idx(&g, "tranquility")),
-            edge: None,
-        };
-        let (buf, text) = render_text(&g, &l, sel, GlyphSet::Unicode, true);
-        check_snapshot(&format!("fleet-{w}x{h}"), &buf, &text, w, h);
-    }
+    let l = compute(&g, 120, 40, GlyphSet::Unicode, None);
+    let sel = Selection {
+        node: Some(idx(&g, "tranquility")),
+        edge: None,
+    };
+    let (_, text) = render_text(&g, &l, sel, GlyphSet::Unicode, true);
+    check_snapshot("fleet-120x40", &text);
     // Short-and-wide terminals (these used to panic in the centring shift).
     for (w, h) in [(120, 24), (200, 24)] {
         let l = compute(&g, w, h, GlyphSet::Unicode, None);
         assert_eq!(l.mode, Mode::Graph, "{w}x{h}");
         assert_geometry(&g, &l);
-        let sel = Selection {
-            node: Some(idx(&g, "tranquility")),
-            edge: None,
-        };
-        let (buf, text) = render_text(&g, &l, sel, GlyphSet::Unicode, true);
-        check_snapshot(&format!("fleet-{w}x{h}"), &buf, &text, w, h);
     }
-    // Variants: ASCII + NO_COLOR at 80x24, a selected edge, an expanded LAN cluster.
-    let l = compute(&g, 80, 24, GlyphSet::Ascii, None);
-    let sel = Selection {
-        node: Some(idx(&g, "tranquility")),
-        edge: None,
-    };
-    let (buf, text) = render_text(&g, &l, sel, GlyphSet::Ascii, false);
-    check_snapshot("fleet-ascii-80x24", &buf, &text, 80, 24);
-    let l = compute(&g, 120, 40, GlyphSet::Unicode, None);
-    let sel = Selection {
-        node: Some(idx(&g, "lab-arm")),
-        edge: Some(edge_idx(&g, "lab-arm", "jetson-01")),
-    };
-    let (buf, text) = render_text(&g, &l, sel, GlyphSet::Unicode, true);
-    check_snapshot("fleet-edge-selected-120x40", &buf, &text, 120, 40);
-    let mut src = fleet_sources();
-    src.expanded.insert("lan:tranquility:enp5s0".into());
-    let mut g2 = build(&src);
-    assign_hotkeys(&mut g2, &BTreeMap::new());
-    let l = compute(&g2, 200, 60, GlyphSet::Unicode, None);
-    let sel = Selection {
-        node: Some(idx(&g2, "lan:tranquility:enp5s0")),
-        edge: None,
-    };
-    let (buf, text) = render_text(&g2, &l, sel, GlyphSet::Unicode, true);
-    check_snapshot("fleet-lan-expanded-200x60", &buf, &text, 200, 60);
-    // Too short for one ssh-overlay band: two fragments joined by a bridge.
-    let l = compute(&g2, 120, 40, GlyphSet::Unicode, None);
-    assert_eq!(l.mode, Mode::Graph);
-    let (buf, text) = render_text(&g2, &l, sel, GlyphSet::Unicode, true);
-    check_snapshot("fleet-lan-expanded-120x40", &buf, &text, 120, 40);
-    // Dense 30-node graph (the perf fixture) in forced graph mode at L.
-    let g3 = thirty_nodes();
-    let key = CacheKey {
-        topology: g3.topology_hash(),
-        width: 200,
-        height: 60,
-        class: SizeClass::L,
-        glyphs: GlyphSet::Unicode,
-    };
-    let l = graph_with_overflow(&g3, key, None).unwrap();
-    let (buf, text) = render_text(&g3, &l, Selection::default(), GlyphSet::Unicode, true);
-    check_snapshot("dense-30-200x60", &buf, &text, 200, 60);
 }

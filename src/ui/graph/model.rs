@@ -9,6 +9,7 @@
 use crate::model::Device;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::hash::{Hash, Hasher};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum NodeKind {
@@ -27,12 +28,13 @@ pub enum NodeState {
     Up,
     Down,
     Unknown,
-    /// Was up, but the evidence is older than [`STALE_SECS`].
+    /// Was up, but the evidence is older than [`FRESH_SECS`].
     Stale,
 }
 
-/// Evidence older than this turns `Up` into `Stale`.
-pub const STALE_SECS: u64 = 600;
+/// Evidence older than this turns `Up` into `Stale` (the window
+/// `App::peer_status` uses for "helper reached").
+pub const FRESH_SECS: u64 = 90;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Metrics {
@@ -53,7 +55,8 @@ pub struct Node {
     pub mesh: Option<String>,
     pub hotkey: Option<char>,
     pub metrics: Metrics,
-    /// Short secondary text: interface of a LAN cluster, `ssh open` for a neighbour.
+    /// Short secondary text: interface of a LAN cluster, hostname hint and
+    /// SSH port evidence for a neighbour.
     pub detail: Option<String>,
     /// Neighbour count of a LAN cluster.
     pub count: Option<u32>,
@@ -77,22 +80,6 @@ pub enum Policy {
     OneWay,
     None,
     Unknown,
-}
-
-impl Policy {
-    /// Adapter seam for the edge-policy store and its effective-access view:
-    /// accepts the `edges::Policy::label()` / `edges::Access` labels and their
-    /// CLI aliases. `refused` maps to `None`; anything else is `Unknown`, so a
-    /// new upstream label degrades to "unchecked" instead of a wrong claim.
-    pub fn from_label(label: &str) -> Policy {
-        match label.trim().to_ascii_lowercase().as_str() {
-            "key" | "key-auto" | "auto" => Policy::Key,
-            "password" | "pwd" | "password-required" => Policy::Password,
-            "one-way" | "one_way" | "oneway" => Policy::OneWay,
-            "none" | "refused" => Policy::None,
-            _ => Policy::Unknown,
-        }
-    }
 }
 
 /// Which way access is proven or allowed, relative to `from -> to`.
@@ -150,40 +137,17 @@ impl Graph {
     /// Hash of everything that moves geometry: node ids, kinds, mesh membership,
     /// cluster expansion and edge endpoints/kinds. State, metrics, labels,
     /// policy and hotkeys only restyle cached cells, so they are excluded.
+    /// In-process cache key only; never persisted.
     pub fn topology_hash(&self) -> u64 {
-        let mut h = Fnv::default();
+        let mut h = std::hash::DefaultHasher::new();
         for n in &self.nodes {
-            h.str(&n.id);
-            h.byte(n.kind as u8);
-            h.str(n.mesh.as_deref().unwrap_or("\u{0}"));
-            h.byte(n.expanded as u8);
+            (&n.id, n.kind, &n.mesh, n.expanded).hash(&mut h);
         }
-        h.byte(0xff);
+        self.nodes.len().hash(&mut h);
         for e in &self.edges {
-            h.str(&e.from);
-            h.str(&e.to);
-            h.byte(e.kind as u8);
+            (&e.from, &e.to, e.kind).hash(&mut h);
         }
-        h.0
-    }
-}
-
-struct Fnv(u64);
-impl Default for Fnv {
-    fn default() -> Self {
-        Fnv(0xcbf2_9ce4_8422_2325)
-    }
-}
-impl Fnv {
-    fn byte(&mut self, b: u8) {
-        self.0 ^= b as u64;
-        self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
-    }
-    fn str(&mut self, s: &str) {
-        for b in s.bytes() {
-            self.byte(b);
-        }
-        self.byte(0);
+        h.finish()
     }
 }
 
@@ -224,6 +188,8 @@ pub struct Sources {
     pub edge_policies: Vec<EdgePolicyInput>,
     /// Optional mesh membership.
     pub mesh: Vec<MeshMembership>,
+    /// Helper checks by device id: (checked at, success), as `App::peer_evidence`.
+    pub helper: BTreeMap<String, (u64, bool)>,
     /// Viewer-side metrics by device id (rtt, sessions, load).
     pub metrics: BTreeMap<String, Metrics>,
     /// LAN cluster ids the user expanded.
@@ -233,54 +199,36 @@ pub struct Sources {
 
 const LABEL_MAX: usize = 32;
 
-/// Terminal-safe, bounded label.
-pub fn safe_label(s: &str) -> String {
-    let mut out: String = s
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(LABEL_MAX)
-        .collect();
+/// [`crate::ui::safe_label`] (control and bidi characters replaced), bounded.
+fn safe_label(s: &str) -> String {
+    let out: String = crate::ui::safe_label(s).chars().take(LABEL_MAX).collect();
     if out.is_empty() {
-        out.push('?');
+        "?".into()
+    } else {
+        out
     }
-    out
 }
 
-/// Maps the free-form device status string to evidence-based state.
-pub fn state_from_status(status: &str, observed_at: u64, now: u64) -> NodeState {
-    let s = status.to_ascii_lowercase();
-    let down = [
-        "unreach",
-        "refused",
-        "fail",
-        "offline",
-        "down",
-        "unavailable",
-        "timeout",
-        "timed out",
-        "error",
-        "denied",
-    ];
-    let up = [
-        "reach",
-        "online",
-        "authenticated",
-        "connected",
-        "local",
-        "ok",
-        "up",
-    ];
-    let state = if down.iter().any(|w| s.contains(w)) {
-        NodeState::Down
-    } else if up.iter().any(|w| s.contains(w)) {
-        NodeState::Up
-    } else {
-        NodeState::Unknown
+/// Device state from the typed helper check (`(checked at, success)`) when
+/// there is one, else from the exact status values the store writes
+/// (`local`, `reachable`; anything else is unknown).
+pub fn device_state(
+    status: &str,
+    observed_at: u64,
+    helper: Option<(u64, bool)>,
+    now: u64,
+) -> NodeState {
+    let (at, success) = match helper {
+        Some(check) => check,
+        None if matches!(status, "local" | "reachable") => (observed_at, true),
+        None => return NodeState::Unknown,
     };
-    if state == NodeState::Up && observed_at > 0 && now.saturating_sub(observed_at) > STALE_SECS {
+    if !success {
+        NodeState::Down
+    } else if at == 0 || now.saturating_sub(at) > FRESH_SECS {
         NodeState::Stale
     } else {
-        state
+        NodeState::Up
     }
 }
 
@@ -340,7 +288,12 @@ pub fn build(src: &Sources) -> Graph {
             id: d.id.clone(),
             label: safe_label(&d.name),
             kind: NodeKind::Device,
-            state: state_from_status(&d.status, d.observed_at, src.now),
+            state: device_state(
+                &d.status,
+                d.observed_at,
+                src.helper.get(&d.id).copied(),
+                src.now,
+            ),
             mesh: lookup_mesh(d),
             hotkey: None,
             metrics,
@@ -368,7 +321,9 @@ pub fn build(src: &Sources) -> Graph {
             evidence: Evidence::default(),
         });
     };
-    // Route edges: viewer -> hop1 -> ... -> device.
+    // Route edges: viewer -> hop1 -> ... -> device. Viewer-scoped evidence
+    // (device policy, rtt) belongs to the last edge of each route only.
+    let mut route_last: BTreeSet<(String, String)> = BTreeSet::new();
     for d in &remotes {
         let target = d.target.as_deref().unwrap_or_default();
         let hops = src.routes.get(target).cloned().unwrap_or_default();
@@ -408,6 +363,7 @@ pub fn build(src: &Sources) -> Graph {
             );
             prev = id;
         }
+        route_last.insert((prev.clone(), d.id.clone()));
         push_edge(
             &mut g,
             &prev,
@@ -462,8 +418,9 @@ pub fn build(src: &Sources) -> Graph {
         }
     }
     // Default policy from device policy (Core = key both ways, Directed = key forward).
+    let last_edge = |e: &Edge| route_last.contains(&(e.from.clone(), e.to.clone()));
     for e in g.edges.iter_mut() {
-        if e.policy != Policy::Unknown {
+        if e.policy != Policy::Unknown || !last_edge(e) {
             continue;
         }
         if let Some(p) = src.policies.get(&e.to) {
@@ -519,14 +476,14 @@ pub fn build(src: &Sources) -> Graph {
         .collect();
     for e in g.edges.iter_mut() {
         if e.kind == EdgeKind::SshDirect
-            && mesh.get(e.from.as_str()).is_some()
+            && mesh.contains_key(e.from.as_str())
             && mesh.get(e.from.as_str()) == mesh.get(e.to.as_str())
         {
             e.kind = EdgeKind::Mesh;
         }
     }
     // Rtt evidence on the last edge into a device.
-    for e in g.edges.iter_mut() {
+    for e in g.edges.iter_mut().filter(|e| last_edge(e)) {
         if let Some(rtt) = src.metrics.get(&e.to).and_then(|m| m.rtt_ms) {
             e.evidence.rtt_ms.push(rtt);
         }
@@ -535,7 +492,8 @@ pub fn build(src: &Sources) -> Graph {
     g
 }
 
-fn neighbor_rows(v: &Value) -> Vec<(String, String, Option<String>, NodeState)> {
+/// (address, interface, hostname hint, SSH port evidence) per observed row.
+fn neighbor_rows(v: &Value, now: u64) -> Vec<(String, String, Option<String>, &'static str)> {
     let mut out = Vec::new();
     let rows = v["candidates"]
         .as_array()
@@ -548,13 +506,9 @@ fn neighbor_rows(v: &Value) -> Vec<(String, String, Option<String>, NodeState)> 
             .as_str()
             .or_else(|| r["dev"].as_str())
             .unwrap_or("lan");
-        let state = match r["ssh"]["state"].as_str() {
-            Some("open" | "tcp_reachable") => NodeState::Up,
-            Some("closed") => NodeState::Down,
-            _ => NodeState::Unknown,
-        };
+        let ssh = crate::ui::network_view::neighbor_ssh(r, now);
         let host = r["hostname"].as_str().map(safe_label);
-        out.push((safe_label(addr), safe_label(iface), host, state));
+        out.push((safe_label(addr), safe_label(iface), host, ssh));
     }
     out
 }
@@ -577,20 +531,19 @@ fn add_lan(
         let Some(observer) = by_ref.get(observer).cloned() else {
             continue;
         };
-        let mut groups: BTreeMap<String, Vec<(String, Option<String>, NodeState)>> =
-            BTreeMap::new();
-        for (addr, iface, host, state) in neighbor_rows(value) {
+        let mut groups: BTreeMap<String, Vec<_>> = BTreeMap::new();
+        for (addr, iface, host, ssh) in neighbor_rows(value, src.now) {
             if known_hosts.contains(addr.as_str()) {
                 continue;
             }
-            groups.entry(iface).or_default().push((addr, host, state));
+            groups.entry(iface).or_default().push((addr, host, ssh));
         }
         for (iface, mut rows) in groups {
             rows.sort();
             rows.dedup_by(|a, b| a.0 == b.0);
             let id = format!("lan:{observer}:{iface}");
             let expanded = src.expanded.contains(&id);
-            let open = rows.iter().filter(|r| r.2 == NodeState::Up).count();
+            let open = rows.iter().filter(|r| r.2 == "port open").count();
             g.nodes.push(Node {
                 id: id.clone(),
                 label: format!("{} LAN", rows.len()),
@@ -604,7 +557,7 @@ fn add_lan(
                 hotkey: None,
                 metrics: Metrics::default(),
                 detail: Some(if open > 0 {
-                    format!("{iface} · {open} ssh")
+                    format!("{iface} {open} open")
                 } else {
                     iface.clone()
                 }),
@@ -616,21 +569,26 @@ fn add_lan(
                 e.evidence.note = Some(iface.clone());
             }
             if expanded {
-                for (addr, host, state) in rows {
+                for (addr, host, ssh) in rows {
                     let nid = format!("nb:{observer}:{iface}:{addr}");
+                    // Names are unauthenticated hints: the address is the label.
+                    let detail = match host {
+                        Some(h) => format!("{h}? · SSH {ssh}"),
+                        None => format!("SSH {ssh}"),
+                    };
                     g.nodes.push(Node {
                         id: nid.clone(),
-                        label: host.clone().unwrap_or_else(|| addr.clone()),
+                        label: addr,
                         kind: NodeKind::Neighbor,
-                        state,
+                        state: match ssh {
+                            "port open" => NodeState::Up,
+                            "port closed" => NodeState::Down,
+                            _ => NodeState::Unknown,
+                        },
                         mesh: None,
                         hotkey: None,
                         metrics: Metrics::default(),
-                        detail: Some(match state {
-                            NodeState::Up => "ssh open".into(),
-                            NodeState::Down => "ssh closed".into(),
-                            _ => "ssh unknown".into(),
-                        }),
+                        detail: Some(detail),
                         count: None,
                         expanded: false,
                     });

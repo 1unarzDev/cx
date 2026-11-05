@@ -142,6 +142,10 @@ back to a neutral provider label; Claude preserves terminal transparency.
   checks. Physical reconnect/attach acceptance needs them online and updated helpers.
 - Silent model/network waits and silent inner-container commands have unknown
   activity; unsupported or ambiguous native metadata remains unavailable.
+- Network graph core (`src/ui/graph`, revamp): layout + routing misses the spec 10.4
+  target of 2 ms in debug builds. Measured best 3.5 ms for 24 nodes at 200x60 (1.4 ms at
+  120x40); larger graphs use the outline. Check with `cargo test --locked graph_layout_perf
+  -- --ignored --test-threads=1`.
 
 Removal/demotion prevents future enrollment but does not revoke existing SSH keys.
 Automatic setup requires supported helpers and direct port-22 connectivity; offline

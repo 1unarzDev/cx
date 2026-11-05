@@ -1,7 +1,6 @@
 //! Draws a cached [`GraphLayout`] into a ratatui buffer (spec 6.4, 10.3).
 //!
-//! Colors come from a [`GraphStyle`] provider so the theme module's semantic
-//! tokens plug in without this module reading the environment. Geometry is
+//! Colors come from [`DefaultStyle`]; this module never reads the environment. Geometry is
 //! never recomputed here: state, rtt, policy, hotkeys and selection only
 //! restyle cells of the cached layout.
 use super::layout::{GlyphSet, GraphLayout, Mode, OutlineRow};
@@ -31,18 +30,13 @@ pub enum Role {
     Hotkey,
 }
 
-/// Style provider; the theme worker implements this over its `Tok` tokens.
-pub trait GraphStyle {
-    fn style(&self, role: Role) -> Style;
-}
-
 /// Spec 4.1 truecolor dark values; `color: false` gives the NO_COLOR substitutes.
 #[derive(Clone, Copy, Debug)]
 pub struct DefaultStyle {
     pub color: bool,
 }
-impl GraphStyle for DefaultStyle {
-    fn style(&self, role: Role) -> Style {
+impl DefaultStyle {
+    pub fn style(&self, role: Role) -> Style {
         let s = Style::default();
         if !self.color {
             return match role {
@@ -130,7 +124,7 @@ fn mask_arms(mask: u8, weight: u8) -> [u8; 4] {
 pub struct GraphView<'a> {
     pub graph: &'a Graph,
     pub layout: &'a GraphLayout,
-    pub style: &'a dyn GraphStyle,
+    pub style: &'a DefaultStyle,
     pub selection: Selection,
     pub glyphs: GlyphSet,
     /// Draw the single-letter hotkey chips.

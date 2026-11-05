@@ -1,0 +1,60 @@
+ cx   Sessions  [Network]                                                                                                                                                         viewing fixture@laptop
+                                                                                                                                                                                                        
+╭ Devices ──────────╮╭ ▸ Network · fixture@laptop ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   All devices     ││fixture@laptop · Internet reachable (ICMP)                                                                                                                                       │
+│ › ●  laptop       ││Interfaces: enp5s0 UP · wlp0s20f3 DOWN · CloudflareWARP UNKNOWN · eth0 UP                                                                                                        │
+│   ●  * lab-arm    ││3s ago · automatic SSH-port checks                                                                                                                                               │
+│   ○  * field-rov… ││Device / LAN neighbor                                                                                                       Execution / link                                     │
+╰───────────────────╯│  ? laptop · 10 LAN                                                                                                         fixture@laptop                                       │
+╭ Actions ──────────╮│  ! xxx.xxx.x.x                                                                                                             enp5s0                                               │
+│ Sessions          ││  ? xxx.xxx.x.x                                                                                                             enp5s0                                               │
+│ Files             ││  ? xxx.xxx.x.xx                                                                                                            enp5s0                                               │
+│ Containers        ││  ? xxx.xxx.x.xx                                                                                                            enp5s0                                               │
+│ Transfers         ││  ? xxx.xxx.x.xxx                                                                                                           enp5s0                                               │
+╰───────────────────╯│  ? xxx.xxx.x.xxx                                                                                                           enp5s0                                               │
+ Selected ───────────│  ? xxx.xxx.x.xxx                                                                                                           enp5s0                                               │
+ Route               │  ? xxxxx.xxxxx · xxx.xx.xx.x                                                                                               eth0                                                 │
+ viewer → laptop     │  ? xxxx:xxxx:xxx:xxxx:xxxx:xxxx:xxxx:xxxx                                                                                  eth0                                                 │
+ → xxx.xxx.x.x       │  ? xxxx::xxxx:xxxx:xxxx:xxxx                                                                                               eth0                                                 │
+ Link enp5s0         │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │Enter: connect via observer and add to All devices                                                                                                                               │
+                     │Discovery: laptop · neighbor · 3s ago                                                                                                                                            │
+                     │Route found: viewer → laptop → xxx.xxx.x.x / enp5s0                                                                                                                              │
+                     │SSH jumps to observer (saved): none saved                                                                                                                                        │
+                     │SSH port closed · authentication unknown                                                                                                                                         │
+                     │Internet unknown · source neighbor · link REACHABLE                                                                                                                              │
+                     │                                                                                                                                                                                 │
+                     ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ● 2/3 devices                                                                 Focus: Network · 11/11                                                                                             ↔ idle
+ j/k Devices / LAN                                                  Enter Open / connect                                              Home Host details                                                 
+ J / K Scroll details                                               Ctrl P Actions                                                    ? Help                                                            
+                                                                                                                                                                                                        

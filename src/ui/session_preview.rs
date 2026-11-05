@@ -890,11 +890,7 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
     let (cx, cy) = p.cursor;
     let cy = u32::from(cy).saturating_add(p.history_total);
     let top = p.scroll_top.unwrap_or_else(|| app.live_top());
-    let left = if p.scroll_top.is_some() {
-        0
-    } else {
-        cx.saturating_sub(screen.width.saturating_sub(1))
-    };
+    let left = preview_left(focused && p.scroll_top.is_none(), cx, screen.width);
     let relative_top = top.saturating_sub(p.line_start).min(u32::from(u16::MAX)) as u16;
     {
         // Only the visible window is copied out of the cached parse.
@@ -922,6 +918,16 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
     list
 }
 
+/// Horizontal scroll of a preview narrower than the pane. Lines stay anchored
+/// at their start (a peek or zoom reads like the terminal); only typing, where
+/// the cursor must stay visible, scrolls just far enough to show it.
+fn preview_left(typing: bool, cursor_x: u16, width: u16) -> u16 {
+    if typing {
+        cursor_x.saturating_sub(width.saturating_sub(1))
+    } else {
+        0
+    }
+}
 fn live_view_top(history: u32, cursor_y: u16, height: u16) -> u32 {
     history.saturating_add(u32::from(cursor_y.saturating_sub(height.saturating_sub(1))))
 }
@@ -933,5 +939,13 @@ mod scroll_tests {
         assert_eq!(live_view_top(1200, 0, 20), 1200);
         assert_eq!(live_view_top(1200, 39, 20), 1220);
         assert_eq!(live_view_top(100_000, 0, 20), 100_000);
+    }
+    #[test]
+    fn narrow_previews_stay_left_anchored_unless_typing_hides_the_cursor() {
+        // A peek or zoom never cuts the start of lines to chase the prompt.
+        assert_eq!(preview_left(false, 29, 21), 0);
+        // Typing scrolls only as far as needed to keep the cursor visible.
+        assert_eq!(preview_left(true, 10, 21), 0);
+        assert_eq!(preview_left(true, 29, 21), 9);
     }
 }

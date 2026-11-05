@@ -2112,7 +2112,7 @@ fn without_status_mouse(config: &str) -> String {
         .filter(|line| !line.starts_with("bind-key -n MouseDown1StatusLeft "))
         .map(|line| {
             if line.starts_with("set -g status-left ") {
-                "set -g status-left 'detach: Ctrl+\\ #{?pane_in_mode,Scroll: y copy / Esc,· cx} '"
+                "set -g status-left 'detach: Ctrl+\\ #{?pane_in_mode,Scroll: y copy / Esc,- cx} '"
                     .to_owned()
             } else if line.starts_with("set -g status-left-length ") {
                 "set -g status-left-length 40".to_owned()
@@ -2748,7 +2748,8 @@ fn restore_managed_style(session: &Session) -> Result<()> {
     // Also clear opaque per-window overrides left by older CX versions.
     for option in ["window-style", "window-active-style"] {
         let mut query = tmux(true)?;
-        query.args(["show-options", "-g", "-v", option]);
+        // `-w`: these are window options; tmux < 3.0 rejects them without it.
+        query.args(["show-options", "-g", "-w", "-v", option]);
         let style = output(query)?;
         let mut command = tmux(true)?;
         command.args(["set-option", "-w", "-t", &session.id, option, style.trim()]);
@@ -2770,11 +2771,14 @@ fn set_managed_status(session: &Session) -> Result<()> {
             .collect::<String>()
     };
     // The title sits beside the detach chip (status-left/window cell); the
-    // right side names the host and the detach key.
+    // right side names the host and the detach key. An ASCII viewer
+    // (CX_ASCII, dumb TERM) gets ASCII glyphs in the chip and separators.
+    let ascii = viewer_ascii();
     let status = format!(
-        "{}@{} · Ctrl+\\ detach",
+        "{}@{}{}Ctrl+\\ detach",
         safe(&session.account),
-        safe(&session.host)
+        safe(&session.host),
+        if ascii { " | " } else { " · " }
     );
     let mut command = tmux(true)?;
     command.args(["set-option", "-t", &session.id, "status-right", &status]);
@@ -2789,7 +2793,20 @@ fn set_managed_status(session: &Session) -> Result<()> {
         &safe(&session.name),
     ]);
     output(title)?;
+    let mut glyphs = tmux(true)?;
+    glyphs.args([
+        "set-option",
+        "-t",
+        &session.id,
+        "@cx_ascii",
+        if ascii { "1" } else { "0" },
+    ]);
+    output(glyphs)?;
     Ok(())
+}
+/// The attaching viewer asked for ASCII-only output (same switch as the UI).
+fn viewer_ascii() -> bool {
+    std::env::var_os("CX_ASCII").is_some() || std::env::var("TERM").is_ok_and(|v| v == "dumb")
 }
 // Codex can spawn an editor in its own foreground process group. A provider
 // ancestor is not enough: another process on this PTY must retain input.
@@ -4856,7 +4873,7 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
         assert!(!lines
             .iter()
             .any(|l| l.contains("C-]") && l.contains("detach")));
-        assert!(config.contains("#[reverse] ⏏ detach #[noreverse]"));
+        assert!(config.contains("⏏ detach") && config.contains("[detach]"));
         let legacy = without_status_mouse(config);
         assert!(!legacy.contains("MouseDown1StatusLeft") && !legacy.contains("⏏"));
         assert!(legacy.contains("detach: ") && legacy.contains("'C-\\' detach-client"));
@@ -4871,11 +4888,17 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
             .unwrap();
         assert_eq!(
             *left,
-            "set -g status-left '#[reverse] ⏏ detach #[noreverse] '"
+            "set -g status-left '#[reverse]#{?@cx_ascii, [detach] , ⏏ detach }#[noreverse] '"
         );
         assert!(lines.contains(
-            &"set -g window-status-current-format '#{?pane_in_mode,Scroll: y copy / Esc,cx · #{@cx_title}}'"
+            &"set -g window-status-current-format '#{?pane_in_mode,Scroll: y copy / Esc,cx#{?@cx_ascii, | , · }#{@cx_title}}'"
         ));
+        // Legacy (tmux < 3.0) status text is ASCII for every viewer.
+        let legacy_left = legacy
+            .lines()
+            .find(|l| l.starts_with("set -g status-left '"))
+            .unwrap();
+        assert!(legacy_left.is_ascii());
     }
     #[test]
     fn managed_launcher_preserves_fish_palette_quoting() {

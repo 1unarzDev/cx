@@ -335,18 +335,28 @@ pub(super) fn folder_tail(path: &str, home: Option<&str>, width: usize) -> Strin
     if text_width(&home_relative) <= width {
         return home_relative;
     }
-    // Too long: the distinguishing basename wins over a cut middle.
-    let base = home_relative
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .filter(|b| !b.is_empty())
-        .unwrap_or(&home_relative)
-        .to_string();
-    if text_width(&base) <= width {
-        base
+    // Too long: keep as many trailing components as fit behind `…/`, so a cut
+    // path never reads like a relative name. A basename too long for the cell
+    // keeps its own tail.
+    let marker = if ascii() { ".../" } else { "…/" };
+    let trimmed = home_relative.trim_end_matches('/');
+    let parts: Vec<&str> = trimmed.split('/').filter(|p| !p.is_empty()).collect();
+    let mut kept = String::new();
+    for part in parts.iter().rev() {
+        let candidate = if kept.is_empty() {
+            part.to_string()
+        } else {
+            format!("{part}/{kept}")
+        };
+        if text_width(marker) + text_width(&candidate) > width {
+            break;
+        }
+        kept = candidate;
+    }
+    if kept.is_empty() {
+        tail(parts.last().copied().unwrap_or(trimmed), width)
     } else {
-        tail(&base, width)
+        format!("{marker}{kept}")
     }
 }
 fn text_width(text: &str) -> usize {
@@ -767,7 +777,15 @@ mod tests {
             folder_tail("/home/anab/x", Some("/home/ana"), 20),
             "/home/anab/x"
         );
+        // Cut paths keep a visible `…/` so they never pass for relative names.
+        assert_eq!(folder_tail("/srv/a/b/cx-demo", None, 12), "…/b/cx-demo");
+        assert_eq!(folder_tail("/srv/a/b/cx-demo", None, 9), "…/cx-demo");
+        assert_eq!(
+            folder_tail("/home/ana/projects/robot-logs", Some("/home/ana"), 14),
+            "…/robot-logs"
+        );
         assert_eq!(folder_tail("/srv/a/b/cx-demo", None, 8), "cx-demo");
+        assert_eq!(folder_tail("/srv/a/b/cx-demo", None, 5), "…demo");
     }
     #[test]
     fn equal_titles_are_numbered_in_list_order() {

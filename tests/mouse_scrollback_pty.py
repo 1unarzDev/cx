@@ -2,7 +2,7 @@
 """Real managed tmux PTY: wheel scrollback, native mouse forwarding, key ownership.
 No provider, transcripts, user config, or inference. Usage: script BINARY.
 """
-import fcntl, json, os, pathlib, pty, select, shlex, struct, subprocess, sys, tempfile, termios, time
+import fcntl, json, os, pathlib, pty, re, select, shlex, struct, subprocess, sys, tempfile, termios, time
 binary = str(pathlib.Path(sys.argv[1]).resolve())
 with tempfile.TemporaryDirectory(prefix='cx-wheel-') as temporary:
     root = pathlib.Path(temporary)
@@ -50,10 +50,12 @@ while True:
 ''')
     checks=[]
     try:
-        wait(lambda: 'C-\\\\' in tmux('list-keys', '-T', 'root'), 'managed bindings unavailable')
+        # tmux 3.x lists Ctrl+backslash escaped twice, 2.x once; < 3.0 has no tappable chip.
+        wait(lambda: 'C-\\' in tmux('list-keys', '-T', 'root'), 'managed bindings unavailable')
         keys = tmux('list-keys', '-T', 'root')
         assert 'C-]' not in keys, 'Ctrl+] must reach the application'
-        assert 'MouseDown1StatusLeft' in keys, 'detach chip is not tappable'
+        legacy = re.match(r'tmux [0-2]\.', tmux('-V'))
+        assert legacy or 'MouseDown1StatusLeft' in keys, 'detach chip is not tappable'
         checks.append('Ctrl+\\ detaches, Ctrl+] is unbound, status-left chip is tappable')
         assert tmux('show-options', '-gv', 'mouse') == 'on', 'wheel reporting disabled: terminal may send prompt-history arrows'
         command = 'exec '+shlex.quote(sys.executable)+' '+shlex.quote(str(fixture))+' '+shlex.quote(str(log))
@@ -124,9 +126,13 @@ while True:
         client = subprocess.Popen([binary, 'native-attach', 'attach-session', '-t', session['id']], stdin=slave, stdout=slave, stderr=slave, env=env, preexec_fn=tty)
         wait(lambda: state('#{session_attached}')=='1', 'reattach for chip tap failed')
         time.sleep(.3); drain()
-        os.write(master,b'\x1b[<0;4;24M\x1b[<0;4;24m'); client.wait(timeout=5)
+        if legacy:
+            # tmux < 3.0 keeps a plain, unclickable status-left; Ctrl+\ detaches.
+            os.write(master,b'\x1c'); client.wait(timeout=5)
+        else:
+            os.write(master,b'\x1b[<0;4;24M\x1b[<0;4;24m'); client.wait(timeout=5)
+            checks.append('tapping the status-left detach chip detaches without killing the process')
         assert client.returncode==0 and state('#{pane_dead}')=='0', 'detach chip tap did not detach cleanly'
-        checks.append('tapping the status-left detach chip detaches without killing the process')
         # Updates must reload configuration even when the owned server persists
         # with zero sessions. Otherwise the next shell inherits old bindings.
         old_bindings=tmux('list-keys','-T','root')

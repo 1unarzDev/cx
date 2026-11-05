@@ -9,11 +9,18 @@ with tempfile.TemporaryDirectory(prefix='cx-reconnect-') as tmp:
  script=tools/'ssh';script.write_text('''#!/usr/bin/env python3
 import sys,os,pathlib,json
 root=pathlib.Path(os.environ['CX_RECONNECT_FIXTURE']);mode=os.environ['CX_RECONNECT_MODE']
+# Shared-master control (-O) finds no master; a master attempt (-N) is the
+# connection attempt for endpoint failures and is otherwise unavailable.
+if '-O' in sys.argv:sys.exit(255)
+master='-N' in sys.argv
+if master and mode not in ('offline','auth','trust'):sys.exit(255)
 count=root/'count';n=int(count.read_text())+1 if count.exists() else 1;count.write_text(str(n))
-line=sys.stdin.buffer.readline();length=int(line.split()[1]);req=json.loads(sys.stdin.buffer.read(length))
+if master:line=b'CX1 0'
+else:line=sys.stdin.buffer.readline()
 if mode=='offline':print('No route to host SYNTHETIC_SECRET',file=sys.stderr);sys.exit(255)
 if mode=='auth':print('Permission denied (publickey) SYNTHETIC_SECRET',file=sys.stderr);sys.exit(255)
 if mode=='trust':print('Host key verification failed SYNTHETIC_SECRET',file=sys.stderr);sys.exit(255)
+length=int(line.split()[1]);req=json.loads(sys.stdin.buffer.read(length))
 if mode=='mutate':(root/'accepted').write_text(req['op']['op']);sys.exit(0)
 if mode=='closed' or n==1:sys.exit(0)
 result=[];payload=json.dumps(dict(version=1,id=req['id'],result=result,error=None)).encode()

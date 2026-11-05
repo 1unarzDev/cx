@@ -105,6 +105,8 @@ Updates check signed stable releases in the background, retain the running versi
 
 A viewer exits when its terminal goes away, and an update's restart handoff is consumed whether or not it restores. Run `cx orphans` to list this user's stray cx processes (terminal gone, reparented to init, or spinning) and stale restart handoffs; `cx orphans --clean` stops the strays and removes the handoffs. Detached transfer workers are listed but never stopped.
 
+CX shares one SSH connection per device and route. The first contact opens a private OpenSSH master (its socket lives in CX's `0700` state directory, or the private runtime directory when that path would be too long); later helper requests and attaches reuse it, so only the first pays the handshake through every jump host. CX's own options set only the master socket and lifetime, overriding any `ControlMaster`/`ControlPath` in `~/.ssh/config` for CX connections; host names, users, ports, jumps and identities still come from your config, and agent forwarding stays off. Background channels never prompt and never become the master; a terminal may prompt and becomes the master when none is running. An idle master exits ten minutes after its last session ends, and removing or re-targeting a device closes its masters at once. `cx orphans` lists CX's masters with their client counts; an idle master that can no longer be reused (socket gone, or device no longer enrolled) is stray and `--clean` closes it. Set `CX_SSH_MULTIPLEX=0` to connect directly every time.
+
 [Back to README](../README.md)
 
 

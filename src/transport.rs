@@ -57,6 +57,268 @@ pub fn ssh(target: &str, interactive: bool) -> Result<Command> {
     crate::store::ssh(target, interactive)
 }
 
+// Shared SSH masters. Each route has at most one cx-owned OpenSSH master
+// (`store::SshMode`); helper channels and terminals multiplex over it so only
+// the first contact pays the handshake through every ProxyJump hop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MasterState {
+    Ready,
+    /// Typed evidence from the master attempt; a direct retry would fail alike.
+    Failed(ConnectionFailure),
+    /// Sharing is off, the socket path is too long, or the outcome is unclear:
+    /// callers connect directly exactly as before.
+    Unavailable,
+}
+const MASTER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25);
+const PREWARM_LIMIT: usize = 4;
+const PREWARM_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(20);
+#[derive(Default)]
+struct Prewarms {
+    failed: std::collections::HashMap<String, std::time::Instant>,
+    running: usize,
+}
+static PREWARMS: std::sync::LazyLock<std::sync::Mutex<Prewarms>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn wait_bounded(child: &mut std::process::Child, limit: std::time::Duration) -> Option<bool> {
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status.success()),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(5))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+/// Local `ssh -O check`: true only when this route's master answers.
+fn master_alive(target: &str) -> bool {
+    let Ok(mut command) = crate::store::ssh_mode(target, crate::store::SshMode::Check) else {
+        return false;
+    };
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    wait_bounded(&mut child, std::time::Duration::from_secs(2)) == Some(true)
+}
+
+/// An unlinked private file: the master and any ProxyJump child may keep the
+/// descriptor for their whole life, so a pipe would never reach EOF.
+fn private_scratch() -> Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = crate::store::control_dir()?.join(format!(
+        ".errors-{}-{}",
+        std::process::id(),
+        NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)?;
+    std::fs::remove_file(&path)?;
+    Ok(file)
+}
+
+/// OpenSSH's notice that it continues without a master socket.
+fn mux_refused(stderr: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(stderr);
+    text.contains("disabling multiplexing") || text.contains("ControlSocket")
+}
+
+/// Start a dedicated `-N` master in its own session so no cx process-group
+/// reaping (or terminal hangup) can take down the master or its jump hops.
+fn establish_master(target: &str) -> MasterState {
+    use std::os::unix::{fs::FileExt, process::CommandExt};
+    let Ok(mut command) = crate::store::ssh_mode(target, crate::store::SshMode::Master) else {
+        return MasterState::Unavailable;
+    };
+    let Ok(errors) = private_scratch() else {
+        return MasterState::Unavailable;
+    };
+    let Ok(child_errors) = errors.try_clone() else {
+        return MasterState::Unavailable;
+    };
+    // A long-lived master must not pin the caller's working directory.
+    command
+        .current_dir("/")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(child_errors);
+    // SAFETY: setsid is async-signal-safe and touches no parent state.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let Ok(mut child) = command.spawn() else {
+        return MasterState::Unavailable;
+    };
+    drop(command);
+    let pid = child.id() as i32;
+    let started = std::time::Instant::now();
+    let mut next_check = started + std::time::Duration::from_secs(1);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return MasterState::Ready,
+            Ok(Some(_)) => {
+                let mut sample = vec![0; 4096];
+                let length = errors.read_at(&mut sample, 0).unwrap_or(0);
+                sample.truncate(length);
+                return match classify_connection_failure(&sample) {
+                    failure @ (ConnectionFailure::Unreachable
+                    | ConnectionFailure::Authentication
+                    | ConnectionFailure::HostKey) => MasterState::Failed(failure),
+                    _ if master_alive(target) => MasterState::Ready,
+                    _ => MasterState::Unavailable,
+                };
+            }
+            Ok(None) => {}
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return MasterState::Unavailable;
+            }
+        }
+        let now = std::time::Instant::now();
+        if now >= next_check {
+            let mut sample = vec![0; 4096];
+            let length = errors.read_at(&mut sample, 0).unwrap_or(0);
+            if mux_refused(&sample[..length]) {
+                // OpenSSH could not bind the socket and kept a plain
+                // connection; it holds no master, so reap it and go direct.
+                unsafe { libc::kill(-pid, libc::SIGKILL) };
+                let _ = child.kill();
+                let _ = child.wait();
+                return if master_alive(target) {
+                    MasterState::Ready
+                } else {
+                    MasterState::Unavailable
+                };
+            }
+            if master_alive(target) {
+                // Another process won the race; ours is an idle mux client
+                // (it holds no jump hop), so stop only that process.
+                unsafe { libc::kill(pid, libc::SIGTERM) };
+                if wait_bounded(&mut child, std::time::Duration::from_secs(1)).is_none() {
+                    let _ = child.wait();
+                }
+                return MasterState::Ready;
+            }
+            next_check = now + std::time::Duration::from_millis(250);
+        }
+        if now.duration_since(started) > MASTER_DEADLINE {
+            // No master detached: reap the whole attempt, jump hops included.
+            unsafe { libc::kill(-pid, libc::SIGKILL) };
+            let _ = child.kill();
+            let _ = child.wait();
+            return MasterState::Failed(ConnectionFailure::Timeout);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Make sure `target` has a live master, joining an attempt already in flight.
+fn ensure_master(target: &str) -> MasterState {
+    if !crate::store::multiplex_enabled() {
+        return MasterState::Unavailable;
+    }
+    if master_alive(target) {
+        return MasterState::Ready;
+    }
+    let Some(flight) = crate::store::begin_master_flight(target) else {
+        crate::store::await_master_flight(
+            target,
+            MASTER_DEADLINE + std::time::Duration::from_secs(2),
+        );
+        // A joiner falls back to a direct connection if that attempt failed.
+        return if master_alive(target) {
+            MasterState::Ready
+        } else {
+            MasterState::Unavailable
+        };
+    };
+    let state = establish_master(target);
+    if let Ok(mut prewarms) = PREWARMS.lock() {
+        if matches!(state, MasterState::Failed(_)) {
+            if prewarms.failed.len() >= 128 {
+                prewarms.failed.clear();
+            }
+            prewarms
+                .failed
+                .insert(target.to_owned(), std::time::Instant::now());
+        } else {
+            prewarms.failed.remove(target);
+        }
+    }
+    drop(flight);
+    state
+}
+
+/// Establish `device`'s shared SSH master in the background, e.g. on hover or
+/// focus, so the next helper request or attach skips the handshake. Never
+/// blocks or prompts (BatchMode), is idempotent while a master is live or an
+/// attempt is in flight, runs at most four attempts at once, backs off for
+/// twenty seconds after a failed attempt, and each attempt ends within
+/// twenty-five seconds. Returns whether a background attempt was started.
+// Wired to device hover/focus by the UI; until then only tests call it.
+#[allow(dead_code)]
+pub fn prewarm(device: &Device) -> bool {
+    let Some(target) = device.target.clone() else {
+        return false;
+    };
+    if !valid_target(&target) || !crate::store::multiplex_enabled() {
+        return false;
+    }
+    {
+        let Ok(mut prewarms) = PREWARMS.lock() else {
+            return false;
+        };
+        let now = std::time::Instant::now();
+        prewarms
+            .failed
+            .retain(|_, at| now.saturating_duration_since(*at) < PREWARM_COOLDOWN);
+        if crate::store::master_flight_active(&target)
+            || prewarms.failed.contains_key(&target)
+            || prewarms.running >= PREWARM_LIMIT
+        {
+            return false;
+        }
+        prewarms.running += 1;
+    }
+    let finished = || {
+        if let Ok(mut prewarms) = PREWARMS.lock() {
+            prewarms.running = prewarms.running.saturating_sub(1);
+        }
+    };
+    let started = std::thread::Builder::new()
+        .name("cx-ssh-prewarm".into())
+        .spawn(move || {
+            ensure_master(&target);
+            finished();
+        })
+        .is_ok();
+    if !started {
+        finished();
+    }
+    started
+}
+
 struct Connection {
     child: std::process::Child,
     input: std::process::ChildStdin,
@@ -75,6 +337,11 @@ impl Drop for Connection {
 }
 impl Connection {
     fn open(target: &str) -> Result<Self> {
+        // Join (or first establish) the route's shared master; its typed
+        // failure is the same evidence a direct BatchMode attempt would give.
+        if let MasterState::Failed(failure) = ensure_master(target) {
+            return Err(failure.into());
+        }
         let route = crate::store::route(target)?;
         let mut c = ssh(target, false)?;
         anyhow::ensure!(
@@ -988,6 +1255,20 @@ mod tests {
             .unwrap()
             .is_err());
         assert_eq!(connection.failure_reason(), ConnectionFailure::Unreachable);
+    }
+    #[test]
+    fn master_attempts_recognise_refused_sockets_and_skip_local_devices() {
+        assert!(mux_refused(
+            b"ControlSocket /s/ssh/x already exists, disabling multiplexing\n"
+        ));
+        assert!(!mux_refused(b"Permission denied (publickey).\n"));
+        // The local device has no SSH route, so prewarm never starts work.
+        assert!(!prewarm(&crate::store::local_device()));
+        let invalid = Device {
+            target: Some("-oProxyCommand=evil".into()),
+            ..crate::store::local_device()
+        };
+        assert!(!prewarm(&invalid));
     }
     #[test]
     fn bounded_frames() {

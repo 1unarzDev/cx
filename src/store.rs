@@ -323,6 +323,15 @@ pub fn save_devices(d: &[Device]) -> Result<()> {
 /// Remove an enrolled remote device and its local policy/route records.
 /// The local execution device is never removable.
 pub fn remove_device(name: &str) -> Result<Device> {
+    let removed = remove_device_record(name)?;
+    // Outside the inventory lock: the device's shared SSH masters end now
+    // instead of lingering for ControlPersist.
+    if let Some(target) = &removed.target {
+        close_masters(target);
+    }
+    Ok(removed)
+}
+fn remove_device_record(name: &str) -> Result<Device> {
     let _guard = device_guard()?;
     let mut devices = devices()?;
     let index = devices
@@ -346,6 +355,13 @@ pub fn remove_device(name: &str) -> Result<Device> {
 /// Change only the SSH target for an enrolled device. Its stable machine id,
 /// posture and remote configuration remain unchanged.
 pub fn update_target(device: &Device, target: &str) -> Result<Device> {
+    let (updated, previous) = update_target_record(device, target)?;
+    if let Some(previous) = previous.filter(|previous| previous != target) {
+        close_masters(&previous);
+    }
+    Ok(updated)
+}
+fn update_target_record(device: &Device, target: &str) -> Result<(Device, Option<String>)> {
     let _guard = device_guard()?;
     anyhow::ensure!(device.target.is_some(), "the local device cannot be edited");
     anyhow::ensure!(valid_target(target), "invalid SSH target");
@@ -367,11 +383,11 @@ pub fn update_target(device: &Device, target: &str) -> Result<Device> {
     let updated = entry.clone();
     save_devices(&devices)?;
     if previous.as_deref() != Some(target) {
-        if let Some(previous) = previous {
-            let _ = remove_route(&previous);
+        if let Some(previous) = &previous {
+            let _ = remove_route(previous);
         }
     }
-    Ok(updated)
+    Ok((updated, previous))
 }
 
 fn policy_path() -> PathBuf {
@@ -662,11 +678,204 @@ fn background_ssh_config() -> Result<PathBuf> {
     }
     Ok(path)
 }
+/// How a cx SSH command participates in its private connection multiplexer.
+///
+/// Every cx connection to a route shares one OpenSSH master socket under the
+/// private state directory. Only processes whose lifetime cx does not tie to a
+/// killed process group may become that master: a dedicated `-N` process, or
+/// a terminal-owning interactive command. Background helper channels are
+/// reaped with their whole process group, so they only ever join a master.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SshMode {
+    /// Noninteractive helper channel: BatchMode, joins a live master, never becomes one.
+    Background,
+    /// Terminal-owning attach/login: may prompt and may become the persistent master.
+    Interactive,
+    /// Dedicated noninteractive `-N` master that detaches right after authentication.
+    Master,
+    /// Local `-O check` query against this route's master; never contacts the host.
+    Check,
+}
+
+/// Idle masters exit this long after their last multiplexed session closes.
+pub(crate) const CONTROL_PERSIST_SECONDS: u64 = 600;
+// Target and route tags plus OpenSSH's 40-hex %C hash of the resolved endpoint.
+const CONTROL_NAME_LEN: usize = 10 + 40;
+// OpenSSH binds `<ControlPath>.<16 random>` before renaming it into place.
+const CONTROL_TEMP_SUFFIX: usize = 17;
+
+fn sun_path_len() -> usize {
+    // SAFETY: sockaddr_un is plain old data; only its field length is read.
+    unsafe { std::mem::zeroed::<libc::sockaddr_un>() }
+        .sun_path
+        .len()
+}
+
+/// Multiplexing is on by default; `CX_SSH_MULTIPLEX=0|off|no|false` opts out
+/// for every cx connection except askpass enrollment, which needs it.
+pub fn multiplex_enabled() -> bool {
+    multiplex_setting(&std::env::var("CX_SSH_MULTIPLEX").unwrap_or_default())
+}
+fn multiplex_setting(value: &str) -> bool {
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "0" | "off" | "no" | "false"
+    )
+}
+
+fn short_hash(domain: &str, parts: &[&[u8]]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(domain.as_bytes());
+    for part in parts {
+        hasher.update((part.len() as u64).to_be_bytes());
+        hasher.update(part);
+    }
+    format!("{:x}", hasher.finalize())[..5].to_owned()
+}
+
+/// First five hex digits of every master socket for this enrolled target.
+pub(crate) fn control_target_tag(target: &str) -> String {
+    short_hash("cx-control-target-v1", &[target.as_bytes()])
+}
+
+/// A route change, or a managed endpoint's trust change, selects a new master.
+fn control_route_tag(hops: &[String], managed: Option<&str>) -> String {
+    let route = hops.join(",");
+    let mode = managed.unwrap_or("system");
+    short_hash("cx-control-route-v1", &[route.as_bytes(), mode.as_bytes()])
+}
+
+/// The ControlPath template, or None when its expansion cannot fit a Unix socket.
+fn control_socket(
+    dir: &std::path::Path,
+    target: &str,
+    hops: &[String],
+    managed: Option<&str>,
+) -> Option<PathBuf> {
+    let path = dir.join(format!(
+        "{}{}%C",
+        control_target_tag(target),
+        control_route_tag(hops, managed)
+    ));
+    let expanded = path.as_os_str().len() - 2 + 40;
+    (expanded + CONTROL_TEMP_SUFFIX < sun_path_len()).then_some(path)
+}
+
+/// True for a file name cx would create as an expanded master socket.
+pub(crate) fn control_socket_name(name: &str) -> bool {
+    name.len() == CONTROL_NAME_LEN
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Quote a path as one OpenSSH option value. `%` is literal unless `token` is
+/// the trailing `%C`, which OpenSSH expands to the resolved endpoint hash.
+fn control_path_option(path: &std::path::Path, token: bool) -> Result<String> {
+    let raw = path.to_str().context("invalid SSH connection path")?;
+    let (literal, suffix) = if token {
+        (
+            raw.strip_suffix("%C")
+                .context("invalid SSH connection path")?,
+            "%C",
+        )
+    } else {
+        (raw, "")
+    };
+    let escaped = literal
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('%', "%%");
+    Ok(format!("ControlPath=\"{escaped}{suffix}\""))
+}
+
+/// The private 0700 directory that holds only cx-owned master sockets.
+pub(crate) fn control_dir() -> Result<PathBuf> {
+    let sockets = ensure()?.join("ssh");
+    private_dir(&sockets)?;
+    Ok(sockets)
+}
+
+/// Fallback for a state directory too deep for a socket path: the per-user
+/// runtime directory, accepted only when it is absolute, owned and private.
+fn runtime_control_root() -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    let root = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
+    let metadata = fs::symlink_metadata(&root).ok()?;
+    (root.is_absolute()
+        && metadata.is_dir()
+        && metadata.uid() == unsafe { libc::geteuid() }
+        && metadata.mode() & 0o077 == 0)
+        .then(|| root.join("cx-ssh"))
+}
+
+fn private_dir(path: &std::path::Path) -> Result<()> {
+    match std::os::unix::fs::DirBuilderExt::mode(&mut fs::DirBuilder::new(), 0o700).create(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(path)?;
+    anyhow::ensure!(
+        metadata.is_dir()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o077 == 0,
+        "unsafe SSH connection directory"
+    );
+    Ok(())
+}
+
+/// Every directory that may hold cx-owned master sockets (not created here).
+pub(crate) fn control_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![state_dir().join("ssh")];
+    dirs.extend(runtime_control_root());
+    dirs
+}
+
+/// The deterministic socket template for a route: the private state directory
+/// when the expanded path fits, else the private runtime directory.
+fn control_socket_for(
+    target: &str,
+    hops: &[String],
+    managed: Option<&str>,
+) -> Result<Option<PathBuf>> {
+    if let Some(socket) = control_socket(&control_dir()?, target, hops, managed) {
+        return Ok(Some(socket));
+    }
+    let Some(root) = runtime_control_root() else {
+        return Ok(None);
+    };
+    let Some(socket) = control_socket(&root, target, hops, managed) else {
+        return Ok(None);
+    };
+    private_dir(&root)?;
+    Ok(Some(socket))
+}
+
 pub fn ssh(target: &str, interactive: bool) -> Result<std::process::Command> {
+    ssh_mode(
+        target,
+        if interactive {
+            SshMode::Interactive
+        } else {
+            SshMode::Background
+        },
+    )
+}
+
+pub(crate) fn ssh_mode(target: &str, mode: SshMode) -> Result<std::process::Command> {
     if !valid_target(target) {
         anyhow::bail!("invalid SSH target")
     };
+    let interactive = mode == SshMode::Interactive;
+    if interactive {
+        // A terminal joins a background master that is mid-handshake.
+        await_master_flight(target, std::time::Duration::from_secs(8));
+    }
     let mut c = std::process::Command::new("ssh");
+    let mut managed = None;
     if let Some((identity, known_hosts)) = crate::peer_ssh::options(target)? {
         let (account, hostname) = target.split_once('@').context("invalid managed endpoint")?;
         let hostname = hostname.trim_start_matches('[').trim_end_matches(']');
@@ -675,6 +884,16 @@ pub fn ssh(target: &str, interactive: bool) -> Result<std::process::Command> {
             .context("invalid managed trust path")?
             .replace('\\', "\\\\")
             .replace('"', "\\\"");
+        // A master authenticated under one pin must not outlive a re-pin.
+        use std::io::Read;
+        let mut trust = Vec::new();
+        fs::File::open(&known_hosts)?
+            .take(256 * 1024)
+            .read_to_end(&mut trust)?;
+        managed = Some(short_hash(
+            "cx-control-managed-v1",
+            &[identity.as_os_str().as_encoded_bytes(), &trust],
+        ));
         c.arg("-i").arg(identity);
         c.arg("-o")
             .arg(format!("UserKnownHostsFile=\"{trust_path}\""));
@@ -687,8 +906,6 @@ pub fn ssh(target: &str, interactive: bool) -> Result<std::process::Command> {
             "ProxyJump=none",
             "ProxyCommand=none",
             "Port=22",
-            "ControlPath=none",
-            "ControlMaster=no",
         ] {
             c.args(["-o", option]);
         }
@@ -726,42 +943,247 @@ pub fn ssh(target: &str, interactive: bool) -> Result<std::process::Command> {
     if interactive && crate::auth::configure(&mut c)? {
         c.stderr(std::process::Stdio::null());
     }
-    // A private enrollment master carries authenticated access, never a saved password.
-    use sha2::{Digest, Sha256};
-    let sockets = ensure()?.join("ssh");
-    match std::os::unix::fs::DirBuilderExt::mode(&mut fs::DirBuilder::new(), 0o700).create(&sockets)
-    {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(error.into()),
+    // cx's options come first, so they win over ~/.ssh/config for these keys
+    // only: a private, cleanable socket and a bounded idle lifetime. Everything
+    // else (HostName, User, Port, ProxyJump, identities) stays the user's.
+    // A master carries authenticated access, never a saved password.
+    let enrollment = crate::auth::active();
+    let socket = if multiplex_enabled() || enrollment {
+        control_socket_for(target, &hops, managed.as_deref())?
+    } else {
+        None
+    };
+    match socket {
+        Some(socket) => {
+            c.arg("-o").arg(control_path_option(&socket, true)?);
+            if matches!(mode, SshMode::Interactive | SshMode::Master) {
+                c.args(["-o", "ControlMaster=auto"]);
+                c.arg("-o")
+                    .arg(format!("ControlPersist={CONTROL_PERSIST_SECONDS}"));
+            } else {
+                c.args(["-o", "ControlMaster=no"]);
+            }
+        }
+        None => {
+            anyhow::ensure!(!enrollment, "SSH connection path too long");
+            anyhow::ensure!(
+                matches!(mode, SshMode::Background | SshMode::Interactive),
+                "SSH connection sharing unavailable"
+            );
+            c.args(["-o", "ControlPath=none", "-o", "ControlMaster=no"]);
+        }
     }
-    use std::os::unix::fs::MetadataExt;
-    let metadata = fs::symlink_metadata(&sockets)?;
-    anyhow::ensure!(
-        metadata.is_dir()
-            && metadata.uid() == unsafe { libc::geteuid() }
-            && metadata.mode() & 0o077 == 0,
-        "unsafe SSH connection directory"
-    );
-    let route_identity = format!("{target}:{hops:?}");
-    let digest = format!("{:x}", Sha256::digest(route_identity.as_bytes()));
-    let socket = sockets.join(format!("{}-%C", &digest[..8]));
-    anyhow::ensure!(
-        socket.as_os_str().len() + 38 < 104,
-        "SSH connection path too long"
-    );
-    c.arg("-o").arg(format!("ControlPath={}", socket.display()));
-    c.args([
-        "-o",
-        if crate::auth::active() {
-            "ControlMaster=auto"
-        } else {
-            "ControlMaster=no"
-        },
-    ]);
-    if crate::auth::active() {
-        c.args(["-o", "ControlPersist=600"]);
+    match mode {
+        SshMode::Master => {
+            c.args(["-N", "-n"]);
+        }
+        SshMode::Check => {
+            c.args(["-O", "check"]);
+        }
+        SshMode::Background | SshMode::Interactive => {}
     }
     c.arg(target);
     Ok(c)
+}
+
+// At most one master attempt per target is in flight; others wait for it.
+type Flight = std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>;
+static MASTER_FLIGHTS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, Flight>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Ownership of a target's single in-flight master attempt; dropping it wakes waiters.
+pub(crate) struct MasterFlight {
+    target: String,
+    flight: Flight,
+}
+impl Drop for MasterFlight {
+    fn drop(&mut self) {
+        if let Ok(mut flights) = MASTER_FLIGHTS.lock() {
+            flights.remove(&self.target);
+        }
+        if let Ok(mut done) = self.flight.0.lock() {
+            *done = true;
+        }
+        self.flight.1.notify_all();
+    }
+}
+
+/// Claim the attempt for `target`, or None when another attempt is in flight.
+pub(crate) fn begin_master_flight(target: &str) -> Option<MasterFlight> {
+    let mut flights = MASTER_FLIGHTS.lock().ok()?;
+    if flights.contains_key(target) {
+        return None;
+    }
+    let flight = Flight::default();
+    flights.insert(target.to_owned(), flight.clone());
+    Some(MasterFlight {
+        target: target.to_owned(),
+        flight,
+    })
+}
+
+pub(crate) fn master_flight_active(target: &str) -> bool {
+    MASTER_FLIGHTS
+        .lock()
+        .is_ok_and(|flights| flights.contains_key(target))
+}
+
+/// Wait (bounded) for an in-flight attempt; returns whether one was awaited.
+pub(crate) fn await_master_flight(target: &str, limit: std::time::Duration) -> bool {
+    let Some(flight) = MASTER_FLIGHTS
+        .lock()
+        .ok()
+        .and_then(|flights| flights.get(target).cloned())
+    else {
+        return false;
+    };
+    let Ok(done) = flight.0.lock() else {
+        return true;
+    };
+    let _ = flight.1.wait_timeout_while(done, limit, |done| !*done);
+    true
+}
+
+/// Run a bounded local mux control command against one expanded socket.
+pub(crate) fn control_exit(socket: &std::path::Path) -> bool {
+    use std::process::Stdio;
+    let Ok(option) = control_path_option(socket, false) else {
+        return false;
+    };
+    let mut command = std::process::Command::new("ssh");
+    command
+        .args(["-F", "/dev/null", "-o", "BatchMode=yes", "-o"])
+        .arg(option)
+        .args(["-O", "exit", "cx-master"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
+/// Close every cx-owned master for `target`, across past routes and pins.
+/// Active multiplexed sessions through those masters end. Returns the number
+/// of masters asked to exit; stale socket files are removed either way.
+pub fn close_masters(target: &str) -> usize {
+    if !valid_target(target) {
+        return 0;
+    }
+    let tag = control_target_tag(target);
+    control_dirs()
+        .iter()
+        .map(|dir| close_masters_in(dir, &tag))
+        .sum()
+}
+
+fn close_masters_in(dir: &std::path::Path, tag: &str) -> usize {
+    use std::os::unix::fs::FileTypeExt;
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut closed = 0;
+    for entry in entries.flatten().take(512) {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !control_socket_name(name) || !name.starts_with(tag) {
+            continue;
+        }
+        if !entry.file_type().is_ok_and(|kind| kind.is_socket()) {
+            continue;
+        }
+        let path = entry.path();
+        if control_exit(&path) {
+            closed += 1;
+        }
+        // A refused or hung master is unreachable once its name is gone;
+        // `cx orphans` then reports it and ControlPersist bounds its life.
+        let _ = fs::remove_file(&path);
+    }
+    closed
+}
+
+#[cfg(test)]
+mod control_tests {
+    use super::*;
+    #[test]
+    fn control_paths_are_private_short_and_route_and_trust_specific() {
+        let dir = std::path::Path::new("/home/someone/.local/state/cx/ssh");
+        let direct = control_socket(dir, "robot", &[], None).unwrap();
+        let name = direct.file_name().unwrap().to_str().unwrap();
+        assert!(name.ends_with("%C") && name.len() == CONTROL_NAME_LEN - 40 + 2);
+        assert!(name.starts_with(&control_target_tag("robot")));
+        assert!(control_socket_name(&name.replace("%C", &"a".repeat(40))));
+        let routed = control_socket(dir, "robot", &["gateway".into()], None).unwrap();
+        let managed = control_socket(dir, "robot", &[], Some("pin-a")).unwrap();
+        let repinned = control_socket(dir, "robot", &[], Some("pin-b")).unwrap();
+        let other = control_socket(dir, "other", &[], None).unwrap();
+        for path in [&routed, &managed, &repinned, &other] {
+            assert_ne!(path, &direct);
+        }
+        assert_ne!(managed, repinned);
+        // Expanded path plus OpenSSH's temporary bind suffix fits sun_path.
+        let expanded = direct.as_os_str().len() - 2 + 40;
+        assert!(expanded + CONTROL_TEMP_SUFFIX < sun_path_len());
+        let long = std::path::PathBuf::from(format!("/{}", "x".repeat(60)));
+        assert!(control_socket(&long, "robot", &[], None).is_none());
+        assert!(!control_socket_name("../../etc/passwd"));
+        assert!(!control_socket_name(&"A".repeat(CONTROL_NAME_LEN)));
+    }
+    #[test]
+    fn control_path_options_quote_and_keep_only_the_endpoint_token() {
+        let path = std::path::Path::new("/tmp/a b\"%/abcdeabcde%C");
+        assert_eq!(
+            control_path_option(path, true).unwrap(),
+            "ControlPath=\"/tmp/a b\\\"%%/abcdeabcde%C\""
+        );
+        let expanded = std::path::Path::new("/tmp/%x");
+        assert_eq!(
+            control_path_option(expanded, false).unwrap(),
+            "ControlPath=\"/tmp/%%x\""
+        );
+        assert!(control_path_option(std::path::Path::new("/tmp/x"), true).is_err());
+    }
+    #[test]
+    fn closing_masters_touches_only_this_targets_sockets() {
+        use std::os::unix::net::UnixListener;
+        let dir = tempfile::tempdir().unwrap();
+        let tag = control_target_tag("robot");
+        let mine = dir.path().join(format!("{tag}{}", "0".repeat(45)));
+        let theirs = dir
+            .path()
+            .join(format!("{}{}", control_target_tag("other"), "0".repeat(45)));
+        let unrelated = dir.path().join(format!("{tag}-not-a-socket-name"));
+        drop(UnixListener::bind(&mine).unwrap());
+        drop(UnixListener::bind(&theirs).unwrap());
+        fs::write(&unrelated, b"").unwrap();
+        // A stale socket refuses the exit request, but its name is retired.
+        close_masters_in(dir.path(), &tag);
+        assert!(!mine.exists());
+        assert!(theirs.exists() && unrelated.exists());
+    }
+    #[test]
+    fn multiplex_opt_out_values() {
+        for value in ["0", "off", "NO", " false "] {
+            assert!(!multiplex_setting(value));
+        }
+        for value in ["", "1", "on", "auto"] {
+            assert!(multiplex_setting(value));
+        }
+    }
 }

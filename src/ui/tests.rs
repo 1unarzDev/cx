@@ -1,6 +1,7 @@
 use super::*;
 use ratatui::backend::TestBackend;
 mod container_agent_tests;
+mod nav_tests;
 mod workspace_tests;
 fn app() -> App {
     let (tx, _) = mpsc::sync_channel(32);
@@ -1869,11 +1870,22 @@ fn update_notice_capture_matrix_aligns_and_preserves_default_background() {
                 } else {
                     "Warning"
                 }));
-                let available = Rect::new(17, 2, width - 17, if search { 15 } else { 18 });
+                // Phone (<60 cols): no rail; the workspace starts under the device strip.
+                let available = if width < 60 {
+                    Rect::new(0, 2, width, if search { 15 } else { 18 })
+                } else {
+                    Rect::new(17, 2, width - 17, if search { 15 } else { 18 })
+                };
                 let popup = notifications::area(&a.notice, available);
                 assert_eq!(popup.right(), width - 1);
                 assert_eq!(popup.bottom(), available.bottom() - 1);
-                assert!(text.lines().last().unwrap().trim().is_empty());
+                // The bottom row is spare, except on phones where it is the tab bar.
+                let last = text.lines().last().unwrap().trim().to_owned();
+                if width < 60 {
+                    assert!(last.contains("Sess") && last.contains("Keys"), "{last}");
+                } else {
+                    assert!(last.is_empty());
+                }
                 assert!(buffer.content.iter().all(|cell| cell.bg == Color::Reset));
                 if let Some(directory) = std::env::var_os("CX_UPDATE_CAPTURE_DIR") {
                     let directory = std::path::PathBuf::from(directory);
@@ -3281,11 +3293,16 @@ fn directional_panel_focus_obeys_geometry_and_input_ownership() {
         (Focus::Actions, false, Rect::new(0, 8, 20, 8)),
         (Focus::Workspace, false, Rect::new(20, 0, 60, 16)),
     ]);
+    // Ctrl+H/J/K/L are Backspace/LF in legacy encodings: no longer focus keys.
     a.key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+    assert!(a.focus == Focus::Workspace);
+    a.key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
     assert!(a.focus == Focus::Devices);
     a.key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
     assert!(a.focus == Focus::Actions);
     a.key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+    assert!(a.focus == Focus::Actions);
+    a.key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
     assert!(a.focus == Focus::Workspace);
     a.input = Some(Input::Search);
     a.key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
@@ -3851,6 +3868,23 @@ fn stacked_path_is_only_in_sidebar_and_keeps_current_folder_visible() {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
+            if width < 60 {
+                // Phone: no rail and no "Selected" panel (P8); the workspace
+                // keeps the current folder and the list visible.
+                let all = format!("{left}{right}");
+                let screen = t
+                    .backend()
+                    .buffer()
+                    .content
+                    .chunks(width as usize)
+                    .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(screen.contains("recordings"), "{width}: {screen}");
+                assert!(screen.contains("alpha.t"), "file list obscured: {screen}");
+                let _ = all;
+                continue;
+            }
             assert!(left.contains("recordings"), "{width}: {left}");
             assert!(!right.contains("recordings"), "{right}");
             assert!(right.contains("alpha.txt"), "file list obscured: {right}");
@@ -5088,16 +5122,25 @@ fn native_bitmap_geometry_tracks_workspace_and_suppresses_overlays() {
         native_preview_area(&a, screen),
         Some(Rect::new(22, 3, 57, 12))
     );
+    // A list search stays hidden while the preview is open; only the
+    // preview's own search bar takes rows (geometry is shared with render).
     a.browser.as_mut().unwrap().search = "photo".into();
+    assert_eq!(
+        native_preview_area(&a, screen),
+        Some(Rect::new(22, 3, 57, 12))
+    );
+    a.browser.as_mut().unwrap().preview_find.query = "photo".into();
     assert_eq!(
         native_preview_area(&a, screen),
         Some(Rect::new(22, 3, 57, 9))
     );
+    a.browser.as_mut().unwrap().preview_find.query.clear();
     a.transfer_drawer = false;
     a.browser.as_mut().unwrap().search.clear();
+    // Phone layout: single column under the header and device strip.
     assert_eq!(
         native_preview_area(&a, Rect::new(0, 0, 48, 24)),
-        Some(Rect::new(15, 3, 32, 16))
+        Some(Rect::new(1, 3, 46, 16))
     );
     a.help = true;
     assert!(native_preview_area(&a, screen).is_none());
@@ -6544,7 +6587,9 @@ fn info_reply_keeps_live_terminal_capability_and_preview_enabled() {
 
 #[test]
 fn session_hover_selects_rendered_row_without_opening() {
-    let (mut a, _) = queued_app();
+    // Spec P16: hover never selects. A click selects the rendered row (via
+    // the hit map); tapping the already-selected row is Enter.
+    let (mut a, _rx) = queued_app();
     let mut one = disposable_shell();
     one.name = "hover-one".into();
     one.directory = "/aaa".into();
@@ -6564,20 +6609,34 @@ fn session_hover_selects_rendered_row_without_opening() {
                 .contains("hover-two")
         })
         .expect("second row rendered");
-    a.mouse(
-        MouseEvent {
-            kind: MouseEventKind::Moved,
-            column: 30,
-            row: y,
-            modifiers: KeyModifiers::NONE,
-        },
-        Rect::new(0, 0, 160, 30),
+    let at = |kind| MouseEvent {
+        kind,
+        column: 30,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    };
+    let area = Rect::new(0, 0, 160, 30);
+    assert!(
+        !a.mouse(at(MouseEventKind::Moved), area),
+        "motion must not redraw"
     );
+    assert_eq!(a.selected, 0, "hover selected a row");
+    assert!(a.mouse(at(MouseEventKind::Down(event::MouseButton::Left)), area));
+    a.mouse(at(MouseEventKind::Up(event::MouseButton::Left)), area);
     assert_eq!(
         a.selected, 1,
-        "hover did not select actual rendered session"
+        "click did not select actual rendered session"
     );
     assert!(a.pending_attach.is_none() && !a.pane_focused());
+    // The second tap on the selected row is Enter (opens), not another select.
+    terminal.draw(|f| render(f, &a)).unwrap();
+    assert!(a.mouse(at(MouseEventKind::Down(event::MouseButton::Left)), area));
+    assert!(a.mouse(at(MouseEventKind::Up(event::MouseButton::Left)), area));
+    assert!(
+        a.attach_check.is_some() || a.pane_focused() || a.dialog.is_some(),
+        "second tap did not run Enter: {}",
+        a.notice
+    );
 }
 
 #[test]

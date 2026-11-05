@@ -39,8 +39,15 @@ impl App {
             .collect()
     }
     pub(super) fn palette_scope(&self) -> String {
-        let Some((action, _)) = self.palette().get(self.palette_selected).copied() else {
-            return "No matching actions · type to filter · Esc cancel".into();
+        let Some(item) = self.palette_view().into_iter().nth(self.palette_selected) else {
+            return "No matches · type to filter · Esc cancel".into();
+        };
+        let action = match item.target {
+            PaletteTarget::Action(action) => action,
+            PaletteTarget::Session(..) => return "Enter attaches · Esc cancel".into(),
+            PaletteTarget::Device(_) => return "Enter scopes views to this device".into(),
+            PaletteTarget::Folder(..) => return "Enter opens the folder in Files".into(),
+            PaletteTarget::Cmd(_) => return "Enter goes there · Esc cancel".into(),
         };
         if matches!(
             action,
@@ -501,5 +508,289 @@ impl App {
         } else {
             self.execute(action);
         }
+    }
+}
+
+/// What a palette row does when chosen.
+#[derive(Clone, PartialEq, Debug)]
+pub(super) enum PaletteTarget {
+    Action(Action),
+    Cmd(keymap::Cmd),
+    /// A device-rail value (0 = All devices).
+    Device(usize),
+    /// Device index and runtime key.
+    Session(usize, String),
+    /// Device index and folder path.
+    Folder(usize, String),
+}
+#[derive(Clone, Debug)]
+pub(super) struct PaletteItem {
+    pub section: &'static str,
+    pub label: String,
+    pub detail: String,
+    pub key: String,
+    pub target: PaletteTarget,
+    /// Stable identity for MRU ranking.
+    pub id: String,
+}
+/// Section order on equal scores (spec 6.6: switcher first, then actions).
+const PALETTE_SECTIONS: [&str; 5] = ["Sessions", "Actions", "Go to", "Devices", "Folders"];
+const PALETTE_MRU: usize = 32;
+
+impl App {
+    /// Every palette source: sessions on all devices, valid actions, goto,
+    /// devices and recently used folders. Unranked.
+    pub(super) fn palette_sources(&self) -> Vec<PaletteItem> {
+        let mut items = Vec::new();
+        let mut folders: Vec<(usize, String)> = Vec::new();
+        for (d, cache) in self.work.iter().enumerate() {
+            for s in &cache.sessions {
+                let key = workspaces::runtime_key(s);
+                items.push(PaletteItem {
+                    section: "Sessions",
+                    label: session_preview::label(s),
+                    detail: format!(
+                        "{} · {}",
+                        safe_label(&self.devices[d].name),
+                        session_folder_label(&s.directory)
+                    ),
+                    key: "⏎".into(),
+                    id: format!("session:{}:{key}", self.devices[d].id),
+                    target: PaletteTarget::Session(d, key),
+                });
+                if !s.directory.is_empty() && s.container.is_none() {
+                    folders.push((d, s.directory.clone()));
+                }
+            }
+        }
+        // `:` is the run-command path; the palette does not list it as an
+        // action (user direction recorded in STATUS: "Removed Command from Ctrl+P/Actions").
+        for (action, label) in self
+            .palette()
+            .into_iter()
+            .filter(|(a, _)| *a != Action::Command)
+        {
+            let (text, suffix) = match label.rsplit_once(" · ") {
+                Some((text, key)) if key.chars().count() <= 6 => (text, key),
+                _ => (label, ""),
+            };
+            let bound = keymap::BINDINGS
+                .iter()
+                .any(|b| b.cmd == keymap::Cmd::Do(action));
+            items.push(PaletteItem {
+                section: "Actions",
+                label: text.to_owned(),
+                detail: String::new(),
+                key: if bound {
+                    keymap::key_for(self, keymap::Cmd::Do(action)).unwrap_or(suffix)
+                } else {
+                    suffix
+                }
+                .to_owned(),
+                id: format!("action:{action:?}"),
+                target: PaletteTarget::Action(action),
+            });
+        }
+        for (view, label, _) in keymap::TABS {
+            let cmd = keymap::Cmd::Goto(view);
+            items.push(PaletteItem {
+                section: "Go to",
+                label: if view == View::Secrets {
+                    "Keys / Secrets".into()
+                } else {
+                    label.into()
+                },
+                detail: String::new(),
+                key: keymap::BINDINGS
+                    .iter()
+                    .find(|b| b.cmd == cmd && b.chord.is_some())
+                    .map(|b| b.label)
+                    .unwrap_or("")
+                    .into(),
+                id: format!("goto:{label}"),
+                target: PaletteTarget::Cmd(cmd),
+            });
+        }
+        for value in self.device_rows() {
+            let (label, detail, id) = if value == 0 {
+                (
+                    "All devices".to_owned(),
+                    String::new(),
+                    "device:*".to_owned(),
+                )
+            } else {
+                let device = &self.devices[value - 1];
+                (
+                    safe_label(&device.name),
+                    identity(device),
+                    format!("device:{}", device.id),
+                )
+            };
+            items.push(PaletteItem {
+                section: "Devices",
+                label,
+                detail,
+                key: String::new(),
+                id,
+                target: PaletteTarget::Device(value),
+            });
+        }
+        let mut locations: Vec<_> = self
+            .file_locations
+            .iter()
+            .map(|(d, p)| (*d, p.clone()))
+            .collect();
+        locations.sort();
+        if let Some(b) = &self.browser {
+            if b.container.is_none() {
+                locations.insert(0, (b.device, b.path.clone()));
+            }
+        }
+        for (d, path) in locations.into_iter().chain(folders) {
+            if d >= self.devices.len()
+                || items
+                    .iter()
+                    .any(|i| i.target == PaletteTarget::Folder(d, path.clone()))
+            {
+                continue;
+            }
+            items.push(PaletteItem {
+                section: "Folders",
+                label: session_folder_label(&path),
+                detail: safe_label(&self.devices[d].name),
+                key: String::new(),
+                id: format!("folder:{}:{path}", self.devices[d].id),
+                target: PaletteTarget::Folder(d, path),
+            });
+        }
+        items
+    }
+    /// Ranked palette rows for the current query: fuzzy score plus recency,
+    /// grouped by section (sections ordered by their best row).
+    pub(super) fn palette_view(&self) -> Vec<PaletteItem> {
+        let query = self.text.trim();
+        let mut scored: Vec<(i64, usize, PaletteItem)> = self
+            .palette_sources()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(order, item)| {
+                let score = fuzzy_score(query, &format!("{} {}", item.label, item.detail))?;
+                let recency = self
+                    .palette_mru
+                    .iter()
+                    .position(|id| *id == item.id)
+                    .map_or(0, |at| (PALETTE_MRU - at.min(PALETTE_MRU)) as i64 * 2);
+                Some((score + recency, order, item))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        let section_rank = |section: &str| {
+            PALETTE_SECTIONS
+                .iter()
+                .position(|s| *s == section)
+                .unwrap_or(PALETTE_SECTIONS.len())
+        };
+        let mut best: Vec<(&'static str, i64)> = Vec::new();
+        for (score, _, item) in &scored {
+            if !best.iter().any(|(s, _)| *s == item.section) {
+                best.push((item.section, *score));
+            }
+        }
+        best.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then(section_rank(a.0).cmp(&section_rank(b.0)))
+        });
+        let mut out = Vec::with_capacity(scored.len());
+        for (section, _) in best {
+            out.extend(
+                scored
+                    .iter()
+                    .filter(|(_, _, item)| item.section == section)
+                    .map(|(_, _, item)| item.clone()),
+            );
+        }
+        out
+    }
+    /// Run the highlighted palette row and remember it for ranking.
+    pub(super) fn run_palette_selected(&mut self) {
+        let Some(item) = self.palette_view().into_iter().nth(self.palette_selected) else {
+            return;
+        };
+        self.palette_mru.retain(|id| *id != item.id);
+        self.palette_mru.push_front(item.id.clone());
+        self.palette_mru.truncate(PALETTE_MRU);
+        match item.target {
+            PaletteTarget::Action(action) => self.execute_palette(action),
+            PaletteTarget::Cmd(cmd) => {
+                self.input = None;
+                self.text.clear();
+                self.run_cmd(cmd);
+            }
+            PaletteTarget::Device(value) => {
+                self.input = None;
+                self.text.clear();
+                self.focus = Focus::Devices;
+                let rows = self.device_rows();
+                let current = rows.iter().position(|d| *d == self.device).unwrap_or(0);
+                if let Some(target) = rows.iter().position(|d| *d == value) {
+                    panels::active(self).move_by(target as isize - current as isize);
+                }
+                self.focus = Focus::Workspace;
+            }
+            PaletteTarget::Session(device, key) => {
+                self.input = None;
+                self.text.clear();
+                if self.view != View::Work {
+                    self.goto_view(View::Work);
+                }
+                // The switcher spans all devices: widen the scope when needed.
+                if self.device != 0 && self.device != device + 1 {
+                    self.device = 0;
+                }
+                self.search.clear();
+                if let Some(index) = self
+                    .session_rows()
+                    .iter()
+                    .position(|(d, s)| *d == device && workspaces::runtime_key(s) == key)
+                {
+                    self.selected = index;
+                    self.focus = Focus::Workspace;
+                    // Enter on a session attaches directly (user decision).
+                    self.primary();
+                }
+            }
+            PaletteTarget::Folder(device, path) => {
+                self.input = None;
+                self.text.clear();
+                self.other_browser = None;
+                self.destination_active = false;
+                self.open_host_browser(device, path);
+                self.focus = Focus::Workspace;
+            }
+        }
+    }
+    /// Tab in the palette: jump to the first row of the next section.
+    pub(super) fn palette_next_section(&mut self, reverse: bool) {
+        let view = self.palette_view();
+        let Some(current) = view.get(self.palette_selected).map(|i| i.section) else {
+            return;
+        };
+        let starts: Vec<usize> = (0..view.len())
+            .filter(|&i| i == 0 || view[i].section != view[i - 1].section)
+            .collect();
+        let at = starts
+            .iter()
+            .rposition(|&s| s <= self.palette_selected)
+            .unwrap_or(0);
+        let next = if reverse {
+            if view[starts[at]].section == current && starts[at] < self.palette_selected {
+                starts[at]
+            } else {
+                starts[(at + starts.len() - 1) % starts.len()]
+            }
+        } else {
+            starts[(at + 1) % starts.len()]
+        };
+        self.palette_selected = next;
     }
 }

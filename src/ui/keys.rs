@@ -62,11 +62,16 @@ impl App {
             self.request_quit();
             return;
         }
+        self.press = None;
+        if self.context_menu.is_some() {
+            self.context_menu_key(key);
+            return;
+        }
         if self.help {
             if let Some(motion) = self.navigation.read(key, 8, false) {
                 navigation::Scroll {
                     offset: &mut self.help_scroll,
-                    max: 40,
+                    max: 80,
                 }
                 .apply(motion);
                 return;
@@ -89,261 +94,63 @@ impl App {
             self.input_key(key, mode);
             return;
         }
-        if self.view == View::Files
-            && self.focus == Focus::Workspace
-            && self.browser.as_ref().is_some_and(|b| b.preview.is_some())
-            && !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        // `g` then a view letter goes there; `gg` stays "first row".
+        if self.navigation.goto_pending()
+            && key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
         {
-            match key.code {
-                KeyCode::Char('o') if self.markdown_preview_active() => {
-                    self.show_preview_links();
+            if let KeyCode::Char(c) = key.code {
+                if let Some(cmd) = keymap::chord(c) {
+                    self.navigation.reset();
+                    self.run_cmd(cmd);
                     return;
                 }
-                KeyCode::Char('/') => {
-                    if self.text_preview_active() {
-                        self.input = Some(Input::PreviewSearch);
-                        self.text = self.browser.as_ref().unwrap().preview_find.query.clone();
-                    } else {
-                        self.set_notice(
-                            if self
-                                .browser
-                                .as_ref()
-                                .is_some_and(|b| b.preview_pending_page.is_some())
-                            {
-                                "Preview is still loading"
-                            } else {
-                                "Search is available in text previews"
-                            }
-                            .into(),
-                        );
-                    }
-                    return;
-                }
-                KeyCode::Char('n') => {
-                    let count = self.navigation.take_count().unwrap_or(1);
-                    for _ in 0..count {
-                        self.next_preview_match(1);
-                    }
-                    return;
-                }
-                KeyCode::Char('N') => {
-                    let count = self.navigation.take_count().unwrap_or(1);
-                    for _ in 0..count {
-                        self.next_preview_match(-1);
-                    }
-                    return;
-                }
-                KeyCode::Esc
-                    if self
-                        .browser
-                        .as_ref()
-                        .is_some_and(|b| !b.preview_find.query.is_empty()) =>
+            }
+        }
+        match keymap::resolve(self, &key) {
+            Some(cmd) if cmd != keymap::Cmd::Motion => {
+                self.run_cmd(cmd);
+                self.navigation.reset();
+            }
+            _ => {
+                if let Some(motion) =
+                    self.navigation
+                        .read(key, if self.pdf_preview_active() { 1 } else { 10 }, false)
                 {
-                    self.browser.as_mut().unwrap().preview_find = PreviewFind::default();
+                    panels::active(self).apply(motion);
+                }
+            }
+        }
+    }
+    /// Run a keymap command. Keys, footer chips, tabs and context-menu rows
+    /// all arrive here, so a tap and its key share one implementation.
+    pub(super) fn run_cmd(&mut self, cmd: keymap::Cmd) {
+        use keymap::Cmd;
+        match cmd {
+            Cmd::Motion => {}
+            Cmd::Goto(view) => self.goto_view(view),
+            Cmd::PrevView => self.cycle_view(-1),
+            Cmd::NextView => self.cycle_view(1),
+            Cmd::NextPanel => self.cycle_focus(false),
+            Cmd::PrevPanel => self.cycle_focus(true),
+            Cmd::FocusDir(dx, dy) => self.directional_focus(i32::from(dx), i32::from(dy)),
+            Cmd::Palette => {
+                self.input = Some(Input::Palette);
+                self.text.clear();
+                self.palette_selected = 0;
+            }
+            Cmd::RunCommand => self.execute(Action::Command),
+            Cmd::Help => {
+                self.help = true;
+                self.help_scroll = 0;
+            }
+            Cmd::Quit => self.request_quit(),
+            Cmd::Primary => self.primary(),
+            Cmd::Back => self.back(),
+            Cmd::Search => {
+                if self.focus == Focus::Devices {
+                    self.begin_list_filter();
                     return;
                 }
-                KeyCode::Esc
-                    if self
-                        .browser
-                        .as_ref()
-                        .is_some_and(|b| !b.preview_history.is_empty()) =>
-                {
-                    let b = self.browser.as_mut().unwrap();
-                    let device = b.device;
-                    let (path, scroll, find) = b.preview_history.pop().unwrap();
-                    self.open_preview(device, path);
-                    self.browser.as_mut().unwrap().preview_restore = Some((scroll, find));
-                    return;
-                }
-                _ => {}
-            }
-        }
-        if self.view == View::Files
-            && self.focus == Focus::Workspace
-            && self.browser.as_ref().is_some_and(|b| !b.search.is_empty())
-            && matches!(key.code, KeyCode::Char('n' | 'N'))
-            && !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-        {
-            let count = self.navigation.take_count().unwrap_or(1);
-            self.finish_visual();
-            for _ in 0..count {
-                self.next_file_match(if key.code == KeyCode::Char('n') {
-                    1
-                } else {
-                    -1
-                });
-            }
-            return;
-        }
-        if let Some(motion) =
-            self.navigation
-                .read(key, if self.pdf_preview_active() { 1 } else { 10 }, false)
-        {
-            panels::active(self).apply(motion);
-            return;
-        }
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            match key.code {
-                KeyCode::Char('p') => {
-                    self.input = Some(Input::Palette);
-                    self.text.clear();
-                    self.palette_selected = 0;
-                }
-                KeyCode::Char('c') => self.request_quit(),
-                KeyCode::Left | KeyCode::Char('h') => self.directional_focus(-1, 0),
-                KeyCode::Right | KeyCode::Char('l') => self.directional_focus(1, 0),
-                KeyCode::Up | KeyCode::Char('k') => self.directional_focus(0, -1),
-                KeyCode::Down | KeyCode::Char('j') => self.directional_focus(0, 1),
-                _ => {}
-            }
-            return;
-        }
-        if self.view == View::Work
-            && self.focus == Focus::Workspace
-            && key.code == KeyCode::Char('d')
-            && key.modifiers.is_empty()
-        {
-            if let Some((device, session)) = self.selected_session() {
-                if !self.observed(device, &session) {
-                    self.set_notice("This pinned runtime has ended; no process was stopped".into());
-                    return;
-                }
-                if session.external
-                    || !["shell", "codex", "claude"].contains(&session.provider.as_str())
-                {
-                    self.set_notice_as(
-                        NoticeKind::Warning,
-                        "Only CX-managed sessions can be stopped here".into(),
-                    );
-                } else if self.devices[device].target.is_some()
-                    && !self.providers.get(&device).is_some_and(|(caps, checked)| {
-                        transport::now().saturating_sub(*checked) < 60
-                            && caps.iter().any(|c| {
-                                c == if session.provider == "shell" {
-                                    "stop-session-v1"
-                                } else {
-                                    "stop-agent-session-v1"
-                                }
-                            })
-                    })
-                {
-                    self.check_providers(device);
-                    self.set_notice(
-                        "Checking session-stop support · press d again when ready".into(),
-                    );
-                } else {
-                    self.dialog_selected = 0;
-                    self.dialog_scroll = 0;
-                    self.dialog_detail_focus = false;
-                    self.dialog = Some(Dialog::StopShell(device, session));
-                }
-            }
-            return;
-        }
-        if self.view == View::Files
-            && self.focus == Focus::Workspace
-            && self.browser.as_ref().is_some_and(|b| b.preview.is_none())
-        {
-            let action = match key.code {
-                KeyCode::Char('.') => Some(Action::Hidden),
-                KeyCode::Char(' ') => Some(Action::Select),
-                KeyCode::Char('v') => Some(Action::Visual),
-                KeyCode::Char('r') => Some(Action::Rename),
-                KeyCode::Char('c' | 'y') => Some(Action::Copy),
-                KeyCode::Char('x') => Some(Action::Cut),
-                KeyCode::Char('d') => Some(Action::Delete),
-                KeyCode::Char('f') => Some(Action::Filter),
-                KeyCode::Char('p') => Some(Action::Paste),
-                KeyCode::Char('t') => Some(Action::TransferTo),
-                KeyCode::Char('T') => Some(Action::Jobs),
-                KeyCode::Char('M') => Some(Action::Mkdir),
-                KeyCode::Char('o') => Some(Action::Conflict),
-                _ => None,
-            };
-            if key.code == KeyCode::Char('Y') {
-                self.clipboard = None;
-                self.set_notice("Clipboard cleared · files unchanged".into());
-                return;
-            }
-            if key.code == KeyCode::Char('u') {
-                self.finish_visual();
-                if let Some(b) = &mut self.browser {
-                    b.marked.clear();
-                }
-                return;
-            }
-            if let Some(action) = action {
-                if self.action_enabled(action) {
-                    self.execute(action);
-                }
-                return;
-            }
-        }
-        match key.code {
-            KeyCode::Char('s') if self.view == View::Work && self.focus == Focus::Workspace => {
-                if let Some((device, session)) = self.selected_session() {
-                    self.dialog =
-                        Some(Dialog::AgentTasks(self.devices[device].id.clone(), session));
-                    self.dialog_selected = 0;
-                    self.dialog_scroll = 0;
-                    self.dialog_detail_focus = false;
-                }
-            }
-            KeyCode::Char('J') | KeyCode::Char('K')
-                if self.view == View::Network && self.focus == Focus::Workspace =>
-            {
-                self.network_detail_scroll = if key.code == KeyCode::Char('J') {
-                    self.network_detail_scroll.saturating_add(1).min(256)
-                } else {
-                    self.network_detail_scroll.saturating_sub(1)
-                };
-            }
-            KeyCode::Char('n' | 'N')
-                if self.focus == Focus::Workspace
-                    && self.view == View::Files
-                    && self.browser.as_ref().is_some_and(|b| !b.search.is_empty()) =>
-            {
-                self.finish_visual();
-                self.next_file_match(if key.code == KeyCode::Char('n') {
-                    1
-                } else {
-                    -1
-                });
-            }
-            KeyCode::Char('b' | 'B') if self.focus == Focus::Devices => self.toggle_access(),
-            KeyCode::Char('x' | 'X') if self.focus == Focus::Devices && self.device > 0 => {
-                self.dialog_selected = 0;
-                self.dialog = Some(Dialog::RemoveDevice(self.device - 1));
-            }
-            KeyCode::Char('e' | 'E') if self.focus == Focus::Devices && self.device > 0 => {
-                self.dialog_selected = 0;
-                self.dialog = Some(Dialog::EditDevice(self.device - 1));
-            }
-            KeyCode::Char('p') if self.view == View::Work && self.focus == Focus::Workspace => {
-                self.toggle_pin()
-            }
-            KeyCode::Char('s') if self.view == View::Files && self.focus == Focus::Workspace => {
-                self.sessions_here()
-            }
-            KeyCode::Char('n') => self.session_shortcut(),
-            KeyCode::Char('w') if self.view == View::Work && self.focus == Focus::Workspace => {
-                self.execute(Action::Observe)
-            }
-            KeyCode::Char('a') if self.view == View::Work && local_only(self) => {
-                self.execute(Action::Add)
-            }
-            KeyCode::Char(':') => self.execute(Action::Command),
-            KeyCode::Char('?') | KeyCode::F(1) => self.help = true,
-            KeyCode::Char('T') => self.execute(Action::Jobs),
-            KeyCode::Char('f') if self.view != View::Files || self.focus == Focus::Devices => {
-                self.begin_list_filter()
-            }
-            KeyCode::Char('/') if self.focus == Focus::Devices => self.begin_list_filter(),
-            KeyCode::Char('/') => {
                 self.finish_visual();
                 self.input = Some(Input::Search);
                 self.focus = Focus::Workspace;
@@ -356,12 +163,41 @@ impl App {
                     self.search.clone()
                 };
             }
-            KeyCode::Tab | KeyCode::BackTab => {
-                self.cycle_focus(
-                    key.code == KeyCode::BackTab || key.modifiers.contains(KeyModifiers::SHIFT),
-                );
+            Cmd::Filter => self.begin_list_filter(),
+            Cmd::New => self.session_shortcut(),
+            Cmd::Jobs => self.execute(Action::Jobs),
+            Cmd::AddDevice => self.execute(Action::Add),
+            Cmd::Watch => self.execute(Action::Observe),
+            Cmd::Pin => self.toggle_pin(),
+            Cmd::Stop => self.stop_selected_session(),
+            Cmd::AgentTasks => {
+                if let Some((device, session)) = self.selected_session() {
+                    self.dialog =
+                        Some(Dialog::AgentTasks(self.devices[device].id.clone(), session));
+                    self.dialog_selected = 0;
+                    self.dialog_scroll = 0;
+                    self.dialog_detail_focus = false;
+                }
             }
-            KeyCode::Left | KeyCode::Char('h') => {
+            Cmd::Refresh => {
+                // Explicit: the one place a device refresh clears provider caches.
+                self.device_refresh_due = None;
+                self.refresh();
+            }
+            Cmd::ToggleAccess => self.toggle_access(),
+            Cmd::RemoveDevice => {
+                if self.device > 0 {
+                    self.dialog_selected = 0;
+                    self.dialog = Some(Dialog::RemoveDevice(self.device - 1));
+                }
+            }
+            Cmd::EditDevice => {
+                if self.device > 0 {
+                    self.dialog_selected = 0;
+                    self.dialog = Some(Dialog::EditDevice(self.device - 1));
+                }
+            }
+            Cmd::Left => {
                 if self.view == View::Containers && self.focus == Focus::Workspace {
                     self.container_tree_motion(false);
                 } else if self.view == View::Network && self.focus == Focus::Workspace {
@@ -372,7 +208,7 @@ impl App {
                     self.focus = Focus::Devices;
                 }
             }
-            KeyCode::Right | KeyCode::Char('l') => {
+            Cmd::Right => {
                 if self.view == View::Containers && self.focus == Focus::Workspace {
                     self.container_tree_motion(true);
                 } else if self.view == View::Network && self.focus == Focus::Workspace {
@@ -389,97 +225,267 @@ impl App {
                     self.focus = Focus::Workspace;
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
-            KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
-            KeyCode::PageDown => {
-                self.move_selection(if self.pdf_preview_active() { 1 } else { 10 })
-            }
-            KeyCode::PageUp => {
-                self.move_selection(if self.pdf_preview_active() { -1 } else { -10 })
-            }
-            KeyCode::Home => self.move_selection(-100_000),
-            KeyCode::End => self.move_selection(100_000),
-            KeyCode::Enter => {
-                if self.focus == Focus::Actions {
-                    let actions = sidebar_actions(self);
-                    if let Some((action, _)) = actions.get(self.side_selected) {
-                        self.execute(*action)
-                    };
-                } else if self.focus == Focus::Devices {
-                    if self.view == View::Files {
-                        self.select_file_device();
+            Cmd::SessionsHere => self.sessions_here(),
+            Cmd::NextMatch | Cmd::PrevMatch => {
+                let step = if cmd == Cmd::NextMatch { 1 } else { -1 };
+                let count = self.navigation.take_count().unwrap_or(1);
+                let preview = self.browser.as_ref().is_some_and(|b| b.preview.is_some());
+                if !preview {
+                    self.finish_visual();
+                }
+                for _ in 0..count {
+                    if preview {
+                        self.next_preview_match(step);
                     } else {
-                        self.refresh();
-                    }
-                    self.focus = Focus::Workspace;
-                } else {
-                    match self.view {
-                        View::Containers => self.open_container_actions(),
-                        View::Work => {
-                            if let Some((d, s)) = self.selected_session() {
-                                if !self.focus_session_pane() {
-                                    self.open_session(d, s, false);
-                                }
-                            } else if empty_work_can_create(self) {
-                                self.session_shortcut();
-                            }
-                        }
-                        View::Files => {
-                            if self.destination_active
-                                && self.clipboard.is_some()
-                                && self.browser.as_ref().is_some_and(|b| b.preview.is_none())
-                            {
-                                if self.browser.as_ref().is_some_and(|b| !b.loading) {
-                                    self.submit_transfer();
-                                }
-                            } else if let Some(b) = &self.browser {
-                                if let Some(e) = self.visible_entries().get(b.selected).cloned() {
-                                    if e.kind == "directory" {
-                                        self.open_browser(b.device, e.path);
-                                    } else {
-                                        self.open_preview(b.device, e.path);
-                                    }
-                                }
-                            }
-                        }
-                        View::Network => self.open_neighbor(),
+                        self.next_file_match(step);
                     }
                 }
             }
-            KeyCode::Esc => {
-                if self.view == View::Files {
-                    if let Some(b) = &mut self.browser {
-                        b.preview_rich = None;
-                        b.preview_find = PreviewFind::default();
-                        b.preview_pending_page = None;
-                        b.preview_path = None;
-                        if b.preview.take().is_none() {
-                            if b.visual_anchor.take().is_some() {
-                                b.visual_base.clear();
-                            } else if !b.marked.is_empty() {
-                                b.marked.clear();
-                            } else if !b.filter.is_empty() {
-                                b.filter.clear();
-                                b.selected = 0;
-                            } else if !b.search.is_empty() {
-                                b.search.clear();
-                            } else {
-                                self.view = View::Work;
-                                self.generation += 1;
-                                b.loading = false;
-                            }
+            Cmd::ClearClipboard => {
+                self.clipboard = None;
+                self.set_notice("Clipboard cleared · files unchanged".into());
+            }
+            Cmd::ClearMarks => {
+                self.finish_visual();
+                if let Some(b) = &mut self.browser {
+                    b.marked.clear();
+                }
+            }
+            Cmd::PreviewLinks => self.show_preview_links(),
+            Cmd::PreviewSearch => {
+                if self.text_preview_active() {
+                    self.input = Some(Input::PreviewSearch);
+                    self.text = self.browser.as_ref().unwrap().preview_find.query.clone();
+                } else {
+                    self.set_notice(
+                        if self
+                            .browser
+                            .as_ref()
+                            .is_some_and(|b| b.preview_pending_page.is_some())
+                        {
+                            "Preview is still loading"
                         } else {
-                            self.generation += 1;
+                            "Search is available in text previews"
                         }
-                    }
-                } else if !self.search.is_empty() {
-                    self.search.clear();
-                } else {
-                    self.focus = Focus::Devices;
+                        .into(),
+                    );
                 }
             }
-            _ => {}
+            Cmd::DetailDown => {
+                self.network_detail_scroll = self.network_detail_scroll.saturating_add(1).min(256)
+            }
+            Cmd::DetailUp => {
+                self.network_detail_scroll = self.network_detail_scroll.saturating_sub(1)
+            }
+            Cmd::Do(action) => {
+                if self.action_enabled(action) {
+                    self.execute(action);
+                }
+            }
         }
+    }
+    /// Go to a top-level view without a device-chooser step (P13): the
+    /// device rail's scope applies.
+    pub(super) fn goto_view(&mut self, view: View) {
+        self.finish_visual();
+        match view {
+            View::Work | View::Containers => {
+                if self.view != view {
+                    self.view = view;
+                    if view == View::Work {
+                        self.refresh_work();
+                    } else {
+                        self.refresh_containers();
+                    }
+                }
+            }
+            View::Files if self.view == View::Files => {}
+            View::Files => {
+                if self.browser.is_some() {
+                    self.view = View::Files;
+                    self.generation += 1;
+                    self.refresh_browser();
+                } else if self.view == View::Work && self.selected_session().is_some() {
+                    self.execute(Action::Files);
+                } else {
+                    self.select_file_device();
+                }
+            }
+            View::Network => {
+                if self.view != View::Network {
+                    self.view = View::Network;
+                    self.refresh();
+                }
+            }
+            View::Secrets => self.view = View::Secrets,
+        }
+        if self.dialog.is_none() {
+            self.focus = Focus::Workspace;
+        }
+    }
+    pub(super) fn cycle_view(&mut self, step: isize) {
+        let index = keymap::tab_index(self.view) as isize;
+        let tabs = keymap::TABS.len() as isize;
+        let next = (index + step).rem_euclid(tabs) as usize;
+        self.goto_view(keymap::TABS[next].0);
+    }
+    /// Enter: the primary action of the focused panel.
+    pub(super) fn primary(&mut self) {
+        if self.focus == Focus::Actions {
+            let actions = sidebar_actions(self);
+            if let Some((action, _)) = actions.get(self.side_selected) {
+                self.execute(*action)
+            };
+        } else if self.focus == Focus::Devices {
+            // Scope is already applied by moving; Enter lands in the view.
+            if self.view == View::Files {
+                self.select_file_device();
+            }
+            self.focus = Focus::Workspace;
+        } else {
+            match self.view {
+                View::Secrets => {}
+                View::Containers => self.open_container_actions(),
+                View::Work => {
+                    if let Some((d, s)) = self.selected_session() {
+                        if !self.focus_session_pane() {
+                            self.open_session(d, s, false);
+                        }
+                    } else if empty_work_can_create(self) {
+                        self.session_shortcut();
+                    }
+                }
+                View::Files => {
+                    if self.destination_active
+                        && self.clipboard.is_some()
+                        && self.browser.as_ref().is_some_and(|b| b.preview.is_none())
+                    {
+                        if self.browser.as_ref().is_some_and(|b| !b.loading) {
+                            self.submit_transfer();
+                        }
+                    } else if let Some(b) = &self.browser {
+                        if let Some(e) = self.visible_entries().get(b.selected).cloned() {
+                            if e.kind == "directory" {
+                                self.open_browser(b.device, e.path);
+                            } else {
+                                self.open_preview(b.device, e.path);
+                            }
+                        }
+                    }
+                }
+                View::Network => self.open_neighbor(),
+            }
+        }
+    }
+    /// Esc: back / clear / focus up one level.
+    pub(super) fn back(&mut self) {
+        if self.view == View::Files && self.focus == Focus::Workspace {
+            if let Some(b) = self.browser.as_mut().filter(|b| b.preview.is_some()) {
+                if !b.preview_find.query.is_empty() {
+                    b.preview_find = PreviewFind::default();
+                    return;
+                }
+                if !b.preview_history.is_empty() {
+                    let device = b.device;
+                    let (path, scroll, find) = b.preview_history.pop().unwrap();
+                    self.open_preview(device, path);
+                    self.browser.as_mut().unwrap().preview_restore = Some((scroll, find));
+                    return;
+                }
+            }
+        }
+        if self.view == View::Files {
+            if let Some(b) = &mut self.browser {
+                b.preview_rich = None;
+                b.preview_find = PreviewFind::default();
+                b.preview_pending_page = None;
+                b.preview_path = None;
+                if b.preview.take().is_none() {
+                    if b.visual_anchor.take().is_some() {
+                        b.visual_base.clear();
+                    } else if !b.marked.is_empty() {
+                        b.marked.clear();
+                    } else if !b.filter.is_empty() {
+                        b.filter.clear();
+                        b.selected = 0;
+                    } else if !b.search.is_empty() {
+                        b.search.clear();
+                    } else {
+                        self.view = View::Work;
+                        self.generation += 1;
+                        b.loading = false;
+                    }
+                } else {
+                    self.generation += 1;
+                }
+            }
+        } else if !self.search.is_empty() {
+            self.search.clear();
+        } else {
+            self.focus = Focus::Devices;
+        }
+    }
+    pub(super) fn stop_selected_session(&mut self) {
+        let Some((device, session)) = self.selected_session() else {
+            return;
+        };
+        if !self.observed(device, &session) {
+            self.set_notice("This pinned runtime has ended; no process was stopped".into());
+            return;
+        }
+        if session.external || !["shell", "codex", "claude"].contains(&session.provider.as_str()) {
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "Only CX-managed sessions can be stopped here".into(),
+            );
+        } else if self.devices[device].target.is_some()
+            && !self.providers.get(&device).is_some_and(|(caps, checked)| {
+                transport::now().saturating_sub(*checked) < 60
+                    && caps.iter().any(|c| {
+                        c == if session.provider == "shell" {
+                            "stop-session-v1"
+                        } else {
+                            "stop-agent-session-v1"
+                        }
+                    })
+            })
+        {
+            self.check_providers(device);
+            self.set_notice("Checking session-stop support · press d again when ready".into());
+        } else {
+            self.dialog_selected = 0;
+            self.dialog_scroll = 0;
+            self.dialog_detail_focus = false;
+            self.dialog = Some(Dialog::StopShell(device, session));
+        }
+    }
+    /// Run the debounced device-scoped refresh once the selection settled.
+    /// Returns true when it ran (the frame changes).
+    pub(super) fn settle_device_refresh(&mut self, now: Instant) -> bool {
+        if self.device_refresh_due.is_none_or(|due| now < due) {
+            return false;
+        }
+        self.device_refresh_due = None;
+        match self.view {
+            View::Work => {
+                for d in 0..self.devices.len() {
+                    if self.background_checks_enabled(d)
+                        && (self.device == 0 || self.device == d + 1)
+                        && !self.work[d].loading
+                    {
+                        self.work[d].loading = self.send(d, Operation::Sessions);
+                    }
+                }
+            }
+            View::Network => {
+                let selection = self.network_selection();
+                self.refresh();
+                self.restore_network_selection(selection);
+            }
+            View::Containers => self.refresh_containers(),
+            View::Files | View::Secrets => {}
+        }
+        true
     }
     pub(super) fn switch_pane(&mut self) {
         std::mem::swap(&mut self.browser, &mut self.other_browser);
@@ -541,11 +547,19 @@ impl App {
                 }
             }
         }
-        self.focus = match (self.focus, reverse) {
+        let step = |focus| match (focus, reverse) {
             (Focus::Workspace, false) | (Focus::Actions, true) => Focus::Devices,
             (Focus::Devices, false) | (Focus::Workspace, true) => Focus::Actions,
             (Focus::Actions, false) | (Focus::Devices, true) => Focus::Workspace,
         };
+        // Skip panels the current layout does not draw (the phone layout has
+        // no Actions panel). Without a rendered layout every panel counts.
+        let drawn: Vec<Focus> = self.panels.borrow().iter().map(|(f, _, _)| *f).collect();
+        let mut next = step(self.focus);
+        if !drawn.is_empty() && !drawn.contains(&next) {
+            next = step(next);
+        }
+        self.focus = next;
     }
     pub(super) fn mouse(&mut self, mouse: MouseEvent, area: Rect) -> bool {
         if self.scroll_session_preview(mouse) {
@@ -554,32 +568,27 @@ impl App {
         if self.pane_focused() {
             return true;
         }
-        if self.view == View::Work
-            && !self.help
-            && self.dialog.is_none()
-            && self.input.is_none()
+        // Hover never changes state (P16), and pure motion never redraws.
+        if mouse.kind == MouseEventKind::Moved {
+            return false;
+        }
+        if self.context_menu.is_some()
             && matches!(
                 mouse.kind,
-                MouseEventKind::Moved | MouseEventKind::Down(event::MouseButton::Left)
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
             )
         {
-            let target = self
-                .session_hits
-                .borrow()
-                .iter()
-                .find(|(rect, _)| {
-                    rect.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
-                })
-                .map(|(_, index)| *index);
-            if let Some(index) = target {
-                if self.selected != index {
-                    self.attach_check = None;
-                    self.pending_attach = None;
-                    self.pending_adoption = None;
-                    self.selected = index;
-                }
-                self.focus = Focus::Workspace;
-                return true;
+            return true;
+        }
+        if matches!(
+            mouse.kind,
+            MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(_)
+        ) {
+            if let Some(handled) = self.pointer(mouse, Instant::now()) {
+                return handled;
+            }
+            if !matches!(mouse.kind, MouseEventKind::Down(_)) {
+                return false;
             }
         }
         if matches!(

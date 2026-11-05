@@ -8,15 +8,26 @@ pub(super) enum Motion {
     Row(usize),
 }
 
+/// A pending `g` (for `gg` or a `g`+view goto) expires after this long.
+pub(super) const CHORD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
 #[derive(Default)]
 pub(super) struct State {
     count: Option<usize>,
     pending_g: bool,
+    pending_g_at: Option<std::time::Instant>,
 }
 impl State {
     pub(super) fn reset(&mut self) {
         self.count = None;
         self.pending_g = false;
+    }
+    /// A `g` was pressed less than `CHORD_TIMEOUT` ago.
+    pub(super) fn goto_pending(&self) -> bool {
+        self.pending_g
+            && self
+                .pending_g_at
+                .is_some_and(|at| at.elapsed() < CHORD_TIMEOUT)
     }
     pub(super) fn take_count(&mut self) -> Option<usize> {
         self.pending_g = false;
@@ -48,6 +59,9 @@ impl State {
                 return Some(Motion::Pending);
             }
         }
+        if self.pending_g && !self.goto_pending() {
+            self.pending_g = false;
+        }
         if key.code == KeyCode::Char('g') {
             if self.pending_g {
                 self.pending_g = false;
@@ -56,6 +70,7 @@ impl State {
                 ));
             }
             self.pending_g = true;
+            self.pending_g_at = Some(std::time::Instant::now());
             return Some(Motion::Pending);
         }
         self.pending_g = false;
@@ -130,5 +145,64 @@ impl Target for Scroll<'_> {
             Motion::Move(delta) => self.move_by(delta),
             Motion::Row(row) => *self.offset = row.min(usize::from(self.max)) as u16,
         }
+    }
+}
+
+/// Rows kept visible between the selection and the list edge (spec 12.4).
+pub(super) const SCROLLOFF: usize = 2;
+
+thread_local! {
+    static OFFSETS: std::cell::RefCell<std::collections::HashMap<&'static str, usize>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Pure scrolloff arithmetic: keep the previous offset unless the selection
+/// would come within `SCROLLOFF` rows of an edge; never recenter, never wrap.
+pub(super) fn scrolloff(previous: usize, selected: usize, len: usize, height: usize) -> usize {
+    if height == 0 || len <= height {
+        return 0;
+    }
+    let margin = SCROLLOFF.min(height.saturating_sub(1) / 2);
+    let max = len - height;
+    let mut offset = previous.min(max);
+    let selected = selected.min(len - 1);
+    if selected < offset + margin {
+        offset = selected.saturating_sub(margin);
+    }
+    if selected + margin >= offset + height {
+        offset = (selected + margin + 1).saturating_sub(height);
+    }
+    offset.min(max)
+}
+
+/// The viewport offset for a rendered list, remembered across frames so the
+/// list scrolls only when the selection nears an edge (no per-frame jumps).
+pub(super) fn viewport(key: &'static str, selected: usize, len: usize, height: usize) -> usize {
+    OFFSETS.with(|o| {
+        let mut o = o.borrow_mut();
+        let previous = o.get(key).copied().unwrap_or(0);
+        let offset = scrolloff(previous, selected, len, height);
+        o.insert(key, offset);
+        offset
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn scrolloff_keeps_margin_without_recentering_or_wrapping() {
+        // Moving down inside the viewport does not scroll.
+        assert_eq!(scrolloff(0, 5, 40, 10), 0);
+        // Two rows before the bottom edge the list scrolls one row per step.
+        assert_eq!(scrolloff(0, 8, 40, 10), 1);
+        assert_eq!(scrolloff(1, 9, 40, 10), 2);
+        // Moving back up keeps the offset until the top margin is reached.
+        assert_eq!(scrolloff(2, 6, 40, 10), 2);
+        assert_eq!(scrolloff(2, 3, 40, 10), 1);
+        // Clamped at both ends; short lists never scroll.
+        assert_eq!(scrolloff(30, 39, 40, 10), 30);
+        assert_eq!(scrolloff(9, 0, 40, 10), 0);
+        assert_eq!(scrolloff(3, 2, 5, 10), 0);
     }
 }

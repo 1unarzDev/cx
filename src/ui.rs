@@ -11,6 +11,8 @@ mod workspaces;
 #[cfg(test)]
 use rendering::render;
 use rendering::render_with_native;
+mod hitmap;
+mod keymap;
 mod menus;
 mod navigation;
 mod notifications;
@@ -69,12 +71,14 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 enum View {
     Work,
     Files,
     Network,
     Containers,
+    /// Keys / secrets inventory (placeholder until the secrets wave).
+    Secrets,
 }
 #[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Focus {
@@ -579,7 +583,15 @@ struct App {
     force_update: bool,
     pending_requests: std::cell::Cell<usize>,
     panels: std::cell::RefCell<Vec<(Focus, bool, Rect)>>,
-    session_hits: std::cell::RefCell<Vec<(Rect, usize)>>,
+    /// Pointer press in progress (tap / long-press / scrollbar drag).
+    press: Option<hitmap::Press>,
+    /// Right-click / long-press menu: the focused selection's keymap commands.
+    context_menu: Option<hitmap::ContextMenu>,
+    /// Device moves only change scope; the scoped refresh runs once the
+    /// selection settles (spec 12.1, P17).
+    device_refresh_due: Option<Instant>,
+    /// Palette picks, most recent first (in-memory MRU ranking).
+    palette_mru: VecDeque<String>,
     tx: mpsc::SyncSender<Task>,
 }
 impl App {
@@ -719,7 +731,10 @@ impl App {
             force_update: false,
             pending_requests: std::cell::Cell::new(0),
             panels: std::cell::RefCell::new(Vec::new()),
-            session_hits: std::cell::RefCell::new(Vec::new()),
+            press: None,
+            context_menu: None,
+            device_refresh_due: None,
+            palette_mru: VecDeque::new(),
             tx,
         };
         if let Ok(message) = std::env::var("CX_STARTUP_NOTICE") {
@@ -1040,6 +1055,7 @@ impl App {
                     }
                 }
                 View::Files => "Files",
+                View::Secrets => "Keys",
             },
         }
     }
@@ -1248,6 +1264,7 @@ impl App {
             }
         }
         match self.view {
+            View::Secrets => {}
             View::Containers => self.refresh_containers(),
             View::Work => self.refresh_work(),
             View::Files => self.refresh_browser(),
@@ -1344,6 +1361,8 @@ impl App {
         }
     }
 }
+/// Device moves settle this long before the scoped refresh runs (spec 12.1).
+const DEVICE_REFRESH_SETTLE: Duration = Duration::from_millis(250);
 fn shift(index: usize, delta: isize, length: usize) -> usize {
     index
         .saturating_add_signed(delta)
@@ -1414,6 +1433,7 @@ fn safe_label(text: &str) -> String {
         })
         .collect()
 }
+#[cfg_attr(not(test), allow(dead_code))]
 fn workspace_action(action: Action) -> bool {
     !matches!(
         action,

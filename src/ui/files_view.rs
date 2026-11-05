@@ -347,7 +347,21 @@ pub(super) fn render_browser(
                     ])
                 })
                 .collect::<Vec<_>>();
-            let mut state = TableState::default().with_selected(Some(b.selected));
+            let row_count = table_rows.len();
+            let body_height = parts[2].height.saturating_sub(2) as usize;
+            let offset = navigation::viewport(
+                if label.starts_with("Destination") {
+                    "files:destination"
+                } else {
+                    "files"
+                },
+                b.selected,
+                row_count,
+                body_height,
+            );
+            let mut state = TableState::default()
+                .with_selected(Some(b.selected))
+                .with_offset(offset);
             frame.render_stateful_widget(
                 Table::new(
                     table_rows,
@@ -367,11 +381,27 @@ pub(super) fn render_browser(
                     ],
                 )
                 .column_spacing(1)
-                .block(block(format!("{} items", rows.len()), focused))
+                .block(block(
+                    // Phone layout has no rail: the title carries the folder tail.
+                    if super::rendering::phone(frame.area().width) {
+                        format!(
+                            "{} · {}",
+                            compact_path(&b.display_path, (area.width / 2) as usize),
+                            rows.len()
+                        )
+                    } else {
+                        format!("{} items", rows.len())
+                    },
+                    focused,
+                ))
                 .row_highlight_style(Style::default()),
                 parts[2],
                 &mut state,
             );
+            if focused {
+                let body = Block::default().borders(Borders::ALL).inner(parts[2]);
+                hitmap::rows(hitmap::ListId::Files, body, state.offset(), row_count);
+            }
         }
     }
     let bottom = if b.preview.is_some() {

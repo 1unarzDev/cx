@@ -176,8 +176,24 @@ pub(super) fn render_network(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .style(muted()),
     )
     .row_highlight_style(selected_style());
-    let mut state = TableState::default().with_selected(Some(app.network_selected));
+    // Header row, then rows; the viewport is remembered (scrolloff, no jumps).
+    let body = Rect {
+        y: sections[1].y + 1,
+        height: sections[1].height.saturating_sub(1),
+        ..sections[1]
+    };
+    let row_count = candidates.len();
+    let offset = navigation::viewport(
+        "network",
+        app.network_selected,
+        row_count,
+        body.height as usize,
+    );
+    let mut state = TableState::default()
+        .with_selected(Some(app.network_selected))
+        .with_offset(offset);
     frame.render_stateful_widget(table, sections[1], &mut state);
+    hitmap::rows(hitmap::ListId::Network, body, state.offset(), row_count);
     if !detail.is_empty() {
         frame.render_widget(
             Paragraph::new(detail).wrap(Wrap { trim: false }).scroll((

@@ -46,6 +46,7 @@ impl Target for Active<'_> {
                     }
                     .move_by(delta);
                 }
+                View::Secrets => {}
                 _ => {
                     let length = app.session_rows().len();
                     List {
@@ -62,24 +63,43 @@ struct Devices<'a> {
     app: &'a mut App,
 }
 impl Target for Devices<'_> {
+    /// Moving in Devices is a pure scope change: no refresh, no cache clearing
+    /// (P17). The scoped refresh runs once the selection settles.
     fn move_by(&mut self, delta: isize) {
+        let rows = self.app.device_rows();
+        let current = rows.iter().position(|d| *d == self.app.device).unwrap_or(0);
+        let next = rows[shift(current, delta, rows.len())];
+        if next == self.app.device {
+            return;
+        }
         let network_selection = if self.app.view == View::Network {
             self.app.network_selection()
         } else {
             None
         };
-        let rows = self.app.device_rows();
-        let current = rows.iter().position(|d| *d == self.app.device).unwrap_or(0);
-        self.app.device = rows[shift(current, delta, rows.len())];
-        self.app.selected = 0;
+        let session = self
+            .app
+            .selected_session()
+            .map(|(d, s)| (d, super::workspaces::runtime_key(&s)));
+        self.app.device = next;
         if self.app.view == View::Files {
             self.app.select_file_device();
-        } else {
-            self.app.refresh();
-            if self.app.view == View::Network {
-                self.app.restore_network_selection(network_selection);
-            }
+            return;
         }
+        // Keep the selected session when it is still in scope, by identity.
+        self.app.selected = session
+            .and_then(|(device, key)| {
+                self.app
+                    .session_rows()
+                    .iter()
+                    .position(|(d, s)| *d == device && super::workspaces::runtime_key(s) == key)
+            })
+            .unwrap_or(0);
+        if self.app.view == View::Network {
+            self.app.restore_network_selection(network_selection);
+        }
+        self.app.device_refresh_due =
+            Some(std::time::Instant::now() + super::DEVICE_REFRESH_SETTLE);
     }
 }
 struct Files<'a> {

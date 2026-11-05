@@ -110,18 +110,24 @@ impl App {
                 );
             }
             KeyCode::Down if mode == Input::Palette => {
-                let n = self.palette().len();
+                let n = self.palette_view().len();
                 self.palette_selected = (self.palette_selected + 1).min(n.saturating_sub(1));
             }
             KeyCode::Up if mode == Input::Palette => {
                 self.palette_selected = self.palette_selected.saturating_sub(1)
             }
+            KeyCode::PageDown if mode == Input::Palette => {
+                let n = self.palette_view().len();
+                self.palette_selected = (self.palette_selected + 8).min(n.saturating_sub(1));
+            }
+            KeyCode::PageUp if mode == Input::Palette => {
+                self.palette_selected = self.palette_selected.saturating_sub(8)
+            }
+            KeyCode::Tab | KeyCode::BackTab if mode == Input::Palette => self.palette_next_section(
+                key.code == KeyCode::BackTab || key.modifiers.contains(KeyModifiers::SHIFT),
+            ),
             KeyCode::Enter => match mode {
-                Input::Palette => {
-                    if let Some((action, _)) = self.palette().get(self.palette_selected).copied() {
-                        self.execute_palette(action);
-                    }
-                }
+                Input::Palette => self.run_palette_selected(),
                 Input::Command => {
                     if !self.text.trim().is_empty() {
                         if let Some((d, directory)) = self.command_target.take() {

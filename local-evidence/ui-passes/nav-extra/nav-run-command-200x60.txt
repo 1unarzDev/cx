@@ -20,7 +20,7 @@
      └─ Downloads/   │                                                                                                                                                                                 │
                      │                                        ╭ > run: ls -la█ ──────────────────────────────────────────────────────────╮                                                             │
                      │                                        │ Run command                                                              │                                                             │
-                     │                                        │▌ ls -la        fixture@lap… · /tmp/tmp-xxxxxx                /home  Enter│                                                             │
+                     │                                        │▌ ls -la        fixture@laptop · …p/tmp-xxxxxx                /home  Enter│                                                             │
                      │                                        ╰ Enter runs in a panel · Esc cancel ──────────────────────────────────────╯                                                             │
                      │                                                                                                                                                                                 │
                      │                                                                                                                                                                                 │

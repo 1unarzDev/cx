@@ -10,7 +10,7 @@
 │ Sessions          ││                                                                                                 │
 │ Network           ││╭ > run: ls -la█ ──────────────────────────────────────────────────────────╮                     │
 │ Containers        │││ Run command                                                              │                     │
-│ Transfers         │││▌ ls -la        fixture@lap… · /tmp/tmp-xxxxxx                /home  Enter│                     │
+│ Transfers         │││▌ ls -la        fixture@laptop · …p/tmp-xxxxxx                /home  Enter│                     │
 ╰───────────────────╯│╰ Enter runs in a panel · Esc cancel ──────────────────────────────────────╯                     │
  Selected ───────────│                                                                                                 │
  laptop              │                                                                                                 │

@@ -2,7 +2,7 @@
 [All] [●laptop] [●* lab-arm]          1›
  Files  fixture@laptop                  
  NORMAL 0 selected · hidden off         
-╭ ▸ …atrix-sqtk4_vt/home · 2 ──────────╮
+╭ ▸ …atrix-vo99u78j/home · 2 ──────────╮
 │  / ▸ Downloads                       │
 │  /   projects                        │
 │                                      │

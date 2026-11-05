@@ -2,7 +2,7 @@
                                                                                 
 ╭ Devices ──────────╮╭ ▸ Sessions · 3 sessions ────────────────────────────────╮
 │ › All devices     ││  SESSION                                      STATE     │
-│   ●  laptop       ││                                                         │
+│   ◌  laptop       ││                                                         │
 │   ●  * lab-arm    ││  /tmp/tmp-xxxxxx                /home/project           ┃
 │   ○  * field-rov… ││› build watcher                                idle      ┃
 ╰───────────────────╯│                                                         ┃
@@ -17,7 +17,7 @@
  Host fixture@laptop │[xxxxxx@xxxxxxxxxx cx-demo]$                             │
  Folder /tmp/cx-cap… │                                                         │
  Enter open · n new  │                                                         │
-╯                    ╰─────────────────────────────────────────────────────────╯
+                     ╰─────────────────────────────────────────────────────────╯
  ● 2/3 devices            Focus: Sessions · 3/3                           ↔ idle
  Enter Open                 n New session             w Watch · read-only       
  p Pin / unpin              s Agent tasks             ? Help                    

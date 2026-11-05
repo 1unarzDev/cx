@@ -1,41 +1,41 @@
  cx  ▸Sessions   Files   Network   Keys                                                                                                                                       viewing fixture@laptop  … 
                                                                                                                                                                                                         
-╭ Devices ──────────╮╭ ▸ Sessions · 3 sessions ──────────────────────────────────────────────────────╮╭ New shell · fixture@laptop ────────────────────────────────────────────────────────────────────╮
-│ › All devices     ││  AGENT      SESSION                       EXECUTION                 STATE     ││Enter · focus terminal · Wheel · scroll                                                         │
-│   ●  laptop       ││                                                                               ││run-05 step 1 ok  lidar=11Hz                                                                    │
-│   ●  * lab-arm    ││             /tmp/tmp-xxxxxx                                                   ││run-05 step 2 ok  lidar=12Hz                                                                    │
-│   ○  * field-rov… ││  [shell]    build watcher                 fixture@laptop            idle      ││run-05 step 3 ok  lidar=13Hz                                                                    │
-╰───────────────────╯│                                                                               ││run-05 step 4 ok  lidar=14Hz                                                                    │
-╭ Actions ──────────╮│             /tmp/tmp-xxxxxx                                                   ││run-05 step 5 ok  lidar=15Hz                                                                    │
-│ Files             ││› [shell]    New shell                     fixture@laptop            idle      ││run-05 step 6 ok  lidar=16Hz                                                                    │
-│ Network           ││                                                                               ││[xxxxxx@xxxxxxxxxx robot-logs]$                                                                 │
-│ Containers        ││             /tmp/tmp-xxxxxx                                                   ││                                                                                                │
-│ Transfers         ││  [shell]    ros core                      robot@lab-arm             idle      ││                                                                                                │
-│ Watch · read-only ││                                                                               ││                                                                                                │
-╰───────────────────╯│                                                                               ││                                                                                                │
- Selected ───────────│                                                                               ││                                                                                                │
+╭ Devices ──────────╮╭ ▸ Sessions · 13 sessions ─────────────────────────────────────────────────────╮╭ shell · xxxxxx · fixture@laptop ───────────────────────────────────────────────────────────────╮
+│ › All devices     ││  AGENT      SESSION                       EXECUTION                 STATE     ││External terminal · Enter to move into CX                                                       │
+│   ●  laptop       ││                                                                               ││                                                                                                │
+│   ●  * lab-arm    ││             /home/xxxxxx                                                      ││                                                                                                │
+│   ○  * field-rov… ││  [shell]    shell · xxxxxx · terminal     fixture@laptop            ● ext     ││                                                                                                │
+╰───────────────────╯│› [shell]    shell · xxxxxx · terminal     fixture@laptop            ● ext     ││                                                                                                │
+╭ Actions ──────────╮│  [shell]    shell · xxxxxx · terminal     fixture@laptop            ● ext     ││                                                                                                │
+│ Files             ││  [shell]    shell · xxxxxx · terminal     fixture@laptop            ● ext     ││                                                                                                │
+│ Network           ││  [shell]    shell · xxxxxx · terminal     fixture@laptop            ● ext     ││                                                                                                │
+│ Containers        ││  [shell]    shell · xxxxxx · terminal     robot@lab-arm             ● ext     ││                                                                                                │
+│ Transfers         ││  [shell]    shell · xxxxxx · terminal     robot@lab-arm             ● ext     ││                                                                                                │
+│ Watch · read-only ││  [shell]    shell · xxxxxx · terminal     robot@lab-arm             ● ext     ││                                                                                                │
+╰───────────────────╯│  [shell]    shell · xxxxxx · terminal     robot@lab-arm             ● ext     ││                                                                                                │
+ Selected ───────────│  [shell]    shell · xxxxxx · terminal     robot@lab-arm             ● ext     ││                                                                                                │
  Host fixture@laptop │                                                                               ││                                                                                                │
- Folder /tmp/cx-cap… │                                                                               ││                                                                                                │
- Enter open · n new  │                                                                               ││                                                                                                │
+ Folder /home/xxxxxx │             /tmp/tmp-xxxxxx                                                   ││                                                                                                │
+ Enter open · n new  │  [shell]    build watcher                 fixture@laptop            idle      ││                                                                                                │
                      │                                                                               ││                                                                                                │
-                     │                                        ╭ > █ ─────────────────────────────────────────────────────────────────────╮                                                             │
-                     │                                        │ Sessions                                                                 │                                                             │
+                     │             /tmp/tmp-xxxxxx            ╭ > █ ─────────────────────────────────────────────────────────────────────╮                                                             │
+                     │  [shell]    New shell                  │ Sessions                                                                 │                                                             │
                      │                                        │▌ build watcher                            laptop · …ojects/cx-demo  Enter│                                                             │
-                     │                                        │  New shell                                laptop · …cts/robot-logs  Enter│                                                             │
+                     │             /tmp/tmp-xxxxxx            │  New shell                                laptop · …cts/robot-logs  Enter│                                                             │
+                     │  [shell]    ros core                   │  shell · xxxxxx                           laptop · /home/xxxxxx     Enter│                                                             │
+                     │                                        │  shell · xxxxxx                           laptop · /home/xxxxxx     Enter│                                                             │
+                     │                                        │  shell · xxxxxx                           laptop · /home/xxxxxx     Enter│                                                             │
+                     │                                        │  shell · xxxxxx                           laptop · /home/xxxxxx     Enter│                                                             │
+                     │                                        │  shell · xxxxxx                           laptop · /home/xxxxxx     Enter│                                                             │
                      │                                        │  ros core                                 lab-arm · …ote/catkin_ws  Enter│                                                             │
+                     │                                        │  shell · xxxxxx                           lab-arm · /home/xxxxxx    Enter│                                                             │
+                     │                                        │  shell · xxxxxx                           lab-arm · /home/xxxxxx    Enter│                                                             │
+                     │                                        │  shell · xxxxxx                           lab-arm · /home/xxxxxx    Enter│                                                             │
+                     │                                        │  shell · xxxxxx                           lab-arm · /home/xxxxxx    Enter│                                                             │
+                     │                                        │  shell · xxxxxx                           lab-arm · /home/xxxxxx    Enter│                                                             │
                      │                                        │ Actions                                                                  │                                                             │
                      │                                        │  Pin / unpin selected session                                           p│                                                             │
                      │                                        │  Containers · choose device / All devices                                │                                                             │
-                     │                                        │  Add by SSH address · alias / user@host                                  │                                                             │
-                     │                                        │  Files · choose device · browse home                                     │                                                             │
-                     │                                        │  New session · choose device, provider and folder                        │                                                             │
-                     │                                        │  Transfers · progress / cancel / retry                                  T│                                                             │
-                     │                                        │  Watch session · read-only terminal, no input                            │                                                             │
-                     │                                        │  Network · choose device / All devices                                   │                                                             │
-                     │                                        │  Sessions · choose device / All devices                                  │                                                             │
-                     │                                        │  Refresh                                                                 │                                                             │
-                     │                                        │  Keyboard help                                                           │                                                             │
-                     │                                        │  Update cx v0.1.95: check releases                                       │                                                             │
                      │                                        ╰ Enter attaches · Esc cancel · Tab section ───────────────────────────────╯                                                             │
                      │                                                                               ││                                                                                                │
                      │                                                                               ││                                                                                                │
@@ -54,7 +54,7 @@
                      │                                                                               ││                                                                                                │
                      │                                                                               ││                                                                                                │
                      ╰───────────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────────────────────────╯
- ● 2/3 devices                                                                  Focus: Palette · 3/3                                                                                              ↔ idle
+ ● 2/3 devices                                                                 Focus: Palette · 13/13                                                                                             ↔ idle
  Enter Confirm                                                      Esc Cancel                                                        Ctrl U Clear                                                      
                                                                                                                                                                                                         
                                                                                                                                                                                                         

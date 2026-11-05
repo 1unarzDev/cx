@@ -15,8 +15,8 @@
 ╰───────────────────╯│                                                                                                                                                                                 │
  Selected ───────────│                                                                                                                                                                                 │
  Host robot@lab-arm  │                                                                                                                                                                                 │
- Folder /tmp/cx-cap… │                                                                                                                                                                                 │
- Enter open · n new  │                                                                                                                                                                                 │
+ 6 sessions          │                                                                                                                                                                                 │
+ n new · Ctrl+P act… │                                                                                                                                                                                 │
                      │                                                                                                                                                                                 │
                      │                                                                                                                                                                                 │
                      │                                                                                                                                                                                 │
@@ -54,7 +54,7 @@
                      │                                                                                                                                                                                 │
                      │                                                                                                                                                                                 │
                      ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- ● 2/3 devices                                                                   Focus: Keys · 13/13                                                                                              ↔ idle
- Enter Open                                                         n New session                                                     n / : Session / command                                           
- / Search                                                           Ctrl P Actions                                                    ? Help                                                            
+ ● 2/3 devices                                                                       Focus: Keys                                                                                                  ↔ idle
+ n New session                                                      Ctrl P Actions                                                    ? Help                                                            
+ Ctrl C Quit                                                                                                                                                                                            
                                                                                                                                                                                                         

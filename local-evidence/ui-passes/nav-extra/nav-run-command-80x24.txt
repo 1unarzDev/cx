@@ -1,9 +1,9 @@
  cx   Sessions  ▸Files   Network   Keys               viewing fixture@laptop  … 
                                                                                 
-╭ ╭ > run: ls -la█ ──────────────────────────────────────────────────────────╮  
-│ │ Run command                                                              │  
-│ │▌ ls -la        fixture@lap… · /tmp/tmp-xxxxxx                /home  Enter│─╮
-│ ╰ Enter runs in a panel · Esc cancel ──────────────────────────────────────╯ │
+╭ > run: ls -la█ ──────────────────────────────────────────────────────────────╮
+│ Run command                                                                  │
+│▌ ls -la        fixture@laptop · /tmp/tmp-xxxxxx                /home    Enter│
+╰ Enter runs in a panel · Esc cancel ──────────────────────────────────────────╯
 │   ○  * field-rov… ││  /   projects                                           │
 ╰───────────────────╯│                                                         │
 ╭ Actions ──────────╮│                                                         │

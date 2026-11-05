@@ -2,7 +2,7 @@
 [All] [●laptop] [●* lab-arm]          1›
  Files  fixture@laptop                  
  NORMAL 0 selected · hidden off         
-╭ ▸ …atrix-sqtk4_vt/home · 2 ──────────╮
+╭ ▸ …atrix-vo99u78j/home · 2 ──────────╮
 │  / ▸ Downloads                       │
 │  /   projects                        │
 │                                      │
@@ -16,5 +16,5 @@
  Space select · v range · . hidden      
 ╭ > run: ls -la█ ──────────────────────╮
 │ Run command                          │
-│▌ ls -la        …-sqtk4_vt/home  Enter│
+│▌ ls -la        …-vo99u78j/home  Enter│
 ╰ Enter runs in a panel · Esc cancel ──╯

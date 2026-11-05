@@ -244,6 +244,11 @@ fn sessions_selected(app: &App) -> bool {
 fn sessions_empty(app: &App) -> bool {
     app.selected_session().is_none()
 }
+/// False on the Keys/Secrets placeholder body, where Enter and `/` have
+/// nothing to act on (the device rail keeps its own keys).
+fn not_placeholder(app: &App) -> bool {
+    !(app.view == View::Secrets && app.focus == Focus::Workspace)
+}
 fn destination_paste(app: &App) -> bool {
     app.destination_active && app.clipboard.is_some()
 }
@@ -807,7 +812,8 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Enter",
         Cmd::Primary,
         "Open",
-        hint("Enter", "Open", 0)
+        hint("Enter", "Open", 0),
+        Some(not_placeholder)
     ),
     bind!(
         Global,
@@ -822,7 +828,8 @@ pub(super) const BINDINGS: &[Binding] = &[
         "/",
         Cmd::Search,
         "Search",
-        hint("/", "Search", 7)
+        hint("/", "Search", 7),
+        Some(not_placeholder)
     ),
     bind!(
         Global,
@@ -973,10 +980,13 @@ pub(super) fn hints(app: &App) -> Vec<(Hint, Cmd)> {
     for ctx in contexts(app) {
         for binding in BINDINGS.iter().filter(|b| b.ctx == ctx) {
             let Some(hint) = binding.hint else { continue };
+            // Combined chips ("n / :") yield when any of their keys already
+            // has a chip of its own.
+            let parts = |key: &'static str| key.split(" / ");
             if !effective(app, binding)
-                || out
-                    .iter()
-                    .any(|(h, _)| h.key == hint.key || h.label == hint.label)
+                || out.iter().any(|(h, _)| {
+                    h.label == hint.label || parts(h.key).any(|a| parts(hint.key).any(|b| a == b))
+                })
             {
                 continue;
             }
@@ -991,6 +1001,15 @@ pub(super) fn hints(app: &App) -> Vec<(Hint, Cmd)> {
 /// then every other context, so the overlay is complete but leads with what applies.
 pub(super) fn help_sections(app: &App) -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
     let active = contexts(app);
+    // Key labels a more specific active context already explains; the generic
+    // Everywhere row for the same key (e.g. Enter "Open") is folded (P15).
+    let specific: Vec<&'static str> = active
+        .iter()
+        .filter(|ctx| **ctx != Ctx::Global)
+        .flat_map(|ctx| BINDINGS.iter().filter(move |b| b.ctx == *ctx))
+        .filter(|b| available(app, b))
+        .map(|b| b.label)
+        .collect();
     let mut order = active.clone();
     for ctx in [
         Ctx::Sessions,
@@ -1012,6 +1031,9 @@ pub(super) fn help_sections(app: &App) -> Vec<(&'static str, Vec<(&'static str, 
             let mut rows: Vec<(&'static str, &'static str)> = Vec::new();
             for binding in BINDINGS.iter().filter(|b| b.ctx == ctx && !b.fold) {
                 if active.contains(&ctx) && !available(app, binding) {
+                    continue;
+                }
+                if ctx == Ctx::Global && specific.contains(&binding.label) {
                     continue;
                 }
                 // One row per key label; the first description wins.

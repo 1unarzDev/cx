@@ -21,12 +21,12 @@
                      │             /tmp/tmp-xxxxxx            ╭ > ros█ ──────────────────────────────────────────────────────────────────╮                                                             │
                      │  [shell]    New shell                  │ Sessions                                                                 │                                                             │
                      │                                        │▌ ros core                                 lab-arm · …ote/catkin_ws  Enter│                                                             │
-                     │             /tmp/tmp-xxxxxx            │  build watcher                            laptop · …ojects/cx-demo  Enter│                                                             │
-                     │› [shell]    ros core                   │  New shell                                laptop · …cts/robot-logs  Enter│                                                             │
+                     │             /tmp/tmp-xxxxxx            │  New shell                                laptop · …cts/robot-logs  Enter│                                                             │
+                     │› [shell]    ros core                   │  build watcher                            laptop · …ojects/cx-demo  Enter│                                                             │
                      │                                        │ Folders                                                                  │                                                             │
-                     │                                        │  …-matrix-sqtk4_vt/home/projects/cx-demo  laptop                         │                                                             │
-                     │                                        │  …trix-sqtk4_vt/home/projects/robot-logs  laptop                         │                                                             │
-                     │                                        │  …pture-matrix-sqtk4_vt/remote/catkin_ws  lab-arm                        │                                                             │
+                     │                                        │  …-matrix-vo99u78j/home/projects/cx-demo  laptop                         │                                                             │
+                     │                                        │  …trix-vo99u78j/home/projects/robot-logs  laptop                         │                                                             │
+                     │                                        │  …pture-matrix-vo99u78j/remote/catkin_ws  lab-arm                        │                                                             │
                      │                                        ╰ Enter attaches · Esc cancel · Tab section ───────────────────────────────╯                                                             │
                      │                                                                               ││                                                                                                │
                      │                                                                               ││                                                                                                │

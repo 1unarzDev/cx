@@ -19,6 +19,6 @@
 │Tab / Shift+Tab    Next / previous panel                                      │
 │Ctrl+arrows        Move panel focus by direction                              │
 │← / h              Focus devices                                              │
-│Enter              Open                                                       │
 │Esc                Back / clear current mode                                  │
+│/                  Search                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯

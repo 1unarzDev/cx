@@ -3,19 +3,19 @@
 ╭ Devices ──────────╮╭ ▸ Sessions · 13 sessions ───────────────────────────────╮
 │ › All devices     ││  SESSION                                      STATE     │
 │   ●  laptop       ││                                                         │
-│   ●  * lab-arm    ││                                                         │
-│   ○  * field-rov… ││  /tmp/tmp-xxxxxx                /home/project           │
-╰───────────────────╯│› build watcher                                idle      │
-╭ Actions ──────────╮│                                                         ┃
-│ Files             ││  /tmp/tmp-xxxxxx                /home/project           │
+│   ●  * lab-arm    ││  /home/xxxxxx                                           ┃
+│   ○  * field-rov… ││› shell · xxxxxx · terminal                    idle      │
+╰───────────────────╯│  shell · xxxxxx · terminal                    idle      │
+╭ Actions ──────────╮│  shell · xxxxxx · terminal                    idle      │
+│ Files             ││  shell · xxxxxx · terminal                    idle      │
 │ Network           │╰─────────────────────────────────────────────────────────╯
-│ Containers        │╭ build watcher · fixture@laptop ─────────────────────────╮
-│ Transfers         ││Enter · focus terminal · Wheel · scroll                  │
-│ Watch · read-only ││Compiling cx-demo v0.1.0                                 │
-╰───────────────────╯│    Finished dev in 2.41s                                │
- Selected ───────────│[Running cargo check]                                    │
- Host fixture@laptop │[xxxxxx@xxxxxxxxxx cx-demo]$                             │
- Folder /tmp/cx-cap… │                                                         │
+│ Containers        │╭ shell · xxxxxx · fixture@laptop ────────────────────────╮
+│ Transfers         ││External terminal · Enter to move into CX                │
+│ Watch · read-only ││                                                         │
+╰───────────────────╯│                                                         │
+ Selected ───────────│                                                         │
+ Host fixture@laptop │                                                         │
+ Folder /home/xxxxxx │                                                         │
  Enter open · n new  │                                                         │
                      ╰─────────────────────────────────────────────────────────╯
  ● 2/3 devices           Focus: Sessions · 13/13                          ↔ idle

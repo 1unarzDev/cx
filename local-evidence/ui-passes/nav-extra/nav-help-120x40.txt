@@ -21,7 +21,7 @@
                      ││n                  New session in this folder                             │                     │
                      ││s                  Sessions in selected / current folder                  │                     │
                      ││Esc                Clear selection / filter / search, then back to        │                     │
-                     ││Sessions                                                                  │                     │
+                     ││                   Sessions                                               │                     │
                      ││                                                                          │                     │
                      ││Everywhere                                                                │                     │
                      ││↑↓ / j k           Move selection (counts: 5j)                            │                     │

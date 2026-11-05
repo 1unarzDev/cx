@@ -11,12 +11,12 @@
 │ Network           ││╭ > ros█ ──────────────────────────────────────────────────────────────────╮                     │
 │ Containers        │││ Sessions                                                                 │                     │
 │ Transfers         │││▌ ros core                                 lab-arm · …ote/catkin_ws  Enter│                     │
-│ Watch · read-only │││  build watcher                            laptop · …ojects/cx-demo  Enter│                     │
-╰───────────────────╯││  New shell                                laptop · …cts/robot-logs  Enter│                     │
+│ Watch · read-only │││  New shexl                                laptop · …cts/robot-logs  Enter│                     │
+╰───────────────────╯││  build watcher                            laptop · …ojects/cx-demo  Enter│                     │
  Selected ───────────││ Folders                                                                  │                     │
- Host robot@lab-arm  ││  …-matrix-sqtk4_vt/home/projects/cx-demo  laptop                         │                     │
- Folder /tmp/cx-cap… ││  …trix-sqtk4_vt/home/projects/robot-logs  laptop                         │                     │
- Enter open · n new  ││  …pture-matrix-sqtk4_vt/remote/catkin_ws  lab-arm                        │                     │
+ Host robot@lab-arm  ││  …-matrix-vo99u78j/home/projects/cx-demo  laptop                         │                     │
+ Folder /tmp/cx-cap… ││  …trix-vo99u78j/home/projects/robot-logs  laptop                         │                     │
+ Enter open · n new  ││  …pture-matrix-vo99u78j/remote/catkin_ws  lab-arm                        │                     │
                      │╰ Enter attaches · Esc cancel · Tab section ───────────────────────────────╯                     │
                      │  /tmp/tmp-xxxxxx                          ││                                                    │
                      │  New shell                      idle      ││                                                    │

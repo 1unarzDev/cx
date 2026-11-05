@@ -2,8 +2,8 @@
                                                                                 
 ╭ Devices ──────────╮╭ ▸ Keys ─────────────────────────────────────────────────╮
 │ › All devices     ││                                                         │
-│   ●  laptop       ││ Keys and secrets                                        │
-│   ●  * lab-arm    ││ Credentials cx uses will be listed here, always masked. │
+│   ◌  laptop       ││ Keys and secrets                                        │
+│   ◌  * lab-arm    ││ Credentials cx uses will be listed here, always masked. │
 │   ○  * field-rov… ││ Nothing is read yet · provider credentials are never    │
 ╰───────────────────╯│ read.                                                   │
 ╭ Actions ──────────╮│                                                         │
@@ -15,10 +15,10 @@
 ╰───────────────────╯│                                                         │
  Selected ───────────│                                                         │
  Host fixture@laptop │                                                         │
- Folder /tmp/cx-cap… │                                                         │
- Enter open · n new  │                                                         │
+ 7 sessions          │                                                         │
+ n new · Ctrl+P act… │                                                         │
                      ╰─────────────────────────────────────────────────────────╯
- ● 2/3 devices              Focus: Keys · 3/3                             ↔ idle
- Enter Open                 n New session             n / : Session / command   
- / Search                   Ctrl P Actions            ? Help                    
+ ● 2/3 devices                 Focus: Keys                                ↔ idle
+ n New session              Ctrl P Actions            ? Help                    
+ Ctrl C Quit                                                                    
                                                                                 

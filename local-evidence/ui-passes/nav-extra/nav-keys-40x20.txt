@@ -14,7 +14,7 @@
 │                                      │
 │                                      │
 ╰──────────────────────────────────────╯
-   Focus: Keys · 3/3              ↔ idle
-   [Open]         [New]       [Help]    
+      Focus: Keys                 ↔ idle
+    [New]       [Actions]     [Help]    
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    Sess      Files      Net      ▸Keys  

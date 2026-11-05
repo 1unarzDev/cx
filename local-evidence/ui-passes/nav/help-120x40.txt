@@ -21,7 +21,6 @@
                      ││Tab / Shift+Tab    Next / previous panel                                  │                     │
                      ││Ctrl+arrows        Move panel focus by direction                          │                     │
                      ││← / h              Focus devices                                          │                     │
-                     ││Enter              Open                                                   │                     │
                      ││Esc                Back / clear current mode                              │                     │
                      ││/                  Search                                                 │                     │
                      ││f                  Filter the list                                        │                     │
@@ -33,8 +32,9 @@
                      ││Ctrl+C             Quit cx; work keeps running                            │                     │
                      ││                                                                          │                     │
                      ││Devices                                                                   │                     │
-                     ╰│Enter              Scope the view to this device                          │─────────────────────╯
- ● 2/3 devices        │r                  Refresh the selected device (moving never refreshes)   │                ↔ idle
+                     ││Enter              Scope the view to this device                          │                     │
+                     ╰│r                  Refresh the selected device (moving never refreshes)   │─────────────────────╯
+ ● 2/3 devices        │b                  Toggle selected remote device access · * means         │                ↔ idle
  ↑↓ Scroll            ╰──────────────────────────────────────────────────────────────────────────╯                      
                                                                                                                         
                                                                                                                         

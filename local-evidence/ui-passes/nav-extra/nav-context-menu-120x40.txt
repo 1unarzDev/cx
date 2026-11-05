@@ -9,11 +9,11 @@
 ╭ Actions ──────────╮│  shell · xxxxxx · terminal      ● ext     ││                                                    │
 │ Files             ││  shell · xxxxxx · terminal      ● ext     ││                                                    │
 │ Network           ││  shell · xxxxxx · terminal      ● ext     ││                                                    │
-│ Containers        ││  shell · xxxxxx · terminal      ● ext     ││                                                    │
-│ Transfers         ││  shell · xxxxxx · terminal      ● ext     ││                                                    │
-│ Watch · read-only ││  shell · xxxxxx · terminal      ● ext     ││                                                    │
-╰───────────────────╯│  shell · xxxxxx · terminal      ● ext     ││                                                    │
- Selected ───────────│  shell · xxxxxx · terminal      ● ext     ││                                                    │
+│ Containers        ││  shell · xxxxxx · terminal      idle      ││                                                    │
+│ Transfers         ││  shell · xxxxxx · terminal      idle      ││                                                    │
+│ Watch · read-only ││  shell · xxxxxx · terminal      idle      ││                                                    │
+╰───────────────────╯│  shell · xxxxxx · terminal      idle      ││                                                    │
+ Selected ───────────│  shell · xxxxxx · terminal      idle      ││                                                    │
  Host robot@lab-arm  │                                           ││                                                    │
  Folder /tmp/cx-cxp… │  /tmp/tmp-xxxxxx                          ││                                                    │
  Enter open · n new  │  build watcher                  idle      ││                                                    │

@@ -735,3 +735,116 @@ fn phone_device_strip_marks_and_reaches_hidden_devices() {
     let name = &a.devices[value - 1].name;
     assert!(strip.contains(name.as_str()), "{name} not visible: {strip}");
 }
+
+#[test]
+fn help_descriptions_wrap_under_their_column_and_enter_is_listed_once() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 3);
+    a.view = View::Work;
+    a.focus = Focus::Workspace;
+    a.help = true;
+    let sections = keymap::help_sections(&a);
+    // 80 columns: full-frame box; 200: the centered 76-wide popup.
+    for (w, box_width) in [(80u16, 80usize), (200, 76)] {
+        let text = draw(&a, w, 120);
+        let key_width = 18;
+        let column = box_width - 2 - key_width - 1;
+        let mut wrapped = 0;
+        for (_, rows) in &sections {
+            for (_, description) in rows {
+                let parts = rendering::help_wrap(description, column);
+                // The 200-column popup is height-capped and scrolls; check
+                // the rows it shows.
+                if !text.contains(&format!(" {}", parts[0])) {
+                    continue;
+                }
+                for part in parts.iter().skip(1) {
+                    wrapped += 1;
+                    let indented = format!("│{}{part}", " ".repeat(key_width + 1));
+                    assert!(
+                        text.contains(&indented),
+                        "{w}: continuation {part:?} not under the description column\n{text}"
+                    );
+                }
+            }
+        }
+        assert!(wrapped > 0, "{w}: no description wrapped");
+    }
+    // P15: the generic Everywhere Enter row folds under Sessions' own.
+    let enter_rows = sections
+        .iter()
+        .filter(|(title, _)| matches!(*title, "Sessions" | "Everywhere"))
+        .flat_map(|(_, rows)| rows)
+        .filter(|(k, _)| *k == "Enter")
+        .count();
+    assert_eq!(enter_rows, 1, "Enter listed twice with Sessions focused");
+    let parts = rendering::help_wrap("Allow access in a single-direction only", 12);
+    assert!(parts.len() > 1 && parts.iter().all(|p| p.chars().count() <= 12));
+    assert_eq!(
+        rendering::help_wrap("supercalifragilistic", 8),
+        vec!["superca…".to_owned()]
+    );
+}
+
+#[test]
+fn keys_placeholder_footer_only_offers_keys_that_work_there() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 4);
+    a.view = View::Secrets;
+    a.focus = Focus::Workspace;
+    let hints = keymap::hints(&a);
+    let keys: Vec<_> = hints.iter().map(|(h, _)| h.key).collect();
+    assert!(!keys.contains(&"Enter"), "{keys:?}");
+    assert!(!keys.contains(&"/"), "{keys:?}");
+    // `n` appears in exactly one chip.
+    let n_chips = keys
+        .iter()
+        .filter(|k| k.split(" / ").any(|p| p == "n"))
+        .count();
+    assert!(n_chips <= 1, "{keys:?}");
+    // `/` does nothing hidden on the placeholder.
+    press(&mut a, '/');
+    assert!(a.input.is_none(), "invisible sessions search opened");
+    // The status line does not show a session count for the placeholder.
+    let text = draw(&a, 120, 40);
+    assert!(text.contains("Focus: Keys"), "{text}");
+    assert!(!text.contains("Focus: Keys · "), "{text}");
+    assert!(!text.contains("Enter open"), "{text}");
+    // The device rail keeps `/` as its filter.
+    a.focus = Focus::Devices;
+    assert!(keymap::hints(&a).iter().any(|(h, _)| h.key == "/"));
+}
+
+#[test]
+fn palette_detail_keeps_the_device_whole_when_there_is_room() {
+    let detail = "fixture@laptop · /tmp/tmp-abcdef/projects/cx-demo/src/home";
+    let fitted = rendering::fit_detail(detail, 48);
+    assert!(fitted.chars().count() <= 48, "{fitted}");
+    assert!(fitted.starts_with("fixture@laptop · "), "{fitted}");
+    assert!(fitted.ends_with("/src/home"), "{fitted}");
+    // Tight: the path tail still wins most of the room.
+    let tight = rendering::fit_detail(detail, 24);
+    assert!(
+        tight.chars().count() <= 24 && tight.ends_with("home"),
+        "{tight}"
+    );
+}
+
+#[test]
+fn palette_spans_the_frame_below_100_columns() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 3);
+    a.open_palette("");
+    let text = draw(&a, 80, 24);
+    // The palette owns the frame's edges: its top border (holding the input)
+    // spans the frame, with no backdrop border a cell or two outside it.
+    let lines: Vec<&str> = text.lines().collect();
+    let input = lines
+        .iter()
+        .position(|l| l.contains('█'))
+        .unwrap_or_else(|| panic!("{text}"));
+    let row: Vec<char> = lines[input].chars().collect();
+    assert!(row[0] == '╭' && row[79] == '╮', "{text}");
+    let below: Vec<char> = lines[input + 1].chars().collect();
+    assert!(below[0] == '│' && !"│╭╰".contains(below[1]), "{text}");
+}

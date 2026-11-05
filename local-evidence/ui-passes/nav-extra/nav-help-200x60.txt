@@ -29,7 +29,7 @@
                      │                                        │n                  New session in this folder                             │                                                             │
                      │                                        │s                  Sessions in selected / current folder                  │                                                             │
                      │                                        │Esc                Clear selection / filter / search, then back to        │                                                             │
-                     │                                        │Sessions                                                                  │                                                             │
+                     │                                        │                   Sessions                                               │                                                             │
                      │                                        │                                                                          │                                                             │
                      │                                        │Everywhere                                                                │                                                             │
                      │                                        │↑↓ / j k           Move selection (counts: 5j)                            │                                                             │
@@ -44,9 +44,9 @@
                      │                                        │Tab / Shift+Tab    Next / previous panel                                  │                                                             │
                      │                                        │Ctrl+arrows        Move panel focus by direction                          │                                                             │
                      │                                        │← / h              Focus devices                                          │                                                             │
-                     │                                        │Enter              Open                                                   │                                                             │
-                     │                                        │Esc                Back / clear current mode                              │                                                             │
                      │                                        │/                  Search                                                 │                                                             │
+                     │                                        │:                  Run command in current folder                          │                                                             │
+                     │                                        │T                  Transfers · progress / cancel / retry                  │                                                             │
                      │                                        ╰──────────────────────────────────────────────────────────────────────────╯                                                             │
                      │                                                                                                                                                                                 │
                      │                                                                                                                                                                                 │

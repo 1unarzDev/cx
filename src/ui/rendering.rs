@@ -308,7 +308,11 @@ pub(super) fn render_at(
             .unwrap_or_else(|| "No devices or LAN observations".into())
     } else if app.view == View::Files {
         String::new() // Render the selected file context as styled hierarchy below.
-    } else if let Some((i, s)) = app.selected_session() {
+    } else if let Some((i, s)) = app
+        .selected_session()
+        // The Keys placeholder has no session row to open.
+        .filter(|_| app.view != View::Secrets)
+    {
         if let Some(scope) = &s.container {
             format!(
                 "Host {}\n{} {}\nFolder {}\nEnter open · n new",
@@ -1015,7 +1019,10 @@ pub(super) fn render_at(
                 accent().add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                if app.dialog.is_some() || app.help {
+                if app.dialog.is_some()
+                    || app.help
+                    || (app.view == View::Secrets && app.focus == Focus::Workspace)
+                {
                     String::new()
                 } else {
                     format!(" · {shown}/{total}")
@@ -1821,11 +1828,23 @@ pub(super) fn render_at(
         frame.render_widget(Clear, rect);
         let key_style = accent().add_modifier(Modifier::BOLD);
         let key_width = if rect.width < 50 { 12 } else { 18 };
-        let key_row = |keys: &str, description: &str| {
-            Line::from(vec![
-                Span::styled(format!("{keys:<key_width$} "), key_style),
-                Span::raw(description.to_owned()),
-            ])
+        // Descriptions wrap under their own column, never back into the key
+        // column (the block border takes one cell on each side).
+        let description_width = usize::from(rect.width.saturating_sub(2))
+            .saturating_sub(key_width + 1)
+            .max(8);
+        let key_row = |keys: &str, description: &str| -> Vec<Line<'static>> {
+            help_wrap(description, description_width)
+                .into_iter()
+                .enumerate()
+                .map(|(index, part)| {
+                    let keys = if index == 0 { keys } else { "" };
+                    Line::from(vec![
+                        Span::styled(format!("{keys:<key_width$} "), key_style),
+                        Span::raw(part),
+                    ])
+                })
+                .collect()
         };
         // Generated from the keymap: the same table dispatches the keys.
         let mut help = Vec::new();
@@ -1838,17 +1857,19 @@ pub(super) fn render_at(
                 Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             )));
             for (keys, description) in rows {
-                help.push(key_row(keys, description));
+                help.extend(key_row(keys, description));
             }
         }
         if matches!(app.dialog, Some(Dialog::Jobs)) {
             help.push(Line::default());
             help.push(Line::from(Span::styled("Transfer jobs", key_style)));
-            help.extend([
-                key_row("c · r", "Cancel / retry saved job"),
-                key_row("Enter / Tab", "Focus details"),
-                key_row("PgUp/PgDn", "Scroll details"),
-            ]);
+            for (keys, description) in [
+                ("c · r", "Cancel / retry saved job"),
+                ("Enter / Tab", "Focus details"),
+                ("PgUp/PgDn", "Scroll details"),
+            ] {
+                help.extend(key_row(keys, description));
+            }
         }
         help.push(Line::default());
         help.push(Line::from(Span::styled(
@@ -1856,20 +1877,20 @@ pub(super) fn render_at(
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )));
         help.push(Line::raw("Native terminals own their input."));
-        help.push(key_row(DETACH_KEY, "Return from a managed session"));
+        help.extend(key_row(DETACH_KEY, "Return from a managed session"));
         help.push(Line::raw("External sessions keep their tmux bindings."));
         help.push(Line::default());
         help.push(Line::from(Span::styled(
             "Mouse and touch",
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )));
-        help.push(key_row("tap", "Select a row; tap it again to open"));
-        help.push(key_row(
+        help.extend(key_row("tap", "Select a row; tap it again to open"));
+        help.extend(key_row(
             "hold / right",
             "Actions for the row (same as its keys)",
         ));
-        help.push(key_row("tab · chip", "Go to the view / run the chip's key"));
-        help.push(key_row("wheel", "Move one row per detent"));
+        help.extend(key_row("tab · chip", "Go to the view / run the chip's key"));
+        help.extend(key_row("wheel", "Move one row per detent"));
         frame.render_widget(
             Paragraph::new(help)
                 .wrap(Wrap { trim: false })
@@ -1879,6 +1900,42 @@ pub(super) fn render_at(
         );
     }
     hitmap::render_context_menu(frame, app, area);
+}
+/// Word-wraps a help description to `width` cells; a word longer than the
+/// column is cut with an ellipsis rather than spilling into the key column.
+pub(super) fn help_wrap(text: &str, width: usize) -> Vec<String> {
+    let w = |t: &str| Span::raw(t).width();
+    let width = width.max(2);
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let word = if w(word) > width {
+            let mut cut = String::new();
+            for c in word.chars() {
+                if w(&cut) + w(c.encode_utf8(&mut [0; 4])) + 1 > width {
+                    break;
+                }
+                cut.push(c);
+            }
+            cut.push('…');
+            cut
+        } else {
+            word.to_owned()
+        };
+        if line.is_empty() {
+            line = word;
+        } else if w(&line) + 1 + w(&word) <= width {
+            line.push(' ');
+            line.push_str(&word);
+        } else {
+            lines.push(std::mem::take(&mut line));
+            line = word;
+        }
+    }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 /// Key that returns from a managed session. The sessions wave moves this to
 /// Ctrl+\ together with the tmux binding; help reads it from here.
@@ -2262,7 +2319,7 @@ pub(super) fn dim_backdrop(frame: &mut Frame<'_>) {
 }
 /// Fit a `head · path` detail: the path keeps its tail (spec 7), the head
 /// gets what is left.
-fn fit_detail(detail: &str, width: usize) -> String {
+pub(super) fn fit_detail(detail: &str, width: usize) -> String {
     let detail = safe_label(detail);
     let tail = |text: &str, width: usize| -> String {
         let count = text.chars().count();
@@ -2276,14 +2333,14 @@ fn fit_detail(detail: &str, width: usize) -> String {
         return detail;
     }
     match detail.rsplit_once(" · ") {
-        Some((head, path)) if path.chars().count() + 3 + 4 <= width => {
-            let head_width = width - path.chars().count() - 3;
-            format!("{} · {path}", fit_label(head, head_width))
-        }
-        // Long path: the head (device) keeps up to 10 columns, the path
-        // keeps its tail in the rest.
+        // Long path: the path keeps its tail in at least three fifths of the
+        // room; the head (device) takes what is left, whole when it fits, and
+        // anything the head does not need goes back to the path.
         Some((head, path)) if width >= 20 => {
-            let head = fit_label(head, head.chars().count().min(10));
+            let room = width - 3;
+            let path_min = path.chars().count().min(room * 3 / 5);
+            let head_width = head.chars().count().min(room - path_min).max(4);
+            let head = fit_label(head, head_width);
             let rest = width - head.chars().count() - 3;
             format!("{head} · {}", tail(path, rest))
         }
@@ -2306,11 +2363,11 @@ fn render_palette(frame: &mut Frame<'_>, app: &App, area: Rect, phone: bool) {
     dim_backdrop(frame);
     hitmap::modal();
     let items = app.palette_view();
-    let width = if phone {
-        area.width
-    } else {
-        76.min(area.width.saturating_sub(2))
-    };
+    // Below 100 columns a centered 76-wide box would sit a cell or two from
+    // the panels' own borders (two borders side by side, P12); span the frame
+    // instead, like the help overlay.
+    let wide = !phone && area.width >= 100;
+    let width = if wide { 76 } else { area.width };
     // Rows: one per item plus one header per section.
     let sections = items
         .iter()
@@ -2330,7 +2387,8 @@ fn render_palette(frame: &mut Frame<'_>, app: &App, area: Rect, phone: bool) {
         // Anchor the top edge where a full box would start, so the box
         // grows downwards as results appear instead of jumping around.
         let full = popup(area, width, max_height);
-        Rect::new(full.x, full.y, full.width, height)
+        let x = if wide { full.x } else { area.x };
+        Rect::new(x, full.y, width, height)
     };
     frame.render_widget(Clear, rect);
     let cursor = if ascii() { "_" } else { "█" };

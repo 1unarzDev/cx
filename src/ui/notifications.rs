@@ -111,7 +111,7 @@ pub(super) fn poll_interval(
     }
 }
 fn fade(style: Style, opacity: f32) -> Style {
-    if std::env::var_os("NO_COLOR").is_some() {
+    if no_color() {
         return style;
     }
     if opacity >= 1.0 && style.fg.is_none_or(|color| color == Color::Reset) {

@@ -15,10 +15,12 @@ mod menus;
 mod navigation;
 mod notifications;
 mod panels;
+mod theme;
 use filters::score as fuzzy_score;
 use menus::{container_action_labels, render_session_chooser};
 use navigation::{Motion as Navigation, Target};
 use notifications::Kind as NoticeKind;
+use theme::*;
 
 use anyhow::{Context, Result};
 use crossterm::{
@@ -6273,44 +6275,6 @@ fn safe_label(text: &str) -> String {
         })
         .collect()
 }
-fn block(title: String, focused: bool) -> Block<'static> {
-    Block::default()
-        .title(Line::from(Span::styled(
-            if focused {
-                format!(" {} {title} ", if ascii() { ">" } else { "▸" })
-            } else {
-                format!(" {title} ")
-            },
-            accent().add_modifier(Modifier::BOLD),
-        )))
-        .border_type(if ascii() {
-            BorderType::Plain
-        } else {
-            BorderType::Rounded
-        })
-        .borders(Borders::ALL)
-        .border_style(if focused {
-            Style::default().add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        })
-}
-fn selected_style() -> Style {
-    accent().add_modifier(Modifier::UNDERLINED | Modifier::BOLD)
-}
-fn accent() -> Style {
-    if std::env::var_os("NO_COLOR").is_some() {
-        Style::default()
-    } else {
-        Style::default().fg(Color::Cyan)
-    }
-}
-fn muted() -> Style {
-    Style::default().add_modifier(Modifier::DIM)
-}
-fn ascii() -> bool {
-    std::env::var_os("CX_ASCII").is_some() || std::env::var("TERM").is_ok_and(|v| v == "dumb")
-}
 fn workspace_action(action: Action) -> bool {
     !matches!(
         action,
@@ -7128,7 +7092,7 @@ fn preview_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
     let rich = browser.preview_rich.as_ref();
     if rich.is_some_and(|p| p.kind == "markdown") {
         let mut lines = markdown_display_lines(browser, text);
-        if ascii() || std::env::var_os("NO_COLOR").is_some() {
+        if ascii() || no_color() {
             for line in &mut lines {
                 line.style.fg = None;
                 line.style.bg = None;
@@ -7139,7 +7103,7 @@ fn preview_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
             }
         }
         lines
-    } else if !ascii() && std::env::var_os("NO_COLOR").is_none() {
+    } else if !ascii() && !no_color() {
         rich.and_then(|p| p.styled.clone())
             .unwrap_or_else(|| preview_lines(text, rich.map(|p| p.kind.as_str()).unwrap_or("text")))
     } else {
@@ -7225,7 +7189,7 @@ fn highlight_preview_matches(lines: &mut [Line<'static>], find: &PreviewFind) {
                 let mut style = span.style;
                 if flags[position] > 0 {
                     style = style.add_modifier(Modifier::UNDERLINED);
-                    if !ascii() && std::env::var_os("NO_COLOR").is_none() {
+                    if !ascii() && !no_color() {
                         style = style.fg(if flags[position] == 2 {
                             Color::Cyan
                         } else {
@@ -7288,7 +7252,7 @@ fn render_preview_with_native(
     if native.is_some_and(|native| native.render(frame, inner)) {
         return;
     }
-    if !ascii() && std::env::var_os("NO_COLOR").is_none() {
+    if !ascii() && !no_color() {
         if let Some((w, h, bytes)) = rich.and_then(|p| p.raster.as_ref()) {
             frame.render_widget(Paragraph::new(raster_lines(*w, *h, bytes, inner)), inner);
             return;
@@ -7807,13 +7771,6 @@ fn render_browser(
         }),
         parts[3],
     );
-}
-fn tint(color: Color) -> Style {
-    if std::env::var_os("NO_COLOR").is_some() {
-        Style::default()
-    } else {
-        Style::default().fg(color)
-    }
 }
 fn human_size(size: u64) -> String {
     if size < 1024 {

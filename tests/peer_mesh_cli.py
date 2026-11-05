@@ -397,9 +397,9 @@ with tempfile.TemporaryDirectory(prefix="cx-peer-mesh-") as temporary:
 with tempfile.TemporaryDirectory(prefix="cx-edge-") as temporary:
     fixture = Fixture(pathlib.Path(temporary))
     creation, tranquility = f"{MACHINE}:conception", f"{MACHINE}:peace"
-    # Viewer-local edge policy: creation -> tranquility one-way, tranquility -> creation refused.
+    # Viewer-local edge policy, one-way as stored: creation -> tranquility key, reverse none.
     fixture.write("innovation", "edges.json", {"version": 1, "edges": [
-        {"from": creation, "to": tranquility, "policy": "one_way", "updated_at": 1},
+        {"from": creation, "to": tranquility, "policy": "key", "updated_at": 1},
         {"from": tranquility, "to": creation, "policy": "none", "updated_at": 1}]})
     result = fixture.sync()
     assert result.returncode == 0, result.stderr

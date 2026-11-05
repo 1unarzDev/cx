@@ -121,7 +121,9 @@ pub fn enroll(mut peer: Device, replace_stale: bool) -> Result<serde_json::Value
 
 pub fn pair(device: &Device, return_target: &str) -> Result<serde_json::Value> {
     anyhow::ensure!(device.target.is_some(), "select a remote device");
-    // The remote helper verifies and registers its route back to this viewer.
+    // Pairing opens SSH viewer -> device, and the remote helper then registers
+    // its route back to this viewer: both directions must allow it.
+    crate::edges::guard(device)?;
     crate::edges::require_key(&device.id, "local", "pairing")?;
     let local_info = crate::info()?;
     let mut local = store::local_device();
@@ -188,44 +190,39 @@ pub fn configure(
 ) -> Result<serde_json::Value> {
     validate(peer)?;
     let _guard = store::device_guard()?;
-    anyhow::ensure!(
-        !store::peer_removed(&peer.id)?,
-        "peer was removed locally; explicit re-enrollment is required"
-    );
+    consents(&peer.id)?;
     anyhow::ensure!(
         identity(&crate::info()?)? != peer.id,
         "cannot configure self as peer"
     );
-    if let Some(existing) = store::devices()?.iter().find(|d| d.id == peer.id) {
+    crate::peer_ssh::configure(peer, host_key, client_key, authorize)
+}
+
+/// The receiver's own decisions win: a removed or directed peer is never authorized.
+fn consents(peer_id: &str) -> Result<()> {
+    anyhow::ensure!(
+        !store::peer_removed(peer_id)?,
+        "peer was removed locally; explicit re-enrollment is required"
+    );
+    if let Some(existing) = store::devices()?.iter().find(|d| d.id == peer_id) {
         anyhow::ensure!(
             store::policy(existing)?.access == store::AccessMode::Core,
             "receiver keeps this peer directed"
         );
     }
-    crate::peer_ssh::configure(peer, host_key, client_key, authorize)
+    Ok(())
 }
 
-/// Receiver side of edge enforcement: query or change the cx-managed line for
-/// one pinned peer. Authorizing keeps the receiver's own directed choice.
+/// Receiver side of edge enforcement: change the cx-managed line for one
+/// pinned peer. Authorizing checks the pin's device id against this receiver's
+/// own removed/directed decisions, however the peer was selected.
 pub fn authorization(
     peer_id: Option<&str>,
     client_key: Option<&str>,
-    authorize: Option<bool>,
+    authorize: bool,
 ) -> Result<serde_json::Value> {
     let _guard = store::device_guard()?;
-    if authorize == Some(true) {
-        if let Some(existing) = peer_id
-            .map(|id| store::devices().map(|d| d.into_iter().find(|d| d.id == id)))
-            .transpose()?
-            .flatten()
-        {
-            anyhow::ensure!(
-                store::policy(&existing)?.access == store::AccessMode::Core,
-                "receiver keeps this peer directed"
-            );
-        }
-    }
-    crate::peer_ssh::authorization(peer_id, client_key, authorize)
+    crate::peer_ssh::authorization(peer_id, client_key, authorize, consents)
 }
 
 /// Edge-policy identity of a device: the viewer's own execution device is `local`.
@@ -234,31 +231,6 @@ pub fn edge_id(device: &Device) -> &str {
         "local"
     } else {
         &device.id
-    }
-}
-
-/// Run one operation on a device through the existing verified helper channel,
-/// requiring a helper capability. The local device is dispatched in-process.
-pub fn on_device(
-    device: &Device,
-    operation: Operation,
-    capability: &str,
-) -> Result<serde_json::Value> {
-    match device.target.as_deref() {
-        None => crate::dispatch(operation),
-        Some(target) => transport::verified_request(target, operation, |info| {
-            anyhow::ensure!(
-                identity(info)? == device.id,
-                "enrolled helper identity mismatch"
-            );
-            anyhow::ensure!(
-                info["capabilities"]
-                    .as_array()
-                    .is_some_and(|caps| caps.iter().any(|c| c == capability)),
-                "helper update needed for {capability}"
-            );
-            Ok(())
-        }),
     }
 }
 
@@ -354,7 +326,13 @@ fn portable_target(device: &Device) -> Result<String> {
     Ok(result)
 }
 
-fn checked(device: &Device, operation: Operation) -> Result<serde_json::Value> {
+/// Run one operation on a device through the verified helper channel, requiring
+/// a helper capability. The local device is dispatched in-process.
+pub(crate) fn checked(
+    device: &Device,
+    operation: Operation,
+    capability: &str,
+) -> Result<serde_json::Value> {
     match device.target.as_deref() {
         None => crate::dispatch(operation),
         Some(target) => transport::verified_request(target, operation, |info| {
@@ -365,8 +343,8 @@ fn checked(device: &Device, operation: Operation) -> Result<serde_json::Value> {
             anyhow::ensure!(
                 info["capabilities"]
                     .as_array()
-                    .is_some_and(|caps| caps.iter().any(|c| c == "peer-bootstrap-v1")),
-                "helper update needed for automatic core setup"
+                    .is_some_and(|caps| caps.iter().any(|c| c == capability)),
+                "helper update needed for {capability}"
             );
             Ok(())
         }),
@@ -409,13 +387,19 @@ pub fn sync() -> Result<serde_json::Value> {
         "automatic core setup supports at most 16 remote core devices"
     );
     let mut pending = Vec::new();
+    let mut refused = Vec::new();
     let mut nodes = Vec::new();
     let mut source = None;
     let ips = local_addresses()?;
     for device in candidates {
+        // A refused viewer direction or route opens no SSH at all.
+        if let Err(e) = crate::edges::guard(&device) {
+            refused.push(json!({"device":device.name,"reason":format!("{e:#}")}));
+            continue;
+        }
         let result = (|| -> Result<CoreNode> {
             let target = portable_target(&device)?;
-            let metadata = checked(&device, Operation::PeerIdentity)?;
+            let metadata = checked(&device, Operation::PeerIdentity, "peer-bootstrap-v1")?;
             anyhow::ensure!(
                 identity(&metadata)? == device.id,
                 "helper metadata identity mismatch"
@@ -481,7 +465,6 @@ pub fn sync() -> Result<serde_json::Value> {
         Ok(())
     };
     let mut ready = Vec::new();
-    let mut refused = Vec::new();
     for a in 0..nodes.len() {
         for b in a + 1..nodes.len() {
             let mut first = nodes[a].clone();
@@ -540,9 +523,9 @@ pub fn sync() -> Result<serde_json::Value> {
                         authorize,
                     };
                     if authorize {
-                        checked(&receiver.connection, operation)?;
+                        checked(&receiver.connection, operation, "peer-bootstrap-v1")?;
                     } else {
-                        on_device(&receiver.connection, operation, "peer-authorize-v1")
+                        checked(&receiver.connection, operation, "peer-authorize-v1")
                             .context("one-way core setup")?;
                     }
                 }
@@ -558,6 +541,7 @@ pub fn sync() -> Result<serde_json::Value> {
                             peer: sender.peer.clone(),
                             replace_stale: true,
                         },
+                        "peer-bootstrap-v1",
                     )?;
                 }
                 Ok(())

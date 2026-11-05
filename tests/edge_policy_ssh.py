@@ -5,8 +5,11 @@ Viewer A and device B are the current OS account with separate temporary HOME
 and state directories and their own private sshd. Only temporary files change;
 an SSH wrapper substitutes B's port and B's fixture helper command. Proves:
 one-way A->B keeps A's cx key on B and removes B's cx key on A; password
-removes A's cx key on B and BatchMode fails without prompting; none refuses
-before any SSH; users' own authorized_keys lines stay byte-for-byte.
+removes A's cx key on B and BatchMode fails without prompting; restoring key
+then fails with a precise hint and is re-planned on rerun; the receiver refuses
+to authorize a peer it keeps directed or removed, even selected by client key;
+none refuses before any SSH, including core sync; users' own authorized_keys
+lines stay byte-for-byte.
 """
 import json
 import os
@@ -88,7 +91,7 @@ os.execv(os.environ['CX_EDGE_SSH'],[os.environ['CX_EDGE_SSH'],*args])
     fake_machine = root / "viewer-machine-id"
     fake_machine.write_text("0" * 32 + "\n")
 
-    def operation(side, op, args=None, distinct_machine=False):
+    def operation(side, op, args=None, distinct_machine=False, refused=None):
         request = dict(version=1, id="edge-fixture", op=dict(op=op))
         if args is not None:
             request["op"]["args"] = args
@@ -105,6 +108,9 @@ os.execv(os.environ['CX_EDGE_SSH'],[os.environ['CX_EDGE_SSH'],*args])
                                 capture_output=True, timeout=20)
         assert result.returncode == 0, result.stderr
         response = json.loads(result.stdout.split(b"\n", 1)[1])
+        if refused:
+            assert refused in (response["error"] or ""), response
+            return None
         assert not response["error"], response
         return response["result"]
 
@@ -200,7 +206,7 @@ AllowUsers {account}
         assert not (state_a / "edges.json").exists()
 
         # One-way A -> B: A keeps its cx key on B, B's cx key on A is removed.
-        result = cx("edge", "set", "local", "peer-b", "one-way", "--yes")
+        result = cx("edge", "set", "local", "peer-b", "one-way", "--yes", "--json")
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout)["enforced"] is True
         assert can_login("a", "b"), "one-way removed the forward key"
@@ -216,7 +222,7 @@ AllowUsers {account}
 
         # Password A -> B: remote helper removes A's cx key on B over the existing channel.
         before = calls()
-        result = cx("edge", "set", "local", "peer-b", "password", "--yes")
+        result = cx("edge", "set", "local", "peer-b", "password", "--yes", "--json")
         assert result.returncode == 0, result.stderr + result.stdout
         applied = json.loads(result.stdout)
         assert applied["enforced"] is True and calls() > before, applied
@@ -229,15 +235,41 @@ AllowUsers {account}
         last = json.loads((root / "argv.jsonl").read_text().splitlines()[-1])
         assert "BatchMode=yes" in last
         [edge] = json.loads(cx("edge", "list", "--json").stdout)
-        assert edge["forward"]["intended"] == "password", edge
+        assert edge["forward"]["access"] == "password", edge
         assert edge["forward"]["enforced"].startswith("cx key absent"), edge
-        assert "authenticated" in edge["forward"]["observed"], edge
-        assert "password required" in edge["forward"]["observed"], edge
-        assert edge["forward"]["background_authenticates"] is False
-        assert edge["reverse"]["intended"] == "refused", edge
+        # The helper channel is not evidence for the cx-key direction.
+        assert edge["forward"]["observed"] == "not checked", edge
+        assert edge["reverse"]["access"] == "refused", edge
+
+        # Key again: BatchMode cannot restore the key it needed, so the step
+        # fails with a precise hint, and a rerun plans the install again.
+        result = cx("edge", "set", "local", "peer-b", "key", "--yes")
+        assert result.returncode != 0, result.stdout
+        assert "enforcement incomplete" in result.stdout, result.stdout
+        assert "rejected this viewer's background SSH" in result.stdout, result.stdout
+        assert "cx-managed-peer" not in authorized("b")
+        retry = json.loads(cx("edge", "set", "local", "peer-b", "key", "--dry-run", "--json").stdout)
+        assert dict(action="install_key", **{"from": "local", "to": device_b["id"]}) in retry["steps"], retry
+        assert any("retry" in c for c in retry["consequences"]), retry
+        assert not (root / "asked").exists()
+
+        # The receiver's own directed/removed decision wins over a client-key request.
+        state_b = sides["b"]["state"] / "cx"
+        (state_b / "devices.json").write_text(json.dumps([viewer]))
+        policies_b = state_b / "device-policies.json"
+        policies_b.write_text(json.dumps({"devices": {viewer["id"]: {"access": "directed"}}}))
+        policies_b.chmod(0o600)
+        request = dict(client_key=identity["a"], authorize=True)
+        operation("b", "peer_authorize", request, refused="receiver keeps this peer directed")
+        (state_b / "devices.json").write_text("[]")
+        policies_b.write_text(json.dumps({"devices": {}, "removed": [viewer["id"]]}))
+        operation("b", "peer_authorize", request, refused="peer was removed locally")
+        assert "cx-managed-peer" not in authorized("b")
+        policies_b.unlink()
+        (state_b / "devices.json").unlink()
 
         # None: saved, enforced where reachable, and every route over the edge refused.
-        result = cx("edge", "set", "local", "peer-b", "none", "--yes")
+        result = cx("edge", "set", "local", "peer-b", "none", "--yes", "--json")
         applied = json.loads(result.stdout)
         assert applied["saved"] is True
         assert result.returncode != 0, "unreachable enforcement claimed success"
@@ -247,6 +279,9 @@ AllowUsers {account}
         assert refused.returncode != 0 and "edge policy refuses" in refused.stderr, refused.stderr
         refused = cx("add", f"{account}@10.0.0.5", "--via", "peer-b")
         assert refused.returncode != 0 and "edge policy refuses" in refused.stderr, refused.stderr
+        sync = cx("device", "sync")
+        assert sync.returncode == 0, sync.stderr
+        assert [r["device"] for r in json.loads(sync.stdout)["refused"]] == ["peer-b"], sync.stdout
         assert calls() == before, "refused edge still opened SSH"
         [edge] = json.loads(cx("edge", "list", "--json").stdout)
         assert edge["label"] == "⊘" and edge["forward"]["enforced"].startswith("failed:"), edge
@@ -261,5 +296,6 @@ AllowUsers {account}
         log.close()
 
 print(json.dumps(dict(result="PASS", one_way_forward_key=True, one_way_reverse_refused=True,
-                      password_no_cx_key=True, batchmode_no_prompt=True, none_refused_before_ssh=True,
+                      password_no_cx_key=True, batchmode_no_prompt=True, failed_install_replanned=True,
+                      receiver_consent_by_client_key=True, none_refused_before_ssh=True,
                       user_lines_untouched=True, device_policies_untouched=True)))

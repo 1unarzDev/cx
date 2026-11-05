@@ -165,81 +165,6 @@ pub fn preview(id: &str, obs: Observation, now: u64) -> Result<Plan> {
             "Verify reverse SSH denial in IPv4 and IPv6 before reporting enforcement".into()] })
 }
 
-/// One edge's tcp/22 posture toward this host from a peer's mesh/overlay addresses.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct EdgeRule {
-    pub peer: String,
-    pub addresses: Vec<std::net::IpAddr>,
-    pub allow: bool,
-}
-/// Preview-only nftables layer for edge policy: reject new tcp/22 from peers
-/// whose edge is refused. Allowed edges add no accept rule, so this never
-/// claims to supersede another firewall. Nothing here applies rules.
-pub fn edge_preview(rules: &[EdgeRule]) -> Result<String> {
-    use std::net::IpAddr;
-    ensure!(rules.len() <= 128, "too many edge firewall rules");
-    let (mut v4, mut v6) = (BTreeSet::new(), BTreeSet::new());
-    let mut comments = String::new();
-    for rule in rules {
-        ensure!(
-            !rule.peer.is_empty()
-                && rule.peer.len() <= 64
-                && rule
-                    .peer
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-                && rule.addresses.len() <= 8,
-            "invalid edge firewall peer"
-        );
-        for ip in &rule.addresses {
-            let ok = match ip {
-                IpAddr::V4(ip) => unicast(*ip),
-                IpAddr::V6(ip) => !ip.is_unspecified() && !ip.is_loopback() && !ip.is_multicast(),
-            };
-            ensure!(ok, "invalid edge firewall address");
-            if !rule.allow {
-                match ip {
-                    IpAddr::V4(ip) => v4.insert(ip.to_string()),
-                    IpAddr::V6(ip) => v6.insert(ip.to_string()),
-                };
-            }
-        }
-        comments.push_str(&format!(
-            " # {} {}: tcp/22 {}\n",
-            if rule.allow { "allow" } else { "deny" },
-            rule.peer,
-            if rule.allow {
-                "unchanged"
-            } else {
-                "new connections rejected"
-            }
-        ));
-    }
-    let join = |set: &BTreeSet<String>| set.iter().cloned().collect::<Vec<_>>().join(", ");
-    let mut body = String::new();
-    if !v4.is_empty() {
-        body.push_str(&format!(
-            " set deny4 {{ type ipv4_addr; elements = {{ {} }} }}\n",
-            join(&v4)
-        ));
-    }
-    if !v6.is_empty() {
-        body.push_str(&format!(
-            " set deny6 {{ type ipv6_addr; elements = {{ {} }} }}\n",
-            join(&v6)
-        ));
-    }
-    body.push_str(" chain input { type filter hook input priority -10; policy accept;\n");
-    if !v4.is_empty() {
-        body.push_str("  ip saddr @deny4 tcp dport 22 ct state new reject with tcp reset;\n");
-    }
-    if !v6.is_empty() {
-        body.push_str("  ip6 saddr @deny6 tcp dport 22 ct state new reject with tcp reset;\n");
-    }
-    body.push_str(" }\n");
-    Ok(format!("{comments}table inet cx_edges {{\n{body}}}\n"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,32 +197,6 @@ mod tests {
             .contains("ip daddr != 192.168.0.0/24 oifname != \"docker0\""));
         assert!(!p.nft_rules.contains("iifname") && !p.nft_rules.contains("\"enp"));
         assert!(!p.nft_rules.contains("flush ruleset") && !p.nft_rules.contains("policy drop"));
-    }
-    #[test]
-    fn edge_preview_rejects_only_refused_peers_and_never_accepts() {
-        let rules = [
-            EdgeRule {
-                peer: "lab-arm".into(),
-                addresses: vec!["100.96.0.2".parse().unwrap(), "fd00::2".parse().unwrap()],
-                allow: false,
-            },
-            EdgeRule {
-                peer: "jetson".into(),
-                addresses: vec!["100.96.0.3".parse().unwrap()],
-                allow: true,
-            },
-        ];
-        let p = edge_preview(&rules).unwrap();
-        assert!(p.contains("elements = { 100.96.0.2 }"));
-        assert!(p.contains("ip6 saddr @deny6 tcp dport 22 ct state new reject"));
-        assert!(!p.contains("100.96.0.3 }") && !p.contains("accept;\n  ip saddr @allow"));
-        assert!(!p.contains("policy drop") && !p.contains("flush"));
-        let mut bad = rules.clone();
-        bad[0].peer = "x; flush ruleset".into();
-        assert!(edge_preview(&bad).is_err());
-        bad[0].peer = "ok".into();
-        bad[0].addresses = vec!["127.0.0.1".parse().unwrap()];
-        assert!(edge_preview(&bad).is_err());
     }
     #[test]
     fn stale_injected_and_overlapping_inputs_fail_closed() {

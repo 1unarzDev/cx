@@ -107,16 +107,17 @@ pub enum Operation {
         #[serde(default = "default_true", skip_serializing_if = "is_true")]
         authorize: bool,
     },
-    /// Query (`authorize: None`) or set the cx-managed authorized_keys line for
-    /// one pinned peer, selected by its client key or pinned identity. Never
+    /// Install (`authorize: true`) or remove the cx-managed authorized_keys line
+    /// for one pinned peer, selected by its client key or pinned identity. The
+    /// receiver refuses to authorize a peer it removed or keeps directed. Never
     /// touches lines CX did not write. Capability `peer-authorize-v1`.
+    /// `authorize` is required: a missing field must not decode as a revoke.
     PeerAuthorize {
         #[serde(default)]
         peer_id: Option<String>,
         #[serde(default)]
         client_key: Option<String>,
-        #[serde(default)]
-        authorize: Option<bool>,
+        authorize: bool,
     },
     PeerEnroll {
         peer: Device,

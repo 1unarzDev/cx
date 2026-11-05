@@ -2,12 +2,12 @@
 //!
 //! Each record governs one direction `from -> to`:
 //! - `key`: `from` may log in to `to` with its cx-managed peer key;
-//! - `password`: no cx key for that direction; interactive auth only, so
-//!   background (BatchMode) checks never authenticate and never prompt;
-//! - `one_way`: `from -> to` uses the key; written together with `none` for
-//!   `to -> from` so reverse keys, jump routes and core pairing are refused;
-//! - `none`: refused; written for both directions by `cx edge set A B none`.
+//! - `password`: cx removes `from`'s cx-managed key on `to`; other SSH keys the
+//!   user configured may still authenticate, so status never claims otherwise;
+//! - `none`: refused; cx opens no SSH over it (core sync, pairing, jumps), except
+//!   the one enforcement step that removes the viewer's own key on the receiver.
 //!
+//! `one-way A B` is a request shorthand stored as `A -> B key` plus `B -> A none`.
 //! Records live in `edges.json` (0600, atomic, bounded, under the device lock).
 //! Pairs without records keep today's posture, migrated read-only from
 //! `device-policies.json`: core devices are `key` both ways, directed devices
@@ -22,28 +22,20 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const LOCAL: &str = "local";
+const STORE_BYTES: usize = 256 * 1024;
 const RECORD_LIMIT: usize = 1024;
 const DETAIL_LIMIT: usize = 200;
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+/// `one-way` is accepted in requests only; `validate` refuses it in edges.json.
+#[derive(
+    Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Policy {
     Key,
     Password,
     OneWay,
     None,
-}
-impl std::str::FromStr for Policy {
-    type Err = anyhow::Error;
-    fn from_str(s: &str) -> Result<Self> {
-        Ok(match s.to_ascii_lowercase().as_str() {
-            "key" | "key-auto" | "auto" => Policy::Key,
-            "password" | "pwd" | "password-required" => Policy::Password,
-            "one-way" | "one_way" | "oneway" => Policy::OneWay,
-            "none" => Policy::None,
-            _ => bail!("policy must be key, password, one-way or none"),
-        })
-    }
 }
 impl Policy {
     pub fn label(self) -> &'static str {
@@ -65,7 +57,7 @@ pub struct EdgePolicy {
 }
 
 /// Effective access for one direction.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Access {
     Key,
@@ -85,6 +77,27 @@ impl Access {
     }
 }
 
+/// Where a direction's access comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Source {
+    Recorded,
+    MigratedCore,
+    MigratedDirected,
+    Unenrolled,
+    Unmanaged,
+}
+impl Source {
+    fn label(self) -> &'static str {
+        match self {
+            Source::Recorded => "edges.json",
+            Source::MigratedCore => "migrated core",
+            Source::MigratedDirected => "migrated directed",
+            Source::Unenrolled => "unenrolled",
+            Source::Unmanaged => "unmanaged",
+        }
+    }
+}
+
 /// Latest cx enforcement outcome for one direction.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Enforcement {
@@ -94,7 +107,7 @@ pub struct Enforcement {
     pub ok: bool,
     pub at: u64,
 }
-/// Authentication evidence for one direction (from apply or the UI's checks).
+/// Authentication evidence for one direction, written by the UI's checks.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Evidence {
     pub from: String,
@@ -131,6 +144,7 @@ impl EdgeFile {
                 valid_id(&e.from)
                     && valid_id(&e.to)
                     && e.from != e.to
+                    && e.policy != Policy::OneWay
                     && seen.insert((&e.from, &e.to)),
                 "invalid or duplicate edge policy"
             );
@@ -162,15 +176,24 @@ fn load() -> Result<Snapshot> {
             core.insert(d.id.clone());
         }
     }
-    let file: EdgeFile = store::read_edges()?.unwrap_or_default();
-    file.validate()?;
+    let file = read()?;
     Ok(Snapshot {
         devices,
         core,
         file,
-        routes: store::all_routes()?,
+        routes: store::routes()?,
         now: transport::now(),
     })
+}
+
+fn read() -> Result<EdgeFile> {
+    let file: EdgeFile = store::read_state("edges.json", STORE_BYTES as u64)?.unwrap_or_default();
+    file.validate()?;
+    Ok(file)
+}
+fn write(file: &EdgeFile) -> Result<()> {
+    file.validate()?;
+    store::write_state("edges.json", file, STORE_BYTES)
 }
 
 impl Snapshot {
@@ -202,33 +225,27 @@ impl Snapshot {
             .map(|d| d.id.as_str())
     }
     /// Effective access and where it comes from.
-    fn access(&self, from: &str, to: &str) -> (Access, &'static str) {
+    fn access(&self, from: &str, to: &str) -> (Access, Source) {
         if let Some(r) = self.file.record(from, to) {
             return (
                 match r.policy {
+                    // One-way is never stored (validate); keep the match total.
                     Policy::Key | Policy::OneWay => Access::Key,
                     Policy::Password => Access::Password,
                     Policy::None => Access::Refused,
                 },
-                "edges.json",
+                Source::Recorded,
             );
-        }
-        if self
-            .file
-            .record(to, from)
-            .is_some_and(|r| matches!(r.policy, Policy::OneWay | Policy::None))
-        {
-            return (Access::Refused, "edges.json");
         }
         let core = |id: &str| id == LOCAL || self.core.contains(id);
         match (from == LOCAL, to == LOCAL) {
-            _ if !self.known(from) || !self.known(to) => (Access::Unmanaged, "unenrolled"),
-            (true, false) if core(to) => (Access::Key, "migrated core"),
-            (true, false) => (Access::Key, "migrated directed"),
-            (false, true) if core(from) => (Access::Key, "migrated core"),
-            (false, true) => (Access::Refused, "migrated directed"),
-            _ if core(from) && core(to) => (Access::Key, "migrated core"),
-            _ => (Access::Unmanaged, "unmanaged"),
+            _ if !self.known(from) || !self.known(to) => (Access::Unmanaged, Source::Unenrolled),
+            (true, false) if core(to) => (Access::Key, Source::MigratedCore),
+            (true, false) => (Access::Key, Source::MigratedDirected),
+            (false, true) if core(from) => (Access::Key, Source::MigratedCore),
+            (false, true) => (Access::Refused, Source::MigratedDirected),
+            _ if core(from) && core(to) => (Access::Key, Source::MigratedCore),
+            _ => (Access::Unmanaged, Source::Unmanaged),
         }
     }
     /// The records this change writes, applied over the current file.
@@ -247,10 +264,9 @@ impl Snapshot {
             policy,
             updated_at: now,
         };
-        let reverse = self.file.record(t, f).cloned();
         match change.policy {
             Policy::OneWay => {
-                edges.push(record(f, t, Policy::OneWay));
+                edges.push(record(f, t, Policy::Key));
                 edges.push(record(t, f, Policy::None));
             }
             Policy::None => {
@@ -259,18 +275,8 @@ impl Snapshot {
             }
             policy => {
                 edges.push(record(f, t, policy));
-                match reverse {
-                    // A one-way record means "reverse refused"; the reverse keeps
-                    // its key but no longer implies refusing this direction.
-                    Some(r) if r.policy == Policy::OneWay => edges.push(record(t, f, Policy::Key)),
-                    Some(r) => edges.push(r),
-                    None => {
-                        // Keep the reverse direction's migrated posture explicit.
-                        if let (Access::Refused, _) = self.access(t, f) {
-                            edges.push(record(t, f, Policy::None));
-                        }
-                    }
-                }
+                // The reverse keeps its own record, or its migrated posture.
+                edges.extend(self.file.record(t, f).cloned());
             }
         }
         edges
@@ -278,7 +284,7 @@ impl Snapshot {
     /// Gates cx key setup: only recorded edges.json decisions refuse it.
     fn explicit_key(&self, from: &str, to: &str) -> bool {
         let (access, source) = self.access(from, to);
-        source != "edges.json" || access == Access::Key
+        source != Source::Recorded || access == Access::Key
     }
     fn with_edges(&self, edges: Vec<EdgePolicy>) -> Snapshot {
         let mut next = self.clone();
@@ -318,14 +324,14 @@ impl Snapshot {
 }
 
 /// A requested policy for `from -> to` (one-way and none also set the reverse).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Change {
     pub from: String,
     pub to: String,
     pub policy: Policy,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Step {
     /// Ensure `from`'s cx-managed key is authorized on `to` (needs a verified pin).
@@ -334,17 +340,7 @@ pub enum Step {
     RemoveKey { from: String, to: String },
 }
 
-/// Preview of the optional firewall layer. Never applied by `apply`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct FirewallPreview {
-    pub host: String,
-    pub nft_rules: Option<String>,
-    pub unresolved: Vec<String>,
-    pub ready_for_apply: bool,
-    pub note: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Plan {
     pub change: Change,
     pub from_name: String,
@@ -357,14 +353,6 @@ pub struct Plan {
     /// Human one-liners, e.g. "lab-arm will no longer reach laptop".
     pub consequences: Vec<String>,
     pub refused_routes: Vec<String>,
-    pub firewall: Vec<FirewallPreview>,
-}
-impl Plan {
-    /// One-line consequence preview for the UI.
-    #[allow(dead_code)] // UI wave API
-    pub fn summary(&self) -> String {
-        self.consequences.join("; ")
-    }
 }
 
 fn pair_records(edges: &[EdgePolicy], a: &str, b: &str) -> Vec<EdgePolicy> {
@@ -402,13 +390,18 @@ fn plan_with(snapshot: &Snapshot, change: Change) -> Result<Plan> {
     let mut steps = Vec::new();
     let mut consequences = Vec::new();
     let mut refused_routes = Vec::new();
-    let mut deny: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (x, y) in [(f, t), (t, f)] {
         let (before, _) = snapshot.access(x, y);
         let (after, _) = next.access(x, y);
         let (xn, yn) = (snapshot.name(x), snapshot.name(y));
+        // Intent is saved before enforcement, so a failed install is retried.
+        let failed = snapshot
+            .file
+            .enforcement
+            .iter()
+            .any(|e| e.from == x && e.to == y && !e.ok);
         match after {
-            Access::Key if before != Access::Key => steps.push(Step::InstallKey {
+            Access::Key if before != Access::Key || failed => steps.push(Step::InstallKey {
                 from: x.into(),
                 to: y.into(),
             }),
@@ -418,16 +411,18 @@ fn plan_with(snapshot: &Snapshot, change: Change) -> Result<Plan> {
             }),
             _ => {}
         }
-        if after == Access::Refused {
-            deny.entry(y.into()).or_default().push(x.into());
-        }
         if before == after {
+            if failed && after == Access::Key {
+                consequences.push(format!(
+                    "cx will retry installing {xn}'s cx key on {yn}; the last attempt failed"
+                ));
+            }
             continue;
         }
         consequences.push(match (before, after) {
             (_, Access::Refused) => format!("{xn} will no longer reach {yn}"),
             (_, Access::Password) => format!(
-                "{xn} will need a password to reach {yn}; background checks will not authenticate"
+                "cx will remove {xn}'s cx key on {yn}; other SSH keys {xn} has there may still log in"
             ),
             (Access::Password, Access::Key) => {
                 format!("{xn} will reach {yn} with its cx key, without a password")
@@ -473,10 +468,6 @@ fn plan_with(snapshot: &Snapshot, change: Change) -> Result<Plan> {
         };
         (on == LOCAL, !install)
     });
-    let firewall = deny
-        .into_iter()
-        .map(|(host, peers)| firewall_preview(snapshot, &host, &peers))
-        .collect::<Result<Vec<_>>>()?;
     Ok(Plan {
         from_name: snapshot.name(f),
         to_name: snapshot.name(t),
@@ -486,70 +477,6 @@ fn plan_with(snapshot: &Snapshot, change: Change) -> Result<Plan> {
         steps,
         consequences,
         refused_routes,
-        firewall,
-    })
-}
-
-/// Addresses come only from IP-literal SSH targets; names are not resolved here.
-fn address(snapshot: &Snapshot, id: &str) -> Option<std::net::IpAddr> {
-    let target = snapshot.remote(id)?.target.as_deref()?;
-    let host = target.rsplit_once('@').map_or(target, |(_, h)| h);
-    let ip: std::net::IpAddr = host
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .parse()
-        .ok()?;
-    // Only routable unicast peers can be filtered meaningfully on tcp/22.
-    let usable = match ip {
-        std::net::IpAddr::V4(v4) => {
-            !(v4.is_loopback()
-                || v4.is_unspecified()
-                || v4.is_multicast()
-                || v4.is_link_local()
-                || v4.is_broadcast())
-        }
-        std::net::IpAddr::V6(v6) => !(v6.is_loopback() || v6.is_unspecified() || v6.is_multicast()),
-    };
-    usable.then_some(ip)
-}
-fn firewall_preview(snapshot: &Snapshot, host: &str, peers: &[String]) -> Result<FirewallPreview> {
-    let mut rules = Vec::new();
-    let mut unresolved = Vec::new();
-    for peer in peers {
-        match address(snapshot, peer) {
-            Some(ip) => rules.push(crate::sharing_lan::EdgeRule {
-                peer: snapshot
-                    .name(peer)
-                    .chars()
-                    .map(|c| {
-                        if c.is_ascii_alphanumeric() || "._-".contains(c) {
-                            c
-                        } else {
-                            '_'
-                        }
-                    })
-                    .take(64)
-                    .collect(),
-                addresses: vec![ip],
-                allow: false,
-            }),
-            None => unresolved.push(format!(
-                "{}: no observed mesh/overlay address",
-                snapshot.name(peer)
-            )),
-        }
-    }
-    let nft_rules = if rules.is_empty() {
-        None
-    } else {
-        Some(crate::sharing_lan::edge_preview(&rules)?)
-    };
-    Ok(FirewallPreview {
-        host: snapshot.name(host),
-        nft_rules,
-        unresolved,
-        ready_for_apply: false,
-        note: "preview only: applying firewall rules needs a separate explicit confirmation on that host".into(),
     })
 }
 
@@ -558,13 +485,13 @@ pub fn plan(change: Change) -> Result<Plan> {
     plan_with(&load()?, change)
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct StepResult {
     pub step: Step,
     pub ok: bool,
     pub state: String,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Applied {
     pub saved: bool,
     pub enforced: bool,
@@ -609,15 +536,30 @@ fn enforce(step: &Step) -> Result<String> {
     } else {
         (Some(from.clone()), None)
     };
-    let result = peers::on_device(
+    let result = peers::checked(
         &receiver,
         Operation::PeerAuthorize {
             peer_id,
             client_key,
-            authorize: Some(authorize),
+            authorize,
         },
         "peer-authorize-v1",
-    )?;
+    )
+    .map_err(|e| {
+        // BatchMode cannot restore a key it needed to log in with.
+        let rejected = matches!(
+            e.downcast_ref::<transport::ConnectionFailure>(),
+            Some(transport::ConnectionFailure::Authentication)
+        );
+        if authorize && from == LOCAL && rejected {
+            e.context(format!(
+                "{} rejected this viewer's background SSH; on {} run cx edge set for this viewer, or authorize your own SSH key there, then rerun",
+                receiver.name, receiver.name
+            ))
+        } else {
+            e
+        }
+    })?;
     let installed = result["managed_key_installed"] == true;
     let user = result["user_authorization_present"] == true;
     anyhow::ensure!(
@@ -632,7 +574,7 @@ fn enforce(step: &Step) -> Result<String> {
 }
 
 /// Save the intent, then enforce each step through the existing helper channels.
-/// Never applies firewall rules or other networking changes.
+/// Never applies networking changes.
 pub fn apply(plan: &Plan) -> Result<Applied> {
     let (f, t) = (&plan.change.from, &plan.change.to);
     {
@@ -647,23 +589,16 @@ pub fn apply(plan: &Plan) -> Result<Applied> {
         file.edges
             .retain(|e| !((&e.from == f && &e.to == t) || (&e.from == t && &e.to == f)));
         file.edges.extend(plan.records.iter().cloned());
-        file.validate()?;
-        store::write_edges(&file)?;
+        write(&file)?;
     }
     let mut results = Vec::new();
     for step in &plan.steps {
-        let outcome = enforce(step);
-        let on = match step {
-            Step::InstallKey { to, .. } | Step::RemoveKey { to, .. } => to.clone(),
-        };
-        let (ok, state) = match outcome {
+        // The helper channel uses the user's SSH setup, so a successful step is
+        // not evidence for the cx-key direction; no evidence is recorded here.
+        let (ok, state) = match enforce(step) {
             Ok(state) => (true, state),
             Err(e) => (false, bounded(format!("failed: {e:#}"))),
         };
-        // A successful remote step authenticated this viewer's helper channel.
-        if ok && on != LOCAL {
-            let _ = record_auth(LOCAL, &on, true, None);
-        }
         results.push(StepResult {
             step: step.clone(),
             ok,
@@ -672,25 +607,10 @@ pub fn apply(plan: &Plan) -> Result<Applied> {
     }
     {
         let _guard = store::device_guard()?;
-        let mut file: EdgeFile = store::read_edges()?.unwrap_or_default();
+        let mut file = read()?;
         let now = transport::now();
-        for r in &results {
-            let (from, to) = match &r.step {
-                Step::InstallKey { from, to } | Step::RemoveKey { from, to } => (from, to),
-            };
-            file.enforcement
-                .retain(|e| !(&e.from == from && &e.to == to));
-            file.enforcement.push(Enforcement {
-                from: from.clone(),
-                to: to.clone(),
-                state: r.state.clone(),
-                ok: r.ok,
-                at: now,
-            });
-        }
-        file.enforcement.truncate(2 * RECORD_LIMIT);
-        file.validate()?;
-        store::write_edges(&file)?;
+        record_enforcement(&mut file.enforcement, &results, now);
+        write(&file)?;
     }
     Ok(Applied {
         saved: true,
@@ -700,57 +620,37 @@ pub fn apply(plan: &Plan) -> Result<Applied> {
     })
 }
 
-/// Record authentication evidence for one direction (UI checks may call this).
-pub fn record_auth(from: &str, to: &str, ok: bool, detail: Option<&str>) -> Result<()> {
-    anyhow::ensure!(valid_id(from) && valid_id(to), "invalid edge endpoint");
-    let _guard = store::device_guard()?;
-    let mut file: EdgeFile = store::read_edges()?.unwrap_or_default();
-    let now = transport::now();
-    let entry = match file
-        .evidence
-        .iter_mut()
-        .position(|e| e.from == from && e.to == to)
-    {
-        Some(i) => &mut file.evidence[i],
-        None => {
-            anyhow::ensure!(
-                file.evidence.len() < 2 * RECORD_LIMIT,
-                "too many edge evidence records"
-            );
-            file.evidence.push(Evidence {
-                from: from.into(),
-                to: to.into(),
-                ..Default::default()
-            });
-            file.evidence.last_mut().unwrap()
-        }
-    };
-    if ok {
-        entry.last_ok = Some(now);
-    } else {
-        entry.last_failed = Some(now);
+/// Keep the latest outcome per direction; at the cap, the oldest go first.
+fn record_enforcement(records: &mut Vec<Enforcement>, results: &[StepResult], now: u64) {
+    for r in results {
+        let (from, to) = match &r.step {
+            Step::InstallKey { from, to } | Step::RemoveKey { from, to } => (from, to),
+        };
+        records.retain(|e| !(&e.from == from && &e.to == to));
+        records.push(Enforcement {
+            from: from.clone(),
+            to: to.clone(),
+            state: r.state.clone(),
+            ok: r.ok,
+            at: now,
+        });
     }
-    entry.detail = detail.map(|d| bounded(d.into()));
-    file.version = 1;
-    file.validate()?;
-    store::write_edges(&file)
+    let excess = records.len().saturating_sub(2 * RECORD_LIMIT);
+    records.drain(..excess);
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct DirectionView {
     pub from: String,
     pub to: String,
+    /// Intended access: "key", "password", "refused" or "unmanaged".
     pub access: Access,
-    /// "key", "password", "refused" or "unmanaged".
-    pub intended: String,
-    /// "edges.json", "migrated core", "migrated directed", "unmanaged".
+    /// "edges.json", "migrated core", "migrated directed", "unenrolled", "unmanaged".
     pub source: String,
     pub enforced: String,
     pub observed: String,
-    /// Whether BatchMode background checks can authenticate this direction.
-    pub background_authenticates: bool,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct EdgeView {
     pub from: String,
     pub to: String,
@@ -783,10 +683,10 @@ fn direction_view(s: &Snapshot, from: &str, to: &str) -> DirectionView {
     {
         Some(e) => format!("{} ({})", e.state, age(s.now, e.at)),
         None if access == Access::Unmanaged => "unmanaged (your SSH setup)".into(),
-        None if source == "migrated core" && access == Access::Key => {
+        None if source == Source::MigratedCore && access == Access::Key => {
             "not applied by cx edge (core sync manages keys)".into()
         }
-        None if source == "migrated directed" && access == Access::Key => {
+        None if source == Source::MigratedDirected && access == Access::Key => {
             "unmanaged (your SSH setup)".into()
         }
         None => "not applied".into(),
@@ -796,7 +696,7 @@ fn direction_view(s: &Snapshot, from: &str, to: &str) -> DirectionView {
         .evidence
         .iter()
         .find(|e| e.from == from && e.to == to);
-    let mut observed = match evidence {
+    let observed = match evidence {
         Some(e) => {
             let mut parts = Vec::new();
             if let Some(at) = e.last_ok {
@@ -813,18 +713,13 @@ fn direction_view(s: &Snapshot, from: &str, to: &str) -> DirectionView {
         }
         None => "not checked".into(),
     };
-    if access == Access::Password {
-        observed.push_str(" (password required; background checks do not authenticate)");
-    }
     DirectionView {
         from: from.into(),
         to: to.into(),
         access,
-        intended: access.label().into(),
-        source: source.into(),
+        source: source.label().into(),
         enforced,
         observed,
-        background_authenticates: matches!(access, Access::Key | Access::Unmanaged),
     }
 }
 
@@ -859,16 +754,7 @@ fn graph_with(s: &Snapshot) -> Vec<EdgeView> {
     }
     for e in &s.file.edges {
         if s.known(&e.from) && s.known(&e.to) {
-            // A one-way/none reverse record names the pair from the deciding side.
-            let decisive = !(e.policy == Policy::None
-                && s.file
-                    .record(&e.to, &e.from)
-                    .is_some_and(|r| r.policy == Policy::OneWay));
-            if decisive {
-                add(&e.from, &e.to, &mut pairs);
-            } else {
-                add(&e.to, &e.from, &mut pairs);
-            }
+            add(&e.from, &e.to, &mut pairs);
         }
     }
     for (i, a) in remotes.iter().enumerate() {
@@ -945,19 +831,6 @@ pub fn guard(device: &Device) -> Result<()> {
     let hops = s.routes.get(target).cloned().unwrap_or_default();
     check_route_with(&s, target, &hops)
 }
-/// False when viewer → device requires a password or is refused, so status
-/// checks should report "password required" rather than "unreachable".
-#[allow(dead_code)] // UI wave API
-pub fn background_authenticates(device: &Device) -> Result<bool> {
-    if device.target.is_none() {
-        return Ok(true);
-    }
-    Ok(matches!(
-        load()?.access(LOCAL, &device.id).0,
-        Access::Key | Access::Unmanaged
-    ))
-}
-
 /// Resolve a CLI endpoint: "local", the local name, or an enrolled name/id/target.
 pub fn resolve(name: &str) -> Result<String> {
     let devices = store::devices()?;
@@ -994,7 +867,10 @@ pub fn render_list(edges: &[EdgeView]) -> String {
             };
             out.push_str(&format!(
                 "  {from} → {to}: intended {} [{}]; enforced {}; observed {}\n",
-                d.intended, d.source, d.enforced, d.observed
+                d.access.label(),
+                d.source,
+                d.enforced,
+                d.observed
             ));
         }
         if e.routes_over > 0 {
@@ -1010,6 +886,22 @@ pub fn render_list(edges: &[EdgeView]) -> String {
     out
 }
 
+/// "install cx key laptop → lab-arm", named from the plan's endpoints.
+fn step_text(plan: &Plan, step: &Step) -> String {
+    let (verb, from, to) = match step {
+        Step::InstallKey { from, to } => ("install", from, to),
+        Step::RemoveKey { from, to } => ("remove", from, to),
+    };
+    let name = |id: &String| {
+        if *id == plan.change.from {
+            &plan.from_name
+        } else {
+            &plan.to_name
+        }
+    };
+    format!("{verb} cx key {} → {}", name(from), name(to))
+}
+
 pub fn render_plan(plan: &Plan) -> String {
     let mut out = format!(
         "{} → {}: {}\n",
@@ -1021,33 +913,19 @@ pub fn render_plan(plan: &Plan) -> String {
         out.push_str(&format!("  • {c}\n"));
     }
     for s in &plan.steps {
-        let (verb, from, to) = match s {
-            Step::InstallKey { from, to } => ("install", from, to),
-            Step::RemoveKey { from, to } => ("remove", from, to),
-        };
-        let name = |id: &String| {
-            if *id == plan.change.from {
-                plan.from_name.clone()
-            } else {
-                plan.to_name.clone()
-            }
-        };
-        out.push_str(&format!(
-            "  step: {verb} cx key {} → {}\n",
-            name(from),
-            name(to)
-        ));
+        out.push_str(&format!("  step: {}\n", step_text(plan, s)));
     }
-    for f in &plan.firewall {
-        out.push_str(&format!(
-            "  firewall preview for {} (not applied): {}\n",
-            f.host,
-            if f.nft_rules.is_some() {
-                "nftables rules available with --json"
-            } else {
-                "no address to filter"
-            }
-        ));
+    out
+}
+
+pub fn render_applied(plan: &Plan, applied: &Applied) -> String {
+    let mut out = String::from(if applied.enforced {
+        "saved and enforced\n"
+    } else {
+        "saved; enforcement incomplete\n"
+    });
+    for r in &applied.steps {
+        out.push_str(&format!("  {}: {}\n", step_text(plan, &r.step), r.state));
     }
     out
 }
@@ -1100,22 +978,28 @@ mod tests {
     #[test]
     fn migration_maps_core_and_directed_without_rewriting_device_policies() {
         let s = snapshot();
-        assert_eq!(s.access(LOCAL, "m1:robot"), (Access::Key, "migrated core"));
-        assert_eq!(s.access("m1:robot", LOCAL), (Access::Key, "migrated core"));
+        assert_eq!(
+            s.access(LOCAL, "m1:robot"),
+            (Access::Key, Source::MigratedCore)
+        );
+        assert_eq!(
+            s.access("m1:robot", LOCAL),
+            (Access::Key, Source::MigratedCore)
+        );
         assert_eq!(
             s.access(LOCAL, "m2:robot"),
-            (Access::Key, "migrated directed")
+            (Access::Key, Source::MigratedDirected)
         );
         assert_eq!(
             s.access("m2:robot", LOCAL),
-            (Access::Refused, "migrated directed")
+            (Access::Refused, Source::MigratedDirected)
         );
         assert_eq!(s.access("m1:robot", "m2:robot").0, Access::Unmanaged);
         let mut s2 = s.clone();
         s2.core.insert("m2:robot".into());
         assert_eq!(
             s2.access("m1:robot", "m2:robot"),
-            (Access::Key, "migrated core")
+            (Access::Key, Source::MigratedCore)
         );
         let views = graph_with(&s);
         let arm = views.iter().find(|e| e.to == "m1:robot").unwrap();
@@ -1127,7 +1011,8 @@ mod tests {
             arm.forward.enforced,
             "not applied by cx edge (core sync manages keys)"
         );
-        assert_eq!(jet.reverse.intended, "refused");
+        assert_eq!(jet.reverse.access, Access::Refused);
+        assert_eq!(jet.reverse.source, "migrated directed");
         // Old device-policies.json content parses unchanged and stays independent.
         let old: store::DevicePolicy =
             serde_json::from_str(r#"{"access":"core","availability":"usually_up"}"#).unwrap();
@@ -1145,12 +1030,26 @@ mod tests {
                 to: LOCAL.into()
             }]
         );
-        assert_eq!(p.summary(), "lab-arm will no longer reach laptop; core sync will not install lab-arm's key on laptop");
-        assert_eq!(p.records.len(), 2);
-        assert!(p
+        assert_eq!(
+            p.consequences,
+            [
+                "lab-arm will no longer reach laptop",
+                "core sync will not install lab-arm's key on laptop"
+            ]
+        );
+        // Stored as key + none; one-way is never persisted.
+        let stored: Vec<_> = p
             .records
             .iter()
-            .any(|r| r.from == "m1:robot" && r.policy == Policy::None));
+            .map(|r| (r.from.as_str(), r.to.as_str(), r.policy))
+            .collect();
+        assert_eq!(
+            stored,
+            [
+                (LOCAL, "m1:robot", Policy::Key),
+                ("m1:robot", LOCAL, Policy::None)
+            ]
+        );
         let next = s.with_edges(s.changed(&p.change));
         assert_eq!(next.access(LOCAL, "m1:robot").0, Access::Key);
         assert_eq!(next.access("m1:robot", LOCAL).0, Access::Refused);
@@ -1199,18 +1098,10 @@ mod tests {
         assert!(check_route_with(&next, "rover", &[]).is_ok());
         // A route between other devices via an unknown hop stays unmanaged.
         assert!(check_route_with(&next, "robot@192.168.0.7", &["robot@172.16.0.1".into()]).is_ok());
-        // The firewall layer previews tcp/22 denies only; it is never ready to apply.
-        let fw = p.firewall.iter().find(|f| f.host == "laptop").unwrap();
-        assert!(!fw.ready_for_apply);
-        assert!(fw.nft_rules.as_ref().unwrap().contains("100.96.0.2"));
-        let fw = p.firewall.iter().find(|f| f.host == "lab-arm").unwrap();
-        assert!(
-            fw.nft_rules.is_none() && fw.unresolved == ["laptop: no observed mesh/overlay address"]
-        );
     }
 
     #[test]
-    fn password_removes_key_for_that_direction_only_and_marks_background_checks() {
+    fn password_removes_key_for_that_direction_only_without_claiming_auth_state() {
         let s = snapshot();
         let p = plan_with(&s, change(LOCAL, "m1:robot", Policy::Password)).unwrap();
         assert_eq!(
@@ -1222,14 +1113,14 @@ mod tests {
         );
         assert_eq!(
             p.consequences[0],
-            "laptop will need a password to reach lab-arm; background checks will not authenticate"
+            "cx will remove laptop's cx key on lab-arm; other SSH keys laptop has there may still log in"
         );
         let next = s.with_edges(s.changed(&p.change));
         assert_eq!(next.access("m1:robot", LOCAL).0, Access::Key);
         let view = graph_with(&next);
         let arm = view.iter().find(|e| e.to == "m1:robot").unwrap();
-        assert!(!arm.forward.background_authenticates);
-        assert!(arm.forward.observed.contains("password required"));
+        // Only recorded evidence is reported; intent implies nothing about auth.
+        assert_eq!(arm.forward.observed, "not checked");
         assert_eq!(arm.label, "pwd → · key ←");
         // Password then key on a one-way pair keeps the reverse refusal.
         let ow = next.with_edges(next.changed(&change("m1:robot", LOCAL, Policy::OneWay)));
@@ -1261,7 +1152,7 @@ mod tests {
     }
 
     #[test]
-    fn routes_plural_and_hand_written_one_way_without_reverse_record() {
+    fn routes_plural_and_stored_one_way_or_duplicates_are_invalid() {
         let mut s = snapshot();
         s.routes
             .insert("robot@10.0.0.8".into(), vec!["robot@100.96.0.2".into()]);
@@ -1269,16 +1160,18 @@ mod tests {
         assert!(p
             .consequences
             .contains(&"2 jump routes via lab-arm will be refused".to_string()));
-        s.file.edges.push(EdgePolicy {
+        let mut file = s.file.clone();
+        file.edges.push(EdgePolicy {
             from: "m1:robot".into(),
             to: LOCAL.into(),
             policy: Policy::OneWay,
             updated_at: 1,
         });
-        assert_eq!(s.access(LOCAL, "m1:robot").0, Access::Refused);
-        let mut bad = s.file.clone();
-        bad.edges.push(bad.edges[0].clone());
-        assert!(bad.validate().is_err());
+        assert!(file.validate().is_err());
+        file.edges[0].policy = Policy::Key;
+        assert!(file.validate().is_ok());
+        file.edges.push(file.edges[0].clone());
+        assert!(file.validate().is_err());
     }
 
     #[test]
@@ -1294,10 +1187,80 @@ mod tests {
         assert!(pwd.explicit_key("m1:robot", LOCAL));
     }
     #[test]
+    fn key_on_directed_device_keeps_reverse_migrated_and_pairable() {
+        let s = snapshot();
+        let p = plan_with(&s, change(LOCAL, "m2:robot", Policy::Key)).unwrap();
+        assert_eq!(p.consequences, ["no access change for laptop and jetson"]);
+        // No hidden reverse refusal: only the requested direction is recorded.
+        assert_eq!(p.records.len(), 1);
+        let next = s.with_edges(s.changed(&p.change));
+        assert_eq!(
+            next.access("m2:robot", LOCAL),
+            (Access::Refused, Source::MigratedDirected)
+        );
+        assert!(next.explicit_key("m2:robot", LOCAL));
+    }
+    #[test]
+    fn failed_install_is_replanned_on_rerun() {
+        let s = snapshot();
+        let pwd = s.with_edges(s.changed(&change(LOCAL, "m1:robot", Policy::Password)));
+        let mut key = pwd.with_edges(pwd.changed(&change(LOCAL, "m1:robot", Policy::Key)));
+        let install = Step::InstallKey {
+            from: LOCAL.into(),
+            to: "m1:robot".into(),
+        };
+        assert!(plan_with(&key, change(LOCAL, "m1:robot", Policy::Key))
+            .unwrap()
+            .steps
+            .is_empty());
+        key.file.enforcement.push(Enforcement {
+            from: LOCAL.into(),
+            to: "m1:robot".into(),
+            state: "failed: SSH access unavailable".into(),
+            ok: false,
+            at: 900,
+        });
+        let retry = plan_with(&key, change(LOCAL, "m1:robot", Policy::Key)).unwrap();
+        assert_eq!(retry.steps, vec![install]);
+        assert_eq!(
+            retry.consequences,
+            ["cx will retry installing laptop's cx key on lab-arm; the last attempt failed"]
+        );
+    }
+    #[test]
+    fn enforcement_cap_drops_oldest_and_keeps_newest() {
+        let mut records: Vec<Enforcement> = (0..2 * RECORD_LIMIT)
+            .map(|i| Enforcement {
+                from: format!("d{i}"),
+                to: LOCAL.into(),
+                state: "old".into(),
+                ok: true,
+                at: 1,
+            })
+            .collect();
+        let result = StepResult {
+            step: Step::RemoveKey {
+                from: "new".into(),
+                to: LOCAL.into(),
+            },
+            ok: true,
+            state: "fresh".into(),
+        };
+        record_enforcement(&mut records, &[result], 2);
+        assert_eq!(records.len(), 2 * RECORD_LIMIT);
+        assert_eq!(records.last().unwrap().state, "fresh");
+        assert!(!records.iter().any(|e| e.from == "d0"));
+    }
+    #[test]
     fn policy_parsing_and_status_strings() {
-        assert_eq!("one-way".parse::<Policy>().unwrap(), Policy::OneWay);
-        assert_eq!("PASSWORD".parse::<Policy>().unwrap(), Policy::Password);
-        assert!("allow".parse::<Policy>().is_err());
+        use clap::ValueEnum;
+        assert_eq!(Policy::from_str("one-way", false).unwrap(), Policy::OneWay);
+        assert_eq!(
+            Policy::from_str("password", false).unwrap(),
+            Policy::Password
+        );
+        assert!(Policy::from_str("auto", false).is_err());
+        assert!(Policy::from_str("PASSWORD", false).is_err());
         let mut s = snapshot();
         s.file.evidence.push(Evidence {
             from: LOCAL.into(),

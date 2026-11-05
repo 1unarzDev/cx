@@ -365,8 +365,8 @@ enum EdgeCommand {
     Set {
         from: String,
         to: String,
-        /// key, password, one-way or none
-        policy: String,
+        #[arg(value_enum)]
+        policy: edges::Policy,
         #[arg(long)]
         dry_run: bool,
         /// Apply without the interactive confirmation.
@@ -626,16 +626,13 @@ fn helper() -> Result<()> {
     }
 }
 fn device(name: Option<String>) -> Result<Device> {
-    let ds = store::devices()?;
-    if let Some(n) = name {
-        let d = ds
-            .into_iter()
-            .find(|d| d.name == n || d.id == n || d.target.as_deref() == Some(&n))
-            .context("device not enrolled; use cx add")?;
-        edges::guard(&d)?;
-        Ok(d)
-    } else {
-        Ok(store::local_device())
+    match name {
+        Some(n) => {
+            let d = enrolled_device(&n)?;
+            edges::guard(&d)?;
+            Ok(d)
+        }
+        None => Ok(store::local_device()),
     }
 }
 
@@ -855,7 +852,7 @@ fn edge_cli(command: EdgeCommand) -> Result<()> {
             let plan = edges::plan(edges::Change {
                 from: edges::resolve(&from)?,
                 to: edges::resolve(&to)?,
-                policy: policy.parse()?,
+                policy,
             })?;
             if dry_run {
                 if json {
@@ -879,7 +876,11 @@ fn edge_cli(command: EdgeCommand) -> Result<()> {
                 }
             }
             let applied = edges::apply(&plan)?;
-            println!("{}", serde_json::to_string_pretty(&applied)?);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&applied)?);
+            } else {
+                print!("{}", edges::render_applied(&plan, &applied));
+            }
             anyhow::ensure!(
                 applied.enforced,
                 "policy saved, but enforcement is incomplete; see the failed steps"
@@ -888,8 +889,8 @@ fn edge_cli(command: EdgeCommand) -> Result<()> {
     }
     Ok(())
 }
-/// Local management lookup (edit, policy, pairing): no edge guard, since these
-/// commands either open no SSH or apply their own edge-policy checks.
+/// Local management lookup without the edge guard; callers that open SSH
+/// (pairing, core sync) check edge policy themselves.
 fn enrolled_device(name: &str) -> Result<Device> {
     store::devices()?
         .into_iter()

@@ -4,6 +4,10 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+### Features
+- `cx edge list` and `cx edge set FROM TO key|password|one-way|none` set access per edge and per direction. A preview lists the consequences (lost reach, refused jump routes, core sync changes) before `--yes` or an interactive confirmation applies it. Intent is stored in `edges.json`; pairs without a record keep their `device-policies.json` posture, which is never rewritten. `none` refuses core sync, pairing and jump routes over that edge before any SSH. Status reports intent, cx enforcement and observed evidence separately.
+- Helpers advertise `peer-authorize-v1` for the new `peer_authorize` operation and the `authorize` field of `peer_configure`, which install or remove only cx-managed authorized_keys lines. A receiver never authorizes a peer it removed or keeps directed.
+
 ## v0.1.95
 
 Includes every change from v0.1.86–v0.1.88 plus the work below, which was previously only deployed locally. (v0.1.93 and v0.1.94 were tagged but not published.)

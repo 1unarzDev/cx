@@ -411,7 +411,7 @@ pub(super) fn cache_writer() -> CacheWriter {
             while let Ok(newer) = rx.try_recv() {
                 snapshot = newer;
             }
-            let _ = store::write_ui_state("ui-navigation.json", &snapshot, 2 * 1024 * 1024);
+            let _ = store::write_state("ui-navigation.json", &snapshot, 2 * 1024 * 1024);
         }
     });
     CacheWriter { tx, worker }

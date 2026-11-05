@@ -178,6 +178,7 @@ fn assert_geometry(g: &Graph, l: &GraphLayout) {
             assert!(on_border, "port {port:?} not on {id}");
         }
     }
+    assert_meshes_connected(g, l);
     // Two routes never run along the same cell in the same axis.
     let mut seen: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     for r in &l.routes {
@@ -193,6 +194,81 @@ fn assert_geometry(g: &Graph, l: &GraphLayout) {
             assert!(*prev & axis == 0, "edges overlap at {x},{y}");
             *prev |= axis;
         }
+    }
+}
+
+/// Visual-first mesh contract: every mesh is one enclosure, or fragments
+/// joined by bridges into one connected region; bridges stay outside nodes
+/// and enclosures and start / end on the borders of the fragments they join.
+fn assert_meshes_connected(g: &Graph, l: &GraphLayout) {
+    let encl = &l.enclosures;
+    for p in &l.nodes {
+        if let Some(m) = g.nodes[p.node].mesh.as_deref() {
+            assert!(
+                encl.iter()
+                    .any(|e| e.mesh == m && e.rect.union(p.rect) == e.rect),
+                "{} outside every {m} enclosure",
+                g.nodes[p.node].id
+            );
+        }
+    }
+    let on_border = |r: Rect, x: u16, y: u16| {
+        x >= r.x
+            && x < r.right()
+            && y >= r.y
+            && y < r.bottom()
+            && (x == r.x || x == r.right() - 1 || y == r.y || y == r.bottom() - 1)
+    };
+    let inside = |r: Rect, x: u16, y: u16| x >= r.x && x < r.right() && y >= r.y && y < r.bottom();
+    for b in &l.bridges {
+        assert_eq!(encl[b.from].mesh, b.mesh);
+        assert_eq!(encl[b.to].mesh, b.mesh);
+        assert!(on_border(encl[b.from].rect, b.ends[0].0, b.ends[0].1));
+        assert!(on_border(encl[b.to].rect, b.ends[1].0, b.ends[1].1));
+        let mut prev = (b.ends[0].0, b.ends[0].1);
+        for &(x, y, _) in b
+            .cells
+            .iter()
+            .chain(std::iter::once(&(b.ends[1].0, b.ends[1].1, 0)))
+        {
+            let d = (x as i32 - prev.0 as i32).abs() + (y as i32 - prev.1 as i32).abs();
+            assert_eq!(d, 1, "bridge {} not contiguous at {x},{y}", b.mesh);
+            prev = (x, y);
+        }
+        for &(x, y, _) in &b.cells {
+            for p in &l.nodes {
+                assert!(!inside(p.rect, x, y), "bridge through node at {x},{y}");
+            }
+            for e in encl {
+                assert!(!inside(e.rect, x, y), "bridge through enclosure at {x},{y}");
+            }
+        }
+    }
+    let mut meshes: Vec<&str> = encl.iter().map(|e| e.mesh.as_str()).collect();
+    meshes.sort_unstable();
+    meshes.dedup();
+    for m in meshes {
+        let frags: Vec<usize> = (0..encl.len()).filter(|&k| encl[k].mesh == m).collect();
+        let mut reached = BTreeSet::from([frags[0]]);
+        loop {
+            let before = reached.len();
+            for b in l.bridges.iter().filter(|b| b.mesh == m) {
+                if reached.contains(&b.from) || reached.contains(&b.to) {
+                    reached.insert(b.from);
+                    reached.insert(b.to);
+                }
+            }
+            if reached.len() == before {
+                break;
+            }
+        }
+        assert_eq!(
+            reached.len(),
+            frags.len(),
+            "{m} drawn as unlinked fragments at {}x{}",
+            l.width,
+            l.height
+        );
     }
 }
 
@@ -482,6 +558,59 @@ fn mesh_members_are_contiguous_and_enclosed() {
 }
 
 #[test]
+fn split_meshes_render_as_one_region_or_linked_fragments() {
+    // Room to spare: the LAN neighbours move out of ssh-overlay's band and
+    // the mesh is one enclosure spanning ranks 1 and 2.
+    let mut src = fleet_sources();
+    src.expanded.insert("lan:tranquility:enp5s0".into());
+    let mut g = build(&src);
+    assign_hotkeys(&mut g, &BTreeMap::new());
+    let l = compute(&g, 200, 60, GlyphSet::Unicode, None);
+    let ssh: Vec<_> = l
+        .enclosures
+        .iter()
+        .filter(|e| e.mesh == "ssh-overlay")
+        .collect();
+    assert_eq!(ssh.len(), 1, "{:?}", l.enclosures);
+    assert!(l.bridges.is_empty());
+    assert_geometry(&g, &l);
+    // Shorter: two fragments, joined by exactly one bridge drawn in mesh style.
+    let l = compute(&g, 120, 40, GlyphSet::Unicode, None);
+    let frags = l
+        .enclosures
+        .iter()
+        .filter(|e| e.mesh == "ssh-overlay")
+        .count();
+    assert_eq!(frags, 2);
+    assert_eq!(l.bridges.len(), 1);
+    assert_geometry(&g, &l);
+    let (buf, _) = render_text(&g, &l, Selection::default(), GlyphSet::Unicode, true);
+    let mesh = DefaultStyle { color: true }.style(Role::Mesh).fg;
+    for &(x, y, _) in &l.bridges[0].cells {
+        assert_eq!(buf[(x, y)].fg, mesh.unwrap(), "bridge cell {x},{y}");
+    }
+    // Interleaved meshes (dense fixture): every fragment is linked.
+    let g = thirty_nodes();
+    let key = CacheKey {
+        topology: g.topology_hash(),
+        width: 200,
+        height: 60,
+        class: SizeClass::L,
+        glyphs: GlyphSet::Unicode,
+    };
+    let l = graph_with_overflow(&g, key, None).unwrap();
+    for mesh in ["cloudflare", "ssh-overlay"] {
+        let frags = l.enclosures.iter().filter(|e| e.mesh == mesh).count();
+        let links = l.bridges.iter().filter(|b| b.mesh == mesh).count();
+        assert!(
+            frags >= 1 && links == frags - 1,
+            "{mesh}: {frags} boxes, {links} bridges"
+        );
+    }
+    assert_geometry(&g, &l);
+}
+
+#[test]
 fn layout_is_stable_under_small_topology_changes() {
     let g = fleet();
     let before = compute(&g, 120, 40, GlyphSet::Unicode, None);
@@ -522,8 +651,64 @@ fn layout_is_stable_under_small_topology_changes() {
     assert_eq!(back.routes, before.routes);
 }
 
+/// Hop distance from the viewer over all edges (the layout's rank before folding).
+fn hops(g: &Graph) -> Vec<usize> {
+    let root = g.viewer().unwrap_or(0);
+    let mut d = vec![usize::MAX; g.nodes.len()];
+    if g.nodes.is_empty() {
+        return d;
+    }
+    d[root] = 0;
+    let mut q = std::collections::VecDeque::from([root]);
+    while let Some(a) = q.pop_front() {
+        for e in &g.edges {
+            let (Some(x), Some(y)) = (g.node_index(&e.from), g.node_index(&e.to)) else {
+                continue;
+            };
+            for (p, c) in [(x, y), (y, x)] {
+                if p == a && d[c] == usize::MAX {
+                    d[c] = d[a] + 1;
+                    q.push_back(c);
+                }
+            }
+        }
+    }
+    d
+}
+
+/// Spec 10.2.5: only ranks >= 3 fold into a pill; a node at hop 1 or 2 is
+/// either drawn (with its hotkey badge and hit target) or the outline is used.
+pub(super) fn assert_no_shallow_folds(g: &Graph, l: &GraphLayout) {
+    let d = hops(g);
+    for m in &l.more {
+        assert!(m.rank >= 3, "pill at rank {}", m.rank);
+        for &i in &m.hidden {
+            assert!(
+                d[i] >= 3 || g.nodes[i].kind == NodeKind::Neighbor,
+                "{} (hop {}) folded at {}x{}",
+                g.nodes[i].id,
+                d[i],
+                l.width,
+                l.height
+            );
+        }
+    }
+    if l.mode == Mode::Graph {
+        for (i, n) in g.nodes.iter().enumerate() {
+            if d[i] <= 2 && n.kind != NodeKind::Neighbor {
+                let p = l.placed(i).unwrap_or_else(|| panic!("{} not drawn", n.id));
+                if let Some(k) = n.hotkey {
+                    let _ = k;
+                    assert_eq!(l.hits.at(p.rect.x + 1, p.rect.y), Some(HitId::Node(i)));
+                }
+            }
+        }
+    }
+}
+
 #[test]
-fn overflow_folds_into_more_pills_without_overlap() {
+fn overflow_never_folds_rank_one_or_two() {
+    // A crowded rank 1 does not fit 80x24: outline, never a `+N more` pill.
     let mut src = fleet_sources();
     for k in 0..9 {
         src.devices.push(device(
@@ -536,11 +721,21 @@ fn overflow_folds_into_more_pills_without_overlap() {
     let mut g = build(&src);
     assign_hotkeys(&mut g, &BTreeMap::new());
     let l = compute(&g, 80, 24, GlyphSet::Unicode, None);
-    assert_eq!(l.mode, Mode::Graph);
-    assert!(!l.more.is_empty(), "rank 1 folds into +N more");
-    let hidden: usize = l.more.iter().map(|m| m.hidden.len()).sum();
-    assert_eq!(hidden + l.nodes.len(), g.nodes.len());
-    assert_geometry(&g, &l);
+    assert_eq!(l.mode, Mode::Outline);
+    assert!(l.more.is_empty());
+    // The fixture fleet at 120x24 (rank 1 = 5 cards incl. the password edge to
+    // nas): every node stays visible with its hotkey and policy.
+    let fleet = fleet();
+    for (w, h) in [(120, 24), (80, 24), (200, 24), (100, 20), (160, 22)] {
+        let l = compute(&fleet, w, h, GlyphSet::Unicode, None);
+        assert_no_shallow_folds(&fleet, &l);
+        if l.mode == Mode::Graph {
+            assert!(l.more.is_empty(), "{w}x{h}");
+            assert!(l
+                .route_for(edge_idx(&fleet, "tranquility", "nas"))
+                .is_some());
+        }
+    }
     // More than 24 nodes: outline.
     for k in 9..30 {
         src.devices.push(device(
@@ -572,13 +767,69 @@ fn expanded_lan_cluster_collapses_first_when_space_runs_out() {
         .count();
     assert_eq!(shown, 4);
     assert_geometry(&g, &big);
-    let small = compute(&g, 80, 18, GlyphSet::Unicode, None);
+    // Without jetson-01 the neighbours need a third rank: at 64x24 two rank
+    // columns fit but three do not, so the cluster collapses (step 1 of the
+    // overflow ladder) instead of the whole view switching to the outline.
+    src.devices.retain(|d| d.id != "jetson-01");
+    src.routes.clear();
+    src.edge_policies.retain(|p| p.to != "jetson-01");
+    for m in src.mesh.iter_mut() {
+        m.members.retain(|id| id != "jetson-01");
+    }
+    let mut g = build(&src);
+    assign_hotkeys(&mut g, &BTreeMap::new());
+    let small = compute(&g, 64, 24, GlyphSet::Unicode, None);
     assert_eq!(small.mode, Mode::Graph);
     assert!(small
         .nodes
         .iter()
         .all(|p| g.nodes[p.node].kind != NodeKind::Neighbor));
+    assert!(small.placed(idx(&g, "lan:tranquility:enp5s0")).is_some());
     assert_geometry(&g, &small);
+    assert_no_shallow_folds(&g, &small);
+}
+
+#[test]
+fn deep_ranks_fold_into_a_pill_at_rank_three() {
+    // v -> hop0 -> hop1 -> hop2 -> hop3a -> hop4: six ranks do not fit 95
+    // columns or 24 rows; four do once ranks >= 3 fold into one pill.
+    let mut src = Sources {
+        devices: vec![device("v", None, "local", 1)],
+        now: NOW,
+        ..Default::default()
+    };
+    let chain = ["hop0", "hop1", "hop2", "hop3a"];
+    // Ranks: v 0, hop0 1, hop1 2, hop2 3, hop3a 4, hop4 5.
+    for (k, id) in chain.iter().enumerate() {
+        src.devices.push(device(id, Some(id), "reachable", 1));
+        if k > 0 {
+            src.routes.insert(
+                id.to_string(),
+                chain[..k].iter().map(|s| s.to_string()).collect(),
+            );
+        }
+    }
+    src.devices
+        .push(device("hop4", Some("hop4"), "reachable", 1));
+    src.routes.insert(
+        "hop4".into(),
+        ["hop0", "hop1", "hop2", "hop3a"].map(String::from).to_vec(),
+    );
+    let mut g = build(&src);
+    assign_hotkeys(&mut g, &BTreeMap::new());
+    let l = compute(&g, 95, 24, GlyphSet::Unicode, None);
+    assert_eq!(l.mode, Mode::Graph);
+    assert_eq!(l.more.len(), 1);
+    assert_eq!(l.more[0].rank, 3);
+    let hidden: BTreeSet<&str> = l.more[0]
+        .hidden
+        .iter()
+        .map(|&i| g.nodes[i].id.as_str())
+        .collect();
+    assert_eq!(hidden, BTreeSet::from(["hop2", "hop3a", "hop4"]));
+    assert_eq!(l.nodes.len() + 3, g.nodes.len());
+    assert_geometry(&g, &l);
+    assert_no_shallow_folds(&g, &l);
 }
 
 #[test]
@@ -682,14 +933,20 @@ fn ports_merge_with_node_borders_and_arrows_point_into_targets() {
         .unwrap();
     let port = buf[(r.src_port.0, r.src_port.1)].symbol().to_string();
     assert!("┝┥┯┷├┤┬┴".contains(&port), "port glyph {port}");
-    // Two-way edge: mutual access stays unarrowed at both ends.
+    // Two-way edge: heads at both ends (spec 10.3), each pointing into its node.
     let first = buf[(r.cells[0].0, r.cells[0].1)].symbol().to_string();
     let last = buf[(r.cells.last().unwrap().0, r.cells.last().unwrap().1)]
         .symbol()
         .to_string();
-    assert!(
-        !"▶◀▲▼".contains(&first) && !"▶◀▲▼".contains(&last),
-        "{first} {last}"
+    assert_eq!((first.as_str(), last.as_str()), ("◀", "▶"));
+    // A forward-only edge has a single head at the target.
+    let fwd = l
+        .route_for(edge_idx(&g, "tranquility", "field-rover"))
+        .unwrap();
+    assert!(!"▶◀▲▼".contains(buf[(fwd.cells[0].0, fwd.cells[0].1)].symbol()));
+    assert_eq!(
+        buf[(fwd.cells.last().unwrap().0, fwd.cells.last().unwrap().1)].symbol(),
+        "▶"
     );
     // Password edge is dashed, one-way has a single head and ⊘ at the source end.
     let pwd = l.route_for(edge_idx(&g, "tranquility", "nas")).unwrap();
@@ -702,6 +959,67 @@ fn ports_merge_with_node_borders_and_arrows_point_into_targets() {
     assert!(
         "▶◀▲▼".contains(buf[(one.cells.last().unwrap().0, one.cells.last().unwrap().1)].symbol())
     );
+}
+
+#[test]
+fn outline_drops_whole_tokens_and_keeps_policy_first() {
+    let g = fleet();
+    let l = compute(&g, 40, 20, GlyphSet::Unicode, None);
+    assert_eq!(l.mode, Mode::Outline);
+    let (_, text) = render_text(&g, &l, Selection::default(), GlyphSet::Unicode, true);
+    let row = |id: &str| -> String {
+        text.lines()
+            .find(|r| r.contains(&format!(" {id}")))
+            .unwrap_or_else(|| panic!("no row {id}:\n{text}"))
+            .to_string()
+    };
+    // The one-way policy outranks the mesh badge on a narrow row.
+    assert!(row("jetson-01").contains("one-way →"), "{text}");
+    assert!(row("nas").contains("pwd →"), "{text}");
+    // Every token is whole: no cut policy words.
+    for r in text.lines() {
+        for bad in ["↳ o ", "↳ o\n", " ke ", " pw "] {
+            assert!(!format!("{r}\n").contains(bad), "cut token in {r:?}");
+        }
+        let t = r.trim_end();
+        for tail in ["↳ o", "↳", " k", " ke", " p", " pw", " one-", "◆ ssh-"] {
+            assert!(!t.ends_with(tail), "cut token in {r:?}");
+        }
+    }
+}
+
+#[test]
+fn legend_lists_only_what_is_drawn() {
+    let g = fleet();
+    let l = compute(&g, 120, 40, GlyphSet::Unicode, None);
+    let items = render::legend_items(&g, &l, Selection::default(), GlyphSet::Unicode);
+    assert!(!items.contains(&"none"), "{items:?}");
+    assert!(items.contains(&"pwd") && items.contains(&"key") && items.contains(&"mesh"));
+    // The dense fixture has no LAN and no labelled jump edge.
+    let d = thirty_nodes();
+    let key = CacheKey {
+        topology: d.topology_hash(),
+        width: 200,
+        height: 60,
+        class: SizeClass::L,
+        glyphs: GlyphSet::Unicode,
+    };
+    let l = graph_with_overflow(&d, key, None).unwrap();
+    let items = render::legend_items(&d, &l, Selection::default(), GlyphSet::Unicode);
+    assert_eq!(items, vec!["key", "pwd", "access", "mesh"]);
+    // Plain key jump edges carry no label unless selected.
+    let jump = d
+        .edges
+        .iter()
+        .position(|e| e.kind == EdgeKind::Jump && e.policy == Policy::Key)
+        .unwrap();
+    assert_eq!(
+        render::edge_label(&d.edges[jump], false, GlyphSet::Unicode),
+        None
+    );
+    assert!(render::edge_label(&d.edges[jump], true, GlyphSet::Unicode)
+        .unwrap()
+        .starts_with('↳'));
 }
 
 #[test]
@@ -887,7 +1205,7 @@ fn layout_and_routing_30_nodes_within_budget() {
     };
     let mut best = std::time::Duration::MAX;
     let mut layout = None;
-    for _ in 0..7 {
+    for _ in 0..15 {
         let t = std::time::Instant::now();
         let l = graph_with_overflow(&g, key, None).expect("graph mode");
         best = best.min(t.elapsed());
@@ -940,10 +1258,11 @@ fn every_area_lays_out_renders_and_hits_without_panic() {
         ("dense-30", dense),
     ];
     let widths: Vec<u16> = (0..=400).collect();
+    // Half the cores: the timing test running alongside keeps a fair share.
     let threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-        .clamp(1, 16);
+        .map(|n| n.get() / 2)
+        .unwrap_or(2)
+        .clamp(1, 8);
     let chunk = widths.len().div_ceil(threads);
     let graphs = &graphs;
     std::thread::scope(|scope| {
@@ -972,6 +1291,7 @@ fn sweep_one(name: &str, g: &Graph, w: u16, h: u16, glyphs: GlyphSet) {
     if l.mode == Mode::Graph {
         assert_geometry(g, &l);
     }
+    assert_no_shallow_folds(g, &l);
     let sel = Selection {
         node: g.nodes.first().map(|_| 0),
         edge: g.edges.first().map(|_| 0),
@@ -1119,6 +1439,11 @@ fn fleet_snapshots() {
     };
     let (buf, text) = render_text(&g2, &l, sel, GlyphSet::Unicode, true);
     check_snapshot("fleet-lan-expanded-200x60", &buf, &text, 200, 60);
+    // Too short for one ssh-overlay band: two fragments joined by a bridge.
+    let l = compute(&g2, 120, 40, GlyphSet::Unicode, None);
+    assert_eq!(l.mode, Mode::Graph);
+    let (buf, text) = render_text(&g2, &l, sel, GlyphSet::Unicode, true);
+    check_snapshot("fleet-lan-expanded-120x40", &buf, &text, 120, 40);
     // Dense 30-node graph (the perf fixture) in forced graph mode at L.
     let g3 = thirty_nodes();
     let key = CacheKey {

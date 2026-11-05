@@ -3,9 +3,11 @@
 //! Rank = BFS hop distance from the viewer; order within a rank = barycenter
 //! sweeps seeded by the previous layout's order; mesh members are kept
 //! contiguous and wrapped in an enclosure; coordinates come from an isotonic
-//! (pool-adjacent-violators) fit to each node's neighbours. Overflow collapses
-//! LAN clusters, then folds ranks >= 3 and long ranks into `+N more` pills, and
-//! finally falls back to the outline view.
+//! (pool-adjacent-violators) fit to each node's neighbours. A mesh spanning
+//! several ranks reserves its band so one enclosure fits; when other meshes
+//! interleave, its fragments are joined by dashed mesh bridges. Overflow (spec
+//! 10.2.5) collapses LAN clusters, then folds ranks >= 3 into a `+N more` pill,
+//! and otherwise falls back to the outline view: ranks 1 and 2 are never hidden.
 use super::hit::HitMap;
 use super::model::*;
 use super::route::{self, Route};
@@ -90,6 +92,20 @@ pub struct Enclosure {
     pub title: bool,
 }
 
+/// A dashed mesh-colored link joining two enclosures of the same mesh, so a
+/// mesh split by interleaved groups still reads as one connected region.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bridge {
+    pub mesh: String,
+    /// Indices into `GraphLayout::enclosures` (the already-connected side first).
+    pub from: usize,
+    pub to: usize,
+    /// Path cells outside every enclosure, with arm masks.
+    pub cells: Vec<(u16, u16, u8)>,
+    /// Enclosure border cells the bridge leaves / enters, with the arm toward the path.
+    pub ends: [(u16, u16, u8); 2],
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutlineRow {
     pub node: usize,
@@ -106,12 +122,16 @@ pub struct GraphLayout {
     pub key: CacheKey,
     pub mode: Mode,
     pub orientation: Orientation,
+    /// Card size class actually used: the width's class, or a more compact
+    /// one when the area is too short for its cards (`key.class` stays the
+    /// width's class).
     pub class: SizeClass,
     pub width: u16,
     pub height: u16,
     pub nodes: Vec<Placed>,
     pub more: Vec<More>,
     pub enclosures: Vec<Enclosure>,
+    pub bridges: Vec<Bridge>,
     pub routes: Vec<Route>,
     pub outline: Vec<OutlineRow>,
     /// node id -> (rank, position) for seeding the next layout.
@@ -165,18 +185,29 @@ pub(super) fn graph_with_overflow(
     prev: Option<&GraphLayout>,
 ) -> Option<GraphLayout> {
     let has_neighbors = g.nodes.iter().any(|n| n.kind == NodeKind::Neighbor);
-    let ladder: &[(bool, bool, bool)] = &[
-        (false, false, false),
-        (true, false, false),
-        (true, true, false),
-        (true, true, true),
-    ];
-    for &(hide_neighbors, fold_deep, trim) in ladder {
+    // Spec 10.2.5: collapse LAN clusters first, then fold ranks >= 3 into a
+    // pill. Each step first tries the width's size class, then more compact
+    // cards (a short terminal fits S cards where M cards do not). Nothing at
+    // rank 1 or 2 is ever folded: if that does not fit, the caller uses the
+    // outline.
+    let ladder: &[(bool, bool)] = &[(false, false), (true, false), (true, true)];
+    let classes: Vec<SizeClass> = [SizeClass::L, SizeClass::M, SizeClass::S]
+        .into_iter()
+        .filter(|&c| c <= key.class)
+        .collect();
+    for &(hide_neighbors, fold_deep) in ladder {
         if hide_neighbors && !has_neighbors && !fold_deep {
             continue;
         }
-        if let Some(l) = try_graph(g, key, prev, hide_neighbors, fold_deep, trim) {
-            return Some(l);
+        for &class in &classes {
+            // Mesh bands first; if the reserved space then fails to route,
+            // the bridged layout (no reservation) may still fit.
+            for reserve in [true, false] {
+                let fold = (hide_neighbors, fold_deep);
+                if let Some(l) = try_graph(g, key, class, prev, fold, reserve) {
+                    return Some(l);
+                }
+            }
         }
     }
     None
@@ -265,13 +296,12 @@ fn default_key<'a>(
 fn try_graph(
     g: &Graph,
     key: CacheKey,
+    class: SizeClass,
     prev: Option<&GraphLayout>,
-    hide_neighbors: bool,
-    fold_deep: bool,
-    trim: bool,
+    (hide_neighbors, fold_deep): (bool, bool),
+    reserve: bool,
 ) -> Option<GraphLayout> {
     let (w, h) = (key.width, key.height);
-    let class = key.class;
     let n = g.nodes.len();
     let mut visible: Vec<bool> = g
         .nodes
@@ -451,35 +481,8 @@ fn try_graph(
     };
     let gap = |a: usize, b: usize| gap_with(base_gap, a, b);
     let extent = |list: &[usize]| extent_with(base_gap, list);
-    for r in 0..items.len() {
-        if extent(&items[r]) <= room {
-            continue;
-        }
-        if !trim {
-            return None;
-        }
-        // Keep the longest prefix that fits next to a pill.
-        let mut keep = items[r].clone();
-        let mut hidden = Vec::new();
-        while !keep.is_empty() && extent(&keep) + base_gap + ext_o > room {
-            let x = keep.pop().unwrap();
-            if x < n {
-                hidden.push(x);
-            } else {
-                hidden.extend(pills[x - n].1.iter().copied());
-                pills[x - n].1.clear();
-            }
-        }
-        if keep.is_empty() {
-            return None;
-        }
-        for &x in &hidden {
-            visible[x] = false;
-        }
-        hidden.sort_unstable();
-        keep.push(n + pills.len());
-        pills.push((r, hidden));
-        items[r] = keep;
+    if items.iter().any(|list| extent(list) > room) {
+        return None;
     }
     let pills_live: Vec<bool> = pills.iter().map(|p| !p.1.is_empty()).collect();
     for list in items.iter_mut() {
@@ -588,6 +591,22 @@ fn try_graph(
             center[it] = Some(v + ext_o as f64 / 2.0);
         }
     }
+    let reserved = reserve
+        && reserve_mesh_bands(
+            &items,
+            &mut start_o,
+            &|it| mesh_of(it),
+            &gap,
+            ext_o,
+            pad_o,
+            base_gap,
+            lo,
+            hi,
+        );
+    if reserve && !reserved {
+        // Identical to the attempt without reservation; let that one run.
+        return None;
+    }
     // Centre the whole composition along the order axis (enclosure pads included).
     {
         let live: Vec<usize> = items.iter().flatten().copied().collect();
@@ -661,6 +680,7 @@ fn try_graph(
         nodes: placed,
         more: pills_out,
         enclosures,
+        bridges: Vec::new(),
         routes: Vec::new(),
         outline: Vec::new(),
         order,
@@ -668,8 +688,150 @@ fn try_graph(
         hits: HitMap::new(w, h),
     };
     layout.routes = route::route_all(g, &layout, &visible);
+    // Every edge between drawn nodes must be drawn (a dropped password edge
+    // would hide its policy): otherwise this attempt does not fit.
+    let index: BTreeMap<&str, usize> = g
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(i, x)| (x.id.as_str(), i))
+        .collect();
+    let routable = g
+        .edges
+        .iter()
+        .filter(
+            |e| match (index.get(e.from.as_str()), index.get(e.to.as_str())) {
+                (Some(&a), Some(&b)) => a != b && visible[a] && visible[b],
+                _ => false,
+            },
+        )
+        .count();
+    if layout.routes.len() < routable {
+        return None;
+    }
+    // A mesh that cannot be shown as one connected region does not fit.
+    layout.bridges = route::bridge_all(&layout)?;
     layout.hits = HitMap::build(g, &layout);
     Some(layout)
+}
+
+/// Mesh bands (spec 10.2.3, visual-first): a mesh with members in several
+/// ranks gets one enclosure spanning those columns, so mesh-less cards of the
+/// ranks it covers are pushed out of its band (before-group cards up,
+/// after-group cards down, order kept). Skipped when another mesh's card sits
+/// in the band (bridges join the fragments instead) or when the result would
+/// not fit the order axis. Returns whether any card moved.
+#[allow(clippy::too_many_arguments)]
+fn reserve_mesh_bands<'a>(
+    items: &[Vec<usize>],
+    start_o: &mut [u16],
+    mesh_of: &dyn Fn(usize) -> Option<&'a str>,
+    gap: &dyn Fn(usize, usize) -> u16,
+    ext_o: u16,
+    pad_o: u16,
+    base_gap: u16,
+    lo: u16,
+    hi: u16,
+) -> bool {
+    let mut changed = false;
+    let mut meshes: Vec<&str> = items
+        .iter()
+        .flatten()
+        .filter_map(|&it| mesh_of(it))
+        .collect();
+    meshes.sort_unstable();
+    meshes.dedup();
+    let ext = ext_o as i32;
+    for m in meshes {
+        let ranks: Vec<usize> = (0..items.len())
+            .filter(|&r| items[r].iter().any(|&it| mesh_of(it) == Some(m)))
+            .collect();
+        let (Some(&rmin), Some(&rmax)) = (ranks.first(), ranks.last()) else {
+            continue;
+        };
+        if rmin == rmax {
+            continue;
+        }
+        let members = (rmin..=rmax).flat_map(|r| items[r].iter().copied());
+        let members: Vec<usize> = members.filter(|&it| mesh_of(it) == Some(m)).collect();
+        let band_lo = members.iter().map(|&it| start_o[it] as i32).min().unwrap() - pad_o as i32;
+        let band_hi = members
+            .iter()
+            .map(|&it| start_o[it] as i32 + ext)
+            .max()
+            .unwrap()
+            + pad_o as i32;
+        let mid = (band_lo + band_hi) as f64 / 2.0;
+        let mut pos: Vec<i32> = start_o.iter().map(|&v| v as i32).collect();
+        let pad = |it: usize| {
+            if mesh_of(it).is_some() {
+                pad_o as i32
+            } else {
+                0
+            }
+        };
+        let mut ok = true;
+        for list in &items[rmin..=rmax] {
+            let first_member = list.iter().position(|&it| mesh_of(it) == Some(m));
+            let hit = |it: usize, pos: &[i32], margin: i32| {
+                pos[it] - pad(it) < band_hi + margin && pos[it] + ext + pad(it) > band_lo - margin
+            };
+            for (k, &it) in list.iter().enumerate() {
+                if mesh_of(it) == Some(m) {
+                    continue;
+                }
+                if mesh_of(it).is_some() {
+                    // Another mesh's group in the band: bridges join instead.
+                    if hit(it, &pos, 0) {
+                        ok = false;
+                        break;
+                    }
+                    continue;
+                }
+                if !hit(it, &pos, base_gap as i32) {
+                    continue;
+                }
+                let up = match first_member {
+                    Some(f) => k < f,
+                    None => (pos[it] as f64 + ext as f64 / 2.0) < mid,
+                };
+                if up {
+                    pos[it] = pos[it].min(band_lo - base_gap as i32 - ext);
+                    for j in (0..k).rev() {
+                        let (a, b) = (list[j], list[j + 1]);
+                        pos[a] = pos[a].min(pos[b] - gap(a, b) as i32 - ext);
+                    }
+                } else {
+                    pos[it] = pos[it].max(band_hi + base_gap as i32);
+                    for j in k + 1..list.len() {
+                        let (a, b) = (list[j - 1], list[j]);
+                        pos[b] = pos[b].max(pos[a] + ext + gap(a, b) as i32);
+                    }
+                }
+            }
+            if !ok {
+                break;
+            }
+        }
+        if !ok {
+            continue;
+        }
+        let live = items.iter().flatten().copied();
+        let (min, max) = live.fold((i32::MAX, i32::MIN), |(a, b), it| {
+            (a.min(pos[it]), b.max(pos[it] + ext))
+        });
+        if min == i32::MAX || max - min > hi as i32 - lo as i32 {
+            continue;
+        }
+        // Keep everything inside the band; the centring pass re-centres.
+        let shift = (lo as i32 - min).max(0) - (max - hi as i32).max(0);
+        for it in items.iter().flatten().copied() {
+            let v = (pos[it] + shift).clamp(0, u16::MAX as i32) as u16;
+            changed |= v != start_o[it];
+            start_o[it] = v;
+        }
+    }
+    changed
 }
 
 /// Pool-adjacent-violators: the non-decreasing sequence closest (L2) to `t`.
@@ -800,6 +962,7 @@ fn outline_layout(g: &Graph, key: CacheKey) -> GraphLayout {
         nodes: Vec::new(),
         more: Vec::new(),
         enclosures: Vec::new(),
+        bridges: Vec::new(),
         routes: Vec::new(),
         outline: outline_rows(g),
         order: BTreeMap::new(),

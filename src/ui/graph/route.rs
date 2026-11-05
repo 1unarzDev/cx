@@ -1,7 +1,7 @@
 //! Orthogonal edge routing (spec 10.3): A* over free cells with bend, crossing
 //! and node-hugging costs, ports spread along node sides, and per-cell arm
 //! masks that the renderer merges into box-drawing glyphs.
-use super::layout::{GraphLayout, Orientation};
+use super::layout::{Bridge, GraphLayout, Orientation};
 use super::model::*;
 use ratatui::layout::Rect;
 use std::cmp::Reverse;
@@ -17,7 +17,7 @@ const STEP: u32 = 1;
 const BEND: u32 = 4;
 const CROSS: u32 = 6;
 const HUG: u32 = 2;
-const FENCE: u32 = 1;
+const FENCE: u32 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LabelSlot {
@@ -122,6 +122,9 @@ struct Grid {
     fence: Vec<bool>,
     /// bit 1: horizontal edge, 2: vertical edge, 4: no crossing here.
     occ: Vec<u8>,
+    /// Port stub cells (first cell outside a port), owned by one edge so a
+    /// route laid earlier never walls off a later edge's port.
+    stub: Vec<usize>,
 }
 const H: u8 = 1;
 const V: u8 = 2;
@@ -143,6 +146,7 @@ pub fn route_all(g: &Graph, layout: &GraphLayout, visible: &[bool]) -> Vec<Route
         hug: vec![false; w as usize * h as usize],
         fence: vec![false; w as usize * h as usize],
         occ: vec![0; w as usize * h as usize],
+        stub: vec![usize::MAX; w as usize * h as usize],
     };
     let rects: Vec<Rect> = layout
         .nodes
@@ -346,6 +350,19 @@ pub fn route_all(g: &Graph, layout: &GraphLayout, visible: &[bool]) -> Vec<Route
             }
         }
     }
+    for (i, p) in pending.iter().enumerate() {
+        for port in [src_port[i], dst_port[i]].into_iter().flatten() {
+            let (x, y) = (port.0 as i32 + DX[port.2], port.1 as i32 + DY[port.2]);
+            if x >= 0 && y >= 0 && x < w as i32 && y < h as i32 {
+                let c = grid.idx(x as u16, y as u16);
+                grid.stub[c] = if grid.stub[c] == usize::MAX || grid.stub[c] == p.edge {
+                    p.edge
+                } else {
+                    usize::MAX - 1
+                };
+            }
+        }
+    }
     // Route shorter edges first.
     let mut order: Vec<usize> = (0..pending.len()).collect();
     let dist = |p: &Pending| {
@@ -471,7 +488,7 @@ fn route_one(
                     continue;
                 }
                 let ni = grid.idx(nx, ny);
-                if grid.blocked[ni] {
+                if grid.blocked[ni] || (grid.stub[ni] != usize::MAX && grid.stub[ni] != edge) {
                     continue;
                 }
                 let o = grid.occ[ni];
@@ -625,4 +642,301 @@ fn place_labels(grid: &Grid, routes: &mut [Route]) {
             }
         }
     }
+}
+
+/// Joins the fragments of every mesh that `layout::enclosures` had to split
+/// (another mesh's group interleaves) with dashed bridges routed outside all
+/// enclosures and nodes. `None` when some fragment cannot be reached: the
+/// caller then treats the graph as not fitting, so a mesh is never shown as
+/// unlinked boxes.
+pub fn bridge_all(layout: &GraphLayout) -> Option<Vec<Bridge>> {
+    let (w, h) = (layout.width, layout.height);
+    let mut meshes: Vec<&str> = layout.enclosures.iter().map(|e| e.mesh.as_str()).collect();
+    meshes.sort_unstable();
+    meshes.dedup();
+    let split = meshes
+        .iter()
+        .any(|m| layout.enclosures.iter().filter(|e| e.mesh == *m).count() > 1);
+    if !split {
+        return Some(Vec::new());
+    }
+    let cells = w as usize * h as usize;
+    let idx = |x: u16, y: u16| y as usize * w as usize + x as usize;
+    // Blocked: nodes, pills, every enclosure (border included), labels, legend.
+    let mut blocked = vec![false; cells];
+    let mut hug = vec![false; cells];
+    let block = |r: Rect, blocked: &mut Vec<bool>| {
+        for y in r.y..r.bottom().min(h) {
+            for x in r.x..r.right().min(w) {
+                blocked[idx(x, y)] = true;
+            }
+        }
+    };
+    for r in layout
+        .nodes
+        .iter()
+        .map(|p| p.rect)
+        .chain(layout.more.iter().map(|m| m.rect))
+    {
+        block(r, &mut blocked);
+        for y in r.y.saturating_sub(1)..(r.bottom() + 1).min(h) {
+            for x in r.x.saturating_sub(1)..(r.right() + 1).min(w) {
+                hug[idx(x, y)] = true;
+            }
+        }
+    }
+    for e in &layout.enclosures {
+        block(e.rect, &mut blocked);
+    }
+    for r in &layout.routes {
+        if let Some(l) = r.label {
+            block(Rect::new(l.x, l.y, l.len, 1), &mut blocked);
+        }
+    }
+    if let Some(row) = layout.legend {
+        block(Rect::new(0, row, w, 1), &mut blocked);
+    }
+    let mut occ = vec![0u8; cells];
+    let mark = |occ: &mut Vec<u8>, path: &[(u16, u16, u8)]| {
+        for &(x, y, m) in path {
+            occ[idx(x, y)] |= if m == LEFT | RIGHT {
+                H
+            } else if m == UP | DOWN {
+                V
+            } else {
+                H | V | NOX
+            };
+        }
+    };
+    for r in &layout.routes {
+        mark(&mut occ, &r.cells);
+        for p in [r.src_port, r.dst_port] {
+            occ[idx(p.0, p.1)] |= NOX;
+        }
+    }
+    // Non-corner border cells of an enclosure with their outward direction.
+    let border = |r: Rect| -> Vec<(u16, u16, usize)> {
+        let mut v = Vec::new();
+        if r.width < 3 || r.height < 3 {
+            return v;
+        }
+        for x in r.x + 1..r.right() - 1 {
+            v.push((x, r.y, 0));
+            v.push((x, r.bottom() - 1, 2));
+        }
+        for y in r.y + 1..r.bottom() - 1 {
+            v.push((r.x, y, 3));
+            v.push((r.right() - 1, y, 1));
+        }
+        v
+    };
+    let step = |x: u16, y: u16, d: usize| -> Option<(u16, u16)> {
+        let nx = x as i32 + DX[d];
+        let ny = y as i32 + DY[d];
+        (nx >= 0 && ny >= 0 && nx < w as i32 && ny < h as i32).then_some((nx as u16, ny as u16))
+    };
+    let mut out = Vec::new();
+    // Valid only where `stamp == gen` (zeroed allocations stay cheap).
+    let mut cost = vec![0u32; cells * 4];
+    let mut parent = vec![0u32; cells * 4];
+    let mut stamp = vec![0u32; cells * 4];
+    let mut gen = 0u32;
+    let mut goal_dir = vec![u8::MAX; cells];
+    for m in meshes {
+        let frags: Vec<usize> = (0..layout.enclosures.len())
+            .filter(|&k| layout.enclosures[k].mesh == m)
+            .collect();
+        if frags.len() < 2 {
+            continue;
+        }
+        let mut connected = vec![frags[0]];
+        let mut rest: Vec<usize> = frags[1..].to_vec();
+        while !rest.is_empty() {
+            // Target: the remaining fragment nearest the connected set.
+            let dist = |a: Rect, b: Rect| {
+                let dx = (a.x as i32 - b.x as i32).abs();
+                let dy = (a.y as i32 - b.y as i32).abs();
+                dx + 2 * dy
+            };
+            let (ti, (_, _, near)) = rest
+                .iter()
+                .enumerate()
+                .map(|(i, &t)| {
+                    let (d, c) = connected
+                        .iter()
+                        .map(|&c| {
+                            let d = dist(layout.enclosures[c].rect, layout.enclosures[t].rect);
+                            (d, c)
+                        })
+                        .min()
+                        .unwrap();
+                    (i, (d, t, c))
+                })
+                .min_by_key(|x| x.1)
+                .unwrap();
+            let target = rest.remove(ti);
+            let trect = layout.enclosures[target].rect;
+            // Goal cells: outside the target, next to a non-corner border cell.
+            let mut goal: BTreeMap<usize, (usize, (u16, u16))> = BTreeMap::new();
+            for (bx, by, d) in border(trect) {
+                if let Some((x, y)) = step(bx, by, d) {
+                    let i = idx(x, y);
+                    if !blocked[i] && occ[i] & NOX == 0 {
+                        goal.entry(i).or_insert((opposite(d), (bx, by)));
+                        if goal_dir[i] == u8::MAX {
+                            goal_dir[i] = opposite(d) as u8;
+                        }
+                    }
+                }
+            }
+            let tx = trect.x as i32 + trect.width as i32 / 2;
+            let ty = trect.y as i32 + trect.height as i32 / 2;
+            let heur = |x: u16, y: u16| -> u32 {
+                let dx = ((x as i32 - tx).abs() - trect.width as i32 / 2 - 1).max(0);
+                let dy = ((y as i32 - ty).abs() - trect.height as i32 / 2 - 1).max(0);
+                (dx + dy) as u32
+            };
+            // A window around the two fragments first, then the whole area.
+            let around = layout.enclosures[near].rect.union(trect);
+            let windows = [
+                (
+                    around.x.saturating_sub(4),
+                    around.y.saturating_sub(4),
+                    (around.right() + 4).min(w),
+                    (around.bottom() + 4).min(h),
+                ),
+                (0, 0, w, h),
+            ];
+            let mut start_of: BTreeMap<u32, (u16, u16, usize, usize)> = BTreeMap::new();
+            let mut best_goal: Option<(u32, u32)> = None; // (cost, state)
+            for (x0, y0, x1, y1) in windows {
+                let inside = |x: u16, y: u16| x >= x0 && x < x1 && y >= y0 && y < y1;
+                gen += 1;
+                let mut heap: BinaryHeap<Reverse<(u32, u32, u32)>> = BinaryHeap::new();
+                start_of.clear();
+                let mut tick = 0u32;
+                for &c in &connected {
+                    for (bx, by, d) in border(layout.enclosures[c].rect) {
+                        let Some((x, y)) = step(bx, by, d) else {
+                            continue;
+                        };
+                        let i = idx(x, y);
+                        if blocked[i] || occ[i] & NOX != 0 || !inside(x, y) {
+                            continue;
+                        }
+                        let st = (i * 4 + d) as u32;
+                        if stamp[st as usize] == gen {
+                            continue;
+                        }
+                        stamp[st as usize] = gen;
+                        cost[st as usize] = 0;
+                        parent[st as usize] = u32::MAX;
+                        start_of.insert(st, (bx, by, d, c));
+                        tick += 1;
+                        heap.push(Reverse((heur(x, y), tick, st)));
+                    }
+                }
+                while let Some(Reverse((f, _, st))) = heap.pop() {
+                    if let Some((gc, _)) = best_goal {
+                        if f >= gc {
+                            break;
+                        }
+                    }
+                    let cell = st as usize / 4;
+                    let dir = st as usize % 4;
+                    let g0 = cost[st as usize];
+                    let (x, y) = ((cell % w as usize) as u16, (cell / w as usize) as u16);
+                    if goal_dir[cell] != u8::MAX {
+                        let gd = goal_dir[cell] as usize;
+                        let gc = g0 + if gd != dir { BEND } else { 0 };
+                        if best_goal.is_none_or(|b| gc < b.0) {
+                            best_goal = Some((gc, st));
+                        }
+                    }
+                    let crossing = occ[cell] & (H | V) != 0;
+                    for nd in [dir, (dir + 1) % 4, (dir + 3) % 4] {
+                        if crossing && nd != dir {
+                            continue;
+                        }
+                        let Some((nx, ny)) = step(x, y, nd) else {
+                            continue;
+                        };
+                        let ni = idx(nx, ny);
+                        if blocked[ni] || !inside(nx, ny) {
+                            continue;
+                        }
+                        let o = occ[ni];
+                        let horizontal = nd % 2 == 1;
+                        let mut c = STEP;
+                        if o != 0 {
+                            if o & NOX != 0
+                                || (horizontal && o & H != 0)
+                                || (!horizontal && o & V != 0)
+                            {
+                                continue;
+                            }
+                            c += CROSS;
+                        }
+                        if nd != dir {
+                            c += BEND;
+                        }
+                        if hug[ni] {
+                            c += HUG;
+                        }
+                        let ns = ni * 4 + nd;
+                        let ng = g0 + c;
+                        if stamp[ns] != gen || ng < cost[ns] {
+                            stamp[ns] = gen;
+                            cost[ns] = ng;
+                            parent[ns] = st;
+                            tick += 1;
+                            heap.push(Reverse((ng + heur(nx, ny), tick, ns as u32)));
+                        }
+                    }
+                }
+                if best_goal.is_some() {
+                    break;
+                }
+            }
+            for &i in goal.keys() {
+                goal_dir[i] = u8::MAX;
+            }
+            let (_, end) = best_goal?;
+            let mut states = vec![end];
+            let mut cur = end;
+            while parent[cur as usize] != u32::MAX {
+                cur = parent[cur as usize];
+                states.push(cur);
+            }
+            states.reverse();
+            let (sbx, sby, sd, from) = start_of[&states[0]];
+            let end_cell = end as usize / 4;
+            let (gd, (gbx, gby)) = goal[&end_cell];
+            let mut path = Vec::with_capacity(states.len());
+            for (k, &st) in states.iter().enumerate() {
+                let cell = st as usize / 4;
+                let arrive = st as usize % 4;
+                let next = if k + 1 < states.len() {
+                    states[k + 1] as usize % 4
+                } else {
+                    gd
+                };
+                let (x, y) = ((cell % w as usize) as u16, (cell / w as usize) as u16);
+                path.push((x, y, bit(opposite(arrive)) | bit(next)));
+            }
+            mark(&mut occ, &path);
+            for &(x, y, _) in &path {
+                blocked[idx(x, y)] = true;
+            }
+            out.push(Bridge {
+                mesh: m.to_string(),
+                from,
+                to: target,
+                cells: path,
+                ends: [(sbx, sby, bit(sd)), (gbx, gby, bit(opposite(gd)))],
+            });
+            connected.push(target);
+        }
+    }
+    Some(out)
 }

@@ -192,9 +192,12 @@ pub fn edge_label(e: &Edge, selected: bool, glyphs: GlyphSet) -> Option<String> 
     } else {
         "↳"
     };
+    // Plain key jump edges stay unlabelled (the hop shows in the layout); the
+    // cue appears when the policy differs from key or the edge is selected.
     Some(match base {
         Some(b) => format!("{jump} {b}"),
-        None => format!("{jump} jump"),
+        None if selected => format!("{jump} jump"),
+        None => return None,
     })
 }
 
@@ -349,6 +352,39 @@ impl GraphView<'_> {
                 }
             }
         }
+        // 1b. Mesh bridges: a split mesh's fragments joined by dashed links
+        // that tee into each enclosure border, so membership reads connected.
+        for b in &self.layout.bridges {
+            let st = self.s(Role::Mesh);
+            for &(x, y, mask) in &b.cells {
+                let ch = match (g.ascii, mask) {
+                    (false, m) if m == LEFT | RIGHT => '┄',
+                    (false, m) if m == UP | DOWN => '┆',
+                    (true, m) if m == LEFT | RIGHT => '.',
+                    (true, m) if m == UP | DOWN => ':',
+                    _ => box_glyph(mask_arms(mask, 1), self.glyphs),
+                };
+                if let Some((ax, ay)) = at(x, y) {
+                    put_char(buf, ax, ay, ch, st);
+                }
+            }
+            for &(x, y, arm) in &b.ends {
+                let side = if arm & (UP | DOWN) != 0 {
+                    LEFT | RIGHT
+                } else {
+                    UP | DOWN
+                };
+                if let Some((ax, ay)) = at(x, y) {
+                    put_char(
+                        buf,
+                        ax,
+                        ay,
+                        box_glyph(mask_arms(side | arm, 1), self.glyphs),
+                        st,
+                    );
+                }
+            }
+        }
         // 2. Edges: merge arms per cell, strongest weight wins, selected edge on top.
         let cells = w as usize * h as usize;
         let mut arms: Vec<[u8; 4]> = vec![[0; 4]; cells];
@@ -407,10 +443,9 @@ impl GraphView<'_> {
                     };
                 }
                 let mut cst = st;
-                // Mutual (two-way) edges stay unarrowed; heads mark one direction only.
-                let one_dir = e.direction != Direction::Both;
-                let arrow_in = one_dir && k == last && e.direction.forward();
-                let arrow_out = one_dir && k == 0 && e.direction.reverse();
+                // Heads at the target show access; a two-way edge gets both (spec 10.3).
+                let arrow_in = k == last && e.direction.forward();
+                let arrow_out = k == 0 && e.direction.reverse();
                 if arrow_in || arrow_out {
                     let d = if arrow_in {
                         (r.dst_port.2.trailing_zeros() as usize + 2) % 4
@@ -532,21 +567,11 @@ impl GraphView<'_> {
                         ("↳", "jump", Role::Muted),
                     ]
                 };
-                // The jump cue only appears when something on screen carries it.
-                let jumps = self
-                    .layout
-                    .routes
-                    .iter()
-                    .any(|r| self.graph.edges[r.edge].kind == EdgeKind::Jump)
-                    || self
-                        .layout
-                        .nodes
-                        .iter()
-                        .any(|p| self.graph.nodes[p.node].kind == NodeKind::Jump);
+                let shown = legend_items(self.graph, self.layout, self.selection, self.glyphs);
                 let mut x = ax;
                 let end = area.x + w;
                 for (glyph, text, role) in items {
-                    if text == "jump" && !jumps {
+                    if !shown.contains(&text) {
                         continue;
                     }
                     let need = (glyph.chars().count() + text.len() + 3) as u16;
@@ -875,45 +900,133 @@ impl GraphView<'_> {
         } else {
             self.s(Role::Text)
         };
+        // Names that do not fit end in an ellipsis rather than a bare cut.
+        let label = {
+            let room = end.saturating_sub(x) as usize;
+            if label.chars().count() > room && room > 1 {
+                let cut: String = label.chars().take(room - 1).collect();
+                format!("{cut}{}", g.pick("…", "~"))
+            } else {
+                label
+            }
+        };
         write(buf, &mut x, &label, name_st);
-        let mut extras: Vec<(String, Role)> = Vec::new();
+        // Tokens in display order: (alternatives longest first, role, priority).
+        // Lower priority numbers win the room on narrow rows: the access policy
+        // matters more than the mesh badge or rtt.
+        let mut extras: Vec<(Vec<String>, Role, u8)> = Vec::new();
         if n.kind == NodeKind::Viewer {
-            extras.push((g.pick("⌂ you", "@ you").into(), Role::Muted));
+            extras.push((vec![g.pick("⌂ you", "@ you").into()], Role::Muted, 0));
         }
         if let Some(m) = &n.mesh {
-            extras.push((format!("{} {m}", g.pick("◆", "*")), Role::Mesh));
+            extras.push((vec![format!("{} {m}", g.pick("◆", "*"))], Role::Mesh, 2));
         }
         if let Some(e) = row.edge.map(|k| &self.graph.edges[k]) {
-            if let Some(l) =
-                edge_label(e, true, self.glyphs).filter(|_| e.kind != EdgeKind::LanObserved)
-            {
-                extras.push((
-                    l,
-                    if e.policy == Policy::Password {
+            if e.kind != EdgeKind::LanObserved {
+                let mut alts: Vec<String> = Vec::new();
+                alts.extend(edge_label(e, true, self.glyphs));
+                alts.extend(edge_label_plain(e, true, self.glyphs));
+                alts.dedup();
+                if !alts.is_empty() {
+                    let role = if e.policy == Policy::Password {
                         Role::Warn
                     } else {
                         Role::Muted
-                    },
-                ));
+                    };
+                    extras.push((alts, role, 1));
+                }
             }
         }
         match n.state {
             NodeState::Down => {
                 if let Some(a) = n.metrics.age_secs {
-                    extras.push((format!("seen {}", age(a)), Role::Muted));
+                    extras.push((vec![format!("seen {}", age(a))], Role::Muted, 3));
                 }
             }
             _ => {
                 if let Some(r) = n.metrics.rtt_ms {
-                    extras.push((format!("{r}ms"), Role::Muted));
+                    extras.push((vec![format!("{r}ms")], Role::Muted, 3));
                 }
             }
         }
-        for (text, role) in extras {
-            write(buf, &mut x, "  ", Style::default());
-            write(buf, &mut x, &text, self.s(role));
+        // Whole tokens only (a cut `↳ o` reads as a different word): pick by
+        // priority within the room left, then draw the picks in display order.
+        let mut room = end.saturating_sub(x);
+        let mut chosen: Vec<Option<String>> = vec![None; extras.len()];
+        let mut by_pri: Vec<usize> = (0..extras.len()).collect();
+        by_pri.sort_by_key(|&k| (extras[k].2, k));
+        for k in by_pri {
+            if let Some(t) = extras[k]
+                .0
+                .iter()
+                .find(|t| 2 + t.chars().count() as u16 <= room)
+            {
+                room -= 2 + t.chars().count() as u16;
+                chosen[k] = Some(t.clone());
+            }
+        }
+        for (k, (_, role, _)) in extras.iter().enumerate() {
+            if let Some(text) = &chosen[k] {
+                write(buf, &mut x, "  ", Style::default());
+                write(buf, &mut x, text, self.s(*role));
+            }
         }
     }
+}
+
+/// Legend entries that something on screen actually uses, so the legend
+/// never explains a glyph that is not drawn.
+pub fn legend_items(
+    g: &Graph,
+    layout: &GraphLayout,
+    selection: Selection,
+    glyphs: GlyphSet,
+) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    let routes: Vec<(&Edge, bool)> = layout
+        .routes
+        .iter()
+        .map(|r| (&g.edges[r.edge], Some(r.edge) == selection.edge))
+        .collect();
+    let any = |f: &dyn Fn(&Edge) -> bool| routes.iter().any(|(e, _)| f(e));
+    if any(&|e| e.policy == Policy::Key) {
+        out.push("key");
+    }
+    if any(&|e| e.policy == Policy::Password) {
+        out.push("pwd");
+    }
+    if any(&|e| e.policy == Policy::None) {
+        out.push("none");
+    }
+    if any(&|e| e.direction != Direction::Neither) {
+        out.push("access");
+    }
+    if !layout.enclosures.is_empty() || !layout.bridges.is_empty() {
+        out.push("mesh");
+    }
+    let lan_node = layout.nodes.iter().any(|p| {
+        matches!(
+            g.nodes[p.node].kind,
+            NodeKind::LanCluster | NodeKind::Neighbor
+        )
+    });
+    if lan_node || any(&|e| e.kind == EdgeKind::LanObserved) {
+        out.push("lan");
+    }
+    let jump_node = layout
+        .nodes
+        .iter()
+        .any(|p| g.nodes[p.node].kind == NodeKind::Jump);
+    let jump_label = layout.routes.iter().any(|r| {
+        r.label.is_some()
+            && g.edges[r.edge].kind == EdgeKind::Jump
+            && edge_label(&g.edges[r.edge], Some(r.edge) == selection.edge, glyphs)
+                .is_some_and(|t| t.chars().count() as u16 <= r.label.unwrap().len)
+    });
+    if jump_node || jump_label {
+        out.push("jump");
+    }
+    out
 }
 
 fn arrow_char(dir: usize, ascii: bool) -> char {

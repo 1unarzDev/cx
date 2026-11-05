@@ -10,7 +10,7 @@ pub enum HitId {
     Edge(usize),
     /// Index into `GraphLayout::more`.
     More(usize),
-    /// Index into `GraphLayout::enclosures` (title chip only).
+    /// Index into `GraphLayout::enclosures` (title chip and mesh bridges).
     Enclosure(usize),
 }
 
@@ -91,6 +91,17 @@ impl HitMap {
                 for x in e.rect.x + 2..e.rect.x + 2 + len {
                     m.set(x as i32, e.rect.y as i32, HitId::Enclosure(k), false);
                 }
+            }
+        }
+        // Bridge cells select the mesh (its titled enclosure).
+        for b in &layout.bridges {
+            let k = layout
+                .enclosures
+                .iter()
+                .position(|e| e.mesh == b.mesh && e.title)
+                .unwrap_or(b.from);
+            for &(x, y, _) in &b.cells {
+                m.set(x as i32, y as i32, HitId::Enclosure(k), false);
             }
         }
         for r in &layout.routes {

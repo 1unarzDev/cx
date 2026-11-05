@@ -7,6 +7,7 @@ Owner side (a trusted machine: one holding the account's API token):
     mesh.py devices | audit                                 what is on the mesh, what happened
     mesh.py revoke NAME [--yes]                             take a device (or a connector host) off the mesh
     mesh.py profile                                         the device profile setup applies, without applying
+    mesh.py deploy                                          redeploy only the Worker and its schema (after a cx update)
     mesh.py teardown [--yes]                                remove everything setup created
 Device side (no cx needed; the one-liners do the same):
     mesh.py join CODE | mesh.py leave
@@ -349,12 +350,22 @@ class Mesh:
         parts = [("metadata", "", "application/json", json.dumps(meta).encode()),
                  ("worker.js", "worker.js", "application/javascript+module", (ASSETS / "worker.js").read_bytes()),
                  ("config.json", "config.json", "text/plain", json.dumps(self.worker_config()).encode())]
-        parts += [(f, f, "text/plain", (ASSETS / f).read_bytes()) for f in ("join.sh", "leave.sh", "join.ps1", "leave.ps1")]
+        parts += [(f, f, "text/plain", (ASSETS / f).read_bytes()) for f in ("join.sh", "leave.sh", "join.ps1", "leave.ps1", "claude.sh", "claude.ps1")]
         b = uuid.uuid4().hex
         raw = b"".join(
             f'--{b}\r\nContent-Disposition: form-data; name="{n}"{f"; filename=\"{fn}\"" if fn else ""}\r\nContent-Type: {t}\r\n\r\n'.encode() + data + b"\r\n"
             for n, fn, t, data in parts) + f"--{b}--\r\n".encode()
         self.cf("PUT", f"/workers/scripts/{st['worker']}", raw=raw, ctype=f"multipart/form-data; boundary={b}")
+
+    def deploy(self) -> dict:
+        """The Worker and its D1 schema only: what a newer util changes, without touching the profile or policies."""
+        st = self.state
+        if not st.get("worker") or not st.get("d1_id"):
+            raise MeshError("this mesh is not set up yet; run `cx mesh setup`")
+        self.cf("POST", f"/d1/database/{st['d1_id']}/query", {"sql": (ASSETS / "schema.sql").read_text()})
+        self.upload(None)
+        self.say(f"worker {st['worker']} redeployed at {st['url']}")
+        return {"worker": st["worker"], "url": st["url"]}
 
     # ---- the owner's everyday commands (through the Worker, authenticated by the account token)
     def invite(self, uses=1, hours=None, name=None) -> dict:
@@ -432,6 +443,7 @@ def main(argv: list[str] | None = None) -> int:
     i.add_argument("--hours", type=float)
     i.add_argument("--name", help="bind the code to this device name (a re-join replaces that device)")
     sp.add_parser("devices")
+    sp.add_parser("deploy")
     sp.add_parser("audit")
     sp.add_parser("profile")
     r = sp.add_parser("revoke")
@@ -472,6 +484,8 @@ def main(argv: list[str] | None = None) -> int:
             if not out(d) and not a.json:
                 print(f"Linux/macOS:  {d['sh']}\nWindows:      {d['ps1']}\nexpires {d['expires']}, {d['uses']} use(s)"
                       f"{', bound to ' + d['name'] if d.get('name') else ''}\nleave:        {d['leave_sh']}  |  {d['leave_ps1']}")
+        elif a.cmd == "deploy":
+            out(m.deploy())
         elif a.cmd == "devices":
             d = m.devices()
             if not a.json:

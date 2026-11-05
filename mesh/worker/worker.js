@@ -11,12 +11,17 @@
 //   override) at its mesh addresses. POST /v1/leave (device token): revokes everything of that device.
 // - Owner (a bearer that Cloudflare verifies as an active token of this account): POST/GET/DELETE
 //   /v1/admin/invites, GET /v1/admin/devices, POST /v1/admin/devices/<name>/revoke.
+// - Claude lends (docs/claude.md): the owner posts a gateway bundle (POST /v1/admin/claude); GET /claude/<code>
+//   answers with claude.sh / claude.ps1 / a page, and the script claims the bundle once (POST /v1/claude/claim).
+//   The bundle is stored AES-GCM sealed with a key derived from the code, which only its SHA-256 identifies.
 // Invites are minted at most MINT_PER_HOUR an hour; enrolments are limited per source address; every
 // state change is in the audit table.
 import JOIN_SH from "./join.sh";
 import LEAVE_SH from "./leave.sh";
 import JOIN_PS1 from "./join.ps1";
 import LEAVE_PS1 from "./leave.ps1";
+import CLAUDE_SH from "./claude.sh";
+import CLAUDE_PS1 from "./claude.ps1";
 import CONFIG_TEXT from "./config.json"; // a text module: the instance config `mesh setup` renders
 
 const CONFIG = JSON.parse(CONFIG_TEXT);
@@ -264,6 +269,133 @@ async function leave(req, env) {
   return json({ ok: true, name: d.name });
 }
 
+// ---- Claude lends: one sealed gateway bundle per name, claimed once by its code
+const LEND_RE = /^[a-z0-9-]{1,40}$/;
+const LEND_CODE_RE = /^[a-z0-9]{12}$/;
+const SAFE = /^[\w.~:/?#@&+,;=%\- ]{1,2048}$/; // what the scripts may embed without quoting: no quotes, $, ` or \
+const CLAIM_PER_HOUR = 10;
+const sealKey = async (code) =>
+  crypto.subtle.importKey("raw", await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`cx-claude-seal:${code}`)), "AES-GCM", false, ["encrypt", "decrypt"]);
+const b64 = (b) => btoa(String.fromCharCode(...new Uint8Array(b)));
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+export function claudeCommands(code) {
+  const u = `${CONFIG.url.replace(/^https?:\/\//, "")}/claude/${code}`;
+  return { sh: `curl -sL ${u}|sh`, ps1: `irm ${u}|iex` };
+}
+
+/** A lend bundle as the owner sends it: {base_url, token, headers[]}, every value plain enough to embed. */
+function checkBundle(b) {
+  const out = { base_url: String(b?.base_url ?? ""), token: String(b?.token ?? ""), headers: (b?.headers ?? []).map(String) };
+  if (!/^https:\/\//.test(out.base_url) && out.base_url) throw new Error("base_url must be https");
+  if (out.base_url && !SAFE.test(out.base_url)) throw new Error("bundle values must be plain text");
+  for (const v of [out.token, ...out.headers]) if (!SAFE.test(v)) throw new Error("bundle values must be plain text");
+  if (out.headers.length > 8) throw new Error("too many headers");
+  return out;
+}
+
+async function lendAdmin(req, env, p, actor, ip, now) {
+  if (p === "/v1/admin/claude" && req.method === "POST") {
+    const b = await req.json().catch(() => ({}));
+    const name = String(b.name ?? "");
+    if (!LEND_RE.test(name)) return json({ error: "name: lowercase letters, digits and -" }, 400);
+    let bundle;
+    try {
+      bundle = checkBundle(b.bundle);
+    } catch (e) {
+      return json({ error: e.message }, 400);
+    }
+    const mesh = String(b.mesh_url ?? "");
+    if (mesh && !/^https?:\/\//.test(mesh)) return json({ error: "mesh_url must be http(s)" }, 400);
+    if (mesh && !SAFE.test(mesh)) return json({ error: "mesh_url must be plain text" }, 400);
+    if (!bundle.base_url && !mesh) return json({ error: "a lend needs base_url or mesh_url" }, 400);
+    const wait = await limited(env, "mint", MINT_PER_HOUR);
+    if (wait) return json({ error: "too many codes this hour", retry_after_s: wait }, 429);
+    const code = [...crypto.getRandomValues(new Uint8Array(12))].map((x) => ALPHABET[x % ALPHABET.length]).join("");
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await sealKey(code), new TextEncoder().encode(JSON.stringify(bundle)));
+    const hours = Math.min(24 * 7, Math.max(0.1, Number(b.code_hours ?? 24)));
+    const codeExpires = new Date(now.getTime() + hours * 3_600_000).toISOString();
+    const expires = b.expires ? new Date(b.expires).toISOString() : null;
+    await env.DB.prepare(
+      `INSERT INTO lends (name, code_sha256, sealed, iv, mesh_url, mesh_only, code_expires, expires, state, created) VALUES (?1, ?2, ?3, ?4, ?5, ?9, ?6, ?7, 'pending', ?8)
+       ON CONFLICT(name) DO UPDATE SET code_sha256 = ?2, sealed = ?3, iv = ?4, mesh_url = ?5, mesh_only = ?9, code_expires = ?6, expires = ?7, state = 'pending', created = ?8, claimed = NULL, claimed_ip = NULL`,
+    )
+      .bind(name, await sha(code), b64(sealed), b64(iv), mesh || null, codeExpires, expires, now.toISOString(), bundle.base_url ? 0 : 1)
+      .run();
+    await audit(env, actor, "lend", `${name} code until ${codeExpires}${mesh ? " mesh" : ""}${bundle.base_url ? "" : " mesh-only"}`, ip);
+    return json({ name, code, code_expires: codeExpires, expires, ...claudeCommands(code) });
+  }
+  if (p === "/v1/admin/claude" && req.method === "GET") {
+    const lends = (await env.DB.prepare("SELECT name, state, mesh_url, mesh_only, code_expires, expires, created, claimed, claimed_ip FROM lends ORDER BY name").all()).results;
+    for (const l of lends) if (l.state === "pending" && l.code_expires <= now.toISOString()) l.state = "code expired";
+    return json({ lends });
+  }
+  const m = /^\/v1\/admin\/claude\/([a-z0-9-]{1,40})\/revoke$/.exec(p);
+  if (m && req.method === "POST") {
+    const r = await env.DB.prepare("UPDATE lends SET state = 'revoked', sealed = NULL, iv = NULL, code_sha256 = NULL WHERE name = ? AND state != 'revoked'").bind(m[1]).run();
+    await audit(env, actor, "lend-revoke", m[1], ip);
+    return json({ name: m[1], revoked: (r.meta?.changes ?? 0) > 0 });
+  }
+  return null;
+}
+
+/** The lend a code names, while it can still be claimed. */
+const lendOf = async (env, code) =>
+  LEND_CODE_RE.test(code)
+    ? await env.DB.prepare("SELECT * FROM lends WHERE code_sha256 = ? AND state = 'pending' AND sealed IS NOT NULL AND code_expires > ?").bind(await sha(code), new Date().toISOString()).first()
+    : null;
+
+async function claim(req, env) {
+  const ip = clientIp(req);
+  const b = await req.json().catch(() => ({}));
+  const wait = await limited(env, `claim:${ip}`, CLAIM_PER_HOUR);
+  if (wait) return json({ error: "too many claims from this address; try again later", retry_after_s: wait }, 429, { "retry-after": String(wait) });
+  const code = String(b.code ?? "").trim().toLowerCase();
+  const l = await lendOf(env, code);
+  // take it: only one claim's UPDATE matches (RETURNING would give the nulled columns, so read first)
+  const took = l && (await env.DB.prepare("UPDATE lends SET state = 'claimed', claimed = ?2, claimed_ip = ?3, sealed = NULL, iv = NULL, code_sha256 = NULL WHERE code_sha256 = ?1 AND state = 'pending'")
+    .bind(l.code_sha256, new Date().toISOString(), ip).run()).meta?.changes === 1;
+  if (!took) return json({ error: "this code is unknown, already used or expired; ask for a new one" }, 403);
+  const plainBytes = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(l.iv) }, await sealKey(code), unb64(l.sealed));
+  const bundle = JSON.parse(new TextDecoder().decode(plainBytes));
+  await audit(env, `lend:${l.name}`, "claim", null, ip);
+  const out = { name: l.name, mesh_url: l.mesh_url ?? "", ...bundle };
+  if (b.format !== "lines") return json(out);
+  const lines = [`name=${out.name}`, `base_url=${out.base_url}`, `mesh_url=${out.mesh_url}`, `token=${out.token}`, ...out.headers.map((h) => `header=${h}`)];
+  return plain(lines.join("\n") + "\n");
+}
+
+async function claudeScript(env, kind, code) {
+  const l = await lendOf(env, code);
+  if (kind === "html") return claudePage(code, !!l);
+  if (!l) {
+    const msg = "this Claude code is unknown, already used or expired; ask for a new one";
+    return plain(kind === "ps1" ? `Write-Error '${msg}'; return\n` : `#!/bin/sh\necho '[claude] error: ${msg}' >&2; exit 1\n`);
+  }
+  const body = (kind === "ps1" ? CLAUDE_PS1 : CLAUDE_SH)
+    .replaceAll("__MESH_URL__", CONFIG.url)
+    .replaceAll("__CLAUDE_CODE__", code)
+    .replaceAll("__CLAUDE_MESH_URL__", l.mesh_url ?? "")
+    .replaceAll("__CLAUDE_MESH_ONLY__", l.mesh_only ? "1" : "");
+  return plain(body);
+}
+
+function claudePage(code, live) {
+  const c = claudeCommands(code);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (m) => `&#${m.charCodeAt(0)};`);
+  return plain(
+    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Claude Code setup</title>
+<style>:root{--bg:#f7f6f2;--fg:#1d1c1a;--mut:#6b6862;--box:#ecebe5}@media (prefers-color-scheme:dark){:root{--bg:#141413;--fg:#ecebe5;--mut:#9c9a93;--box:#23221f}}
+body{background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif;max-width:44rem;margin:3rem auto;padding:0 16px}code{display:block;background:var(--box);padding:.7rem 1rem;border-radius:8px;overflow-x:auto;font-size:15px;-webkit-user-select:all;user-select:all}p{color:var(--mut)}</style>
+<h1>Set up Claude Code</h1>${live ? "" : "<p>This code is unknown, already used or expired: ask for a new one.</p>"}
+<p>Run this once on the machine that runs Claude Code. Linux and macOS, in a terminal:</p><code>${esc(c.sh)}</code>
+<p>Windows, in PowerShell:</p><code>${esc(c.ps1)}</code>
+<p>It points Claude Code at the shared gateway in your settings.json (merged, with a backup) and checks that it answers. The code works once.</p>`,
+    "text/html; charset=utf-8",
+  );
+}
+
 async function admin(req, env, p) {
   const actor = await owner(req);
   if (!actor) return json({ error: "an active API token of this Cloudflare account is required" }, 401);
@@ -298,6 +430,10 @@ async function admin(req, env, p) {
   }
   if (p === "/v1/admin/audit" && req.method === "GET")
     return json({ audit: (await env.DB.prepare("SELECT at, actor, action, detail, ip FROM audit ORDER BY id DESC LIMIT 200").all()).results });
+  if (p.startsWith("/v1/admin/claude")) {
+    const r = await lendAdmin(req, env, p, actor, ip, now);
+    if (r) return r;
+  }
   const m = /^\/v1\/admin\/devices\/([a-z0-9-]{1,40})\/revoke$/.exec(p);
   if (m && req.method === "POST") return json({ name: m[1], revoked: await revokeName(env, m[1], actor, ip) });
   return json({ error: "not found" }, 404);
@@ -339,10 +475,13 @@ export default {
           return kind === "html" ? page(code) : script(kind, false, code);
         }
         if (p === "/leave") return kind === "html" ? page("") : script(kind, true, "");
+        const lc = /^\/claude\/([a-z0-9]{1,40})$/i.exec(p);
+        if (lc) return await claudeScript(env, kind, lc[1].toLowerCase());
         if (p === "/v1/keys") return plain((CONFIG.ssh_keys ?? []).join("\n") + "\n");
       }
       if (req.method === "POST" && p === "/v1/enroll") return await enroll(req, env);
       if (req.method === "POST" && p === "/v1/registered") return await registered(req, env);
+      if (req.method === "POST" && p === "/v1/claude/claim") return await claim(req, env);
       if (req.method === "POST" && p === "/v1/leave") return await leave(req, env);
       if (p.startsWith("/v1/admin/")) return await admin(req, env, p);
       return json({ error: "not found" }, 404);

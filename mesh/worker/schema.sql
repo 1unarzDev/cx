@@ -33,3 +33,17 @@ CREATE TABLE IF NOT EXISTS audit (
   detail TEXT,
   ip TEXT
 );
+CREATE TABLE IF NOT EXISTS lends (  -- Claude gateway lends (docs/claude.md), one per name
+  name TEXT PRIMARY KEY,
+  code_sha256 TEXT UNIQUE,   -- while pending: the claim code's SHA-256
+  sealed TEXT,               -- while pending: the bundle, AES-GCM under a key derived from the code
+  iv TEXT,
+  mesh_url TEXT,             -- the mesh-only gateway, when there is one (not secret)
+  mesh_only INTEGER NOT NULL DEFAULT 0, -- no Access route: the mesh is required
+  code_expires TEXT,
+  expires TEXT,              -- when the lend itself ends (the owner revokes it then)
+  state TEXT NOT NULL,       -- pending | claimed | revoked
+  created TEXT NOT NULL,
+  claimed TEXT,
+  claimed_ip TEXT
+);

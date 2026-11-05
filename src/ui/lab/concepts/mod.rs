@@ -3,7 +3,12 @@ use super::Concept;
 
 mod baseline;
 mod glyphs;
+mod mission;
 
 pub fn all() -> Vec<Box<dyn Concept>> {
-    vec![Box::new(baseline::Baseline), Box::new(glyphs::Glyphs)]
+    vec![
+        Box::new(baseline::Baseline),
+        Box::new(glyphs::Glyphs),
+        Box::new(mission::Mission),
+    ]
 }

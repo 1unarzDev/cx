@@ -536,6 +536,10 @@ impl Drop for Lock {
 struct Index {
     version: u32,
     secrets: BTreeMap<String, SecretMeta>,
+    /// Names whose value moved from the OS keyring to the file while the keyring could not be reached: the old
+    /// keyring copy is deleted by a later set/delete once the keyring answers.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    stale_keyring: std::collections::BTreeSet<String>,
 }
 
 /// A secrets store rooted at one directory.
@@ -776,13 +780,11 @@ impl Secrets {
                 }
             }
         }
-        if previous.as_ref().map(|p| p.backend) == Some(Backend::Keyring)
-            && backend == Backend::File
-            && keyring_error.is_none()
-        {
-            if let Some(k) = &self.keyring {
-                let _ = k.delete(name);
-            }
+        // Leaving the keyring (it was unreachable or failed just now) strands the old copy there; remember it.
+        if backend == Backend::Keyring {
+            index.stale_keyring.remove(name);
+        } else if previous.as_ref().map(|p| p.backend) == Some(Backend::Keyring) {
+            index.stale_keyring.insert(name.to_string());
         }
         let t = now();
         let meta = SecretMeta {
@@ -797,6 +799,9 @@ impl Secrets {
         };
         index.version = 1;
         index.secrets.insert(name.to_string(), meta.clone());
+        if keyring_error.is_none() {
+            self.sweep_stale_keyring(&mut index);
+        }
         self.write_index(&index)?;
         Ok(meta)
     }
@@ -821,8 +826,33 @@ impl Secrets {
             }
         }
         index.secrets.remove(name);
+        self.sweep_stale_keyring(&mut index);
         self.write_index(&index)?;
         Ok(meta)
+    }
+
+    /// Delete stranded keyring copies (see `Index::stale_keyring`) when a keyring is reachable, stopping at the
+    /// first failure so an unresponsive keyring costs at most one bounded wait. Caller holds the lock and writes
+    /// the index afterwards.
+    fn sweep_stale_keyring(&self, index: &mut Index) {
+        let Some(k) = &self.keyring else { return };
+        let names: Vec<String> = index.stale_keyring.iter().cloned().collect();
+        for name in names {
+            // A name whose current value lives in the keyring is not stale.
+            if index.secrets.get(&name).map(|m| m.backend) == Some(Backend::Keyring) {
+                index.stale_keyring.remove(&name);
+                continue;
+            }
+            if k.is_hung() || k.delete(&name).is_err() {
+                return;
+            }
+            index.stale_keyring.remove(&name);
+        }
+    }
+
+    /// Names with a stranded copy still in the OS keyring (for tests and the panel's status line).
+    pub fn stale_keyring(&self) -> Result<Vec<String>> {
+        Ok(self.read_index()?.stale_keyring.into_iter().collect())
     }
 
     /// Set each secret as an environment variable of `cmd` only. A spec is `NAME` (variable from the kind, or
@@ -941,6 +971,27 @@ fn read_value(name: &str) -> Result<Zeroizing<String>> {
     Ok(Zeroizing::new(text.to_string()))
 }
 
+/// The terminal mode a running prompt must put back, for the SIGTERM/SIGHUP handler. Written before the
+/// handler is installed and only read by it.
+static PROMPT_TTY: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+static mut PROMPT_MODE: std::mem::MaybeUninit<libc::termios> = std::mem::MaybeUninit::uninit();
+const PROMPT_SIGNALS: [libc::c_int; 3] = [libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT];
+
+extern "C" fn restore_tty_and_die(sig: libc::c_int) {
+    // Only async-signal-safe calls: tcsetattr, sigaction (via signal) and raise.
+    let fd = PROMPT_TTY.load(Ordering::SeqCst);
+    if fd >= 0 {
+        unsafe { libc::tcsetattr(fd, libc::TCSANOW, std::ptr::addr_of!(PROMPT_MODE).cast()) };
+    }
+    unsafe {
+        libc::signal(sig, libc::SIG_DFL);
+        libc::raise(sig);
+    }
+}
+
+/// Read one line from /dev/tty with echo off. The terminal is put in non-canonical mode with ISIG off, so Ctrl-C
+/// (and Ctrl-\) arrive as bytes and cancel the prompt here, and the mode is always restored on the way out;
+/// SIGTERM/SIGHUP/SIGQUIT from elsewhere restore it in a handler before the process dies as it would have.
 fn prompt_no_echo(label: &str, out: &mut Vec<u8>) -> Result<()> {
     use std::os::fd::AsRawFd;
     let mut tty = fs::OpenOptions::new()
@@ -955,34 +1006,81 @@ fn prompt_no_echo(label: &str, out: &mut Vec<u8>) -> Result<()> {
         "read terminal mode"
     );
     let mut quiet = old;
-    quiet.c_lflag &= !libc::ECHO;
-    quiet.c_lflag |= libc::ECHONL;
-    struct Restore(i32, libc::termios);
+    quiet.c_lflag &= !(libc::ECHO | libc::ICANON | libc::ISIG | libc::IEXTEN);
+    quiet.c_cc[libc::VMIN] = 1;
+    quiet.c_cc[libc::VTIME] = 0;
+
+    struct Restore {
+        fd: i32,
+        old: libc::termios,
+        previous: Vec<(libc::c_int, libc::sigaction)>,
+    }
     impl Drop for Restore {
         fn drop(&mut self) {
-            unsafe { libc::tcsetattr(self.0, libc::TCSAFLUSH, &self.1) };
+            unsafe { libc::tcsetattr(self.fd, libc::TCSAFLUSH, &self.old) };
+            for (sig, action) in &self.previous {
+                unsafe { libc::sigaction(*sig, action, std::ptr::null_mut()) };
+            }
+            PROMPT_TTY.store(-1, Ordering::SeqCst);
+        }
+    }
+    unsafe { std::ptr::addr_of_mut!(PROMPT_MODE).write(std::mem::MaybeUninit::new(old)) };
+    PROMPT_TTY.store(fd, Ordering::SeqCst);
+    let mut restore = Restore {
+        fd,
+        old,
+        previous: Vec::new(),
+    };
+    for sig in PROMPT_SIGNALS {
+        let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+        action.sa_sigaction =
+            restore_tty_and_die as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        unsafe { libc::sigemptyset(&mut action.sa_mask) };
+        let mut previous: libc::sigaction = unsafe { std::mem::zeroed() };
+        if unsafe { libc::sigaction(sig, &action, &mut previous) } == 0 {
+            restore.previous.push((sig, previous));
         }
     }
     ensure!(
         unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &quiet) } == 0,
         "turn off terminal echo"
     );
-    let _restore = Restore(fd, old);
     tty.write_all(label.as_bytes())?;
     tty.flush()?;
+    let (intr, quit, eof, erase, kill) = (
+        old.c_cc[libc::VINTR],
+        old.c_cc[libc::VQUIT],
+        old.c_cc[libc::VEOF],
+        old.c_cc[libc::VERASE],
+        old.c_cc[libc::VKILL],
+    );
     let mut byte = [0u8; 1];
-    loop {
-        match tty.read(&mut byte)? {
-            0 => break,
-            _ if byte[0] == b'\n' => break,
-            _ => {
-                out.push(byte[0]);
+    let cancelled = loop {
+        if tty.read(&mut byte)? == 0 {
+            break false;
+        }
+        match byte[0] {
+            b'\n' | b'\r' => break false,
+            b if b == intr || b == quit => break true,
+            b if b == eof && out.is_empty() => break false,
+            b if b == erase || b == 0x7f || b == 0x08 => {
+                out.pop();
+            }
+            b if b == kill => out.clear(),
+            b => {
+                out.push(b);
                 ensure!(
                     out.len() <= VALUE_LIMIT + 2,
                     "secret exceeds {VALUE_LIMIT} bytes"
                 );
             }
         }
+    };
+    let _ = tty.write_all(b"\n");
+    drop(restore);
+    if cancelled {
+        out.clear();
+        bail!("cancelled; nothing stored");
     }
     Ok(())
 }
@@ -1414,6 +1512,57 @@ mod tests {
 
         let strict = Secrets::at(dir.clone(), None, Mode::KeyringOnly);
         assert!(strict.set("c", Kind::Generic, "v").is_err());
+    }
+
+    #[test]
+    fn stranded_keyring_copy_is_deleted_once_the_keyring_answers() {
+        let (_t, dir) = temp();
+        let fake = Arc::new(FakeKeyring::default());
+        let s = keyring_store(&dir, &fake, Duration::from_secs(2));
+        assert_eq!(
+            s.set("a", Kind::Generic, "old").unwrap().backend,
+            Backend::Keyring
+        );
+
+        // Another session without a keyring replaces the value: it lands in the file, the old copy is noted.
+        let headless = file_store(&dir);
+        assert_eq!(
+            headless.set("a", Kind::Generic, "new").unwrap().backend,
+            Backend::File
+        );
+        assert_eq!(headless.stale_keyring().unwrap(), ["a"]);
+        assert_eq!(fake.map.lock().unwrap().get("a").unwrap(), "old");
+        assert_eq!(headless.get("a").unwrap().expose(), "new");
+
+        // A keyring that is reachable but failing: the value still goes to the file and the note stays.
+        fake.fail.store(true, Ordering::SeqCst);
+        assert_eq!(
+            s.set("b", Kind::Generic, "x").unwrap().backend,
+            Backend::File
+        );
+        assert_eq!(s.stale_keyring().unwrap(), ["a"]);
+        assert!(fake.map.lock().unwrap().contains_key("a"));
+
+        // Once the keyring answers, the next write removes the stranded copy; the file value is untouched.
+        fake.fail.store(false, Ordering::SeqCst);
+        s.set("c", Kind::Generic, "y").unwrap();
+        assert!(!fake.map.lock().unwrap().contains_key("a"));
+        assert!(s.stale_keyring().unwrap().is_empty());
+        assert_eq!(s.get("a").unwrap().expose(), "new");
+        assert_eq!(s.meta("a").unwrap().unwrap().backend, Backend::File);
+
+        // Moving back into the keyring clears the note without deleting the fresh keyring value.
+        headless.set("d", Kind::Generic, "1").unwrap();
+        s.set("d", Kind::Generic, "2").unwrap();
+        let headless_again = file_store(&dir);
+        s.set("e", Kind::Generic, "k").unwrap();
+        headless_again.set("e", Kind::Generic, "f").unwrap();
+        assert_eq!(headless_again.stale_keyring().unwrap(), ["e"]);
+        s.set("e", Kind::Generic, "k2").unwrap();
+        assert!(s.stale_keyring().unwrap().is_empty());
+        assert_eq!(fake.map.lock().unwrap().get("e").unwrap(), "k2");
+        s.delete("e").unwrap();
+        assert!(!fake.map.lock().unwrap().contains_key("e"));
     }
 
     #[test]

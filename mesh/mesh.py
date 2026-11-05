@@ -417,8 +417,13 @@ class Mesh:
 
 def device_script(url: str, leaving: bool) -> int:
     """The device side: what the one-liner runs (curl ... | sh)."""
-    sh = subprocess.run(["curl", "-fsSL", url], capture_output=True, check=True).stdout
-    return subprocess.run(["sh"], input=sh).returncode
+    sh = subprocess.run(["curl", "-fsSL", url], capture_output=True, check=True, env=without_token()).stdout
+    return subprocess.run(["sh"], input=sh, env=without_token()).returncode
+
+
+def without_token() -> dict[str, str]:
+    """The environment minus the admin API token, for programs that must not see it (a fetched script)."""
+    return {k: v for k, v in os.environ.items() if k != "CLOUDFLARE_API_TOKEN"}
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -50,7 +50,8 @@ python3 mesh/mesh.py setup --name team
 Create an API token at dash.cloudflare.com, under *My Profile, API Tokens*, scoped to your account. Setup reads it
 from `$CLOUDFLARE_API_TOKEN`, or asks once and saves it (mode 600) next to the config. Under `cx mesh`, a token kept in
 cx's secrets store (`cx secrets set cloudflare.api_token`, or `cx secrets migrate` to import the saved file; see
-[secrets.md](secrets.md)) is passed in as `$CLOUDFLARE_API_TOKEN`, so the plaintext file can go. It needs these permissions:
+[secrets.md](secrets.md)) is passed in as `$CLOUDFLARE_API_TOKEN` for the subcommands that call the API (never `join` or
+`leave`, whose fetched script also runs with the variable removed), so the plaintext file can go. It needs these permissions:
 
 - Account: Zero Trust Write, Access: Apps and Policies Write, Access: Service Tokens Write, Access: Organizations
   Read, Cloudflare One Connector: WARP Write, D1 Write, Workers Scripts Write, Account API Tokens Write.

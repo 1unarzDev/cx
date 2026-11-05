@@ -19,7 +19,7 @@ import subprocess
 import sys
 import urllib.parse
 
-from mesh import Mesh, MeshError, load_config
+from mesh import Mesh, MeshError, load_config, without_token
 
 NAME_RE = re.compile(r"^[a-z0-9-]{1,40}$")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -48,7 +48,8 @@ class Lends:
 
     # ---- the gateway (better-ccflare's own CLI)
     def gateway(self, *args: str) -> str:
-        r = self.run([*self.c["gateway"], *args], capture_output=True, text=True, timeout=90)
+        # The gateway command never needs the Cloudflare admin token, so it does not inherit it.
+        r = self.run([*self.c["gateway"], *args], capture_output=True, text=True, timeout=90, env=without_token())
         out = ANSI.sub("", r.stdout + r.stderr)
         if r.returncode != 0 or "❌" in out or "Failed" in out:
             reason = next((l for l in out.splitlines() if "Failed" in l or "❌" in l or "rror" in l), f"exit {r.returncode}")

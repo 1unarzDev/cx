@@ -66,7 +66,37 @@ store here.
 
 ## mesh.py
 
-mesh/mesh.py is unchanged and still works standalone: `$CLOUDFLARE_API_TOKEN`, then its `credentials` file, then a
-prompt. `cx mesh` and `cx claude` set `$CLOUDFLARE_API_TOKEN` for the util from `cloudflare.api_token` when it is
-stored and the variable is not already set. After `cx secrets migrate --delete-plaintext`, standalone runs need the
-variable (for example `cx secrets get cloudflare.api_token --exec -- python3 mesh/mesh.py devices`).
+mesh/mesh.py still works standalone: `$CLOUDFLARE_API_TOKEN`, then its `credentials` file, then a prompt. `cx mesh`
+and `cx claude` set `$CLOUDFLARE_API_TOKEN` from `cloudflare.api_token` when it is stored and the variable is not
+already set, and only for subcommands that call the Cloudflare API:
+
+- `cx mesh setup | invite | devices | deploy | audit | profile | revoke | teardown`
+- `cx claude lend | revoke | list`
+
+The token is an account admin token (it can mint API tokens and edit Zero Trust), so it is kept away from anything
+that runs foreign code:
+
+- `cx mesh join` and `leave` never get it. They pipe a script fetched from a URL (possibly another mesh's) into
+  `sh`; mesh.py also removes `$CLOUDFLARE_API_TOKEN` from the environment of that `curl` and `sh`, so an exported
+  token does not reach the script either, standalone or under cx.
+- An argv whose subcommand cx cannot read with certainty (an unknown or abbreviated option before it, such as
+  `--conf X`, `-h`, `--`) gets no token; spell options out (`--config X`, `--json`) or use `--exec` below.
+- claude.py runs the `[claude] gateway` command without `$CLOUDFLARE_API_TOKEN` in its environment.
+
+The remaining exposure: the mesh.py and claude.py processes themselves hold the token (in their environment, readable
+by the same user via `/proc/PID/environ`), as they would after reading the credentials file; neither spawns anything
+else that inherits it. After
+`cx secrets migrate --delete-plaintext`, standalone runs need the variable (for example
+`cx secrets get cloudflare.api_token --exec -- python3 mesh/mesh.py devices`).
+
+## Prompt
+
+On a terminal, `set` reads the value byte by byte with echo, line mode and terminal signals off: Ctrl-C (or
+Ctrl-\) cancels without storing, Backspace and Ctrl-U edit, Enter ends. SIGTERM, SIGHUP or SIGQUIT sent while the
+prompt waits restore the terminal mode before the process dies, so the shell is never left with echo off.
+
+## Keyring copies left behind
+
+When a secret held in the keyring is replaced from a session that cannot reach the keyring (or while it fails), the
+new value goes to the file and the old keyring copy is noted in the index (`stale_keyring`, names only). The next
+`set` or `rm` from a session whose keyring answers deletes those copies.

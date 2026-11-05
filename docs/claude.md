@@ -35,6 +35,10 @@ mesh_url = "http://100.96.0.5:8081"       # optional: the gateway on a mesh addr
 
 The Worker needs no new settings; after updating cx, run `cx mesh deploy` once so it serves `/claude/`.
 
+The Cloudflare API token (`$CLOUDFLARE_API_TOKEN`, the credentials file, or cx's stored `cloudflare.api_token`, see
+[secrets.md](secrets.md#meshpy)) is used by claude.py for Access; the `gateway` command runs with
+`$CLOUDFLARE_API_TOKEN` removed from its environment, so it never receives the admin token.
+
 ## What a lend is
 
 Everything is named `<prefix><name>`, so `revoke` finds it again without local state:

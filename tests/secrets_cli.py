@@ -5,7 +5,9 @@ Uses the age-file backend only (CX_SECRETS_BACKEND=file, no session bus), so the
 touched. Checks: set from stdin, list/--json carry metadata only, get --fd to a pipe (a terminal is refused),
 get --exec puts the value in the child's env and in no process's /proc/PID/cmdline, migrate imports the
 plaintext `cx mesh` token and deletes it only with --delete-plaintext, `cx mesh` hands the stored token to
-python3 as $CLOUDFLARE_API_TOKEN (an explicit one wins), rm, and 0600/0700 modes.
+python3 as $CLOUDFLARE_API_TOKEN (an explicit one wins) for API subcommands only, never for join/leave (whose
+fetched script runs without it, end to end), Ctrl-C/SIGTERM at the prompt restore the terminal, rm, and 0600/0700
+modes.
 """
 import hashlib, json, os, pathlib, stat, subprocess, sys, tempfile
 
@@ -77,6 +79,47 @@ with tempfile.TemporaryDirectory(prefix='cx-secrets-') as tmp:
     assert b'stored robot.typed' in screen, screen
     cx('secrets', 'rm', 'robot.typed')
 
+    # Ctrl-C at the prompt cancels it (nothing stored) and SIGTERM kills it, both with echo and line mode restored.
+    import signal, termios
+
+    def prompt(then):
+        pid, master = pty.fork()
+        if pid == 0:
+            os.execve(binary, [binary, 'secrets', 'set', 'robot.cancel'], env)
+        screen, deadline = b'', time.monotonic() + 10
+        while b'not echoed' not in screen and time.monotonic() < deadline:
+            if select.select([master], [], [], 0.2)[0]:
+                screen += os.read(master, 4096)
+        assert b'not echoed' in screen, screen
+        lflag = termios.tcgetattr(master)[3]
+        assert not lflag & termios.ECHO, 'echo is off while prompting'
+        os.write(master, CANARY[:8].encode())
+        then(pid, master)
+        while time.monotonic() < deadline:
+            if select.select([master], [], [], 0.2)[0]:
+                try:
+                    chunk = os.read(master, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                screen += chunk
+            elif os.waitpid(pid, os.WNOHANG)[0]:
+                pid = 0
+                break
+        lflag = termios.tcgetattr(master)[3]
+        status = os.waitpid(pid, 0)[1] if pid else None
+        os.close(master)
+        seen.append(screen)
+        assert lflag & termios.ECHO and lflag & termios.ICANON and lflag & termios.ISIG, 'terminal mode restored'
+        return screen, status
+
+    screen, _ = prompt(lambda pid, master: (time.sleep(0.2), os.write(master, b'\x03')))
+    assert b'cancelled' in screen, screen
+    screen, status = prompt(lambda pid, master: (time.sleep(0.2), os.kill(pid, signal.SIGTERM)))
+    assert status is None or os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGTERM, status
+    assert 'robot.cancel' not in [m['name'] for m in json.loads(cx('secrets', 'list', '--json').stdout)]
+
     # --fd: a pipe gets exactly the value; a terminal is refused.
     rd, wr = os.pipe()
     cx('secrets', 'get', 'robot.wifi', '--fd', str(wr), pass_fds=(wr,))
@@ -140,6 +183,29 @@ with tempfile.TemporaryDirectory(prefix='cx-secrets-') as tmp:
     assert CANARY2 not in (root / 'mesh-out.argv').read_text()
     cx('mesh', 'devices', extra=dict(PATH=path, CX_FAKE_OUT=str(out_file), CLOUDFLARE_API_TOKEN='explicit'))
     assert out_file.read_text().strip() == sha('explicit'), 'explicit env must win'
+    # Only API subcommands get it: join/leave run a fetched script and never see it; neither do argvs whose
+    # subcommand cx cannot read with certainty.
+    for args in (['join', 'https://mesh.example.org/abc'], ['leave'], ['--conf', 'devices', 'join', 'x'],
+                 ['--config', 'devices', 'join', 'x'], ['-h'], []):
+        out_file.write_text('unset')
+        cx('mesh', *args, extra=dict(PATH=path, CX_FAKE_OUT=str(out_file)))
+        assert out_file.read_text().strip() == sha(''), f'token passed on to cx mesh {args}'
+    for args, want in ((['--json', 'audit'], CANARY2), (['--config=c.toml', 'invite'], CANARY2)):
+        cx('mesh', *args, extra=dict(PATH=path, CX_FAKE_OUT=str(out_file)))
+        assert out_file.read_text().strip() == sha(want), args
+    for args, want in ((['list'], CANARY2), (['lend', 'evan'], CANARY2), (['revoke', 'evan'], CANARY2)):
+        cx('claude', *args, extra=dict(PATH=path, CX_FAKE_OUT=str(out_file)))
+        assert out_file.read_text().strip() == sha(want), args
+
+    # End to end with the real mesh.py: the script a join URL serves runs without the token, stored or explicit.
+    curl_dir = root / 'curl-bin'; curl_dir.mkdir()
+    (curl_dir / 'curl').write_text('#!/bin/sh\nprintf \'%s\\n\' \'printf %s "${CLOUDFLARE_API_TOKEN-unset}" > "$CX_FAKE_OUT"\'\n')
+    (curl_dir / 'curl').chmod(0o700)
+    curl_path = f'{curl_dir}:{env["PATH"]}'
+    for extra in ({}, {'CLOUDFLARE_API_TOKEN': CANARY2}):
+        out_file.write_text('')
+        cx('mesh', 'join', 'https://mesh.example.org/abc', extra=dict(PATH=curl_path, CX_FAKE_OUT=str(out_file), **extra))
+        assert out_file.read_text() == 'unset', f'join script saw the token ({sorted(extra)})'
 
     # Nothing on disk or in any output carries a value in clear; modes stay private.
     for p in state.iterdir():

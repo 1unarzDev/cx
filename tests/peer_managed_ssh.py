@@ -64,8 +64,8 @@ assert 'ForwardAgent=no' in args
 assert 'Port=22' in args
 assert '-i' in args and str(root) in args[args.index('-i')+1]
 assert any(a.startswith('UserKnownHostsFile=') and str(root) in a for a in args)
-# Shared-master setup (-N) and checks (-O) carry no remote command.
-mux='-N' in args or '-O' in args
+# Shared-master setup (-N), control (-O) and resolution (-G) carry no remote command.
+mux='-N' in args or '-O' in args or '-G' in args
 assert mux or args[-1]=='exec ~/.local/bin/cx helper'
 args[args.index('Port=22')]='Port='+os.environ['CX_NATIVE_PORT']
 if not mux:args[-1]=os.environ['CX_NATIVE_COMMAND']
@@ -168,7 +168,24 @@ AllowUsers {account}
         result = sessions()
         assert result.returncode == 0, result.stderr
         assert len([a for a in argv_log() if "-N" in a]) == before == 1
-        assert all("ControlMaster=no" in a for a in argv_log() if a[-1] != "-N" and "-N" not in a and "-O" not in a)
+        assert all("ControlMaster=no" in a for a in argv_log() if a[-1] != "-N" and "-N" not in a and "-O" not in a and "-G" not in a)
+        # The master records its exact managed target (0600 sidecar).
+        [master] = masters()
+        record = master.with_name(master.name + ".owner")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not record.exists():
+            time.sleep(0.05)
+        assert record.stat().st_mode & 0o777 == 0o600
+        assert json.loads(record.read_text())["target"] == peer["target"]
+        # A managed mesh endpoint that is not an inventory device keeps its
+        # idle master: orphans never marks it stray.
+        (state / "devices.json").write_text("[]")
+        result = subprocess.run([binary, "orphans", "--json"], env=env, stdin=subprocess.DEVNULL,
+                                capture_output=True, timeout=30)
+        assert result.returncode == 0, result.stderr
+        rows = json.loads(result.stdout)["ssh_masters"]
+        assert rows and all(r["owner_recorded"] and r["enrolled"] and not r["stray"] for r in rows), rows
+        (state / "devices.json").write_text(json.dumps([peer]))
 
         known = state / "peer-ssh/known_hosts"
         pinned = known.read_bytes()
@@ -177,7 +194,15 @@ AllowUsers {account}
         assert result.returncode != 0, "untrusted server authenticated"
         assert known.read_text() == "", "unknown host was automatically trusted"
         assert not (root / "asked").exists()
+        # A missing trust file is reported by ssh as a host-identity failure,
+        # not an I/O error while building the command.
+        known.unlink()
+        result = sessions()
+        assert result.returncode != 0, "host without trust file authenticated"
+        assert b"host identity could not be verified" in result.stderr, result.stderr[-500:]
+        assert not known.exists() and not (root / "asked").exists()
         known.write_bytes(pinned)
+        known.chmod(0o600)
 
         # A live master keeps its authenticated connection to the pinned host;
         # retire it so the changed key below meets a fresh handshake.
@@ -199,4 +224,6 @@ AllowUsers {account}
 print(json.dumps(dict(result="PASS", native_openssh=True, managed_client_key_authenticated=True,
                       strict_managed_host_pin=True, unknown_host_rejected=True,
                       changed_host_rejected=True, no_askpass_prompt=True, private_key_mode_600=True,
-                      shared_master_reused=True, repin_selects_new_master=True)))
+                      shared_master_reused=True, repin_selects_new_master=True,
+                      owner_record_exact_target=True, mesh_master_not_stray=True,
+                      missing_trust_file_is_host_key_failure=True)))

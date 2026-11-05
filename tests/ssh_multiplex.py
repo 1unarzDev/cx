@@ -11,10 +11,12 @@ Every master the fixture creates is closed before it exits.
 
 Checks: one dedicated `-N` master per route, detached in its own session so
 reaping a helper channel's process group (including a ProxyJump hop) never
-ends it; helper channels only join (ControlMaster=no, BatchMode); terminals
-may join or become a master (ControlMaster=auto, ControlPersist=600); no
-agent forwarding; `cx orphans --json` recognises the master (read-only);
-`cx device remove` exits it; CX_SSH_MULTIPLEX=0 restores direct connections.
+ends it; helper channels and terminals only join (ControlMaster=no), even on
+terminal-first contact, where cx starts the dedicated master instead; each
+master has a 0600 owner record naming its exact target; no agent
+forwarding; `cx orphans --json` recognises the master (read-only); `cx
+device remove` exits it; `cx prewarm` opens one and replaces a master whose
+link stopped answering; CX_SSH_MULTIPLEX=0 restores direct connections.
 Prints first-request vs warm-request vs attach latency, with and without.
 """
 import json, os, pathlib, pwd, shutil, signal, socket, subprocess, sys, tempfile, time
@@ -87,11 +89,12 @@ while True:
 """)
     wrapper = tools / "ssh"
     wrapper.write_text(f"""#!{sys.executable}
-import json,os,sys
+import json,os,sys,time
 args=sys.argv[1:]
 if '-F' in args:
  pos=args.index('-F');del args[pos:pos+2]
 with open(os.environ['CX_MX_LOG'],'a') as log:log.write(json.dumps(args)+chr(10))
+if '-N' in args and os.environ.get('CX_MX_MASTER_DELAY'):time.sleep(float(os.environ['CX_MX_MASTER_DELAY']))
 if args and args[-1]=='exec ~/.local/bin/cx helper':args[-1]=os.environ['CX_MX_HELPER']
 elif args and args[-1].startswith('~/.local/bin/cx native-attach'):args[-1]='true'
 os.execv({ssh!r},[{ssh!r},'-F',os.environ['CX_MX_CONFIG'],*args])
@@ -118,8 +121,8 @@ os.execv({ssh!r},[{ssh!r},'-F',os.environ['CX_MX_CONFIG'],*args])
                     CX_MX_LOG=str(log_path), CX_MX_CONFIG=str(root / "client.conf"),
                     CX_MX_HELPER=f"{sys.executable} {helper}")
 
-    def cx(*args, multiplex=True, timeout=30):
-        env = dict(base_env)
+    def cx(*args, multiplex=True, timeout=30, extra=None):
+        env = dict(base_env, **(extra or {}))
         if not multiplex:
             env["CX_SSH_MULTIPLEX"] = "0"
         started = time.monotonic()
@@ -149,6 +152,31 @@ os.execv({ssh!r},[{ssh!r},'-F',os.environ['CX_MX_CONFIG'],*args])
             subprocess.run([ssh, "-F", "/dev/null", "-S", str(candidate), "-O", "exit", "cx"],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
 
+    def session_leader(pid):
+        stat = pathlib.Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return int(stat[3]) == pid
+
+    def wait_gone(paths, limit=5):
+        deadline = time.monotonic() + limit
+        while time.monotonic() < deadline and any(p.exists() for p in paths):
+            time.sleep(0.05)
+
+    def descendants(root_pid):
+        children = {}
+        for proc in pathlib.Path("/proc").iterdir():
+            if proc.name.isdigit():
+                try:
+                    ppid = int((proc / "stat").read_text().rsplit(")", 1)[1].split()[1])
+                except (OSError, IndexError, ValueError):
+                    continue
+                children.setdefault(ppid, []).append(int(proc.name))
+        found, queue = [], [root_pid]
+        while queue:
+            for child in children.get(queue.pop(), []):
+                found.append(child)
+                queue.append(child)
+        return found
+
     def alive(pid):
         try:
             os.kill(pid, 0)
@@ -160,6 +188,8 @@ os.execv({ssh!r},[{ssh!r},'-F',os.environ['CX_MX_CONFIG'],*args])
     daemon = subprocess.Popen([sshd, "-D", "-e", "-f", str(root / "sshd.conf")],
                               stdout=daemon_log, stderr=daemon_log, start_new_session=True)
     timings = {}
+    frozen = []
+    started_masters = set()
     try:
         for _ in range(100):
             assert daemon.poll() is None, (root / "sshd.log").read_text()
@@ -186,10 +216,10 @@ os.execv({ssh!r},[{ssh!r},'-F',os.environ['CX_MX_CONFIG'],*args])
         assert len([a for a in masters if "-N" in a]) == 2, masters
         assert len(sockets()) == 2 and all(p.stat().st_mode & 0o077 == 0 for p in sockets())
         pids = master_pids()
+        started_masters.update(pids)
         assert len(pids) == 2
         for pid in pids:
-            stat = pathlib.Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-            assert int(stat[3]) == pid, "master must lead its own session"
+            assert session_leader(pid), "master must lead its own session"
         # The cx processes (and their reaped helper groups, including the
         # routed jump hop) are gone; both masters survive and are reused.
         log_path.write_text("")
@@ -205,7 +235,15 @@ os.execv({ssh!r},[{ssh!r},'-F',os.environ['CX_MX_CONFIG'],*args])
         for a in helpers:
             assert "BatchMode=yes" in a and "ControlMaster=no" in a and "ControlPersist=600" not in a
         for a in terminals:
-            assert "ControlMaster=auto" in a and "ControlPersist=600" in a and "BatchMode=yes" not in a
+            assert "ControlMaster=no" in a and "ControlPersist=600" not in a and "BatchMode=yes" not in a
+            assert "ControlMaster=auto" not in a, "a terminal must never become the master"
+        # Every master records its exact target in a private sidecar.
+        owners = {}
+        for candidate in sockets():
+            record = candidate.with_name(candidate.name + ".owner")
+            assert record.stat().st_mode & 0o777 == 0o600, record
+            owners[candidate.name] = json.loads(record.read_text())["target"]
+        assert sorted(owners.values()) == ["fixture", "fixture-routed"], owners
         for a in reused:
             assert "ForwardAgent=no" in a and "-A" not in a
             assert any(o.startswith("ControlPath=") and str(state / "ssh") in o for o in a)
@@ -258,8 +296,97 @@ os.execv({ssh!r},[{ssh!r},'-F',os.environ['CX_MX_CONFIG'],*args])
             if b"-N" in cmdline and any(str(state).encode() in a for a in cmdline):
                 attempts.append(int(proc.name))
         assert attempts == master_pids(), (attempts, master_pids())
-    finally:
+
+        # Terminal-first contact: cx starts the dedicated master; the terminal
+        # itself only joins (or goes direct) and never becomes the master.
         close_all()
+        wait_gone(sockets())
+        log_path.write_text("")
+        _, timings["fixture_cold_attach"] = cx("attach", "$1", "--device", "fixture")
+        cold = argv()
+        assert len([a for a in cold if "-N" in a]) == 1, cold
+        cold_terminals = [a for a in cold if "-t" in a]
+        assert cold_terminals and all("ControlMaster=no" in a and "ControlMaster=auto" not in a
+                                      for a in cold_terminals)
+        time.sleep(0.2)
+        [terminal_master] = master_pids()
+        started_masters.add(terminal_master)
+        assert session_leader(terminal_master)
+        _, timings["fixture_warm_attach"] = cx("attach", "$1", "--device", "fixture")
+        assert master_pids() == [terminal_master], "the attach's master must outlive it"
+
+        # A slow master handshake never holds a request: the helper channel
+        # waits about 1.5 s, connects directly, and the master keeps
+        # starting in the background (it outlives the cx process).
+        close_all()
+        wait_gone(sockets())
+        log_path.write_text("")
+        result, timings["fixture_slow_master_request"] = cx(
+            "sessions", "--device", "fixture", extra={"CX_MX_MASTER_DELAY": "4"})
+        assert json.loads(result.stdout)[0]["id"] == "$1"
+        assert timings["fixture_slow_master_request"] < 2.5, timings
+        slow = argv()
+        assert len([a for a in slow if "-N" in a]) == 1, slow
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not master_pids():
+            time.sleep(0.1)
+        [late] = master_pids()
+        started_masters.add(late)
+        assert session_leader(late)
+
+        # cx prewarm opens the route's master without any request.
+        write_private(state / "devices.json", json.dumps(devices))
+        close_all()
+        wait_gone(sockets())
+        log_path.write_text("")
+        result, timings["routed_prewarm"] = cx("prewarm", "routed")
+        assert result.stdout.decode().strip() == "ready", result.stdout
+        assert len([a for a in argv() if "-N" in a]) == 1, argv()
+        [prewarmed] = master_pids()
+        started_masters.add(prewarmed)
+        log_path.write_text("")
+        result, timings["routed_after_prewarm"] = cx("sessions", "--device", "routed")
+        assert json.loads(result.stdout)[0]["id"] == "$1"
+        assert not [a for a in argv() if "-N" in a], "prewarmed master was not reused"
+        result, _ = cx("prewarm", "routed")
+        assert result.stdout.decode().strip() == "ready" and master_pids() == [prewarmed]
+
+        # Silent link loss: the master still answers -O check, but its server
+        # side is frozen. Prewarm (like a timed-out request) probes it with a
+        # bounded channel, stops it from taking clients, and starts a fresh one.
+        close_all()
+        wait_gone(sockets())
+        cx("prewarm", "fixture")
+        [stale] = master_pids()
+        started_masters.add(stale)
+        frozen = descendants(daemon.pid)
+        assert frozen
+        for pid in frozen:
+            os.kill(pid, signal.SIGSTOP)
+        result, timings["fixture_replace_stuck"] = cx("prewarm", "fixture")
+        assert "replaced" in result.stdout.decode(), result.stdout
+        [fresh] = master_pids()
+        started_masters.add(fresh)
+        assert fresh != stale
+        _, timings["fixture_after_replace"] = cx("sessions", "--device", "fixture")
+        assert master_pids() == [fresh]
+        result, _ = cx("orphans", "--json")
+        found = {m["pid"]: m for m in json.loads(result.stdout)["ssh_masters"]}
+        if stale in found:
+            # Stopped from listening: never stray, it ends with its sessions.
+            assert not found[stale]["listening"] and not found[stale]["stray"], found[stale]
+    finally:
+        for pid in frozen:
+            try:
+                os.kill(pid, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+        close_all()
+        for pid in started_masters:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
         if daemon.poll() is None:
             os.killpg(daemon.pid, signal.SIGTERM)
         daemon.wait(timeout=3)
@@ -268,6 +395,7 @@ os.execv({ssh!r},[{ssh!r},'-F',os.environ['CX_MX_CONFIG'],*args])
 ms = {k: round(v * 1000) for k, v in timings.items()}
 print(json.dumps(dict(result="PASS", detached_master_per_route=True, helper_group_reap_keeps_master=True,
                       jump_route_master_survives=True, helpers_join_only=True,
-                      terminals_join_or_master=True, no_agent_forwarding=True,
+                      terminals_never_master=True, terminal_first_contact_dedicated_master=True,
+                      owner_records_exact_target=True, prewarm_cli=True, slow_master_bounded_wait=True, stuck_master_replaced=True, no_agent_forwarding=True,
                       orphans_recognise_masters=True, device_remove_exits_master=True, concurrent_cold_start_one_master=True,
                       opt_out_direct=True, latency_ms=ms)))

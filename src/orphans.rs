@@ -228,8 +228,11 @@ fn stop(proc: &Proc) -> bool {
 /// A cx-owned OpenSSH master: a detached `ssh` session leader whose ControlPath
 /// lies in cx's private socket directory. Masters normally end on their own
 /// ControlPersist idle timer; one is stray only when it is idle (no
-/// multiplexed client) and can never be reused: its socket name is gone, or
-/// it belongs to a device that is no longer enrolled.
+/// multiplexed client), still listening, and can never be reused: its socket
+/// name is gone, or its owner record names a target that is neither an
+/// inventory device nor a managed peer-mesh endpoint. A master without an
+/// owner record, or one stopped from accepting clients (it exits by itself
+/// once its last session closes), is never stray.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Master {
     pub pid: i32,
@@ -240,12 +243,17 @@ pub struct Master {
     pub socket: Option<String>,
     pub socket_present: bool,
     pub clients: usize,
+    /// The socket's owner record exists (exact target known).
+    pub owner_recorded: bool,
+    /// The recorded target is an inventory device or a managed mesh endpoint.
     pub enrolled: bool,
 }
 
 impl Master {
     pub fn stray(&self) -> bool {
-        self.clients == 0 && (!self.socket_present || !self.enrolled)
+        self.socket.is_some()
+            && self.clients == 0
+            && (!self.socket_present || (self.owner_recorded && !self.enrolled))
     }
 }
 
@@ -296,7 +304,7 @@ pub fn describe_master(
     inodes: &[u64],
     table: &std::collections::HashMap<u64, (bool, String)>,
     directory: &Path,
-    enrolled_tags: &[String],
+    owner_known: impl Fn(&Path) -> Option<bool>,
     exists: impl Fn(&Path) -> bool,
 ) -> Master {
     let prefix = format!("{}/", directory.display());
@@ -328,11 +336,10 @@ pub fn describe_master(
     let socket_present = socket.as_deref().is_some_and(|name| {
         crate::store::control_socket_name(name) && exists(&directory.join(name))
     });
-    let enrolled = socket.as_deref().is_some_and(|name| {
-        enrolled_tags
-            .iter()
-            .any(|tag| name.starts_with(tag.as_str()))
-    });
+    let owner = socket
+        .as_deref()
+        .filter(|name| crate::store::control_socket_name(name))
+        .and_then(|name| owner_known(&directory.join(name)));
     Master {
         pid,
         directory: directory.to_path_buf(),
@@ -340,7 +347,8 @@ pub fn describe_master(
         socket,
         socket_present,
         clients,
-        enrolled,
+        owner_recorded: owner.is_some(),
+        enrolled: owner == Some(true),
     }
 }
 
@@ -389,12 +397,19 @@ pub fn scan_masters() -> Vec<Master> {
     let directories = crate::store::control_dirs();
     let uid = unsafe { libc::geteuid() };
     let table = unix_sockets(&fs::read_to_string("/proc/net/unix").unwrap_or_default());
-    let tags: Vec<String> = crate::store::devices()
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|d| d.target.as_deref())
-        .map(crate::store::control_target_tag)
-        .collect();
+    // An unreadable inventory or mesh pin store makes ownership unknown,
+    // which never marks a master stray.
+    let inventory: Option<std::collections::HashSet<String>> = crate::store::devices()
+        .ok()
+        .map(|devices| devices.into_iter().filter_map(|d| d.target).collect());
+    let owner_known = |socket: &Path| -> Option<bool> {
+        let target = crate::store::master_owner(socket)?;
+        if inventory.as_ref()?.contains(&target) {
+            return Some(true);
+        }
+        // Managed peer-mesh endpoints need not be inventory devices.
+        crate::peer_ssh::options(&target).ok().map(|o| o.is_some())
+    };
     let Ok(entries) = fs::read_dir("/proc") else {
         return Vec::new();
     };
@@ -411,7 +426,7 @@ pub fn scan_masters() -> Vec<Master> {
                 &inodes,
                 &table,
                 &directory,
-                &tags,
+                &owner_known,
                 |path| fs::symlink_metadata(path).is_ok(),
             ))
         })
@@ -479,7 +494,8 @@ pub fn run(clean: bool, as_json: bool) -> Result<()> {
         .map(|m| {
             json!({
                 "pid": m.pid, "clients": m.clients, "socket_present": m.socket_present,
-                "enrolled": m.enrolled, "stray": m.stray(), "stopped": stopped.contains(&m.pid),
+                "owner_recorded": m.owner_recorded, "enrolled": m.enrolled,
+                "listening": m.socket.is_some(), "stray": m.stray(), "stopped": stopped.contains(&m.pid),
             })
         })
         .collect();
@@ -541,7 +557,12 @@ pub fn run(clean: bool, as_json: bool) -> Result<()> {
         if !m.socket_present {
             flags.push("socket-gone".into());
         }
-        if !m.enrolled {
+        if m.socket.is_none() {
+            flags.push("stopped-listening".into());
+        }
+        if !m.owner_recorded {
+            flags.push("owner-unrecorded".into());
+        } else if !m.enrolled {
             flags.push("not-enrolled".into());
         }
         if m.stray() {
@@ -639,32 +660,39 @@ mod tests {
     #[test]
     fn masters_are_stray_only_when_idle_and_unreusable() {
         let dir = Path::new("/state/cx/ssh");
-        let tag = "abcde".to_string();
-        let name = format!("{tag}{}", "1".repeat(45));
+        let name = format!("abcde{}", "1".repeat(45));
         let bound = format!("/state/cx/ssh/{name}.0123456789abcdef");
         let mut table = std::collections::HashMap::new();
         table.insert(1, (true, bound.clone()));
         table.insert(2, (false, bound.clone()));
         table.insert(3, (true, "/elsewhere/sock".to_string()));
-        let tags = [tag.clone()];
         let present = |_: &Path| true;
         let gone = |_: &Path| false;
+        let known = |_: &Path| Some(true);
+        let removed = |_: &Path| Some(false);
+        let unrecorded = |_: &Path| None;
         // Busy master: kept even when its device was removed.
-        let busy = describe_master(9, 1, &[1, 2, 3], &table, dir, &[], present);
+        let busy = describe_master(9, 1, &[1, 2, 3], &table, dir, removed, present);
         assert_eq!(
             (busy.clients, busy.socket.as_deref()),
             (1, Some(name.as_str()))
         );
         assert!(!busy.stray());
-        // Idle, reachable and enrolled: expires on its own ControlPersist.
-        let idle = describe_master(9, 1, &[1], &table, dir, &tags, present);
+        // Idle, reachable and enrolled (a device or a managed mesh endpoint):
+        // expires on its own ControlPersist.
+        let idle = describe_master(9, 1, &[1], &table, dir, known, present);
         assert!(idle.socket_present && idle.enrolled && !idle.stray());
-        // Idle and unreachable, or idle for a removed device: stray.
-        assert!(describe_master(9, 1, &[1], &table, dir, &tags, gone).stray());
-        assert!(describe_master(9, 1, &[1], &table, dir, &[], present).stray());
-        // A socket outside the private directory is never treated as ours.
-        let foreign = describe_master(9, 1, &[3], &table, dir, &tags, present);
-        assert!(foreign.socket.is_none());
+        // Idle and unreachable, or idle for a recorded target that left: stray.
+        assert!(describe_master(9, 1, &[1], &table, dir, known, gone).stray());
+        let left = describe_master(9, 1, &[1], &table, dir, removed, present);
+        assert!(left.owner_recorded && !left.enrolled && left.stray());
+        // No owner record: ownership unknown, never stray while reachable.
+        let unknown = describe_master(9, 1, &[1], &table, dir, unrecorded, present);
+        assert!(!unknown.owner_recorded && !unknown.stray());
+        // A socket outside the private directory is never treated as ours,
+        // and a master that stopped listening finishes its sessions itself.
+        let foreign = describe_master(9, 1, &[3], &table, dir, removed, gone);
+        assert!(foreign.socket.is_none() && !foreign.stray());
     }
     #[test]
     fn control_path_arguments_and_unix_table_parse() {

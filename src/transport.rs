@@ -53,32 +53,74 @@ pub fn read_frame<T: serde::de::DeserializeOwned>(r: &mut impl BufRead) -> Resul
         }
     }
 }
+/// How long a terminal waits for a route's dedicated master before it
+/// connects directly instead (the master keeps starting in the background).
+const INTERACTIVE_MASTER_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// An SSH command for `target`. Before a terminal-owning (interactive)
+/// command, outside askpass enrollment, the route's dedicated master is
+/// started or joined for at most 1.5 s, so the terminal multiplexes over it;
+/// the terminal itself never becomes the master.
 pub fn ssh(target: &str, interactive: bool) -> Result<Command> {
+    if interactive && !crate::auth::active() {
+        warm_master(target, INTERACTIVE_MASTER_WAIT);
+    }
     crate::store::ssh(target, interactive)
 }
 
-// Shared SSH masters. Each route has at most one cx-owned OpenSSH master
-// (`store::SshMode`); helper channels and terminals multiplex over it so only
-// the first contact pays the handshake through every ProxyJump hop.
+// Shared SSH masters. Each route has at most one cx-owned OpenSSH master: a
+// dedicated detached `-N` process (`store::SshMode::Master`). Helper channels
+// and terminals only join it, so only the first contact pays the handshake
+// through every ProxyJump hop and no pane or channel lifetime can end it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MasterState {
     Ready,
     /// Typed evidence from the master attempt; a direct retry would fail alike.
     Failed(ConnectionFailure),
-    /// Sharing is off, the socket path is too long, or the outcome is unclear:
-    /// callers connect directly exactly as before.
+    /// Sharing is off, the socket path is too long, the master is not ready
+    /// yet, or the outcome is unclear: callers connect directly as before.
     Unavailable,
 }
+/// A master attempt that has not authenticated by now is reaped.
 const MASTER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25);
+/// A helper channel waits this long for a starting master, then connects
+/// directly while the master keeps starting in the background, so short
+/// budgets (3 s screen reads, 15 s default) still cover their own handshake.
+const CHANNEL_MASTER_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+/// After a failed attempt, connections go direct (and report their own typed
+/// failure) instead of starting another master for this long.
+const MASTER_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(20);
 const PREWARM_LIMIT: usize = 4;
-const PREWARM_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(20);
+/// A trivial channel through a healthy master answers well within this.
+const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(3);
+/// A master confirmed this recently is not re-checked (a terminal right
+/// after its session lookup); a master gone since then only means the
+/// joining ssh connects directly.
+const CONFIRMED_FOR: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// One target's in-flight master attempt; waiters see its outcome.
 #[derive(Default)]
-struct Prewarms {
-    failed: std::collections::HashMap<String, std::time::Instant>,
-    running: usize,
+struct Flight {
+    state: std::sync::Mutex<Option<MasterState>>,
+    done: std::sync::Condvar,
 }
-static PREWARMS: std::sync::LazyLock<std::sync::Mutex<Prewarms>> =
+#[derive(Default)]
+struct Masters {
+    flights: std::collections::HashMap<String, std::sync::Arc<Flight>>,
+    failed: std::collections::HashMap<String, std::time::Instant>,
+    /// Targets whose owner record this process has written (or confirmed).
+    recorded: std::collections::HashSet<String>,
+    recovering: std::collections::HashSet<String>,
+    /// When this process last saw each target's master answer.
+    confirmed: std::collections::HashMap<String, std::time::Instant>,
+    prewarming: usize,
+}
+static MASTERS: std::sync::LazyLock<std::sync::Mutex<Masters>> =
     std::sync::LazyLock::new(Default::default);
+
+fn masters() -> Option<std::sync::MutexGuard<'static, Masters>> {
+    MASTERS.lock().ok()
+}
 
 fn wait_bounded(child: &mut std::process::Child, limit: std::time::Duration) -> Option<bool> {
     let deadline = std::time::Instant::now() + limit;
@@ -97,9 +139,9 @@ fn wait_bounded(child: &mut std::process::Child, limit: std::time::Duration) -> 
     }
 }
 
-/// Local `ssh -O check`: true only when this route's master answers.
-fn master_alive(target: &str) -> bool {
-    let Ok(mut command) = crate::store::ssh_mode(target, crate::store::SshMode::Check) else {
+/// Local bounded `ssh -O <op>` against this route's master (check, stop).
+fn master_control(target: &str, op: &'static str) -> bool {
+    let Ok(mut command) = crate::store::ssh_mode(target, crate::store::SshMode::Control(op)) else {
         return false;
     };
     command
@@ -110,6 +152,63 @@ fn master_alive(target: &str) -> bool {
         return false;
     };
     wait_bounded(&mut child, std::time::Duration::from_secs(2)) == Some(true)
+}
+
+/// True only when this route's master answers `-O check`.
+fn master_alive(target: &str) -> bool {
+    master_control(target, "check")
+}
+
+/// The expanded socket path of this route's master, from `ssh -G` (local only).
+fn master_socket(target: &str) -> Option<std::path::PathBuf> {
+    let mut command = crate::store::ssh_mode(target, crate::store::SshMode::Resolve).ok()?;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command.spawn().ok()?;
+    let stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = stdout.take(256 * 1024).read_to_end(&mut out);
+        out
+    });
+    let finished = wait_bounded(&mut child, std::time::Duration::from_secs(2)) == Some(true);
+    let out = reader.join().ok()?;
+    if !finished {
+        return None;
+    }
+    String::from_utf8_lossy(&out).lines().find_map(|line| {
+        let path = std::path::PathBuf::from(line.strip_prefix("controlpath ")?);
+        path.is_absolute().then_some(path)
+    })
+}
+
+/// Write the live master's owner record (once per process and target).
+fn record_owner(target: &str) {
+    let Some(socket) = master_socket(target) else {
+        return;
+    };
+    if crate::store::record_master_owner(&socket, target).is_ok() {
+        if let Some(mut m) = masters() {
+            if m.recorded.len() >= 256 {
+                m.recorded.clear();
+            }
+            m.recorded.insert(target.to_owned());
+        }
+    }
+}
+
+/// Record a master this process found already running (another viewer's, or
+/// askpass enrollment's) off the request path.
+fn record_owner_later(target: &str) {
+    if masters().is_none_or(|m| m.recorded.contains(target)) {
+        return;
+    }
+    let owned = target.to_owned();
+    let _ = std::thread::Builder::new()
+        .name("cx-ssh-owner".into())
+        .spawn(move || record_owner(&owned));
 }
 
 /// An unlinked private file: the master and any ProxyJump child may keep the
@@ -138,8 +237,10 @@ fn mux_refused(stderr: &[u8]) -> bool {
     text.contains("disabling multiplexing") || text.contains("ControlSocket")
 }
 
-/// Start a dedicated `-N` master in its own session so no cx process-group
+/// Run a dedicated `-N` master in its own session so no cx process-group
 /// reaping (or terminal hangup) can take down the master or its jump hops.
+/// Blocks until the master detaches, fails, or MASTER_DEADLINE passes; only
+/// the background attempt thread calls it.
 fn establish_master(target: &str) -> MasterState {
     use std::os::unix::{fs::FileExt, process::CommandExt};
     let Ok(mut command) = crate::store::ssh_mode(target, crate::store::SshMode::Master) else {
@@ -233,51 +334,116 @@ fn establish_master(target: &str) -> MasterState {
     }
 }
 
-/// Make sure `target` has a live master, joining an attempt already in flight.
-fn ensure_master(target: &str) -> MasterState {
+/// Join `target`'s in-flight master attempt, or start one on a background
+/// thread. None while a recent attempt's failure is cooling down.
+fn start_master(target: &str) -> Option<std::sync::Arc<Flight>> {
+    let mut m = masters()?;
+    if let Some(flight) = m.flights.get(target) {
+        return Some(flight.clone());
+    }
+    let now = std::time::Instant::now();
+    m.failed
+        .retain(|_, at| now.saturating_duration_since(*at) < MASTER_COOLDOWN);
+    if m.failed.contains_key(target) {
+        return None;
+    }
+    let flight = std::sync::Arc::new(Flight::default());
+    m.flights.insert(target.to_owned(), flight.clone());
+    drop(m);
+    let owned = target.to_owned();
+    let running = flight.clone();
+    let spawned = std::thread::Builder::new()
+        .name("cx-ssh-master".into())
+        .spawn(move || {
+            let state = establish_master(&owned);
+            if state == MasterState::Ready {
+                record_owner(&owned);
+            }
+            if let Some(mut m) = masters() {
+                m.flights.remove(&owned);
+                if matches!(state, MasterState::Failed(_)) {
+                    if m.failed.len() >= 128 {
+                        m.failed.clear();
+                    }
+                    m.failed.insert(owned.clone(), std::time::Instant::now());
+                } else {
+                    m.failed.remove(&owned);
+                }
+            }
+            if let Ok(mut slot) = running.state.lock() {
+                *slot = Some(state);
+            }
+            running.done.notify_all();
+        });
+    if spawned.is_err() {
+        if let Some(mut m) = masters() {
+            m.flights.remove(target);
+        }
+        return None;
+    }
+    Some(flight)
+}
+
+/// The attempt's outcome, or None when it is still running after `limit`.
+fn await_flight(flight: &Flight, limit: std::time::Duration) -> Option<MasterState> {
+    let state = flight.state.lock().ok()?;
+    let (state, _) = flight
+        .done
+        .wait_timeout_while(state, limit, |state| state.is_none())
+        .ok()?;
+    *state
+}
+
+/// Make sure `target` has a live master, waiting at most `wait` for one that
+/// is starting. Never blocks longer than `wait` plus two local `ssh -O`/`-G`
+/// queries; an attempt that needs longer keeps running in the background.
+fn ensure_master(target: &str, wait: std::time::Duration) -> MasterState {
     if !crate::store::multiplex_enabled() {
         return MasterState::Unavailable;
     }
-    if master_alive(target) {
+    if masters().is_some_and(|m| {
+        m.confirmed
+            .get(target)
+            .is_some_and(|at| at.elapsed() < CONFIRMED_FOR)
+    }) {
         return MasterState::Ready;
     }
-    let Some(flight) = crate::store::begin_master_flight(target) else {
-        crate::store::await_master_flight(
-            target,
-            MASTER_DEADLINE + std::time::Duration::from_secs(2),
-        );
-        // A joiner falls back to a direct connection if that attempt failed.
-        return if master_alive(target) {
-            MasterState::Ready
-        } else {
-            MasterState::Unavailable
-        };
+    let state = if master_alive(target) {
+        record_owner_later(target);
+        MasterState::Ready
+    } else if let Some(flight) = start_master(target) {
+        await_flight(&flight, wait).unwrap_or(MasterState::Unavailable)
+    } else {
+        MasterState::Unavailable
     };
-    let state = establish_master(target);
-    if let Ok(mut prewarms) = PREWARMS.lock() {
-        if matches!(state, MasterState::Failed(_)) {
-            if prewarms.failed.len() >= 128 {
-                prewarms.failed.clear();
+    if let Some(mut m) = masters() {
+        if state == MasterState::Ready {
+            if m.confirmed.len() >= 256 {
+                m.confirmed.clear();
             }
-            prewarms
-                .failed
+            m.confirmed
                 .insert(target.to_owned(), std::time::Instant::now());
         } else {
-            prewarms.failed.remove(target);
+            m.confirmed.remove(target);
         }
     }
-    drop(flight);
     state
+}
+
+/// Used before a terminal's ssh is built: start or join the route's
+/// dedicated master for at most `wait`. The terminal then joins it, or
+/// connects directly (and may prompt) when it is not ready; it never becomes
+/// the master itself. Returns whether a master is ready.
+pub(crate) fn warm_master(target: &str, wait: std::time::Duration) -> bool {
+    valid_target(target) && ensure_master(target, wait) == MasterState::Ready
 }
 
 /// Establish `device`'s shared SSH master in the background, e.g. on hover or
 /// focus, so the next helper request or attach skips the handshake. Never
 /// blocks or prompts (BatchMode), is idempotent while a master is live or an
-/// attempt is in flight, runs at most four attempts at once, backs off for
+/// attempt is in flight, runs at most four prewarms at once, backs off for
 /// twenty seconds after a failed attempt, and each attempt ends within
-/// twenty-five seconds. Returns whether a background attempt was started.
-// Wired to device hover/focus by the UI; until then only tests call it.
-#[allow(dead_code)]
+/// twenty-five seconds. Returns whether a background prewarm was started.
 pub fn prewarm(device: &Device) -> bool {
     let Some(target) = device.target.clone() else {
         return false;
@@ -286,30 +452,28 @@ pub fn prewarm(device: &Device) -> bool {
         return false;
     }
     {
-        let Ok(mut prewarms) = PREWARMS.lock() else {
+        let Some(mut m) = masters() else {
             return false;
         };
         let now = std::time::Instant::now();
-        prewarms
+        let cooling = m
             .failed
-            .retain(|_, at| now.saturating_duration_since(*at) < PREWARM_COOLDOWN);
-        if crate::store::master_flight_active(&target)
-            || prewarms.failed.contains_key(&target)
-            || prewarms.running >= PREWARM_LIMIT
-        {
+            .get(&target)
+            .is_some_and(|at| now.saturating_duration_since(*at) < MASTER_COOLDOWN);
+        if m.flights.contains_key(&target) || cooling || m.prewarming >= PREWARM_LIMIT {
             return false;
         }
-        prewarms.running += 1;
+        m.prewarming += 1;
     }
     let finished = || {
-        if let Ok(mut prewarms) = PREWARMS.lock() {
-            prewarms.running = prewarms.running.saturating_sub(1);
+        if let Some(mut m) = masters() {
+            m.prewarming = m.prewarming.saturating_sub(1);
         }
     };
     let started = std::thread::Builder::new()
         .name("cx-ssh-prewarm".into())
         .spawn(move || {
-            ensure_master(&target);
+            ensure_master(&target, std::time::Duration::ZERO);
             finished();
         })
         .is_ok();
@@ -317,6 +481,99 @@ pub fn prewarm(device: &Device) -> bool {
         finished();
     }
     started
+}
+
+/// `cx prewarm`: confirm `device`'s shared master really opens channels
+/// (replacing one that does not), else establish one, and wait for the
+/// outcome, bounded by the master attempt deadline. Returns whether an
+/// unresponsive master was replaced.
+pub fn prewarm_blocking(device: &Device) -> Result<bool> {
+    let target = device
+        .target
+        .as_deref()
+        .context("the local device needs no SSH connection")?;
+    if !valid_target(target) {
+        bail!("invalid SSH target")
+    }
+    anyhow::ensure!(
+        crate::store::multiplex_enabled(),
+        "SSH connection sharing is turned off (CX_SSH_MULTIPLEX)"
+    );
+    let replaced = stop_stuck_master(target);
+    // The same background start the UI uses on hover; the wait below joins it.
+    prewarm(device);
+    match ensure_master(target, MASTER_DEADLINE + std::time::Duration::from_secs(2)) {
+        MasterState::Ready => Ok(replaced),
+        MasterState::Failed(failure) => Err(failure.into()),
+        MasterState::Unavailable => {
+            bail!("SSH connection sharing unavailable for this device; connections stay direct")
+        }
+    }
+}
+
+/// A trivial channel through the master; false when it cannot open in time.
+fn master_probe(target: &str) -> bool {
+    use std::os::unix::process::CommandExt;
+    let Ok(mut command) = crate::store::ssh_mode(target, crate::store::SshMode::Background) else {
+        return false;
+    };
+    command
+        .arg("exit 0")
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    let pid = child.id() as i32;
+    let ok = wait_bounded(&mut child, PROBE_LIMIT) == Some(true);
+    // Reap the probe's group (a direct fallback may hold a jump hop).
+    unsafe { libc::kill(-pid, libc::SIGKILL) };
+    ok
+}
+
+/// Stop a master that answers `-O check` but cannot open a trivial channel
+/// in time; returns whether one was stopped.
+fn stop_stuck_master(target: &str) -> bool {
+    let stopped = master_alive(target) && !master_probe(target) && master_control(target, "stop");
+    if stopped {
+        if let Some(mut m) = masters() {
+            m.confirmed.remove(target);
+        }
+    }
+    stopped
+}
+
+/// After a request timeout: a master whose network silently died still
+/// answers `-O check` until ServerAlive ends it. Probe it with a trivial
+/// channel (bounded) and, when that cannot open, stop it from accepting new
+/// clients (`-O stop`) so the next request starts a fresh master at once.
+/// Sessions already on the stopped master are not cut; a dead link ends them
+/// by itself. Runs on a background thread, once per target at a time.
+fn recover_master(target: &str) {
+    if !crate::store::multiplex_enabled() {
+        return;
+    }
+    if !masters()
+        .is_some_and(|mut m| m.recovering.len() < 64 && m.recovering.insert(target.to_owned()))
+    {
+        return;
+    }
+    let owned = target.to_owned();
+    let spawned = std::thread::Builder::new()
+        .name("cx-ssh-recover".into())
+        .spawn(move || {
+            stop_stuck_master(&owned);
+            if let Some(mut m) = masters() {
+                m.recovering.remove(&owned);
+            }
+        });
+    if spawned.is_err() {
+        if let Some(mut m) = masters() {
+            m.recovering.remove(target);
+        }
+    }
 }
 
 struct Connection {
@@ -337,9 +594,10 @@ impl Drop for Connection {
 }
 impl Connection {
     fn open(target: &str) -> Result<Self> {
-        // Join (or first establish) the route's shared master; its typed
-        // failure is the same evidence a direct BatchMode attempt would give.
-        if let MasterState::Failed(failure) = ensure_master(target) {
+        // Join (or start) the route's shared master, waiting only briefly so
+        // the operation's own timeout still covers a direct handshake. A
+        // typed failure is the same evidence a direct BatchMode attempt gives.
+        if let MasterState::Failed(failure) = ensure_master(target, CHANNEL_MASTER_WAIT) {
             return Err(failure.into());
         }
         let route = crate::store::route(target)?;
@@ -561,8 +819,14 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
         15
     };
     let is_info = matches!(&op, Operation::Info);
-    let result = exchange(&mut slot, op, response_timeout)?;
+    let result = exchange(&mut slot, op, response_timeout);
     drop(slot);
+    if let Err(error) = &result {
+        if error.downcast_ref::<ConnectionFailure>() == Some(&ConnectionFailure::Timeout) {
+            recover_master(target);
+        }
+    }
+    let result = result?;
     if is_info {
         schedule_host_update(target, &result);
     }

@@ -474,3 +474,383 @@ pub(super) fn transfer_destination(job: &Value) -> String {
         Err(_) => safe_label(path),
     }
 }
+
+impl App {
+    pub(super) fn visible_entries(&self) -> Vec<Entry> {
+        self.browser
+            .as_ref()
+            .map(browser_entries)
+            .unwrap_or_default()
+    }
+    pub(super) fn chosen_entries(&self) -> Vec<Entry> {
+        let Some(b) = &self.browser else {
+            return vec![];
+        };
+        if b.marked.is_empty() {
+            browser_entries(b)
+                .get(b.selected)
+                .cloned()
+                .into_iter()
+                .collect()
+        } else {
+            // Marks are path identities, independent of hidden/filter state.
+            b.entries
+                .iter()
+                .filter(|e| b.marked.contains(&e.path))
+                .cloned()
+                .collect()
+        }
+    }
+    pub(super) fn queue_file_actions(&mut self, actions: Vec<(usize, Operation)>) {
+        if !self.file_busy && self.file_queue.is_empty() {
+            self.file_errors.clear();
+        }
+        for (_, op) in &actions {
+            if let Operation::TransferRetry { key } = op {
+                self.watched_jobs.insert(key.clone());
+            }
+        }
+        let actions = actions
+            .into_iter()
+            .map(|(d, op)| (d, self.scoped_file_operation(d, op)))
+            .collect::<Vec<_>>();
+        self.file_queue.extend(actions);
+        self.start_next_file_action();
+    }
+    pub(super) fn start_next_file_action(&mut self) {
+        if !self.file_busy {
+            if let Some((d, op)) = self.file_queue.front().cloned() {
+                if self.send_explicit(d, op) {
+                    self.file_queue.pop_front();
+                    self.file_busy = true;
+                } else {
+                    self.set_notice_as(
+                        NoticeKind::Warning,
+                        "Request queue busy · file action remains pending".into(),
+                    );
+                }
+            }
+        }
+    }
+    pub(super) fn finish_visual(&mut self) {
+        if let Some(b) = &mut self.browser {
+            b.visual_anchor = None;
+            b.visual_base.clear();
+        }
+    }
+    pub(super) fn live_search(&mut self) {
+        if self.view == View::Files {
+            if let Some(b) = &mut self.browser {
+                b.search = self.text.clone();
+                b.restore_selection = None;
+                let rows = browser_entries(b);
+                if !b.search.is_empty() {
+                    let matches = file_search_matches(&rows, &b.search);
+                    if let Some(index) = matches
+                        .iter()
+                        .map(|(i, _)| *i)
+                        .find(|i| *i >= b.selected)
+                        .or_else(|| matches.first().map(|(i, _)| *i))
+                    {
+                        b.selected = index;
+                    }
+                }
+            }
+        } else {
+            self.search = self.text.clone();
+            self.selected = 0;
+            self.container_selected = 0;
+        }
+    }
+    pub(super) fn next_file_match(&mut self, direction: isize) {
+        if let Some(b) = &mut self.browser {
+            let matches = file_search_matches(&browser_entries(b), &b.search);
+            let index = if direction > 0 {
+                matches
+                    .iter()
+                    .find(|(i, _)| *i > b.selected)
+                    .or_else(|| matches.first())
+            } else {
+                matches
+                    .iter()
+                    .rev()
+                    .find(|(i, _)| *i < b.selected)
+                    .or_else(|| matches.last())
+            };
+            if let Some((index, _)) = index {
+                b.selected = *index;
+                b.restore_selection = None;
+            }
+        }
+    }
+    pub(super) fn open_browser(&mut self, device: usize, path: String) {
+        let scope = self
+            .browser
+            .as_ref()
+            .filter(|b| self.view == View::Files && b.device == device)
+            .and_then(|b| b.container.clone());
+        self.open_scoped_browser(device, path, scope);
+    }
+    pub(super) fn open_host_browser(&mut self, device: usize, path: String) {
+        self.open_scoped_browser(device, path, None);
+    }
+    pub(super) fn open_container_browser(&mut self, device: usize, scope: ContainerScope) {
+        self.other_browser = None;
+        self.destination_active = false;
+        let path = self
+            .container_locations
+            .get(&(device, scope.id.clone()))
+            .cloned()
+            .unwrap_or_else(|| scope.folder.clone());
+        self.open_scoped_browser(device, path, Some(scope));
+    }
+    pub(super) fn open_scoped_browser(
+        &mut self,
+        device: usize,
+        path: String,
+        scope: Option<ContainerScope>,
+    ) {
+        self.device = device + 1;
+        let show_hidden = self
+            .browser
+            .as_ref()
+            .or(self.other_browser.as_ref())
+            .is_some_and(|b| b.show_hidden);
+        self.finish_visual();
+        self.generation += 1;
+        if let Some(mut old) = self.browser.take() {
+            old.preview = None;
+            old.preview_rich = None;
+            old.preview_history.clear();
+            old.preview_restore = None;
+            old.preview_anchor = None;
+            old.preview_link_cells.borrow_mut().clear();
+            if let Some(scope) = &old.container {
+                self.container_locations
+                    .insert((old.device, scope.id.clone()), old.path.clone());
+            } else {
+                self.file_locations.insert(old.device, old.path.clone());
+            }
+            if self.browser_cache.len() >= 64 {
+                if let Some(key) = self.browser_cache.keys().next().cloned() {
+                    self.browser_cache.remove(&key);
+                }
+            }
+            self.browser_cache.insert(
+                (
+                    old.device,
+                    old.path.clone(),
+                    browser_scope_key(old.container.as_ref()),
+                ),
+                old,
+            );
+        }
+        self.browser = Some(
+            self.browser_cache
+                .remove(&(device, path.clone(), browser_scope_key(scope.as_ref())))
+                .unwrap_or_else(|| Browser::new(device, path)),
+        );
+        if let Some(b) = &mut self.browser {
+            b.show_hidden = show_hidden;
+            b.container = scope;
+        }
+        self.view = View::Files;
+        self.focus = Focus::Workspace;
+        self.refresh_browser();
+        self.check_providers(device);
+    }
+    pub(super) fn select_file_device(&mut self) {
+        // Files always has one execution host; All devices returns to the local location.
+        let device = self
+            .device
+            .checked_sub(1)
+            .or_else(|| self.devices.iter().position(|d| d.target.is_none()));
+        if let Some(device) = device {
+            if self
+                .browser
+                .as_ref()
+                .is_none_or(|b| b.device != device || b.container.is_some())
+            {
+                let path = self
+                    .file_locations
+                    .get(&device)
+                    .cloned()
+                    .unwrap_or_else(|| "~".into());
+                self.open_host_browser(device, path);
+            }
+        }
+        self.focus = Focus::Devices;
+    }
+    pub(super) fn refresh_browser(&mut self) {
+        self.generation += 1;
+        if let Some(b) = self.browser.as_mut() {
+            if b.restore_selection.is_none() {
+                b.restore_selection = browser_entries(b)
+                    .get(b.selected)
+                    .map(|entry| entry.path.clone());
+            }
+            b.loading = true;
+            b.preview = None;
+            b.preview_rich = None;
+            b.preview_history.clear();
+            b.preview_restore = None;
+            b.preview_anchor = None;
+            b.preview_link_cells.borrow_mut().clear();
+            let device = b.device;
+            let path = b.path.clone();
+            if !self.send(device, Operation::List { path }) {
+                if let Some(b) = &mut self.browser {
+                    b.loading = false;
+                }
+                self.set_notice_as(
+                    NoticeKind::Warning,
+                    "Refresh queue busy · retry shortly".into(),
+                );
+            }
+        }
+    }
+    pub(super) fn conflict_policy(&self) -> &'static str {
+        ["skip", "overwrite", "rename"][self.conflict]
+    }
+    pub(super) fn active_transfer_keys(&self) -> BTreeSet<String> {
+        let mut keys = self.pending_transfers.clone();
+        for (_, job) in self.job_rows() {
+            if matches!(
+                job["status"].as_str(),
+                Some("queued" | "running" | "submitting")
+            ) {
+                if let Some(key) = job["key"].as_str() {
+                    keys.insert(key.into());
+                }
+            }
+        }
+        keys
+    }
+    pub(super) fn submit_transfer(&mut self) {
+        let (Some(clip), Some(b)) = (self.clipboard.clone(), self.browser.as_ref()) else {
+            return;
+        };
+        let Some(local) = self.devices.iter().position(|d| d.target.is_none()) else {
+            return;
+        };
+        let destination = self.devices[b.device].clone();
+        let destination_path = b.path.clone();
+        let destination_container = b.container.clone();
+        let active = self.active_transfer_keys();
+        if self.submitted.iter().any(|(key, spec)| {
+            active.contains(key)
+                && spec.source.id == self.devices[clip.device].id
+                && spec.destination.id == destination.id
+                && spec.source_container == clip.container
+                && spec.destination_container == destination_container
+                && spec.destination_path == destination_path
+                && clip.entries.iter().any(|e| e.path == spec.source_path)
+        }) {
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "Transfer already pending · T shows progress".into(),
+            );
+            return;
+        }
+        let mut actions = Vec::new();
+        for entry in &clip.entries {
+            let spec = crate::model::TransferSpec {
+                source_container: clip.container.clone(),
+                destination_container: destination_container.clone(),
+                source: self.devices[clip.device].clone(),
+                source_path: entry.path.clone(),
+                destination: destination.clone(),
+                destination_path: destination_path.clone(),
+                conflict: self.conflict_policy().into(),
+                key: unique_key(),
+                cut: clip.cut,
+                source_identity: if clip.cut {
+                    entry.identity.clone()
+                } else {
+                    None
+                },
+            };
+            if self.submitted.len() >= 256 {
+                if let Some(key) = self.submitted.keys().next().cloned() {
+                    self.submitted.remove(&key);
+                }
+            }
+            self.pending_transfers.insert(spec.key.clone());
+            self.submitted.insert(spec.key.clone(), spec.clone());
+            if clip.cut {
+                self.submitted_clipboards
+                    .insert(spec.key.clone(), clip.id.clone());
+            }
+            actions.push((local, spec.operation()));
+        }
+        self.set_notice(format!(
+            "{} {} items · {} → {} · existing: {}",
+            if clip.cut { "Moving" } else { "Copying" },
+            clip.entries.len(),
+            file_endpoint_label(&self.devices[clip.device], &clip.container),
+            file_endpoint_label(&destination, &destination_container),
+            self.conflict_policy()
+        ));
+        self.queue_file_actions(actions);
+        self.transfer_drawer = true;
+    }
+    pub(super) fn job_rows(&self) -> Vec<(usize, Value)> {
+        let mut unique = HashMap::new();
+        for (d, value) in &self.jobs {
+            if let Some(jobs) = value["jobs"].as_array() {
+                for job in jobs {
+                    let key = (
+                        job["key"].as_str().unwrap_or("").to_string(),
+                        job["source_host"].as_str().unwrap_or("").to_string(),
+                        job["destination_host"].as_str().unwrap_or("").to_string(),
+                    );
+                    let row = unique.entry(key).or_insert((*d, job.clone()));
+                    // Prefer the viewer's durable forwarding reference, which knows job ownership.
+                    if (self.devices[*d].target.is_none() && self.devices[row.0].target.is_some())
+                        || (self.devices[*d].target.is_none()
+                            == self.devices[row.0].target.is_none()
+                            && *d < row.0)
+                    {
+                        *row = (*d, job.clone());
+                    }
+                }
+            }
+        }
+        let mut rows = unique
+            .into_values()
+            .filter(|(_, job)| {
+                fuzzy_score(
+                    &self.job_filter,
+                    &format!(
+                        "{} {} {} {} {} {}",
+                        transfer_name(job),
+                        transfer_status(job),
+                        job["source_host"].as_str().unwrap_or(""),
+                        job["destination_host"].as_str().unwrap_or(""),
+                        job["source_display"]
+                            .as_str()
+                            .or(job["source_path"].as_str())
+                            .unwrap_or(""),
+                        transfer_destination(job)
+                    ),
+                )
+                .is_some()
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by(|(a, x), (b, y)| {
+            y["updated"]
+                .as_u64()
+                .cmp(&x["updated"].as_u64())
+                .then_with(|| a.cmp(b))
+                .then_with(|| x["key"].as_str().cmp(&y["key"].as_str()))
+        });
+        rows
+    }
+    pub(super) fn parent_directory(&mut self) {
+        if let Some(b) = &self.browser {
+            if let Some(path) = b.parent.clone() {
+                self.open_browser(b.device, path);
+            }
+        }
+    }
+}

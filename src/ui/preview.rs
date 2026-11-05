@@ -869,3 +869,244 @@ pub(super) fn render_preview_with_native(
         inner,
     );
 }
+
+impl App {
+    pub(super) fn pdf_preview_active(&self) -> bool {
+        self.view == View::Files
+            && self.focus == Focus::Workspace
+            && self.browser.as_ref().is_some_and(|b| {
+                b.preview.is_some()
+                    && b.preview_rich
+                        .as_ref()
+                        .is_some_and(|p| p.kind == "pdf" && p.raster.is_some())
+            })
+    }
+    pub(super) fn open_preview(&mut self, device: usize, path: String) {
+        self.generation += 1;
+        if let Some(b) = &mut self.browser {
+            b.preview_path = Some(path.clone());
+            b.preview_restore = None;
+            b.preview_anchor = None;
+            b.preview_link_cells.borrow_mut().clear();
+            b.preview_requested_page = 1;
+            b.preview_pending_page = Some(1);
+            b.preview_rich = None;
+            b.preview_scroll.set(0);
+            b.preview_find = PreviewFind::default();
+            b.preview = Some("Loading preview…".into());
+        }
+        if !self.send(device, Operation::Preview { path }) {
+            if let Some(b) = &mut self.browser {
+                b.preview_pending_page = None;
+                b.preview = Some("Preview queue busy · Escape and retry".into());
+            }
+        }
+    }
+    pub(super) fn start_pdf_page_request(&mut self) {
+        let Some(b) = self.browser.as_ref() else {
+            return;
+        };
+        if b.preview_pending_page.is_some()
+            || b.preview_rich
+                .as_ref()
+                .is_some_and(|p| p.page == b.preview_requested_page)
+        {
+            return;
+        }
+        let device = b.device;
+        let path = b
+            .preview_path
+            .clone()
+            .or_else(|| browser_entries(b).get(b.selected).map(|e| e.path.clone()));
+        let Some(path) = path else {
+            return;
+        };
+        let page = b.preview_requested_page.max(1);
+        if self.devices[device].target.is_some()
+            && !self
+                .providers
+                .get(&device)
+                .is_some_and(|(caps, _)| caps.iter().any(|c| c == "pdf-pages-v1"))
+        {
+            self.providers.remove(&device);
+            self.check_providers(device);
+            self.set_notice("PDF pages need a current device helper · checking update".into());
+            return;
+        }
+        if self.send(
+            device,
+            Operation::PreviewPage {
+                path: path.clone(),
+                page,
+            },
+        ) {
+            if let Some(b) = &mut self.browser {
+                b.preview_path = Some(path);
+                b.preview_pending_page = Some(page);
+            }
+        } else {
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "Preview queue busy · retry shortly".into(),
+            );
+        }
+    }
+    pub(super) fn text_preview_active(&self) -> bool {
+        self.view == View::Files
+            && self.browser.as_ref().is_some_and(|b| {
+                b.preview.is_some()
+                    && b.preview_pending_page.is_none()
+                    && b.preview_rich
+                        .as_ref()
+                        .is_none_or(|p| p.raster.is_none() && p.kind != "pdf")
+            })
+    }
+    pub(super) fn update_preview_search(&mut self) {
+        if let Some(b) = &mut self.browser {
+            b.preview_find.query = self.text.clone();
+            b.preview_find.matches = preview_matches(
+                &preview_display_lines(b, b.preview.as_deref().unwrap_or("")),
+                &self.text,
+            );
+            b.preview_find.selected = 0;
+            b.preview_find.reveal.set(true);
+        }
+    }
+    pub(super) fn next_preview_match(&mut self, direction: isize) {
+        if let Some(b) = &mut self.browser {
+            b.preview_find.matches = preview_matches(
+                &preview_display_lines(b, b.preview.as_deref().unwrap_or("")),
+                &b.preview_find.query,
+            );
+            let count = b.preview_find.matches.len();
+            if count > 0 {
+                b.preview_find.selected = b.preview_find.selected.min(count - 1);
+                b.preview_find.selected = (b.preview_find.selected as isize + direction)
+                    .rem_euclid(count as isize) as usize;
+                b.preview_find.reveal.set(true);
+            }
+        }
+    }
+    pub(super) fn markdown_preview_active(&self) -> bool {
+        self.text_preview_active()
+            && self.browser.as_ref().is_some_and(|b| {
+                b.preview_rich
+                    .as_ref()
+                    .is_some_and(|p| p.kind == "markdown")
+            })
+    }
+    pub(super) fn open_markdown_link(&mut self, link: &crate::markdown_links::Link) {
+        if crate::markdown_links::web_target(&link.target) {
+            if std::env::var_os("DISPLAY").is_none()
+                && std::env::var_os("WAYLAND_DISPLAY").is_none()
+            {
+                self.set_notice_as(
+                    NoticeKind::Warning,
+                    "No graphical browser on this viewer · inspect the URL with o".into(),
+                );
+                return;
+            }
+            match std::process::Command::new("xdg-open")
+                .arg(&link.target)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                Ok(mut child) => {
+                    std::thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                    self.set_notice_as(NoticeKind::Success, "Link sent to viewer browser".into());
+                    self.dialog = None;
+                }
+                Err(_) => self.set_notice_as(
+                    NoticeKind::Warning,
+                    "Viewer browser unavailable · inspect the URL with o".into(),
+                ),
+            }
+            return;
+        }
+        let Some(b) = self.browser.as_ref() else {
+            return;
+        };
+        let Some(document) = b.preview_path.as_ref() else {
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "Document path unavailable · reopen this file".into(),
+            );
+            return;
+        };
+        let resolved = crate::files::decode_path(document)
+            .and_then(|p| crate::markdown_links::resolve_file_link(&p, &link.target));
+        let (path, anchor) = match resolved {
+            Ok(Some(destination)) => destination,
+            Ok(None) => {
+                self.set_notice_as(
+                    NoticeKind::Warning,
+                    "Only web URLs and file links can open".into(),
+                );
+                return;
+            }
+            Err(error) => {
+                self.set_notice_as(NoticeKind::Error, safe_text(&error.to_string()));
+                return;
+            }
+        };
+        let device = b.device;
+        let same = crate::files::decode_path(document).ok().as_ref() == Some(&path);
+        if same && anchor.is_some() {
+            self.dialog = None;
+            let b = self.browser.as_mut().unwrap();
+            if let Some(scroll) = markdown_anchor_scroll(b, anchor.as_deref().unwrap()) {
+                b.preview_scroll.set(scroll);
+                b.preview_find.reveal.set(false);
+            } else {
+                self.set_notice_as(
+                    NoticeKind::Warning,
+                    "Heading not found in this preview".into(),
+                );
+            }
+            return;
+        }
+        self.dialog = None;
+        if link
+            .target
+            .split('#')
+            .next()
+            .is_some_and(|p| p.ends_with('/'))
+        {
+            self.open_browser(device, crate::files::encode_path(&path));
+            return;
+        }
+        let b = self.browser.as_mut().unwrap();
+        if let Some(previous) = b.preview_path.clone() {
+            if b.preview_history.len() >= 16 {
+                b.preview_history.remove(0);
+            }
+            b.preview_history
+                .push((previous, b.preview_scroll.get(), b.preview_find.clone()));
+        }
+        self.open_preview(device, crate::files::encode_path(&path));
+        self.browser.as_mut().unwrap().preview_anchor = anchor;
+    }
+    pub(super) fn show_preview_links(&mut self) {
+        let links = self
+            .browser
+            .as_ref()
+            .and_then(|b| b.preview.as_ref())
+            .map(|s| markdown_preview_links(s))
+            .unwrap_or_default();
+        if links.is_empty() {
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "No Markdown links in this preview".into(),
+            );
+            return;
+        }
+        self.dialog_selected = 0;
+        self.dialog_scroll = 0;
+        self.dialog_detail_focus = false;
+        self.dialog = Some(Dialog::Links(links));
+    }
+}

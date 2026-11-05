@@ -63,14 +63,19 @@ const fn row(dark: u32, light: u32, x256: (u8, u8), ansi: Option<Color>) -> Row 
 
 /// Identity hues: OKLCH L 0.74 / C 0.10 (dark) and L 0.47 / C 0.11 (light),
 /// hue 25..340 in 8 steps; every one reaches 4.5:1 on #282c34 and #f0f0f0.
+/// The 16-color column is the nearest ANSI hue of each swatch (red, yellow,
+/// green, cyan, bright cyan, bright blue, magenta, bright magenta), so a device
+/// keeps the same hue family at every depth. It uses the same eight ANSI slots
+/// as the spec's rotation except bright blue for plain blue, which fails
+/// contrast on dark backgrounds (P9).
 const IDS: [Row; 8] = [
-    row(0xe3928b, 0x8e3e3a, (174, 131), Some(Color::Cyan)),
-    row(0xd3a062, 0x814d00, (179, 130), Some(Color::Magenta)),
+    row(0xe3928b, 0x8e3e3a, (174, 131), Some(Color::Red)),
+    row(0xd3a062, 0x814d00, (179, 130), Some(Color::Yellow)),
     row(0xa3b46b, 0x536304, (143, 64), Some(Color::Green)),
-    row(0x68bf9b, 0x006d4b, (79, 29), Some(Color::Yellow)),
-    row(0x51bcce, 0x006a7d, (74, 30), Some(Color::Blue)),
-    row(0x79b0e8, 0x215d96, (110, 25), Some(Color::Red)),
-    row(0xaf9ee4, 0x604c91, (146, 61), Some(Color::LightCyan)),
+    row(0x68bf9b, 0x006d4b, (79, 29), Some(Color::Cyan)),
+    row(0x51bcce, 0x006a7d, (74, 30), Some(Color::LightCyan)),
+    row(0x79b0e8, 0x215d96, (110, 25), Some(Color::LightBlue)),
+    row(0xaf9ee4, 0x604c91, (146, 61), Some(Color::Magenta)),
     row(0xd692bf, 0x823f6e, (175, 125), Some(Color::LightMagenta)),
 ];
 
@@ -221,14 +226,21 @@ pub(super) fn selection(focused: bool) -> Style {
 pub(super) fn selected_style() -> Style {
     selection(true)
 }
-/// Left selection bar, including the trailing gap.
-pub(super) fn selection_symbol(focused: bool) -> &'static str {
-    let g = glyphs();
-    if focused {
+/// Left selection bar, including the trailing gap. Under `NO_COLOR` a Unicode
+/// terminal still gets the `>` marker (spec 4.1 / 5): without color, the thin
+/// `▌`/`▏` bars are too weak a cue, and REVERSED already marks the focused row.
+pub(super) fn selection_symbol_for(focused: bool, caps: Caps) -> &'static str {
+    let g = glyphs_for(caps);
+    if caps.color == ColorDepth::None {
+        ASCII.bar_focused
+    } else if focused {
         g.bar_focused
     } else {
         g.bar_dim
     }
+}
+pub(super) fn selection_symbol(focused: bool) -> &'static str {
+    selection_symbol_for(focused, caps())
 }
 
 /// Glyph set (spec table 4.2). ASCII is chosen by `CX_ASCII`, `TERM=dumb|linux`
@@ -425,13 +437,57 @@ pub(super) fn ascii_glyph(symbol: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
-/// Rewrite known UI glyphs in a rendered buffer to ASCII.
-pub(super) fn asciify(buf: &mut ratatui::buffer::Buffer, area: Rect) {
+thread_local! {
+    /// Content regions of the frame being drawn, with the symbols they held
+    /// right after the content was rendered (see [`protect_content`]).
+    static CONTENT: std::cell::RefCell<Vec<(Rect, Vec<String>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+/// Mark `area` as user content (file preview text, the live terminal preview):
+/// the ASCII pass leaves it alone, so quotes, dashes and box drawing inside a
+/// document or a remote screen are shown as written. The symbols are
+/// snapshotted, so chrome drawn over the region later (an overlay, a toast) is
+/// still converted. Content renderers emit their own decorations in ASCII
+/// (markdown rules and bullets check [`ascii`]). No-op outside ASCII mode.
+pub(super) fn protect_content(buf: &ratatui::buffer::Buffer, area: Rect) {
+    if !ascii() {
+        return;
+    }
+    let area = area.intersection(buf.area);
+    if area.is_empty() {
+        return;
+    }
+    let mut symbols = Vec::with_capacity(usize::from(area.width) * usize::from(area.height));
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
-            let cell = &mut buf[(x, y)];
+            symbols.push(buf[(x, y)].symbol().to_owned());
+        }
+    }
+    CONTENT.with(|c| c.borrow_mut().push((area, symbols)));
+}
+/// Forget content regions (start of a frame).
+pub(super) fn clear_protected_content() {
+    CONTENT.with(|c| c.borrow_mut().clear());
+}
+/// Rewrite known UI glyphs in a rendered buffer to ASCII, except cells of
+/// regions registered with [`protect_content`] that still hold their content.
+/// Consumes the registered regions.
+pub(super) fn asciify(buf: &mut ratatui::buffer::Buffer, area: Rect) {
+    let content = CONTENT.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    let is_content = |x: u16, y: u16, symbol: &str| {
+        content.iter().any(|(r, symbols)| {
+            r.contains(ratatui::layout::Position { x, y })
+                && symbols[usize::from(y - r.y) * usize::from(r.width) + usize::from(x - r.x)]
+                    == symbol
+        })
+    };
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &buf[(x, y)];
             if let Some(sub) = ascii_glyph(cell.symbol()) {
-                cell.set_symbol(sub);
+                if !is_content(x, y, cell.symbol()) {
+                    buf[(x, y)].set_symbol(sub);
+                }
             }
         }
     }
@@ -778,6 +834,97 @@ mod tests {
         asciify(&mut buf, Rect::new(0, 0, 8, 1));
         let text: String = buf.content.iter().map(|c| c.symbol()).collect();
         assert_eq!(text, "+-.~*é> ");
+    }
+
+    #[test]
+    fn asciify_keeps_protected_content_but_not_chrome_drawn_over_it() {
+        let ascii = Caps {
+            unicode: false,
+            ..Caps::default()
+        };
+        with_caps(ascii, || {
+            let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 10, 2));
+            buf.set_string(0, 0, "│“x”—→", Style::default());
+            buf.set_string(0, 1, "│ ── ", Style::default());
+            clear_protected_content();
+            protect_content(&buf, Rect::new(1, 0, 9, 2));
+            // An overlay later draws chrome over part of the content region.
+            buf.set_string(6, 1, "╭─", Style::default());
+            asciify(&mut buf, Rect::new(0, 0, 10, 2));
+            let row = |buf: &ratatui::buffer::Buffer, y: u16| -> String {
+                (0..10).map(|x| buf[(x, y)].symbol()).collect()
+            };
+            assert_eq!(row(&buf, 0), "|“x”—→    ");
+            assert_eq!(row(&buf, 1), "| ──  +-  ");
+            // Regions are per frame: the next pass converts everything.
+            asciify(&mut buf, Rect::new(0, 0, 10, 2));
+            assert_eq!(row(&buf, 0), "|\"x\"->    ");
+        });
+        // Outside ASCII mode nothing is recorded.
+        with_caps(Caps::default(), || {
+            let buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 2, 1));
+            protect_content(&buf, buf.area);
+            assert!(CONTENT.with(|c| c.borrow().is_empty()));
+        });
+    }
+
+    #[test]
+    fn no_color_selection_uses_the_marker_bar() {
+        let mono = Caps {
+            color: ColorDepth::None,
+            ..Caps::default()
+        };
+        assert_eq!(selection_symbol_for(true, mono), "> ");
+        assert_eq!(selection_symbol_for(false, mono), "> ");
+        assert!(selection_for(true, mono)
+            .add_modifier
+            .contains(Modifier::REVERSED));
+        assert_eq!(selection_for(false, mono), Style::default());
+        assert_eq!(selection_symbol_for(true, Caps::default()), "▌ ");
+        assert_eq!(selection_symbol_for(false, Caps::default()), "▏ ");
+        let ascii = Caps {
+            unicode: false,
+            ..Caps::default()
+        };
+        assert_eq!(selection_symbol_for(false, ascii), ": ");
+    }
+
+    #[test]
+    fn identity_hues_keep_their_family_at_16_colors() {
+        // The truecolor hue angle must fall in the ANSI hue's range.
+        let range = |c: Color| match c {
+            Color::Red => (-30.0, 30.0),
+            Color::Yellow => (25.0, 70.0),
+            Color::Green => (60.0, 150.0),
+            Color::Cyan | Color::LightCyan => (145.0, 210.0),
+            Color::LightBlue => (195.0, 250.0),
+            Color::Magenta | Color::LightMagenta => (240.0, 340.0),
+            other => panic!("{other:?}"),
+        };
+        let hue = |(r, g, b): Rgb| {
+            let (r, g, b) = (f64::from(r), f64::from(g), f64::from(b));
+            let h = (3f64.sqrt() * (g - b))
+                .atan2(2.0 * r - g - b)
+                .to_degrees()
+                .rem_euclid(360.0);
+            if h > 330.0 {
+                h - 360.0
+            } else {
+                h
+            }
+        };
+        let mut seen = Vec::new();
+        for i in 0..SWATCHES {
+            let r = spec(Tok::Id(i));
+            let ansi = r.ansi.unwrap();
+            let (lo, hi) = range(ansi);
+            for rgb in [r.dark, r.light] {
+                let h = hue(rgb);
+                assert!(lo <= h && h <= hi, "id.{i} {rgb:?} hue {h:.0} vs {ansi:?}");
+            }
+            assert!(!seen.contains(&ansi), "id.{i} duplicates {ansi:?}");
+            seen.push(ansi);
+        }
     }
 
     #[test]

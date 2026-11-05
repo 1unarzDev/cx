@@ -1,13 +1,13 @@
  cx   [Sessions]  Network                                 viewing fixture@laptop
                                                                                 
 + Devices ----------+#[ Sessions . 3 sessions ]================================#
-| : All devices     |#  SESSION                                      STATE     #
+| > All devices     |#  SESSION                                      STATE     #
 |   +  laptop       |#                                                         #
 |   +  * lab-arm    |#  /tmp/tmp-xxxxxx                /home/project           #
 |   x  * field-rov~ |#> build watcher                                idle      #
 +-------------------+#                                                         #
 + Actions ----------+#  /tmp/tmp-xxxxxx                /home/project           #
-| Files             |#  New shell                                    idle      #
+| Files             |#  recent: env                                  idle      #
 | Network           |#=========================================================#
 | Containers        |+ build watcher . fixture@laptop -------------------------+
 | Transfers         ||Enter . focus terminal . Wheel . scroll                  |

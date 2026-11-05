@@ -24,6 +24,7 @@ pub(super) fn render_at(
     native: Option<&mut crate::terminal_preview::NativePreview>,
     now: Instant,
 ) {
+    clear_protected_content();
     render_frame(frame, app, native, now);
     if ascii() {
         // ASCII parity (spec C11): UI glyphs from every view, in one place.

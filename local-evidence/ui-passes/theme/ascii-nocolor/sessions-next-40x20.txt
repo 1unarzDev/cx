@@ -1,13 +1,13 @@
  cx   Sessions      viewing fixture@lapt
                                         
 + Devices ------+#[ Sessions . 3 sessio#
-| : All devices |#  SESSION    STATE   #
+| > All devices |#  SESSION    STATE   #
 |   +  laptop   |#                     #
 |   +  * lab-a~ |#  /tmp/cx-ca         #
 |   x  * field~ |#  build watc idle    #
 +---------------+#                     #
 + Actions ------+#  /tmp/cx-ca         #
-| Files         |#> New shell  idle    #
+| Files         |#> recent: en idle    #
 | Network       |#                     #
 | Containers    |#  /tmp/cx-ca         #
 +---------------+#  ros core   idle    #

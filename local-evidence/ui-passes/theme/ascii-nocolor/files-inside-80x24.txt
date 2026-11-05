@@ -2,7 +2,7 @@
                                                                                 
 + Devices ----------+ Files  fixture@laptop                                     
 |   All devices     | NORMAL 0 selected . hidden off                            
-| : +  laptop       |#[ 5 items ]==============================================#
+| > +  laptop       |#[ 5 items ]==============================================#
 |   +  * lab-arm    |#  /   docs                                               #
 |   x  * field-rov~ |#  /   src                                                #
 +-------------------+#      Cargo.toml                                 45 B    #

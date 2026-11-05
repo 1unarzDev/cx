@@ -3,8 +3,8 @@
 ╭ Devices ──────────╮ Files  fixture@laptop                                     
 │   All devices     │ NORMAL 0 selected · hidden off                            
 │ ▏ ●  laptop       │┏ 2 items ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-│   ●  * lab-arm    │┃  / ▌ Downloads                                          ┃
-│   ○  * field-rov… │┃  /   projects                                           ┃
+│   ●  * lab-arm    │┃  /   Downloads                                          ┃
+│   ○  * field-rov… │┃  / ▌ projects                                           ┃
 ╰───────────────────╯┃                                                         ┃
 ╭ Actions ──────────╮┃                                                         ┃
 │ Sessions          │┃                                                         ┃
@@ -17,7 +17,7 @@
  tmp/                ┃│ check its connection, then Refresh: helper closed     │┃
   cx-capture-matrix… ┃│ before response                                       │┃
    └─ home/          ┗╰───────────────────────────────────────────────────────╯┛
-     └─ Downloads/    Space select · v range · . hidden                         
+     └─ projects/     Space select · v range · . hidden                         
  ● 2/3 devices             Focus: Files · 2/5                             ↔ idle
  s Sessions here            Space Select              c / x Copy / cut          
  p / t Paste / transfer     n / : Session / command   r / d Rename / delete     

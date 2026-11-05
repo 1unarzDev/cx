@@ -2,12 +2,12 @@
                                                                                                                                                                                                         
 + Devices ----------+#[ Sessions . 2 sessions ]======================================================#+ build watcher . fixture@laptop ----------------------------------------------------------------+
 |   All devices     |#  AGENT      SESSION                       EXECUTION                 STATE     #|Enter . focus terminal . Wheel . scroll                                                         |
-| : +  laptop       |#                                                                               #|Compiling cx-demo v0.1.0                                                                        |
+| > +  laptop       |#                                                                               #|Compiling cx-demo v0.1.0                                                                        |
 |   +  * lab-arm    |#             /tmp/tmp-xxxxxx                                                   #|    Finished dev in 2.41s                                                                       |
 |   x  * field-rov~ |#> [shell]    build watcher                 fixture@laptop            idle      #|[Running cargo check]                                                                           |
 +-------------------+#                                                                               #|[xxxxxx@xxxxxxxxxx cx-demo]$                                                                    |
 + Actions ----------+#             /tmp/tmp-xxxxxx                                                   #|                                                                                                |
-| Files             |#  [shell]    New shell                     fixture@laptop            idle      #|                                                                                                |
+| Files             |#  [shell]    recent: env                   fixture@laptop            idle      #|                                                                                                |
 | Network           |#                                                                               #|                                                                                                |
 | Containers        |#                                                                               #|                                                                                                |
 | Transfers         |#                                                                               #|                                                                                                |

@@ -1,13 +1,13 @@
  cx   [Sessions]  Network                                                                                                                                                         viewing fixture@laptop
                                                                                                                                                                                                         
-+ Devices ----------+#[ Sessions . 3 sessions ]======================================================#+ New shell . fixture@laptop --------------------------------------------------------------------+
-| : All devices     |#  AGENT      SESSION                       EXECUTION                 STATE     #|Loading terminal~                                                                               |
++ Devices ----------+#[ Sessions . 3 sessions ]======================================================#+ recent: env . fixture@laptop ------------------------------------------------------------------+
+| > All devices     |#  AGENT      SESSION                       EXECUTION                 STATE     #|Loading terminal~                                                                               |
 |   +  laptop       |#                                                                               #|                                                                                                |
 |   +  * lab-arm    |#             /tmp/tmp-xxxxxx                                                   #|                                                                                                |
 |   x  * field-rov~ |#  [shell]    build watcher                 fixture@laptop            idle      #|                                                                                                |
 +-------------------+#                                                                               #|                                                                                                |
 + Actions ----------+#             /tmp/tmp-xxxxxx                                                   #|                                                                                                |
-| Files             |#> [shell]    New shell                     fixture@laptop            idle      #|                                                                                                |
+| Files             |#> [shell]    recent: env                   fixture@laptop            idle      #|                                                                                                |
 | Network           |#                                                                               #|                                                                                                |
 | Containers        |#             /tmp/tmp-xxxxxx                                                   #|                                                                                                |
 | Transfers         |#  [shell]    ros core                      robot@lab-arm             idle      #|                                                                                                |

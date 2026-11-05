@@ -1,13 +1,13 @@
  cx   [Sessions]  Network                                                                         viewing fixture@laptop
                                                                                                                         
-+ Devices ----------+#[ Sessions . 3 sessions ]==================#+ New shell . fixture@laptop ------------------------+
-| : All devices     |#  SESSION                        STATE     #|Enter . focus terminal . Wheel . scroll             |
++ Devices ----------+#[ Sessions . 3 sessions ]==================#+ recent: env . fixture@laptop ----------------------+
+| > All devices     |#  SESSION                        STATE     #|Enter . focus terminal . Wheel . scroll             |
 |   +  laptop       |#                                           #|run-05 step 1 ok  lidar=11Hz                        |
 |   +  * lab-arm    |#  /tmp/tmp-xxxxxx                          #|run-05 step 2 ok  lidar=12Hz                        |
 |   x  * field-rov~ |#  build watcher                  idle      #|run-05 step 3 ok  lidar=13Hz                        |
 +-------------------+#                                           #|run-05 step 4 ok  lidar=14Hz                        |
 + Actions ----------+#  /tmp/tmp-xxxxxx                          #|run-05 step 5 ok  lidar=15Hz                        |
-| Files             |#> New shell                      idle      #|run-05 step 6 ok  lidar=16Hz                        |
+| Files             |#> recent: env                    idle      #|run-05 step 6 ok  lidar=16Hz                        |
 | Network           |#                                           #|[xxxxxx@xxxxxxxxxx robot-logs]$                     |
 | Containers        |#  /tmp/tmp-xxxxxx                          #|                                                    |
 | Transfers         |#  ros core                       idle      #|                                                    |

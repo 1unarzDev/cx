@@ -2,12 +2,12 @@
                                         
 + Devices ------+#[ Sessions . 2 sessio#
 |   All devices |#  SESSION    STATE   #
-| : +  laptop   |#                     #
+| > +  laptop   |#                     #
 |   +  * lab-a~ |#  /tmp/cx-ca         #
 |   x  * field~ |#> build watc idle    #
 +---------------+#                     #
 + Actions ------+#  /tmp/cx-ca         #
-| Files         |#  New shell  idle    #
+| Files         |#  recent: en idle    #
 | Network       |#                     #
 | Containers    |#                     #
 +---------------+#                     #

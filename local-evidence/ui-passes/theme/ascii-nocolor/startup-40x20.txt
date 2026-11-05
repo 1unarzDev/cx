@@ -2,7 +2,7 @@
                                         
 + Devices ---+ Files  fixture@laptop    
 |   All devi | NORMAL 0 selected . hidde
-| : +  lapt~ |#[ 2 items ]=============#
+| > +  lapt~ |#[ 2 items ]=============#
 |   +  * la~ |#  / > ~wnloads          #
 |   x  * fi~ |#  /   projects          #
 +------------+#+ Error ---------------+#

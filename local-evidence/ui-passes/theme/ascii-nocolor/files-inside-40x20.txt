@@ -2,7 +2,7 @@
                                         
 + Devices ---+ Files  fixture@laptop    
 |   All devi | NORMAL 0 selected . hidde
-| : +  lapt~ |#[ 5 items ]=============#
+| > +  lapt~ |#[ 5 items ]=============#
 |   +  * la~ |#  / > docs              #
 |   x  * fi~ |#  /   src               #
 +------------+#      ~go.toml  45 B    #

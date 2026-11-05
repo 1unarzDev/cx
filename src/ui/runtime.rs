@@ -908,6 +908,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     ] {
         signal_hook::flag::register(sig, stopping.clone())?;
     }
+    // Detect terminal capabilities (incl. the bounded OSC 11 background query)
+    // before any thread or raw mode touches the terminal.
+    let _ = super::caps::caps();
     let devices = store::devices()?;
     anyhow::ensure!(!devices.is_empty(), "No local device available");
     let (tx, rx) = mpsc::sync_channel::<Task>(32);
@@ -1408,6 +1411,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
         if event::poll(wait)? {
             for (input, observed) in read_input_batch()? {
+                if super::caps::swallow_stray_reply(&input) {
+                    continue;
+                }
                 if !wheel_reports.accepts(&input, observed) {
                     continue;
                 }

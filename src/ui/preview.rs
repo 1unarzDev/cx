@@ -866,6 +866,7 @@ pub(super) fn render_preview_with_native(
             .scroll((scroll, 0)),
         inner,
     );
+    protect_content(frame.buffer_mut(), inner);
 }
 
 impl App {

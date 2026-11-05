@@ -2,7 +2,7 @@
                                         
 + Devices ---+ Files  fixture@laptop    
 |   All devi | NORMAL 0 selected . hidde
-| : +  lapt~ |#[ 69 ~ . Escape back ]==#
+| > +  lapt~ |#[ 69 ~ . Escape back ]==#
 |   +  * la~ |#cx demo                 #
 |   x  * fi~ |#                        #
 +------------+#A fixture project for UI#

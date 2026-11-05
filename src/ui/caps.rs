@@ -79,6 +79,10 @@ pub(crate) trait Probe {
     fn tmux_rgb(&self) -> Option<bool> {
         None
     }
+    /// Terminal background from an OSC 11 query (spec 4.1), when answered in time.
+    fn osc11_background(&self) -> Option<Background> {
+        None
+    }
 }
 
 /// A probe that knows nothing; detection then uses the environment alone.
@@ -170,8 +174,13 @@ impl Caps {
         let background = match get("CX_THEME").as_deref().map(str::to_ascii_lowercase) {
             Some(v) if v == "light" => Background::Light,
             Some(v) if v == "dark" => Background::Dark,
-            _ => get("COLORFGBG")
-                .and_then(|v| colorfgbg_background(&v))
+            // CX_THEME, then OSC 11, then COLORFGBG, then dark (spec 4.1). The
+            // query is skipped where it cannot be answered: TERM=dumb, and Blink,
+            // which leaves it unanswered.
+            _ => (!dumb && !blink)
+                .then(|| probe.osc11_background())
+                .flatten()
+                .or_else(|| get("COLORFGBG").and_then(|v| colorfgbg_background(&v)))
                 .unwrap_or(Background::Dark),
         };
 
@@ -225,6 +234,181 @@ fn colorfgbg_background(value: &str) -> Option<Background> {
     })
 }
 
+/// Parse an OSC 11 reply (`ESC ] 11 ; rgb:RRRR/GGGG/BBBB` + BEL or ST; 1-4 hex
+/// digits per channel, `rgba:` accepted) anywhere in `bytes`.
+pub(crate) fn osc11_reply_background(bytes: &[u8]) -> Option<Background> {
+    let text = String::from_utf8_lossy(bytes);
+    let start = text.find("\x1b]11;")? + 5;
+    let body = &text[start..];
+    let end = body.find(['\x07', '\x1b']).unwrap_or(body.len());
+    let spec = body[..end].trim();
+    let channels = spec
+        .strip_prefix("rgb:")
+        .or_else(|| spec.strip_prefix("rgba:"))?;
+    let mut parts = channels.split('/');
+    let mut channel = || -> Option<f64> {
+        let hex = parts.next()?;
+        if hex.is_empty() || hex.len() > 4 {
+            return None;
+        }
+        let value = u32::from_str_radix(hex, 16).ok()?;
+        Some(f64::from(value) / f64::from((1u32 << (4 * hex.len() as u32)) - 1))
+    };
+    let (r, g, b) = (channel()?, channel()?, channel()?);
+    // sRGB relative luminance; mid-grey (#777 ~ 0.18) and below count as dark.
+    let lin = |c: f64| {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let luminance = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    Some(if luminance > 0.3 {
+        Background::Light
+    } else {
+        Background::Dark
+    })
+}
+
+/// Until when a timed-out OSC 11 reply may still arrive as keystrokes, and whether
+/// one is being swallowed right now (with a hard cap on swallowed events).
+static STRAY_REPLY: std::sync::Mutex<Option<(Instant, bool, u8)>> = std::sync::Mutex::new(None);
+const STRAY_WINDOW: Duration = Duration::from_secs(3);
+
+/// Query the terminal background with OSC 11 followed by a DA1 sentinel (every
+/// terminal answers DA1, so an unanswered OSC 11 ends early instead of after the
+/// limit). Reads `/dev/tty` with echo and canonical mode off, restores the
+/// previous termios, and never blocks longer than `limit`. Skipped unless stdin
+/// and stdout are terminals. If the sentinel did not arrive in time, a late reply
+/// would reach the event loop as `Alt+]` and printable keys, so a short guard
+/// ([`swallow_stray_reply`]) is armed to drop it.
+fn query_osc11(limit: Duration) -> Option<Background> {
+    use std::os::fd::AsRawFd;
+    if unsafe { libc::isatty(0) != 1 || libc::isatty(1) != 1 } {
+        return None;
+    }
+    let mut tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags_noctty()
+        .open("/dev/tty")
+        .ok()?;
+    let fd = tty.as_raw_fd();
+    let mut saved: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(fd, &mut saved) } != 0 {
+        return None;
+    }
+    let mut raw = saved;
+    raw.c_lflag &= !(libc::ICANON | libc::ECHO);
+    raw.c_cc[libc::VMIN] = 0;
+    raw.c_cc[libc::VTIME] = 0;
+    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } != 0 {
+        return None;
+    }
+    let deadline = Instant::now() + limit;
+    let mut reply = Vec::new();
+    let mut answered = false;
+    if std::io::Write::write_all(&mut tty, b"\x1b]11;?\x07\x1b[c").is_ok() {
+        let mut chunk = [0u8; 256];
+        while reply.len() < 1024 {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            let mut pfd = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ready = unsafe { libc::poll(&mut pfd, 1, left.as_millis().max(1) as i32) };
+            if ready < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            if ready <= 0 {
+                break;
+            }
+            match tty.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => reply.extend_from_slice(&chunk[..n]),
+            }
+            if da1_complete(&reply) {
+                answered = true;
+                break;
+            }
+        }
+    }
+    unsafe {
+        libc::tcsetattr(fd, libc::TCSANOW, &saved);
+    }
+    if !answered {
+        if let Ok(mut guard) = STRAY_REPLY.lock() {
+            *guard = Some((Instant::now() + STRAY_WINDOW, false, 0));
+        }
+    }
+    osc11_reply_background(&reply)
+}
+
+/// True once `bytes` holds a complete DA1 reply (`ESC [ ? ... c`).
+fn da1_complete(bytes: &[u8]) -> bool {
+    bytes.windows(3).enumerate().any(|(i, w)| {
+        w == b"\x1b[?"
+            && bytes[i + 3..]
+                .iter()
+                .find(|b| !(b.is_ascii_digit() || **b == b';'))
+                == Some(&b'c')
+    })
+}
+
+trait NoCtty {
+    fn custom_flags_noctty(&mut self) -> &mut Self;
+}
+impl NoCtty for std::fs::OpenOptions {
+    fn custom_flags_noctty(&mut self) -> &mut Self {
+        use std::os::unix::fs::OpenOptionsExt;
+        self.custom_flags(libc::O_NOCTTY)
+    }
+}
+
+/// Event-loop filter for a late OSC 11 reply after a timed-out query: within a
+/// few seconds, `Alt+]` starts swallowing and BEL (`Ctrl+G`) or ST (`Alt+\`)
+/// ends it; at most 64 events are ever dropped. Inert when the query was
+/// answered or never sent.
+pub(crate) fn swallow_stray_reply(event: &crossterm::event::Event) -> bool {
+    use crossterm::event::{Event, KeyCode, KeyModifiers};
+    let Ok(mut guard) = STRAY_REPLY.lock() else {
+        return false;
+    };
+    let Some((until, swallowing, count)) = *guard else {
+        return false;
+    };
+    let now = Instant::now();
+    if (!swallowing && now >= until) || count >= 64 {
+        *guard = None;
+        return false;
+    }
+    let Event::Key(key) = event else {
+        return false;
+    };
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    if !swallowing {
+        if alt && key.code == KeyCode::Char(']') {
+            *guard = Some((until, true, count + 1));
+            return true;
+        }
+        return false;
+    }
+    let end = (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g'))
+        || (alt && key.code == KeyCode::Char('\\'));
+    // One reply per query: disarm once it has been swallowed.
+    *guard = if end {
+        None
+    } else {
+        Some((until, true, count + 1))
+    };
+    true
+}
+
 /// Bounded, read-only probes of the real system.
 struct SystemProbe;
 
@@ -265,38 +449,79 @@ impl Probe for SystemProbe {
         let features = out.trim();
         (!features.is_empty()).then(|| features.split(',').any(|f| f == "RGB"))
     }
+    fn osc11_background(&self) -> Option<Background> {
+        query_osc11(Duration::from_millis(100))
+    }
 }
 
-/// Run a command with null stdin/stderr; give up (and kill it) after `limit`.
+/// Run a command with null stdin/stderr in its own process group and return its
+/// stdout if it exits successfully, all within `limit` (plus a few ms to reap).
 /// Output is capped at 64 KiB.
+///
+/// The whole call is time-bounded, not just the wait for exit: stdout is read on
+/// a helper thread, and once the leader exits (or the limit expires) the whole
+/// group is SIGKILLed, so a wrapper that leaves a background child holding the
+/// pipe can neither stall startup nor outlive the probe (the regression class of
+/// `sessions::bounded_provider_check`). A descendant that escaped the group with
+/// `setsid` only keeps the detached reader thread alive; the caller never waits.
 fn bounded_output(command: &mut Command, limit: Duration) -> Option<String> {
+    use std::os::unix::process::CommandExt;
+    let started = Instant::now();
+    let deadline = started + limit;
+    command.process_group(0);
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) | Err(_) => return None,
-            Ok(None) if started.elapsed() >= limit => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(2)),
+    let stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let ok = stdout.take(64 * 1024).read_to_end(&mut out).is_ok();
+        let _ = tx.send(ok.then_some(out));
+    });
+    // Observe exit without reaping: the zombie pins the group ID until the group
+    // has been killed, so the signal can never reach a recycled PID.
+    let exited = loop {
+        let mut status: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let observed = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                child.id(),
+                &mut status,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if observed == 0 && unsafe { status.si_pid() } != 0 {
+            break true;
         }
+        if observed != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            // Group ownership cannot be established: never signal a group then.
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    // Kill leftovers (or the stalled leader) before reaping, then collect what
+    // the leader wrote; the pipe closes as soon as the group is gone.
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
     }
-    let mut out = String::new();
-    child
-        .stdout
-        .take()?
-        .take(64 * 1024)
-        .read_to_string(&mut out)
-        .ok()?;
-    Some(out)
+    let success = child.wait().is_ok_and(|s| s.success());
+    if !(exited && success) {
+        return None;
+    }
+    let grace = deadline
+        .saturating_duration_since(Instant::now())
+        .max(Duration::from_millis(5));
+    let out = rx.recv_timeout(grace).ok()??;
+    String::from_utf8(out).ok()
 }
 
 static CAPS: OnceLock<Caps> = OnceLock::new();
@@ -678,5 +903,178 @@ mod tests {
             assert_eq!(caps(), ascii);
         });
         assert_eq!(caps(), before);
+    }
+
+    struct Osc(Option<Background>);
+    impl Probe for Osc {
+        fn osc11_background(&self) -> Option<Background> {
+            self.0
+        }
+    }
+
+    #[test]
+    fn background_order_is_cx_theme_osc11_colorfgbg_dark() {
+        let light = Osc(Some(Background::Light));
+        let dark = Osc(Some(Background::Dark));
+        assert_eq!(
+            detect_with(&[("CX_THEME", "dark")], &light).background,
+            Background::Dark
+        );
+        assert_eq!(detect_with(&[], &light).background, Background::Light);
+        // OSC 11 outranks COLORFGBG (often stale after a theme switch).
+        assert_eq!(
+            detect_with(&[("COLORFGBG", "0;15")], &dark).background,
+            Background::Dark
+        );
+        assert_eq!(
+            detect_with(&[("COLORFGBG", "0;15")], &Osc(None)).background,
+            Background::Light
+        );
+        // Never queried where it cannot be answered.
+        struct Panics;
+        impl Probe for Panics {
+            fn osc11_background(&self) -> Option<Background> {
+                panic!("osc 11 queried")
+            }
+        }
+        detect_with(&[("TERM", "dumb")], &Panics);
+        detect_with(
+            &[("TERM_PROGRAM", "Blink"), ("TERM", "xterm-256color")],
+            &Panics,
+        );
+        detect_with(&[("CX_THEME", "light")], &Panics);
+    }
+
+    #[test]
+    fn osc11_replies_parse() {
+        use Background::*;
+        let cases: &[(&[u8], Option<Background>)] = &[
+            (b"\x1b]11;rgb:0000/0000/0000\x07", Some(Dark)),
+            (b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\\x1b[?62;22c", Some(Dark)),
+            (b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\", Some(Light)),
+            (b"\x1b]11;rgb:fd/f6/e3\x07", Some(Light)),
+            (b"\x1b]11;rgba:f0f0/f0f0/f0f0/ffff\x07", Some(Light)),
+            (b"\x1b]11;rgb:28/2c/34\x07", Some(Dark)),
+            (b"\x1b]11;rgb:7777/7777/7777\x07", Some(Dark)),
+            (b"\x1b[?62;22c", None),
+            (b"\x1b]11;rgb:zz/00/00\x07", None),
+            (b"\x1b]11;rgb:12345/0/0\x07", None),
+            (b"", None),
+        ];
+        for (reply, want) in cases {
+            assert_eq!(osc11_reply_background(reply), *want, "{reply:?}");
+        }
+        assert!(da1_complete(b"\x1b]11;rgb:0/0/0\x07\x1b[?62;22c"));
+        assert!(da1_complete(b"\x1b[?1;2c"));
+        assert!(!da1_complete(b"\x1b[?62;2"));
+        assert!(!da1_complete(b"\x1b]11;rgb:0/0/0\x07"));
+    }
+
+    #[test]
+    fn late_osc11_reply_is_swallowed_once_and_bounded() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let key = |c: char, m: KeyModifiers| Event::Key(KeyEvent::new(KeyCode::Char(c), m));
+        let plain = |c: char| key(c, KeyModifiers::NONE);
+        // Unarmed: nothing is ever dropped.
+        *STRAY_REPLY.lock().unwrap() = None;
+        assert!(!swallow_stray_reply(&key(']', KeyModifiers::ALT)));
+        // Armed: ESC ] 11 ; rgb:... BEL arrives as Alt+] then keys then Ctrl+G.
+        *STRAY_REPLY.lock().unwrap() = Some((Instant::now() + STRAY_WINDOW, false, 0));
+        assert!(!swallow_stray_reply(&plain('j')), "real keys pass");
+        assert!(swallow_stray_reply(&key(']', KeyModifiers::ALT)));
+        for c in "11;rgb:1e1e/1e1e/1e1e".chars() {
+            assert!(swallow_stray_reply(&plain(c)));
+        }
+        assert!(swallow_stray_reply(&key('g', KeyModifiers::CONTROL)));
+        assert!(
+            !swallow_stray_reply(&plain('q')),
+            "disarmed after one reply"
+        );
+        assert!(!swallow_stray_reply(&key(']', KeyModifiers::ALT)));
+        // ST terminator, and the hard cap on swallowed events.
+        *STRAY_REPLY.lock().unwrap() = Some((Instant::now() + STRAY_WINDOW, false, 0));
+        assert!(swallow_stray_reply(&key(']', KeyModifiers::ALT)));
+        assert!(swallow_stray_reply(&key('\\', KeyModifiers::ALT)));
+        assert!(!swallow_stray_reply(&plain('x')));
+        *STRAY_REPLY.lock().unwrap() = Some((Instant::now() + STRAY_WINDOW, false, 0));
+        assert!(swallow_stray_reply(&key(']', KeyModifiers::ALT)));
+        let dropped = (0..100)
+            .take_while(|_| swallow_stray_reply(&plain('1')))
+            .count();
+        assert!(dropped < 64, "{dropped}");
+        assert!(!swallow_stray_reply(&plain('1')));
+        // Expired window: inert.
+        *STRAY_REPLY.lock().unwrap() = Some((Instant::now(), false, 0));
+        assert!(!swallow_stray_reply(&key(']', KeyModifiers::ALT)));
+        assert!(STRAY_REPLY.lock().unwrap().is_none());
+    }
+
+    fn assert_gone(pid: &str) {
+        let deadline = Instant::now() + Duration::from_millis(250);
+        loop {
+            let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid.trim()));
+            let gone = stat.as_ref().map_or(true, |s| {
+                s.rsplit_once(')')
+                    .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'))
+            });
+            if gone {
+                return;
+            }
+            assert!(Instant::now() < deadline, "probe descendant {pid} survived");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn bounded_output_is_time_bounded_and_leaves_no_descendants() {
+        let limit = Duration::from_millis(100);
+        // A wrapper that answers and exits but leaves a child holding stdout.
+        let dir = tempfile::tempdir().unwrap();
+        let pid = dir.path().join("child.pid");
+        let started = Instant::now();
+        let out = bounded_output(
+            Command::new("/bin/sh")
+                .args(["-c", "sleep 3 & echo $! > \"$1\"; echo colors#256", "probe"])
+                .arg(&pid),
+            limit,
+        );
+        let elapsed = started.elapsed();
+        assert_eq!(out.as_deref(), Some("colors#256\n"));
+        assert!(elapsed < Duration::from_millis(400), "{elapsed:?}");
+        assert_gone(&std::fs::read_to_string(&pid).unwrap());
+
+        // A wrapper that never exits: None at the limit, the whole group killed.
+        let pid = dir.path().join("stalled.pid");
+        let started = Instant::now();
+        let out = bounded_output(
+            Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    "sleep 5 & echo $! > \"$1\"; echo partial; wait",
+                    "probe",
+                ])
+                .arg(&pid),
+            limit,
+        );
+        let elapsed = started.elapsed();
+        assert_eq!(out, None);
+        assert!(elapsed < Duration::from_millis(400), "{elapsed:?}");
+        assert_gone(&std::fs::read_to_string(&pid).unwrap());
+
+        // Failure exits yield nothing, and their leftovers are killed too.
+        let pid = dir.path().join("failed.pid");
+        let out = bounded_output(
+            Command::new("/bin/sh")
+                .args(["-c", "sleep 5 & echo $! > \"$1\"; echo x; exit 1", "probe"])
+                .arg(&pid),
+            limit,
+        );
+        assert_eq!(out, None);
+        assert_gone(&std::fs::read_to_string(&pid).unwrap());
+        // Missing binaries fail fast.
+        assert_eq!(
+            bounded_output(&mut Command::new("/nonexistent/cx-probe"), limit),
+            None
+        );
     }
 }

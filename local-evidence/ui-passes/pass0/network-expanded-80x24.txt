@@ -2,23 +2,23 @@
                                                                                 
 ╭ Devices ──────────╮╭ ▸ Network · fixture@laptop ─────────────────────────────╮
 │   All devices     ││fixture@laptop · Internet reachable (ICMP)               │
-│ › ●  laptop       ││Interfaces: enp5s0 UP · wlp0s20f3 DOWN · CloudflareWARP  │
-│   ●  * lab-arm    ││UNKNOWN · eth0 UP                                        │
+│ › ●  laptop       ││Interfaces: if9xxx UP · if7xxxxxx DOWN · if3xxxxxxxxxxx  │
+│   ●  * lab-arm    ││UNKNOWN · if10 UP                                        │
 │   ○  * field-rov… ││Device / LAN neighbor                   Execution / link │
-╰───────────────────╯│  ? laptop · 10 LAN                     fixture@laptop   │
-╭ Actions ──────────╮│  ! xxx.xxx.x.x                         enp5s0           │
-│ Sessions          ││  ? xxx.xxx.x.x                         enp5s0           │
-│ Files             ││  ? xxx.xxx.x.xx                        enp5s0           │
-│ Containers        ││  ? xxx.xxx.x.xx                        enp5s0           │
+╰───────────────────╯│  ? laptop · 11 LAN                     fixture@laptop   │
+╭ Actions ──────────╮│  ! xxx.xxx.x.x                         if9xxx           │
+│ Sessions          ││  ? xxx.xxx.x.x                         if9xxx           │
+│ Files             ││  ? xxx.xxx.x.xx                        if9xxx           │
+│ Containers        ││  ? xxx.xxx.x.xx                        if9xxx           │
 │ Transfers         ││Enter: connect via observer and add to All devices       │
-╰───────────────────╯│Discovery: laptop · neighbor · 4s ago                    │
- Selected ───────────│Route found: viewer → laptop → xxx.xxx.x.x / enp5s0      │
+╰───────────────────╯│Discovery: laptop · neighbor · 5s ago                    │
+ Selected ───────────│Route found: viewer → laptop → xxx.xxx.x.x / if9xxx      │
  Route               │SSH jumps to observer (saved): none saved                │
  viewer → laptop     │SSH port closed · authentication unknown                 │
  → xxx.xxx.x.x       │Internet unknown · source neighbor · link REACHABLE      │
- Link enp5s0         │                                                         │
+ Link if9xxx         │                                                         │
                      ╰─────────────────────────────────────────────────────────╯
- ● 2/3 devices           Focus: Network · 11/11                           ↔ idle
+ ● 2/3 devices           Focus: Network · 12/12                           ↔ idle
  j/k Devices / LAN          Enter Open / connect      Home Host details         
  J / K Scroll details       Ctrl P Actions            ? Help                    
                                                                                 

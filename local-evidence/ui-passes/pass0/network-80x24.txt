@@ -2,23 +2,23 @@
                                                                                 
 ╭ Devices ──────────╮╭ ▸ Network · fixture@laptop ─────────────────────────────╮
 │   All devices     ││fixture@laptop · Internet reachable (ICMP)               │
-│ › ●  laptop       ││Interfaces: enp5s0 UP · wlp0s20f3 DOWN · CloudflareWARP  │
-│   ●  * lab-arm    ││UNKNOWN · eth0 UP                                        │
+│ › ●  laptop       ││Interfaces: if9xxx UP · if7xxxxxx DOWN · if3xxxxxxxxxxx  │
+│   ●  * lab-arm    ││UNKNOWN · if10 UP                                        │
 │   ○  * field-rov… ││Device / LAN neighbor                   Execution / link │
-╰───────────────────╯│  ? laptop · 10 LAN                     fixture@laptop   │
-╭ Actions ──────────╮│  ! xxx.xxx.x.x                         enp5s0           │
-│ Sessions          ││  ? xxx.xxx.x.x                         enp5s0           │
+╰───────────────────╯│  ? laptop · 11 LAN                     fixture@laptop   │
+╭ Actions ──────────╮│  ! xxx.xxx.x.x                         if9xxx           │
+│ Sessions          ││  ? xxx.xxx.x.x                         if9xxx           │
 │ Files             ││laptop · fixture@laptop                                  │
 │ Containers        ││Route found: viewer → laptop                             │
-│ Transfers         ││cached helper · 4s ago · helper evidence from viewer     │
+│ Transfers         ││cached helper · 9s ago · helper evidence from viewer     │
 ╰───────────────────╯│SSH jumps (saved): none saved                            │
  Selected ───────────│Via another observer: unknown                            │
  Route               │                                                         │
- viewer → laptop     │Internet ● · reachable (ICMP) · 29s ago                  │
+ viewer → laptop     │Internet ● · reachable (ICMP) · 25s ago                  │
                      │DNS / HTTPS and overlay access: unknown                  │
                      │Backend: linux-iproute2                                  │
                      ╰─────────────────────────────────────────────────────────╯
- ● 2/3 devices           Focus: Network · 11/11                           ↔ idle
+ ● 2/3 devices           Focus: Network · 12/12                           ↔ idle
  j/k Devices / LAN          Enter Open / connect      Home Host details         
  J / K Scroll details       Ctrl P Actions            ? Help                    
                                                                                 

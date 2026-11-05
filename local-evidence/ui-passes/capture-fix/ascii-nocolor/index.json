@@ -1,0 +1,154 @@
+{
+ "harness": "tests/capture_matrix.py",
+ "bin": "target/debug/cx",
+ "theme": "dark",
+ "ascii": true,
+ "nocolor": true,
+ "env": [],
+ "sizes": [
+  "40x20",
+  "80x24"
+ ],
+ "views": [
+  "sessions",
+  "files",
+  "files-preview",
+  "network",
+  "help",
+  "palette"
+ ],
+ "captures": [
+  {
+   "view": "sessions",
+   "cols": 40,
+   "rows": 20,
+   "txt": "sessions-40x20.txt",
+   "png": "sessions-40x20.png",
+   "theme": "dark",
+   "ascii": true,
+   "nocolor": true,
+   "unmasked": 0
+  },
+  {
+   "view": "files",
+   "cols": 40,
+   "rows": 20,
+   "txt": "files-40x20.txt",
+   "png": "files-40x20.png",
+   "theme": "dark",
+   "ascii": true,
+   "nocolor": true,
+   "unmasked": 0
+  },
+  {
+   "view": "files-preview",
+   "cols": 40,
+   "rows": 20,
+   "txt": "files-preview-40x20.txt",
+   "png": "files-preview-40x20.png",
+   "theme": "dark",
+   "ascii": true,
+   "nocolor": true,
+   "unmasked": 0
+  },
+  {
+   "view": "network",
+   "cols": 40,
+   "rows": 20,
+   "txt": "network-40x20.txt",
+   "png": "network-40x20.png",
+   "theme": "dark",
+   "ascii": true,
+   "nocolor": true,
+   "unmasked": 0
+  },
+  {
+   "view": "help",
+   "cols": 40,
+   "rows": 20,
+   "txt": "help-40x20.txt",
+   "png": "help-40x20.png",
+   "theme": "dark",
+   "ascii": true,
+   "nocolor": true,
+   "unmasked": 0
+  },
+  {
+   "view": "palette",
+   "cols": 40,
+   "rows": 20,
+   "txt": "palette-40x20.txt",
+   "png": "palette-40x20.png",
+   "theme": "dark",
+   "ascii": true,
+   "nocolor": true,
+   "unmasked": 0
+  },
+  {
+   "view": "sessions",
+   "cols": 80,
+   "rows": 24,
+   "txt": "sessions-80x24.txt",
+   "png": "sessions-80x24.png",
+   "theme": "dark",
+   "ascii": true,
+   "nocolor": true,
+   "unmasked": 0
+  },
+  {
+   "view": "files",
+   "cols": 80,
+   "rows": 24,
+   "txt": "files-80x24.txt",
+   "png": "files-80x24.png",
+   "theme": "dark",
+   "ascii": true,
+   "nocolor": true,
+   "unmasked": 0
+  },
+  {
+   "view": "files-preview",
+   "cols": 80,
+   "rows": 24,
+   "txt": "files-preview-80x24.txt",
+   "png": "files-preview-80x24.png",
+   "theme": "dark",
+   "ascii": true,
+   "nocolor": true,
+   "unmasked": 0
+  },
+  {
+   "view": "network",
+   "cols": 80,
+   "rows": 24,
+   "txt": "network-80x24.txt",
+   "png": "network-80x24.png",
+   "theme": "dark",
+   "ascii": true,
+   "nocolor": true,
+   "unmasked": 0
+  },
+  {
+   "view": "help",
+   "cols": 80,
+   "rows": 24,
+   "txt": "help-80x24.txt",
+   "png": "help-80x24.png",
+   "theme": "dark",
+   "ascii": true,
+   "nocolor": true,
+   "unmasked": 0
+  },
+  {
+   "view": "palette",
+   "cols": 80,
+   "rows": 24,
+   "txt": "palette-80x24.txt",
+   "png": "palette-80x24.png",
+   "theme": "dark",
+   "ascii": true,
+   "nocolor": true,
+   "unmasked": 0
+  }
+ ]
+}

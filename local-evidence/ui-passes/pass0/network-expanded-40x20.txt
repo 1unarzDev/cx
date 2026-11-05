@@ -5,16 +5,16 @@
 │ › ●  laptop   ││Internet reachable   │
 │   ●  * lab-a… ││(ICMP)               │
 │   ○  * field… ││Device / LAN neighbor│
-╰───────────────╯│  ? laptop · 10 LAN  │
+╰───────────────╯│  ? laptop · 11 LAN  │
 ╭ Actions ──────╮│  ! xxx.xxx.x.x      │
 │ Sessions      ││  ? xxx.xxx.x.x      │
 │ Files         ││Enter: connect via   │
 │ Containers    ││observer and add to  │
 ╰───────────────╯│All devices          │
                  │Discovery: laptop ·  │
-                 │neighbor · 4s ago    │
+                 │neighbor · 5s ago    │
                  ╰─────────────────────╯
-Focus: Network · 11/11            ↔ idle
+Focus: Network · 12/12            ↔ idle
  j/k Devices / LAN   Enter Open / connec
  Home Host details   J / K Scroll detail
                                         

@@ -1,0 +1,40 @@
+ cx   Sessions / Files  Network                                                                   viewing fixture@laptop
+                                                                                                                        
+╭ Devices ──────────╮ Files  fixture@laptop                                                                             
+│   All devices     │ NORMAL 0 selected · hidden off                                                                    
+│ › ●  laptop       │╭ ▸ 2 items ──────────────────────────────────────────────────────────────────────────────────────╮
+│   ●  * lab-arm    ││  /   Downloads                                                                                  │
+│   ○  * field-rov… ││  / ▸ projects                                                                                   │
+╰───────────────────╯│                                                                                                 │
+╭ Actions ──────────╮│                                                                                                 │
+│ Sessions          ││                                                                                                 │
+│ Network           ││╭ ▸ Help ──────────────────────────────────────────────────────────────────╮                     │
+│ Containers        │││Arrows / h j k l       Navigate                                           │                     │
+│ Transfers         │││Ctrl+arrows / hjkl     Move panel focus (hold Ctrl)                       │                     │
+╰───────────────────╯││Enter                  Open / enter session with input                    │                     │
+ Selected ───────────││Escape                 Back / clear current mode                          │                     │
+ laptop              ││Tab / Shift+Tab        Next / previous panel                              │                     │
+ tmp/                ││/                      Search                                             │                     │
+  cxcap-xxxxxxxx/    ││Ctrl+P                 Actions                                            │                     │
+   └─ home/          ││n                      New session in current folder                      │                     │
+     └─ projects/    ││:                      Run command in current folder                      │                     │
+                     ││Ctrl+C                 Quit cx; work keeps running                        │                     │
+                     ││Files                                                                     │                     │
+                     ││s                      Sessions in selected / current folder              │                     │
+                     ││Left/h · Right/l       Parent / enter directory                           │                     │
+                     ││Space                  Select and advance                                 │                     │
+                     ││v · u                  Visual range / clear selection                     │                     │
+                     ││.                      Show / hide hidden files                           │                     │
+                     ││/ · n / N              Highlight names / next / previous match            │                     │
+                     ││f                      Filter names                                       │                     │
+                     │╰──────────────────────────────────────────────────────────────────────────╯                     │
+                     │                                                                                                 │
+                     │                                                                                                 │
+                     │                                                                                                 │
+                     │                                                                                                 │
+                     ╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
+                      Space select · v range · . hidden                                                                 
+ ● 2/3 devices                                   Focus: Help                                                      ↔ idle
+ ↑↓ Scroll                               PgUpDn Page                             Esc Close                              
+                                                                                                                        
+                                                                                                                        

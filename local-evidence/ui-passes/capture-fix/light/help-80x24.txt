@@ -1,0 +1,24 @@
+ cx   Sessions / Files  Network                           viewing fixture@laptop
+                                                                                
+╭ ╭ ▸ Help ──────────────────────────────────────────────────────────────────╮  
+│ │Arrows / h j k l       Navigate                                           │  
+│ │Ctrl+arrows / hjkl     Move panel focus (hold Ctrl)                       │─╮
+│ │Enter                  Open / enter session with input                    │ │
+│ │Escape                 Back / clear current mode                          │ │
+╰─│Tab / Shift+Tab        Next / previous panel                              │ │
+╭ │/                      Search                                             │ │
+│ │Ctrl+P                 Actions                                            │ │
+│ │n                      New session in current folder                      │ │
+│ │:                      Run command in current folder                      │ │
+│ │Ctrl+C                 Quit cx; work keeps running                        │ │
+╰─│Files                                                                     │ │
+ S│s                      Sessions in selected / current folder              │ │
+ l│Left/h · Right/l       Parent / enter directory                           │ │
+ t│Space                  Select and advance                                 │ │
+  │v · u                  Visual range / clear selection                     │ │
+  │.                      Show / hide hidden files                           │─╯
+  │/ · n / N              Highlight names / next / previous match            │  
+ ●│f                      Filter names                                       │le
+ ↑╰──────────────────────────────────────────────────────────────────────────╯  
+                                                                                
+                                                                                

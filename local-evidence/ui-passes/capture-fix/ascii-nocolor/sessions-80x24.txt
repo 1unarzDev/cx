@@ -1,0 +1,24 @@
+ cx   [Sessions]  Network                                 viewing fixture@laptop
+                                                                                
+┌ Devices ──────────┐┌ > Sessions · 3 sessions ────────────────────────────────┐
+│ > All devices     ││  SESSION                                      STATE     │
+│   +  laptop       ││                                                         │
+│   +  * lab-arm    ││  /tmp/cxcap-xxxxxxxx/home/projects/cx-demo              │
+│   x  * field-rov~ ││> build watcher                                idle      │
+└───────────────────┘│                                                         │
+┌ Actions ──────────┐│  /tmp/cxcap-xxxxxxxx/home/projects/robot-logs           │
+│ Files             ││  lidar logs                                   idle      │
+│ Network           │└─────────────────────────────────────────────────────────┘
+│ Containers        │┌ build watcher · fixture@laptop ─────────────────────────┐
+│ Transfers         ││Enter · focus terminal · Wheel · scroll                  │
+│ Watch · read-only ││   Compiling cx-demo v0.1.0                              │
+└───────────────────┘│    Finished dev profile in 2.41s                        │
+ Selected ───────────│warning: unused variable `x`                             │
+ Host fixture@laptop │fixture:cx-demo$                                         │
+ Folder /tmp/cxcap-~ │                                                         │
+ Enter open · n new  │                                                         │
+                     └─────────────────────────────────────────────────────────┘
+ + 2/3 devices            Focus: Sessions · 3/3                           ~ idle
+ Enter Open                 n New session             w Watch · read-only       
+ p Pin / unpin              s Agent tasks             d Stop · confirm          
+                                                                                

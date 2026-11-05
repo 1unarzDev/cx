@@ -1,0 +1,40 @@
+ cx   Sessions  [Network]                                                                         viewing fixture@laptop
+                                                                                                                        
+╭ Devices ──────────╮╭ ▸ Network · fixture@laptop ─────────────────────────────────────────────────────────────────────╮
+│   All devices     ││fixture@laptop · Internet reachable (ICMP)                                                       │
+│ › ●  laptop       ││Interfaces: if9xxx UP · if7xxxxxx DOWN · if3xxxxxxxxxxx UNKNOWN · if10 UP                        │
+│   ●  * lab-arm    ││51s ago · automatic SSH-port checks                                                              │
+│   ○  * field-rov… ││Device / LAN neighbor                                               Execution / link             │
+╰───────────────────╯│  ? laptop · 11 LAN                                                 fixture@laptop               │
+╭ Actions ──────────╮│  ! xxx.xxx.x.x                                                     if9xxx                       │
+│ Sessions          ││  ? xxx.xxx.x.x                                                     if9xxx                       │
+│ Files             ││laptop · fixture@laptop                                                                          │
+│ Containers        ││Route found: viewer → laptop                                                                     │
+│ Transfers         ││cached helper · 9s ago · helper evidence from viewer                                             │
+╰───────────────────╯│SSH jumps (saved): none saved                                                                    │
+ Selected ───────────│Via another observer: unknown                                                                    │
+ Route               │                                                                                                 │
+ viewer → laptop     │Internet ● · reachable (ICMP) · 51s ago                                                          │
+                     │DNS / HTTPS and overlay access: unknown                                                          │
+                     │Backend: linux-iproute2                                                                          │
+                     │                                                                                                 │
+                     │Interfaces                                                                                       │
+                     │  if9xxx · UP                                                                                    │
+                     │    xxx.xxx.x.xxx/24                                                                             │
+                     │    xxxx::xxxx:xxx:xxxx:xxxx/64                                                                  │
+                     │  if7xxxxxx · DOWN                                                                               │
+                     │  if3xxxxxxxxxxx · UNKNOWN                                                                       │
+                     │    xxx.xx.x.xx/32                                                                               │
+                     │    xxxx:xxxx:xxx:xxxx::x/128                                                                    │
+                     │    xxxx:xxxx:xxx:xxxx::x/128                                                                    │
+                     │    xxxx::xxx:xxxx:xxxx:xxxx/64                                                                  │
+                     │  if10 · UP                                                                                      │
+                     │    xxx.xx.xx.x/28                                                                               │
+                     │    xxxx:xxxx:xxxx:xxx:xxxx:xxxx:xxx:xxxx/64                                                     │
+                     │    xxxx::xxxx:xxxx:xxxx:xxxx/64                                                                 │
+                     │                                                                                                 │
+                     ╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ● 2/3 devices                             Focus: Network · 12/12                                                 ↔ idle
+ j/k Devices / LAN                       Enter Open / connect                    Home Host details                      
+ J / K Scroll details                    Ctrl P Actions                          ? Help                                 
+                                                                                                                        

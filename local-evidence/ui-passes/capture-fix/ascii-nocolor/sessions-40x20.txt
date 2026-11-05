@@ -1,0 +1,20 @@
+ cx   Sessions      viewing fixture@lapt
+                                        
+┌ Devices ──────┐┌ > Sessions · 3 sessi┐
+│ > All devices ││  SESSION    STATE   │
+│   +  laptop   ││                     │
+│   +  * lab-a~ ││  /tmp/cxcap         │
+│   x  * field~ ││> build watc idle    │
+└───────────────┘│                     │
+┌ Actions ──────┐│  /tmp/cxcap         │
+│ Files         ││  lidar logs idle    │
+│ Network       ││                     │
+│ Containers    ││  /tmp/cxcap         │
+└───────────────┘│  ros core   idle    │
+                 │                     │
+                 │                     │
+                 └─────────────────────┘
+ Focus: Sessions · 3/3            ~ idle
+ Enter Open          n New session      
+ w Watch · read-only p Pin / unpin      
+                                        

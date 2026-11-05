@@ -969,7 +969,7 @@ pub(super) fn render_preview_with_native(
     native: Option<&mut crate::terminal_preview::NativePreview>,
 ) {
     let rich = browser.preview_rich.as_ref();
-    let title = preview_title(browser);
+    let title = super::files_view::glyph_text(preview_title(browser));
     let border = block(
         fit_label(&title, usize::from(area.width.saturating_sub(6))),
         focused,

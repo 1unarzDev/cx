@@ -297,6 +297,10 @@ struct Browser {
     /// The raw reply behind a loaded peek, so Enter can open it without a re-read.
     #[serde(skip)]
     peek_value: Option<Value>,
+    /// Peek previews still in flight, as (path, request generation). Their replies are
+    /// consumed by the peek (or dropped) and never reach the full preview.
+    #[serde(skip)]
+    peek_inflight: Vec<(String, u64)>,
     /// Streaming state for text previews larger than the helper's first window.
     #[serde(skip)]
     stream: Option<PreviewStream>,
@@ -343,6 +347,7 @@ impl Browser {
             peek: None,
             peek_shown: std::cell::Cell::new(false),
             peek_value: None,
+            peek_inflight: Vec::new(),
             stream: None,
         }
     }

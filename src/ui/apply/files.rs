@@ -81,10 +81,8 @@ pub(in crate::ui) fn apply_preview(
     preview: Option<RichPreview>,
     value: &Value,
 ) -> PreviewApplied {
-    if b.preview_path
-        .as_ref()
-        .is_some_and(|requested| requested != path)
-    {
+    // Only a preview that was asked for (open_preview / peek set preview_path) applies.
+    if b.preview_path.as_deref() != Some(path) {
         return PreviewApplied::Stale;
     }
     b.preview_path = Some(path.to_owned());
@@ -463,17 +461,27 @@ impl App {
                 true
             }
             Operation::Preview { path } => {
-                let Some(b) = self.browser.as_mut().filter(|b| {
-                    b.device == reply.device
-                        && b.preview_path.as_ref() != Some(path)
-                        && b.peek
-                            .as_ref()
-                            .is_some_and(|p| p.preview_path.as_ref() == Some(path))
-                }) else {
+                let generation = reply.generation;
+                let Some(b) = self.browser.as_mut().filter(|b| b.device == reply.device) else {
                     return false;
                 };
+                let Some(slot) = b
+                    .peek_inflight
+                    .iter()
+                    .position(|(p, g)| p == path && *g == generation)
+                else {
+                    return false;
+                };
+                b.peek_inflight.remove(slot);
                 let path = path.clone();
-                let peek = b.peek.as_mut().unwrap();
+                // A peek reply only ever feeds the peek; an outdated one is dropped.
+                let Some(peek) = b
+                    .peek
+                    .as_mut()
+                    .filter(|p| p.preview_path.as_ref() == Some(&path))
+                else {
+                    return true;
+                };
                 match std::mem::replace(&mut reply.result, Ok(Value::Null)) {
                     Ok(value) => {
                         apply_preview(peek, &path, 1, reply.preview.take(), &value);

@@ -141,6 +141,76 @@
  },
  {
   "view": "startup",
+  "cols": 100,
+  "rows": 30,
+  "txt": "startup-100x30.txt",
+  "png": "startup-100x30.png"
+ },
+ {
+  "view": "files",
+  "cols": 100,
+  "rows": 30,
+  "txt": "files-100x30.txt",
+  "png": "files-100x30.png"
+ },
+ {
+  "view": "files-projects",
+  "cols": 100,
+  "rows": 30,
+  "txt": "files-projects-100x30.txt",
+  "png": "files-projects-100x30.png"
+ },
+ {
+  "view": "files-inside",
+  "cols": 100,
+  "rows": 30,
+  "txt": "files-inside-100x30.txt",
+  "png": "files-inside-100x30.png"
+ },
+ {
+  "view": "files-preview",
+  "cols": 100,
+  "rows": 30,
+  "txt": "files-preview-100x30.txt",
+  "png": "files-preview-100x30.png"
+ },
+ {
+  "view": "sessions",
+  "cols": 100,
+  "rows": 30,
+  "txt": "sessions-100x30.txt",
+  "png": "sessions-100x30.png"
+ },
+ {
+  "view": "sessions-all",
+  "cols": 100,
+  "rows": 30,
+  "txt": "sessions-all-100x30.txt",
+  "png": "sessions-all-100x30.png"
+ },
+ {
+  "view": "sessions-next",
+  "cols": 100,
+  "rows": 30,
+  "txt": "sessions-next-100x30.txt",
+  "png": "sessions-next-100x30.png"
+ },
+ {
+  "view": "palette",
+  "cols": 100,
+  "rows": 30,
+  "txt": "palette-100x30.txt",
+  "png": "palette-100x30.png"
+ },
+ {
+  "view": "help",
+  "cols": 100,
+  "rows": 30,
+  "txt": "help-100x30.txt",
+  "png": "help-100x30.png"
+ },
+ {
+  "view": "startup",
   "cols": 120,
   "rows": 40,
   "txt": "startup-120x40.txt",

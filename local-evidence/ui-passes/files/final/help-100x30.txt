@@ -1,0 +1,30 @@
+ cx   [Sessions]  Network                                                     viewing fixture@laptop
+                                                                                                    
+╭ Devices ──────────╮╭ ▸ Sessions · 3 sessions ────────────────────────────────────────────────────╮
+│ › All devices     ││  AGENT      SESSION                     EXECUTION                 STATE     │
+│   ●  laptop       ││                                                                             │
+│   ●  * lab╭ ▸ Help ──────────────────────────────────────────────────────────────────╮           │
+│   ○  * fie│Arrows / h j k l       Navigate                                           │ idle      │
+╰───────────│Ctrl+arrows / hjkl     Move panel focus (hold Ctrl)                       │           │
+╭ Actions ──│Enter                  Open / enter session with input                    │           │
+│ Files     │Escape                 Back / clear current mode                          │ idle      │
+│ Network   │Tab / Shift+Tab        Next / previous panel                              │           │
+│ Containers│/                      Search                                             │           │
+│ Transfers │Ctrl+P                 Actions                                            │ idle      │
+│ Watch · re│n                      New session in current folder                      │───────────╯
+╰───────────│:                      Run command in current folder                      │───────────╮
+ Selected ──│Ctrl+C                 Quit cx; work keeps running                        │           │
+ Host fixtur│p                      Pin / unpin; keep an ended-work bookmark           │           │
+ Folder /tmp│d                      Stop selected CX-managed session · confirm         │           │
+ Enter open │w                      Watch selected session · read-only                 │           │
+            │s                      Inspect selected session's tasks and subagents     │           │
+            │                                                                          │           │
+            │d                      Stop selected CX-managed session · confirmation    │           │
+            │Native terminals own their input.                                         │           │
+            │Ctrl+]                 Return from a managed session                      │           │
+            ╰──────────────────────────────────────────────────────────────────────────╯           │
+                     ╰─────────────────────────────────────────────────────────────────────────────╯
+ ● 2/3 devices                          Focus: Help                                           ↔ idle
+ ↑↓ Scroll                        PgUpDn Page                       Esc Close                       
+                                                                                                    
+                                                                                                    

@@ -205,6 +205,33 @@ fn dir_style() -> Style {
 fn nerd_icons() -> bool {
     !ascii() && std::env::var("CX_ICONS").is_ok_and(|v| v == "1")
 }
+/// The unknown/empty-cell glyph (spec 4.2: `·`, ASCII `-`).
+fn unknown_glyph() -> &'static str {
+    if ascii() {
+        "-"
+    } else {
+        "·"
+    }
+}
+/// Separator between footer/status facts (`·`, ASCII `|`).
+fn fact_sep() -> &'static str {
+    if ascii() {
+        " | "
+    } else {
+        " · "
+    }
+}
+/// Swap the Unicode punctuation used in Files chrome text for ASCII in ASCII mode.
+pub(super) fn glyph_text(text: String) -> String {
+    if !ascii() || text.is_ascii() {
+        return text;
+    }
+    text.replace(" · ", " | ")
+        .replace('·', "-")
+        .replace('…', "...")
+        .replace('→', "->")
+        .replace('›', ">")
+}
 fn icon(category: Category) -> &'static str {
     if ascii() {
         return match category {
@@ -244,7 +271,7 @@ fn type_tag(entry: &Entry, category: Category) -> String {
         _ => {
             let ext = extension(&entry.name).to_ascii_lowercase();
             if ext.is_empty() {
-                "·".into()
+                unknown_glyph().into()
             } else {
                 ext.chars().take(4).collect()
             }
@@ -292,7 +319,7 @@ pub(super) fn middle_ellipsis(name: &str, width: usize) -> String {
 /// Compact relative age: now, 45s, 12m, 3h, 5d, 3w, 4mo, 2y. Unknown is `·`.
 pub(super) fn relative_age(modified: Option<i64>, now: i64) -> String {
     let Some(modified) = modified else {
-        return "·".into();
+        return unknown_glyph().into();
     };
     let age = (now - modified).max(0);
     match age {
@@ -561,12 +588,27 @@ pub(super) fn render_browser(
     }
     // Wide layouts split: list on the left, inline preview of the highlighted entry.
     let dual = label.starts_with("Source") || label.starts_with("Destination");
-    let peek = parts[0].width >= 90 && parts[0].height >= 6 && !dual;
+    // Spec 6.2: the preview is inline and automatic at >= 100 terminal columns.
+    let peek = frame.area().width >= PEEK_MIN_COLUMNS
+        && parts[0].width >= 60
+        && parts[0].height >= 6
+        && !dual;
     b.peek_shown.set(peek);
     let (list_area, peek_area) = if peek {
+        // The list gets the width its rows need (all columns beside the longest name),
+        // between 30% and 60% of the space; the preview takes the rest.
+        let longest = {
+            let mut index = b.index.borrow_mut();
+            index.largest(&b.entries, b.show_hidden, &b.filter);
+            index.longest()
+        };
+        let agent_width = agents.values().map(|s| cell_width(s)).max().unwrap_or(0);
+        let total = usize::from(parts[0].width);
+        let natural = RowColumns::natural_width(longest, agent_width) + 2;
+        let list = natural.clamp(total * 3 / 10, total * 3 / 5) as u16;
         let columns = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .constraints([Constraint::Length(list), Constraint::Min(1)])
             .split(parts[0]);
         (columns[0], Some(columns[1]))
     } else {
@@ -626,7 +668,7 @@ fn browser_status_line(
         return None;
     };
     Some((
-        text,
+        glyph_text(text),
         if clipboard.is_some() {
             tint(Color::Yellow)
         } else {
@@ -646,7 +688,7 @@ fn render_list(
     agents: &BTreeMap<String, String>,
 ) {
     // Title: optional context label, then the clickable breadcrumb.
-    let prefix = if let Some(c) = &b.container {
+    let prefix = glyph_text(if let Some(c) = &b.container {
         format!(
             "Container · {} · read-only{}",
             safe_label(&c.name),
@@ -656,7 +698,7 @@ fn render_list(
         String::new()
     } else {
         format!("{} · ", safe_label(label))
-    };
+    });
     let room = usize::from(area.width).saturating_sub(8 + cell_width(&prefix));
     let (crumbs, segments) = fit_breadcrumb(&breadcrumb(b, device), room);
     let title = format!("{prefix}{crumbs}");
@@ -695,7 +737,7 @@ fn render_list(
     if b.filter.is_empty() && !b.show_hidden && rows.len() < b.entries.len() {
         state.push(format!("{} hidden", b.entries.len() - rows.len()));
     }
-    if bytes > 0 && area.width >= 50 {
+    if bytes > 0 && area.width >= 34 {
         state.push(human_size(bytes));
     }
     if !b.marked.is_empty() {
@@ -715,7 +757,7 @@ fn render_list(
     if b.loading {
         state.push("loading".into());
     }
-    let state = format!(" {} ", state.join(" · "));
+    let state = format!(" {} ", state.join(fact_sep()));
     if area.height > 1 && area.width > 6 {
         let w = (cell_width(&state) as u16).min(area.width.saturating_sub(4));
         frame.render_widget(
@@ -728,13 +770,16 @@ fn render_list(
     }
     if rows.is_empty() {
         frame.render_widget(
-            Paragraph::new(if b.loading {
-                " Loading…"
-            } else if !b.search.is_empty() || !b.filter.is_empty() {
-                " No matches · Escape clears filter"
-            } else {
-                " Empty folder · . shows hidden files"
-            })
+            Paragraph::new(glyph_text(
+                if b.loading {
+                    " Loading…"
+                } else if !b.search.is_empty() || !b.filter.is_empty() {
+                    " No matches · Escape clears filter"
+                } else {
+                    " Empty folder · . shows hidden files"
+                }
+                .to_owned(),
+            ))
             .style(muted()),
             inner,
         );
@@ -765,30 +810,22 @@ fn render_list(
     let clip = clipboard
         .filter(|c| c.container == b.container && c.device == b.device)
         .map(|c| (c.cut, file_index::clipboard_paths(&c.entries)));
-    // Columns by width: bar, mark, icon, name, [type], [size], [bar], [age].
     let width = usize::from(inner.width);
-    let show_type = width >= 64;
-    let show_size = width >= 26;
-    let show_bar = width >= 72;
-    let show_age = width >= 40;
     let agent_width = agents
         .values()
         .map(|s| cell_width(s))
         .max()
         .unwrap_or(0)
         .min(24);
-    let size_width = 8.max(agent_width.min(width / 4));
-    let fixed = 1
-        + 1
-        + 2
-        + if show_type { 5 } else { 0 }
-        + if show_size { size_width + 1 } else { 0 }
-        + if show_bar { 2 } else { 0 }
-        + if show_age { 5 } else { 0 }
-        + 1;
-    // Names take what they need (up to the space left), so metadata sits next to them
-    // instead of across an empty gap on wide terminals.
-    let name_width = width.saturating_sub(fixed).min(longest.max(28) + 2).max(4);
+    let columns = RowColumns::fit(width, longest, agent_width);
+    let RowColumns {
+        show_type,
+        show_size,
+        show_bar,
+        show_age,
+        size_width,
+        name_width,
+    } = columns;
     let now = now_seconds();
     let mut hits = b.hits.borrow_mut();
     let mut lines = Vec::with_capacity(height);
@@ -915,12 +952,12 @@ fn render_list(
             let (text, style) = if category == Category::Directory {
                 match agents.get(&entry.path) {
                     Some(agent) => (agent.clone(), accent()),
-                    None => ("·".to_owned(), muted()),
+                    None => (unknown_glyph().to_owned(), muted()),
                 }
             } else if entry.kind == "file" {
                 (short_size(entry.size), muted())
             } else {
-                ("·".to_owned(), muted())
+                (unknown_glyph().to_owned(), muted())
             };
             spans.push(Span::styled(
                 format!("{:>w$} ", fit_label(&text, size_width), w = size_width),
@@ -959,6 +996,61 @@ fn render_list(
     }
     drop(hits);
     frame.render_widget(Paragraph::new(lines), inner);
+}
+/// Terminal width from which Files shows the inline preview beside the list.
+const PEEK_MIN_COLUMNS: u16 = 100;
+/// Which optional row columns fit, and how wide the name column is (spec 7.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct RowColumns {
+    pub(super) show_type: bool,
+    pub(super) show_size: bool,
+    pub(super) show_bar: bool,
+    pub(super) show_age: bool,
+    pub(super) size_width: usize,
+    pub(super) name_width: usize,
+}
+impl RowColumns {
+    /// Selection bar, mark, icon and a trailing space.
+    const CHROME: usize = 1 + 1 + 2 + 1;
+    /// Columns are chosen from the space left after the names this listing really
+    /// needs (`longest` cells, plus a directory slash), in priority order size, age,
+    /// type, bar. The name column then takes all remaining width, so metadata sits
+    /// at the right edge with no dead zone after it.
+    pub(super) fn fit(width: usize, longest: usize, agent_width: usize) -> Self {
+        let size_width = 7.max(agent_width.min(width / 4));
+        let need = (longest + 1).max(4);
+        // Below the needed width, keep at least this much name before adding columns.
+        let floor = need.min(16);
+        let mut room = width.saturating_sub(Self::CHROME + floor);
+        let mut take = |cells: usize| {
+            let fits = room >= cells;
+            if fits {
+                room -= cells;
+            }
+            fits
+        };
+        let show_size = take(size_width + 1);
+        let show_age = show_size && take(5);
+        let show_type = show_age && take(5);
+        let show_bar = show_type && take(2);
+        let fixed = Self::CHROME
+            + if show_type { 5 } else { 0 }
+            + if show_size { size_width + 1 } else { 0 }
+            + if show_bar { 2 } else { 0 }
+            + if show_age { 5 } else { 0 };
+        Self {
+            show_type,
+            show_size,
+            show_bar,
+            show_age,
+            size_width,
+            name_width: width.saturating_sub(fixed).max(4),
+        }
+    }
+    /// Cells one row needs to show every column next to the longest name.
+    pub(super) fn natural_width(longest: usize, agent_width: usize) -> usize {
+        Self::CHROME + (longest + 1).max(4) + 1 + 7.max(agent_width.min(24)) + 1 + 5 + 5 + 2
+    }
 }
 /// The inline preview: the highlighted file's preview, or the highlighted folder's
 /// prefetched listing.
@@ -1034,17 +1126,46 @@ fn render_peek(frame: &mut Frame<'_>, b: &Browser, area: Rect) {
                 peek.preview.as_deref().unwrap_or(""),
                 false,
             );
+            // Spec 12.5: while the next file loads, the previous frame stays visible
+            // but dimmed, so it never reads as the current file's content.
+            if peek.preview_pending_page.is_some() {
+                let inner = Rect::new(
+                    area.x + 1,
+                    area.y + 1,
+                    area.width.saturating_sub(2),
+                    area.height.saturating_sub(2),
+                );
+                let buffer = frame.buffer_mut();
+                for y in inner.top()..inner.bottom() {
+                    for x in inner.left()..inner.right() {
+                        if let Some(cell) = buffer.cell_mut((x, y)) {
+                            cell.modifier.insert(Modifier::DIM);
+                            cell.modifier.remove(Modifier::BOLD);
+                        }
+                    }
+                }
+                if area.height > 1 && area.width > 16 {
+                    let label = glyph_text(" loading… ".to_owned());
+                    frame.render_widget(
+                        Paragraph::new(Span::styled(label.clone(), muted())),
+                        Rect::new(area.x + 2, area.bottom() - 1, cell_width(&label) as u16, 1),
+                    );
+                }
+            }
         }
         (Some(entry), _) => {
             let border = block(safe_label(&entry.name), false);
             let inner = border.inner(area);
             frame.render_widget(border, area);
             let mut lines = vec![Line::styled(
-                if entry.kind == "directory" {
-                    " Folder"
-                } else {
-                    " Loading preview…"
-                },
+                glyph_text(
+                    if entry.kind == "directory" {
+                        " Folder"
+                    } else {
+                        " Loading preview…"
+                    }
+                    .to_owned(),
+                ),
                 muted(),
             )];
             if entry.kind == "file" {
@@ -1196,15 +1317,21 @@ impl App {
                 child.preview_pending_page = Some(1);
                 child.peek_value = None;
                 b.peek = Some(child);
-                if !self.send(
+                let generation = self.generation;
+                if self.send(
                     device,
                     Operation::Preview {
                         path: entry.path.clone(),
                     },
                 ) {
-                    if let Some(p) = self.browser.as_mut().and_then(|b| b.peek.as_mut()) {
-                        p.preview_pending_page = None;
+                    if let Some(b) = self.browser.as_mut() {
+                        if b.peek_inflight.len() >= 16 {
+                            b.peek_inflight.remove(0);
+                        }
+                        b.peek_inflight.push((entry.path.clone(), generation));
                     }
+                } else if let Some(p) = self.browser.as_mut().and_then(|b| b.peek.as_mut()) {
+                    p.preview_pending_page = None;
                 }
                 dirty = true;
             }

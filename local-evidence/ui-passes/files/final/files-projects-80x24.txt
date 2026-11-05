@@ -1,8 +1,8 @@
  cx   Sessions / Files  Network                           viewing fixture@laptop
                                                                                 
 ╭ Devices ──────────╮╭ ▸ laptop › ~ › projects ────────────────────────────────╮
-│   All devices     ││▌ ▸ cx-demo/                              ·  32s         │
-│ › ●  laptop       ││  ▸ robot-logs/                           ·  32s         │
+│   All devices     ││▌ ▸ cx-demo/                         dir        ·    31s │
+│ › ●  laptop       ││  ▸ robot-logs/                      dir        ·    31s │
 │   ●  * lab-arm    ││                                                         │
 │   ○  * field-rov… ││                                                         │
 ╰───────────────────╯│                                                         │

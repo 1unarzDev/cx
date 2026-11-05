@@ -1,11 +1,11 @@
  cx   Files         viewing fixture@lapt
                                         
 ╭ Devices ───╮╭ ▸ … › cx-demo ─────────╮
-│   All devi ││▌ ▸ docs/               │
-│ › ●  lapt… ││  ▸ src/                │
-│   ●  * la… ││  ▤ Cargo.toml          │
-│   ○  * fi… ││  ≡ README.md           │
-╰────────────╯│  · data.bin            │
+│   All devi ││▌ ▸ docs/             · │
+│ › ●  lapt… ││  ▸ src/              · │
+│   ●  * la… ││  ▤ Cargo.toml     45 B │
+│   ○  * fi… ││  ≡ README.md      69 B │
+╰────────────╯│  · data.bin     16 KiB │
 ╭ Actions ───╮│                        │
 │ Sessions   ││                        │
 │ Network    ││                        │

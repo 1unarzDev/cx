@@ -1,6 +1,6 @@
  cx   Sessions / Files  Network                           viewing fixture@laptop
                                                                                 
-┌ Devices ──────────┐┌ > README.md · 69 B · markdown ──────────────────────────┐
+┌ Devices ──────────┐┌ > README.md | 69 B | markdown ──────────────────────────┐
 │   All devices     ││cx demo                                                  │
 │ > +  laptop       ││                                                         │
 │   +  * lab-arm    ││A fixture project for UI captures.                       │

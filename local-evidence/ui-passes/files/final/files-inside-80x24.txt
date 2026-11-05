@@ -1,11 +1,11 @@
  cx   Sessions / Files  Network                           viewing fixture@laptop
                                                                                 
 ╭ Devices ──────────╮╭ ▸ laptop › ~ › projects › cx-demo ──────────────────────╮
-│   All devices     ││  ▸ docs/                                 ·  33s         │
-│ › ●  laptop       ││  ▸ src/                                  ·  33s         │
-│   ●  * lab-arm    ││  ▤ Cargo.toml                         45 B  33s         │
-│   ○  * field-rov… ││▌ ≡ README.md                          69 B  33s         │
-╰───────────────────╯│  · data.bin                         16 KiB  33s         │
+│   All devices     ││  ▸ docs/                            dir        ·    33s │
+│ › ●  laptop       ││  ▸ src/                             dir        ·    33s │
+│   ●  * lab-arm    ││  ▤ Cargo.toml                       toml    45 B ▏  33s │
+│   ○  * field-rov… ││▌ ≡ README.md                        md      69 B ▏  33s │
+╰───────────────────╯│  · data.bin                         bin   16 KiB █  33s │
 ╭ Actions ──────────╮│                                                         │
 │ Sessions          ││                                                         │
 │ Network           ││                                                         │

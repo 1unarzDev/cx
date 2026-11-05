@@ -59,16 +59,22 @@ fn press(a: &mut App, c: char) {
 }
 
 /// The terminal background stays transparent: only the selected file row paints the
-/// selection token (`accent.bg` / `select.dim.bg`), and only on rows with a selection bar.
+/// selection token (`accent.bg` / `select.dim.bg`), and only on a row whose selection
+/// bar sits at a list's left inner edge (right after a vertical border) and itself
+/// carries the selection background. A `>` or `:` elsewhere on a row (breadcrumbs,
+/// text) does not exempt it.
 fn transparent_except_selection(buffer: &ratatui::buffer::Buffer) -> bool {
+    let selection =
+        |c: &ratatui::buffer::Cell| matches!(c.bg, Color::Indexed(23 | 236 | 195 | 255));
     let width = buffer.area.width as usize;
     buffer.content.chunks(width).all(|row| {
-        let marked = row
-            .iter()
-            .any(|c| matches!(c.symbol(), "▌" | "▏" | ">" | ":"));
-        row.iter().all(|c| {
-            c.bg == Color::Reset || (marked && matches!(c.bg, Color::Indexed(23 | 236 | 195 | 255)))
-        })
+        let marked = (1..row.len()).any(|i| {
+            matches!(row[i].symbol(), "▌" | "▏" | ">" | ":")
+                && selection(&row[i])
+                && matches!(row[i - 1].symbol(), "│" | "┃" | "|" | "#" | "║")
+        });
+        row.iter()
+            .all(|c| c.bg == Color::Reset || (marked && selection(c)))
     })
 }
 #[test]
@@ -4869,6 +4875,8 @@ fn preview_reply_is_scoped_and_content_is_not_serialized() {
         result: Ok(reply()),
     });
     assert!(a.browser.as_ref().unwrap().preview.is_none());
+    // Only a requested preview applies (open_preview records the path).
+    a.browser.as_mut().unwrap().preview_path = Some("/files/a".into());
     a.apply(Reply {
         device_id: None,
         execution_target: None,
@@ -5152,6 +5160,7 @@ fn native_bitmap_geometry_tracks_workspace_and_suppresses_overlays() {
 #[test]
 fn accepted_preview_responses_change_native_identity_even_when_metadata_matches() {
     let (mut a, _rx) = file_app();
+    a.browser.as_mut().unwrap().preview_path = Some("/files/alpha.txt".into());
     for revision in [1, 2] {
         a.apply(Reply {
             device_id: None,
@@ -6881,4 +6890,103 @@ fn streamed_preview_chunks_extend_the_retained_layout() {
         text.contains("line 2099"),
         "end of the streamed file is reachable"
     );
+}
+
+/// Regression: an outdated inline-peek reply (file A, still in flight after the
+/// selection moved to B) must never open the full-screen preview, and must not
+/// replace the peek of B. While B loads, the previous peek frame is shown dimmed.
+#[test]
+fn stale_peek_reply_never_opens_the_full_preview() {
+    use std::time::{Duration, Instant};
+    let (mut a, rx) = file_app();
+    let draw = |a: &App| {
+        let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+        terminal.draw(|frame| render(frame, a)).unwrap();
+        terminal.backend().buffer().clone()
+    };
+    let settle = |a: &mut App| {
+        let now = Instant::now();
+        a.files_tick(now);
+        a.files_tick(now + Duration::from_millis(200));
+    };
+    let reply = |a: &mut App, path: &str, text: &str| {
+        let generation = a.generation;
+        a.apply(Reply {
+            device_id: None,
+            execution_target: None,
+            device: 0,
+            generation,
+            op: Operation::Preview { path: path.into() },
+            preview: None,
+            result: Ok(serde_json::json!({"kind":"text","text":text})),
+        });
+    };
+    draw(&a);
+    assert!(a.browser.as_ref().unwrap().peek_shown.get());
+    settle(&mut a);
+    assert!(
+        matches!(rx.try_recv().unwrap().op, Operation::Preview { path } if path == "/files/alpha.txt")
+    );
+    press(&mut a, 'j');
+    settle(&mut a);
+    assert!(
+        matches!(rx.try_recv().unwrap().op, Operation::Preview { path } if path == "/files/beta.txt")
+    );
+    // The late reply for alpha arrives first.
+    reply(&mut a, "/files/alpha.txt", "AAA");
+    let b = a.browser.as_ref().unwrap();
+    assert_eq!(
+        b.preview_path, None,
+        "stale peek reply opened the full preview"
+    );
+    assert_eq!(b.preview, None);
+    let peek = b.peek.as_ref().unwrap();
+    assert_eq!(peek.preview_path.as_deref(), Some("/files/beta.txt"));
+    assert_ne!(peek.preview.as_deref(), Some("AAA"));
+    reply(&mut a, "/files/beta.txt", "BBB");
+    let b = a.browser.as_ref().unwrap();
+    assert_eq!(b.preview, None);
+    assert_eq!(b.peek.as_ref().unwrap().preview.as_deref(), Some("BBB"));
+    // Moving on to gamma keeps BBB on screen, dimmed, until gamma's reply arrives.
+    press(&mut a, 'j');
+    settle(&mut a);
+    let buffer = draw(&a);
+    let width = buffer.area.width as usize;
+    let dimmed = buffer.content.chunks(width).any(|row| {
+        let text: String = row.iter().map(|c| c.symbol()).collect();
+        text.contains("BBB")
+            && row
+                .iter()
+                .filter(|c| c.symbol() == "B")
+                .all(|c| c.modifier.contains(ratatui::style::Modifier::DIM))
+    });
+    assert!(
+        dimmed,
+        "the previous peek frame must stay visible and dimmed"
+    );
+    // A stray Preview reply nobody asked for never opens the full preview either.
+    reply(&mut a, "/files/.secret", "SSS");
+    assert_eq!(a.browser.as_ref().unwrap().preview, None);
+}
+
+/// Spec 6.2/7.3: optional columns come from the space left after the names really
+/// needed, so M/L list widths keep the type tag and size bar beside short names.
+#[test]
+fn file_row_columns_follow_needed_name_width() {
+    use super::files_view::RowColumns;
+    // About the list's inner width at 80x24 and in the 120x40 split.
+    for width in [52, 57] {
+        let c = RowColumns::fit(width, 10, 0);
+        assert!(
+            c.show_size && c.show_age && c.show_type && c.show_bar,
+            "{width}: {c:?}"
+        );
+        assert_eq!(c.name_width + 4 + 1 + 5 + 8 + 2 + 5, width);
+    }
+    // Long names keep at least 16 cells before columns are added.
+    let narrow = RowColumns::fit(36, 40, 0);
+    assert!(narrow.show_size && narrow.show_age && !narrow.show_bar);
+    assert!(narrow.name_width >= 16);
+    let tiny = RowColumns::fit(20, 40, 0);
+    assert!(!tiny.show_size && tiny.name_width >= 4);
 }

@@ -14,8 +14,8 @@
 // - Claude lends (docs/claude.md): the owner posts a gateway bundle (POST /v1/admin/claude); GET /claude/<code>
 //   answers with claude.sh / claude.ps1 / a page, and the script claims the bundle once (POST /v1/claude/claim).
 //   The bundle is stored AES-GCM sealed with a key derived from the code, which only its SHA-256 identifies.
-// - ssh-overlay short codes (docs/mesh.md, "cx join"): the owner stashes an invite cx sealed itself
-//   (POST /v1/admin/pairs {lookup, sealed, hours}); `cx join <host>/<code>` takes it once
+// - ssh-overlay short codes (docs/mesh.md, "cx mesh pair"): the owner stashes an invite cx sealed itself
+//   (POST /v1/admin/pairs {lookup, sealed, hours}); `cx mesh pair <host>/<code>` takes it once
 //   (POST /v1/pair/redeem {lookup}). The Worker holds only the seal and a hash of the code.
 // Invites are minted at most MINT_PER_HOUR an hour; enrolments are limited per source address; every
 // state change is in the audit table.
@@ -522,7 +522,7 @@ export default {
         if (lc) return await claudeScript(env, kind, lc[1].toLowerCase());
         if (p === "/v1/keys") return plain((CONFIG.ssh_keys ?? []).join("\n") + "\n");
         const pc = /^\/p\/([0-9A-Za-z-]{12,20})$/.exec(p);
-        if (pc) return plain(`Run this on the device that joins (cx installed):\n  cx join ${CONFIG.url.replace(/^https?:\/\//, "")}/${pc[1]}\n`);
+        if (pc) return plain(`Run this on the device that joins (cx installed):\n  cx mesh pair ${CONFIG.url.replace(/^https?:\/\//, "")}/${pc[1]}\n`);
       }
       if (req.method === "POST" && p === "/v1/enroll") return await enroll(req, env);
       if (req.method === "POST" && p === "/v1/registered") return await registered(req, env);

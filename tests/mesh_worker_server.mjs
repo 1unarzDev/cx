@@ -1,6 +1,6 @@
 // The mesh Worker (mesh/worker/worker.js) served over local HTTPS against an in-memory D1 (node:sqlite) and a
 // fake Cloudflare API that accepts one owner token. tests/mesh_ssh_overlay.py drives `cx mesh invite --short` and
-// `cx join <host>/<code>` through mesh.py against it, end to end. No account is touched; it listens on 127.0.0.1 only.
+// `cx mesh pair <host>/<code>` through mesh.py against it, end to end. No account is touched; it listens on 127.0.0.1 only.
 // Run: node tests/mesh_worker_server.mjs CERT KEY PORT OWNER_TOKEN   (prints "ready" once listening)
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";

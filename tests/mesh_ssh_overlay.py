@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ssh-overlay `cx join` end to end over a disposable loopback sshd (docs/mesh.md, "ssh-overlay").
+"""ssh-overlay `cx mesh pair` end to end over a disposable loopback sshd (docs/mesh.md, "ssh-overlay").
 
 Two cx identities on this machine, each with its own temporary HOME and state: the viewer invites,
 a private sshd (running as this user, authorizing only the viewer's temporary authorized_keys, with
@@ -109,10 +109,10 @@ SetEnv {setenv}
     try:
         inv = invite("--name", "rover")
         code = inv["code"]
-        assert inv["one_liner_sh"] == f"cx join {code}" and inv["uses"] == 1, inv
+        assert inv["one_liner_sh"] == f"cx mesh pair {code}" and inv["uses"] == 1, inv
         line = [l for l in authorized(viewer).splitlines() if "cx-join-invite:" in l]
         assert len(line) == 1 and line[0].startswith("restrict,command=") and "expiry-time=" in line[0], line
-        assert f"{binary} join --redeem " in line[0]
+        assert f"{binary} mesh pair --redeem " in line[0]
 
         daemon = start("host")
         # Takeover: an invite holder claiming an enrolled identity (here a directed device with no
@@ -124,7 +124,7 @@ SetEnv {setenv}
         policy_file = viewer / "state/cx/device-policies.json"
         policies_before = policy_file.read_text() if policy_file.exists() else None
         intruder, ienv = side("intruder", "victim-machine")
-        r = cx(ienv, "join", invite()["code"], "--name", "mallory", check=False)
+        r = cx(ienv, "mesh", "pair", invite()["code"], "--name", "mallory", check=False)
         assert r.returncode != 0 and "already enrolled" in r.stderr, r.stderr
         assert [d for d in devices(viewer) if d["id"] == victim["id"]] == [victim], devices(viewer)
         assert (policy_file.read_text() if policy_file.exists() else None) == policies_before
@@ -134,7 +134,7 @@ SetEnv {setenv}
         (viewer / "state/cx/devices.json").write_text(json.dumps([d for d in devices(viewer) if d["id"] != victim["id"]]))
         result["takeover_refused"] = True
 
-        r = cx(jenv, "join", code, "--json")
+        r = cx(jenv, "mesh", "pair", code, "--json")
         joined = json.loads(r.stdout)
         assert joined["joined"] and joined["target"] == f"{account}@127.0.0.1" and joined["as"] != "", joined
         result["joined"] = True
@@ -169,7 +169,7 @@ SetEnv {setenv}
         result["managed_key_authenticates"] = True
 
         # Replay: the same code no longer authenticates.
-        r = cx(jenv, "join", code, check=False)
+        r = cx(jenv, "mesh", "pair", code, check=False)
         assert r.returncode != 0 and "could not join" in r.stderr, r.stderr
         result["replay_refused"] = True
 
@@ -178,14 +178,14 @@ SetEnv {setenv}
         daemon.terminate()
         daemon.wait(timeout=3)
         daemon = start("changed-host")
-        r = cx(jenv, "join", second["code"], "--name", "rover2", check=False)
+        r = cx(jenv, "mesh", "pair", second["code"], "--name", "rover2", check=False)
         assert r.returncode != 0 and "different SSH host key" in r.stderr, r.stderr
         assert "cx-join-invite:" in authorized(viewer), "never connected, so the invite is still pending"
         result["changed_host_key_refused"] = True
 
         # A mistyped code fails its checksum offline.
         typo = second["code"][:-1] + ("0" if second["code"][-1] != "0" else "1")
-        r = cx(jenv, "join", typo, check=False)
+        r = cx(jenv, "mesh", "pair", typo, check=False)
         assert r.returncode != 0 and ("checksum" in r.stderr or "mistyped" in r.stderr), r.stderr
 
         # Teardown cancels pending invites (and their authorizations); revoke removes the member.
@@ -203,7 +203,7 @@ SetEnv {setenv}
         assert "join" in [a["action"] for a in audit]
         result["revoke_and_teardown"] = True
 
-        # --short end to end: cx -> embedded mesh.py -> the mesh Worker (local HTTPS fake) -> cx join <host>/<code>.
+        # --short end to end: cx -> embedded mesh.py -> the mesh Worker (local HTTPS fake) -> cx mesh pair <host>/<code>.
         node = shutil.which("node")
         assert node, "node is needed for the Worker fixture"
         daemon.terminate()
@@ -231,16 +231,16 @@ SetEnv {setenv}
                                                                  f"127.0.0.1:{port}", "--host-key", str(root / "host.pub"),
                                                                  "--short", "--json").stdout)
             sc = short["short_code"]
-            assert len(sc.replace("-", "")) == 12 and short["one_liner_sh"] == f"cx join localhost:{wport}/{sc}", short
+            assert len(sc.replace("-", "")) == 12 and short["one_liner_sh"] == f"cx mesh pair localhost:{wport}/{sc}", short
             assert short["url"] == f"https://localhost:{wport}/p/{sc}", short
             assert short["code"] not in json.dumps(short["one_liner_sh"])
             shorty, shenv = side("shorty", "shorty-machine")
             shenv.update(tls)
-            r = cx(shenv, "join", f"localhost:{wport}/{sc}", "--name", "shorty", "--json")
+            r = cx(shenv, "mesh", "pair", f"localhost:{wport}/{sc}", "--name", "shorty", "--json")
             j = json.loads(r.stdout)
             assert j["joined"] and j["target"] == f"{account}@127.0.0.1", j
             assert [d["name"] for d in devices(viewer) if d.get("target")] == ["shorty"], devices(viewer)
-            again = cx(shenv, "join", f"localhost:{wport}/{sc}", check=False)
+            again = cx(shenv, "mesh", "pair", f"localhost:{wport}/{sc}", check=False)
             assert again.returncode != 0 and "already used" in again.stderr, again.stderr
             result["short_code_end_to_end"] = True
         finally:

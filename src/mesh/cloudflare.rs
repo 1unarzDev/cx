@@ -1,11 +1,9 @@
 //! The cloudflare-warp backend: the WARP mesh of mesh/mesh.py, driven through its `--json`
 //! contract from the copy embedded in cx (so standalone mesh.py users see no change).
-//! Onboarding helpers (`token-url`, `verify`, `zones`) live in mesh.py too, so both get them.
+//! Onboarding helpers (`token-url`, `verify`, `zones`) live in mesh.py, reached through `cx mesh`.
 //!
-//! The API token is never stored here. It is read, in order, from a [`TokenSource`] (the secrets
-//! store once root wires it; until then `$CLOUDFLARE_API_TOKEN`), and passed to mesh.py through
-//! its environment or stdin, never argv. mesh.py's own fallback (its mode-600 credentials file)
-//! still applies when no source has one.
+//! The API token is never handled here: mesh.py inherits cx's environment and reads
+//! `$CLOUDFLARE_API_TOKEN` itself, else its mode-600 credentials file.
 use super::{ranges, AuditEntry, Invite, IpNet, Member, MeshBackend, Plan, Status};
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
@@ -16,61 +14,6 @@ use std::{
 };
 
 pub const ID: &str = "cloudflare-warp";
-const SECRET_NAME: &str = "cloudflare-api-token";
-
-/// A token that zeroes its bytes when dropped (stand-in for `zeroize::Zeroizing<String>`).
-pub struct Secret(String);
-impl Secret {
-    pub fn new(s: String) -> Self {
-        Self(s)
-    }
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-impl Drop for Secret {
-    fn drop(&mut self) {
-        // SAFETY: zero bytes keep the String valid UTF-8.
-        unsafe {
-            for b in self.0.as_bytes_mut() {
-                std::ptr::write_volatile(b, 0);
-            }
-        }
-    }
-}
-impl std::fmt::Debug for Secret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Secret(<{} bytes>)", self.0.len())
-    }
-}
-
-/// Where the Cloudflare token comes from. TODO(root): add a source backed by
-/// `crate::secrets::get("cloudflare-api-token")` (Zeroizing<String>) once src/secrets.rs lands,
-/// and put it first in [`default_sources`].
-pub trait TokenSource {
-    fn get(&self, name: &str) -> Option<Secret>;
-}
-
-/// `$CLOUDFLARE_API_TOKEN`, what mesh.py itself reads first.
-pub struct EnvSource;
-impl TokenSource for EnvSource {
-    fn get(&self, name: &str) -> Option<Secret> {
-        (name == SECRET_NAME)
-            .then(|| std::env::var("CLOUDFLARE_API_TOKEN").ok())
-            .flatten()
-            .filter(|t| !t.trim().is_empty())
-            .map(Secret::new)
-    }
-}
-
-pub fn default_sources() -> Vec<Box<dyn TokenSource>> {
-    vec![Box::new(EnvSource)]
-}
-
-pub fn token() -> Option<Secret> {
-    default_sources().iter().find_map(|s| s.get(SECRET_NAME))
-}
-
 /// Run the embedded mesh.py with `--json`; the parsed JSON on success, its error otherwise.
 fn mesh_json(args: &[&str], stdin: Option<&[u8]>, timeout: Duration) -> Result<Value> {
     let (ok, v) = mesh_json_status(args, stdin, timeout)?;
@@ -87,9 +30,6 @@ fn mesh_json_status(
     let script = super::unpack()?;
     let mut cmd = Command::new("python3");
     cmd.arg(script).args(args).arg("--json");
-    if let Some(t) = token() {
-        cmd.env("CLOUDFLARE_API_TOKEN", t.expose());
-    }
     let (ok, out) = super::run_bounded(cmd, stdin.unwrap_or_default(), 1024 * 1024, timeout)
         .context("cx mesh needs python3")?;
     let text = String::from_utf8_lossy(&out);
@@ -104,41 +44,6 @@ fn mesh_json_status(
 
 const QUICK: Duration = Duration::from_secs(20);
 const SLOW: Duration = Duration::from_secs(300);
-
-/// The dashboard URL that creates a token with the permissions docs/mesh.md lists, pre-filled.
-/// `{"url", "permissions": [...prefilled], "manual": [...the user adds by hand]}`; no network.
-#[allow(dead_code)] // the UI wave's Secrets onboarding calls this
-pub fn onboarding_url(with_domain: bool) -> Result<Value> {
-    let mut args = vec!["token-url"];
-    if with_domain {
-        args.push("--with-domain");
-    }
-    mesh_json(&args, None, QUICK)
-}
-
-/// GET /user/tokens/verify (then the account endpoint) through mesh.py; the token goes on stdin.
-/// `{"valid", "status", "id", "expires_on", "kind"}`; the token itself is never echoed.
-#[allow(dead_code)] // the UI wave's Secrets onboarding calls this
-pub fn verify_token(token: &Secret) -> Result<Value> {
-    let input = Secret::new(format!("{}\n", token.expose()));
-    Ok(mesh_json_status(
-        &["verify", "--token-stdin"],
-        Some(input.expose().as_bytes()),
-        QUICK,
-    )?
-    .1)
-}
-
-/// The zones the token can see, for a one-click domain choice: `{"zones": [{id, name, status, account}]}`.
-#[allow(dead_code)] // the UI wave's Secrets onboarding calls this
-pub fn list_zones(token: &Secret) -> Result<Value> {
-    let input = Secret::new(format!("{}\n", token.expose()));
-    mesh_json(
-        &["zones", "--token-stdin"],
-        Some(input.expose().as_bytes()),
-        QUICK,
-    )
-}
 
 /// Stash a sealed ssh-overlay invite on the mesh Worker (owner side). `{"url", "expires"}`.
 pub fn stash_pair(lookup: &str, sealed: &str, hours: f64) -> Result<Value> {
@@ -201,6 +106,38 @@ fn toml_string(text: &str, key: &str) -> Option<String> {
     })
 }
 
+/// `[profile] mesh = [...]` of mesh.py's config: the quoted CIDRs of that array, which may span
+/// lines, with `#` comments ignored (tomllib's reading of the template's form).
+fn toml_mesh_ranges(text: &str) -> Vec<IpNet> {
+    let mut array = String::new();
+    let mut open = false;
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or_default();
+        if !open {
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
+            if k.trim() != "mesh" || !v.trim_start().starts_with('[') {
+                continue;
+            }
+            open = true;
+            array.push_str(v);
+        } else {
+            array.push_str(line);
+        }
+        if array.contains(']') {
+            break;
+        }
+    }
+    let array = array.split(']').next().unwrap_or_default();
+    array
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .filter_map(|s| s.parse().ok())
+        .collect()
+}
+
 /// Local-only status (no python, no network): config present, and the state file's endpoint.
 /// Cheap enough for every network observation.
 pub fn quick_status_at(dir: &Path) -> Quick {
@@ -219,22 +156,7 @@ pub fn quick_status_at(dir: &Path) -> Quick {
     let endpoint = state
         .as_ref()
         .and_then(|s| s["url"].as_str().map(str::to_owned));
-    // [profile] mesh = ["..."]: only quoted CIDRs on that one line (the template writes it so).
-    let mut mesh_ranges: Vec<IpNet> = text
-        .lines()
-        .filter(|l| {
-            l.trim_start().starts_with("mesh")
-                && l.split_once('=').is_some_and(|(k, _)| k.trim() == "mesh")
-        })
-        .flat_map(|l| {
-            l.split('"')
-                .skip(1)
-                .step_by(2)
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        })
-        .filter_map(|s| s.parse().ok())
-        .collect();
+    let mut mesh_ranges = toml_mesh_ranges(&text);
     if mesh_ranges.is_empty() {
         mesh_ranges.push(ranges::net(ranges::WARP_V4));
     }
@@ -252,6 +174,27 @@ pub fn quick_status() -> Quick {
 }
 
 pub struct CloudflareWarp;
+
+/// `mesh.py invite`: a WARP join code with its one-liners.
+pub fn invite(uses: u32, ttl_hours: f64, device_name: Option<&str>) -> Result<Invite> {
+    let (u, h) = (uses.to_string(), ttl_hours.to_string());
+    let mut args = vec!["invite", "--uses", &u, "--hours", &h];
+    if let Some(n) = device_name {
+        args.extend(["--name", n]);
+    }
+    let d = mesh_json(&args, None, QUICK)?;
+    let code = d["code"].as_str().context("no invite code")?.to_owned();
+    Ok(Invite {
+        url: quick_status().endpoint.map(|e| format!("{e}/{code}")),
+        code,
+        one_liner_sh: d["sh"].as_str().unwrap_or_default().to_owned(),
+        one_liner_ps: d["ps1"].as_str().map(str::to_owned),
+        expires: d["expires"].as_str().unwrap_or_default().to_owned(),
+        uses: d["uses"].as_u64().unwrap_or(uses as u64) as u32,
+        backend: ID.into(),
+        short_code: None,
+    })
+}
 
 pub fn members_from(d: &Value) -> Vec<Member> {
     let suffix = d["dns_suffix"].as_str().unwrap_or_default();
@@ -371,25 +314,6 @@ impl MeshBackend for CloudflareWarp {
         }
         Ok(plan(mesh_json(&args, None, SLOW)?, dry_run))
     }
-    fn invite(&self, uses: u32, ttl_hours: f64, device_name: Option<&str>) -> Result<Invite> {
-        let (u, h) = (uses.to_string(), ttl_hours.to_string());
-        let mut args = vec!["invite", "--uses", &u, "--hours", &h];
-        if let Some(n) = device_name {
-            args.extend(["--name", n]);
-        }
-        let d = mesh_json(&args, None, QUICK)?;
-        let code = d["code"].as_str().context("no invite code")?.to_owned();
-        Ok(Invite {
-            url: quick_status().endpoint.map(|e| format!("{e}/{code}")),
-            code,
-            one_liner_sh: d["sh"].as_str().unwrap_or_default().to_owned(),
-            one_liner_ps: d["ps1"].as_str().map(str::to_owned),
-            expires: d["expires"].as_str().unwrap_or_default().to_owned(),
-            uses: d["uses"].as_u64().unwrap_or(uses as u64) as u32,
-            backend: ID.into(),
-            short_code: None,
-        })
-    }
     fn members(&self) -> Result<Vec<Member>> {
         Ok(members_from(&mesh_json(&["devices"], None, QUICK)?))
     }
@@ -488,9 +412,25 @@ mod tests {
     }
 
     #[test]
-    fn secrets_never_print() {
-        let s = Secret::new("abc123".into());
-        assert_eq!(format!("{s:?}"), "Secret(<6 bytes>)");
-        assert!(EnvSource.get("other").is_none());
+    fn mesh_ranges_read_like_tomllib() {
+        let d = tempfile::tempdir().unwrap();
+        let ranges = |text: &str| {
+            std::fs::write(d.path().join("config.toml"), text).unwrap();
+            quick_status_at(d.path())
+                .mesh_ranges
+                .iter()
+                .map(|r| r.to_string())
+                .collect::<Vec<_>>()
+        };
+        // An array edited across lines, with comments (one holding a quote).
+        assert_eq!(
+            ranges("name = \"team\"\n[profile]\nmesh = [  # the \"carved\" ranges\n  \"10.77.0.0/16\",\n  # \"10.1.0.0/16\",\n  \"fd00:bb::/64\",\n]\nexcludes = [\"192.168.0.0/16\"]\n"),
+            vec!["10.77.0.0/16", "fd00:bb::/64"]
+        );
+        assert_eq!(
+            ranges("[profile]\nmesh_dns = [\"10.9.0.0/16\"]\nmesh = []\n"),
+            vec![ranges::WARP_V4],
+            "an empty array, and another key that starts with mesh, fall back to the default"
+        );
     }
 }

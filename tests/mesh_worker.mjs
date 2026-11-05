@@ -277,7 +277,7 @@ test("an ssh-overlay short code: stashed sealed by the owner, redeemed once, nev
   assert.equal(row.state, "redeemed");
   assert.equal(row.redeemed_ip, "203.0.113.9");
   const page = await call("GET", "/p/ABCD-EFGH-JKMN");
-  assert.ok(page.text.includes("cx join mesh.example.org/ABCD-EFGH-JKMN"));
+  assert.ok(page.text.includes("cx mesh pair mesh.example.org/ABCD-EFGH-JKMN"));
   const audit = (await call("GET", "/v1/admin/audit", { token: OWNER })).json.audit.map((a) => a.action);
   assert.ok(audit.includes("pair") && audit.includes("redeem"));
 });

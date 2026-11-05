@@ -392,7 +392,7 @@ class ClaudeScript(unittest.TestCase):
 
 
 class Onboarding(unittest.TestCase):
-    """token-url, verify, zones and status: what cx's onboarding calls through mesh.py --json."""
+    """token-url, verify and zones: the onboarding helpers of mesh.py --json."""
 
     def fake_api(self, routes):
         seen = []
@@ -477,20 +477,8 @@ class Onboarding(unittest.TestCase):
             r = subprocess.run([sys.executable, str(stub), "verify", "--token-stdin", "--json"], input="bad\n", capture_output=True, text=True, env=env)
             self.assertEqual((r.returncode, json.loads(r.stdout)["status"]), (1, "expired"))
 
-    def test_status_reads_local_files_only(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.toml"
-            self.assertEqual(mesh.status(str(p))["configured"], False)
-            mesh.write_config(p, "demo", "acct", "example.org")
-            st = mesh.status(str(p))
-            self.assertEqual((st["configured"], st["provisioned"], st["name"], st["mesh"]), (True, False, "demo", ["100.96.0.0/12"]))
-            (Path(d) / "demo.state.json").write_text(json.dumps({"url": "https://mesh.example.org", "account": "acct"}))
-            st = mesh.status(str(p))
-            self.assertEqual((st["provisioned"], st["endpoint"]), (True, "https://mesh.example.org"))
-
-
 class Pairs(unittest.TestCase):
-    """A `cx join` short code: the owner stashes the seal on the Worker, a device takes it once."""
+    """A `cx mesh pair` short code: the owner stashes the seal on the Worker, a device takes it once."""
 
     def test_stash_and_redeem_through_the_worker_api(self):
         calls = []
@@ -534,6 +522,24 @@ class Pairs(unittest.TestCase):
             self.assertEqual(len(fake.calls), before, "a dry run calls nothing")
             self.assertIn("worker", r["would_remove"])
             self.assertTrue((Path(d) / "demo.state.json").exists())
+
+    def test_teardown_cli_dry_run_wins_over_yes(self):
+        # cx's cloudflare-warp backend runs `teardown --yes --dry-run --json`: a preview, never a teardown.
+        with tempfile.TemporaryDirectory() as d:
+            mesh.write_config(Path(d) / "config.toml", "demo", "acct", "")
+            state = {"url": "https://demo-mesh.owner.workers.dev", "worker": "demo-mesh", "d1_id": "db"}
+            (Path(d) / "demo.state.json").write_text(json.dumps(state))
+            stub = Path(d) / "run.py"
+            stub.write_text(
+                "import sys\nsys.path.insert(0, %r)\nimport mesh\n"
+                "def refuse(*a, **k):\n    raise SystemExit('network call in a dry run')\n"
+                "mesh.Mesh.http = refuse\nmesh.request = refuse\n"
+                "sys.exit(mesh.main(sys.argv[1:]))\n" % str(ROOT / "mesh"))
+            r = subprocess.run([sys.executable, str(stub), "teardown", "--yes", "--dry-run", "--json", "--config", str(Path(d) / "config.toml")],
+                               capture_output=True, text=True, env={**os.environ, "CLOUDFLARE_API_TOKEN": "t"})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(json.loads(r.stdout)["would_remove"], ["worker", "d1_id"])
+            self.assertEqual(json.loads((Path(d) / "demo.state.json").read_text()), state)
 
 
 if __name__ == "__main__":

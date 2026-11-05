@@ -1,4 +1,4 @@
-//! Join codes for the ssh-overlay backend (docs/mesh.md, "ssh-overlay: cx join").
+//! Join codes for the ssh-overlay backend (docs/mesh.md, "ssh-overlay: cx mesh pair").
 //!
 //! Two forms share Crockford base32 (0-9 A-Z without I L O U; input is case-insensitive, `I`/`L`
 //! read as 1 and `O` as 0, dashes and spaces are ignored):

@@ -1,18 +1,20 @@
 //! The ssh-overlay backend: the lightweight default mesh, built from what cx already has and able to
 //! coexist with any VPN (it claims no address range). Members are the enrolled devices; core
 //! devices pair automatically (peers.rs, peer_ssh.rs); reachability is the existing routes plus
-//! ProxyJump through a reachable peer. New devices join with `cx join <code>` (docs/mesh.md has
-//! the protocol and its threat model):
+//! ProxyJump through a reachable peer. New devices join with `cx mesh pair <code>` (docs/mesh.md
+//! has the protocol and its threat model):
 //!
 //! 1. `cx mesh invite --backend ssh-overlay` on the viewer makes a direct code (code.rs) holding
 //!    its SSH account, reachable addresses, the SHA-256 prefix of its SSH host key and a one-time
 //!    token. The token derives an Ed25519 *invite key*; the viewer authorizes only its public half,
-//!    as `restrict,command="<cx> join --redeem <id>",expiry-time=...` tagged `cx-join-invite:<id>`.
-//! 2. `cx join <code>` on the joiner fetches the viewer's host key, accepts it only when its digest
+//!    as `restrict,command="<cx> mesh pair --redeem <id>",expiry-time=...` tagged
+//!    `cx-join-invite:<id>`.
+//! 2. `cx mesh pair <code>` on the joiner fetches the viewer's host key, accepts it only when its digest
 //!    matches the code (then pins it for the connection, StrictHostKeyChecking=yes), and connects
 //!    with the invite key. sshd runs only the redeem command, which burns the invite (single use,
-//!    expiry enforced by sshd and by cx), installs the joiner's own key as `cx-managed-peer`
-//!    (restricted), pins the joiner's host key, enrolls it as a core device, and answers with the
+//!    expiry enforced by sshd and by cx), installs the joiner's own key as `cx-managed-peer` (a
+//!    full shell as the viewer's account: only agent, port and X11 forwarding and user rc are
+//!    disabled), pins the joiner's host key, enrolls it as a core device, and answers with the
 //!    viewer's public keys. The joiner pins and authorizes those the same way.
 use super::{
     code::Direct, ed25519, iso, AuditEntry, Invite, IpNet, Member, MeshBackend, Plan, Status,
@@ -97,6 +99,12 @@ fn lock() -> Result<Lock> {
 }
 
 fn read_invites(_l: &Lock) -> Result<Invites> {
+    load_invites()
+}
+
+/// The invite state without the lock: it is only ever replaced whole by rename, so a reader sees
+/// one complete version (enough for a count; changes go through [`read_invites`]).
+fn load_invites() -> Result<Invites> {
     let p = dir().join("invites.json");
     match fs::read(&p) {
         Ok(b) => {
@@ -117,10 +125,16 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(&tmp)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    fs::rename(&tmp, path)?;
-    Ok(())
+    let result = (|| -> Result<()> {
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        fs::rename(&tmp, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
 fn write_invites(_l: &Lock, inv: &Invites) -> Result<()> {
@@ -130,25 +144,24 @@ fn write_invites(_l: &Lock, inv: &Invites) -> Result<()> {
     )
 }
 
-fn audit(action: &str, detail: &str) {
+/// Append to audit.jsonl (kept to its last 500..1000 entries). The caller holds the lock, so
+/// concurrent redeems and invites (separate processes) never lose each other's lines.
+fn audit(_l: &Lock, action: &str, detail: &str) {
     let line =
         json!({"at": iso(transport::now()), "actor": "local", "action": action, "detail": detail});
     let path = dir().join("audit.jsonl");
-    let _ = (|| -> Result<()> {
-        ensure_dir()?;
-        let old = fs::read_to_string(&path).unwrap_or_default();
-        let mut lines: Vec<&str> = old.lines().collect();
-        if lines.len() >= 1000 {
-            lines.drain(..lines.len() - 499);
-        }
-        let mut text = lines.join("\n");
-        if !text.is_empty() {
-            text.push('\n');
-        }
-        text.push_str(&line.to_string());
+    let old = fs::read_to_string(&path).unwrap_or_default();
+    let mut lines: Vec<&str> = old.lines().collect();
+    if lines.len() >= 1000 {
+        lines.drain(..lines.len() - 499);
+    }
+    let mut text = lines.join("\n");
+    if !text.is_empty() {
         text.push('\n');
-        write_private(&path, text.as_bytes())
-    })();
+    }
+    text.push_str(&line.to_string());
+    text.push('\n');
+    let _ = write_private(&path, text.as_bytes());
 }
 
 /// The `cx` the forced command runs: this executable, when its path is plain enough to quote.
@@ -174,17 +187,13 @@ fn invite_line(id: &str, public: &str, expires: u64, exe: &str) -> String {
         .take(12)
         .collect();
     format!(
-        "restrict,command=\"{exe} join --redeem {id}\",expiry-time=\"{t}Z\" {public} cx-join-invite:{id}"
+        "restrict,command=\"{exe} mesh pair --redeem {id}\",expiry-time=\"{t}Z\" {public} cx-join-invite:{id}"
     )
-}
-
-fn invite_tag(id: &str) -> String {
-    format!(" cx-join-invite:{id}")
 }
 
 /// Addresses a joiner may reach this host at, best first: private LAN IPv4, overlay IPv4
 /// (CGNAT), then global and ULA IPv6. Loopback and link-local are never offered.
-pub fn default_addresses(port: u16) -> Result<Vec<SocketAddr>> {
+fn default_addresses() -> Result<Vec<SocketAddr>> {
     let mut ips = crate::peers::local_addresses()?;
     let rank = |ip: &IpAddr| match ip {
         IpAddr::V4(v) if v.is_private() => 0,
@@ -202,7 +211,7 @@ pub fn default_addresses(port: u16) -> Result<Vec<SocketAddr>> {
     Ok(ips
         .into_iter()
         .take(3)
-        .map(|ip| SocketAddr::new(ip, port))
+        .map(|ip| SocketAddr::new(ip, 22))
         .collect())
 }
 
@@ -210,25 +219,37 @@ pub fn default_addresses(port: u16) -> Result<Vec<SocketAddr>> {
 pub struct InviteOptions {
     pub ttl_hours: Option<f64>,
     pub device_name: Option<String>,
-    /// Explicit addresses (`ip` or `ip:port` / `[v6]:port`); default: this host's own.
+    /// Explicit addresses (`ip`, or `ip:22` / `[v6]:22`); default: this host's own.
     pub addresses: Vec<String>,
-    pub port: Option<u16>,
     /// The host key to pin, when sshd does not use /etc/ssh/ssh_host_ed25519_key.
     pub host_key_file: Option<PathBuf>,
     /// Also stash the code on the Cloudflare mesh Worker and return a short code.
     pub short: bool,
 }
 
-fn parse_address(s: &str, port: u16) -> Result<SocketAddr> {
-    if let Ok(a) = s.parse::<SocketAddr>() {
-        return Ok(a);
-    }
-    let ip: IpAddr = s
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .parse()
-        .with_context(|| format!("invalid address {s:?} (an IP, optionally with :port)"))?;
-    Ok(SocketAddr::new(ip, port))
+fn parse_address(s: &str) -> Result<SocketAddr> {
+    let a = match s.parse::<SocketAddr>() {
+        Ok(a) => a,
+        Err(_) => SocketAddr::new(
+            s.trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse()
+                .with_context(|| format!("invalid address {s:?} (an IP)"))?,
+            22,
+        ),
+    };
+    check_port(&a)?;
+    Ok(a)
+}
+
+/// cx device targets carry no port, so a pairing is only usable over port 22: anything else would
+/// burn the invite for a one-sided pairing. The loopback fixture (debug builds) is the exception.
+fn check_port(addr: &SocketAddr) -> Result<()> {
+    anyhow::ensure!(
+        addr.port() == 22 || fixture_machine_id().is_some(),
+        "{addr}: cx pairs over SSH port 22 only (device targets carry no port)"
+    );
+    Ok(())
 }
 
 pub(super) fn valid_name(n: &str) -> bool {
@@ -249,13 +270,12 @@ pub fn create_invite(opts: &InviteOptions) -> Result<Invite> {
     if let Some(n) = &opts.device_name {
         anyhow::ensure!(valid_name(n), "invalid device name");
     }
-    let port = opts.port.unwrap_or(22);
     let addresses = if opts.addresses.is_empty() {
-        default_addresses(port)?
+        default_addresses()?
     } else {
         opts.addresses
             .iter()
-            .map(|a| parse_address(a, port))
+            .map(|a| parse_address(a))
             .collect::<Result<_>>()?
     };
     anyhow::ensure!(
@@ -263,9 +283,7 @@ pub fn create_invite(opts: &InviteOptions) -> Result<Invite> {
         "no reachable address to put in the code; pass --address"
     );
     let host_key = match &opts.host_key_file {
-        Some(p) => {
-            peer_ssh::ed25519_public(&fs::read_to_string(p).context("cannot read --host-key")?)?
-        }
+        Some(p) => peer_ssh::public_key(&fs::read_to_string(p).context("cannot read --host-key")?)?,
         None => peer_ssh::host_public_key()
             .context("this host has no readable SSH Ed25519 host key; pass --host-key")?,
     };
@@ -279,6 +297,7 @@ pub fn create_invite(opts: &InviteOptions) -> Result<Invite> {
         let l = lock()?;
         let mut inv = read_invites(&l)?;
         expire(&mut inv, now);
+        let _ = sweep(&inv);
         let pending = inv
             .invites
             .values()
@@ -302,13 +321,13 @@ pub fn create_invite(opts: &InviteOptions) -> Result<Invite> {
         );
         write_invites(&l, &inv)?;
         peer_ssh::authorize_line(&invite_line(&id, &public, direct.expires, &exe))?;
+        audit(&l, "invite", &format!("{id} until {}", iso(direct.expires)));
     }
-    audit("invite", &format!("{id} until {}", iso(direct.expires)));
     let code = direct.encode();
     let mut invite = Invite {
         code: code.clone(),
         url: None,
-        one_liner_sh: format!("cx join {code}"),
+        one_liner_sh: format!("cx mesh pair {code}"),
         one_liner_ps: None,
         expires: iso(direct.expires),
         uses: 1,
@@ -326,7 +345,7 @@ pub fn create_invite(opts: &InviteOptions) -> Result<Invite> {
         let shown = super::code::group(&short, 4);
         invite.url = Some(format!("{base}/p/{shown}"));
         invite.short_code = Some(shown.clone());
-        invite.one_liner_sh = format!("cx join {host}/{shown}");
+        invite.one_liner_sh = format!("cx mesh pair {host}/{shown}");
     }
     Ok(invite)
 }
@@ -352,20 +371,18 @@ fn expire(inv: &mut Invites, now: u64) {
     }
 }
 
+/// An invite authorization whose invite is no longer pending, or no longer recorded at all
+/// (expire() trims old records, so their lines are found by the absence of a pending one).
+fn stale_invite_line(line: &str, inv: &Invites) -> bool {
+    line.starts_with("restrict,command=")
+        && line
+            .rsplit_once(" cx-join-invite:")
+            .is_some_and(|(_, id)| inv.invites.get(id).is_none_or(|r| r.state != "pending"))
+}
+
 /// Remove the authorized_keys lines of invites that are no longer pending.
 fn sweep(inv: &Invites) -> Result<usize> {
-    let dead: Vec<String> = inv
-        .invites
-        .iter()
-        .filter(|(_, r)| r.state != "pending")
-        .map(|(k, _)| invite_tag(k))
-        .collect();
-    if dead.is_empty() {
-        return Ok(0);
-    }
-    peer_ssh::remove_authorized(|l| {
-        l.starts_with("restrict,command=") && dead.iter().any(|t| l.ends_with(t.as_str()))
-    })
+    peer_ssh::remove_authorized(|l| stale_invite_line(l, inv))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -398,17 +415,26 @@ struct Peer {
     client_key: String,
 }
 
-fn machine_id() -> String {
-    // CX_JOIN_MACHINE_ID: lets the loopback fixture run two identities on one machine.
-    std::env::var("CX_JOIN_MACHINE_ID")
+/// The loopback fixture (tests/mesh_ssh_overlay.py) runs two identities on one machine, and its
+/// sshd on a free port. Debug builds only, like CX_ADOPT_REPTYR.
+fn fixture_machine_id() -> Option<String> {
+    #[cfg(debug_assertions)]
+    if let Some(m) = std::env::var("CX_JOIN_MACHINE_ID")
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            fs::read_to_string("/etc/machine-id")
-                .unwrap_or_default()
-                .trim()
-                .to_owned()
-        })
+    {
+        return Some(m);
+    }
+    None
+}
+
+fn machine_id() -> String {
+    fixture_machine_id().unwrap_or_else(|| {
+        fs::read_to_string("/etc/machine-id")
+            .unwrap_or_default()
+            .trim()
+            .to_owned()
+    })
 }
 
 fn valid_machine_id(m: &str) -> bool {
@@ -416,6 +442,22 @@ fn valid_machine_id(m: &str) -> bool {
         && m.len() <= 64
         && m.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+}
+
+/// The identity a join request carries, as the viewer checks it. The joiner checks its own first,
+/// so a request the viewer would refuse never burns an invite.
+fn check_identity(name: &str, host: &str, account: &str, machine_id: &str) -> Result<()> {
+    anyhow::ensure!(valid_name(name), "invalid device name; pass --name");
+    anyhow::ensure!(valid_name(host), "invalid host name");
+    anyhow::ensure!(
+        valid_machine_id(machine_id),
+        "invalid machine id (from /etc/machine-id)"
+    );
+    anyhow::ensure!(
+        transport::valid_target(&format!("{account}@127.0.0.1")),
+        "invalid account name"
+    );
+    Ok(())
 }
 
 fn bracket(ip: IpAddr) -> String {
@@ -480,7 +522,7 @@ fn pair_new(peer: &Device, host_key: &str, client_key: &str) -> Result<String> {
     })
 }
 
-/// The forced command (`cx join --redeem <id>`), on the viewer, under sshd: stdin/stdout carry
+/// The forced command (`cx mesh pair --redeem <id>`), on the viewer, under sshd: stdin/stdout carry
 /// one request and one response frame. Always answers with a frame, even on refusal.
 pub fn redeem(id: &str) -> Result<()> {
     let stdin = std::io::stdin();
@@ -500,10 +542,13 @@ pub fn redeem(id: &str) -> Result<()> {
             viewer: Some(viewer),
         },
         Err(e) => {
-            audit(
-                "join-refused",
-                &format!("{id}: {}", crate::files::display(&format!("{e:#}"))),
-            );
+            if let Ok(l) = lock() {
+                audit(
+                    &l,
+                    "join-refused",
+                    &format!("{id}: {}", crate::files::display(&format!("{e:#}"))),
+                );
+            }
             JoinResponse {
                 version: PROTOCOL,
                 error: Some(format!("{e:#}")),
@@ -540,11 +585,7 @@ fn redeem_request(id: &str, req: JoinRequest) -> Result<Peer> {
     );
     anyhow::ensure!(req.id == id, "request names another invite");
     let name = record.name.clone().unwrap_or_else(|| req.name.clone());
-    anyhow::ensure!(
-        valid_name(&name) && valid_name(&req.host),
-        "invalid device name"
-    );
-    anyhow::ensure!(valid_machine_id(&req.machine_id), "invalid machine id");
+    check_identity(&name, &req.host, &req.account, &req.machine_id)?;
     let source: IpAddr = std::env::var("SSH_CONNECTION")
         .ok()
         .and_then(|s| s.split_whitespace().next().map(str::to_owned))
@@ -572,8 +613,8 @@ fn redeem_request(id: &str, req: JoinRequest) -> Result<Peer> {
             r.redeemed_by = Some(format!("{name} ({target})"));
         }
         write_invites(&l, &inv)?;
+        audit(&l, "join", &format!("{id}: {name} {target}"));
     }
-    audit("join", &format!("{id}: {name} {target}"));
     let identity = peer_ssh::identity()?;
     let local = store::local_device();
     Ok(Peer {
@@ -610,7 +651,7 @@ fn verified_host_key(code: &Direct, addr: &SocketAddr) -> Result<String> {
             seen = true;
             let key = format!("{} {}", f[1], f[2]);
             if code.matches_host_key(&key) {
-                return peer_ssh::ed25519_public(&key);
+                return peer_ssh::public_key(&key);
             }
         }
     }
@@ -649,7 +690,7 @@ fn resolve(text: &str) -> Result<String> {
     Ok(t.to_owned())
 }
 
-/// `cx join <code>`: redeem an invite on the viewer it names and pair both ways.
+/// `cx mesh pair <code>`: redeem an invite on the viewer it names and pair both ways.
 pub fn join(text: &str, opts: &JoinOptions) -> Result<Value> {
     let code = Direct::decode(&resolve(text)?)?;
     let now = transport::now();
@@ -658,9 +699,12 @@ pub fn join(text: &str, opts: &JoinOptions) -> Result<Value> {
         "this join code expired at {}; ask for a new one",
         iso(code.expires)
     );
+    for addr in &code.addresses {
+        check_port(addr)?;
+    }
     let local = store::local_device();
     let name = opts.name.clone().unwrap_or_else(|| local.name.clone());
-    anyhow::ensure!(valid_name(&name), "invalid device name; pass --name");
+    check_identity(&name, &local.host, &local.account, &machine_id())?;
     let identity = peer_ssh::identity()?;
     let request = JoinRequest {
         version: PROTOCOL,
@@ -681,9 +725,6 @@ pub fn join(text: &str, opts: &JoinOptions) -> Result<Value> {
     struct Cleanup(PathBuf);
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            if let Ok(b) = fs::read(self.0.join("invite")) {
-                let _ = fs::write(self.0.join("invite"), vec![0u8; b.len()]);
-            }
             let _ = fs::remove_dir_all(&self.0);
         }
     }
@@ -790,7 +831,6 @@ pub fn join(text: &str, opts: &JoinOptions) -> Result<Value> {
                 "port": addr.port(),
                 "host_key_sha256_prefix": digest[..super::code::FINGERPRINT_LEN].iter().map(|b| format!("{b:02x}")).collect::<String>(),
                 "as": name,
-                "warning": if addr.port() != 22 { Value::from("the viewer's sshd is not on port 22; cx pairing assumes 22, so add an SSH alias for it") } else { Value::Null },
                 "next": "cx device sync verifies the pairing in both directions",
             }))
         })();
@@ -826,17 +866,12 @@ impl MeshBackend for SshOverlay {
             .into_iter()
             .filter(|m| m.state != "local")
             .count();
-        let pending = if !dir().exists() {
-            0
-        } else {
-            let l = lock()?;
-            let mut inv = read_invites(&l)?;
-            expire(&mut inv, transport::now());
-            inv.invites
-                .values()
-                .filter(|r| r.state == "pending")
-                .count()
-        };
+        let now = transport::now();
+        let pending = load_invites()?
+            .invites
+            .values()
+            .filter(|r| r.state == "pending" && now < r.expires)
+            .count();
         Ok(Status {
             backend: ID.into(),
             available: true,
@@ -881,6 +916,7 @@ impl MeshBackend for SshOverlay {
             }
             write_invites(&l, &inv)?;
             audit(
+                &l,
                 "teardown",
                 &format!("{} invite(s) cancelled", pending.len()),
             );
@@ -891,14 +927,6 @@ impl MeshBackend for SshOverlay {
             applied: !dry_run,
             steps,
             result: json!({"authorizations_removed": swept}),
-        })
-    }
-    fn invite(&self, uses: u32, ttl_hours: f64, device_name: Option<&str>) -> Result<Invite> {
-        anyhow::ensure!(uses == 1, "ssh-overlay invites are single use");
-        create_invite(&InviteOptions {
-            ttl_hours: Some(ttl_hours),
-            device_name: device_name.map(str::to_owned),
-            ..Default::default()
         })
     }
     fn members(&self) -> Result<Vec<Member>> {
@@ -954,9 +982,9 @@ impl MeshBackend for SshOverlay {
             }
             write_invites(&l, &inv)?;
             let _ = sweep(&inv);
+            audit(&l, "revoke", &removed.name);
             n
         };
-        audit("revoke", &removed.name);
         Ok(
             json!({"name": removed.name, "id": removed.id, "revoked": ["device", "ssh pins"], "ssh": unpinned, "invites_cancelled": cancelled}),
         )
@@ -985,6 +1013,15 @@ impl MeshBackend for SshOverlay {
 mod tests {
     use super::*;
 
+    fn record(created: u64, expires: u64, state: &str) -> InviteRecord {
+        InviteRecord {
+            created,
+            expires,
+            state: state.into(),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn invite_line_is_restricted_forced_and_expiring() {
         let l = invite_line(
@@ -995,30 +1032,239 @@ mod tests {
         );
         assert_eq!(
             l,
-            "restrict,command=\"/home/u/.local/bin/cx join --redeem 0123456789abcdef\",expiry-time=\"202701150800Z\" ssh-ed25519 AAAA cx-join-invite:0123456789abcdef"
+            "restrict,command=\"/home/u/.local/bin/cx mesh pair --redeem 0123456789abcdef\",expiry-time=\"202701150800Z\" ssh-ed25519 AAAA cx-join-invite:0123456789abcdef"
         );
-        assert!(l.ends_with(&invite_tag("0123456789abcdef")));
     }
 
     #[test]
-    fn addresses_and_names() {
+    fn addresses_ports_and_identities() {
         assert_eq!(
-            parse_address("10.0.0.2", 22).unwrap().to_string(),
+            parse_address("10.0.0.2").unwrap().to_string(),
             "10.0.0.2:22"
         );
-        assert_eq!(parse_address("10.0.0.2:2222", 22).unwrap().port(), 2222);
-        assert_eq!(parse_address("[fd00::1]:2200", 22).unwrap().port(), 2200);
-        assert_eq!(parse_address("fd00::1", 2201).unwrap().port(), 2201);
-        assert!(parse_address("host.example", 22).is_err());
+        assert_eq!(parse_address("10.0.0.2:22").unwrap().port(), 22);
+        assert_eq!(parse_address("fd00::1").unwrap().port(), 22);
+        assert_eq!(parse_address("[fd00::1]:22").unwrap().port(), 22);
+        assert!(parse_address("host.example").is_err());
+        // Device targets carry no port: a pairing over another port would be one-sided.
+        for other in ["10.0.0.2:2222", "[fd00::1]:2200"] {
+            let e = parse_address(other).unwrap_err().to_string();
+            assert!(e.contains("port 22 only"), "{e}");
+        }
         assert!(
             valid_name("lab-arm") && !valid_name("-x") && !valid_name("a b") && !valid_name("")
         );
         assert!(valid_machine_id("0123abc") && !valid_machine_id("a;b"));
+        check_identity("rover", "rover", "alice", "0123abc").unwrap();
+        // No /etc/machine-id (macOS, minimal containers): refused before any invite is used.
+        let e = check_identity("rover", "rover", "alice", "").unwrap_err();
+        assert!(e.to_string().contains("machine id"), "{e}");
+        assert!(check_identity("rover", "a b", "alice", "0123abc").is_err());
+        assert!(check_identity("rover", "rover", "-oProxy", "0123abc").is_err());
     }
 
     #[test]
     fn short_code_references_resolve_shape() {
         assert!(resolve("mesh.example.org/not-a-code").is_err());
         assert_eq!(resolve("  ABCDE-12345 ").unwrap(), "ABCDE-12345");
+    }
+
+    #[test]
+    fn expire_marks_and_keeps_history_bounded() {
+        let mut inv = Invites::default();
+        inv.invites.insert("old".into(), record(1, 100, "pending"));
+        expire(&mut inv, 100);
+        assert_eq!(inv.invites["old"].state, "expired");
+        for i in 0..70u64 {
+            let state = if i % 14 == 0 { "pending" } else { "redeemed" };
+            inv.invites
+                .insert(format!("{i:02}"), record(10 + i, 10_000, state));
+        }
+        expire(&mut inv, 200);
+        assert_eq!(inv.invites.len(), 64);
+        assert_eq!(
+            inv.invites
+                .values()
+                .filter(|r| r.state == "pending")
+                .count(),
+            5,
+            "pending invites are never trimmed"
+        );
+        assert!(
+            !inv.invites.contains_key("old"),
+            "the oldest history goes first"
+        );
+    }
+
+    #[test]
+    fn stale_invite_lines_include_trimmed_records() {
+        let mut inv = Invites::default();
+        inv.invites.insert("aa".into(), record(1, 100, "pending"));
+        inv.invites.insert("bb".into(), record(1, 100, "redeemed"));
+        let line = |id: &str| invite_line(id, "ssh-ed25519 AAAA", 100, "/bin/cx");
+        assert!(!stale_invite_line(&line("aa"), &inv));
+        assert!(stale_invite_line(&line("bb"), &inv));
+        // Trimmed from the map by expire(): its line must still be swept.
+        assert!(stale_invite_line(&line("cc"), &inv));
+        assert!(!stale_invite_line(
+            "no-agent-forwarding ssh-ed25519 AAAA cx-managed-peer",
+            &inv
+        ));
+        assert!(!stale_invite_line(
+            "ssh-ed25519 AAAA me cx-join-invite:cc",
+            &inv
+        ));
+    }
+
+    #[test]
+    fn a_failed_write_leaves_no_temporary_file() {
+        let d = tempfile::tempdir().unwrap();
+        let target = d.path().join("invites.json");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("x"), "").unwrap();
+        assert!(write_private(&target, b"{}").is_err());
+        let left: Vec<_> = fs::read_dir(d.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, vec![std::ffi::OsString::from("invites.json")]);
+    }
+
+    fn scratch_state(d: &Path) -> [(&'static str, PathBuf); 2] {
+        [("HOME", d.to_owned()), ("XDG_STATE_HOME", d.join("state"))]
+    }
+
+    fn env<'a>(v: &'a [(&'static str, PathBuf)]) -> Vec<(&'static str, &'a Path)> {
+        v.iter().map(|(k, p)| (*k, p.as_path())).collect()
+    }
+
+    /// Separate processes appending at once (two redeems, an invite during a redeem) keep every
+    /// line, and a full log is trimmed to its newest half.
+    #[test]
+    fn audit_appends_from_concurrent_processes_are_kept() {
+        let d = tempfile::tempdir().unwrap();
+        fs::set_permissions(
+            d.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        let vars = scratch_state(d.path());
+        if !super::super::in_child(
+            "mesh::ssh_overlay::tests::audit_appends_from_concurrent_processes_are_kept",
+            &env(&vars),
+        ) {
+            return;
+        }
+        if let Ok(n) = std::env::var("CX_TEST_AUDIT_WRITER") {
+            for i in 0..50 {
+                audit(&lock().unwrap(), "join", &format!("{n}.{i}"));
+            }
+            return;
+        }
+        let writers: Vec<_> = (0..4)
+            .map(|n| {
+                Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "mesh::ssh_overlay::tests::audit_appends_from_concurrent_processes_are_kept",
+                        "--exact",
+                    ])
+                    .env("CX_TEST_AUDIT_WRITER", n.to_string())
+                    .stdout(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        for mut w in writers {
+            assert!(w.wait().unwrap().success());
+        }
+        let path = dir().join("audit.jsonl");
+        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 200);
+        let full: String = (0..1000).map(|i| format!("{{\"n\":{i}}}\n")).collect();
+        fs::write(&path, full).unwrap();
+        audit(&lock().unwrap(), "invite", "x");
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), 500);
+        assert!(text.starts_with("{\"n\":501}\n") && text.contains("\"invite\""));
+    }
+
+    /// cx's own expiry holds even when sshd's minute-rounded expiry-time still lets the key in.
+    #[test]
+    fn an_expired_invite_is_not_redeemed() {
+        let d = tempfile::tempdir().unwrap();
+        fs::set_permissions(
+            d.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        let vars = scratch_state(d.path());
+        if !super::super::in_child(
+            "mesh::ssh_overlay::tests::an_expired_invite_is_not_redeemed",
+            &env(&vars),
+        ) {
+            return;
+        }
+        let now = transport::now();
+        {
+            let l = lock().unwrap();
+            let mut inv = Invites::default();
+            inv.invites.insert(
+                "0123456789abcdef".into(),
+                record(now - 120, now - 1, "pending"),
+            );
+            write_invites(&l, &inv).unwrap();
+        }
+        let req = JoinRequest {
+            version: PROTOCOL,
+            id: "0123456789abcdef".into(),
+            name: "rover".into(),
+            host: "rover".into(),
+            account: "alice".into(),
+            machine_id: "m1".into(),
+            client_key: String::new(),
+            host_key: String::new(),
+        };
+        let e = redeem_request("0123456789abcdef", req).err().unwrap();
+        assert_eq!(e.to_string(), "this invite was already expired");
+        assert!(store::devices().unwrap().iter().all(|d| d.target.is_none()));
+    }
+
+    /// The joiner refuses an identity the viewer would refuse before it connects, so the invite
+    /// is not burnt (and nothing is generated or contacted).
+    #[test]
+    fn a_join_with_an_invalid_identity_fails_before_connecting() {
+        let d = tempfile::tempdir().unwrap();
+        fs::set_permissions(
+            d.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        let mut vars = scratch_state(d.path()).to_vec();
+        vars.push(("CX_JOIN_MACHINE_ID", PathBuf::from("no;such id")));
+        if !super::super::in_child(
+            "mesh::ssh_overlay::tests::a_join_with_an_invalid_identity_fails_before_connecting",
+            &env(&vars),
+        ) {
+            return;
+        }
+        let key =
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+        // TEST-NET-1: never answers, so a missing check would show up as a timeout, not a pass.
+        let code = Direct::new(
+            "alice",
+            vec!["192.0.2.1:22".parse().unwrap()],
+            key,
+            3600,
+            transport::now(),
+        )
+        .unwrap()
+        .encode();
+        let started = std::time::Instant::now();
+        let e = join(&code, &JoinOptions::default()).unwrap_err();
+        assert!(e.to_string().contains("machine id"), "{e:#}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(
+            !store::state_dir().join("peer-ssh").exists(),
+            "no identity generated"
+        );
     }
 }

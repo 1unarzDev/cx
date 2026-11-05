@@ -1,7 +1,7 @@
 //! The tailscale backend: read-only adoption of an existing tailnet through
 //! `tailscale status --json` when the binary exists. cx never logs in, changes ACLs or
 //! routes, or revokes nodes; those stay in Tailscale's own tools.
-use super::{ranges, AuditEntry, Invite, IpNet, Member, MeshBackend, Plan, Status};
+use super::{ranges, AuditEntry, IpNet, Member, MeshBackend, Plan, Status};
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::{
@@ -33,7 +33,7 @@ impl Tailscale {
     pub fn new() -> Self {
         Self { binary: find() }
     }
-    #[allow(dead_code)] // tests and callers that already located the binary
+    #[cfg(test)]
     pub fn with_binary(binary: Option<PathBuf>) -> Self {
         Self { binary }
     }
@@ -56,10 +56,12 @@ impl Tailscale {
     }
 }
 
-impl Default for Tailscale {
-    fn default() -> Self {
-        Self::new()
-    }
+/// The tailnet's address ranges (CGNAT IPv4 and Tailscale's ULA IPv6).
+pub fn ranges() -> Vec<IpNet> {
+    vec![
+        ranges::net(ranges::TAILSCALE_V4),
+        ranges::net(ranges::TAILSCALE_V6),
+    ]
 }
 
 fn member(node: &Value, own: bool) -> Member {
@@ -165,9 +167,6 @@ impl MeshBackend for Tailscale {
     fn teardown(&self, _dry_run: bool) -> Result<Plan> {
         bail!("tailscale is adopted read-only; cx does not change it")
     }
-    fn invite(&self, _uses: u32, _ttl_hours: f64, _device_name: Option<&str>) -> Result<Invite> {
-        bail!("tailscale is adopted read-only; invite devices from the Tailscale admin console")
-    }
     fn members(&self) -> Result<Vec<Member>> {
         Ok(members_from(&self.raw_status()?))
     }
@@ -175,10 +174,7 @@ impl MeshBackend for Tailscale {
         bail!("tailscale is adopted read-only; remove devices from the Tailscale admin console")
     }
     fn address_ranges(&self) -> Vec<IpNet> {
-        vec![
-            ranges::net(ranges::TAILSCALE_V4),
-            ranges::net(ranges::TAILSCALE_V6),
-        ]
+        ranges()
     }
     fn audit(&self, _limit: usize) -> Result<Vec<AuditEntry>> {
         Ok(Vec::new())
@@ -229,7 +225,7 @@ mod tests {
         assert_eq!(m[1].dns_name.as_deref(), Some("lab-arm.tail1234.ts.net"));
         assert_eq!(m[1].last_seen.as_deref(), Some("2026-11-01T10:00:00Z"));
         assert_eq!(m[2].last_seen, None);
-        assert!(t.revoke("phone").is_err() && t.invite(1, 1.0, None).is_err());
+        assert!(t.revoke("phone").is_err());
         assert!(t
             .address_ranges()
             .iter()

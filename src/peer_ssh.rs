@@ -319,7 +319,8 @@ impl Locked {
 fn root() -> PathBuf {
     store::state_dir().join("peer-ssh")
 }
-fn public_key(input: &str) -> Result<String> {
+/// Validated public key in canonical `ssh-ed25519 <base64>` form.
+pub(crate) fn public_key(input: &str) -> Result<String> {
     anyhow::ensure!(
         input.len() <= 1024 && !input.contains(['\r', '\0']) && input.trim().lines().count() == 1,
         "invalid Ed25519 public key"
@@ -427,7 +428,7 @@ fn configure_at(
     let authorized = read(&ssh.join("authorized_keys"))?;
     let _ = read(&locked.root.join("known_hosts"))?;
     let _ = locked.identity()?;
-    let managed_line = format!("no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc {authorized_key} cx-managed-peer");
+    let managed_line = managed_line(&authorized_key);
     let mut present = false;
     for line in authorized
         .lines()
@@ -448,7 +449,7 @@ fn configure_at(
         } else {
             ""
         };
-        let addition = format!("{prefix}no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc {authorized_key} cx-managed-peer\n");
+        let addition = format!("{prefix}{managed_line}\n");
         anyhow::ensure!(
             (authorized.len() + addition.len()) as u64 <= MAX,
             "authorized_keys too large"
@@ -467,6 +468,17 @@ fn configure_at(
             client_key: authorized_key,
         },
     );
+    write_pins(&locked, &pins)?;
+    Ok(json!({"configured": true, "target": target}))
+}
+/// The authorized_keys line of a paired peer's client key: what configure appends and unpin removes.
+fn managed_line(key: &str) -> String {
+    format!(
+        "no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc {key} cx-managed-peer"
+    )
+}
+/// Save the pins and regenerate known_hosts from them.
+fn write_pins(locked: &Locked, pins: &Pins) -> Result<()> {
     let hosts: BTreeMap<_, _> = pins.endpoints.values().map(|p| (&p.host, &p.key)).collect();
     let known = hosts
         .into_iter()
@@ -479,7 +491,7 @@ fn configure_at(
         .collect::<String>();
     locked.write("known_hosts", &known)?;
     locked.write("peers.json", &serde_json::to_string(&pins)?)?;
-    Ok(json!({"configured": true, "target": target}))
+    Ok(())
 }
 /// Only exact endpoints enrolled by authenticated pairing receive this identity.
 pub fn options(target: &str) -> Result<Option<(PathBuf, PathBuf)>> {
@@ -506,11 +518,6 @@ pub fn options(target: &str) -> Result<Option<(PathBuf, PathBuf)>> {
 fn ssh_dir() -> Result<PathBuf> {
     let home = std::env::var_os("HOME").context("HOME is unavailable")?;
     Ok(PathBuf::from(home).join(".ssh"))
-}
-
-/// Validated public key in canonical `ssh-ed25519 <base64>` form (for callers outside this module).
-pub(crate) fn ed25519_public(input: &str) -> Result<String> {
-    public_key(input)
 }
 
 /// The host's own SSH Ed25519 public key (root-owned, not writable by others).
@@ -629,25 +636,14 @@ fn unpin_at(root: PathBuf, ssh: &Path, device_id: &str) -> Result<Value> {
     let lines: Vec<String> = keys
         .iter()
         .filter(|k| !still.contains(k))
-        .map(|k| format!("no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc {k} cx-managed-peer"))
+        .map(|k| managed_line(k))
         .collect();
     let removed = if lines.is_empty() {
         0
     } else {
         remove_authorized_at(&locked, ssh, |l| lines.iter().any(|m| m == l))?
     };
-    let hosts: BTreeMap<_, _> = pins.endpoints.values().map(|p| (&p.host, &p.key)).collect();
-    let known = hosts
-        .into_iter()
-        .map(|(host, key)| {
-            format!(
-                "{} {key}\n",
-                host.trim_start_matches('[').trim_end_matches(']')
-            )
-        })
-        .collect::<String>();
-    locked.write("known_hosts", &known)?;
-    locked.write("peers.json", &serde_json::to_string(&pins)?)?;
+    write_pins(&locked, &pins)?;
     Ok(json!({"unpinned": unpinned, "authorizations_removed": removed}))
 }
 

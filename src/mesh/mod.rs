@@ -5,12 +5,12 @@
 //! The mesh is a pluggable feature: [`MeshBackend`] has three implementations, listed by
 //! [`backends`] (`cx mesh backends`):
 //! - `ssh-overlay` (ssh_overlay.rs): the built-in default over plain SSH, coexisting with any VPN;
-//!   devices join with `cx join <code>` (code.rs, the protocol and threat model in docs/mesh.md).
+//!   devices join with `cx mesh pair <code>` (code.rs, the protocol and threat model in docs/mesh.md).
 //! - `cloudflare-warp` (cloudflare.rs): the WARP mesh of mesh.py, through its `--json` contract.
 //! - `tailscale` (tailscale.rs): read-only adoption of `tailscale status --json`.
 //!
-//! [`overlay`] feeds network.rs: which backends exist, which interfaces sit in their ranges, and
-//! range collisions (ranges.rs) between overlays and LANs.
+//! [`overlay`] feeds network.rs from local evidence only: which interfaces sit in overlay ranges,
+//! and range collisions (ranges.rs) between overlays and LANs.
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -82,9 +82,12 @@ fn unpack() -> Result<PathBuf> {
     Ok(dir.join("mesh.py"))
 }
 
-/// `cx mesh ARGS`: `backends`, `ranges` and any subcommand with `--backend ID` are handled here;
-/// everything else goes to mesh.py unchanged (its CLI and `--json` contract are frozen).
+/// `cx mesh ARGS`: `backends`, `ranges`, `pair` and any subcommand with `--backend ID` are handled
+/// here; everything else goes to mesh.py unchanged (its CLI and `--json` contract are frozen).
 pub fn run(args: &[String]) -> Result<()> {
+    if args.first().map(String::as_str) == Some("pair") {
+        return pair(&args[1..]);
+    }
     if args.first().map(String::as_str) == Some("backends") {
         let json = args.iter().any(|a| a == "--json");
         let r = report();
@@ -154,7 +157,7 @@ pub struct Plan {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Invite {
     pub backend: String,
-    /// What the new device types or pastes (`cx join <code>` for ssh-overlay).
+    /// What the new device types or pastes (`cx mesh pair <code>` for ssh-overlay).
     pub code: String,
     pub url: Option<String>,
     pub one_liner_sh: String,
@@ -200,7 +203,6 @@ pub trait MeshBackend {
     fn status(&self) -> Result<Status>;
     fn provision(&self, dry_run: bool) -> Result<Plan>;
     fn teardown(&self, dry_run: bool) -> Result<Plan>;
-    fn invite(&self, uses: u32, ttl_hours: f64, device_name: Option<&str>) -> Result<Invite>;
     fn members(&self) -> Result<Vec<Member>>;
     fn revoke(&self, name: &str) -> Result<Value>;
     /// The ranges this overlay assigns addresses from (empty: it claims none).
@@ -274,7 +276,9 @@ pub(crate) fn run_bounded(
         .spawn()?;
     let mut stdin = child.stdin.take().context("no stdin")?;
     let input = input.to_vec();
-    let writer = std::thread::spawn(move || {
+    // Not joined: a group member that holds stdin without reading would block it; the group kill
+    // below closes the pipe and ends the thread.
+    std::thread::spawn(move || {
         let _ = stdin.write_all(&input);
     });
     let mut stdout = child.stdout.take().context("no stdout")?;
@@ -285,22 +289,27 @@ pub(crate) fn run_bounded(
         let _ = tx.send((r, b));
     });
     let deadline = Instant::now() + timeout;
+    let group = child.id() as libc::pid_t;
+    // SAFETY: plain syscall; the group id is the child's pid (process_group(0) above). After the
+    // leader is reaped the id stays reserved while any member of the group remains.
+    let kill_group = || unsafe {
+        libc::killpg(group, libc::SIGKILL);
+    };
     let status = loop {
         if let Some(s) = child.try_wait()? {
             break s;
         }
         if Instant::now() >= deadline {
-            // SAFETY: plain syscall; the group id is the child's pid (process_group(0) above).
-            unsafe {
-                libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
-            }
+            kill_group();
             let _ = child.kill();
             let _ = child.wait();
             bail!("timed out");
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    let _ = writer.join();
+    // Whatever the child left running in its group (a lingering helper still holding stdout)
+    // goes with it, so the output is complete and nothing outlives the call.
+    kill_group();
     let (r, b) = rx.recv_timeout(Duration::from_secs(2))?;
     r?;
     anyhow::ensure!(b.len() <= limit, "output too large");
@@ -406,16 +415,27 @@ pub fn report_with(list: &[Box<dyn MeshBackend>], interfaces: &Value) -> Value {
 }
 
 /// network.rs: the `overlay` field's state and the details behind it, from `ip -j address`.
-/// state: "observed" (an interface address sits in an overlay range), "configured" (a backend
-/// with ranges is provisioned, no interface seen), or "none". ssh-overlay claims no range, so it
-/// is listed but never makes the state.
+/// state: "observed" (an interface address sits in an overlay range), "configured" (a WARP mesh
+/// is deployed, no interface seen), or "none".
+///
+/// Every network observation (local and remote helpers) runs this, so it uses local evidence
+/// only and never a backend's status(): WARP's config and state files (cloudflare::quick_status)
+/// and `tailscale` on PATH, with no subprocess and no lock. ssh-overlay claims no range, so it
+/// takes no part; `cx mesh backends` reports the full status.
 pub fn overlay(interfaces: &Value) -> (String, Value) {
-    overlay_with(&backends(), interfaces)
+    let q = cloudflare::quick_status();
+    let present = [
+        json!({"id": cloudflare::ID, "ranges": q.mesh_ranges,
+               "status": {"available": q.configured, "provisioned": q.provisioned}}),
+        json!({"id": tailscale::ID, "ranges": tailscale::ranges(),
+               "status": {"available": tailscale::find().is_some(), "provisioned": false}}),
+    ];
+    overlay_with(&present, interfaces)
 }
 
-pub fn overlay_with(list: &[Box<dyn MeshBackend>], interfaces: &Value) -> (String, Value) {
-    let values: Vec<Value> = list.iter().map(|b| backend_value(b.as_ref())).collect();
-    let (overlays, lans) = claims(&values, interfaces);
+/// [`overlay`] for backends given as `{id, ranges, status: {available, provisioned}}`.
+fn overlay_with(values: &[Value], interfaces: &Value) -> (String, Value) {
+    let (overlays, lans) = claims(values, interfaces);
     let mut on = Vec::new();
     for item in interfaces.as_array().into_iter().flatten() {
         for a in item["addr_info"].as_array().into_iter().flatten() {
@@ -467,111 +487,49 @@ fn print_report(r: &Value) {
     }
 }
 
-struct Flags<'a> {
-    args: &'a [String],
-}
-impl<'a> Flags<'a> {
-    fn has(&self, f: &str) -> bool {
-        self.args.iter().any(|a| a == f)
-    }
-    fn all(&self, f: &str) -> Vec<&'a str> {
-        let mut out = Vec::new();
-        let eq = format!("{f}=");
-        let mut i = 0;
-        while i < self.args.len() {
-            if self.args[i] == f {
-                if let Some(v) = self.args.get(i + 1) {
-                    out.push(v.as_str());
-                }
-                i += 2;
-                continue;
-            }
-            if let Some(v) = self.args[i].strip_prefix(&eq) {
-                out.push(v);
-            }
-            i += 1;
-        }
-        out
-    }
-    fn one(&self, f: &str) -> Option<&'a str> {
-        self.all(f).into_iter().last()
-    }
-    /// Positional arguments after the subcommand (values of known flags skipped).
-    fn positional(&self) -> Vec<&'a str> {
-        const VALUED: &[&str] = &[
-            "--backend",
-            "--hours",
-            "--uses",
-            "--name",
-            "--address",
-            "--port",
-            "--host-key",
-            "--limit",
-        ];
-        let mut out = Vec::new();
-        let mut i = 1;
-        while i < self.args.len() {
-            let a = self.args[i].as_str();
-            if VALUED.contains(&a) {
-                i += 2;
-                continue;
-            }
-            if !a.starts_with("--") {
-                out.push(a);
-            }
-            i += 1;
-        }
-        out
-    }
+/// `cx mesh SUB --backend ID ...`: the part of `cx mesh` handled here. Unknown flags are refused.
+#[derive(clap::Parser)]
+#[command(name = "cx mesh", no_binary_name = true)]
+struct BackendArgs {
+    /// status, members, invite, revoke, audit, ranges, setup or teardown
+    #[arg(default_value = "status")]
+    sub: String,
+    /// revoke: the device
+    device: Option<String>,
+    #[arg(long)]
+    backend: String,
+    #[arg(long)]
+    hours: Option<f64>,
+    #[arg(long)]
+    uses: Option<u32>,
+    #[arg(long)]
+    name: Option<String>,
+    /// ssh-overlay invite: an address to put in the code (repeatable; default: this host's own).
+    #[arg(long)]
+    address: Vec<String>,
+    /// ssh-overlay invite: the host key to pin, when sshd does not use the default one.
+    #[arg(long)]
+    host_key: Option<PathBuf>,
+    #[arg(long)]
+    limit: Option<usize>,
+    /// ssh-overlay invite: also stash the code on the mesh Worker for a short code.
+    #[arg(long)]
+    short: bool,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    yes: bool,
+    #[arg(long)]
+    json: bool,
 }
 
 fn run_backend(args: &[String]) -> Result<()> {
-    let f = Flags { args };
-    let id = f.one("--backend").context("--backend needs a value")?;
-    let b = backend(id)?;
-    let sub = args.first().map(String::as_str).unwrap_or("status");
-    let hours = f
-        .one("--hours")
-        .map(str::parse::<f64>)
-        .transpose()
-        .context("--hours")?;
-    let out: Value = match sub {
-        "status" => serde_json::to_value(b.status()?)?,
-        "members" | "devices" => serde_json::to_value(b.members()?)?,
-        "audit" => serde_json::to_value(b.audit(f.one("--limit").map(str::parse).transpose()?.unwrap_or(50))?)?,
-        "ranges" => serde_json::to_value(b.address_ranges())?,
-        "setup" | "provision" => serde_json::to_value(b.provision(f.has("--dry-run"))?)?,
-        "teardown" => {
-            let dry = f.has("--dry-run");
-            anyhow::ensure!(dry || f.has("--yes"), "not confirmed (pass --yes, or --dry-run to preview)");
-            serde_json::to_value(b.teardown(dry)?)?
-        }
-        "revoke" => {
-            let name = *f.positional().first().context("revoke NAME")?;
-            anyhow::ensure!(f.has("--yes"), "not confirmed (pass --yes)");
-            b.revoke(name)?
-        }
-        "invite" if b.id() == ssh_overlay::ID => {
-            let opts = ssh_overlay::InviteOptions {
-                ttl_hours: hours,
-                device_name: f.one("--name").map(str::to_owned),
-                addresses: f.all("--address").into_iter().map(str::to_owned).collect(),
-                port: f.one("--port").map(str::parse).transpose().context("--port")?,
-                host_key_file: f.one("--host-key").map(PathBuf::from),
-                short: f.has("--short"),
-            };
-            anyhow::ensure!(f.one("--uses").is_none_or(|u| u == "1"), "ssh-overlay invites are single use");
-            serde_json::to_value(ssh_overlay::create_invite(&opts)?)?
-        }
-        "invite" => {
-            let uses = f.one("--uses").map(str::parse).transpose().context("--uses")?.unwrap_or(1);
-            serde_json::to_value(b.invite(uses, hours.unwrap_or(24.0), f.one("--name"))?)?
-        }
-        other => bail!("cx mesh {other} --backend: use status, members, invite, revoke, audit, ranges, setup or teardown"),
-    };
-    if f.has("--json") {
+    use clap::Parser;
+    let a = BackendArgs::try_parse_from(args).unwrap_or_else(|e| e.exit());
+    let out = backend_command(&a)?;
+    if a.json {
         println!("{}", serde_json::to_string_pretty(&out)?);
-    } else if sub == "invite" {
+    } else if a.sub == "invite" {
         println!(
             "On the new device:  {}",
             out["one_liner_sh"].as_str().unwrap_or("")
@@ -590,24 +548,88 @@ fn run_backend(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// `cx join <code> [--name N]`, and the viewer's forced command `cx join --redeem <id>`.
-pub fn join(
-    code: Option<&str>,
-    name: Option<&str>,
-    redeem: Option<&str>,
+fn backend_command(a: &BackendArgs) -> Result<Value> {
+    let b = backend(&a.backend)?;
+    anyhow::ensure!(
+        a.device.is_none() || a.sub == "revoke",
+        "cx mesh {}: unexpected argument {:?}",
+        a.sub,
+        a.device.as_deref().unwrap_or_default()
+    );
+    Ok(match a.sub.as_str() {
+        "status" => serde_json::to_value(b.status()?)?,
+        "members" | "devices" => serde_json::to_value(b.members()?)?,
+        "audit" => serde_json::to_value(b.audit(a.limit.unwrap_or(50))?)?,
+        "ranges" => serde_json::to_value(b.address_ranges())?,
+        "setup" | "provision" => serde_json::to_value(b.provision(a.dry_run)?)?,
+        "teardown" => {
+            anyhow::ensure!(
+                a.dry_run || a.yes,
+                "not confirmed (pass --yes, or --dry-run to preview)"
+            );
+            serde_json::to_value(b.teardown(a.dry_run)?)?
+        }
+        "revoke" => {
+            let name = a.device.as_deref().context("revoke NAME")?;
+            anyhow::ensure!(a.yes, "not confirmed (pass --yes)");
+            b.revoke(name)?
+        }
+        "invite" => serde_json::to_value(match b.id() {
+            ssh_overlay::ID => {
+                anyhow::ensure!(
+                    a.uses.is_none_or(|u| u == 1),
+                    "ssh-overlay invites are single use"
+                );
+                ssh_overlay::create_invite(&ssh_overlay::InviteOptions {
+                    ttl_hours: a.hours,
+                    device_name: a.name.clone(),
+                    addresses: a.address.clone(),
+                    host_key_file: a.host_key.clone(),
+                    short: a.short,
+                })?
+            }
+            cloudflare::ID => cloudflare::invite(
+                a.uses.unwrap_or(1),
+                a.hours.unwrap_or(24.0),
+                a.name.as_deref(),
+            )?,
+            _ => bail!("tailscale is adopted read-only; invite devices from the Tailscale admin console"),
+        })?,
+        other => bail!("cx mesh {other} --backend: use status, members, invite, revoke, audit, ranges, setup or teardown"),
+    })
+}
+
+/// `cx mesh pair <code> [--name N]`, and the viewer's forced command `cx mesh pair --redeem <id>`.
+#[derive(clap::Parser)]
+#[command(name = "cx mesh pair", no_binary_name = true)]
+struct PairArgs {
+    /// The code from `cx mesh invite --backend ssh-overlay`, or <mesh host>/<short code>.
+    #[arg(required_unless_present = "redeem")]
+    code: Option<String>,
+    /// The name this device gets on the viewer (default: the hostname).
+    #[arg(long)]
+    name: Option<String>,
+    #[arg(long)]
     json: bool,
-) -> Result<()> {
-    if let Some(id) = redeem {
+    /// The viewer side, run by sshd as the invite key's forced command.
+    #[arg(long, hide = true, conflicts_with = "code")]
+    redeem: Option<String>,
+}
+
+fn pair(args: &[String]) -> Result<()> {
+    use clap::Parser;
+    let a = PairArgs::try_parse_from(args).unwrap_or_else(|e| e.exit());
+    if let Some(id) = &a.redeem {
         return ssh_overlay::redeem(id);
     }
-    let code = code.context("cx join <code>")?;
+    let code = a.code.as_deref().context("cx mesh pair <code>")?;
     let r = ssh_overlay::join(
         code,
         &ssh_overlay::JoinOptions {
-            name: name.map(str::to_owned),
+            name: a.name.clone(),
         },
     )?;
-    if json {
+    if a.json {
         println!("{}", serde_json::to_string_pretty(&r)?);
     } else {
         println!(
@@ -615,12 +637,34 @@ pub fn join(
             r["target"].as_str().unwrap_or(""),
             r["as"].as_str().unwrap_or("")
         );
-        if let Some(w) = r["warning"].as_str() {
-            println!("note: {w}");
-        }
         println!("next: {}", r["next"].as_str().unwrap_or(""));
     }
     Ok(())
+}
+
+/// Tests that need HOME, XDG dirs or PATH of their own run again as a child of this test binary,
+/// with `env` set there, so this process's environment (shared by every test thread) is untouched.
+/// Returns true in the child, which then does the work; in the parent it runs the child, asserts
+/// that it passed, and returns false.
+#[cfg(test)]
+pub(crate) fn in_child(test: &str, env: &[(&str, &std::path::Path)]) -> bool {
+    if std::env::var_os("CX_TEST_CHILD").is_some() {
+        return true;
+    }
+    let mut cmd = Command::new(std::env::current_exe().unwrap());
+    cmd.args([test, "--exact", "--test-threads=1"])
+        .env("CX_TEST_CHILD", "1");
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && text.contains("1 passed"),
+        "{test} failed in its child:\n{text}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    false
 }
 
 #[cfg(test)]
@@ -633,22 +677,23 @@ mod tests {
         assert_eq!(super::iso(1_793_836_799), "2026-11-04T23:59:59Z");
     }
 
-    struct Fake;
+    /// A backend with one range; `provisioned` is its evidence (available and provisioned alike).
+    struct Fake(&'static str, &'static str, bool);
     impl super::MeshBackend for Fake {
         fn id(&self) -> &'static str {
-            "fake"
+            self.0
         }
         fn name(&self) -> &'static str {
-            "Fake"
+            self.0
         }
         fn capabilities(&self) -> Vec<&'static str> {
             vec![]
         }
         fn status(&self) -> anyhow::Result<super::Status> {
             Ok(super::Status {
-                backend: "fake".into(),
-                available: true,
-                provisioned: true,
+                backend: self.0.into(),
+                available: self.2,
+                provisioned: self.2,
                 ..Default::default()
             })
         }
@@ -656,69 +701,6 @@ mod tests {
             unimplemented!()
         }
         fn teardown(&self, _: bool) -> anyhow::Result<super::Plan> {
-            unimplemented!()
-        }
-        fn invite(&self, _: u32, _: f64, _: Option<&str>) -> anyhow::Result<super::Invite> {
-            unimplemented!()
-        }
-        fn members(&self) -> anyhow::Result<Vec<super::Member>> {
-            Ok(vec![])
-        }
-        fn revoke(&self, _: &str) -> anyhow::Result<serde_json::Value> {
-            unimplemented!()
-        }
-        fn address_ranges(&self) -> Vec<super::IpNet> {
-            vec![super::ranges::net("100.64.0.0/10")]
-        }
-        fn audit(&self, _: usize) -> anyhow::Result<Vec<super::AuditEntry>> {
-            Ok(vec![])
-        }
-    }
-
-    #[test]
-    fn report_flags_overlay_lan_collisions() {
-        let interfaces = serde_json::json!([
-            {"ifname":"wlan0","addr_info":[{"local":"100.70.3.4","prefixlen":10}]},
-            {"ifname":"eth0","addr_info":[{"local":"192.168.7.2","prefixlen":24}]}
-        ]);
-        let list: Vec<Box<dyn super::MeshBackend>> = vec![Box::new(Fake)];
-        let r = super::report_with(&list, &interfaces);
-        assert_eq!(r["backends"][0]["id"], "fake");
-        let owners: Vec<_> = r["claims"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|c| c["owner"].as_str().unwrap().to_owned())
-            .collect();
-        assert_eq!(
-            owners,
-            vec!["fake", "lan:eth0"],
-            "an address inside an overlay range is the overlay's, not a LAN"
-        );
-        assert!(r["collisions"].as_array().unwrap().is_empty());
-    }
-
-    struct Ranged(&'static str, &'static str);
-    impl super::MeshBackend for Ranged {
-        fn id(&self) -> &'static str {
-            self.0
-        }
-        fn name(&self) -> &'static str {
-            self.0
-        }
-        fn capabilities(&self) -> Vec<&'static str> {
-            vec![]
-        }
-        fn status(&self) -> anyhow::Result<super::Status> {
-            Ok(super::Status::default())
-        }
-        fn provision(&self, _: bool) -> anyhow::Result<super::Plan> {
-            unimplemented!()
-        }
-        fn teardown(&self, _: bool) -> anyhow::Result<super::Plan> {
-            unimplemented!()
-        }
-        fn invite(&self, _: u32, _: f64, _: Option<&str>) -> anyhow::Result<super::Invite> {
             unimplemented!()
         }
         fn members(&self) -> anyhow::Result<Vec<super::Member>> {
@@ -735,11 +717,39 @@ mod tests {
         }
     }
 
+    fn values(list: &[Fake]) -> Vec<serde_json::Value> {
+        list.iter().map(|b| super::backend_value(b)).collect()
+    }
+
+    #[test]
+    fn report_flags_overlay_lan_collisions() {
+        let interfaces = serde_json::json!([
+            {"ifname":"wlan0","addr_info":[{"local":"100.70.3.4","prefixlen":10}]},
+            {"ifname":"eth0","addr_info":[{"local":"192.168.7.2","prefixlen":24}]}
+        ]);
+        let list: Vec<Box<dyn super::MeshBackend>> =
+            vec![Box::new(Fake("fake", "100.64.0.0/10", true))];
+        let r = super::report_with(&list, &interfaces);
+        assert_eq!(r["backends"][0]["id"], "fake");
+        let owners: Vec<_> = r["claims"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["owner"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            owners,
+            vec!["fake", "lan:eth0"],
+            "an address inside an overlay range is the overlay's, not a LAN"
+        );
+        assert!(r["collisions"].as_array().unwrap().is_empty());
+    }
+
     #[test]
     fn observed_interfaces_pick_their_overlay() {
         let list: Vec<Box<dyn super::MeshBackend>> = vec![
-            Box::new(Ranged("cloudflare-warp", "100.96.0.0/12")),
-            Box::new(Ranged("tailscale", "100.64.0.0/10")),
+            Box::new(Fake("cloudflare-warp", "100.96.0.0/12", false)),
+            Box::new(Fake("tailscale", "100.64.0.0/10", false)),
         ];
         let owners = |interfaces: serde_json::Value| -> Vec<String> {
             let r = super::report_with(&list, &interfaces);
@@ -778,55 +788,12 @@ mod tests {
         assert_eq!(both["collisions"][0]["a"]["owner"], "cloudflare-warp");
     }
 
-    /// Ranged, but with real evidence (provisioned), like a configured WARP and a running tailnet.
-    struct Present(&'static str, &'static str);
-    impl super::MeshBackend for Present {
-        fn id(&self) -> &'static str {
-            self.0
-        }
-        fn name(&self) -> &'static str {
-            self.0
-        }
-        fn capabilities(&self) -> Vec<&'static str> {
-            vec![]
-        }
-        fn status(&self) -> anyhow::Result<super::Status> {
-            Ok(super::Status {
-                backend: self.0.into(),
-                available: true,
-                provisioned: true,
-                ..Default::default()
-            })
-        }
-        fn provision(&self, _: bool) -> anyhow::Result<super::Plan> {
-            unimplemented!()
-        }
-        fn teardown(&self, _: bool) -> anyhow::Result<super::Plan> {
-            unimplemented!()
-        }
-        fn invite(&self, _: u32, _: f64, _: Option<&str>) -> anyhow::Result<super::Invite> {
-            unimplemented!()
-        }
-        fn members(&self) -> anyhow::Result<Vec<super::Member>> {
-            Ok(vec![])
-        }
-        fn revoke(&self, _: &str) -> anyhow::Result<serde_json::Value> {
-            unimplemented!()
-        }
-        fn address_ranges(&self) -> Vec<super::IpNet> {
-            vec![super::ranges::net(self.1)]
-        }
-        fn audit(&self, _: usize) -> anyhow::Result<Vec<super::AuditEntry>> {
-            Ok(vec![])
-        }
-    }
-
     #[test]
     fn network_overlay_interfaces_use_the_interface_name_first() {
-        let list: Vec<Box<dyn super::MeshBackend>> = vec![
-            Box::new(Present("cloudflare-warp", "100.96.0.0/12")),
-            Box::new(Present("tailscale", "100.64.0.0/10")),
-        ];
+        let list = values(&[
+            Fake("cloudflare-warp", "100.96.0.0/12", true),
+            Fake("tailscale", "100.64.0.0/10", true),
+        ]);
         let (state, v) = super::overlay_with(
             &list,
             &serde_json::json!([
@@ -860,16 +827,115 @@ mod tests {
 
     #[test]
     fn available_but_unprovisioned_backends_without_interfaces_claim_nothing() {
-        // Ranged reports available=false, provisioned=false: no evidence, no claim, no collision.
-        let list: Vec<Box<dyn super::MeshBackend>> = vec![
-            Box::new(Ranged("cloudflare-warp", "100.96.0.0/12")),
-            Box::new(Present("tailscale", "100.64.0.0/10")),
-        ];
+        // No evidence for WARP: no claim, no collision.
+        let list = values(&[
+            Fake("cloudflare-warp", "100.96.0.0/12", false),
+            Fake("tailscale", "100.64.0.0/10", true),
+        ]);
         let (state, v) = super::overlay_with(&list, &serde_json::json!([]));
         assert_eq!(state, "configured");
         assert!(v["collisions"].as_array().unwrap().is_empty(), "{v}");
         assert_eq!(v["claims"][0]["owner"], "tailscale");
         assert_eq!(v["claims"].as_array().unwrap().len(), 1);
+    }
+
+    /// The network observation runs no backend status: a hung `tailscale` on PATH is never
+    /// called and a held ssh-overlay invite lock never waited on.
+    #[test]
+    fn network_overlay_runs_no_subprocess_and_takes_no_lock() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path();
+        let path =
+            std::path::PathBuf::from(format!("{}:/usr/bin:/bin", home.join("bin").display()));
+        if !super::in_child(
+            "mesh::tests::network_overlay_runs_no_subprocess_and_takes_no_lock",
+            &[
+                ("HOME", home),
+                ("XDG_STATE_HOME", &home.join("state")),
+                ("XDG_CONFIG_HOME", &home.join("config")),
+                ("PATH", &path),
+            ],
+        ) {
+            return;
+        }
+        let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+        let bin = home.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let fake = bin.join("tailscale");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\ntouch {}\nsleep 30\n",
+                home.join("called").display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mesh = home.join("state/cx/mesh/ssh-overlay");
+        std::fs::create_dir_all(&mesh).unwrap();
+        for p in [
+            home.join("state"),
+            home.join("state/cx"),
+            home.join("state/cx/mesh"),
+            mesh.clone(),
+        ] {
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let held = std::fs::File::create(mesh.join("lock")).unwrap();
+        use std::os::fd::AsRawFd;
+        assert_eq!(unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX) }, 0);
+        let started = std::time::Instant::now();
+        let (state, v) = super::overlay(&serde_json::json!([]));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(!home.join("called").exists(), "tailscale was run");
+        assert_eq!(state, "none", "{v}");
+        assert_eq!(
+            v["backends"][1]["status"]["available"], true,
+            "found on PATH"
+        );
+    }
+
+    fn parse(args: &[&str]) -> Result<super::BackendArgs, clap::Error> {
+        use clap::Parser;
+        super::BackendArgs::try_parse_from(args)
+    }
+
+    #[test]
+    fn backend_flags_parse_anywhere_and_unknown_ones_are_refused() {
+        let a = parse(&["revoke", "--backend", "x", "--yes", "rover"]).unwrap();
+        assert_eq!(
+            (a.sub.as_str(), a.device.as_deref(), a.yes),
+            ("revoke", Some("rover"), true)
+        );
+        let a = parse(&["--backend", "ssh-overlay", "status"]).unwrap();
+        assert_eq!(a.sub, "status");
+        assert_eq!(parse(&["--backend=ssh-overlay"]).unwrap().sub, "status");
+        let a = parse(&[
+            "invite",
+            "--backend",
+            "x",
+            "--hours=2",
+            "--address",
+            "10.0.0.2",
+            "--address",
+            "10.0.0.3",
+        ])
+        .unwrap();
+        assert_eq!((a.hours, a.address.len()), (Some(2.0), 2));
+        // A typo (`--hour`) must not silently fall back to the default lifetime.
+        assert!(parse(&["invite", "--backend", "x", "--hour", "48"]).is_err());
+        assert!(parse(&["status", "--backend", "x", "--bogus"]).is_err());
+        assert!(parse(&["invite", "--backend", "x", "--hours", "many"]).is_err());
+        let a = parse(&["status", "--backend", "ssh-overlay", "stray"]).unwrap();
+        assert!(super::backend_command(&a)
+            .unwrap_err()
+            .to_string()
+            .contains("unexpected argument"));
     }
 
     #[test]
@@ -901,6 +967,46 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(!alive, "grandchild {pid} survived the timeout");
+    }
+
+    #[test]
+    fn normal_exit_ends_lingering_group_members_and_never_waits_on_stdin() {
+        let d = tempfile::tempdir().unwrap();
+        let pidfile = d.path().join("grandchild");
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c")
+            .arg("sleep 20 & echo $! > \"$1\"; echo hi")
+            .arg("sh")
+            .arg(&pidfile);
+        let started = std::time::Instant::now();
+        let (ok, out) =
+            super::run_bounded(cmd, b"", 1024, std::time::Duration::from_secs(10)).unwrap();
+        assert!(ok && out == b"hi\n", "{out:?}");
+        assert!(started.elapsed() < std::time::Duration::from_millis(1500));
+        let pid: i32 = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let mut alive = true;
+        for _ in 0..200 {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            if stat.is_empty() || stat.contains(") Z ") {
+                alive = false;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!alive, "grandchild {pid} outlived the call");
+        // A group member holding stdin without reading it, with more input than a pipe buffers.
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg("sleep 8 0<&0 >/dev/null & exit 0");
+        let started = std::time::Instant::now();
+        let input = vec![b'x'; 1024 * 1024];
+        let (ok, _) =
+            super::run_bounded(cmd, &input, 1024, std::time::Duration::from_secs(2)).unwrap();
+        assert!(ok);
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
     }
 
     #[test]

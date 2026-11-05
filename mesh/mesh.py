@@ -9,15 +9,14 @@ Owner side (a trusted machine: one holding the account's API token):
     mesh.py profile                                         the device profile setup applies, without applying
     mesh.py deploy                                          redeploy only the Worker and its schema (after a cx update)
     mesh.py teardown [--yes] [--dry-run]                    remove everything setup created
-    mesh.py status                                          config and deployment, from local files only
-    mesh.py pair-stash --lookup H --hours H                 hold a sealed `cx join` invite (stdin) for a short code
+    mesh.py pair-stash --lookup H --hours H                 hold a sealed `cx mesh pair` invite (stdin) for a short code
 Onboarding (no config needed):
     mesh.py token-url [--with-domain]                       the dashboard link that creates the setup token
     mesh.py verify [--token-stdin]                          is the token valid? (GET /user/tokens/verify)
     mesh.py zones [--token-stdin]                           the zones (domains) the token can use
 Device side (no cx needed; the one-liners do the same):
     mesh.py join CODE | mesh.py leave
-    mesh.py pair-redeem --url URL --lookup H                take a short code's sealed invite (cx join does this)
+    mesh.py pair-redeem --url URL --lookup H                take a short code's sealed invite (cx mesh pair does this)
 Every command takes --json (machine-readable output) and --config PATH (default
 $XDG_CONFIG_HOME/cx/mesh/config.toml). The API token comes from $CLOUDFLARE_API_TOKEN, else the credentials file
 setup writes (mode 600). Stdlib only; usable as a library: `Mesh(load_config()).devices()`.
@@ -129,18 +128,6 @@ def list_zones(token: str) -> dict:
         raise MeshError(f"GET /zones: {d.get('errors') or d.get('status')}")
     zones = [{"id": z["id"], "name": z["name"], "status": z.get("status"), "account": {"id": (z.get("account") or {}).get("id"), "name": (z.get("account") or {}).get("name")}} for z in d.get("result") or []]
     return {"zones": zones, "more": (d.get("result_info") or {}).get("total_pages", 1) > 1}
-
-
-def status(cfg_path: str | None = None) -> dict:
-    """Configured? Deployed? From the config and state files only."""
-    path = config_path(cfg_path)
-    if not path.exists():
-        return {"configured": False, "provisioned": False, "config": str(path)}
-    c = load_config(cfg_path)
-    st_file = path.parent / f"{c['name']}.state.json"
-    st = json.loads(st_file.read_text()) if st_file.exists() else {}
-    return {"configured": True, "provisioned": bool(st.get("url")), "config": str(path), "name": c["name"], "domain": c.get("domain", ""),
-            "endpoint": st.get("url"), "account": st.get("account") or c.get("account") or None, "mesh": c["profile"]["mesh"], "dns_suffix": c["dns_suffix"]}
 
 
 TEMPLATE = """# cx mesh instance (docs/mesh.md). Edit, then run `cx mesh setup` again to apply.
@@ -468,7 +455,7 @@ class Mesh:
         return self.worker_api("POST", f"/v1/admin/devices/{name}/revoke")
 
     def pair_stash(self, lookup: str, sealed: str, hours: float) -> dict:
-        """Hold a `cx join` invite that cx sealed under its short code; the Worker sees only the seal."""
+        """Hold a `cx mesh pair` invite that cx sealed under its short code; the Worker sees only the seal."""
         return self.worker_api("POST", "/v1/admin/pairs", {"lookup": lookup, "sealed": sealed, "hours": hours})
 
     def teardown(self, dry_run: bool = False) -> dict:
@@ -556,7 +543,6 @@ def main(argv: list[str] | None = None) -> int:
     t = sp.add_parser("teardown")
     t.add_argument("--yes", action="store_true")
     t.add_argument("--dry-run", action="store_true", help="list what would be removed, remove nothing")
-    sp.add_parser("status")
     tu = sp.add_parser("token-url")
     tu.add_argument("--with-domain", action="store_true", help="add the zone permissions a domain needs")
     tu.add_argument("--name", default="cx-mesh")
@@ -607,10 +593,6 @@ def main(argv: list[str] | None = None) -> int:
                 for z in d["zones"]:
                     print(f"{z['name']:32} {z['status'] or '':10} {z['account']['name'] or ''}")
             out(d)
-            return 0
-        if a.cmd == "status":
-            d = status(a.config)
-            out(d) if a.json else print(json.dumps(d, indent=1))
             return 0
         if a.cmd == "pair-redeem":
             out(pair_redeem(a.url, a.lookup))

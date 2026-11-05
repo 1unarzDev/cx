@@ -51,17 +51,21 @@ fn highlight_with_budget(text: &str, path: &str, budget: Duration) -> Vec<Line<'
         .unwrap_or_else(|| syntaxes.find_syntax_plain_text());
     let theme = &THEMES.themes["base16-ocean.dark"];
     let mut parser = HighlightLines::new(syntax, theme);
-    let started = Instant::now();
-    let mut stopped = false;
+    // The clock starts after the first line, which pays the one-time lazy
+    // regex compilation; a zero budget still means no highlighting at all.
+    let mut started: Option<Instant> = None;
+    let mut stopped = budget.is_zero();
     text.split_inclusive('\n')
         .map(|line| {
             // Very long lines and exhausted budgets degrade to literal text for the rest.
             // The UI caches this result; rendering never reparses source.
-            stopped |= line.len() > 2048 || started.elapsed() > budget;
+            stopped |= line.len() > 2048 || started.is_some_and(|at| at.elapsed() > budget);
             if stopped {
                 return Line::raw(line.trim_end_matches('\n').to_owned());
             }
-            match parser.highlight_line(line, syntaxes) {
+            let tokens = parser.highlight_line(line, syntaxes);
+            started.get_or_insert_with(Instant::now);
+            match tokens {
                 Ok(tokens) => Line::from(
                     tokens
                         .into_iter()
@@ -247,6 +251,14 @@ mod tests {
             .flat_map(|line| &line.spans)
             .all(|span| span.style == Style::default()));
         assert_eq!(lines[0].spans[0].content, "let value = \"hello\";");
+    }
+    #[test]
+    fn first_line_compile_cost_does_not_spend_the_budget() {
+        // The first line pays syntect's one-time lazy regex compilation (slow in
+        // debug builds and on loaded hosts); only later lines draw on the budget.
+        let source = "let value = \"hello\";\nlet next = 2;\n";
+        let lines = highlight_with_budget(source, "sample.rs", Duration::from_nanos(1));
+        assert!(lines[0].spans.iter().any(|s| s.style != Style::default()));
     }
     #[test]
     fn multiline_source_retains_token_colors_beyond_first_line() {

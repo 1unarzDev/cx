@@ -1,0 +1,20 @@
+ cx · Keys                            … 
+[All] [●laptop] [●* lab-arm]            
+╭ ▸ Keys ──────────────────────────────╮
+│                                      │
+│ Keys and secrets                     │
+│ Credentials cx uses will be listed   │
+│ here, always masked.                 │
+│ Nothing is read yet · provider       │
+│ credentials are never read.          │
+│                                      │
+│ g s Sessions · g f Files · g n       │
+│ Network                              │
+│                                      │
+│                                      │
+│                                      │
+╰──────────────────────────────────────╯
+   Focus: Keys · 3/3              ↔ idle
+   [Open]         [New]       [Help]    
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Sess      Files      Net      ▸Keys  

@@ -163,6 +163,9 @@ pub(super) struct Binding {
     pub hint: Option<Hint>,
     /// Extra availability beyond the context; `None` means always.
     pub when: Option<fn(&App) -> bool>,
+    /// A second key of a row already described in help (e.g. Alt+2 under
+    /// "Alt+1..4"); dispatched, but not listed again.
+    pub fold: bool,
 }
 
 macro_rules! bind {
@@ -182,7 +185,17 @@ macro_rules! bind {
             help: $help,
             hint: $hint,
             when: $when,
+            fold: false,
         }
+    };
+}
+/// A dispatch-only alias of the row above it in help.
+macro_rules! alias {
+    ($ctx:ident, [$($k:expr),*], $label:expr, $cmd:expr, $help:expr) => {
+        Binding { fold: true, ..bind!($ctx, [$($k),*], $label, $cmd, $help) }
+    };
+    ($ctx:ident, [$($k:expr),*], $label:expr, $cmd:expr, $help:expr, $hint:expr, $when:expr) => {
+        Binding { fold: true, ..bind!($ctx, [$($k),*], $label, $cmd, $help, $hint, $when) }
     };
 }
 macro_rules! goto {
@@ -196,6 +209,7 @@ macro_rules! goto {
             help: $help,
             hint: None,
             when: None,
+            fold: false,
         }
     };
 }
@@ -376,7 +390,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         hint("j/k", "Scroll", 0),
         Some(not_pdf_preview)
     ),
-    bind!(
+    alias!(
         Preview,
         [ch('j'), ch('k'), code(Down), code(Up)],
         "j/k",
@@ -417,7 +431,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Next / previous match, wrap around",
         hint("n / N", "Next / previous", 3)
     ),
-    bind!(Preview, [ch('N')], "N", Cmd::PrevMatch, "Previous match"),
+    alias!(Preview, [ch('N')], "N", Cmd::PrevMatch, "Previous match"),
     bind!(
         Preview,
         [code(Esc)],
@@ -445,7 +459,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         hint("n / N", "Next / previous", 4),
         Some(files_search)
     ),
-    bind!(
+    alias!(
         FilesList,
         [ch('N')],
         "N",
@@ -595,7 +609,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         hint("h / l", "Parent / open", 1),
         Some(destination_paste)
     ),
-    bind!(
+    alias!(
         Files,
         [code(Right), ch('l')],
         "→ / l",
@@ -635,7 +649,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Fold / expand",
         hint("h / l", "Fold / expand", 2)
     ),
-    bind!(Network, [code(Right), ch('l')], "l", Cmd::Right, "Expand"),
+    alias!(Network, [code(Right), ch('l')], "l", Cmd::Right, "Expand"),
     bind!(
         Network,
         [ch('J')],
@@ -644,7 +658,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Scroll details",
         hint("J / K", "Scroll details", 3)
     ),
-    bind!(Network, [ch('K')], "K", Cmd::DetailUp, "Scroll details up"),
+    alias!(Network, [ch('K')], "K", Cmd::DetailUp, "Scroll details up"),
     // Containers.
     bind!(
         Containers,
@@ -662,7 +676,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Fold / expand",
         hint("h / l", "Fold / expand", 2)
     ),
-    bind!(
+    alias!(
         Containers,
         [code(Right), ch('l')],
         "l",
@@ -705,7 +719,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         Cmd::PrevView,
         "Previous / next view"
     ),
-    bind!(Global, [ch(']')], "]", Cmd::NextView, "Next view"),
+    alias!(Global, [ch(']')], "]", Cmd::NextView, "Next view"),
     bind!(
         Global,
         [alt('1')],
@@ -713,21 +727,21 @@ pub(super) const BINDINGS: &[Binding] = &[
         Cmd::Goto(View::Work),
         "Go to view 1-4 (Sessions, Files, Network, Keys)"
     ),
-    bind!(
+    alias!(
         Global,
         [alt('2')],
         "Alt+2",
         Cmd::Goto(View::Files),
         "Go to Files"
     ),
-    bind!(
+    alias!(
         Global,
         [alt('3')],
         "Alt+3",
         Cmd::Goto(View::Network),
         "Go to Network"
     ),
-    bind!(
+    alias!(
         Global,
         [alt('4')],
         "Alt+4",
@@ -741,7 +755,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         Cmd::NextPanel,
         "Next / previous panel"
     ),
-    bind!(
+    alias!(
         Global,
         [code(BackTab)],
         "Shift+Tab",
@@ -755,21 +769,21 @@ pub(super) const BINDINGS: &[Binding] = &[
         Cmd::FocusDir(-1, 0),
         "Move panel focus by direction"
     ),
-    bind!(
+    alias!(
         Global,
         [ctrl_code(Right)],
         "Ctrl+→",
         Cmd::FocusDir(1, 0),
         "Focus panel to the right"
     ),
-    bind!(
+    alias!(
         Global,
         [ctrl_code(Up)],
         "Ctrl+↑",
         Cmd::FocusDir(0, -1),
         "Focus panel above"
     ),
-    bind!(
+    alias!(
         Global,
         [ctrl_code(Down)],
         "Ctrl+↓",
@@ -783,7 +797,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         Cmd::Left,
         "Focus devices"
     ),
-    bind!(
+    alias!(
         Global,
         [code(Right), ch('l')],
         "→ / l",
@@ -989,7 +1003,7 @@ pub(super) fn help_sections(app: &App) -> Vec<(&'static str, Vec<(&'static str, 
         .into_iter()
         .map(|ctx| {
             let mut rows: Vec<(&'static str, &'static str)> = Vec::new();
-            for binding in BINDINGS.iter().filter(|b| b.ctx == ctx) {
+            for binding in BINDINGS.iter().filter(|b| b.ctx == ctx && !b.fold) {
                 if active.contains(&ctx) && !available(app, binding) {
                     continue;
                 }

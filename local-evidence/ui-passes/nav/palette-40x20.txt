@@ -1,0 +1,20 @@
+ cx · Sessions                        … 
+[All] [●laptop] [●* lab-arm]            
+╭ ▸ Sessions · 3 sessions ─────────────╮
+│  SESSION                   STATE     │
+╭ > █ ─────────────────────────────────╮
+│ Sessions                             │
+│▌ build watcher  laptop · /tmp…  Enter│
+│  New shell  laptop · /tmp/cx-…  Enter│
+│  ros core  lab-arm · /tmp/cx-…  Enter│
+│ Actions                              │
+│  Pin / unpin selected session       p│
+│  Containers · choose device /…       │
+│  Add by SSH address · alias /…       │
+│  Files · choose device · brow…       │
+│  New sessixn · choose device,…       │
+│  Transfers · progress / cance…      T│
+│  Watch session · read-only te…       │
+│  Network · choose device / Al…       │
+│  Sessions · choose device / A…       │
+╰ Enter attaches · Esc cancel · Tab se…╯

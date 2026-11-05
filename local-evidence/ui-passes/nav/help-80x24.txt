@@ -1,0 +1,24 @@
+ cx  ▸Sessions   Files   Network   Keys               viewing fixture@laptop  … 
+                                                                                
+╭ ╭ ▸ Help · Esc close ──────────────────────────────────────────────────────╮─╮
+│ │Sessions                                                                  │ │
+│ │Enter              Open the selected session                              │ │
+│ │w                  Watch selected session · read-only                     │ │
+│ │p                  Pin / unpin; keep an ended-work bookmark               │ ┃
+╰─│s                  Inspect selected session's tasks and subagents         │ ┃
+╭ │d                  Stop selected CX-managed session · confirm             │ ┃
+│ │                                                                          │ ┃
+│ │Everywhere                                                                │─╯
+│ │↑↓ / j k           Move selection (counts: 5j)                            │─╮
+│ │gg / G             First / last row                                       │ │
+│ │PgUp / PgDn        Page                                                   │ │
+╰─│g s                Go to Sessions                                         │ │
+ S│g f                Go to Files                                            │ │
+ H│g n                Go to Network                                          │ │
+ F│g k                Go to Keys / Secrets                                   │ │
+ E│[ / ]              Previous / next view                                   │ │
+  │Alt+1..4           Go to view 1-4 (Sessions, Files, Network, Keys)        │─╯
+ ●│Tab / Shift+Tab    Next / previous panel                                  │le
+ ↑╰──────────────────────────────────────────────────────────────────────────╯  
+                                                                                
+                                                                                

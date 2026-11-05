@@ -487,7 +487,12 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
     } else if area.width < 90 || frame.area().width < 120 {
         let parts = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .constraints(if super::rendering::phone(frame.area().width) {
+                // Phone: the list gets the room; the peek keeps the last lines.
+                [Constraint::Percentage(62), Constraint::Percentage(38)]
+            } else {
+                [Constraint::Percentage(50), Constraint::Percentage(50)]
+            })
             .split(area);
         (parts[0], parts[1])
     } else {

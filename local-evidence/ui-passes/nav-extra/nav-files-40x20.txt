@@ -1,0 +1,20 @@
+ cx · Files                           … 
+[All] [●laptop] [●* lab-arm]            
+ Files  fixture@laptop                  
+ NORMAL 0 selected · hidden off         
+╭ ▸ …atrix-o04i848i/home · 2 ──────────╮
+│  / ▸ Downloads                       │
+│  /   projects                        │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+╰──────────────────────────────────────╯
+ Space select · v range · . hidden      
+  Focus: Files · 2/5              ↔ idle
+ [Sessions]     [Select]      [Help]    
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Sess     ▸Files      Net      Keys   

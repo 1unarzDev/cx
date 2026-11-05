@@ -1,0 +1,60 @@
+ cx  ▸Sessions   Files   Network   Keys                                                                                                                                       viewing fixture@laptop  … 
+                                                                                                                                                                                                        
+╭ Devices ──────────╮╭ ▸ Sessions · 13 sessions ─────────────────────────────────────────────────────╮╭ ros core · robot@lab-arm ──────────────────────────────────────────────────────────────────────╮
+│ › All devices     ││  AGENT      SESSION                       EXECUTION                 STATE     ││Enter · focus terminal · Wheel · scroll                                                         │
+│   ●  laptop       ││                                                                               ││started roslaunch server http://lab-arm:41011/                                                  │
+│   ●  * lab-arm    ││             /home/xxxxxx                                                      ││process[master]: started                                                                        │
+│   ○  * field-rov… ││  [shell]    shell · xxxxxx · terminal     fixture@laptop            idle      ││[xxxxxx@xxxxxxxxxx catkin_ws]$                                                                  │
+╰───────────────────╯│  [shell]    shell · xxxxxx · terminal     fixture@laptop            idle      ││                                                                                                │
+╭ Actions ──────────╮│  [shell]    shell · xxxxxx · terminal     fixture@laptop            idle      ││                                                                                                │
+│ Files             ││  [shell]    shell · xxxxxx · terminal     fixture@laptop            idle      ││                                                                                                │
+│ Network           ││  [shell]    shell · xxxxxx · terminal     fixture@laptop            idle      ││                                                                                                │
+│ Containers        ││  [shell]    shell · xxxxxx · terminal     robot@lab-arm             ● ext     ││                                                                                                │
+│ Transfers         ││  [shell]    shell · xxxxxx · terminal     robot@lab-arm             ● ext     ││                                                                                                │
+│ Watch · read-only ││  [shell]    shell · xxxxxx · terminal     robot@lab-arm             ● ext     ││                                                                                                │
+╰───────────────────╯│  [shell]    shell · xxxxxx · terminal     robot@lab-arm             ● ext     ││                                                                                                │
+ Selected ───────────│  [shell]    shell · xxxxxx · terminal     robot@lab-arm             ● ext     ││                                                                                                │
+ Host robot@lab-arm  │                                                                               ││                                                                                                │
+ Folder /tmp/cx-cap… │             /tmp/tmp-xxxxxx                                                   ││                                                                                                │
+ Enter open · n new  │  [shell]    build watcher                 fixture@laptop            idle      ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │             /tmp/tmp-xxxxxx            ╭ > ros█ ──────────────────────────────────────────────────────────────────╮                                                             │
+                     │  [shell]    New shell                  │ Sessions                                                                 │                                                             │
+                     │                                        │▌ ros core  lab-arm · /tmp/tmp-xxxxxx                /remote/catki…  Enter│                                                             │
+                     │             /tmp/tmp-xxxxxx            │  New shell  laptop · /tmp/tmp-xxxxxx                /home/project…  Enter│                                                             │
+                     │› [shell]    ros core                   │  build watcher  laptop · /tmp/tmp-xxxxxx                /home/pro…  Enter│                                                             │
+                     │                                        │ Folders                                                                  │                                                             │
+                     │                                        │  /tmp/tmp-xxxxxx                /home/p…  laptop                         │                                                             │
+                     │                                        │  /tmp/tmp-xxxxxx                /home/p…  laptop                         │                                                             │
+                     │                                        │  /tmp/tmp-xxxxxx                /remote…  lab-arm                        │                                                             │
+                     │                                        │                                                                          │                                                             │
+                     │                                        │                                                                          │                                                             │
+                     │                                        │                                                                          │                                                             │
+                     │                                        │                                                                          │                                                             │
+                     │                                        │                                                                          │                                                             │
+                     │                                        │                                                                          │                                                             │
+                     │                                        │                                                                          │                                                             │
+                     │                                        │                                                                          │                                                             │
+                     │                                        │                                                                          │                                                             │
+                     │                                        ╰ Enter attaches · Esc cancel · Tab section ───────────────────────────────╯                                                             │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     ╰───────────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ● 2/3 devices                                                                 Focus: Actions · 13/13                                                                                             ↔ idle
+ Enter Confirm                                                      Esc Cancel                                                        Ctrl U Clear                                                      
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        

@@ -23,7 +23,9 @@ Record changes in [CHANGELOG.md](../CHANGELOG.md). Before tagging a stable versi
 |---|---|
 | `runtime.rs` | Event loop, `Screen` terminal ownership, input batching, task workers, auth prompts, self-restart state and update checks |
 | `actions.rs` | `execute()`, the command palette and action availability |
-| `keys.rs` | Workspace key and mouse dispatch, focus movement, command-panel keys |
+| `keys.rs` | Workspace key and mouse dispatch: resolves keys through `keymap`, runs `Cmd`s, focus movement, command-panel keys |
+| `keymap.rs` | The single keymap table (`BINDINGS`): key dispatch, help overlay, footer chips, context menu and palette key column all read it |
+| `hitmap.rs` | Pointer targets registered during render (tabs, rows, chips, scrollbars, palette/menu rows); tap / long-press / drag resolution; context menu |
 | `input.rs` | Text-input fields (filter, search, rename, commands); they own every printable key |
 | `dialogs.rs` | Modal dialog keys, Enter handling per dialog family, confirmation button layout |
 | `apply/` | Task replies: `mod.rs` shared bookkeeping and dispatch; `sessions.rs`, `files.rs`, `network.rs`, `containers.rs` per operation group |

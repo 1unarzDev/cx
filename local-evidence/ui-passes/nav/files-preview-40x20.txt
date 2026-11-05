@@ -1,0 +1,20 @@
+ cx · Files                           … 
+[All] [●laptop] [●* lab-arm]            
+ Files  fixture@laptop                  
+ NORMAL 0 selected · hidden off         
+╭ ▸ 69 bytes · Escape back ────────────╮
+│cx demo                               │
+│                                      │
+│A fixture project for UI captures.    │
+│                                      │
+│• item one                            │
+│• item two                            │
+│                                      │
+│                                      │
+│                                      │
+╰──────────────────────────────────────╯
+ Preview · j/k scroll · Escape back     
+  Focus: Files · 5/6              ↔ idle
+  [Scroll]     [Sessions]     [Help]    
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Sess     ▸Files      Net      Keys   

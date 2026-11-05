@@ -1,0 +1,20 @@
+ cx · Sessions                        … 
+[All] [●laptop] [●* lab-arm]            
+╭ ▸ Sessions · 3 sessions ─────────────╮
+│  SESSION                   STATE     │
+╭ > ros█ ──────────────────────────────╮
+│ Sessions                             │
+│▌ ros core  lab-arm · /tmp/cx-…  Enter│
+│  New shell  laptop · /tmp/cx-…  Enter│
+│  build watcher  laptop · /tmp…  Enter│
+│ Folders                              │
+│  /tmp/cx-capture-…  laptop           │
+│  /tmp/cx-capture-…  laptop           │
+│  /tmp/cx-capture-…  lab-arm          │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+╰ Enter attaches · Esc cancel · Tab se…╯

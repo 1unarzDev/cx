@@ -1,0 +1,24 @@
+ cx  ▸Sessions   Files   Network   Keys               viewing fixture@laptop  … 
+                                                                                
+╭ ╭ > ros█ ──────────────────────────────────────────────────────────────────╮─╮
+│ │ Sessions                                                                 │ │
+│ │▌ ros core  lab-arm · /tmp/tmp-xxxxxx                /remote/catki…  Enter│ │
+│ │  New shell  laptop · /tmp/tmp-xxxxxx                /home/project…  Enter│ ┃
+│ │  build watcher  laptop · /tmp/tmp-xxxxxx                /home/pro…  Enter│ ┃
+╰─│ Folders                                                                  │ ┃
+╭ │  /tmp/tmp-xxxxxx                /home/p…  laptop                         │ ┃
+│ │  /tmp/tmp-xxxxxx                /home/p…  laptop                         │ │
+│ │  /tmp/tmp-xxxxxx                /remote…  lab-arm                        │─╯
+│ │                                                                          │─╮
+│ │                                                                          │ │
+│ │                                                                          │ │
+╰─│                                                                          │ │
+ S│                                                                          │ │
+ H│                                                                          │ │
+ F│                                                                          │ │
+ E│                                                                          │ │
+  │                                                                          │─╯
+ ●╰ Enter attaches · Esc cancel · Tab section ───────────────────────────────╯le
+ Enter Confirm              Esc Cancel                Ctrl U Clear              
+                                                                                
+                                                                                

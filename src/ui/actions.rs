@@ -554,7 +554,7 @@ impl App {
                         safe_label(&self.devices[d].name),
                         session_folder_label(&s.directory)
                     ),
-                    key: "⏎".into(),
+                    key: "Enter".into(),
                     id: format!("session:{}:{key}", self.devices[d].id),
                     target: PaletteTarget::Session(d, key),
                 });

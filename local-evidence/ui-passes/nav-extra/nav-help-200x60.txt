@@ -1,0 +1,60 @@
+ cx   Sessions  ▸Files   Network   Keys                                                                                                                                       viewing fixture@laptop  … 
+                                                                                                                                                                                                        
+╭ Devices ──────────╮ Files  fixture@laptop                                                                                                                                                             
+│ › All devices     │ NORMAL 0 selected · hidden off                                                                                                                                                    
+│   ●  laptop       │╭ ▸ 2 items ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   ●  * lab-arm    ││  / ▸ Downloads                                                                                                                                                                  │
+│   ○  * field-rov… ││  /   projects                                                                                                                                                                   │
+╰───────────────────╯│                                                                                                                                                                                 │
+╭ Actions ──────────╮│                                                                                                                                                                                 │
+│ Sessions          ││                                                                                                                                                                                 │
+│ Network           ││                                        ╭ ▸ Help · Esc close ──────────────────────────────────────────────────────╮                                                             │
+│ Containers        ││                                        │Files                                                                     │                                                             │
+│ Transfers         ││                                        │Space              Select and advance                                     │                                                             │
+╰───────────────────╯│                                        │v                  Visual range selection                                 │                                                             │
+ Selected ───────────│                                        │u                  Clear selection                                        │                                                             │
+ laptop              │                                        │.                  Show / hide hidden files                               │                                                             │
+ tmp/                │                                        │f                  Filter names                                           │                                                             │
+  cx-capture-matrix… │                                        │c / y              Copy, then choose another folder or device             │                                                             │
+   └─ home/          │                                        │x                  Cut, then choose another folder or device              │                                                             │
+     └─ Downloads/   │                                        │p                  Paste here                                             │                                                             │
+                     │                                        │Y                  Clear clipboard · files unchanged                      │                                                             │
+                     │                                        │t                  Transfer to… choose device, folder, then Enter         │                                                             │
+                     │                                        │r                  Rename the selected file                               │                                                             │
+                     │                                        │d                  Delete · confirm permanently                           │                                                             │
+                     │                                        │M                  New folder                                             │                                                             │
+                     │                                        │                                                                          │                                                             │
+                     │                                        │Files and previews                                                        │                                                             │
+                     │                                        │Enter              Open folder / preview file                             │                                                             │
+                     │                                        │n                  New session in this folder                             │                                                             │
+                     │                                        │s                  Sessions in selected / current folder                  │                                                             │
+                     │                                        │Esc                Clear selection / filter / search, then back to        │                                                             │
+                     │                                        │Sessions                                                                  │                                                             │
+                     │                                        │                                                                          │                                                             │
+                     │                                        │Everywhere                                                                │                                                             │
+                     │                                        │↑↓ / j k           Move selection (counts: 5j)                            │                                                             │
+                     │                                        │gg / G             First / last row                                       │                                                             │
+                     │                                        │PgUp / PgDn        Page                                                   │                                                             │
+                     │                                        │g s                Go to Sessions                                         │                                                             │
+                     │                                        │g f                Go to Files                                            │                                                             │
+                     │                                        │g n                Go to Network                                          │                                                             │
+                     │                                        │g k                Go to Keys / Secrets                                   │                                                             │
+                     │                                        │[ / ]              Previous / next view                                   │                                                             │
+                     │                                        │Alt+1..4           Go to view 1-4 (Sessions, Files, Network, Keys)        │                                                             │
+                     │                                        │Tab / Shift+Tab    Next / previous panel                                  │                                                             │
+                     │                                        │Ctrl+arrows        Move panel focus by direction                          │                                                             │
+                     │                                        │← / h              Focus devices                                          │                                                             │
+                     │                                        │Enter              Open                                                   │                                                             │
+                     │                                        │Esc                Back / clear current mode                              │                                                             │
+                     │                                        │/                  Search                                                 │                                                             │
+                     │                                        ╰──────────────────────────────────────────────────────────────────────────╯                                                             │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     │                                                                                                                                                                                 │
+                     ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                      Space select · v range · . hidden                                                                                                                                                 
+ ● 2/3 devices                                                                       Focus: Help                                                                                                  ↔ idle
+ ↑↓ Scroll                                                          PgUpDn Page                                                       Esc Close                                                         
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        

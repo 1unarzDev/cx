@@ -1237,11 +1237,7 @@ pub(super) fn render_at(
             .collect()
     };
     let columns = if phone {
-        if footer[key_row].width >= 48 {
-            3
-        } else {
-            2
-        }
+        3
     } else if footer[key_row].width >= 60 {
         3
     } else {
@@ -1287,12 +1283,27 @@ pub(super) fn render_at(
             accent().add_modifier(Modifier::BOLD)
         };
         let cell = cells[i % columns];
-        let text = Line::from(vec![
-            Span::styled(format!(" {key} "), key_style),
-            Span::raw(label),
-        ]);
+        let text = if phone && !modal {
+            // Touch targets: one short word per chip, bracketed like a button.
+            let word = label
+                .split([' ', '/', '·'])
+                .find(|w| !w.is_empty())
+                .unwrap_or(label);
+            Line::from(vec![Span::styled(format!(" [{word}] "), key_style)])
+                .alignment(ratatui::layout::Alignment::Center)
+        } else {
+            Line::from(vec![
+                Span::styled(format!(" {key} "), key_style),
+                Span::raw(label),
+            ])
+        };
         if let Some(cmd) = cmd.filter(|c| *c != keymap::Cmd::Motion) {
-            let width = (text.width() as u16 + 1).min(cell.width);
+            // Phone chips take their whole cell (larger touch targets).
+            let width = if phone {
+                cell.width
+            } else {
+                (text.width() as u16 + 1).min(cell.width)
+            };
             hitmap::register(Rect::new(cell.x, cell.y, width, 1), hitmap::Hit::Cmd(cmd));
         }
         frame.render_widget(Paragraph::new(text), cell);
@@ -1963,7 +1974,8 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let row = Rect::new(area.x, area.y, area.width, 1);
     let active = keymap::tab_index(app.view);
     let mark = Span::styled(" cx ", accent().add_modifier(Modifier::BOLD));
-    let more = if ascii() { " ... " } else { " ⋯ " };
+    // U+2026 is in every common terminal font (U+22EF often is not).
+    let more = if ascii() { " ... " } else { " … " };
     let more_width = more.chars().count() as u16;
     let palette = Rect::new(
         row.right().saturating_sub(more_width),
@@ -2215,11 +2227,8 @@ fn render_palette(frame: &mut Frame<'_>, app: &App, area: Rect, phone: bool) {
     };
     frame.render_widget(Clear, rect);
     let cursor = if ascii() { "_" } else { "█" };
-    let search = if ascii() { ">" } else { "⌕" };
-    let footer = format!(
-        " {} · ↑↓ choose · ⏎ run · Tab section · Esc close ",
-        app.palette_scope()
-    );
+    let search = ">";
+    let footer = format!(" {} · Tab section ", app.palette_scope());
     let outer = Block::default()
         .borders(Borders::ALL)
         .border_type(if ascii() {

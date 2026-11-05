@@ -1,0 +1,60 @@
+ cx  ▸Sessions   Files   Network   Keys                                                                                                                                       viewing fixture@laptop  … 
+                                                                                                                                                                                                        
+╭ Devices ──────────╮╭ ▸ Sessions · 3 sessions ──────────────────────────────────────────────────────╮╭ New shell · fixture@laptop ────────────────────────────────────────────────────────────────────╮
+│ › All devices     ││  AGENT      SESSION                       EXECUTION                 STATE     ││Loading terminal…                                                                               │
+│   ●  laptop       ││                                                                               ││                                                                                                │
+│   ●  * lab-arm    ││             /tmp/tmp-xxxxxx                                                   ││                                                                                                │
+│   ○  * field-rov… ││  [shell]    build watcher                 fixture@laptop            idle      ││                                                                                                │
+╰───────────────────╯│                                                                               ││                                                                                                │
+╭ Actions ──────────╮│             /tmp/tmp-xxxxxx                                                   ││                                                                                                │
+│ Files             ││› [shell]    New shell                     fixture@laptop            idle      ││                                                                                                │
+│ Network           ││                                        ╭ ▸ Help · Esc close ──────────────────────────────────────────────────────╮                                                             │
+│ Containers        ││             /tmp/tmp-xxxxxx            │Sessions                                                                  │                                                             │
+│ Transfers         ││  [shell]    ros core                   │Enter              Open the selected session                              │                                                             │
+│ Watch · read-only ││                                        │w                  Watch selected session · read-only                     │                                                             │
+╰───────────────────╯│                                        │p                  Pin / unpin; keep an ended-work bookmark               │                                                             │
+ Selected ───────────│                                        │s                  Inspect selected session's tasks and subagents         │                                                             │
+ Host fixture@laptop │                                        │d                  Stop selected CX-managed session · confirm             │                                                             │
+ Folder /tmp/cx-cap… │                                        │                                                                          │                                                             │
+ Enter open · n new  │                                        │Everywhere                                                                │                                                             │
+                     │                                        │↑↓ / j k           Move selection (counts: 5j)                            │                                                             │
+                     │                                        │gg / G             First / last row                                       │                                                             │
+                     │                                        │PgUp / PgDn        Page                                                   │                                                             │
+                     │                                        │g s                Go to Sessions                                         │                                                             │
+                     │                                        │g f                Go to Files                                            │                                                             │
+                     │                                        │g n                Go to Network                                          │                                                             │
+                     │                                        │g k                Go to Keys / Secrets                                   │                                                             │
+                     │                                        │[ / ]              Previous / next view                                   │                                                             │
+                     │                                        │Alt+1..4           Go to view 1-4 (Sessions, Files, Network, Keys)        │                                                             │
+                     │                                        │Tab / Shift+Tab    Next / previous panel                                  │                                                             │
+                     │                                        │Ctrl+arrows        Move panel focus by direction                          │                                                             │
+                     │                                        │← / h              Focus devices                                          │                                                             │
+                     │                                        │Enter              Open                                                   │                                                             │
+                     │                                        │Esc                Back / clear current mode                              │                                                             │
+                     │                                        │/                  Search                                                 │                                                             │
+                     │                                        │f                  Filter the list                                        │                                                             │
+                     │                                        │n                  New session in current folder                          │                                                             │
+                     │                                        │:                  Run command in current folder                          │                                                             │
+                     │                                        │T                  Transfers · progress / cancel / retry                  │                                                             │
+                     │                                        │Ctrl+P             Actions, sessions, devices and folders                 │                                                             │
+                     │                                        │? / F1             Keyboard help                                          │                                                             │
+                     │                                        │Ctrl+C             Quit cx; work keeps running                            │                                                             │
+                     │                                        │                                                                          │                                                             │
+                     │                                        │Devices                                                                   │                                                             │
+                     │                                        │Enter              Scope the view to this device                          │                                                             │
+                     │                                        │r                  Refresh the selected device (moving never refreshes)   │                                                             │
+                     │                                        │b                  Toggle selected remote device access · * means         │                                                             │
+                     │                                        │single-direction                                                          │                                                             │
+                     │                                        │e                  Edit the selected device's SSH address                 │                                                             │
+                     │                                        │x                  Remove the selected device · confirm                   │                                                             │
+                     │                                        ╰──────────────────────────────────────────────────────────────────────────╯                                                             │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     ╰───────────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ● 2/3 devices                                                                       Focus: Help                                                                                                  ↔ idle
+ ↑↓ Scroll                                                          PgUpDn Page                                                       Esc Close                                                         
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        

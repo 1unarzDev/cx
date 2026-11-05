@@ -1,0 +1,20 @@
+ cx · Files                           … 
+[All] [●laptop] [●* lab-arm]            
+ ╭ ▸ Sessions here · fixture@laptop ──╮ 
+ │+ New shell session                 │ 
+╭╰────────────────────────────────────╯╮
+│╭ Details · PgUp/PgDn ───────────────╮│
+││/tmp/tmp-xxxxxx                /home││
+││/Downloads                          ││
+││Enter joins the selected runtime ·  ││
+││New creates separate work           ││
+││No conversation is selected by      ││
+││recency.                            ││
+││                                    ││
+││                                    ││
+╰│                                    │╯
+ │                                    │ 
+ ╰────────────────────────────────────╯e
+ ↑↓ Choose    Enter Confirm Esc Cancel  
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Sess     ▸Files      Net      Keys   

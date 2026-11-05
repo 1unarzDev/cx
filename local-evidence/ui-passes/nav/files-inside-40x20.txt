@@ -1,0 +1,20 @@
+ cx · Files                           … 
+[All] [●laptop] [●* lab-arm]            
+ Files  fixture@laptop                  
+ NORMAL 0 selected · hidden off         
+╭ ▸ …me/projects/cx-demo · 5 ──────────╮
+│  / ▸ docs                            │
+│  /   src                             │
+│      Cargo.toml              45 B    │
+│      README.md               69 B    │
+│      data.bin                16.0 KiB│
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+╰──────────────────────────────────────╯
+ Space select · v range · . hidden      
+  Focus: Files · 5/6              ↔ idle
+ [Sessions]     [Select]      [Help]    
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Sess     ▸Files      Net      Keys   

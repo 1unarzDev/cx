@@ -1,5 +1,5 @@
 // The mesh share-code Worker (mesh/worker/worker.js) against an in-memory D1 (node:sqlite) and a fake
-// Cloudflare API: invites, the one-liner scripts, enrolment, registration, the DNS name, leave and revoke.
+// Cloudflare API: invites, the one-liner scripts, enrolment, registration, the DNS name, leave and revoke, and Claude lends.
 // No account is touched. Run: node tests/mesh_worker.mjs
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
@@ -19,7 +19,7 @@ const CONFIG = {
 // The Worker with its text-module imports inlined (Workers bundles them; node cannot import .sh).
 const text = (f) => JSON.stringify(readFileSync(join(W, f), "utf8"));
 const src = readFileSync(join(W, "worker.js"), "utf8")
-  .replace(/^import (\w+) from "\.\/(join|leave)\.(sh|ps1)";$/gm, (_, v, n, e) => `const ${v} = ${text(`${n}.${e}`)};`)
+  .replace(/^import (\w+) from "\.\/(join|leave|claude)\.(sh|ps1)";$/gm, (_, v, n, e) => `const ${v} = ${text(`${n}.${e}`)};`)
   .replace(/^import CONFIG_TEXT from "\.\/config\.json";.*$/m, `const CONFIG_TEXT = ${JSON.stringify(JSON.stringify(CONFIG))};`);
 assert.ok(!/^import /m.test(src), "every Worker import is inlined");
 const file = join(mkdtempSync(join(tmpdir(), "mesh-worker-")), "worker.mjs");
@@ -213,4 +213,45 @@ test("cleanName and scriptKind", () => {
   assert.equal(worker.scriptKind("Wget/1.21"), "sh");
   assert.equal(worker.scriptKind("Mozilla/5.0 (Windows NT 10.0; Microsoft Windows 10.0.19045; en-US) PowerShell/7.4.0"), "ps1");
   assert.equal(worker.scriptKind("Mozilla/5.0 (Macintosh) Safari/605"), "html");
+});
+
+const BUNDLE = { base_url: "https://claude.example.org", token: "btr-secret-key", headers: ["CF-Access-Client-Id: cid.access", "CF-Access-Client-Secret: csecret"] };
+const lend = async (call, b = {}) => call("POST", "/v1/admin/claude", { token: OWNER, body: { name: "evan", bundle: BUNDLE, mesh_url: "http://100.96.0.5:8081", expires: "2030-01-01T00:00:00Z", ...b } });
+
+test("a Claude lend: sealed at rest, served as a script, claimed once", async () => {
+  const { call, env } = setup();
+  assert.equal((await call("POST", "/v1/admin/claude", { body: { name: "evan", bundle: BUNDLE } })).status, 401);
+  assert.equal((await lend(call, { bundle: { ...BUNDLE, token: 'x"; rm -rf ~' } })).status, 400, "only plain values");
+  const l = (await lend(call)).json;
+  assert.match(l.code, /^[2-9a-hjkmnp-z]{12}$/);
+  assert.equal(l.sh, `curl -sL mesh.example.org/claude/${l.code}|sh`);
+  const row = env.DB.raw.prepare("SELECT * FROM lends").get();
+  for (const v of [BUNDLE.token, "csecret", l.code]) assert.ok(!JSON.stringify(row).includes(v), "no secret or code at rest");
+  const sh = await call("GET", `/claude/${l.code}`);
+  assert.ok(sh.text.includes(`CODE='${l.code}'`) && sh.text.includes("MESH_URL='http://100.96.0.5:8081'") && sh.text.includes("MESH_ONLY=''"));
+  assert.ok(!/__(MESH|CLAUDE)_[A-Z_]+__/.test(sh.text), "every placeholder is filled");
+  assert.ok(!sh.text.includes(BUNDLE.token), "the script carries no secret");
+  assert.ok((await call("GET", `/claude/${l.code}`, { ua: "Mozilla/5.0 PowerShell/7.4" })).text.includes(`$Code = '${l.code}'`));
+  assert.match((await call("GET", `/claude/${l.code}`, { ua: "Mozilla/5.0 (X11) Firefox/140.0" })).text, /Set up Claude Code/);
+  assert.equal((await call("POST", "/v1/claude/claim", { body: { code: "zzzzzzzzzzzz" } })).status, 403);
+  const c = await call("POST", "/v1/claude/claim", { body: { code: l.code, format: "lines" } });
+  assert.equal(c.status, 200, c.text);
+  assert.equal(c.text, `name=evan\nbase_url=https://claude.example.org\nmesh_url=http://100.96.0.5:8081\ntoken=btr-secret-key\nheader=CF-Access-Client-Id: cid.access\nheader=CF-Access-Client-Secret: csecret\n`);
+  assert.equal((await call("POST", "/v1/claude/claim", { body: { code: l.code } })).status, 403, "single use");
+  assert.match((await call("GET", `/claude/${l.code}`)).text, /already used/);
+  const list = (await call("GET", "/v1/admin/claude", { token: OWNER })).json.lends;
+  assert.deepEqual(list.map((x) => [x.name, x.state, x.expires]), [["evan", "claimed", "2030-01-01T00:00:00.000Z"]]);
+  assert.equal(env.DB.raw.prepare("SELECT sealed FROM lends").get().sealed, null);
+});
+
+test("a mesh-only lend says so to its script; revoke kills a pending code", async () => {
+  const { call } = setup();
+  const l = (await lend(call, { bundle: { ...BUNDLE, base_url: "", headers: [] } })).json;
+  assert.ok((await call("GET", `/claude/${l.code}`)).text.includes("MESH_ONLY='1'"));
+  assert.equal((await lend(call, { name: "x", bundle: { ...BUNDLE, base_url: "" }, mesh_url: "" })).status, 400, "a route is required");
+  assert.deepEqual((await call("POST", "/v1/admin/claude/evan/revoke", { token: OWNER })).json, { name: "evan", revoked: true });
+  assert.deepEqual((await call("POST", "/v1/admin/claude/evan/revoke", { token: OWNER })).json, { name: "evan", revoked: false }, "once");
+  assert.equal((await call("POST", "/v1/claude/claim", { body: { code: l.code } })).status, 403);
+  const c = (await lend(call)).json; // a new lend of the name replaces the old
+  assert.equal((await call("POST", "/v1/claude/claim", { body: { code: c.code } })).json.token, BUNDLE.token);
 });

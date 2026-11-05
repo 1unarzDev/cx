@@ -121,6 +121,8 @@ pub fn enroll(mut peer: Device, replace_stale: bool) -> Result<serde_json::Value
 
 pub fn pair(device: &Device, return_target: &str) -> Result<serde_json::Value> {
     anyhow::ensure!(device.target.is_some(), "select a remote device");
+    // The remote helper verifies and registers its route back to this viewer.
+    crate::edges::require_key(&device.id, "local", "pairing")?;
     let local_info = crate::info()?;
     let mut local = store::local_device();
     local.id = identity(&local_info)?;
@@ -178,7 +180,12 @@ pub fn bootstrap_identity() -> Result<serde_json::Value> {
     Ok(value)
 }
 
-pub fn configure(peer: &Device, host_key: &str, client_key: &str) -> Result<serde_json::Value> {
+pub fn configure(
+    peer: &Device,
+    host_key: &str,
+    client_key: &str,
+    authorize: bool,
+) -> Result<serde_json::Value> {
     validate(peer)?;
     let _guard = store::device_guard()?;
     anyhow::ensure!(
@@ -195,7 +202,64 @@ pub fn configure(peer: &Device, host_key: &str, client_key: &str) -> Result<serd
             "receiver keeps this peer directed"
         );
     }
-    crate::peer_ssh::configure(peer, host_key, client_key)
+    crate::peer_ssh::configure(peer, host_key, client_key, authorize)
+}
+
+/// Receiver side of edge enforcement: query or change the cx-managed line for
+/// one pinned peer. Authorizing keeps the receiver's own directed choice.
+pub fn authorization(
+    peer_id: Option<&str>,
+    client_key: Option<&str>,
+    authorize: Option<bool>,
+) -> Result<serde_json::Value> {
+    let _guard = store::device_guard()?;
+    if authorize == Some(true) {
+        if let Some(existing) = peer_id
+            .map(|id| store::devices().map(|d| d.into_iter().find(|d| d.id == id)))
+            .transpose()?
+            .flatten()
+        {
+            anyhow::ensure!(
+                store::policy(&existing)?.access == store::AccessMode::Core,
+                "receiver keeps this peer directed"
+            );
+        }
+    }
+    crate::peer_ssh::authorization(peer_id, client_key, authorize)
+}
+
+/// Edge-policy identity of a device: the viewer's own execution device is `local`.
+pub fn edge_id(device: &Device) -> &str {
+    if device.target.is_none() {
+        "local"
+    } else {
+        &device.id
+    }
+}
+
+/// Run one operation on a device through the existing verified helper channel,
+/// requiring a helper capability. The local device is dispatched in-process.
+pub fn on_device(
+    device: &Device,
+    operation: Operation,
+    capability: &str,
+) -> Result<serde_json::Value> {
+    match device.target.as_deref() {
+        None => crate::dispatch(operation),
+        Some(target) => transport::verified_request(target, operation, |info| {
+            anyhow::ensure!(
+                identity(info)? == device.id,
+                "enrolled helper identity mismatch"
+            );
+            anyhow::ensure!(
+                info["capabilities"]
+                    .as_array()
+                    .is_some_and(|caps| caps.iter().any(|c| c == capability)),
+                "helper update needed for {capability}"
+            );
+            Ok(())
+        }),
+    }
 }
 
 fn local_addresses() -> Result<Vec<std::net::IpAddr>> {
@@ -417,6 +481,7 @@ pub fn sync() -> Result<serde_json::Value> {
         Ok(())
     };
     let mut ready = Vec::new();
+    let mut refused = Vec::new();
     for a in 0..nodes.len() {
         for b in a + 1..nodes.len() {
             let mut first = nodes[a].clone();
@@ -447,26 +512,44 @@ pub fn sync() -> Result<serde_json::Value> {
                     });
                 }
             }
+            // Edge policy decides each direction: `x -> y` installs x's key on y
+            // and lets x enroll y. A refused direction pins only, never authorizes.
+            let key = |from: &CoreNode, to: &CoreNode| {
+                crate::edges::key_allowed(edge_id(&from.connection), edge_id(&to.connection))
+            };
+            let (forward, reverse) = (key(&first, &second)?, key(&second, &first)?);
+            if !forward && !reverse {
+                refused.push(json!({"from":first.peer.name,"to":second.peer.name,"reason":"edge policy refuses cx keys in both directions"}));
+                continue;
+            }
             let result = (|| -> Result<()> {
                 for (receiver, sender) in [(&first, &second), (&second, &first)] {
                     selected(receiver)?;
                     selected(sender)?;
-                    checked(
-                        &receiver.connection,
-                        Operation::PeerConfigure {
-                            peer: sender.peer.clone(),
-                            host_key: sender.metadata["host_key"]
-                                .as_str()
-                                .context("missing verified host key")?
-                                .into(),
-                            client_key: sender.metadata["client_key"]
-                                .as_str()
-                                .context("missing public client key")?
-                                .into(),
-                        },
-                    )?;
+                    let authorize = key(sender, receiver)?;
+                    let operation = Operation::PeerConfigure {
+                        peer: sender.peer.clone(),
+                        host_key: sender.metadata["host_key"]
+                            .as_str()
+                            .context("missing verified host key")?
+                            .into(),
+                        client_key: sender.metadata["client_key"]
+                            .as_str()
+                            .context("missing public client key")?
+                            .into(),
+                        authorize,
+                    };
+                    if authorize {
+                        checked(&receiver.connection, operation)?;
+                    } else {
+                        on_device(&receiver.connection, operation, "peer-authorize-v1")
+                            .context("one-way core setup")?;
+                    }
                 }
                 for (receiver, sender) in [(&first, &second), (&second, &first)] {
+                    if !key(receiver, sender)? {
+                        continue;
+                    }
                     selected(receiver)?;
                     selected(sender)?;
                     checked(
@@ -481,7 +564,7 @@ pub fn sync() -> Result<serde_json::Value> {
             })();
             match result {
                 Ok(()) => ready.push(
-                    json!({"from":first.peer.name,"to":second.peer.name,"bidirectional":true}),
+                    json!({"from":first.peer.name,"to":second.peer.name,"bidirectional":forward && reverse,"forward":forward,"reverse":reverse}),
                 ),
                 Err(e) => pending.push(
                     json!({"from":first.peer.name,"to":second.peer.name,"reason":format!("{e:#}")}),
@@ -490,6 +573,6 @@ pub fn sync() -> Result<serde_json::Value> {
         }
     }
     Ok(
-        json!({"state":if pending.is_empty(){"ready"}else{"pending"},"pending":pending,"ready":ready}),
+        json!({"state":if pending.is_empty(){"ready"}else{"pending"},"pending":pending,"ready":ready,"refused":refused}),
     )
 }

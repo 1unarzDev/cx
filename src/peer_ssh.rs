@@ -382,7 +382,12 @@ pub fn identity() -> Result<Value> {
     let host_key = public_key(&fs::read_to_string("/etc/ssh/ssh_host_ed25519_key.pub")?)?;
     Ok(json!({"client_key": locked.identity()?, "host_key": host_key}))
 }
-pub fn configure(peer: &Device, host_key: &str, authorized_key: &str) -> Result<Value> {
+pub fn configure(
+    peer: &Device,
+    host_key: &str,
+    authorized_key: &str,
+    authorize: bool,
+) -> Result<Value> {
     let home = std::env::var_os("HOME").context("HOME is unavailable")?;
     configure_at(
         root(),
@@ -390,6 +395,200 @@ pub fn configure(peer: &Device, host_key: &str, authorized_key: &str) -> Result<
         peer,
         host_key,
         authorized_key,
+        authorize,
+    )
+}
+fn managed_line(key: &str) -> String {
+    format!(
+        "no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc {key} cx-managed-peer"
+    )
+}
+fn names_key(line: &str, key: &str) -> bool {
+    !line.trim_start().starts_with('#')
+        && line
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|w| format!("{} {}", w[0], w[1]) == key)
+}
+fn bare(line: &str) -> &str {
+    let line = line.strip_suffix('\n').unwrap_or(line);
+    line.strip_suffix('\r').unwrap_or(line)
+}
+/// Append the exact restricted cx-managed line once. Returns whether it was added.
+fn authorize_managed(ssh: &Path, key: &str) -> Result<bool> {
+    let authorized = read(&ssh.join("authorized_keys"))?;
+    let managed = managed_line(key);
+    let mut present = false;
+    for line in authorized.lines().filter(|line| names_key(line, key)) {
+        anyhow::ensure!(line == managed, "existing managed-key authorization has different restrictions; refusing to override it");
+        present = true;
+    }
+    if present {
+        return Ok(false);
+    }
+    let prefix = if !authorized.is_empty() && !authorized.ends_with('\n') {
+        "\n"
+    } else {
+        ""
+    };
+    let addition = format!("{prefix}{managed}\n");
+    anyhow::ensure!(
+        (authorized.len() + addition.len()) as u64 <= MAX,
+        "authorized_keys too large"
+    );
+    // Append only: unrelated keys and their options remain byte-for-byte intact.
+    let mut file = open(&ssh.join("authorized_keys"), true)?;
+    file.write_all(addition.as_bytes())?;
+    file.sync_all()?;
+    Ok(true)
+}
+/// Remove only exact cx-managed lines for `key`. Every other line, including a
+/// user's own line for the same key, stays byte-for-byte. Returns
+/// (removed managed lines, user line for this key remains).
+fn revoke_managed(ssh: &Path, key: &str) -> Result<(usize, bool)> {
+    let path = ssh.join("authorized_keys");
+    let text = read(&path)?;
+    let managed = managed_line(key);
+    let mut removed = 0;
+    let mut user = false;
+    let mut kept = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        if bare(line) == managed {
+            removed += 1;
+            continue;
+        }
+        user |= names_key(bare(line), key);
+        kept.push_str(line);
+    }
+    if removed == 0 {
+        return Ok((0, user));
+    }
+    let mode = open(&path, false)?.metadata()?.mode() & 0o777;
+    let (temporary, mut file) = (0..64)
+        .find_map(|_| {
+            let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = ssh.join(format!(
+                ".authorized_keys.cx.{}.{}.tmp",
+                std::process::id(),
+                sequence
+            ));
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(&path)
+            {
+                Ok(file) => Some(Ok((path, file))),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .context("cannot reserve authorized_keys temporary file")??;
+    let result = (|| -> Result<()> {
+        file.write_all(kept.as_bytes())?;
+        file.set_permissions(fs::Permissions::from_mode(mode))?;
+        file.sync_all()?;
+        fs::rename(&temporary, &path)?;
+        File::open(ssh)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result?;
+    Ok((removed, user))
+}
+/// Query or change the cx-managed authorization for one pinned peer. The key is
+/// the explicit client key when given, otherwise the pinned key for `peer_id`.
+/// Authorizing requires an existing verified pin; revoking never does.
+pub fn authorization(
+    peer_id: Option<&str>,
+    client_key: Option<&str>,
+    authorize: Option<bool>,
+) -> Result<Value> {
+    let home = std::env::var_os("HOME").context("HOME is unavailable")?;
+    authorization_at(
+        root(),
+        &PathBuf::from(home).join(".ssh"),
+        peer_id,
+        client_key,
+        authorize,
+    )
+}
+fn authorization_at(
+    root: PathBuf,
+    ssh: &Path,
+    peer_id: Option<&str>,
+    client_key: Option<&str>,
+    authorize: Option<bool>,
+) -> Result<Value> {
+    anyhow::ensure!(
+        peer_id.is_some() || client_key.is_some(),
+        "select a peer by identity or client key"
+    );
+    if let Some(id) = peer_id {
+        anyhow::ensure!(
+            !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control),
+            "invalid peer identity"
+        );
+    }
+    let client_key = client_key.map(public_key).transpose()?;
+    let locked = if root.try_exists()? || authorize.is_some() {
+        Some(Locked::new(root)?)
+    } else {
+        None
+    };
+    let pins = match &locked {
+        Some(locked) => locked.pins()?,
+        None => Pins::default(),
+    };
+    let matching = |pin: &&Pin| {
+        peer_id.is_none_or(|id| pin.device_id == id)
+            && client_key.as_ref().is_none_or(|key| &pin.client_key == key)
+    };
+    let pinned = pins.endpoints.values().find(matching);
+    let key = client_key.or_else(|| pinned.map(|pin| pin.client_key.clone()));
+    let Some(key) = key else {
+        anyhow::ensure!(
+            authorize != Some(true),
+            "no verified cx pairing for this peer; run core sync first"
+        );
+        return Ok(json!({"pinned": false, "managed_key_installed": false,
+            "user_authorization_present": false, "changed": false}));
+    };
+    let mut changed = false;
+    match authorize {
+        Some(true) => {
+            anyhow::ensure!(
+                pinned.is_some(),
+                "no verified cx pairing for this peer; run core sync first"
+            );
+            private_dir(ssh)?;
+            changed = authorize_managed(ssh, &key)?;
+        }
+        Some(false) => {
+            if ssh.try_exists()? {
+                owned_dir(ssh)?;
+                changed = revoke_managed(ssh, &key)?.0 > 0;
+            }
+        }
+        None => {}
+    }
+    let text = if ssh.try_exists()? {
+        read(&ssh.join("authorized_keys"))?
+    } else {
+        String::new()
+    };
+    let managed = managed_line(&key);
+    let installed = text.lines().any(|line| line == managed);
+    let user = text
+        .lines()
+        .any(|line| line != managed && names_key(line, &key));
+    Ok(
+        json!({"pinned": pinned.is_some(), "managed_key_installed": installed,
+        "user_authorization_present": user, "changed": changed}),
     )
 }
 fn configure_at(
@@ -398,6 +597,7 @@ fn configure_at(
     peer: &Device,
     host_key: &str,
     authorized_key: &str,
+    authorize: bool,
 ) -> Result<Value> {
     let target = peer.target.as_deref().context("cannot pair local device")?;
     let (account, host) = endpoint(target)?;
@@ -429,39 +629,14 @@ fn configure_at(
     }
     // Validate all destinations before making changes.
     private_dir(ssh)?;
-    let authorized = read(&ssh.join("authorized_keys"))?;
+    let _ = read(&ssh.join("authorized_keys"))?;
     let _ = read(&locked.root.join("known_hosts"))?;
     let _ = locked.identity()?;
-    let managed_line = format!("no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc {authorized_key} cx-managed-peer");
-    let mut present = false;
-    for line in authorized
-        .lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
-    {
-        let fields: Vec<_> = line.split_whitespace().collect();
-        if fields
-            .windows(2)
-            .any(|w| format!("{} {}", w[0], w[1]) == authorized_key)
-        {
-            anyhow::ensure!(line == managed_line, "existing managed-key authorization has different restrictions; refusing to override it");
-            present = true;
-        }
-    }
-    if !present {
-        let prefix = if !authorized.is_empty() && !authorized.ends_with('\n') {
-            "\n"
-        } else {
-            ""
-        };
-        let addition = format!("{prefix}no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc {authorized_key} cx-managed-peer\n");
-        anyhow::ensure!(
-            (authorized.len() + addition.len()) as u64 <= MAX,
-            "authorized_keys too large"
-        );
-        // Append only: unrelated keys and their options remain byte-for-byte intact.
-        let mut file = open(&ssh.join("authorized_keys"), true)?;
-        file.write_all(addition.as_bytes())?;
-        file.sync_all()?;
+    if authorize {
+        authorize_managed(ssh, &authorized_key)?;
+    } else {
+        // One-way: this host may reach the peer, but the peer may not log in here.
+        revoke_managed(ssh, &authorized_key)?;
     }
     pins.endpoints.insert(
         target.to_owned(),
@@ -484,7 +659,19 @@ fn configure_at(
         .collect::<String>();
     locked.write("known_hosts", &known)?;
     locked.write("peers.json", &serde_json::to_string(&pins)?)?;
-    Ok(json!({"configured": true, "target": target}))
+    Ok(json!({"configured": true, "target": target, "authorized": authorize}))
+}
+/// This host's cx public client key, if one was ever generated. Never creates one.
+pub fn client_key() -> Result<Option<String>> {
+    if !root().try_exists()? {
+        return Ok(None);
+    }
+    let locked = Locked::new(root())?;
+    match fs::symlink_metadata(locked.root.join("id_ed25519")) {
+        Ok(_) => Ok(Some(private_key(&locked.root.join("id_ed25519"))?)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 /// Only exact endpoints enrolled by authenticated pairing receive this identity.
 pub fn options(target: &str) -> Result<Option<(PathBuf, PathBuf)>> {
@@ -572,13 +759,13 @@ mod tests {
         private_dir(&ssh).unwrap();
         let comment = format!("# {} disabled\n", key(2));
         fs::write(ssh.join("authorized_keys"), &comment).unwrap();
-        configure_at(root.clone(), &ssh, &peer(), &key(1), &key(2)).unwrap();
+        configure_at(root.clone(), &ssh, &peer(), &key(1), &key(2), true).unwrap();
         let authorized = fs::read_to_string(ssh.join("authorized_keys")).unwrap();
         assert!(authorized.starts_with(&comment));
         assert!(authorized.contains("no-user-rc ssh-ed25519"));
         let restricted = format!("command=\"false\" {} restricted\n", key(2));
         fs::write(ssh.join("authorized_keys"), &restricted).unwrap();
-        assert!(configure_at(root, &ssh, &peer(), &key(1), &key(2)).is_err());
+        assert!(configure_at(root, &ssh, &peer(), &key(1), &key(2), true).is_err());
         assert_eq!(
             fs::read_to_string(ssh.join("authorized_keys")).unwrap(),
             restricted
@@ -598,13 +785,13 @@ mod tests {
             fs::Permissions::from_mode(0o644),
         )
         .unwrap();
-        configure_at(root.clone(), &ssh, &peer(), &key(1), &key(2)).unwrap();
+        configure_at(root.clone(), &ssh, &peer(), &key(1), &key(2), true).unwrap();
         let authorized = fs::read_to_string(ssh.join("authorized_keys")).unwrap();
         assert!(authorized.starts_with(&old));
         assert!(authorized.contains(
             "no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc ssh-ed25519"
         ));
-        configure_at(root.clone(), &ssh, &peer(), &key(1), &key(2)).unwrap();
+        configure_at(root.clone(), &ssh, &peer(), &key(1), &key(2), true).unwrap();
         assert_eq!(
             fs::read_to_string(ssh.join("authorized_keys")).unwrap(),
             authorized
@@ -619,11 +806,95 @@ mod tests {
             format!("peer.example {}\n", key(1))
         );
         let before = fs::read(root.join("known_hosts")).unwrap();
-        assert!(configure_at(root.clone(), &ssh, &peer(), &key(4), &key(2)).is_err());
+        assert!(configure_at(root.clone(), &ssh, &peer(), &key(4), &key(2), true).is_err());
         assert_eq!(fs::read(root.join("known_hosts")).unwrap(), before);
         let mut other = peer();
         other.id = "other:alice".into();
-        assert!(configure_at(root, &ssh, &other, &key(1), &key(2)).is_err());
+        assert!(configure_at(root, &ssh, &other, &key(1), &key(2), true).is_err());
+    }
+    #[test]
+    fn edge_revocation_removes_only_cx_managed_lines_and_preserves_user_lines() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("peer-ssh");
+        let ssh = temp.path().join("ssh");
+        private_dir(&ssh).unwrap();
+        let user = format!(
+            "# keep me\nrestrict {} unrelated\nfrom=\"10.0.0.1\" {} my-own-line\n",
+            key(3),
+            key(2)
+        );
+        fs::write(ssh.join("authorized_keys"), &user).unwrap();
+        fs::set_permissions(
+            ssh.join("authorized_keys"),
+            fs::Permissions::from_mode(0o640),
+        )
+        .unwrap();
+        // A user's own line for the same key blocks cx from adding a differing one.
+        assert!(configure_at(root.clone(), &ssh, &peer(), &key(1), &key(2), true).is_err());
+        fs::write(
+            ssh.join("authorized_keys"),
+            format!("restrict {} unrelated\n", key(3)),
+        )
+        .unwrap();
+        configure_at(root.clone(), &ssh, &peer(), &key(1), &key(2), true).unwrap();
+        let installed =
+            authorization_at(root.clone(), &ssh, Some("machine:alice"), None, None).unwrap();
+        assert_eq!(installed["managed_key_installed"], true);
+        assert_eq!(installed["pinned"], true);
+        let mut text = fs::read_to_string(ssh.join("authorized_keys")).unwrap();
+        text.push_str(&format!(
+            "from=\"10.0.0.1\" {} my-own-line\n# trailing comment\n",
+            key(2)
+        ));
+        fs::write(ssh.join("authorized_keys"), &text).unwrap();
+        fs::set_permissions(
+            ssh.join("authorized_keys"),
+            fs::Permissions::from_mode(0o640),
+        )
+        .unwrap();
+        let revoked =
+            authorization_at(root.clone(), &ssh, Some("machine:alice"), None, Some(false)).unwrap();
+        assert_eq!(revoked["changed"], true);
+        assert_eq!(revoked["managed_key_installed"], false);
+        assert_eq!(revoked["user_authorization_present"], true);
+        let after = fs::read_to_string(ssh.join("authorized_keys")).unwrap();
+        assert_eq!(
+            after,
+            text.replace(&format!("{}\n", managed_line(&key(2))), "")
+        );
+        assert!(after.contains("my-own-line") && after.contains("unrelated"));
+        assert_eq!(
+            fs::metadata(ssh.join("authorized_keys")).unwrap().mode() & 0o777,
+            0o640
+        );
+        // Idempotent; querying an unknown peer never creates state or errors.
+        let again =
+            authorization_at(root.clone(), &ssh, Some("machine:alice"), None, Some(false)).unwrap();
+        assert_eq!(again["changed"], false);
+        let unknown =
+            authorization_at(root.clone(), &ssh, Some("nobody:x"), None, Some(false)).unwrap();
+        assert_eq!(unknown["pinned"], false);
+        assert!(authorization_at(root.clone(), &ssh, Some("nobody:x"), None, Some(true)).is_err());
+        // Re-authorizing a pinned peer by client key restores exactly one managed line.
+        fs::write(
+            ssh.join("authorized_keys"),
+            format!("restrict {} unrelated\n", key(3)),
+        )
+        .unwrap();
+        let restored =
+            authorization_at(root.clone(), &ssh, None, Some(&key(2)), Some(true)).unwrap();
+        assert_eq!(restored["managed_key_installed"], true);
+        authorization_at(root.clone(), &ssh, None, Some(&key(2)), Some(true)).unwrap();
+        let text = fs::read_to_string(ssh.join("authorized_keys")).unwrap();
+        assert_eq!(text.matches("cx-managed-peer").count(), 1);
+        // One-way configure pins the peer without authorizing it, and revokes.
+        configure_at(root.clone(), &ssh, &peer(), &key(1), &key(2), false).unwrap();
+        let text = fs::read_to_string(ssh.join("authorized_keys")).unwrap();
+        assert!(!text.contains("cx-managed-peer") && text.contains("unrelated"));
+        assert!(fs::read_to_string(root.join("known_hosts"))
+            .unwrap()
+            .contains(&key(1)));
+        assert!(authorization_at(root, &ssh, None, Some("not a key"), None).is_err());
     }
     #[test]
     fn refuses_symlink_and_shared_writable_files() {
@@ -639,7 +910,8 @@ mod tests {
             &ssh,
             &peer(),
             &key(1),
-            &key(2)
+            &key(2),
+            true
         )
         .is_err());
         assert_eq!(fs::read_to_string(&destination).unwrap(), "untouched");
@@ -655,7 +927,8 @@ mod tests {
             &ssh,
             &peer(),
             &key(1),
-            &key(2)
+            &key(2),
+            true
         )
         .is_err());
         symlink(&ssh, temp.path().join("alias")).unwrap();
@@ -757,7 +1030,7 @@ mod tests {
                 let root = root.clone();
                 let ssh = ssh.clone();
                 std::thread::spawn(move || {
-                    configure_at(root.clone(), &ssh, &peer(), &key(1), &key(2)).unwrap();
+                    configure_at(root.clone(), &ssh, &peer(), &key(1), &key(2), true).unwrap();
                     Locked::new(root).unwrap().identity().unwrap()
                 })
             })

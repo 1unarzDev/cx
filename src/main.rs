@@ -2,6 +2,7 @@ mod access;
 mod adoption;
 mod auth;
 mod containers;
+mod edges;
 mod files;
 mod markdown_links;
 mod markdown_math;
@@ -89,6 +90,11 @@ enum Cmd {
         minimal: bool,
     },
     Devices,
+    /// Per-edge, per-direction access policy: key, password, one-way or none.
+    Edge {
+        #[command(subcommand)]
+        command: EdgeCommand,
+    },
     /// Change a locally approved device access posture or availability hint.
     Device {
         #[command(subcommand)]
@@ -348,6 +354,29 @@ enum DeviceCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum EdgeCommand {
+    /// Show intended, enforced and observed access for each edge and direction.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Preview, then apply, a policy for FROM -> TO (one-way and none also set TO -> FROM).
+    Set {
+        from: String,
+        to: String,
+        /// key, password, one-way or none
+        policy: String,
+        #[arg(long)]
+        dry_run: bool,
+        /// Apply without the interactive confirmation.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub(crate) enum PtraceAction {
     /// Install the user-local relay so moves work through one sudo prompt each.
@@ -403,6 +432,7 @@ fn info() -> Result<serde_json::Value> {
     caps.push("network-candidates-v1");
     caps.push("peer-enroll-v1");
     caps.push("peer-bootstrap-v1");
+    caps.push("peer-authorize-v1");
     caps.push("adopt-session-v1");
     let relay = adoption::reptyr();
     if relay.is_ok() {
@@ -428,7 +458,13 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
             peer,
             host_key,
             client_key,
-        } => peers::configure(&peer, &host_key, &client_key),
+            authorize,
+        } => peers::configure(&peer, &host_key, &client_key, authorize),
+        Operation::PeerAuthorize {
+            peer_id,
+            client_key,
+            authorize,
+        } => peers::authorization(peer_id.as_deref(), client_key.as_deref(), authorize),
         Operation::Containers => containers::list(),
         Operation::ContainerInspect { id } => Ok(serde_json::to_value(containers::inspect(&id)?)?),
         Operation::DevcontainerUp { workspace } => containers::up(&workspace),
@@ -592,9 +628,12 @@ fn helper() -> Result<()> {
 fn device(name: Option<String>) -> Result<Device> {
     let ds = store::devices()?;
     if let Some(n) = name {
-        ds.into_iter()
+        let d = ds
+            .into_iter()
             .find(|d| d.name == n || d.id == n || d.target.as_deref() == Some(&n))
-            .context("device not enrolled; use cx add")
+            .context("device not enrolled; use cx add")?;
+        edges::guard(&d)?;
+        Ok(d)
     } else {
         Ok(store::local_device())
     }
@@ -610,7 +649,7 @@ pub(crate) fn device_ptrace(
     let device = if name == "local" {
         store::local_device()
     } else {
-        enrolled_device(name)?
+        device(Some(name.to_owned()))?
     };
     let label = device.name.clone();
     let status = |device: &Device| -> Result<serde_json::Value> {
@@ -795,8 +834,67 @@ pub(crate) fn device_ptrace(
     }
 }
 
+fn edge_cli(command: EdgeCommand) -> Result<()> {
+    match command {
+        EdgeCommand::List { json } => {
+            let graph = edges::graph()?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&graph)?);
+            } else {
+                print!("{}", edges::render_list(&graph));
+            }
+        }
+        EdgeCommand::Set {
+            from,
+            to,
+            policy,
+            dry_run,
+            yes,
+            json,
+        } => {
+            let plan = edges::plan(edges::Change {
+                from: edges::resolve(&from)?,
+                to: edges::resolve(&to)?,
+                policy: policy.parse()?,
+            })?;
+            if dry_run {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&plan)?);
+                } else {
+                    print!("{}", edges::render_plan(&plan));
+                }
+                return Ok(());
+            }
+            if !yes {
+                use std::io::IsTerminal;
+                anyhow::ensure!(
+                    std::io::stdin().is_terminal(),
+                    "confirmation required: rerun with --yes, or preview with --dry-run"
+                );
+                eprint!("{}Apply? [y/N] ", edges::render_plan(&plan));
+                let mut answer = String::new();
+                std::io::stdin().read_line(&mut answer)?;
+                if !matches!(answer.trim(), "y" | "Y" | "yes") {
+                    bail!("not applied");
+                }
+            }
+            let applied = edges::apply(&plan)?;
+            println!("{}", serde_json::to_string_pretty(&applied)?);
+            anyhow::ensure!(
+                applied.enforced,
+                "policy saved, but enforcement is incomplete; see the failed steps"
+            );
+        }
+    }
+    Ok(())
+}
+/// Local management lookup (edit, policy, pairing): no edge guard, since these
+/// commands either open no SSH or apply their own edge-policy checks.
 fn enrolled_device(name: &str) -> Result<Device> {
-    device(Some(name.to_owned()))
+    store::devices()?
+        .into_iter()
+        .find(|d| d.name == name || d.id == name || d.target.as_deref() == Some(name))
+        .context("device not enrolled; use cx add")
 }
 
 fn device_policy_report(name: &str) -> Result<serde_json::Value> {
@@ -843,6 +941,7 @@ fn add_via_mode(target: &str, via: Option<&Device>, minimal: bool) -> Result<()>
         previous == next || !store::devices()?.iter().any(|d| d.target.as_deref() == Some(target)),
         "This target is already enrolled through another route. Use distinct SSH aliases for devices on overlapping networks; the existing device was not changed."
     );
+    edges::check_route(target, &next)?;
     store::set_route(target, &next)?;
     let result = enroll_target(target, minimal);
     if result.is_err() {
@@ -1559,6 +1658,7 @@ fn run() -> Result<()> {
                         .any(|d| d.target.as_deref() == Some(&connection.target)),
                     "enroll and verify destination identity before installing its route"
                 );
+                edges::check_route(&connection.target, &connection.jumps)?;
                 store::set_route(&connection.target, &connection.jumps)?;
             }
             println!("{}", serde_json::to_string_pretty(&connection)?);
@@ -1567,6 +1667,7 @@ fn run() -> Result<()> {
         Some(Cmd::Terminal { device: d }) => sessions::login_terminal(&device(d)?),
         Some(Cmd::Mesh { args }) => mesh::run(&args),
         Some(Cmd::Claude { args }) => mesh::run_claude(&args),
+        Some(Cmd::Edge { command }) => edge_cli(command),
         Some(Cmd::Device { command }) => {
             match command {
                 DeviceCommand::Edit { name, target } => {

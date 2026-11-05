@@ -765,3 +765,73 @@ pub fn ssh(target: &str, interactive: bool) -> Result<std::process::Command> {
     c.arg(target);
     Ok(c)
 }
+
+// Per-edge, per-direction access intent (src/edges.rs). Separate from
+// device-policies.json, which stays readable and is never rewritten by edges.
+const EDGES_BYTES: usize = 256 * 1024;
+fn edges_path() -> PathBuf {
+    state_dir().join("edges.json")
+}
+/// Raw bounded read of the private edges.json; `None` when it does not exist.
+pub fn read_edges<T: serde::de::DeserializeOwned>() -> Result<Option<T>> {
+    use std::{
+        io::Read,
+        os::unix::fs::{MetadataExt, OpenOptionsExt},
+    };
+    let file = match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(edges_path())
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let m = file.metadata()?;
+    anyhow::ensure!(
+        m.is_file()
+            && m.uid() == unsafe { libc::geteuid() }
+            && m.mode() & 0o077 == 0
+            && m.len() <= EDGES_BYTES as u64,
+        "unsafe edge policy store"
+    );
+    let mut bytes = Vec::new();
+    file.take(EDGES_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+    anyhow::ensure!(bytes.len() <= EDGES_BYTES, "edge policy store is too large");
+    Ok(Some(serde_json::from_slice(&bytes)?))
+}
+/// Atomic 0600 replacement of edges.json under the device lock.
+pub fn write_edges<T: Serialize>(value: &T) -> Result<()> {
+    let _guard = device_guard()?;
+    let bytes = serde_json::to_vec_pretty(value)?;
+    anyhow::ensure!(bytes.len() <= EDGES_BYTES, "edge policy store is too large");
+    let dir = ensure()?;
+    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    let temporary = dir.join(format!(
+        "edges.{}.{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)?;
+    let result = (|| -> Result<()> {
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        fs::rename(&temporary, edges_path())?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
+}
+/// Every validated jump route, for edge-policy consequence previews.
+pub fn all_routes() -> Result<std::collections::BTreeMap<String, Vec<String>>> {
+    routes()
+}

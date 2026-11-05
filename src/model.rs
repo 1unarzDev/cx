@@ -101,6 +101,22 @@ pub enum Operation {
         peer: Device,
         host_key: String,
         client_key: String,
+        /// False pins the peer's host key for outbound use without authorizing
+        /// its client key (and removes an existing cx-managed line). Older
+        /// helpers ignore it; callers check `peer-authorize-v1` before sending false.
+        #[serde(default = "default_true", skip_serializing_if = "is_true")]
+        authorize: bool,
+    },
+    /// Query (`authorize: None`) or set the cx-managed authorized_keys line for
+    /// one pinned peer, selected by its client key or pinned identity. Never
+    /// touches lines CX did not write. Capability `peer-authorize-v1`.
+    PeerAuthorize {
+        #[serde(default)]
+        peer_id: Option<String>,
+        #[serde(default)]
+        client_key: Option<String>,
+        #[serde(default)]
+        authorize: Option<bool>,
     },
     PeerEnroll {
         peer: Device,
@@ -362,4 +378,11 @@ impl TransferSpec {
             Operation::Transfer(self)
         }
     }
+}
+
+fn default_true() -> bool {
+    true
+}
+fn is_true(value: &bool) -> bool {
+    *value
 }

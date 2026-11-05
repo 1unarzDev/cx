@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""`cx secrets` keeps values out of stdout/stderr, argv and files, offline in a temp HOME.
+
+Uses the age-file backend only (CX_SECRETS_BACKEND=file, no session bus), so the user's keyring is never
+touched. Checks: set from stdin, list/--json carry metadata only, get --fd to a pipe (a terminal is refused),
+get --exec puts the value in the child's env and in no process's /proc/PID/cmdline, migrate imports the
+plaintext `cx mesh` token and deletes it only with --delete-plaintext, `cx mesh` hands the stored token to
+python3 as $CLOUDFLARE_API_TOKEN (an explicit one wins), rm, and 0600/0700 modes.
+"""
+import hashlib, json, os, pathlib, stat, subprocess, sys, tempfile
+
+binary = str(pathlib.Path(sys.argv[1]).resolve())
+CANARY = 'cx-cli-canary-5d2b81c4'
+CANARY2 = 'cx-cli-canary-mesh-0e77a1'
+seen = []  # every stdout/stderr byte cx produced
+
+
+def sha(s):
+    return hashlib.sha256(s.encode()).hexdigest()
+
+
+with tempfile.TemporaryDirectory(prefix='cx-secrets-') as tmp:
+    root = pathlib.Path(tmp); root.chmod(0o700)
+    env = {k: v for k, v in os.environ.items() if not k.startswith(('DBUS_', 'CLOUDFLARE_', 'XDG_', 'CX_'))}
+    env.update(HOME=str(root), XDG_STATE_HOME=str(root / 'state'), XDG_CONFIG_HOME=str(root / 'config'),
+               XDG_CACHE_HOME=str(root / 'cache'), XDG_RUNTIME_DIR=str(root / 'run'), CX_SECRETS_BACKEND='file')
+    (root / 'run').mkdir(mode=0o700)
+    state = root / 'state/cx'
+
+    def cx(*args, input=None, ok=True, extra=None, **kw):
+        r = subprocess.run([binary, *args], env=dict(env, **(extra or {})), input=input, capture_output=True,
+                           timeout=30, **kw)
+        seen.extend([r.stdout, r.stderr])
+        if ok:
+            assert r.returncode == 0, (args, r.returncode, r.stderr.decode(errors='replace')[-2000:])
+        return r
+
+    r = cx('secrets', 'list')
+    assert b'no secrets' in r.stdout
+    cx('secrets', 'set', 'robot.wifi', input=(CANARY + '\n').encode())
+    r = cx('secrets', 'list', '--json')
+    meta = json.loads(r.stdout)
+    assert [m['name'] for m in meta] == ['robot.wifi'], meta
+    assert meta[0]['kind'] == 'generic' and meta[0]['backend'] == 'file' and meta[0]['length'] == len(CANARY), meta
+    assert 'value' not in meta[0]
+    r = cx('secrets', 'list')
+    assert f'({len(CANARY)})'.encode() in r.stdout
+    r = cx('secrets', 'set', 'cloudflare.api_token', '--kind', 'generic', input=b'x', ok=False)
+    assert r.returncode != 0 and b'well-known' in r.stderr
+    r = cx('secrets', 'set', 'robot.wifi', '--kind', 'nope', input=b'x', ok=False)
+    assert r.returncode != 0
+
+    # On a terminal, set prompts with echo off: the typed value never comes back on the screen.
+    import pty, select, time
+    pid, master = pty.fork()
+    if pid == 0:
+        os.execve(binary, [binary, 'secrets', 'set', 'robot.typed'], env)
+    screen = b''
+    deadline = time.monotonic() + 10
+    while b'not echoed' not in screen and time.monotonic() < deadline:
+        if select.select([master], [], [], 0.2)[0]:
+            screen += os.read(master, 4096)
+    assert b'not echoed' in screen, screen
+    os.write(master, (CANARY + '\n').encode())
+    while time.monotonic() < deadline:
+        if select.select([master], [], [], 0.2)[0]:
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            screen += chunk
+    assert os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]) == 0, screen
+    os.close(master)
+    seen.append(screen)
+    assert b'stored robot.typed' in screen, screen
+    cx('secrets', 'rm', 'robot.typed')
+
+    # --fd: a pipe gets exactly the value; a terminal is refused.
+    rd, wr = os.pipe()
+    cx('secrets', 'get', 'robot.wifi', '--fd', str(wr), pass_fds=(wr,))
+    os.close(wr)
+    with os.fdopen(rd, 'rb') as f:
+        assert f.read() == CANARY.encode()
+    master, slave = os.openpty()
+    r = cx('secrets', 'get', 'robot.wifi', '--fd', str(slave), pass_fds=(slave,), ok=False)
+    os.close(slave)
+    os.set_blocking(master, False)
+    try:
+        leaked = os.read(master, 4096)
+    except (BlockingIOError, OSError):
+        leaked = b''
+    os.close(master)
+    assert r.returncode != 0 and b'terminal' in r.stderr and CANARY.encode() not in leaked
+
+    # --exec: the child sees the value in its env; no process's argv carries it.
+    child = (
+        'import hashlib,os,sys\n'
+        'c=open(sys.argv[1],"rb").read()\n'
+        'hits=[]\n'
+        'for p in os.listdir("/proc"):\n'
+        '    if p.isdigit():\n'
+        '        try: a=open(f"/proc/{p}/cmdline","rb").read()\n'
+        '        except OSError: continue\n'
+        '        if c in a: hits.append(p)\n'
+        'v=os.environ.get("WIFI","")\n'
+        'print(hashlib.sha256(v.encode()).hexdigest(), os.environ.get("ROBOT_WIFI") is None, len(hits))\n'
+    )
+    needle = root / 'needle'; needle.write_text(CANARY); needle.chmod(0o600)
+    r = cx('secrets', 'get', 'WIFI=robot.wifi', '--exec', '--', sys.executable, '-c', child, str(needle))
+    out = r.stdout.decode().split()
+    assert out[0] == sha(CANARY) and out[1] == 'True', out
+    assert out[2] == '0', f'canary in argv of {out[2]} processes'
+    cx('secrets', 'get', 'robot.wifi', '--exec', '--', 'sh', '-c', 'test "$ROBOT_WIFI" = "$(cat "$1")"', 'x', str(needle))
+    r = cx('secrets', 'get', 'missing', '--exec', '--', 'true', ok=False)
+    assert r.returncode != 0
+
+    # migrate: imports the plaintext mesh token, deletes it only on request.
+    creds = root / 'config/cx/mesh/credentials'
+    creds.parent.mkdir(parents=True); creds.write_text(CANARY2 + '\n'); creds.chmod(0o600)
+    r = cx('secrets', 'migrate')
+    assert creds.exists() and b'--delete-plaintext' in r.stdout
+    assert json.loads(cx('secrets', 'list', '--json').stdout)[0]['name'] == 'cloudflare.api_token'
+    cx('secrets', 'migrate', '--delete-plaintext')
+    assert not creds.exists()
+    r = cx('secrets', 'migrate')
+    assert b'nothing to migrate' in r.stdout
+
+    # cx mesh: the stored token reaches python3 through the environment only.
+    bin_dir = root / 'bin'; bin_dir.mkdir()
+    fake = bin_dir / 'python3'
+    fake.write_text('#!/bin/sh\nprintf %s "$CLOUDFLARE_API_TOKEN" | sha256sum | cut -c1-64 > "$CX_FAKE_OUT"\n'
+                    'printf "%s\\n" "$@" > "$CX_FAKE_OUT.argv"\n')
+    fake.chmod(0o700)
+    out_file = root / 'mesh-out'
+    path = f'{bin_dir}:{env["PATH"]}'
+    cx('mesh', 'devices', extra=dict(PATH=path, CX_FAKE_OUT=str(out_file)))
+    assert out_file.read_text().strip() == sha(CANARY2), 'stored token not injected'
+    assert CANARY2 not in (root / 'mesh-out.argv').read_text()
+    cx('mesh', 'devices', extra=dict(PATH=path, CX_FAKE_OUT=str(out_file), CLOUDFLARE_API_TOKEN='explicit'))
+    assert out_file.read_text().strip() == sha('explicit'), 'explicit env must win'
+
+    # Nothing on disk or in any output carries a value in clear; modes stay private.
+    for p in state.iterdir():
+        data = p.read_bytes()
+        assert CANARY.encode() not in data and CANARY2.encode() not in data, p
+        if p.is_file():
+            assert stat.S_IMODE(p.stat().st_mode) == 0o600, (p, oct(p.stat().st_mode))
+    assert stat.S_IMODE(state.stat().st_mode) == 0o700
+    for f in ('secrets.age', 'secrets.key', 'secrets.json'):
+        assert (state / f).exists(), f
+
+    cx('secrets', 'rm', 'robot.wifi')
+    assert [m['name'] for m in json.loads(cx('secrets', 'list', '--json').stdout)] == ['cloudflare.api_token']
+    r = cx('secrets', 'rm', 'robot.wifi', ok=False)
+    assert r.returncode != 0
+
+    for blob in seen:
+        assert CANARY.encode() not in blob and CANARY2.encode() not in blob, blob[-500:]
+        assert CANARY[:16].encode() not in blob
+print('secrets CLI: values stayed out of output, argv and disk')

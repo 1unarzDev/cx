@@ -12,6 +12,7 @@ mod network;
 mod orphans;
 mod peer_ssh;
 mod peers;
+mod secrets;
 mod session_titles;
 mod sessions;
 mod sharing;
@@ -107,6 +108,11 @@ enum Cmd {
     Claude {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+    /// OS keyring / age-file secrets (docs/secrets.md): list, set, get --fd/--exec, rm, migrate.
+    Secrets {
+        #[command(subcommand)]
+        command: secrets::Cli,
     },
     /// Open an ordinary login terminal; exit returns without requiring tmux.
     Terminal {
@@ -1567,6 +1573,7 @@ fn run() -> Result<()> {
         Some(Cmd::Terminal { device: d }) => sessions::login_terminal(&device(d)?),
         Some(Cmd::Mesh { args }) => mesh::run(&args),
         Some(Cmd::Claude { args }) => mesh::run_claude(&args),
+        Some(Cmd::Secrets { command }) => secrets::run_cli(command),
         Some(Cmd::Device { command }) => {
             match command {
                 DeviceCommand::Edit { name, target } => {

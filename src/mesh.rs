@@ -50,12 +50,36 @@ pub fn run_claude(args: &[String]) -> Result<()> {
 }
 
 fn python(script: PathBuf, args: &[String]) -> Result<()> {
-    let status = std::process::Command::new("python3")
-        .arg(&script)
-        .args(args)
+    let mut command = std::process::Command::new("python3");
+    command.arg(&script).args(args);
+    inject_token(&mut command);
+    let status = command
         .status()
         .context("cx mesh and cx claude need python3")?;
     std::process::exit(status.code().unwrap_or(1));
+}
+
+/// Hand a stored `cloudflare.api_token` (docs/secrets.md) to the util as $CLOUDFLARE_API_TOKEN, the variable it
+/// already reads first, so mesh.py stays unchanged and standalone. An explicit $CLOUDFLARE_API_TOKEN wins; with no
+/// stored token (or an unreachable store) the util keeps its own lookup: credentials file, then prompt.
+fn inject_token(command: &mut std::process::Command) {
+    if std::env::var_os("CLOUDFLARE_API_TOKEN").is_some() {
+        return;
+    }
+    let name = crate::secrets::Kind::CloudflareApiToken.as_str();
+    match crate::secrets::Secrets::open().and_then(|s| s.inject(&[name], command).map(|_| ())) {
+        Ok(()) => {}
+        Err(e) => {
+            if crate::secrets::Secrets::open()
+                .and_then(|s| s.meta(name))
+                .is_ok_and(|m| m.is_some())
+            {
+                eprintln!(
+                    "cx: stored {name} unavailable ({e:#}); mesh.py falls back to its own lookup"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

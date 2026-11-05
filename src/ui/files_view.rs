@@ -74,7 +74,7 @@ pub(super) fn file_context_hierarchy(
             "›"
         }
     } else if ascii() {
-        "+- "
+        "`- "
     } else {
         "└─ "
     };
@@ -105,7 +105,9 @@ pub(super) fn file_context_hierarchy(
             ),
             width,
         ),
-        accent().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+        // The reversed accent chip belongs to the focused panel's title (spec
+        // 5 cue 2); the current folder is a dim selection, bold.
+        selection(false).patch(dir()),
     ));
     if let Some(entry) = entry {
         lines.push(Line::styled(

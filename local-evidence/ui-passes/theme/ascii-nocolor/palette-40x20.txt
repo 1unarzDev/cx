@@ -1,19 +1,19 @@
  cx   Sessions      viewing fixture@lapt
  #[ Actions . type to filter ]========# 
-+#>                                   ##
-|#====================================##
-|+------------------------------------+#
-||Pin / unpin selected session . p    |#
-||Containers . choose device / All dev|#
-+|Add by SSH address . alias / user@ho|#
-+|Files . choose device . browse home |#
-||New session . choose device, provide|#
-||Transfers . progress / cancel / retr|#
-||Run command here . :                |#
-+|Watch session . read-only terminal, |#
- |Network . choose device / All device|#
- |Sessions . choose device / All devic|#
- +------------------------------------+#
++#>                                   #+
+|#====================================#|
+|+------------------------------------+|
+||Pin / unpin selected session . p    ||
+||Containers . choose device / All dev||
++|Add by SSH address . alias / user@ho||
++|Files . choose device . browse home ||
+||New session . choose device, provide||
+||Transfers . progress / cancel / retr||
+||Run command here . :                ||
++|Watch session . read-only terminal, ||
+ |Network . choose device / All device||
+ |Sessions . choose device / All devic||
+ +------------------------------------++
  +------------------------------------+e
  |Current: laptop .                   | 
  +------------------------------------+ 

@@ -3,7 +3,7 @@
 ╭ Devices ───╮ Files  fixture@laptop    
 │   All devi │ NORMAL 0 selected · hidde
 │ ▏ ●  lapt… │┏ 2 items ━━━━━━━━━━━━━━━┓
-│   ●  * la… │┃  / ▌ …wnloads          ┃
+│   ●  * la… │┃  / > …wnloads          ┃
 │   ○  * fi… │┃  /   projects          ┃
 ╰────────────╯┃╭ Error ───────────────╮┃
 ╭ Actions ───╮┃│ robot@field-rover:   │┃

@@ -1,6 +1,6 @@
  cx   Sessions      viewing fixture@lapt
                                         
-╭ Devices ──────╮┏ Sessions · 2 session┓
+╭ Devices ──────╮┏ Sessions · 2 sess…━━┓
 │   All devices │┃  SESSION    STATE   ┃
 │ ▏ ●  laptop   │┃                     ┃
 │   ●  * lab-a… │┃  /tmp/cx-ca         ┃

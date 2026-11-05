@@ -4,7 +4,7 @@
 │   All devices     │┃  SESSION                        STATE     ┃│Enter · focus terminal · Wheel · scroll             │
 │ ▏ ●  laptop       │┃                                           ┃│Compiling cx-demo v0.1.0                            │
 │   ●  * lab-arm    │┃  /tmp/tmp-xxxxxx                          ┃│    Finished dev in 2.41s                           │
-│   ○  * field-rov… │┃▌ build watcher                  idle      ┃│[Running cargo check]                               │
+│   ○  * field-rov… │┃> build watcher                  idle      ┃│[Running cargo check]                               │
 ╰───────────────────╯┃                                           ┃│[xxxxxx@xxxxxxxxxx cx-demo]$                        │
 ╭ Actions ──────────╮┃  /tmp/tmp-xxxxxx                          ┃│                                                    │
 │ Files             │┃  New shell                      idle      ┃│                                                    │

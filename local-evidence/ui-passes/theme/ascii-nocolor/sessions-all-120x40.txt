@@ -7,7 +7,7 @@
 |   x  * field-rov~ |#> build watcher                  idle      #|[Running cargo check]                               |
 +-------------------+#                                           #|[xxxxxx@xxxxxxxxxx cx-demo]$                        |
 + Actions ----------+#  /tmp/tmp-xxxxxx                          #|                                                    |
-| Files             |#  recent: env                    idle      #|                                                    |
+| Files             |#  New shell                      idle      #|                                                    |
 | Network           |#                                           #|                                                    |
 | Containers        |#  /tmp/tmp-xxxxxx                          #|                                                    |
 | Transfers         |#  ros core                       idle      #|                                                    |

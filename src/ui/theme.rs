@@ -205,7 +205,9 @@ pub(super) fn swatch(key: &str) -> Style {
 
 /// Selected-row style: `accent.bg` in the focused panel, `select.dim.bg` elsewhere.
 /// 16-color and NO_COLOR use REVERSED for the focused row and nothing (the bar
-/// marker carries it) for unfocused ones.
+/// marker carries it) for unfocused ones. The reversed row also resets the
+/// foreground, so token-colored cells (an accent state, a dim age) do not turn
+/// into colored blocks inside the bar: the row reads as one uniform chip.
 pub(super) fn selection_for(focused: bool, caps: Caps) -> Style {
     let t = if focused {
         Tok::AccentBg
@@ -215,23 +217,30 @@ pub(super) fn selection_for(focused: bool, caps: Caps) -> Style {
     match token_color(t, caps) {
         Some(bg) if focused => Style::default().bg(bg).add_modifier(Modifier::BOLD),
         Some(bg) => Style::default().bg(bg),
-        None if focused => Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        None if focused => Style::default()
+            .fg(Color::Reset)
+            .add_modifier(Modifier::REVERSED | Modifier::BOLD),
         None => Style::default(),
     }
 }
+/// Selection style for a panel row; `focused` is downgraded while an overlay
+/// owns input (see [`set_panels_dimmed`]).
 pub(super) fn selection(focused: bool) -> Style {
-    selection_for(focused, caps())
+    selection_for(focused && !panels_dimmed(), caps())
 }
-/// The focused selection (kept for call sites that only draw focused lists).
+/// The focused selection (lists that only show a selection while focused).
+/// Still dims behind an overlay.
 pub(super) fn selected_style() -> Style {
     selection(true)
 }
-/// Left selection bar, including the trailing gap. Under `NO_COLOR` a Unicode
-/// terminal still gets the `>` marker (spec 4.1 / 5): without color, the thin
-/// `▌`/`▏` bars are too weak a cue, and REVERSED already marks the focused row.
+/// Left selection bar, including the trailing gap. A focused row whose depth
+/// falls back to REVERSED (16 colors, NO_COLOR) gets the `>` marker: inside a
+/// reversed row the half-block `▌` collapses to a sliver of the row color and
+/// disappears (spec 4.1 / 5: the bar must survive at every depth).
 pub(super) fn selection_symbol_for(focused: bool, caps: Caps) -> &'static str {
     let g = glyphs_for(caps);
-    if caps.color == ColorDepth::None {
+    let reversed = token_color(Tok::AccentBg, caps).is_none();
+    if caps.color == ColorDepth::None || (focused && reversed) {
         ASCII.bar_focused
     } else if focused {
         g.bar_focused
@@ -240,9 +249,149 @@ pub(super) fn selection_symbol_for(focused: bool, caps: Caps) -> &'static str {
     }
 }
 pub(super) fn selection_symbol(focused: bool) -> &'static str {
-    selection_symbol_for(focused, caps())
+    selection_symbol_for(focused && !panels_dimmed(), caps())
 }
 
+/// Per-frame render state shared by the theme helpers.
+#[derive(Default)]
+struct FrameState {
+    /// An overlay, dialog or palette owns input: panels behind it draw unfocused.
+    dimmed: bool,
+    /// Collect block titles for [`fit_titles`] (only inside a managed frame).
+    collecting: bool,
+    /// Focused/unfocused titles created this frame, as rendered cell symbols.
+    titles: Vec<Vec<String>>,
+}
+thread_local! {
+    static FRAME: std::cell::RefCell<FrameState> = std::cell::RefCell::new(FrameState::default());
+}
+/// While `true`, [`block`], [`selection`] and [`selection_symbol`] treat every
+/// caller as unfocused, so the panels behind a modal overlay never look focused
+/// next to it (spec 5: exactly one focused region). Overlays are drawn after
+/// this is reset to `false`.
+pub(super) fn set_panels_dimmed(dimmed: bool) {
+    FRAME.with(|f| f.borrow_mut().dimmed = dimmed);
+}
+pub(super) fn panels_dimmed() -> bool {
+    FRAME.with(|f| f.borrow().dimmed)
+}
+/// Start a managed frame: forget titles and content regions, start collecting
+/// titles for [`fit_titles`].
+pub(super) fn begin_frame(dimmed: bool) {
+    clear_protected_content();
+    FRAME.with(|f| {
+        *f.borrow_mut() = FrameState {
+            dimmed,
+            collecting: true,
+            titles: Vec::new(),
+        }
+    });
+}
+/// End a managed frame: stop collecting and return the collected titles.
+fn end_frame() -> Vec<Vec<String>> {
+    FRAME.with(|f| {
+        let mut f = f.borrow_mut();
+        f.dimmed = false;
+        f.collecting = false;
+        std::mem::take(&mut f.titles)
+    })
+}
+fn register_title(title: &Line<'_>) {
+    FRAME.with(|f| {
+        let mut f = f.borrow_mut();
+        if !f.collecting || f.titles.len() >= 256 {
+            return;
+        }
+        let width = title.width();
+        if width == 0 || width > 512 {
+            return;
+        }
+        let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, width as u16, 1));
+        ratatui::widgets::Widget::render(title.clone(), buf.area, &mut buf);
+        f.titles
+            .push(buf.content.iter().map(|c| c.symbol().to_owned()).collect());
+    });
+}
+/// Horizontal border symbol continuing a top-left corner, for our border sets.
+fn top_run(corner: &str) -> Option<(&'static str, &'static [&'static str])> {
+    Some(match corner {
+        "┏" => ("━", &["┓"]),
+        "╭" => ("─", &["╮"]),
+        "┌" => ("─", &["┐"]),
+        "#" => ("=", &["#"]),
+        "+" => ("-", &["+"]),
+        _ => return None,
+    })
+}
+/// Keep panel titles from swallowing the top border at narrow widths: a title
+/// wider than the block minus 4 cells is cut to that width and ends with the
+/// glyph-set ellipsis, so border cells stay visible after the chip. Runs on the
+/// finished frame (titles are clipped by ratatui without an ellipsis).
+pub(super) fn fit_titles(buf: &mut ratatui::buffer::Buffer, area: Rect) {
+    let titles = end_frame();
+    if titles.is_empty() {
+        return;
+    }
+    let ellipsis = glyphs().ellipsis;
+    for y in area.top()..area.bottom() {
+        let mut x = area.left();
+        while x + 1 < area.right() {
+            let Some((run, rights)) = top_run(buf[(x, y)].symbol()) else {
+                x += 1;
+                continue;
+            };
+            let start = x + 1;
+            // Longest registered title drawn right after this corner.
+            let mut best: Option<(u16, usize)> = None;
+            for t in &titles {
+                let mut k = 0u16;
+                while usize::from(k) < t.len()
+                    && start + k < area.right()
+                    && buf[(start + k, y)].symbol() == t[usize::from(k)]
+                {
+                    k += 1;
+                }
+                if k >= 2 && best.is_none_or(|(bk, _)| k > bk) {
+                    best = Some((k, t.len()));
+                }
+            }
+            let Some((k, full)) = best else {
+                x += 1;
+                continue;
+            };
+            // Find the right corner after the drawn title.
+            let mut end = start + k;
+            while end < area.right() && buf[(end, y)].symbol() == run {
+                end += 1;
+            }
+            if end >= area.right() || !rights.contains(&buf[(end, y)].symbol()) {
+                x = start + k;
+                continue;
+            }
+            let width = end - x + 1;
+            let cap = width.saturating_sub(4);
+            if usize::from(k) < full || k > cap {
+                let style = buf[(x, y)].style();
+                let keep = cap.saturating_sub(1);
+                // Do not split a wide character: back off over continuation cells.
+                let mut cut = start + keep;
+                while cut > start && buf[(cut, y)].symbol().is_empty() {
+                    cut -= 1;
+                }
+                if cap > 0 {
+                    let chip = buf[(cut.saturating_sub(1).max(start), y)].style();
+                    buf[(cut, y)].set_symbol(ellipsis).set_style(chip);
+                    cut += 1;
+                }
+                for cx in cut..end {
+                    buf[(cx, y)].reset();
+                    buf[(cx, y)].set_symbol(run).set_style(style);
+                }
+            }
+            x = end + 1;
+        }
+    }
+}
 /// Glyph set (spec table 4.2). ASCII is chosen by `CX_ASCII`, `TERM=dumb|linux`
 /// or a non-UTF-8 locale.
 #[allow(dead_code)]
@@ -356,7 +505,7 @@ pub(super) fn border_set_for(focused: bool, caps: Caps) -> border::Set {
     }
 }
 pub(super) fn border_set(focused: bool) -> border::Set {
-    border_set_for(focused, caps())
+    border_set_for(focused && !panels_dimmed(), caps())
 }
 /// Border glyphs for overlays and toasts (never "focused" panels).
 pub(super) fn overlay_border() -> border::Set {
@@ -386,14 +535,18 @@ pub(super) fn block_for(title: String, focused: bool, caps: Caps) -> Block<'stat
             tok_for(Tok::Faint, caps),
         )
     };
+    let title = Line::from(Span::styled(title, title_style));
+    register_title(&title);
     Block::default()
-        .title(Line::from(Span::styled(title, title_style)))
+        .title(title)
         .borders(Borders::ALL)
         .border_set(border_set_for(focused, caps))
         .border_style(border_style)
 }
+/// Panel frame for the current capabilities. `focused` is downgraded while an
+/// overlay owns input, so only the overlay shows the focused treatment.
 pub(super) fn block(title: String, focused: bool) -> Block<'static> {
-    block_for(title, focused, caps())
+    block_for(title, focused && !panels_dimmed(), caps())
 }
 /// Untitled unfocused frame (overlay sub-boxes), still honouring ASCII.
 pub(super) fn plain_block() -> Block<'static> {

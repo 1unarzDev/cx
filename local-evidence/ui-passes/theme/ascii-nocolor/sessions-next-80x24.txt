@@ -7,9 +7,9 @@
 |   x  * field-rov~ |#  build watcher                                idle      #
 +-------------------+#                                                         #
 + Actions ----------+#  /tmp/tmp-xxxxxx                /home/project           #
-| Files             |#> recent: env                                  idle      #
+| Files             |#> New shell                                    idle      #
 | Network           |#=========================================================#
-| Containers        |+ recent: env . fixture@laptop ---------------------------+
+| Containers        |+ New shell . fixture@laptop -----------------------------+
 | Transfers         ||Enter . focus terminal . Wheel . scroll                  |
 | Watch . read-only ||run-05 step 2 ok  lidar=12Hz                             |
 +-------------------+|run-05 step 3 ok  lidar=13Hz                             |

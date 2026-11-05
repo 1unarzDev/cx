@@ -6687,3 +6687,156 @@ fn ascii_capability_renders_no_unicode_and_keeps_focus_cues() {
         }
     }
 }
+
+/// Spec 5: exactly one focused region. With a modal overlay open, the panels
+/// behind it lose the heavy border, the accent chip and the accent selection.
+#[test]
+fn only_the_overlay_looks_focused_while_it_owns_input() {
+    let accent = theme::token_color(theme::Tok::Accent, caps::caps()).unwrap();
+    let accent_bg = theme::token_color(theme::Tok::AccentBg, caps::caps()).unwrap();
+    let draw = |a: &App| {
+        let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        t.draw(|f| render(f, a)).unwrap();
+        t.backend().buffer().clone()
+    };
+    let heavy = |b: &ratatui::buffer::Buffer| -> Vec<(u16, u16)> {
+        let mut v = Vec::new();
+        for y in 0..b.area.height {
+            for x in 0..b.area.width {
+                if b[(x, y)].symbol() == "┏" {
+                    v.push((x, y));
+                }
+            }
+        }
+        v
+    };
+    let chip_rows = |b: &ratatui::buffer::Buffer| -> std::collections::BTreeSet<u16> {
+        b.content
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                c.modifier.contains(Modifier::REVERSED)
+                    && c.fg == accent
+                    && c.symbol().chars().all(char::is_alphabetic)
+                    && !c.symbol().is_empty()
+            })
+            .map(|(i, _)| (i / usize::from(b.area.width)) as u16)
+            .collect()
+    };
+    let (mut a, _) = queued_app();
+    a.view = View::Work;
+    a.focus = Focus::Workspace;
+    let base = draw(&a);
+    assert_eq!(heavy(&base).len(), 1, "one focused panel without overlays");
+
+    for open in [
+        (|a: &mut App| a.input = Some(Input::Palette)) as fn(&mut App),
+        |a: &mut App| a.help = true,
+    ] {
+        let mut a2 = queued_app().0;
+        a2.view = View::Work;
+        a2.focus = Focus::Workspace;
+        open(&mut a2);
+        let b = draw(&a2);
+        let corners = heavy(&b);
+        assert_eq!(corners.len(), 1, "only the overlay is heavy: {corners:?}");
+        let (ox, oy) = corners[0];
+        let rows = chip_rows(&b);
+        assert_eq!(rows.len(), 1, "one accent chip row: {rows:?}");
+        assert_eq!(rows.iter().next(), Some(&oy), "the chip is the overlay's");
+        // Find the overlay's extent (its right and bottom heavy corners).
+        let right = (ox..b.area.width)
+            .find(|&x| b[(x, oy)].symbol() == "┓")
+            .unwrap();
+        // The overlay may stack frames (the palette's input box over its
+        // list): it extends down while its left column stays a border.
+        let bottom = (oy..b.area.height)
+            .take_while(|&y| "┏┃┗╭│╰├".contains(b[(ox, y)].symbol()))
+            .last()
+            .unwrap();
+        for y in 0..b.area.height {
+            for x in 0..b.area.width {
+                let inside = (ox..=right).contains(&x) && (oy..=bottom).contains(&y);
+                if !inside {
+                    assert_ne!(
+                        b[(x, y)].bg,
+                        accent_bg,
+                        "focused selection behind overlay at {x},{y}: {:?}",
+                        (0..b.area.width)
+                            .map(|x| b[(x, y)].symbol())
+                            .collect::<String>()
+                    );
+                    assert_ne!(
+                        b[(x, y)].symbol(),
+                        "▌",
+                        "focused bar behind overlay at {x},{y}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Titles keep border cells after them and end with the ellipsis when cut.
+#[test]
+fn narrow_titles_are_capped_with_an_ellipsis() {
+    let (a, _) = queued_app();
+    for (caps, run, ell) in [
+        (caps::Caps::default(), "━", "…"),
+        (
+            caps::Caps {
+                unicode: false,
+                color: caps::ColorDepth::None,
+                ..caps::Caps::default()
+            },
+            "=",
+            "~",
+        ),
+    ] {
+        caps::with_caps(caps, || {
+            let mut t = Terminal::new(TestBackend::new(40, 20)).unwrap();
+            t.draw(|f| render(f, &a)).unwrap();
+            let b = t.backend().buffer();
+            let row = |y: u16| (0..40).map(|x| b[(x, y)].symbol()).collect::<String>();
+            let line = (0..20)
+                .map(row)
+                .find(|r| {
+                    r.contains("Session")
+                        && r.split_whitespace()
+                            .next()
+                            .is_some_and(|w| w.starts_with(['┏', '╭', '#', '+']))
+                })
+                .unwrap();
+            let tail: String = line
+                .chars()
+                .rev()
+                .take(3)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            assert!(
+                tail.starts_with(run) || line.contains(&format!("{ell}{run}")),
+                "title leaves border after it: {line:?}"
+            );
+        });
+    }
+}
+
+/// 16 colors: the focused row is one uniform reversed chip with a `>` bar.
+#[test]
+fn ansi16_focused_row_is_uniform_and_keeps_its_bar() {
+    let c = caps::Caps {
+        color: caps::ColorDepth::Ansi16,
+        ..caps::Caps::default()
+    };
+    let style = theme::selection_for(true, c);
+    assert!(style.add_modifier.contains(Modifier::REVERSED));
+    assert_eq!(
+        style.fg,
+        Some(Color::Reset),
+        "token colors do not leak into the bar"
+    );
+    assert_eq!(theme::selection_symbol_for(true, c), "> ");
+    assert_eq!(theme::selection_symbol_for(false, c), "▏ ");
+}

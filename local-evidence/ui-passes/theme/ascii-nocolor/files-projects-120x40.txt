@@ -17,8 +17,8 @@
  tmp/                #                                                                                                 #
   cx-capture-matrix~ #                                                                                                 #
    home/             #                                                                                                 #
-    +- projects/     #                                                                                                 #
-      +- cx-demo/    #                                                                                                 #
+    `- projects/     #                                                                                                 #
+      `- cx-demo/    #                                                                                                 #
                      #                                                                                                 #
                      #                                                                                                 #
                      #                                                                                                 #

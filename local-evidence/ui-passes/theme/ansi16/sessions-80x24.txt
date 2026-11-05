@@ -4,7 +4,7 @@
 │   All devices     │┃  SESSION                                      STATE     ┃
 │ ▏ ●  laptop       │┃                                                         ┃
 │   ●  * lab-arm    │┃  /tmp/tmp-xxxxxx                /home/project           ┃
-│   ○  * field-rov… │┃▌ build watcher                                idle      ┃
+│   ○  * field-rov… │┃> build watcher                                idle      ┃
 ╰───────────────────╯┃                                                         ┃
 ╭ Actions ──────────╮┃  /tmp/tmp-xxxxxx                /home/project           ┃
 │ Files             │┃  New shell                                    idle      ┃

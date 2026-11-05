@@ -7,7 +7,7 @@
 │   ○  * field-rov… │┃  build watcher                                idle      ┃
 ╰───────────────────╯┃                                                         ┃
 ╭ Actions ──────────╮┃  /tmp/tmp-xxxxxx                /home/project           ┃
-│ Files             │┃▌ New shell                                    idle      ┃
+│ Files             │┃> New shell                                    idle      ┃
 │ Network           │┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 │ Containers        │╭ New shell · fixture@laptop ─────────────────────────────╮
 │ Transfers         ││Enter · focus terminal · Wheel · scroll                  │

@@ -24,13 +24,26 @@ pub(super) fn render_at(
     native: Option<&mut crate::terminal_preview::NativePreview>,
     now: Instant,
 ) {
-    clear_protected_content();
+    begin_frame(overlay_owns_input(app));
     render_frame(frame, app, native, now);
+    let area = frame.area();
+    fit_titles(frame.buffer_mut(), area);
     if ascii() {
         // ASCII parity (spec C11): UI glyphs from every view, in one place.
-        let area = frame.area();
         asciify(frame.buffer_mut(), area);
     }
+}
+/// True while a modal overlay (help, a dialog, the palette or another input
+/// popup, the command panel, the "New session" popup) owns input. Inline
+/// search and filter keep the list focused.
+pub(super) fn overlay_owns_input(app: &App) -> bool {
+    app.help
+        || app.dialog.is_some()
+        || app.command_panel.is_some()
+        || app.creating
+        || app
+            .input
+            .is_some_and(|i| !matches!(i, Input::Search | Input::PreviewSearch | Input::Filter))
 }
 fn render_frame(
     frame: &mut Frame<'_>,
@@ -1345,6 +1358,8 @@ fn render_frame(
             cells[i % columns],
         );
     }
+    // Overlays from here on: they own the focused treatment.
+    set_panels_dimmed(false);
     if app.creating && app.dialog.is_none() && app.input.is_none() {
         let rect = popup(workspace, 44, 6);
         frame.render_widget(Clear, rect);
@@ -1855,7 +1870,7 @@ fn render_frame(
                     )
                     .header(Row::new(["Status", "File", "Progress"]).style(muted()))
                     .column_spacing(1)
-                    .block(block(title, true))
+                    .block(block(title, !app.dialog_detail_focus))
                     .row_highlight_style(selection_style),
                     parts[0],
                     &mut state,
@@ -1865,7 +1880,7 @@ fn render_frame(
                     ratatui::widgets::ListState::default().with_selected(Some(app.dialog_selected));
                 frame.render_stateful_widget(
                     List::new(labels.into_iter().map(ListItem::new).collect::<Vec<_>>())
-                        .block(block(title, true))
+                        .block(block(title, !app.dialog_detail_focus))
                         .highlight_style(selection_style),
                     parts[0],
                     &mut state,
@@ -2084,7 +2099,7 @@ fn render_containers(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Some(c) => {
                 let state = if c.state == "running" { ok() } else { warn() };
                 ListItem::new(Line::from(vec![
-                    Span::raw(if ascii() { "  +- " } else { "  ├─ " }),
+                    Span::raw(if ascii() { "  |- " } else { "  ├─ " }),
                     Span::raw(safe_label(&c.name)),
                     Span::styled(
                         format!(

@@ -6,7 +6,7 @@
 │   ●  * lab-arm    │┃  /   docs                                                                                                                                                                       ┃
 │   ○  * field-rov… │┃  /   src                                                                                                                                                                        ┃
 ╰───────────────────╯┃      Cargo.toml                                                                                                                                                         45 B    ┃
-╭ Actions ──────────╮┃    ▌ README.md                                                                                                                                                          69 B    ┃
+╭ Actions ──────────╮┃    > README.md                                                                                                                                                          69 B    ┃
 │ Sessions          │┃      data.bin                                                                                                                                                           16.0 KiB┃
 │ Network           │┃                                                                                                                                                                                 ┃
 │ Containers        │┃                                                                                                                                                                                 ┃

@@ -1,10 +1,10 @@
  cx   Sessions      viewing fixture@lapt
                                         
-╭ Devices ──────╮┏ Sessions · 3 session┓
+╭ Devices ──────╮┏ Sessions · 3 sess…━━┓
 │ ▏ All devices │┃  SESSION    STATE   ┃
 │   ◌  laptop   │┃                     ┃
 │   ◌  * lab-a… │┃  /tmp/cx-ca         ┃
-│   ◌  * field… │┃▌ build watc idle    ┃
+│   ◌  * field… │┃> build watc idle    ┃
 ╰───────────────╯┃                     ┃
 ╭ Actions ──────╮┃  /tmp/cx-ca         ┃
 │ Files         │┃  New shell  idle    ┃

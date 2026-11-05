@@ -16,8 +16,8 @@
  laptop              #                                                                                                 #
  tmp/                #                                                                                                 #
   cx-capture-matrix~ #                                                                                                 #
-   +- home/          #                                                                                                 #
-     +- projects/    #                                                                                                 #
+   `- home/          #                                                                                                 #
+     `- projects/    #                                                                                                 #
                      #                                                                                                 #
                      #                                                                                                 #
                      #                                                                                                 #

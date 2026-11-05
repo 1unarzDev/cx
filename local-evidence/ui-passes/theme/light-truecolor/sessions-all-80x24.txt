@@ -2,9 +2,9 @@
                                                                                 
 ╭ Devices ──────────╮┏ Sessions · 3 sessions ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 │ ▏ All devices     │┃  SESSION                                      STATE     ┃
-│   ◌  laptop       │┃                                                         ┃
-│   ◌  * lab-arm    │┃  /tmp/tmp-xxxxxx                /home/project           ┃
-│   ◌  * field-rov… │┃▌ build watcher                                idle      ┃
+│   ●  laptop       │┃                                                         ┃
+│   ●  * lab-arm    │┃  /tmp/tmp-xxxxxx                /home/project           ┃
+│   ○  * field-rov… │┃▌ build watcher                                idle      ┃
 ╰───────────────────╯┃                                                         ┃
 ╭ Actions ──────────╮┃  /tmp/tmp-xxxxxx                /home/project           ┃
 │ Files             │┃  New shell                                    idle      ┃

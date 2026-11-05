@@ -3,7 +3,7 @@
 ╭ Devices ───╮ Files  fixture@laptop    
 │   All devi │ NORMAL 0 selected · hidde
 │ ▏ ●  lapt… │┏ 5 items ━━━━━━━━━━━━━━━┓
-│   ●  * la… │┃  / ▌ docs              ┃
+│   ●  * la… │┃  / > docs              ┃
 │   ○  * fi… │┃  /   src               ┃
 ╰────────────╯┃      …go.toml  45 B    ┃
 ╭ Actions ───╮┃      …ADME.md  69 B    ┃

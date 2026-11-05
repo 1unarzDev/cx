@@ -18,8 +18,8 @@
   cx-capture-matrix~ #                                                                                                                                                                                 #
    home/             #                                                                                                                                                                                 #
     projects/        #                                                                                                                                                                                 #
-    +- cx-demo/      #                                                                                                                                                                                 #
-      +- README.md   #                                                                                                                                                                                 #
+    `- cx-demo/      #                                                                                                                                                                                 #
+      `- README.md   #                                                                                                                                                                                 #
                      #                                                                                                                                                                                 #
                      #                                                                                                                                                                                 #
                      #                                                                                                                                                                                 #

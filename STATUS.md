@@ -1,5 +1,11 @@
 # CX status
 
+## Revamp (in progress, branch `revamp/base`)
+- Integrated so far: UI module split (`src/ui.rs` 9.8k → 1.6k lines), files listed in one cached pass, perf harness, regression ledger (`tests/REGRESSIONS.md`, `tests/run_regressions.sh`: 56 fixtures plus the Rust suite, all green), design spec (`docs/design/ui-revamp.md`).
+- Running: wave 2 (theme/caps/focus, sessions flow with Ctrl+\ detach, files UX/scroll perf, keymap/hitmap/palette/phone layout, SSH multiplexing fix, capture harness fix) and wave 3a (secrets, mesh backends and Cloudflare onboarding, per-edge policy, graph core).
+- Decided: Network hub start view with per-node letter hotkeys; visual-first layout; Ctrl+\ detach accepted; per-edge, per-direction policy; keyring with age-file fallback.
+- Open questions: none.
+
 ## Claude gateway lends (Unreleased)
 - `cx claude lend | revoke | list` (mesh/claude.py, docs/claude.md): a better-ccflare key, an Access service token and policy, and a single-use code; the teammate runs `curl -sL <endpoint>/claude/<code>|sh` or `irm …|iex`. `cx mesh deploy` redeploys only the Worker.
 - Tested offline (fake Cloudflare, fake gateway, claude.sh against a local stand-in) and live: a throwaway lend over the Access route and the mesh route, Claude Code answering with the written settings, then revoke (the key refused, token and policy gone). claude.ps1 is untested on Windows.

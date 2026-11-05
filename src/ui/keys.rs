@@ -333,6 +333,12 @@ impl App {
             KeyCode::Char('w') if self.view == View::Work && self.focus == Focus::Workspace => {
                 self.execute(Action::Observe)
             }
+            KeyCode::Char('i') if self.view == View::Work && self.focus == Focus::Workspace => {
+                self.type_into_preview()
+            }
+            KeyCode::Char('z') if self.view == View::Work && self.focus == Focus::Workspace => {
+                self.toggle_preview_zoom()
+            }
             KeyCode::Char('a') if self.view == View::Work && local_only(self) => {
                 self.execute(Action::Add)
             }
@@ -416,10 +422,9 @@ impl App {
                     match self.view {
                         View::Containers => self.open_container_actions(),
                         View::Work => {
+                            // Enter attaches directly; `i` types inline, `z` zooms.
                             if let Some((d, s)) = self.selected_session() {
-                                if !self.focus_session_pane() {
-                                    self.open_session(d, s, false);
-                                }
+                                self.open_session(d, s, false);
                             } else if empty_work_can_create(self) {
                                 self.session_shortcut();
                             }
@@ -445,6 +450,9 @@ impl App {
                         View::Network => self.open_neighbor(),
                     }
                 }
+            }
+            KeyCode::Esc if self.view == View::Work && self.preview_zoomed() => {
+                self.toggle_preview_zoom()
             }
             KeyCode::Esc => {
                 if self.view == View::Files {
@@ -548,7 +556,7 @@ impl App {
         };
     }
     pub(super) fn mouse(&mut self, mouse: MouseEvent, area: Rect) -> bool {
-        if self.scroll_session_preview(mouse) {
+        if self.scroll_session_preview(mouse) || self.click_session_preview(mouse) {
             return true;
         }
         if self.pane_focused() {
@@ -571,12 +579,29 @@ impl App {
                     rect.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
                 })
                 .map(|(_, index)| *index);
+            if mouse.kind == MouseEventKind::Moved {
+                // Hover only highlights: it never selects, fetches or cancels,
+                // and motion within the same row does not redraw.
+                if self.session_list.hover == target {
+                    return false;
+                }
+                self.session_list.hover = target;
+                return true;
+            }
             if let Some(index) = target {
                 if self.selected != index {
                     self.attach_check = None;
                     self.pending_attach = None;
                     self.pending_adoption = None;
                     self.selected = index;
+                } else if self.focus == Focus::Workspace
+                    && self.pending_attach.is_none()
+                    && self.attach_check.is_none()
+                {
+                    // Tapping the selected row again is Enter.
+                    if let Some((d, s)) = self.selected_session() {
+                        self.open_session(d, s, false);
+                    }
                 }
                 self.focus = Focus::Workspace;
                 return true;

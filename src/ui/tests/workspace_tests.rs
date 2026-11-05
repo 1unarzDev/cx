@@ -409,7 +409,11 @@ fn workspace_capture_matrix() {
     pin(&mut a, 0, &ended);
     for width in [48, 80, 120] {
         let text = capture_app(&a, width);
-        assert!(text.contains("not seen") && text.contains("* "));
+        // An ended pin is evidence (`ended`, err) and pins carry the flag glyph.
+        assert!(
+            text.contains("ended") && text.contains("⚑"),
+            "{width}: {text}"
+        );
         if let Some(dir) = std::env::var_os("CX_SESSION_WORKSPACE_CAPTURE_DIR") {
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(
@@ -418,5 +422,361 @@ fn workspace_capture_matrix() {
             )
             .unwrap();
         }
+    }
+}
+
+fn identified_shell() -> Session {
+    let mut s = disposable_shell();
+    s.terminal = Some(crate::model::TerminalIdentity {
+        server_pid: 1,
+        server_start: "1".into(),
+        session_id: "$1".into(),
+        created: "1".into(),
+    });
+    s
+}
+
+#[test]
+fn identity_checked_sessions_attach_on_enter_without_a_round_trip() {
+    // Spec 11 flow 1: Enter attaches directly. The checked attach re-verifies
+    // the runtime on the execution host, so no click-time listing is sent.
+    let (mut a, rx) = queued_app();
+    a.work[0].sessions.push(identified_shell());
+    a.work[0].fetched = transport::now();
+    a.focus = Focus::Workspace;
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(a.pending_attach, Some((0, _, false))));
+    assert!(a.attach_check.is_none() && !a.pane_focused());
+    assert!(rx.try_iter().all(|t| !matches!(t.op, Operation::Sessions)));
+    // `w` watches read-only through the same direct path.
+    a.pending_attach = None;
+    press(&mut a, 'w');
+    assert!(matches!(a.pending_attach, Some((0, _, true))));
+    // Legacy rows without terminal identity keep the verification round trip.
+    let (mut b, rx) = queued_app();
+    b.work[0].sessions.push(disposable_shell());
+    b.focus = Focus::Workspace;
+    b.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(b.pending_attach.is_none() && b.attach_check.is_some());
+    assert!(matches!(rx.try_recv().unwrap().op, Operation::Sessions));
+}
+
+#[test]
+fn tapping_the_selected_row_again_attaches_but_first_tap_only_selects() {
+    let (mut a, _) = queued_app();
+    let mut second = identified_shell();
+    second.id = "cx-second".into();
+    second.name = "second shell".into();
+    second.terminal.as_mut().unwrap().created = "2".into();
+    a.work[0].sessions = vec![identified_shell(), second];
+    a.work[0].fetched = transport::now();
+    a.focus = Focus::Workspace;
+    let mut terminal = ratatui::Terminal::new(TestBackend::new(160, 30)).unwrap();
+    terminal.draw(|f| render(f, &a)).unwrap();
+    let (rect, _) = *a
+        .session_hits
+        .borrow()
+        .iter()
+        .find(|(_, index)| *index == 1)
+        .unwrap();
+    let tap = MouseEvent {
+        kind: MouseEventKind::Down(event::MouseButton::Left),
+        column: rect.x + 4,
+        row: rect.y,
+        modifiers: KeyModifiers::NONE,
+    };
+    a.mouse(tap, Rect::new(0, 0, 160, 30));
+    assert_eq!(a.selected, 1);
+    assert!(a.pending_attach.is_none());
+    a.mouse(tap, Rect::new(0, 0, 160, 30));
+    assert!(matches!(&a.pending_attach, Some((0, s, false)) if s.id == "cx-second"));
+}
+
+#[test]
+fn zoom_and_inline_input_keys_and_chips() {
+    let (mut a, rx) = queued_app();
+    a.work[0].sessions.push(identified_shell());
+    a.work[0].fetched = transport::now();
+    a.providers
+        .get_mut(&0)
+        .unwrap()
+        .0
+        .push("live-session-pane-v1".into());
+    a.focus = Focus::Workspace;
+    assert!(a.refresh_session_preview(160));
+    let task = rx.try_recv().unwrap();
+    a.apply(Reply {
+        device_id: Some("local".into()),
+        execution_target: Some(None),
+        preview: None,
+        device: 0,
+        op: task.op,
+        generation: task.generation,
+        result: Ok(serde_json::json!({"live":true,"pane_id":"%1","styled_lines":["zoomed screen"],"cols":80,"rows":24})),
+    });
+    press(&mut a, 'z');
+    assert!(a.preview_zoomed());
+    let text = capture_app(&a, 120);
+    assert!(
+        text.contains("zoomed screen") && text.contains("z back"),
+        "{text}"
+    );
+    assert!(!text.contains("Sessions 1"), "zoom hides the list: {text}");
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!a.preview_zoomed());
+    // The zoom chip on the preview border toggles zoom by tap.
+    let _ = capture_app(&a, 160);
+    let mut terminal = ratatui::Terminal::new(TestBackend::new(160, 30)).unwrap();
+    terminal.draw(|f| render(f, &a)).unwrap();
+    let chip = a.session_preview_chip();
+    assert!(chip.width > 0, "zoom chip registered");
+    let tap = |rect: Rect| MouseEvent {
+        kind: MouseEventKind::Down(event::MouseButton::Left),
+        column: rect.x + 1,
+        row: rect.y,
+        modifiers: KeyModifiers::NONE,
+    };
+    a.mouse(tap(chip), Rect::new(0, 0, 160, 30));
+    assert!(a.preview_zoomed());
+    press(&mut a, 'z');
+    assert!(!a.preview_zoomed());
+    // `i` types inline; the border chip becomes ⏏ detach and leaves by tap.
+    press(&mut a, 'i');
+    assert!(a.pane_focused());
+    terminal.draw(|f| render(f, &a)).unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(text.contains("⏏ detach"), "{text}");
+    let chip = a.session_preview_chip();
+    a.mouse(tap(chip), Rect::new(0, 0, 160, 30));
+    assert!(!a.pane_focused());
+    assert!(rx
+        .try_iter()
+        .all(|t| !matches!(t.op, Operation::SessionPaneInput { .. })));
+}
+
+#[test]
+fn passive_reports_never_postpone_attachment_but_keys_do() {
+    use crossterm::event::{MouseButton, MouseEvent as Mouse};
+    let mouse = |kind| {
+        Event::Mouse(Mouse {
+            kind,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    for passive in [
+        mouse(MouseEventKind::Moved),
+        mouse(MouseEventKind::Up(MouseButton::Left)),
+        Event::FocusLost,
+        Event::Resize(80, 24),
+    ] {
+        assert!(runtime::passive_input(&passive));
+    }
+    for owning in [
+        Event::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE)),
+        Event::Paste("x".into()),
+        mouse(MouseEventKind::Down(MouseButton::Left)),
+        mouse(MouseEventKind::ScrollDown),
+    ] {
+        assert!(!runtime::passive_input(&owning));
+    }
+}
+
+#[test]
+fn control_keys_reach_the_pane_with_their_legacy_bytes() {
+    let ctrl = |c| encode_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+    assert_eq!(ctrl(']'), Some(vec![0x1d]));
+    assert_eq!(ctrl('5'), Some(vec![0x1d]));
+    assert_eq!(ctrl('4'), Some(vec![0x1c]));
+    assert_eq!(ctrl('7'), Some(vec![0x1f]));
+    assert_eq!(ctrl(' '), Some(vec![0]));
+    assert_eq!(ctrl('o'), Some(vec![0x0f]));
+    assert!(session_preview::detach_key(&KeyEvent::new(
+        KeyCode::Char('\\'),
+        KeyModifiers::CONTROL
+    )));
+    assert!(session_preview::detach_key(&KeyEvent::new(
+        KeyCode::Char('4'),
+        KeyModifiers::CONTROL
+    )));
+    assert!(!session_preview::detach_key(&KeyEvent::new(
+        KeyCode::Char(']'),
+        KeyModifiers::CONTROL
+    )));
+}
+
+#[test]
+fn keystroke_echo_polls_immediately_and_parsed_screen_is_cached() {
+    let (mut a, rx) = queued_app();
+    a.work[0].sessions.push(identified_shell());
+    a.work[0].fetched = transport::now();
+    a.providers
+        .get_mut(&0)
+        .unwrap()
+        .0
+        .push("live-session-pane-v1".into());
+    a.focus = Focus::Workspace;
+    assert!(a.refresh_session_preview(160));
+    let task = rx.try_recv().unwrap();
+    let reply = |task: Task, line: &str| Reply {
+        device_id: Some("local".into()),
+        execution_target: Some(None),
+        preview: None,
+        device: 0,
+        op: task.op,
+        generation: task.generation,
+        result: Ok(
+            serde_json::json!({"live":true,"pane_id":"%1","styled_lines":[line],"cols":80,"rows":24}),
+        ),
+    };
+    a.apply(reply(task, "\u{1b}[31mfirst"));
+    let r1 = a.session_preview_revision();
+    let _ = capture_app(&a, 160);
+    let _ = capture_app(&a, 160);
+    assert_eq!(a.session_preview_revision(), r1, "drawing never reparses");
+    press(&mut a, 'i');
+    assert!(a.pane_focused());
+    // Focusing takes one fresh capture; after it lands nothing is due yet.
+    a.refresh_session_preview(160);
+    let focus = rx.try_recv().unwrap();
+    a.apply(reply(focus, "\u{1b}[31mfirst"));
+    assert_eq!(
+        a.session_preview_revision(),
+        r1,
+        "identical capture: no redraw"
+    );
+    a.refresh_session_preview(160);
+    assert!(rx.try_recv().is_err());
+    press(&mut a, 'x');
+    assert!(matches!(
+        rx.try_recv().unwrap().op,
+        Operation::SessionPaneInput { .. }
+    ));
+    // A keystroke makes the echo capture due at once, without waiting 100 ms.
+    a.refresh_session_preview(160);
+    let echo = rx.try_recv().unwrap();
+    assert!(matches!(echo.op, Operation::SessionPreview { .. }));
+    // Another key while that capture is in flight re-polls right after it lands.
+    press(&mut a, 'y');
+    let _ = rx.try_recv();
+    a.apply(reply(echo, "firstx"));
+    assert!(a.session_preview_revision() > r1);
+    a.refresh_session_preview(160);
+    assert!(matches!(
+        rx.try_recv().unwrap().op,
+        Operation::SessionPreview { .. }
+    ));
+    assert!(a.session_preview_wait().unwrap() <= Duration::from_millis(16));
+}
+
+#[test]
+fn focused_scrollback_and_missing_selection_never_spin_the_event_loop() {
+    let (mut a, rx) = queued_app();
+    a.work[0].sessions.push(identified_shell());
+    a.work[0].fetched = transport::now();
+    a.providers
+        .get_mut(&0)
+        .unwrap()
+        .0
+        .push("live-session-pane-v1".into());
+    a.focus = Focus::Workspace;
+    let reply = |task: Task| {
+        let lines: Vec<String> = (0..200).map(|n| format!("line {n}")).collect();
+        Reply {
+            device_id: Some("local".into()),
+            execution_target: Some(None),
+            preview: None,
+            device: 0,
+            op: task.op,
+            generation: task.generation,
+            result: Ok(serde_json::json!({
+                "live": true, "pane_id": "%1", "styled_lines": lines,
+                "cols": 80, "rows": 24, "history_total": 176, "line_start": 0,
+                "cursor_y": 23
+            })),
+        }
+    };
+    assert!(a.refresh_session_preview(160));
+    a.apply(reply(rx.try_recv().unwrap()));
+    press(&mut a, 'i');
+    assert!(a.pane_focused());
+    a.refresh_session_preview(160);
+    a.apply(reply(rx.try_recv().unwrap()));
+    // Type, so echo polling runs at its fastest interval.
+    press(&mut a, 'x');
+    let _ = rx.try_recv();
+    a.refresh_session_preview(160);
+    if let Ok(echo) = rx.try_recv() {
+        a.apply(reply(echo));
+    }
+    // Lay out the focused preview so the wheel lands on its screen.
+    let _ = capture_app(&a, 160);
+    let (column, row) = (100, 10);
+    for _ in 0..5 {
+        a.mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            },
+            Rect::new(0, 0, 160, 24),
+        );
+    }
+    // The wheel requests one history page; once it lands nothing is due.
+    a.refresh_session_preview(160);
+    let page = rx.try_recv().unwrap();
+    assert!(matches!(
+        page.op,
+        Operation::SessionPreview {
+            scrollback: true,
+            ..
+        }
+    ));
+    a.apply(reply(page));
+    a.refresh_session_preview(160);
+    assert!(rx.try_recv().is_err(), "a loaded page is not re-requested");
+    // Typing while scrolled back must not make the loop poll with a zero wait.
+    std::thread::sleep(Duration::from_millis(20));
+    let wait = a.session_preview_wait();
+    assert!(
+        wait.is_none_or(|w| w > Duration::ZERO),
+        "focused scrollback wait {wait:?}"
+    );
+    // A focused preview whose session vanished requests nothing either.
+    a.work[0].sessions.clear();
+    assert!(a.session_preview_wait().is_none());
+}
+
+#[test]
+fn unreachable_or_cached_devices_keep_the_in_cx_round_trip() {
+    // An errored device, a startup-cache row (never fetched) and a listing
+    // older than a minute must not suspend the viewer into a raw ssh.
+    for case in 0..3 {
+        let (mut a, rx) = queued_app();
+        a.work[0].sessions.push(identified_shell());
+        match case {
+            0 => {
+                a.work[0].fetched = transport::now();
+                a.work[0].error = Some("ssh: connect: Connection refused".into());
+            }
+            1 => a.work[0].fetched = 0,
+            _ => a.work[0].fetched = transport::now().saturating_sub(120),
+        }
+        a.focus = Focus::Workspace;
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            a.pending_attach.is_none(),
+            "case {case} suspended the viewer"
+        );
+        assert!(a.attach_check.is_some(), "case {case}");
+        assert!(matches!(rx.try_recv().unwrap().op, Operation::Sessions));
     }
 }

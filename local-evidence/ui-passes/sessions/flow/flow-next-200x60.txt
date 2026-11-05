@@ -1,0 +1,60 @@
+ cx   [Sessions]  Network                                                                                                                                                         viewing fixture@laptop
+                                                                                                                                                                                                        
+╭ Devices ──────────╮╭ ▸ Sessions 3 ──────────────────────────────────────────────────────────────────────────╮╭ robot-logs shell · laptop · idle 20s ─────────────────────────────────────────────────╮
+│ › All devices     ││ ■ ● SH build watcher                 ~/projects/cx-demo       [la] ···▁   1m           ││lidar tick 4                                                                           │
+│   ●  laptop       ││▌■ ● SH robot-logs shell              ~/projects/robot-logs    [la] ···▁  20s           ││[xxxxxx@xxxxxxxxxxx robot-logs]$ echo lidar tick 5                                     │
+│   ●  * lab-arm    ││ ■ ● SH ros core                      catkin_ws                [lb] ···▁   2m           ││lidar tick 5                                                                           │
+│   ○  * field-rov… ││                                                                                        ││[xxxxxx@xxxxxxxxxxx robot-logs]$ echo lidar tick 6                                     │
+╰───────────────────╯│                                                                                        ││lidar tick 6                                                                           │
+╭ Actions ──────────╮│                                                                                        ││[xxxxxx@xxxxxxxxxxx robot-logs]$ echo lidar tick 7                                     │
+│ Files             ││                                                                                        ││lidar tick 7                                                                           │
+│ Network           ││                                                                                        ││[xxxxxx@xxxxxxxxxxx robot-logs]$ echo lidar tick 8                                     │
+│ Containers        ││                                                                                        ││lidar tick 8                                                                           │
+│ Transfers         ││                                                                                        ││[xxxxxx@xxxxxxxxxxx robot-logs]$ echo lidar tick 24                                    │
+│ Watch · read-only ││                                                                                        ││lidar tick 24                                                                          │
+╰───────────────────╯│                                                                                        ││[xxxxxx@xxxxxxxxxxx robot-logs]$ echo lidar tick 25                                    │
+ Selected ───────────│                                                                                        ││lidar tick 25                                                                          │
+ Host fixture@laptop │                                                                                        ││[xxxxxx@xxxxxxxxxxx robot-logs]$ echo lidar tick 26                                    │
+ Folder /tmp/cx-cap… │                                                                                        ││lidar tick 26                                                                          │
+ ⏎ attach · n new    │                                                                                        ││[xxxxxx@xxxxxxxxxxx robot-logs]$ echo lidar tick 27                                    │
+                     │                                                                                        ││lidar tick 27                                                                          │
+                     │                                                                                        ││[xxxxxx@xxxxxxxxxxx robot-logs]$ echo lidar tick 44                                    │
+                     │                                                                                        ││lidar tick 44                                                                          │
+                     │                                                                                        ││[xxxxxx@xxxxxxxxxxx robot-logs]$ echo lidar tick 45                                    │
+                     │                                                                                        ││lidar tick 45                                                                          │
+                     │                                                                                        ││[xxxxxx@xxxxxxxxxxx robot-logs]$ echo lidar tick 52                                    │
+                     │                                                                                        ││lidar tick 52                                                                          │
+                     │                                                                                        ││[xxxxxx@xxxxxxxxxxx robot-logs]$                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     ╰────────────────────────────────────────────────────────────────────────────────────────╯╰ live · ~/projects/robot-logs · 80x24 ──────────────────────────────────────── z zoom ─╯
+ ● 2/3 devices                                                                  Focus: Sessions · 3/3                                                                                             ↔ idle
+ Enter Attach                                                       i Type                                                            z Zoom                                                            
+ w Watch                                                            n New                                                             d Stop                                                            
+                                                                                                                                                                                                        

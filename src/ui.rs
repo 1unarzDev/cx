@@ -7,6 +7,7 @@ mod container_agents;
 mod filters;
 mod rendering;
 mod session_preview;
+mod session_rows;
 mod workspaces;
 #[cfg(test)]
 use rendering::render;
@@ -477,6 +478,7 @@ struct CommandPanel {
 }
 struct App {
     session_preview: session_preview::Snapshot,
+    session_list: session_rows::State,
     devices: Vec<Device>,
     policies: Vec<store::DevicePolicy>,
     device: usize,
@@ -621,6 +623,7 @@ impl App {
             .collect();
         let mut app = Self {
             session_preview: session_preview::Snapshot::default(),
+            session_list: session_rows::State::default(),
             devices,
             policies,
             device: 0,
@@ -1528,7 +1531,13 @@ fn encode_key(key: KeyEvent) -> Option<Vec<u8>> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let mut bytes = match key.code {
         KeyCode::Char(c) => {
-            if ctrl {
+            if ctrl && ('4'..='7').contains(&c) {
+                // Legacy terminals send Ctrl+\ ] ^ _ as 0x1c-0x1f, which
+                // crossterm reports as Ctrl+4..7. Ctrl+] must reach the app.
+                vec![c as u8 - b'4' + 0x1c]
+            } else if ctrl && matches!(c, ' ' | '2' | '@') {
+                vec![0]
+            } else if ctrl {
                 let b = (c.to_ascii_uppercase() as u8).wrapping_sub(0x40);
                 if b < 0x20 || b == 0x7f {
                     vec![b]
@@ -1585,6 +1594,7 @@ fn command_panel_session(panel: &CommandPanel) -> Session {
         container: None,
         activity: None,
         agent_tasks: vec![],
+        idle_seconds: None,
         origin: None,
         terminal: None,
     }

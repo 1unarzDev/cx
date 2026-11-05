@@ -53,6 +53,11 @@ pub struct Session {
     pub activity: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agent_tasks: Vec<AgentTask>,
+    /// Seconds since the terminal's last output (tmux `#{window_activity}`),
+    /// measured on the execution host when observed, so clock skew between
+    /// hosts cannot distort it. Older helpers omit it; viewers render `·`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_seconds: Option<u64>,
     /// Terminal evidence for a session started outside CX. Adoption re-verifies it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<ExternalOrigin>,

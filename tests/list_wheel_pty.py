@@ -30,7 +30,7 @@ for view in ['Files','Work']:
      data=os.read(master,65536);raw.extend(data);stream.feed(data.decode(errors='replace'))
   def current():
    for row,line in enumerate(screen.display):
-    if ('▸' in line or '›' in line) and re.search(pattern,line):return re.search(pattern,line).group(),row
+    if ('▸' in line or '›' in line or '▌' in line) and re.search(pattern,line):return re.search(pattern,line).group(),row
    return None
   def wait(predicate):
    end=time.monotonic()+10
@@ -80,18 +80,22 @@ for view in ['Files','Work']:
    send(b'\x1b[<65;40;1M');assert current()[0]==ordered[5]
    if view=='Work':
     socket=str(state/'managed.sock')
-    # Enter focuses the live terminal inside CX once its preview has loaded (before
-    # that it falls back to native attachment); Ctrl+O expands focus to native.
-    wait(lambda:f'{ordered[5]} · ' in '\n'.join(screen.display) and 'Enter · focus terminal' in '\n'.join(screen.display))
-    send(b'\r');wait(lambda:'Ctrl+O · expand' in '\n'.join(screen.display))
-    before_native=len(raw);send(b'\x0f')
+    # Enter attaches natively at once (no focus/expand chain); Ctrl+\ returns.
+    display=lambda:'\n'.join(screen.display)
+    wait(lambda:f'{ordered[5]} · ' in display() and ' live' in display())
     target=next(r['id'] for r in sessions if r['name']==ordered[5])
     def clients():return subprocess.check_output(['tmux','-S',socket,'list-clients','-F','#{session_name}'],env=env,text=True).splitlines()
-    wait(lambda:clients()==[target] and b'Return: Ctrl+]' in raw[before_native:])
+    before_native=len(raw);send(b'\r')
+    wait(lambda:clients()==[target] and b'Ctrl+\\' in raw[before_native:] and b'detach' in raw[before_native:])
     assert b'\x1b[?1000l' in raw[before_native:],'cx releases mouse before native terminal'
-    back_start=len(raw);send(b'\x1d')
+    back_start=len(raw);send(b'\x1c')
     wait(lambda:clients()==[] and current() is not None and b'\x1b[?1000h' in raw[back_start:])
     assert current()[0]==ordered[5]
+    # `i` types inline; Ctrl+] is application input there, Ctrl+\ leaves.
+    send(b'i');wait(lambda:'⏏ detach' in display())
+    send(b'\x1d');read(.3)
+    assert '⏏ detach' in display() and clients()==[],'Ctrl+] must reach the pane, not detach'
+    send(b'\x1c');wait(lambda:'⏏ detach' not in display())
     restored=json.loads(subprocess.check_output([binary,'sessions'],env=env));by_id={r['id']:r for r in restored}
     assert all(all(by_id[r['id']][key]==r[key] for key in ['pid','started','boot_id','socket']) for r in sessions)
    send(b'\x03');proc.wait(timeout=5);assert proc.returncode==0 and termios.tcgetattr(slave)==before

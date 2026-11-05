@@ -33,6 +33,12 @@ pub(super) fn runtime_key(s: &Session) -> String {
     ))
     .unwrap_or_default()
 }
+/// Sessions whose attach is identity-checked on the execution host attach
+/// directly. Legacy rows without terminal identity keep the verification
+/// round trip, because tmux reuses `$N` and names can be recreated.
+pub(super) fn optimistic_attach(s: &Session) -> bool {
+    s.terminal.is_some() && !(s.external && s.origin.is_some())
+}
 pub(super) fn device_matches(a: &Device, b: &Device) -> bool {
     a.id == b.id && a.target == b.target && a.account == b.account && a.host == b.host
 }
@@ -122,6 +128,18 @@ impl App {
             return;
         }
         if self.attach_check.is_some() {
+            return;
+        }
+        // Only a row the device confirmed in a successful refresh within the
+        // last minute attaches directly. Errored, offline or startup-cache rows
+        // keep the round trip, so an unreachable device fails inside cx with a
+        // notice instead of suspending the viewer into a hanging ssh.
+        if optimistic_attach(&s) && self.session_status(d, &s).starts_with('+') {
+            // The checked attach re-verifies server, session and creation
+            // identity atomically on the execution host, so a click-time
+            // round trip adds latency without adding safety. A refusal
+            // refreshes the list and reports it (runtime pending_attach).
+            self.pending_attach = Some((d, s, watch));
             return;
         }
         self.generation += 1;
@@ -340,6 +358,7 @@ impl NavigationCache {
                         .cloned()
                         .map(|mut s| {
                             s.activity = None;
+                            s.idle_seconds = None;
                             s.agent_tasks.clear();
                             s
                         })

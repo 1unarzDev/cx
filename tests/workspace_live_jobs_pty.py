@@ -108,7 +108,7 @@ for rows, cols in [(40, 120)]:
             assert 'Return to cx' in text(), 'shell did not auto-attach from Files actions'
             directory = subprocess.run(['tmux','-S',str(home/'state/cx/managed.sock'),'display-message','-p','#{pane_current_path}'],capture_output=True,text=True,check=True).stdout.strip()
             assert directory == str(home/'destination'), ('wrong launch directory', directory)
-            send(b'\x1d')
+            send(b'\x1c')
             assert 'Files' in text() or 'Start shell' in text(), 'browser state did not return'
 
             send(b'\x03')
@@ -117,7 +117,7 @@ for rows, cols in [(40, 120)]:
             results.append({'size': f'{cols}x{rows}', 'result': 'PASS', 'scenario': 'actual detached copy/integrity/job drawer and actual folder shell start/single-key return'})
         finally:
             if proc.poll() is None:
-                os.write(master, b'\x1d')
+                os.write(master, b'\x1c')
                 read(.2)
                 os.write(master, b'\x03')
                 try:

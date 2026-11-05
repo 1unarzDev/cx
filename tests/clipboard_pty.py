@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory(prefix='cx-clipboard-') as tmp:
    os.write(m,event);read_for(.15)
   assert b'\x1b]52;' in out, 'mouse drag selection did not copy'
   assert tmux('display-message','-p','-t',pane,'#{pane_in_mode}').strip()==b'0'
-  os.write(m,b'\x1d');p.wait(timeout=5)
+  os.write(m,b'\x1c');p.wait(timeout=5)
   print(json.dumps(dict(result='PASS',application_osc52=True,tmux_copy=True,keyboard_copy_both_modes=True,mouse_drag_copy=True,idempotent_config=True,return_key=True)))
  finally:
   if p.poll() is None:p.terminate();p.wait(timeout=5)

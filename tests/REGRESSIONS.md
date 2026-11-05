@@ -57,7 +57,11 @@ Guard notation:
 | `0b2b928` v0.1.90 | Codex prompt backgrounds were too bright; reverse video persisted after SGR 27; DIM was dropped | attribute end sequences were not applied, and the pane palette was ignored | rust:dim_and_attribute_end_sequences_preserve_native_contrast, rust:pane_palette_is_applied_to_both_prompt_background_and_dim_text, rust:prompt_selection_end_restores_normal_foreground_and_muted_background, py:codex_contrast_live [local] |
 | `f7c90f3` v0.1.92 | Prompt background blocks stopped at the text; colours broke across rows | trailing cells were not painted, and style was not carried across rows | rust:captured_rows_share_style_and_paint_trailing_cells, py:preview_fidelity_live [local] |
 | `88c54f5` v0.1.95 | Every live preview showed "Terminal unavailable" on tmux 3.4 (Ubuntu 24.04) | `#{bracket_paste_flag}` does not exist before tmux 3.5; it expanded to nothing, giving 10 fields | rust:live_view_flags_always_print_a_digit_on_older_tmux |
-| `f91242a` v0.1.95 | Live previews vanished once availability returned; hover did not select rows | Info ingestion overwrote the live-preview capabilities; there were no rendered row hit boxes | rust:info_reply_keeps_live_terminal_capability_and_preview_enabled, rust:session_hover_selects_rendered_row_without_opening |
+| `f91242a` v0.1.95 | Live previews vanished once availability returned; hover did not track rendered rows | Info ingestion overwrote the live-preview capabilities; there were no rendered row hit boxes | rust:info_reply_keeps_live_terminal_capability_and_preview_enabled, rust:session_hover_highlights_rendered_row_without_selecting (revamp: hover highlights the rendered row but never selects or fetches, P16) |
+| revamp/w2-sessions | Review: typing into a focused preview while scrolled back pinned a CPU core | `session_preview_wait` returned a zero wait while `refresh_session_preview` skipped the request (loaded history page, or no selection) | rust:focused_scrollback_and_missing_selection_never_spin_the_event_loop |
+| revamp/w2-sessions | Review: Enter suspended the viewer into `ssh -t` for errored, offline or startup-cache devices | the direct attach did not require a fresh successful listing | rust:unreachable_or_cached_devices_keep_the_in_cx_round_trip |
+| revamp/w2-sessions | Review: tapping the copy-mode hint or title in the managed status line detached | `MouseDown1StatusLeft` covers all of status-left, which also held the hint | py:mouse_scrollback_pty (title cell not a detach target; chip tap detaches), rust:managed_detach_is_ctrl_backslash_with_a_tappable_chip |
+| revamp/w2-sessions | Review: two devices showed the same `[la]` chip, distinguishable only by colour | the initials took the first two letters of each name | rust:device_initials_stay_unique_without_color |
 | `8d978cc` v0.1.72 | Claude lost terminal transparency; old CX left opaque window backgrounds | the managed contrast was set on a solid window style | py:claude_contrast_live [ci] |
 | v0.1.69 | Claude question descriptions had low contrast | default-cell backgrounds | py:claude_contrast_live [ci], py:session_color_live [local] |
 | `10e4a10` v0.1.5 | The viewer palette was reset after native Fish commands | OSC 104 was emitted by the Fish theme | py:native_command_pty [rel], rust:fish_palette_reset_is_after_config_before_command |
@@ -267,7 +271,10 @@ cargo test --locked markdown_links_math_and_click_picker_are_safe
 cargo test --locked leaving_linked_preview_discards_history_even_in_cached_locations
 cargo test --locked clipped_directory_find_has_a_distinct_noncolor_modifier
 cargo test --locked info_reply_keeps_live_terminal_capability_and_preview_enabled
-cargo test --locked session_hover_selects_rendered_row_without_opening
+cargo test --locked session_hover_highlights_rendered_row_without_selecting
+cargo test --locked focused_scrollback_and_missing_selection_never_spin_the_event_loop
+cargo test --locked unreachable_or_cached_devices_keep_the_in_cx_round_trip
+cargo test --locked device_initials_stay_unique_without_color
 cargo test --locked horizontal_folder_keys_enter_and_leave_without_previewing_files
 cargo test --locked reverse_tab_cycles_focus_and_leaves_search
 cargo test --locked file_device_selection_retargets_only_the_focused_location

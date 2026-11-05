@@ -20,7 +20,7 @@ with tempfile.TemporaryDirectory(prefix='cx-copymode-') as tmp:
         return next(s['id'] for s in out if s['name'] == name)
 
     def attach(name, observe):
-        # Drive the real interactive attach over a PTY, then detach with Ctrl+].
+        # Drive the real interactive attach over a PTY, then detach with Ctrl+\.
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
 
@@ -41,7 +41,7 @@ with tempfile.TemporaryDirectory(prefix='cx-copymode-') as tmp:
                 break
         time.sleep(.4)
         state = in_mode(sid)
-        os.write(master, b'\x1d')  # Ctrl+] detach
+        os.write(master, b'\x1c')  # Ctrl+\ detach
         try:
             p.wait(timeout=3)
         finally:

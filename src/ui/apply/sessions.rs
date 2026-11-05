@@ -132,6 +132,11 @@ impl App {
                         self.work[reply.device].sessions = s;
                         self.work[reply.device].error = None;
                         self.work[reply.device].fetched = transport::now();
+                        self.session_list.record(
+                            &self.devices[reply.device],
+                            &self.work[reply.device].sessions,
+                            self.work[reply.device].fetched,
+                        );
                         if self.work[reply.device]
                             .sessions
                             .iter()

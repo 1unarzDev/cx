@@ -1,0 +1,40 @@
+ cx   [Sessions]  Network                                                                         viewing fixture@laptop
+                                                                                                                        
+╭ Devices ──────────╮╭ ▸ Sessions 3 ──────────────────────────────────╮╭ robot-logs shell · laptop ────────────────────╮
+│ › All devices     ││ ■ ● SH build watcher       cx-demo    [la]   1m││run-05 step 1 ok  lidar=11Hz                   │
+│   ●  laptop       ││▌■ ● SH robot-logs shell    robot-logs [la]   1m││run-05 step 2 ok  lidar=12Hz                   │
+│   ●  * lab-arm    ││ ■ ● SH ros core            catkin_ws  [lb]   1m││run-05 step 3 ok  lidar=13Hz                   │
+│   ○  * field-rov… ││                                                ││run-05 step 4 ok  lidar=14Hz                   │
+╰───────────────────╯│                                                ││run-05 step 5 ok  lidar=15Hz                   │
+╭ Actions ──────────╮│                                                ││run-05 step 6 ok  lidar=16Hz                   │
+│ Files             ││                                                ││[xxxxxx@xxxxxxxxxxx robot-logs]$               │
+│ Network           ││╭ ▸ Actions · type to filter ──────────────────────────────────────────────╮                     │
+│ Containers        │││>                                                                         │                     │
+│ Transfers         ││╰──────────────────────────────────────────────────────────────────────────╯                     │
+│ Watch · read-only ││┌──────────────────────────────────────────────────────────────────────────┐                     │
+╰───────────────────╯││Pin / unpin selected session · p                                          │                     │
+ Selected ───────────││Containers · choose device / All devices                                  │                     │
+ Host fixture@laptop ││Add by SSH address · alias / user@host                                    │                     │
+ Folder /tmp/cx-cap… ││Files · choose device · browse home                                       │                     │
+ ⏎ attach · n new    ││New session · choose device, provider and folder                          │                     │
+                     ││Transfers · progress / cancel / retry                                     │                     │
+                     ││Run command here · :                                                      │                     │
+                     ││Watch session · read-only terminal, no input                              │                     │
+                     ││Network · choose device / All devices                                     │                     │
+                     ││Sessions · choose device / All devices                                    │                     │
+                     ││Refresh                                                                   │                     │
+                     │└──────────────────────────────────────────────────────────────────────────┘                     │
+                     │┌──────────────────────────────────────────────────────────────────────────┐                     │
+                     ││Current: laptop · /tmp/tmp-xxxxxx                /home/projects/robot-logs│                     │
+                     │└──────────────────────────────────────────────────────────────────────────┘                     │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     ╰────────────────────────────────────────────────╯╰ live ──────────────────────────────── z zoom ─╯
+ ● 2/3 devices                              Focus: Actions · 3/3                                                  ↔ idle
+ Enter Confirm                           Esc Cancel                              Ctrl U Clear                           
+                                                                                                                        
+                                                                                                                        

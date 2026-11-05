@@ -1,0 +1,24 @@
+ cx   [Sessions]  Network                                 viewing fixture@laptop
+                                                                                
+┌ Devices ──────────┐┌ build watcher | laptop ─────────────────────────────────┐
+│ > All devices     ││Compiling cx-demo v0.1.0                                 │
+│   +  laptop       ││    Finished dev in 2.41s                                │
+│   +  * lab-arm    ││[Running cargo check]                                    │
+│   x  * field-rov~ ││[xxxxxx@xxxxxxxxxxx cx-demo]$                            │
+└───────────────────┘│                                                         │
+┌ Actions ──────────┐│                                                         │
+│ Files             ││                                                         │
+│ Network           ││                                                         │
+│ Containers        ││                                                         │
+└───────────────────┘│                                                         │
+ Selected ───────────│                                                         │
+ Host fixture@laptop │                                                         │
+ Folder /tmp/cx-cap~ │                                                         │
+ Enter attach, n new └ live | 40x19 ──────────────────────────────── [z back] ─┘
+┌ Search ──────────────────────────────────────────────────────────────────────┐
+│ /  build                                                                     │
+└──────────────────────────────────────────────────────────────────────────────┘
+ + 2/3 devices            Focus: Sessions · 1/3                           ~ idle
+ Enter Attach               i Type                    z / Esc Back to list      
+ w Watch                                                                        
+                                                                                

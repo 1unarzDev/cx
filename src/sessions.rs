@@ -99,7 +99,7 @@ fn ids(managed: bool) -> Result<Vec<String>> {
 
 // Only tmux-generated numeric fields enter this framing. Names and paths may
 // contain tabs/newlines and must remain separate reads, never inventory records.
-const SNAPSHOT_FORMAT: &str = "#{session_id}\t#{pane_pid}\t#{session_created}\t#{pane_id}\t#{pane_dead}\t#{pid}\t#{session_windows}\t#{window_panes}";
+const SNAPSHOT_FORMAT: &str = "#{session_id}\t#{pane_pid}\t#{session_created}\t#{pane_id}\t#{pane_dead}\t#{pid}\t#{session_windows}\t#{window_panes}\t#{window_activity}";
 #[derive(Debug)]
 struct SessionSnapshot {
     id: String,
@@ -111,6 +111,8 @@ struct SessionSnapshot {
     server_start: Option<String>,
     windows: u32,
     panes: u32,
+    /// Unix seconds of the window's last output; empty or zero means unknown.
+    activity: Option<u64>,
 }
 impl SessionSnapshot {
     fn ended(&self) -> bool {
@@ -129,7 +131,7 @@ fn parse_snapshot(raw: &str) -> Result<Vec<SessionSnapshot>> {
     raw.lines()
         .map(|line| {
             let columns: Vec<_> = line.split('\t').collect();
-            anyhow::ensure!(columns.len() == 8, "invalid tmux inventory metadata");
+            anyhow::ensure!(columns.len() == 9, "invalid tmux inventory metadata");
             let id = columns[0]
                 .strip_prefix('$')
                 .context("invalid tmux session identity")?;
@@ -146,6 +148,12 @@ fn parse_snapshot(raw: &str) -> Result<Vec<SessionSnapshot>> {
             let server_pid = number(columns[5])?;
             let windows = number(columns[6])?;
             let panes = number(columns[7])?;
+            // Optional evidence: malformed activity loses its age, not its session.
+            let activity = (!columns[8].is_empty()
+                && columns[8].bytes().all(|b| b.is_ascii_digit()))
+            .then(|| columns[8].parse::<u64>().ok())
+            .flatten()
+            .filter(|t| *t > 0);
             anyhow::ensure!(
                 dead <= 1 && server_pid > 0 && windows > 0 && panes > 0,
                 "invalid tmux runtime metadata"
@@ -165,9 +173,18 @@ fn parse_snapshot(raw: &str) -> Result<Vec<SessionSnapshot>> {
                 server_start: None,
                 windows,
                 panes,
+                activity,
             })
         })
         .collect()
+}
+/// Seconds since `activity`, measured on this host; future stamps count as now.
+fn idle_seconds(activity: Option<u64>) -> Option<u64> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    activity.map(|t| now.saturating_sub(t))
 }
 fn snapshot(managed: bool) -> Result<Vec<SessionSnapshot>> {
     let mut c = tmux(managed)?;
@@ -859,7 +876,7 @@ fn inspect_observed(
                 .collect()
         })
         .unwrap_or_default();
-    {
+    let last_output = {
         let expected = observed;
         // A pane can move between sessions while enrichment is in flight. Never
         // return its new metadata under the old attachment/ownership identity.
@@ -873,7 +890,8 @@ fn inspect_observed(
                 && !current[0].ended(),
             "session changed during observation"
         );
-    }
+        current[0].activity.or(expected.activity)
+    };
     let terminal = terminal_identity(observed, process_start_ticks(observed.server_pid))?;
     Ok(Session {
         terminal,
@@ -894,6 +912,7 @@ fn inspect_observed(
         process,
         activity,
         agent_tasks,
+        idle_seconds: idle_seconds(last_output),
         origin: prior.as_ref().and_then(|s| s.origin.clone()),
         container: prior.as_ref().and_then(|s| s.container.clone()),
         launcher: prior.as_ref().and_then(|s| s.launcher.clone()),
@@ -1178,6 +1197,7 @@ fn external_terminal(terminal: &crate::adoption::Terminal) -> Option<Session> {
         container: None,
         activity,
         agent_tasks,
+        idle_seconds: None,
         origin: Some(origin(terminal)),
     })
 }
@@ -2060,20 +2080,10 @@ fn managed_config() -> String {
         "set -g default-terminal 'tmux-256color'",
         &format!("set -g default-terminal '{terminal}'"),
     );
-    // Reuse the bounded process-group probe; custom tmux wrappers cannot block setup.
-    let mut version = Command::new("/bin/sh");
-    version.args([
-        "-c",
-        r#"version=$("$1" -V 2>/dev/null | /usr/bin/head -c 128)
-case "$version" in 'tmux '*) version=${version#tmux };; *) exit 1;; esac
-major=${version%%.*}; minor=${version#*.}; minor=${minor%%[!0-9]*}
-case "$major:$minor" in *[!0-9:]*|:*|*:) exit 1;; esac
-[ "$major" -gt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -ge 4 ]; }
-"#,
-        "cx-tmux-version",
-    ]);
-    version.arg(tmux_executable());
-    let supports_terminal_color = bounded_provider_check(version, Duration::from_millis(200));
+    let supports_terminal_color = tmux_at_least(3, 4);
+    if !supports_terminal_color && !tmux_at_least(3, 0) {
+        config = without_status_mouse(&config);
+    }
     if !supports_terminal_color {
         // Older tmux rejects `terminal`, opening an error pager instead of the shell.
         config = config.replace("fg=terminal,bg=terminal", "fg=default,bg=default");
@@ -2092,6 +2102,48 @@ case "$major:$minor" in *[!0-9:]*|:*|*:) exit 1;; esac
         }).collect::<Vec<_>>().join("\n");
     }
     config
+}
+/// Status-line mouse locations are unverified before tmux 3.0, and an unknown
+/// key name would fail the whole `source-file`. There the chip stays plain
+/// text and Ctrl+\ remains the detach key.
+fn without_status_mouse(config: &str) -> String {
+    config
+        .lines()
+        .filter(|line| !line.starts_with("bind-key -n MouseDown1StatusLeft "))
+        .map(|line| {
+            if line.starts_with("set -g status-left ") {
+                "set -g status-left 'detach: Ctrl+\\ #{?pane_in_mode,Scroll: y copy / Esc,· cx} '"
+                    .to_owned()
+            } else if line.starts_with("set -g status-left-length ") {
+                "set -g status-left-length 40".to_owned()
+            } else if line.starts_with("set -g window-status-current-format ") {
+                "set -g window-status-current-format \"\"".to_owned()
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+/// Bounded `tmux -V` comparison; custom tmux wrappers cannot block setup and
+/// an unparseable version counts as old.
+fn tmux_at_least(major: u32, minor: u32) -> bool {
+    let mut version = Command::new("/bin/sh");
+    version.args([
+        "-c",
+        r#"version=$("$1" -V 2>/dev/null | /usr/bin/head -c 128)
+case "$version" in 'tmux '*) version=${version#tmux };; *) exit 1;; esac
+major=${version%%.*}; minor=${version#*.}; minor=${minor%%[!0-9]*}
+case "$major:$minor" in *[!0-9:]*|:*|*:) exit 1;; esac
+[ "$major" -gt "$2" ] || { [ "$major" -eq "$2" ] && [ "$minor" -ge "$3" ]; }
+"#,
+        "cx-tmux-version",
+    ]);
+    version
+        .arg(tmux_executable())
+        .arg(major.to_string())
+        .arg(minor.to_string());
+    bounded_provider_check(version, Duration::from_millis(200))
 }
 pub fn configure_managed() -> Result<()> {
     let conf = state()?.join("tmux.conf");
@@ -2510,6 +2562,7 @@ fn create_with_permissions(
         process: None,
         activity: None,
         agent_tasks: vec![],
+        idle_seconds: None,
         origin: None,
         container: container.cloned(),
     };
@@ -2716,15 +2769,26 @@ fn set_managed_status(session: &Session) -> Result<()> {
             .take(50)
             .collect::<String>()
     };
+    // The title sits beside the detach chip (status-left/window cell); the
+    // right side names the host and the detach key.
     let status = format!(
-        "{}@{} | {}",
+        "{}@{} · Ctrl+\\ detach",
         safe(&session.account),
-        safe(&session.host),
-        safe(&session.name)
+        safe(&session.host)
     );
     let mut command = tmux(true)?;
     command.args(["set-option", "-t", &session.id, "status-right", &status]);
     output(command)?;
+    // Read by the status line as `cx · <title>` next to the detach chip.
+    let mut title = tmux(true)?;
+    title.args([
+        "set-option",
+        "-t",
+        &session.id,
+        "@cx_title",
+        &safe(&session.name),
+    ]);
+    output(title)?;
     Ok(())
 }
 // Codex can spawn an editor in its own foreground process group. A provider
@@ -3821,7 +3885,7 @@ panes=1
 case "$op" in
 list-sessions)
     if [ "$last" = '#{session_id}' ]; then printf '$1\n'
-    else printf '$1\t%s\t100\t%%1\t%s\t%s\t1\t%s\n' "$pane" "$dead" "$server" "$panes"; fi;;
+    else printf '$1\t%s\t100\t%%1\t%s\t%s\t1\t%s\t1700000000\n' "$pane" "$dead" "$server" "$panes"; fi;;
 display-message)
     case "$last" in
     '#{session_name}') printf 'cx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n';;
@@ -3834,7 +3898,7 @@ display-message)
     '#{session_id}'*)
         selected=1
         [ "$CX_INVENTORY_CASE" = moved ] && selected=2
-        printf '$%s\t%s\t100\t%%1\t%s\t%s\t1\t%s\n' "$selected" "$pane" "$dead" "$server" "$panes";;
+        printf '$%s\t%s\t100\t%%1\t%s\t%s\t1\t%s\t1700000000\n' "$selected" "$pane" "$dead" "$server" "$panes";;
     *) printf '\n';;
     esac;;
 esac
@@ -4222,7 +4286,7 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
 
     #[test]
     fn terminal_generation_rejects_replaced_or_exited_server() {
-        let mut observed = parse_snapshot("$1\t10\t100\t%2\t0\t42\t1\t1")
+        let mut observed = parse_snapshot("$1\t10\t100\t%2\t0\t42\t1\t1\t90")
             .unwrap()
             .remove(0);
         observed.server_start = Some("700".into());
@@ -4264,33 +4328,55 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
 
     #[test]
     fn runtime_snapshot_rejects_malformed_identity_and_framing() {
-        let valid = "$1\t10\t100\t%2\t0\t42\t1\t1";
+        let valid = "$1\t10\t100\t%2\t0\t42\t1\t1\t90";
         assert_eq!(parse_snapshot(valid).unwrap().len(), 1);
         for invalid in [
-            "$1\t10\t100\t%2\t0\t42\t1\t1\textra",
-            "$1\t10\t100\t%2\t0\t42\t1",
-            "$name\t10\t100\t%2\t0\t42\t1\t1",
-            "$1\t10\t100\t%2\t2\t42\t1\t1",
-            "$1\t10\t100\t%2\t0\t0\t1\t1",
-            "$1\t10\t100\t%2\t0\t42\t0\t1",
-            "$1\t10\t100\t%2\t0\t42\t1\t1\nforged",
+            "$1\t10\t100\t%2\t0\t42\t1\t1\t90\textra",
+            "$1\t10\t100\t%2\t0\t42\t1\t1",
+            "$name\t10\t100\t%2\t0\t42\t1\t1\t90",
+            "$1\t10\t100\t%2\t2\t42\t1\t1\t90",
+            "$1\t10\t100\t%2\t0\t0\t1\t1\t90",
+            "$1\t10\t100\t%2\t0\t42\t0\t1\t90",
+            "$1\t10\t100\t%2\t0\t42\t1\t1\t90\nforged",
         ] {
             assert!(parse_snapshot(invalid).is_err());
         }
     }
 
     #[test]
+    fn runtime_snapshot_activity_is_optional_evidence() {
+        let row = |activity: &str| {
+            parse_snapshot(&format!("$1\t10\t100\t%2\t0\t42\t1\t1\t{activity}"))
+                .unwrap()
+                .remove(0)
+                .activity
+        };
+        assert_eq!(row("1700000000"), Some(1_700_000_000));
+        // Unknown or malformed activity loses its age, never the session.
+        for unknown in ["", "0", "-5", "12x", "99999999999999999999999"] {
+            assert_eq!(row(unknown), None, "{unknown:?}");
+        }
+        assert_eq!(idle_seconds(None), None);
+        assert_eq!(
+            idle_seconds(Some(u64::MAX)),
+            Some(0),
+            "future stamps are now"
+        );
+        assert!(idle_seconds(Some(1)).unwrap() > 1_000_000);
+    }
+
+    #[test]
     fn runtime_snapshot_accepts_cleared_pid_only_for_dead_pane() {
-        let dead = parse_snapshot("$1\t\t100\t%2\t1\t42\t1\t1")
+        let dead = parse_snapshot("$1\t\t100\t%2\t1\t42\t1\t1\t")
             .unwrap()
             .remove(0);
         assert_eq!(dead.pane_pid, 0);
         assert!(dead.ended());
-        let expanded = parse_snapshot("$1\t\t100\t%2\t1\t42\t1\t2")
+        let expanded = parse_snapshot("$1\t\t100\t%2\t1\t42\t1\t2\t90")
             .unwrap()
             .remove(0);
         assert!(!expanded.ended());
-        assert!(parse_snapshot("$1\t\t100\t%2\t0\t42\t1\t1").is_err());
+        assert!(parse_snapshot("$1\t\t100\t%2\t0\t42\t1\t1\t90").is_err());
     }
 
     #[test]
@@ -4620,6 +4706,7 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
             process: None,
             activity: None,
             agent_tasks: vec![],
+            idle_seconds: None,
             origin: None,
             container: None,
         };
@@ -4757,6 +4844,38 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
             output.stdout,
             b"\x1b]104\x1b\\\x1b]110\x1b\\\x1b]111\x1b\\AFTER"
         );
+    }
+    #[test]
+    fn managed_detach_is_ctrl_backslash_with_a_tappable_chip() {
+        let config = include_str!("../assets/tmux.conf");
+        let lines: Vec<_> = config.lines().collect();
+        assert!(lines.contains(&"bind-key -n 'C-\\' detach-client"));
+        assert!(lines.contains(&"bind-key -n MouseDown1StatusLeft detach-client"));
+        // A running server that sourced an older config releases Ctrl+] too.
+        assert!(lines.contains(&"unbind-key -n C-]"));
+        assert!(!lines
+            .iter()
+            .any(|l| l.contains("C-]") && l.contains("detach")));
+        assert!(config.contains("#[reverse] ⏏ detach #[noreverse]"));
+        let legacy = without_status_mouse(config);
+        assert!(!legacy.contains("MouseDown1StatusLeft") && !legacy.contains("⏏"));
+        assert!(legacy.contains("detach: ") && legacy.contains("'C-\\' detach-client"));
+        assert!(!legacy
+            .lines()
+            .any(|l| !l.starts_with('#') && l.contains("@cx_title")));
+        // The clickable status-left is the chip alone: the title and the
+        // copy-mode hint live in the window cell, so tapping them never detaches.
+        let left = lines
+            .iter()
+            .find(|l| l.starts_with("set -g status-left '"))
+            .unwrap();
+        assert_eq!(
+            *left,
+            "set -g status-left '#[reverse] ⏏ detach #[noreverse] '"
+        );
+        assert!(lines.contains(
+            &"set -g window-status-current-format '#{?pane_in_mode,Scroll: y copy / Esc,cx · #{@cx_title}}'"
+        ));
     }
     #[test]
     fn managed_launcher_preserves_fish_palette_quoting() {

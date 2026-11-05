@@ -84,7 +84,7 @@ with tempfile.TemporaryDirectory(prefix='cx-containers-') as tmp:
    send(b"for i in $(seq 1 80); do printf 'CX_SCROLL_%s\\n' \"$i\"; done\n")
    wait(lambda:b'CX_SCROLL_80' in pane())
    send(b'\x1b[<64;40;10M');wait(lambda:tmux('display-message','-p','-t',session['id'],'#{pane_in_mode}').strip()==b'1')
-   send(b'\x1b');wait(lambda:tmux('display-message','-p','-t',session['id'],'#{pane_in_mode}').strip()==b'0');send(b'\x1d')
+   send(b'\x1b');wait(lambda:tmux('display-message','-p','-t',session['id'],'#{pane_in_mode}').strip()==b'0');send(b'\x1c')
    deadline=time.monotonic()+5
    while p.poll() is None and time.monotonic()<deadline:read(.1)
    assert p.poll()==0,'one detach did not return'

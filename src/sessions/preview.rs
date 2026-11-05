@@ -37,18 +37,30 @@ fn bounded(mut command: Command) -> Result<String> {
                     bytes.extend_from_slice(&buf[..n]);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(5))
+                    // Block until output or the deadline instead of sleeping in
+                    // fixed steps: keystroke echo pays this on every capture.
+                    let mut fd = libc::pollfd {
+                        fd: pipe.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    let wait = end.saturating_duration_since(Instant::now()).as_millis();
+                    unsafe { libc::poll(&mut fd, 1, wait.clamp(1, 750) as libc::c_int) };
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(e) => return Err(e.into()),
             }
         }
+        // The pipe closed, so the child is exiting; reap it without a 5 ms step.
+        let mut pause = Duration::from_micros(200);
         loop {
             if let Some(status) = child.try_wait()? {
                 anyhow::ensure!(status.success(), "preview unavailable");
                 return Ok(String::from_utf8_lossy(&bytes).into_owned());
             }
             anyhow::ensure!(Instant::now() < end, "preview timed out");
-            thread::sleep(Duration::from_millis(5));
+            thread::sleep(pause);
+            pause = (pause * 2).min(Duration::from_millis(5));
         }
     })();
     if result.is_err() {

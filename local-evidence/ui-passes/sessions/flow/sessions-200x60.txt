@@ -1,0 +1,60 @@
+ cx   [Sessions]  Network                                                                                                                                                         viewing fixture@laptop
+                                                                                                                                                                                                        
+╭ Devices ──────────╮╭ ▸ Sessions 2 ──────────────────────────────────────────────────────────────────────────╮╭ build watcher · laptop · idle 1m ─────────────────────────────────────────────────────╮
+│   All devices     ││▌■ ● SH build watcher                      ~/projects/cx-demo       ··▁▁   1m           ││Compiling cx-demo v0.1.0                                                               │
+│ › ●  laptop       ││ ■ ● SH robot-logs shell                   ~/projects/robot-logs    ··▁▁   1m           ││    Finished dev in 2.41s                                                              │
+│   ●  * lab-arm    ││                                                                                        ││[Running cargo check]                                                                  │
+│   ○  * field-rov… ││                                                                                        ││[xxxxxx@xxxxxxxxxxx cx-demo]$                                                          │
+╰───────────────────╯│                                                                                        ││                                                                                       │
+╭ Actions ──────────╮│                                                                                        ││                                                                                       │
+│ Files             ││                                                                                        ││                                                                                       │
+│ Network           ││                                                                                        ││                                                                                       │
+│ Containers        ││                                                                                        ││                                                                                       │
+│ Transfers         ││                                                                                        ││                                                                                       │
+│ Watch · read-only ││                                                                                        ││                                                                                       │
+╰───────────────────╯│                                                                                        ││                                                                                       │
+ Selected ───────────│                                                                                        ││                                                                                       │
+ Host fixture@laptop │                                                                                        ││                                                                                       │
+ Folder /tmp/cx-cap… │                                                                                        ││                                                                                       │
+ ⏎ attach · n new    │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     │                                                                                        ││                                                                                       │
+                     ╰───────────────────────────────────────────────────────────────��────────────────────────╯ live · ~/projects/cx-demo · 80x24 ──────────────────────────────────────────── z zoom ─
+╯● 2/3 devices                                                                  Focus: Sessions · 2/2                                                                                             ↔ idle
+ Enter Attach                                                       i Type                                                            z Zoom                                                            
+ w Watch                                                            n New                                                             d Stop                                                            
+                                                                                                                                                                                                        

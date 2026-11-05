@@ -1,0 +1,20 @@
+Compiling cx-demo v0.1.0                
+    Finished dev in 2.41s               
+[Running cargo check]                   
+[xxxxxx@xxxxxxxxxxx cx-demo]$           
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        
+ ⏏ detach  z@xxxxxxxxxxx · Ctrl+\ detach

@@ -105,7 +105,7 @@ with tempfile.TemporaryDirectory(prefix='cx-wheel-') as temporary:
         time.sleep(.2);drain()
         assert log.read_bytes()==b'', 'Codex ancestor caused wheel injection into editor'
         assert state('#{pane_in_mode}')=='0'
-        os.write(master,b'\x1d');client.wait(timeout=5)
+        os.write(master,b'\x1c');client.wait(timeout=5)
         assert client.returncode==0 and state('#{pane_dead}')=='0'
         print(json.dumps(dict(result='PASS',backend=tmux('-V'),native_wheel_exact_bytes=True,empty_mode_recovery=True,invalid_event_suppressed=True,same_process=True,embedded_editor_input_preserved=True,observer_no_input=True)))
     finally:

@@ -1,0 +1,24 @@
+ cx   [Sessions]  Network                                 viewing fixture@laptop
+                                                                                
+╭ Devices ──────────╮╭ ▸ Sessions 3 ───────────────────────────────────────────╮
+│ › All devices     ││▌■ ● SH build watcher      cx-demo    [la]  11s          │
+│   ●  laptop       ││ ■ ● SH robot-logs shell   robot-logs [la]  28s          │
+│   ●  * lab-arm    ││ ■ ● SH ros core           catkin_ws  [lb]  28s          │
+│   ○  * field-rov… ││                                                         │
+╰───────────────────╯│                                                         │
+╭ Actions ──────────╮│                                                         │
+│ Files             ││                                                         │
+│ Network           │╰─────────────────────────────────────────────────────────╯
+│ Containers        │╭ build watcher · laptop ─────────────────────────────────╮
+│ Transfers         ││    Finished dev in 2.41s                                │
+│ Watch · read-only ││[Running cargo check]                                    │
+╰───────────────────╯│[xxxxxx@xxxxxxxxxxx cx-demo]$                            │
+ Selected ───────────│                                                         │
+ Host fixture@laptop │                                                         │
+ Folder /tmp/cx-cap… │                                                         │
+ ⏎ attach · n new    │                                                         │
+                     ╰ live · 40x19 ────────────────────────────────── z zoom ─╯
+ ● 2/3 devices            Focus: Sessions · 3/3                           ↔ idle
+ Enter Attach               i Type                    z Zoom                    
+ w Watch                    n New                     d Stop                    
+                                                                                

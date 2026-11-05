@@ -55,7 +55,7 @@ int main(int argc,char **argv){
       tmux('clear-history','-t',session['id']);event=b'\x1b[<64;40;10M';os.write(m,event);expected+=event;drain(1)
       assert tmux('display-message','-p','-t',session['id'],'#{pane_in_mode}').strip()==b'0'
      actual=docker('exec',id,'cat','/tmp/keys');assert actual==expected,f'{provider} input mismatch: {actual.hex()} vs {expected.hex()}'
-     os.write(m,b'\x1d');deadline=time.monotonic()+5
+     os.write(m,b'\x1c');deadline=time.monotonic()+5
      while p.poll() is None and time.monotonic()<deadline:drain(.1)
      assert p.poll()==0 and termios.tcgetattr(t)==before
      live=next(s for s in cli('sessions') if s['id']==session['id']);assert live['container'] and live['provider']==provider

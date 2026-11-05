@@ -1,0 +1,40 @@
+ cx   [Sessions]  Network                                                                         viewing fixture@laptop
+                                                                                                                        
+╭ Devices ──────────╮╭ build watcher · laptop · idle 16s ──────────────────────────────────────────────────────────────╮
+│ › All devices     ││    Finished dev in 2.41s                                                                        │
+│   ●  laptop       ││[Running cargo check]                                                                            │
+│   ●  * lab-arm    ││[xxxxxx@xxxxxxxxxxx cx-demo]$                                                                    │
+│   ○  * field-rov… ││                                                                                                 │
+╰───────────────────╯│                                                                                                 │
+╭ Actions ──────────╮│                                                                                                 │
+│ Files             ││                                                                                                 │
+│ Network           ││                                                                                                 │
+│ Containers        ││                                                                                                 │
+│ Transfers         ││                                                                                                 │
+│ Watch · read-only ││                                                                                                 │
+╰───────────────────╯│                                                                                                 │
+ Selected ───────────│                                                                                                 │
+ Host fixture@laptop │                                                                                                 │
+ Folder /tmp/cx-cap… │                                                                                                 │
+ ⏎ attach · n new    │                                                                                                 │
+                     │                                                                                                 │
+                     │                                                                                                 │
+                     │                                                                                                 │
+                     │                                                                                                 │
+                     │                                                                                                 │
+                     │                                                                                                 │
+                     │                                                                                                 │
+                     │                                                                                                 │
+                     │                                                                                                 │
+                     │                                                                                                 │
+                     │                                                                                                 │
+                     │                                                                                                 │
+                     │                                                                                                 │
+                     ╰ live · ~/projects/cx-demo · 80x23 ───────────────────────────────────────────────────── z back ─╯
+╭ Search ──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ /  build                                                                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ● 2/3 devices                              Focus: Sessions · 1/3                                                 ↔ idle
+ Enter Attach                            i Type                                  z / Esc Back to list                   
+ w Watch                                                                                                                
+                                                                                                                        

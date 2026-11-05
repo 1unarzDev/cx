@@ -36,7 +36,9 @@ You can also select a discovered neighbor in **Network** and press Enter to conn
 | `/`, `?` | Search, help |
 | `n` | Choose Claude, Codex, Shell or Devcontainer for the highlighted device |
 | Tab / Shift+Tab | Change panel focus |
-| Ctrl+] in a managed terminal | Return to CX; the session keeps running |
+| Enter in Sessions | Attach to the highlighted session |
+| `i` / `z` in Sessions | Type into the live preview / zoom it |
+| Ctrl+\ (or tap `⏏ detach`) in a managed terminal | Return to CX; the session keeps running. Ctrl+] reaches the application |
 | `w` in Sessions | Watch the highlighted session read-only |
 | Enter on external terminal | Move existing work into CX after verification |
 | `s` in Sessions | Inspect agent tasks and subagents |

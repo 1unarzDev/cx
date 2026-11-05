@@ -1,0 +1,40 @@
+ cx   [Sessions]  Network                                                                         viewing fixture@laptop
+                                                                                                                        
+╭ Devices ──────────╮╭ ▸ Sessions 3 ──────────────────────────────────╮╭ build watcher · laptop ───────────────────────╮
+│ › All devices     ││▌■ ● SH build watcher       cx-demo    [la]  10s││    Finished dev in 2.41s                      │
+│   ●  laptop       ││ ■ ● SH robot-logs shell    robot-logs [la]  48s││[Running cargo check]                          │
+│   ●  * lab-arm    ││ ■ ● SH ros core            catkin_ws  [lb]  48s││[xxxxxx@xxxxxxxxxxx cx-demo]$                  │
+│   ○  * field-rov… ││                                                ││                                               │
+╰───────────────────╯│                                                ││                                               │
+╭ Actions ──────────╮│                                                ││                                               │
+│ Files             ││                                                ││                                               │
+│ Network           ││                                                ││                                               │
+│ Containers        ││                                                ││                                               │
+│ Transfers         ││                                                ││                                               │
+│ Watch · read-only ││                                                ││                                               │
+╰───────────────────╯│                                                ││                                               │
+ Selected ───────────│                                                ││                                               │
+ Host fixture@laptop │                                                ││                                               │
+ Folder /tmp/cx-cap… │                                                ││                                               │
+ ⏎ attach · n new    │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     ╰────────────────────────────────────────────────╯╰ live ──────────────────────────────── z zoom ─╯
+ ● 2/3 devices                              Focus: Sessions · 3/3                                                 ↔ idle
+ Enter Attach                            i Type                                  z Zoom                                 
+ w Watch                                 n New                                   d Stop                                 
+                                                                                                                        

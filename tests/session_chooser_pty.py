@@ -40,9 +40,9 @@ with tempfile.TemporaryDirectory(prefix='cx-session-chooser-') as tmp:
   send(b'\x1b');wait(lambda:'[s] Shell' not in text());assert not sessions()
   send(b'n');wait(lambda:'[s] Shell' in text());send(b's')
   wait(lambda:len(sessions())==1);created=sessions()[0];assert created['provider']=='shell' and pathlib.Path(created['directory'])==root
-  wait(lambda:'Ctrl+]' in text() or '[s] Shell' not in text());read(1);send(b'printf "chooser-proof" > chooser-proof\n')
+  wait(lambda:'Ctrl+\\' in text() or '[s] Shell' not in text());read(1);send(b'printf "chooser-proof" > chooser-proof\n')
   wait(lambda:(root/'chooser-proof').exists());assert (root/'chooser-proof').read_text()=='chooser-proof'
-  send(b'\x1d');read(.5);assert proc.poll() is None and len(sessions())==1
+  send(b'\x1c');read(.5);assert proc.poll() is None and len(sessions())==1
   send(b'\t\tw')
   def readonly():
    p=subprocess.run(['tmux','-S',str(state/'managed.sock'),'list-clients','-F','#{client_readonly}'],capture_output=True)
@@ -50,7 +50,7 @@ with tempfile.TemporaryDirectory(prefix='cx-session-chooser-') as tmp:
   wait(readonly)
   send(b'printf changed > chooser-proof\n');read(.5)
   assert (root/'chooser-proof').read_text()=='chooser-proof','watch mode injected terminal input'
-  send(b'\x1d');read(.5);assert proc.poll() is None
+  send(b'\x1c');read(.5);assert proc.poll() is None
   send(b'\x03');proc.wait(timeout=5);assert proc.returncode==0 and termios.tcgetattr(slave)==before
  finally:
   if proc.poll() is None:proc.kill();proc.wait()

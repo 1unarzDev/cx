@@ -72,7 +72,7 @@ int main(int argc,char **argv) {
         assert log.read_bytes()==b'', 'worker-thread editor received fabricated wheel input'
         assert state('#{pane_in_mode}')=='0'
         assert state('#{pane_pid}')==pid
-        os.write(master,b'\x1d');client.wait(timeout=5)
+        os.write(master,b'\x1c');client.wait(timeout=5)
         print(json.dumps(dict(result='PASS',worker_thread_editor_no_input=True,redirected_stdin=True,same_process=True)))
     finally:
         if client.poll() is None: client.terminate(); client.wait(timeout=5)

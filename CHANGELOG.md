@@ -4,6 +4,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+### Changes
+- Enter on a session attaches directly when its device answered a listing within the last minute (errored, offline or cached devices still check first, inside cx); `i` types into the live preview, `z` zooms it and `w` watches read-only. The pre-attach listing round trip and the Ctrl+O expand step are gone; a refused attach refreshes the list and says so.
+- Detach is Ctrl+\ (or a tap on the `⏏ detach` chip in the managed status line on tmux 3.0 and later); Ctrl+] and Ctrl+O now reach the application. Only the chip is a tap target; the status line shows `cx · <title>` beside it and `Ctrl+\ detach` on the right. Running managed servers pick up the binding on the next attach or session start.
+- Session rows show an identity swatch, status glyph, SH/CL/CX badge, title, folder, device chip (initials unique across devices, so they read without colour), 60-second activity sparkline, idle age and a working/awaiting state. Hover only highlights; it never selects or fetches.
+- Preview identity and liveness move to the frame; moving the selection keeps the previous frame dimmed for 60 ms instead of blanking, and identical captures no longer redraw. Keystroke echo in the inline preview polls immediately after input (p50 about 21 ms, was about 100 ms).
+
 ## v0.1.95
 
 Includes every change from v0.1.86–v0.1.88 plus the work below, which was previously only deployed locally. (v0.1.93 and v0.1.94 were tagged but not published.)

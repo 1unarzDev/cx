@@ -25,6 +25,30 @@ pub(super) struct Snapshot {
     bracketed_paste: bool,
     application_cursor: bool,
     pub(super) focused: Option<(Device, Session, String)>,
+    /// `z`: the preview fills the workspace, read-only and live.
+    zoomed: bool,
+    /// Bumped on every applied capture; keys the parsed-screen cache.
+    revision: u64,
+    parsed: std::cell::RefCell<Option<(u64, Vec<Line<'static>>)>>,
+    /// The previous session's frame, kept dimmed until the new one arrives.
+    carried: bool,
+    /// Selection-driven fetches wait for the selection to settle.
+    selected_at: Option<Instant>,
+    /// Last keystroke or paste sent to the pane; echo polling follows it.
+    last_input: Option<Instant>,
+    echo_due: bool,
+    received: Option<Instant>,
+    /// Border chip: `⏏ detach` while typing, `z zoom` / `z back` otherwise.
+    chip: std::cell::Cell<Rect>,
+    stale_shown: std::cell::Cell<bool>,
+}
+/// Moving the selection settles for this long before a preview is requested.
+pub(super) const SELECT_DEBOUNCE: Duration = Duration::from_millis(60);
+/// True for every encoding of Ctrl+\: the legacy 0x1c byte (which crossterm
+/// reports as Ctrl+4) and the kitty keyboard protocol's Ctrl+backslash.
+pub(super) fn detach_key(event: &KeyEvent) -> bool {
+    event.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(event.code, KeyCode::Char('\\') | KeyCode::Char('4'))
 }
 fn key(device: &Device, session: &Session) -> String {
     serde_json::json!([
@@ -38,10 +62,6 @@ fn key(device: &Device, session: &Session) -> String {
     .to_string()
 }
 pub(super) fn label(s: &Session) -> String {
-    let name = s.name.trim();
-    if !name.is_empty() && name != s.id && name != s.provider && name != "shell" {
-        return safe_label(name);
-    }
     let folder = s
         .directory
         .trim_end_matches('/')
@@ -53,17 +73,24 @@ pub(super) fn label(s: &Session) -> String {
         } else {
             "~"
         });
-    format!(
-        "{} · {} · {}",
-        safe_label(folder),
-        safe_label(&s.provider),
-        safe_label(
-            s.terminal
-                .as_ref()
-                .map(|t| t.session_id.as_str())
-                .unwrap_or_else(|| s.id.get(s.id.len().saturating_sub(8)..).unwrap_or(&s.id))
-        )
-    )
+    let name = s.name.trim();
+    // Automatic names (`shell · cx-demo`, from the helper) are not user names.
+    let automatic = name
+        .strip_prefix(s.provider.as_str())
+        .and_then(|rest| rest.strip_prefix(" · "))
+        .is_some_and(|rest| rest == folder || rest == "root");
+    let generic = name.is_empty()
+        || automatic
+        || name == s.id
+        || name == s.provider
+        || name == "shell"
+        || name == "New shell";
+    if !generic {
+        return safe_label(name);
+    }
+    // Spec 7.1: provider title, else user name, else "<folder> shell".
+    // Never a tmux id; the list disambiguates equal fallbacks itself.
+    format!("{} {}", safe_label(folder), safe_label(&s.provider))
 }
 impl App {
     fn live_top(&self) -> u32 {
@@ -87,6 +114,15 @@ impl App {
                         .saturating_add(u32::from(self.session_preview.rows)),
                 )
                 <= end
+    }
+    /// A loaded scrollback page covers the view: no request until the user
+    /// scrolls past it or returns to live.
+    fn preview_fetch_parked(&self) -> bool {
+        self.session_preview.history_loaded
+            && self
+                .session_preview
+                .scroll_top
+                .is_some_and(|top| self.preview_page_contains(top))
     }
     fn resume_session_preview(&mut self) {
         self.session_preview.scroll_top = None;
@@ -223,11 +259,10 @@ impl App {
         true
     }
     pub(super) fn session_pane_key(&mut self, event: KeyEvent) {
-        // Legacy terminals encode Ctrl+] as byte0x1d, which crossterm reports as Ctrl+5.
-        if event.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(event.code, KeyCode::Char(']') | KeyCode::Char('5'))
-        {
-            self.session_preview.focused = None;
+        // Ctrl+\ leaves inline input; every other key (Ctrl+] and Ctrl+O too)
+        // belongs to the application in the pane.
+        if detach_key(&event) {
+            self.leave_session_pane();
             return;
         }
         let Some((d, _)) = self.preview_selection() else {
@@ -235,11 +270,6 @@ impl App {
             return;
         };
         let (_, session, pane_id) = self.session_preview.focused.clone().unwrap();
-        if event.modifiers.contains(KeyModifiers::CONTROL) && event.code == KeyCode::Char('o') {
-            self.session_preview.focused = None;
-            self.open_session(d, session, false);
-            return;
-        }
         self.resume_session_preview();
         if let Some(mut bytes) = encode_key(event) {
             if self.session_preview.application_cursor
@@ -258,7 +288,7 @@ impl App {
                 bytes[1] = b'O';
             }
             let hex = bytes.iter().map(|b| format!("{b:02x}")).collect();
-            if !self.send(
+            if self.send(
                 d,
                 Operation::SessionPaneInput {
                     session,
@@ -266,9 +296,121 @@ impl App {
                     hex,
                 },
             ) {
+                self.input_sent();
+            } else {
                 self.session_preview.focused = None;
                 self.set_notice("Terminal input was not queued; focus released".into());
             }
+        }
+    }
+    /// Poll for the echo right away; an in-flight capture may predate the key.
+    fn input_sent(&mut self) {
+        self.session_preview.last_input = Some(Instant::now());
+        self.session_preview.last = None;
+        if self.session_preview.inflight {
+            self.session_preview.echo_due = true;
+        }
+    }
+    pub(super) fn leave_session_pane(&mut self) {
+        self.session_preview.focused = None;
+        self.session_preview.last_input = None;
+    }
+    /// `i`: type into the inline preview. Explains why when it is not ready.
+    pub(super) fn type_into_preview(&mut self) {
+        if self.focus_session_pane() {
+            return;
+        }
+        let message = match self.selected_session() {
+            None => return,
+            Some((_, s)) if outside_tmux(&s) => {
+                "This terminal is outside tmux · Enter moves it into CX"
+            }
+            Some(_) if self.preview_selection().is_none() => {
+                "No live preview for this session · Enter attaches"
+            }
+            Some(_) => "Live preview is still loading · try again in a moment",
+        };
+        self.set_notice(message.into());
+    }
+    #[cfg(test)]
+    pub(super) fn session_preview_chip(&self) -> Rect {
+        self.session_preview.chip.get()
+    }
+    pub(super) fn preview_zoomed(&self) -> bool {
+        self.session_preview.zoomed
+    }
+    /// `z`: zoom the preview to the workspace, or return to the list.
+    pub(super) fn toggle_preview_zoom(&mut self) {
+        if self.session_preview.zoomed {
+            self.session_preview.zoomed = false;
+        } else if self.selected_session().is_some() {
+            self.session_preview.zoomed = true;
+        }
+    }
+    /// Clicks on the preview: the border chip detaches or zooms; the screen
+    /// starts inline input. Returns true when the click was the preview's.
+    pub(super) fn click_session_preview(&mut self, mouse: MouseEvent) -> bool {
+        if self.view != View::Work
+            || self.dialog.is_some()
+            || self.help
+            || self.command_panel.is_some()
+            || mouse.kind != MouseEventKind::Down(event::MouseButton::Left)
+        {
+            return false;
+        }
+        let at = ratatui::layout::Position::new(mouse.column, mouse.row);
+        if self.session_preview.chip.get().contains(at) {
+            if self.pane_focused() {
+                self.leave_session_pane();
+            } else {
+                self.toggle_preview_zoom();
+            }
+            return true;
+        }
+        if !self.pane_focused() && self.session_preview.screen.get().contains(at) {
+            self.type_into_preview();
+            return true;
+        }
+        false
+    }
+    /// How soon the event loop must wake for preview work, if sooner than idle.
+    pub(super) fn session_preview_wait(&self) -> Option<Duration> {
+        if self.view != View::Work && !self.pane_focused() {
+            return None;
+        }
+        let p = &self.session_preview;
+        if let Some(at) = p.selected_at {
+            return Some(SELECT_DEBOUNCE.saturating_sub(at.elapsed()));
+        }
+        if !self.pane_focused() {
+            return None;
+        }
+        // Nothing would be requested: wake on input, never spin.
+        if self.preview_fetch_parked() || self.preview_selection().is_none() {
+            return None;
+        }
+        let typing = p
+            .last_input
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(1));
+        if p.inflight {
+            // Replies arrive on a channel the input poll cannot see.
+            return Some(Duration::from_millis(if typing { 4 } else { 20 }));
+        }
+        let due = p
+            .last
+            .map(|t| self.echo_interval().saturating_sub(t.elapsed()))
+            .unwrap_or_default();
+        Some(due)
+    }
+    /// Keystroke echo is fast right after input and backs off when idle.
+    fn echo_interval(&self) -> Duration {
+        if !self.pane_focused() {
+            return Duration::from_millis(250);
+        }
+        match self.session_preview.last_input.map(|t| t.elapsed()) {
+            Some(e) if e < Duration::from_secs(1) => Duration::from_millis(16),
+            Some(e) if e < Duration::from_secs(5) => Duration::from_millis(50),
+            _ => Duration::from_millis(120),
         }
     }
     pub(super) fn session_pane_paste(&mut self, text: &str) {
@@ -290,7 +432,7 @@ impl App {
             return;
         };
         let hex = text.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
-        if !self.send(
+        if self.send(
             d,
             Operation::SessionPaneInput {
                 session,
@@ -298,6 +440,8 @@ impl App {
                 hex,
             },
         ) {
+            self.input_sent();
+        } else {
             self.session_preview.focused = None;
             self.set_notice("Paste was not queued; focus released".into());
         }
@@ -307,30 +451,48 @@ impl App {
         let next = selection.as_ref().map(|(d, s)| key(&self.devices[*d], s));
         let changed = next != self.session_preview.key;
         if changed {
-            let serial = self.session_preview.serial.wrapping_add(1);
+            let previous = std::mem::take(&mut self.session_preview);
+            let moved = previous.key.is_some() && next.is_some();
             self.session_preview = Snapshot {
-                key: next,
-                serial,
+                serial: previous.serial.wrapping_add(1),
+                zoomed: previous.zoomed && next.is_some(),
                 ..Snapshot::default()
             };
+            if moved {
+                // Keep the old frame, dimmed, so moving never blanks the
+                // preview; fetch only once the selection settles.
+                let p = &mut self.session_preview;
+                p.carried = !previous.lines.is_empty();
+                p.lines = previous.lines;
+                p.cols = previous.cols;
+                p.rows = previous.rows;
+                p.palette8 = previous.palette8;
+                p.cursor = previous.cursor;
+                p.history_total = previous.history_total;
+                p.line_start = previous.line_start;
+                p.revision = previous.revision.wrapping_add(1);
+                p.selected_at = Some(Instant::now());
+            }
+            self.session_preview.key = next;
         }
         let Some((device, session)) = selection else {
             return changed;
         };
-        if self
-            .session_preview
-            .scroll_top
-            .is_some_and(|top| self.preview_page_contains(top))
-            && self.session_preview.history_loaded
-        {
+        if let Some(at) = self.session_preview.selected_at {
+            if at.elapsed() < SELECT_DEBOUNCE {
+                return changed;
+            }
+            self.session_preview.selected_at = None;
+        }
+        if self.preview_fetch_parked() {
             return changed;
         }
-        let interval = if self.pane_focused() { 100 } else { 250 };
+        let interval = self.echo_interval();
         if self.session_preview.inflight
             || self
                 .session_preview
                 .last
-                .is_some_and(|t| t.elapsed() < Duration::from_millis(interval))
+                .is_some_and(|t| t.elapsed() < interval)
         {
             return changed;
         }
@@ -356,7 +518,8 @@ impl App {
             self.pending_requests.set(self.pending_requests.get() + 1);
             self.session_preview.inflight = true;
         }
-        changed || sent
+        // A request alone changes nothing on screen; its reply decides.
+        changed
     }
     pub(super) fn apply_session_preview(&mut self, reply: Reply) {
         let Operation::SessionPreview {
@@ -376,7 +539,11 @@ impl App {
         {
             return;
         }
+        let before = fingerprint(&self.session_preview);
         self.session_preview.inflight = false;
+        if std::mem::take(&mut self.session_preview.echo_due) {
+            self.session_preview.last = None;
+        }
         if *scrollback && self.session_preview.scroll_top.is_none() {
             self.session_preview.last = None;
             return; // A late history page must not replace the resumed live screen.
@@ -457,12 +624,8 @@ impl App {
                     budget -= line.len();
                     self.session_preview.lines.push(line.to_owned());
                 }
-                self.session_preview.status = if self.session_preview.live {
-                    "Enter · focus terminal · Wheel · scroll"
-                } else {
-                    "Enter · attach"
-                }
-                .into();
+                self.session_preview.status.clear();
+                self.session_preview.received = Some(Instant::now());
             }
             Err(_) => {
                 self.session_preview.focused = None;
@@ -471,92 +634,290 @@ impl App {
                 self.session_preview.status = "Terminal unavailable · refresh to check".into();
             }
         }
+        let was_carried = std::mem::take(&mut self.session_preview.carried);
+        if was_carried || fingerprint(&self.session_preview) != before {
+            // Identical captures neither reparse nor redraw.
+            self.session_preview.revision = self.session_preview.revision.wrapping_add(1);
+        }
+    }
+    /// The runtime redraws for a preview reply only when this changed.
+    pub(super) fn session_preview_revision(&self) -> u64 {
+        self.session_preview.revision
+    }
+    /// True when the liveness label must switch between live and stale.
+    pub(super) fn session_preview_staleness_changed(&self) -> bool {
+        let p = &self.session_preview;
+        p.received
+            .is_some_and(|t| (t.elapsed() >= PREVIEW_STALE) != p.stale_shown.get())
     }
 }
+/// Liveness turns into `stale <age>` once captures stop arriving for this long.
+const PREVIEW_STALE: Duration = Duration::from_secs(3);
+fn fingerprint(p: &Snapshot) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (
+        &p.lines,
+        &p.status,
+        &p.pane,
+        p.live,
+        p.cursor,
+        p.cursor_visible,
+        p.cols,
+        p.rows,
+        p.history_total,
+        p.line_start,
+        p.history_loaded,
+        format!("{:?}", p.palette8),
+    )
+        .hash(&mut h);
+    p.scroll_top.hash(&mut h);
+    p.focused.is_some().hash(&mut h);
+    h.finish()
+}
+/// Parse the captured ANSI rows once per capture revision, not once per frame.
+fn parsed_screen(p: &Snapshot) -> std::cell::Ref<'_, Vec<Line<'static>>> {
+    let stale = p
+        .parsed
+        .borrow()
+        .as_ref()
+        .is_none_or(|(revision, _)| *revision != p.revision);
+    if stale {
+        *p.parsed.borrow_mut() = Some((
+            p.revision,
+            rendering::ansi_screen(&p.lines, p.palette8, p.cols),
+        ));
+    }
+    std::cell::Ref::map(p.parsed.borrow(), |cached| {
+        &cached.as_ref().expect("parsed screen cached").1
+    })
+}
 pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
-    app.session_preview.screen.set(Rect::default());
+    let p = &app.session_preview;
+    p.screen.set(Rect::default());
+    p.chip.set(Rect::default());
     let Some((d, s)) = app.preview_selection().or_else(|| app.selected_session()) else {
         return area;
     };
     let focused = app.pane_focused();
-    if !focused && (area.width < 28 || area.height < 12) {
+    let full = focused || p.zoomed;
+    let narrow = area.width < 90 || frame.area().width < 120;
+    // Phones keep a peek of the last lines (spec 6.1 XS); only a list too
+    // small for a row plus a two-line peek drops it.
+    if !full && (area.width < 16 || area.height < 8) {
         return area;
     }
-    let (list, pane) = if focused {
+    let (list, pane) = if full {
         (Rect::new(area.x, area.y, 0, 0), area)
-    } else if area.width < 90 || frame.area().width < 120 {
+    } else if narrow {
+        // List over preview; phones get a short peek of the last lines.
+        let peek = if area.width < 50 {
+            // Two to four screen lines plus the frame.
+            (area.height / 3).clamp(4, 6)
+        } else {
+            area.height / 2
+        };
         let parts = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .constraints([Constraint::Min(3), Constraint::Length(peek)])
             .split(area);
         (parts[0], parts[1])
     } else {
         let parts = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(area);
         (parts[0], parts[1])
     };
-    let border = block(
-        format!("{} · {}", label(&s), identity(&app.devices[d])),
-        focused,
-    );
+    let device = &app.devices[d];
+    let mut title = label(&s);
+    if pane.width >= 40 {
+        title = format!("{title}{}{}", session_rows::sep(), safe_label(&device.name));
+    }
+    if let Some(idle) = session_rows::idle_now(&app.work[d], &s).filter(|_| pane.width >= 60) {
+        title = format!(
+            "{title}{}idle {}",
+            session_rows::sep(),
+            session_rows::age(idle)
+        );
+    }
+    let border = block(title, focused);
     let inner = border.inner(pane);
     frame.render_widget(border, pane);
-    let screen = Rect::new(
-        inner.x,
-        inner.y.saturating_add(1),
-        inner.width,
-        inner.height.saturating_sub(1),
-    );
-    app.session_preview.screen.set(screen);
-    frame.render_widget(
-        Paragraph::new(if app.session_preview.scroll_top.is_some() {
-            "Scrollback · scroll down to return live"
-        } else if focused {
-            "Wheel · scroll · Ctrl+] · back to sessions · Ctrl+O · expand"
-        } else if outside_tmux(&s) {
-            "External terminal · Enter to move into CX"
-        } else if app.session_preview.status.is_empty() {
-            "Loading terminal…"
+    // The screen owns the whole interior: identity and liveness live on the
+    // border, never on a content row.
+    let screen = inner;
+    p.screen.set(screen);
+    let current = p.key.as_ref() == Some(&key(device, &s));
+    let a = ascii();
+    // Bottom chrome strip: device · folder · size · liveness, dim; chip right.
+    if pane.height >= 2 && pane.width >= 12 {
+        let chip = if focused {
+            if a {
+                " [^\\ detach] "
+            } else {
+                " ⏏ detach "
+            }
+        } else if p.zoomed {
+            if a {
+                " [z back] "
+            } else {
+                " z back "
+            }
+        } else if a {
+            " [z zoom] "
         } else {
-            &app.session_preview.status
-        })
-        .style(muted()),
-        Rect::new(inner.x, inner.y, inner.width, inner.height.min(1)),
-    );
-    if app.session_preview.key.as_ref() == Some(&key(&app.devices[d], &s)) {
-        let (cx, cy) = app.session_preview.cursor;
-        let cy = u32::from(cy).saturating_add(app.session_preview.history_total);
-        let top = app
-            .session_preview
-            .scroll_top
-            .unwrap_or_else(|| app.live_top());
-        let left = if app.session_preview.scroll_top.is_some() {
-            0
-        } else {
-            cx.saturating_sub(screen.width.saturating_sub(1))
+            " z zoom "
         };
-        let lines = rendering::ansi_screen(
-            &app.session_preview.lines,
-            app.session_preview.palette8,
-            app.session_preview.cols,
-        );
-        let relative_top = top
-            .saturating_sub(app.session_preview.line_start)
-            .min(u32::from(u16::MAX)) as u16;
-        frame.render_widget(Paragraph::new(lines).scroll((relative_top, left)), screen);
-        if focused
-            && app.session_preview.scroll_top.is_none()
-            && app.session_preview.cursor_visible
-            && screen.width > 0
-            && screen.height > 0
-        {
-            frame.set_cursor_position((
-                screen.x + cx.saturating_sub(left).min(screen.width - 1),
-                screen.y + cy.saturating_sub(top).min(u32::from(screen.height - 1)) as u16,
+        let chip_width = Span::raw(chip).width() as u16;
+        let y = pane.bottom() - 1;
+        let chip_x = pane.right().saturating_sub(chip_width + 2);
+        let (live_text, live_style) = if app.preview_selection().is_none() {
+            ("no preview".to_string(), session_rows::soft())
+        } else if p.scroll_top.is_some() {
+            (
+                "scrollback · wheel down returns".to_string(),
+                session_rows::warn(),
+            )
+        } else if !current || (p.lines.is_empty() && p.status.is_empty()) {
+            ("loading".to_string(), session_rows::info())
+        } else if !p.status.is_empty() {
+            ("unavailable".to_string(), session_rows::err())
+        } else if p.carried {
+            ("loading".to_string(), session_rows::info())
+        } else if !p.live {
+            ("snapshot".to_string(), session_rows::soft())
+        } else {
+            let stale = p.received.is_some_and(|t| t.elapsed() >= PREVIEW_STALE);
+            p.stale_shown.set(stale);
+            match p.received.map(|t| t.elapsed().as_secs()) {
+                Some(age) if stale => (
+                    format!("stale {}", session_rows::age(age)),
+                    session_rows::warn(),
+                ),
+                _ => (
+                    if focused {
+                        format!("live{}typing", session_rows::sep())
+                    } else {
+                        "live".into()
+                    },
+                    session_rows::ok(),
+                ),
+            }
+        };
+        let mut facts = Vec::new();
+        if pane.width >= 70 {
+            facts.push(session_rows::folder_tail(
+                &s.directory,
+                session_rows::device_home(device).as_deref(),
+                28,
             ));
         }
+        if p.cols > 0 && p.rows > 0 && pane.width >= 50 {
+            facts.push(format!("{}x{}", p.cols, p.rows));
+        }
+        let room = usize::from(chip_x.saturating_sub(pane.x + 2));
+        let live_text = if Span::raw(live_text.as_str()).width() + 2 > room {
+            // Narrow frames keep the first word: `live`, `stale`, `loading`.
+            live_text
+                .split(session_rows::sep())
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        } else {
+            live_text
+        };
+        let mut strip = vec![Span::styled(format!(" {live_text}"), live_style)];
+        for fact in facts {
+            strip.push(Span::styled(
+                format!("{}{fact}", session_rows::sep()),
+                session_rows::soft(),
+            ));
+        }
+        strip.push(Span::raw(" "));
+        let line = Line::from(strip);
+        if line.width() <= room {
+            frame.render_widget(
+                Paragraph::new(line),
+                Rect::new(pane.x + 1, y, room as u16 + 1, 1),
+            );
+        } else {
+            frame.render_widget(
+                Paragraph::new(Span::styled(format!(" {live_text} "), live_style)),
+                Rect::new(pane.x + 1, y, room as u16 + 1, 1),
+            );
+        }
+        if chip_x > pane.x + 2 {
+            let rect = Rect::new(chip_x, y, chip_width, 1);
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    chip,
+                    if focused {
+                        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+                    } else {
+                        accent().add_modifier(Modifier::BOLD)
+                    },
+                )),
+                rect,
+            );
+            p.chip.set(rect);
+        }
+    }
+    if !current || p.lines.is_empty() {
+        let message = if outside_tmux(&s) {
+            format!("Outside tmux{}Enter moves it into CX", session_rows::sep())
+        } else if app.preview_selection().is_none() {
+            format!("No live preview{}Enter attaches", session_rows::sep())
+        } else if !p.status.is_empty() {
+            p.status.clone()
+        } else {
+            "Loading terminal…".to_string()
+        };
+        if !(current && p.carried) {
+            frame.render_widget(
+                Paragraph::new(Span::styled(message, session_rows::soft()))
+                    .wrap(Wrap { trim: true }),
+                Rect::new(
+                    screen.x + 1,
+                    screen.y,
+                    screen.width.saturating_sub(1),
+                    screen.height,
+                ),
+            );
+            return list;
+        }
+    }
+    let (cx, cy) = p.cursor;
+    let cy = u32::from(cy).saturating_add(p.history_total);
+    let top = p.scroll_top.unwrap_or_else(|| app.live_top());
+    let left = if p.scroll_top.is_some() {
+        0
+    } else {
+        cx.saturating_sub(screen.width.saturating_sub(1))
+    };
+    let relative_top = top.saturating_sub(p.line_start).min(u32::from(u16::MAX)) as u16;
+    {
+        // Only the visible window is copied out of the cached parse.
+        let lines = parsed_screen(p);
+        let start = usize::from(relative_top).min(lines.len());
+        let end = (start + usize::from(screen.height)).min(lines.len());
+        let mut paragraph = Paragraph::new(lines[start..end].to_vec()).scroll((0, left));
+        if p.carried {
+            paragraph = paragraph.style(Style::default().add_modifier(Modifier::DIM));
+        }
+        frame.render_widget(paragraph, screen);
+    }
+    if focused
+        && !p.carried
+        && p.scroll_top.is_none()
+        && p.cursor_visible
+        && screen.width > 0
+        && screen.height > 0
+    {
+        frame.set_cursor_position((
+            screen.x + cx.saturating_sub(left).min(screen.width - 1),
+            screen.y + cy.saturating_sub(top).min(u32::from(screen.height - 1)) as u16,
+        ));
     }
     list
 }

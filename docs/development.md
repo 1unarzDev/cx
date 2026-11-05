@@ -17,16 +17,29 @@ Record changes in [CHANGELOG.md](../CHANGELOG.md). Before tagging a stable versi
 
 ## UI maintenance
 
-`src/ui.rs` owns state, action dispatch, task replies and native attachment. Private modules under `src/ui/` keep changes local:
+`src/ui.rs` owns the shared types (`App`, `Browser`, `Dialog`, `Action`, ...), `App::new`, device bookkeeping and refresh. Behavior lives in private modules under `src/ui/`, mostly as `impl App` blocks, so changes stay local:
 
 | Module | Responsibility |
 |---|---|
+| `runtime.rs` | Event loop, `Screen` terminal ownership, input batching, task workers, auth prompts, self-restart state and update checks |
+| `actions.rs` | `execute()`, the command palette and action availability |
+| `keys.rs` | Workspace key and mouse dispatch, focus movement, command-panel keys |
+| `input.rs` | Text-input fields (filter, search, rename, commands); they own every printable key |
+| `dialogs.rs` | Modal dialog keys, Enter handling per dialog family, confirmation button layout |
+| `apply/` | Task replies: `mod.rs` shared bookkeeping and dispatch; `sessions.rs`, `files.rs`, `network.rs`, `containers.rs` per operation group |
+| `launch.rs` | Session launch flows: device/provider choice, permission prompts, shells, adoption |
+| `files_view.rs` | File browser state, transfers and `render_browser` |
+| `preview.rs` | File preview state and rendering: text, markdown layout/links, raster fallback, in-preview find |
+| `network_view.rs` | Network/neighbor state, probes and the network render |
+| `containers_view.rs` | Container panel state, tree rows and container sessions |
+| `theme.rs` | Shared styles (`accent`, `muted`, `block`, `tint`) and the `no_color()`/`ascii()` switches; restyle here |
 | `navigation.rs` | Counted key motions and the `Target` interface; no requests or rendering |
 | `panels.rs` | List, device and file adapters, including refresh/selection effects |
 | `filters.rs` | Scoped filter state, device identity mapping and fuzzy matching |
 | `menus.rs` | Session choices shared by labels/shortcuts/dispatch; container display labels |
 | `notifications.rs` | Typed floating panels, bounded layout and timed animation |
 | `rendering.rs` | Layout and rendering; no request dispatch |
+| `session_preview.rs`, `workspaces.rs`, `container_agents.rs` | Session pane preview, workspace session identity, container agent profiles |
 | `tests.rs` | Existing UI and cross-panel regression fixtures |
 
 Reuse a navigation target when adding a panel; keep panel-specific side effects in its adapter. Change session choices in `menus.rs` rather than maintaining parallel label/key/provider arrays. Rendering never changes the session provider: devcontainer identity is a display scope, while shell/agent behavior stays in the session runtime. Preserve typed-input ownership and the existing host/container scope guards. Verify UI changes with the capture matrices and native PTY fixtures in `tests/`.

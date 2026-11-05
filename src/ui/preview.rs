@@ -1,4 +1,4 @@
-//! File preview rendering: text, markdown layout/links/emphasis, raster fallback and in-preview find.
+//! File preview: open/page/find state and rendering of text, markdown layout/links/emphasis and raster fallback.
 use super::*;
 
 pub(super) fn markdown_heading_slug(text: &str) -> String {

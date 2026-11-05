@@ -1,4 +1,4 @@
-//! File browser rendering and the transfer drawer labels.
+//! File browser: navigation/selection state, transfer submission, `render_browser` and drawer labels.
 use super::*;
 
 pub(super) fn browser_entries(b: &Browser) -> Vec<Entry> {

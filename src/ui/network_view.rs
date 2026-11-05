@@ -1,4 +1,4 @@
-//! Network/neighbor view: candidate labels, the network tree render and summaries.
+//! Network/neighbor view: observation refresh, neighbor probes, tree rows and the network render.
 use super::*;
 
 // Network browser rendering: evidence remains scoped to the selected enrolled device.

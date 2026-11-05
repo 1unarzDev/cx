@@ -1,12 +1,12 @@
 # Secrets
 
 `cx secrets` keeps API tokens and keys out of plaintext files, shell history and argv. Values go into the OS keyring
-when one answers, else into an age-encrypted file. A metadata index (names, kinds, dates, backend, length; never
-values) lets `cx secrets list` and the Secrets panel work without touching either backend.
+when one answers, else into an age-encrypted file. A metadata index (names, dates, backend, length; never
+values) lets `cx secrets list` work without touching either backend; it is still read from disk on each call.
 
 ```
 cx secrets list [--json]                     # metadata only
-printf %s "$TOKEN" | cx secrets set NAME [--kind K]
+printf %s "$TOKEN" | cx secrets set NAME
 cx secrets set NAME                          # on a terminal: prompts with echo off
 cx secrets get NAME --fd 3 3>file            # write the value to an inherited descriptor (never a terminal)
 cx secrets get NAME [VAR=NAME...] --exec -- cmd args   # run cmd with the values in its environment only
@@ -17,21 +17,12 @@ cx secrets migrate [--delete-plaintext]      # import the `cx mesh` token file a
 Values are never accepted on the command line and never printed to a terminal. `get --fd 1` works when stdout is a
 pipe (`token=$(cx secrets get x --fd 1)`) and is refused when it is a terminal.
 
-## Kinds and names
+## Names and variables
 
-Names are 1-64 characters of `a-z 0-9 . _ -`. These well-known names imply their kind, and `get --exec` sets the
-listed variable unless the spec says `VAR=NAME`:
-
-| Name / kind            | Variable               | Used by                                      |
-|------------------------|------------------------|----------------------------------------------|
-| `cloudflare.api_token` | `CLOUDFLARE_API_TOKEN` | `cx mesh`, `cx claude` (passed to mesh.py)   |
-| `claude.gateway_key`   | `ANTHROPIC_AUTH_TOKEN` |                                              |
-| `codex.api_key`        | `OPENAI_API_KEY`       |                                              |
-| `anthropic.api_key`    | `ANTHROPIC_API_KEY`    |                                              |
-| `generic` (any name)   | the name upper-cased, `.`/`-` as `_` (`robot.wifi` → `ROBOT_WIFI`) |       |
-
-cx never reads or rewrites provider credential files (Claude/Codex logins); these kinds exist for keys you choose to
-store here.
+Names are 1-64 characters of `a-z 0-9 . _ -`. `get --exec` sets the name upper-cased with `.`/`-` as `_`
+(`robot.wifi` → `ROBOT_WIFI`) unless the spec says `VAR=NAME`, and refuses two specs that set one variable. The one
+name cx itself reads is `cloudflare.api_token`, which sets `CLOUDFLARE_API_TOKEN` and is passed to mesh.py by
+`cx mesh` and `cx claude`. cx never reads or rewrites provider credential files (Claude/Codex logins).
 
 ## Backends
 
@@ -56,7 +47,7 @@ store here.
   That is the deliberate trade-off for headless robots, which must start without a person typing a passphrase.
 - The OS keyring adds what the platform gives: encryption at rest tied to the login password, and locking when the
   session locks. Any process of the same unlocked session can still ask it for the value.
-- The index reveals names, kinds, timestamps and value lengths (for the masked `•••• (40)` display).
+- The index reveals names, timestamps and value lengths (for the masked `•••• (40)` display).
 - Values live in memory in zeroize-on-drop buffers, and `SecretValue` has no `Display` and a redacted `Debug`.
   Copies made by the keyring library, the JSON parser or `std::process::Command` (which holds the environment it is
   given) are not zeroized; this is best effort, not a guarantee against memory inspection.
@@ -72,6 +63,11 @@ already set, and only for subcommands that call the Cloudflare API:
 
 - `cx mesh setup | invite | devices | deploy | audit | profile | revoke | teardown`
 - `cx claude lend | revoke | list`
+
+The stored token belongs to the default mesh (the `credentials` file `migrate` imports): an argv with `--config`
+gets no token, so that mesh keeps the `credentials` file next to its config. If a token is stored but cannot be read
+in this session (keyring-held and no session bus, or a locked or hung keyring), `cx mesh` stops with that error
+rather than letting mesh.py prompt and save the token in plaintext again; export `$CLOUDFLARE_API_TOKEN` there instead.
 
 The token is an account admin token (it can mint API tokens and edit Zero Trust), so it is kept away from anything
 that runs foreign code:
@@ -92,11 +88,13 @@ else that inherits it. After
 ## Prompt
 
 On a terminal, `set` reads the value byte by byte with echo, line mode and terminal signals off: Ctrl-C (or
-Ctrl-\) cancels without storing, Backspace and Ctrl-U edit, Enter ends. SIGTERM, SIGHUP or SIGQUIT sent while the
-prompt waits restore the terminal mode before the process dies, so the shell is never left with echo off.
+Ctrl-\) cancels without storing, Backspace (one character) and Ctrl-U edit, Enter or Ctrl-D ends. SIGINT, SIGTERM,
+SIGHUP or SIGQUIT sent while the prompt waits restore the terminal mode before the process dies, so the shell is
+never left with echo off.
 
 ## Keyring copies left behind
 
 When a secret held in the keyring is replaced from a session that cannot reach the keyring (or while it fails), the
-new value goes to the file and the old keyring copy is noted in the index (`stale_keyring`, names only). The next
+new value goes to the file and the old keyring copy is noted in the index (`stale_keyring`, names only). So is any
+name whose keyring write failed or timed out just now, since a timed-out call may still land later. The next
 `set` or `rm` from a session whose keyring answers deletes those copies.

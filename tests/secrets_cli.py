@@ -6,8 +6,10 @@ touched. Checks: set from stdin, list/--json carry metadata only, get --fd to a 
 get --exec puts the value in the child's env and in no process's /proc/PID/cmdline, migrate imports the
 plaintext `cx mesh` token and deletes it only with --delete-plaintext, `cx mesh` hands the stored token to
 python3 as $CLOUDFLARE_API_TOKEN (an explicit one wins) for API subcommands only, never for join/leave (whose
-fetched script runs without it, end to end), Ctrl-C/SIGTERM at the prompt restore the terminal, rm, and 0600/0700
-modes.
+fetched script runs without it, end to end) nor with --config (that mesh keeps its own credentials), a stored but
+unreadable token stops `cx mesh` instead of letting mesh.py prompt and save it in plaintext, Ctrl-C and
+SIGINT/SIGTERM/SIGHUP/SIGQUIT at the prompt restore the terminal, Ctrl-D and Backspace edit like a line, rm, and
+0600/0700 modes.
 """
 import hashlib, json, os, pathlib, stat, subprocess, sys, tempfile
 
@@ -43,14 +45,16 @@ with tempfile.TemporaryDirectory(prefix='cx-secrets-') as tmp:
     r = cx('secrets', 'list', '--json')
     meta = json.loads(r.stdout)
     assert [m['name'] for m in meta] == ['robot.wifi'], meta
-    assert meta[0]['kind'] == 'generic' and meta[0]['backend'] == 'file' and meta[0]['length'] == len(CANARY), meta
+    assert meta[0]['backend'] == 'file' and meta[0]['length'] == len(CANARY), meta
     assert 'value' not in meta[0]
     r = cx('secrets', 'list')
     assert f'({len(CANARY)})'.encode() in r.stdout
-    r = cx('secrets', 'set', 'cloudflare.api_token', '--kind', 'generic', input=b'x', ok=False)
-    assert r.returncode != 0 and b'well-known' in r.stderr
-    r = cx('secrets', 'set', 'robot.wifi', '--kind', 'nope', input=b'x', ok=False)
-    assert r.returncode != 0
+    r = cx('secrets', 'set', 'robot.wifi', '--kind', 'generic', input=b'x', ok=False)
+    assert r.returncode != 0, 'there is no --kind'
+    r = cx('secrets', 'set', 'robot.x', input=b'x', ok=False, extra=dict(CX_SECRETS_BACKEND='keyring'))
+    assert r.returncode != 0 and b'no OS keyring' in r.stderr, r.stderr
+    r = cx('secrets', 'list', ok=False, extra=dict(CX_SECRETS_BACKEND='bogus'))
+    assert r.returncode != 0 and b'auto, file or keyring' in r.stderr, r.stderr
 
     # On a terminal, set prompts with echo off: the typed value never comes back on the screen.
     import pty, select, time
@@ -78,6 +82,47 @@ with tempfile.TemporaryDirectory(prefix='cx-secrets-') as tmp:
     seen.append(screen)
     assert b'stored robot.typed' in screen, screen
     cx('secrets', 'rm', 'robot.typed')
+
+    import signal
+
+    def typed(name, keys):
+        """Type `keys` at the no-echo prompt of `set name` and return the stored value."""
+        pid, master = pty.fork()
+        if pid == 0:
+            os.execve(binary, [binary, 'secrets', 'set', name], env)
+        screen, deadline = b'', time.monotonic() + 10
+        while b'not echoed' not in screen and time.monotonic() < deadline:
+            if select.select([master], [], [], 0.2)[0]:
+                screen += os.read(master, 4096)
+        assert b'not echoed' in screen, screen
+        os.write(master, keys)
+        status = None
+        while status is None and time.monotonic() < deadline:
+            done, st = os.waitpid(pid, os.WNOHANG)
+            if done:
+                status = st
+            elif select.select([master], [], [], 0.2)[0]:
+                try:
+                    os.read(master, 4096)
+                except OSError:
+                    time.sleep(0.05)
+        if status is None:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+            raise AssertionError(f'prompt for {name} did not end after {keys!r}')
+        assert os.waitstatus_to_exitcode(status) == 0, status
+        os.close(master)
+        rd, wr = os.pipe()
+        cx('secrets', 'get', name, '--fd', str(wr), pass_fds=(wr,))
+        os.close(wr)
+        with os.fdopen(rd, 'rb') as f:
+            value = f.read()
+        cx('secrets', 'rm', name)
+        return value
+
+    # Ctrl-D ends the value like Enter (it is never stored as a byte); Backspace erases a whole character.
+    assert typed('robot.eof', b'tok123\x04') == b'tok123'
+    assert typed('robot.erase', 'xé\x7fy\n'.encode()) == b'xy'
 
     # Ctrl-C at the prompt cancels it (nothing stored) and SIGTERM kills it, both with echo and line mode restored.
     import signal, termios
@@ -116,8 +161,9 @@ with tempfile.TemporaryDirectory(prefix='cx-secrets-') as tmp:
 
     screen, _ = prompt(lambda pid, master: (time.sleep(0.2), os.write(master, b'\x03')))
     assert b'cancelled' in screen, screen
-    screen, status = prompt(lambda pid, master: (time.sleep(0.2), os.kill(pid, signal.SIGTERM)))
-    assert status is None or os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGTERM, status
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT):
+        screen, status = prompt(lambda pid, master: (time.sleep(0.2), os.kill(pid, sig)))
+        assert status is None or os.WIFSIGNALED(status) and os.WTERMSIG(status) == sig, (sig, status)
     assert 'robot.cancel' not in [m['name'] for m in json.loads(cx('secrets', 'list', '--json').stdout)]
 
     # --fd: a pipe gets exactly the value; a terminal is refused.
@@ -136,6 +182,8 @@ with tempfile.TemporaryDirectory(prefix='cx-secrets-') as tmp:
         leaked = b''
     os.close(master)
     assert r.returncode != 0 and b'terminal' in r.stderr and CANARY.encode() not in leaked
+    r = cx('secrets', 'get', 'robot.wifi', 'robot.wifi', '--fd', '1', ok=False)
+    assert r.returncode != 0 and b'exactly one' in r.stderr
 
     # --exec: the child sees the value in its env; no process's argv carries it.
     child = (
@@ -169,6 +217,16 @@ with tempfile.TemporaryDirectory(prefix='cx-secrets-') as tmp:
     assert not creds.exists()
     r = cx('secrets', 'migrate')
     assert b'nothing to migrate' in r.stdout
+    # A different plaintext token is refused: the stored one is kept and so is the file.
+    creds.write_text('cx-cli-other-token\n'); creds.chmod(0o600)
+    r = cx('secrets', 'migrate', '--delete-plaintext', ok=False)
+    assert r.returncode != 0 and b'different token' in r.stderr and creds.exists(), r.stderr
+    rd, wr = os.pipe()
+    cx('secrets', 'get', 'cloudflare.api_token', '--fd', str(wr), pass_fds=(wr,))
+    os.close(wr)
+    with os.fdopen(rd, 'rb') as f:
+        assert f.read() == CANARY2.encode()
+    creds.unlink()
 
     # cx mesh: the stored token reaches python3 through the environment only.
     bin_dir = root / 'bin'; bin_dir.mkdir()
@@ -190,12 +248,28 @@ with tempfile.TemporaryDirectory(prefix='cx-secrets-') as tmp:
         out_file.write_text('unset')
         cx('mesh', *args, extra=dict(PATH=path, CX_FAKE_OUT=str(out_file)))
         assert out_file.read_text().strip() == sha(''), f'token passed on to cx mesh {args}'
-    for args, want in ((['--json', 'audit'], CANARY2), (['--config=c.toml', 'invite'], CANARY2)):
+    # Another --config keeps the credentials file next to it: the stored (default mesh) token is not passed.
+    for args, want in ((['--json', 'audit'], CANARY2), (['--config=c.toml', 'invite'], ''),
+                       (['--config', 'c.toml', 'devices'], '')):
         cx('mesh', *args, extra=dict(PATH=path, CX_FAKE_OUT=str(out_file)))
         assert out_file.read_text().strip() == sha(want), args
     for args, want in ((['list'], CANARY2), (['lend', 'evan'], CANARY2), (['revoke', 'evan'], CANARY2)):
         cx('claude', *args, extra=dict(PATH=path, CX_FAKE_OUT=str(out_file)))
         assert out_file.read_text().strip() == sha(want), args
+
+    # A stored token this session cannot read (keyring-held, no bus) stops cx mesh before mesh.py runs, so the util
+    # cannot prompt and write the plaintext credentials file again.
+    index_path = state / 'secrets.json'
+    original = index_path.read_bytes()
+    index = json.loads(original)
+    index['secrets']['cloudflare.api_token']['backend'] = 'keyring'
+    index_path.write_text(json.dumps(index))
+    out_file.write_text('unset')
+    r = cx('mesh', 'devices', ok=False, extra=dict(PATH=path, CX_FAKE_OUT=str(out_file)))
+    assert r.returncode != 0 and b'CLOUDFLARE_API_TOKEN' in r.stderr, r.stderr
+    assert out_file.read_text() == 'unset', 'mesh.py ran without the stored token'
+    assert not creds.exists()
+    index_path.write_bytes(original)
 
     # End to end with the real mesh.py: the script a join URL serves runs without the token, stored or explicit.
     curl_dir = root / 'curl-bin'; curl_dir.mkdir()

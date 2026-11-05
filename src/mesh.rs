@@ -61,8 +61,8 @@ const CLAUDE_API: &[&str] = &["lend", "revoke", "list"];
 fn python(script: PathBuf, args: &[String], api: &[&str]) -> Result<()> {
     let mut command = std::process::Command::new("python3");
     command.arg(&script).args(args);
-    if subcommand(args).is_some_and(|s| api.contains(&s)) {
-        inject_token(&mut command);
+    if subcommand(args).is_some_and(|s| api.contains(&s)) && !names_config(args) {
+        inject_token(&mut command)?;
     }
     let status = command
         .status()
@@ -89,23 +89,34 @@ fn subcommand(args: &[String]) -> Option<&str> {
     None
 }
 
+/// Whether argv picks a mesh config with `--config`. The stored token belongs to the default mesh (the one
+/// `cx secrets migrate` imports from); another config keeps the `credentials` file next to it.
+fn names_config(args: &[String]) -> bool {
+    args.iter()
+        .any(|a| a == "--config" || a.starts_with("--config="))
+}
+
 /// Hand a stored `cloudflare.api_token` (docs/secrets.md) to the util as $CLOUDFLARE_API_TOKEN, the variable it
 /// already reads first, so mesh.py stays standalone. An explicit $CLOUDFLARE_API_TOKEN wins; with no stored token
-/// (or an unreachable store) the util keeps its own lookup: credentials file, then prompt.
-fn inject_token(command: &mut std::process::Command) {
+/// the util keeps its own lookup (credentials file, then prompt). A stored token that cannot be read here is an
+/// error: falling through would prompt and save the token in plaintext again.
+fn inject_token(command: &mut std::process::Command) -> Result<()> {
     if std::env::var_os("CLOUDFLARE_API_TOKEN").is_some() {
-        return;
+        return Ok(());
     }
-    let name = crate::secrets::Kind::CloudflareApiToken.as_str();
-    let Ok(secrets) = crate::secrets::Secrets::open() else {
-        return;
-    };
-    if !secrets.meta(name).is_ok_and(|m| m.is_some()) {
-        return;
+    let name = crate::secrets::CLOUDFLARE_TOKEN;
+    let token = crate::secrets::Secrets::open()
+        .and_then(|s| s.try_get(name))
+        .with_context(|| {
+            format!(
+                "stored {name} is unavailable here; export CLOUDFLARE_API_TOKEN or run \
+                 `cx secrets get {name} --exec -- cx mesh ...` where it is reachable"
+            )
+        })?;
+    if let Some(token) = token {
+        command.env("CLOUDFLARE_API_TOKEN", token.expose());
     }
-    if let Err(e) = secrets.inject(&[name], command) {
-        eprintln!("cx: stored {name} unavailable ({e:#}); mesh.py falls back to its own lookup");
-    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -143,6 +154,16 @@ mod tests {
         assert_eq!(sub(&["--", "devices"]), None);
         assert_eq!(sub(&["--config"]), None);
         assert_eq!(sub(&[]), None);
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(super::names_config(&args(&[
+            "--config", "c.toml", "devices"
+        ])));
+        assert!(super::names_config(&args(&[
+            "--json",
+            "--config=c.toml",
+            "audit"
+        ])));
+        assert!(!super::names_config(&args(&["--json", "devices"])));
         for s in ["join", "leave"] {
             assert!(!super::MESH_API.contains(&s));
             assert!(!super::CLAUDE_API.contains(&s));

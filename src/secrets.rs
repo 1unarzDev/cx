@@ -1,10 +1,10 @@
 //! Secrets: one interface over the OS keyring and an age-encrypted file (docs/secrets.md).
 //!
-//! * [`list`] returns metadata only (never values) from `secrets.json`; it never contacts a backend, so the UI can
-//!   call it on every frame without blocking on dbus.
-//! * [`get`] returns a [`SecretValue`], which zeroizes on drop and has no `Display` and a redacted `Debug`.
-//! * [`set`] stores in the OS keyring when one answers within [`KEYRING_TIMEOUT`], else in the age file.
-//! * [`inject`] puts values into one child's environment, never into argv.
+//! * [`Secrets::list`] returns metadata only (never values) from `secrets.json` and never contacts a backend; it
+//!   still reads the index from disk on each call.
+//! * [`Secrets::get`] returns a [`SecretValue`], which zeroizes on drop and has no `Display` and a redacted `Debug`.
+//! * [`Secrets::set`] stores in the OS keyring when one answers within [`KEYRING_TIMEOUT`], else in the age file.
+//! * [`Secrets::inject`] puts values into one child's environment, never into argv.
 //!
 //! Backends: the keyring is the Secret Service over a pure-Rust zbus connection on Linux (no libdbus, so the static
 //! musl release keeps working) and the Keychain on macOS. Every keyring call runs on its own thread with a bounded
@@ -12,7 +12,6 @@
 //! `$XDG_STATE_HOME/cx/secrets.age`, encrypted to an X25519 identity in `secrets.key` (0600, in the 0700 state
 //! dir). That protects like an SSH private key: against other users and against copies of `secrets.age` alone,
 //! not against this user's own processes or root.
-#![allow(dead_code)] // the panel-facing API (list/get/set/delete/inject, labels) is consumed by the UI wave
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -38,80 +37,17 @@ const STORE: &str = "secrets.age";
 const IDENTITY: &str = "secrets.key";
 const LOCK: &str = "secrets.lock";
 
-/// Well-known kinds. A secret whose name is a kind's name must have that kind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Kind {
-    #[serde(rename = "cloudflare.api_token")]
-    CloudflareApiToken,
-    #[serde(rename = "claude.gateway_key")]
-    ClaudeGatewayKey,
-    #[serde(rename = "codex.api_key")]
-    CodexApiKey,
-    #[serde(rename = "anthropic.api_key")]
-    AnthropicApiKey,
-    #[serde(rename = "generic")]
-    Generic,
-}
+/// The stored Cloudflare token `cx mesh` and `cx claude` hand to mesh.py.
+pub const CLOUDFLARE_TOKEN: &str = "cloudflare.api_token";
+/// Names whose default variable is not the derived one. Add a row only when something in cx consumes it.
+const WELL_KNOWN: &[(&str, &str)] = &[(CLOUDFLARE_TOKEN, "CLOUDFLARE_API_TOKEN")];
 
-impl Kind {
-    pub const ALL: [Kind; 5] = [
-        Kind::CloudflareApiToken,
-        Kind::ClaudeGatewayKey,
-        Kind::CodexApiKey,
-        Kind::AnthropicApiKey,
-        Kind::Generic,
-    ];
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Kind::CloudflareApiToken => "cloudflare.api_token",
-            Kind::ClaudeGatewayKey => "claude.gateway_key",
-            Kind::CodexApiKey => "codex.api_key",
-            Kind::AnthropicApiKey => "anthropic.api_key",
-            Kind::Generic => "generic",
-        }
-    }
-    /// Human label for the Secrets panel.
-    pub fn label(self) -> &'static str {
-        match self {
-            Kind::CloudflareApiToken => "Cloudflare API token",
-            Kind::ClaudeGatewayKey => "Claude gateway key",
-            Kind::CodexApiKey => "Codex API key",
-            Kind::AnthropicApiKey => "Anthropic API key",
-            Kind::Generic => "Secret",
-        }
-    }
-    /// The environment variable [`inject`] uses unless the caller names one.
-    pub fn env_var(self) -> Option<&'static str> {
-        match self {
-            Kind::CloudflareApiToken => Some("CLOUDFLARE_API_TOKEN"),
-            Kind::ClaudeGatewayKey => Some("ANTHROPIC_AUTH_TOKEN"),
-            Kind::CodexApiKey => Some("OPENAI_API_KEY"),
-            Kind::AnthropicApiKey => Some("ANTHROPIC_API_KEY"),
-            Kind::Generic => None,
-        }
-    }
-    /// The kind a well-known name implies.
-    pub fn of_name(name: &str) -> Option<Kind> {
-        Kind::ALL
-            .into_iter()
-            .find(|k| *k != Kind::Generic && k.as_str() == name)
-    }
-}
-
-impl std::str::FromStr for Kind {
-    type Err = anyhow::Error;
-    fn from_str(s: &str) -> Result<Kind> {
-        Kind::ALL
-            .into_iter()
-            .find(|k| k.as_str() == s)
-            .with_context(|| {
-                let all: Vec<_> = Kind::ALL.iter().map(|k| k.as_str()).collect();
-                format!(
-                    "unknown secret kind {s:?}; expected one of {}",
-                    all.join(", ")
-                )
-            })
-    }
+/// The variable [`Secrets::inject`] sets for `name` unless the spec says `VAR=NAME`.
+fn default_env_var(name: &str) -> String {
+    WELL_KNOWN
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map_or_else(|| derived_env_var(name), |(_, var)| var.to_string())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,9 +70,6 @@ impl Backend {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecretMeta {
     pub name: String,
-    pub kind: Kind,
-    /// "local": stored on, and usable from, this device only.
-    pub scope: String,
     /// Unix seconds.
     pub created: u64,
     pub updated: u64,
@@ -144,16 +77,6 @@ pub struct SecretMeta {
     pub backend: Backend,
     /// Value length in characters, for the masked "•••• (40)" display.
     pub length: usize,
-}
-
-impl SecretMeta {
-    /// The variable [`inject`] sets for this secret by default.
-    pub fn env_var(&self) -> String {
-        self.kind
-            .env_var()
-            .map(str::to_string)
-            .unwrap_or_else(|| derived_env_var(&self.name))
-    }
 }
 
 /// A secret value: zeroized on drop, no `Display`, `Debug` prints only its length.
@@ -165,9 +88,6 @@ impl SecretValue {
     }
     pub fn expose(&self) -> &str {
         &self.0
-    }
-    pub fn into_zeroizing(self) -> Zeroizing<String> {
-        self.0
     }
     pub fn len(&self) -> usize {
         self.0.chars().count()
@@ -240,14 +160,8 @@ pub struct TimedVault {
 }
 
 impl TimedVault {
-    pub fn new(inner: Arc<dyn Vault>, timeout: Duration) -> TimedVault {
-        TimedVault {
-            inner,
-            timeout,
-            hung: Arc::new(AtomicBool::new(false)),
-        }
-    }
-    fn shared(inner: Arc<dyn Vault>, timeout: Duration, hung: Arc<AtomicBool>) -> TimedVault {
+    /// `hung` is shared by every vault of this process (see `process_keyring_hung`).
+    pub fn new(inner: Arc<dyn Vault>, timeout: Duration, hung: Arc<AtomicBool>) -> TimedVault {
         TimedVault {
             inner,
             timeout,
@@ -504,19 +418,34 @@ fn atomic_write(dir: &Path, name: &str, bytes: &[u8]) -> Result<()> {
     result.with_context(|| format!("write {}", dir.join(name).display()))
 }
 
+/// Refuse a state file that is not a regular file owned by this user without group/other bits (the checks
+/// store.rs applies to its private files). `file` was opened with O_NOFOLLOW, so a symlink never gets here.
+fn ensure_private(file: &fs::File, path: &Path) -> Result<()> {
+    let m = file.metadata()?;
+    ensure!(
+        m.is_file() && m.uid() == unsafe { libc::geteuid() } && m.mode() & 0o077 == 0,
+        "{} is not a private file owned by this user; refusing to use it",
+        path.display()
+    );
+    Ok(())
+}
+
 struct Lock(fs::File);
 
 impl Lock {
     fn take(dir: &Path) -> Result<Lock> {
         use std::os::fd::AsRawFd;
+        let path = dir.join(LOCK);
         let file = fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .mode(0o600)
-            .open(dir.join(LOCK))
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)
             .context("open secrets lock")?;
+        ensure_private(&file, &path)?;
         ensure!(
             unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0,
             "lock secrets store"
@@ -566,13 +495,6 @@ fn process_keyring_hung() -> Arc<AtomicBool> {
         .clone()
 }
 
-pub fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 pub fn validate_name(name: &str) -> Result<()> {
     let ok = (1..=64).contains(&name.len())
         && name.as_bytes()[0].is_ascii_alphanumeric()
@@ -617,9 +539,8 @@ impl Secrets {
             Ok("auto") | Ok("") | Err(_) => Mode::Auto,
             Ok(other) => bail!("CX_SECRETS_BACKEND must be auto, file or keyring, not {other:?}"),
         };
-        let keyring = (mode != Mode::FileOnly && keyring_reachable()).then(|| {
-            TimedVault::shared(Arc::new(OsKeyring), KEYRING_TIMEOUT, process_keyring_hung())
-        });
+        let keyring = (mode != Mode::FileOnly && keyring_reachable())
+            .then(|| TimedVault::new(Arc::new(OsKeyring), KEYRING_TIMEOUT, process_keyring_hung()));
         Ok(Secrets::at(dir, keyring, mode))
     }
 
@@ -639,7 +560,11 @@ impl Secrets {
 
     fn read_index(&self) -> Result<Index> {
         let path = self.dir.join(INDEX);
-        let file = match fs::File::open(&path) {
+        let file = match fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&path)
+        {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(Index {
@@ -649,6 +574,7 @@ impl Secrets {
             }
             Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
         };
+        ensure_private(&file, &path)?;
         let mut bytes = Vec::new();
         file.take(INDEX_LIMIT + 1).read_to_end(&mut bytes)?;
         ensure!(
@@ -705,7 +631,7 @@ impl Secrets {
                 meta.backend.as_str()
             )
         })?;
-        let t = now();
+        let t = crate::transport::now();
         if meta.last_used.is_none_or(|u| t.saturating_sub(u) >= 60) {
             let _ = self.touch(name, t);
         }
@@ -728,15 +654,8 @@ impl Secrets {
     }
 
     /// Store `value` under `name`, replacing any previous value (whose `created` is kept).
-    pub fn set(&self, name: &str, kind: Kind, value: &str) -> Result<SecretMeta> {
+    pub fn set(&self, name: &str, value: &str) -> Result<SecretMeta> {
         validate_name(name)?;
-        if let Some(k) = Kind::of_name(name) {
-            ensure!(
-                k == kind,
-                "{name} is a well-known name of kind {}",
-                k.as_str()
-            );
-        }
         ensure!(!value.is_empty(), "refusing to store an empty secret");
         ensure!(
             value.len() <= VALUE_LIMIT,
@@ -780,17 +699,18 @@ impl Secrets {
                 }
             }
         }
-        // Leaving the keyring (it was unreachable or failed just now) strands the old copy there; remember it.
+        // Leaving the keyring strands the old copy there; a keyring call that failed or timed out just now may
+        // still land later (a timed-out thread keeps running). Remember both so a later sweep deletes them.
         if backend == Backend::Keyring {
             index.stale_keyring.remove(name);
-        } else if previous.as_ref().map(|p| p.backend) == Some(Backend::Keyring) {
+        } else if keyring_error.is_some()
+            || previous.as_ref().map(|p| p.backend) == Some(Backend::Keyring)
+        {
             index.stale_keyring.insert(name.to_string());
         }
-        let t = now();
+        let t = crate::transport::now();
         let meta = SecretMeta {
             name: name.to_string(),
-            kind,
-            scope: "local".into(),
             created: previous.as_ref().map_or(t, |p| p.created),
             updated: t,
             last_used: previous.and_then(|p| p.last_used),
@@ -850,13 +770,15 @@ impl Secrets {
         }
     }
 
-    /// Names with a stranded copy still in the OS keyring (for tests and the panel's status line).
-    pub fn stale_keyring(&self) -> Result<Vec<String>> {
+    /// Names with a stranded copy still in the OS keyring.
+    #[cfg(test)]
+    fn stale_keyring(&self) -> Result<Vec<String>> {
         Ok(self.read_index()?.stale_keyring.into_iter().collect())
     }
 
-    /// Set each secret as an environment variable of `cmd` only. A spec is `NAME` (variable from the kind, or
-    /// the upper-cased name for generic secrets) or `VAR=NAME`. All values are fetched before any is applied.
+    /// Set each secret as an environment variable of `cmd` only. A spec is `NAME` (the well-known variable, else
+    /// the upper-cased name) or `VAR=NAME`; two specs may not set the same variable. All values are fetched
+    /// before any is applied.
     pub fn inject(&self, specs: &[&str], cmd: &mut std::process::Command) -> Result<Vec<String>> {
         let mut values = Vec::new();
         for spec in specs {
@@ -864,11 +786,12 @@ impl Secrets {
                 Some((var, name)) => (Some(var.to_string()), name),
                 None => (None, *spec),
             };
-            let meta = self
-                .meta(name)?
-                .with_context(|| format!("no secret named {name}"))?;
-            let var = var.unwrap_or_else(|| meta.env_var());
+            let var = var.unwrap_or_else(|| default_env_var(name));
             validate_env_var(&var)?;
+            ensure!(
+                values.iter().all(|(v, _)| *v != var),
+                "two secrets would set {var}; name one with VAR=NAME"
+            );
             values.push((var, self.get(name)?));
         }
         let vars = values.iter().map(|(v, _)| v.clone()).collect();
@@ -879,43 +802,17 @@ impl Secrets {
     }
 }
 
-/// [`Secrets::list`] on cx's store.
-pub fn list() -> Result<Vec<SecretMeta>> {
-    Secrets::open()?.list()
-}
-pub fn get(name: &str) -> Result<SecretValue> {
-    Secrets::open()?.get(name)
-}
-pub fn try_get(name: &str) -> Result<Option<SecretValue>> {
-    Secrets::open()?.try_get(name)
-}
-pub fn set(name: &str, kind: Kind, value: &str) -> Result<SecretMeta> {
-    Secrets::open()?.set(name, kind, value)
-}
-pub fn delete(name: &str) -> Result<SecretMeta> {
-    Secrets::open()?.delete(name)
-}
-pub fn inject(specs: &[&str], cmd: &mut std::process::Command) -> Result<Vec<String>> {
-    Secrets::open()?.inject(specs, cmd)
-}
-
 // ---- CLI -----------------------------------------------------------------------------------------------------
 
 #[derive(clap::Subcommand)]
 pub enum Cli {
-    /// Names, kinds and backends; never values.
+    /// Names, backends and dates; never values.
     List {
         #[arg(long)]
         json: bool,
     },
     /// Store a value read from stdin (or a no-echo prompt on a terminal); values are never taken from argv.
-    Set {
-        name: String,
-        /// cloudflare.api_token, claude.gateway_key, codex.api_key, anthropic.api_key or generic
-        /// (default: the kind a well-known name implies, else generic).
-        #[arg(long)]
-        kind: Option<Kind>,
-    },
+    Set { name: String },
     /// Hand a value to a program: write it to an inherited descriptor, or run a command with it in its env.
     Get {
         /// Secret names; with --exec each may be VAR=NAME to choose the variable.
@@ -941,7 +838,7 @@ pub enum Cli {
 }
 
 fn date(t: u64) -> String {
-    let age = now().saturating_sub(t);
+    let age = crate::transport::now().saturating_sub(t);
     match age {
         0..=59 => "now".into(),
         60..=3599 => format!("{}m", age / 60),
@@ -971,11 +868,11 @@ fn read_value(name: &str) -> Result<Zeroizing<String>> {
     Ok(Zeroizing::new(text.to_string()))
 }
 
-/// The terminal mode a running prompt must put back, for the SIGTERM/SIGHUP handler. Written before the
+/// The terminal mode a running prompt must put back, for the signal handler. Written before the
 /// handler is installed and only read by it.
 static PROMPT_TTY: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 static mut PROMPT_MODE: std::mem::MaybeUninit<libc::termios> = std::mem::MaybeUninit::uninit();
-const PROMPT_SIGNALS: [libc::c_int; 3] = [libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT];
+const PROMPT_SIGNALS: [libc::c_int; 4] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT];
 
 extern "C" fn restore_tty_and_die(sig: libc::c_int) {
     // Only async-signal-safe calls: tcsetattr, sigaction (via signal) and raise.
@@ -990,8 +887,9 @@ extern "C" fn restore_tty_and_die(sig: libc::c_int) {
 }
 
 /// Read one line from /dev/tty with echo off. The terminal is put in non-canonical mode with ISIG off, so Ctrl-C
-/// (and Ctrl-\) arrive as bytes and cancel the prompt here, and the mode is always restored on the way out;
-/// SIGTERM/SIGHUP/SIGQUIT from elsewhere restore it in a handler before the process dies as it would have.
+/// (and Ctrl-\) arrive as bytes and cancel the prompt here, Ctrl-D ends the value like Enter, and the mode is
+/// always restored on the way out; SIGINT/SIGTERM/SIGHUP/SIGQUIT from elsewhere restore it in a handler before the
+/// process dies as it would have.
 fn prompt_no_echo(label: &str, out: &mut Vec<u8>) -> Result<()> {
     use std::os::fd::AsRawFd;
     let mut tty = fs::OpenOptions::new()
@@ -1062,9 +960,10 @@ fn prompt_no_echo(label: &str, out: &mut Vec<u8>) -> Result<()> {
         match byte[0] {
             b'\n' | b'\r' => break false,
             b if b == intr || b == quit => break true,
-            b if b == eof && out.is_empty() => break false,
+            b if b == eof => break false,
             b if b == erase || b == 0x7f || b == 0x08 => {
-                out.pop();
+                // Drop one whole character: its UTF-8 continuation bytes, then its lead byte.
+                while out.pop().is_some_and(|c| c & 0xc0 == 0x80) {}
             }
             b if b == kill => out.clear(),
             b => {
@@ -1115,7 +1014,7 @@ pub fn mesh_credentials_path() -> Option<PathBuf> {
 }
 
 fn migrate(secrets: &Secrets, delete_plaintext: bool) -> Result<()> {
-    let name = Kind::CloudflareApiToken.as_str();
+    let name = CLOUDFLARE_TOKEN;
     let path = mesh_credentials_path().context("HOME is not set")?;
     let mut text = Zeroizing::new(String::new());
     match fs::File::open(&path) {
@@ -1141,7 +1040,7 @@ fn migrate(secrets: &Secrets, delete_plaintext: bool) -> Result<()> {
             "{name} already holds a different token; nothing changed. Run `cx secrets set {name}` to choose one"
         ),
         None => {
-            let meta = secrets.set(name, Kind::CloudflareApiToken, token)?;
+            let meta = secrets.set(name, token)?;
             println!(
                 "imported {} into {name} ({} backend)",
                 path.display(),
@@ -1181,14 +1080,13 @@ pub fn run_cli(command: Cli) -> Result<()> {
                 println!("no secrets; `cx secrets set NAME` stores one from stdin");
             } else {
                 println!(
-                    "{:<28} {:<22} {:<8} {:<14} {:>7} {:>9}",
-                    "NAME", "KIND", "BACKEND", "VALUE", "CREATED", "LAST USED"
+                    "{:<28} {:<8} {:<14} {:>7} {:>9}",
+                    "NAME", "BACKEND", "VALUE", "CREATED", "LAST USED"
                 );
                 for m in all {
                     println!(
-                        "{:<28} {:<22} {:<8} {:<14} {:>7} {:>9}",
+                        "{:<28} {:<8} {:<14} {:>7} {:>9}",
                         m.name,
-                        m.kind.as_str(),
                         m.backend.as_str(),
                         format!("•••••••• ({})", m.length),
                         date(m.created),
@@ -1197,17 +1095,13 @@ pub fn run_cli(command: Cli) -> Result<()> {
                 }
             }
         }
-        Cli::Set { name, kind } => {
+        Cli::Set { name } => {
             validate_name(&name)?;
-            let kind = kind
-                .or_else(|| Kind::of_name(&name))
-                .unwrap_or(Kind::Generic);
             let value = read_value(&name)?;
-            let meta = secrets.set(&name, kind, &value)?;
+            let meta = secrets.set(&name, &value)?;
             eprintln!(
-                "stored {} ({}, {} chars) in the {} backend",
+                "stored {} ({} chars) in the {} backend",
                 meta.name,
-                meta.kind.as_str(),
                 meta.length,
                 meta.backend.as_str()
             );
@@ -1306,7 +1200,11 @@ mod tests {
     }
 
     fn keyring_store(dir: &Path, fake: &Arc<FakeKeyring>, timeout: Duration) -> Secrets {
-        let vault = TimedVault::new(fake.clone() as Arc<dyn Vault>, timeout);
+        let vault = TimedVault::new(
+            fake.clone() as Arc<dyn Vault>,
+            timeout,
+            Arc::new(AtomicBool::new(false)),
+        );
         Secrets::at(dir.to_path_buf(), Some(vault), Mode::Auto)
     }
 
@@ -1319,12 +1217,10 @@ mod tests {
         let (_t, dir) = temp();
         let s = file_store(&dir);
         assert!(s.list().unwrap().is_empty());
-        let meta = s
-            .set("cloudflare.api_token", Kind::CloudflareApiToken, "tok-1")
-            .unwrap();
+        let meta = s.set("cloudflare.api_token", "tok-1").unwrap();
         assert_eq!(meta.backend, Backend::File);
         assert_eq!(meta.length, 5);
-        s.set("robot.wifi", Kind::Generic, "pässwörd").unwrap();
+        s.set("robot.wifi", "pässwörd").unwrap();
         assert_eq!(s.get("cloudflare.api_token").unwrap().expose(), "tok-1");
         assert_eq!(s.get("robot.wifi").unwrap().expose(), "pässwörd");
         let names: Vec<_> = s.list().unwrap().into_iter().map(|m| m.name).collect();
@@ -1332,7 +1228,7 @@ mod tests {
         assert!(s.meta("robot.wifi").unwrap().unwrap().last_used.is_some());
         assert_eq!(s.meta("robot.wifi").unwrap().unwrap().length, 8);
         let created = s.meta("robot.wifi").unwrap().unwrap().created;
-        s.set("robot.wifi", Kind::Generic, "second").unwrap();
+        s.set("robot.wifi", "second").unwrap();
         assert_eq!(s.get("robot.wifi").unwrap().expose(), "second");
         assert_eq!(s.meta("robot.wifi").unwrap().unwrap().created, created);
         for f in [STORE, IDENTITY, INDEX, LOCK] {
@@ -1353,11 +1249,11 @@ mod tests {
     fn writes_replace_by_rename_and_leave_no_temporaries() {
         let (_t, dir) = temp();
         let s = file_store(&dir);
-        s.set("a", Kind::Generic, "one").unwrap();
+        s.set("a", "one").unwrap();
         let old = dir.join("old-link");
         fs::hard_link(dir.join(STORE), &old).unwrap();
         let before = fs::read(&old).unwrap();
-        s.set("a", Kind::Generic, "two").unwrap();
+        s.set("a", "two").unwrap();
         // The old inode is untouched: the new content arrived by rename, not by rewriting in place.
         assert_eq!(fs::read(&old).unwrap(), before);
         assert_ne!(fs::read(dir.join(STORE)).unwrap(), before);
@@ -1375,14 +1271,14 @@ mod tests {
     fn corrupt_store_is_reported_and_never_overwritten() {
         let (_t, dir) = temp();
         let s = file_store(&dir);
-        s.set("a", Kind::Generic, "one").unwrap();
+        s.set("a", "one").unwrap();
         let mut bytes = fs::read(dir.join(STORE)).unwrap();
         let n = bytes.len();
         bytes[n - 10] ^= 0xff;
         fs::write(dir.join(STORE), &bytes).unwrap();
         let err = format!("{:#}", s.get("a").unwrap_err());
         assert!(err.contains("unreadable"), "{err}");
-        let err = format!("{:#}", s.set("b", Kind::Generic, "two").unwrap_err());
+        let err = format!("{:#}", s.set("b", "two").unwrap_err());
         assert!(err.contains("left untouched"), "{err}");
         assert_eq!(fs::read(dir.join(STORE)).unwrap(), bytes);
         assert!(s.meta("b").unwrap().is_none());
@@ -1395,20 +1291,48 @@ mod tests {
         fs::write(dir.join(INDEX), b"{").unwrap();
         let err = format!("{:#}", s.list().unwrap_err());
         assert!(err.contains("corrupt"), "{err}");
-        assert!(s.set("c", Kind::Generic, "x").is_err());
+        assert!(s.set("c", "x").is_err());
         assert_eq!(fs::read(dir.join(INDEX)).unwrap(), b"{");
+    }
+
+    #[test]
+    fn index_and_lock_must_be_private_files() {
+        let (_t, dir) = temp();
+        let s = file_store(&dir);
+        s.set("a", "one").unwrap();
+        // A planted symlink is refused, not followed (the lock would otherwise create its target).
+        fs::remove_file(dir.join(LOCK)).unwrap();
+        std::os::unix::fs::symlink(dir.join("elsewhere"), dir.join(LOCK)).unwrap();
+        assert!(s.set("b", "two").is_err());
+        assert!(!dir.join("elsewhere").exists());
+        fs::remove_file(dir.join(LOCK)).unwrap();
+        let planted = dir.join("planted.json");
+        fs::rename(dir.join(INDEX), &planted).unwrap();
+        std::os::unix::fs::symlink(&planted, dir.join(INDEX)).unwrap();
+        assert!(s.list().is_err());
+        fs::remove_file(dir.join(INDEX)).unwrap();
+        fs::rename(&planted, dir.join(INDEX)).unwrap();
+        // So is an index or lock others can write.
+        fs::set_permissions(dir.join(INDEX), fs::Permissions::from_mode(0o666)).unwrap();
+        let err = format!("{:#}", s.list().unwrap_err());
+        assert!(err.contains("not a private file"), "{err}");
+        fs::set_permissions(dir.join(INDEX), fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(s.list().unwrap().len(), 1);
+        s.set("b", "two").unwrap();
+        fs::set_permissions(dir.join(LOCK), fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(s.set("c", "three").is_err());
     }
 
     #[test]
     fn identity_must_be_private_and_present() {
         let (_t, dir) = temp();
         let s = file_store(&dir);
-        s.set("a", Kind::Generic, "one").unwrap();
+        s.set("a", "one").unwrap();
         fs::set_permissions(dir.join(IDENTITY), fs::Permissions::from_mode(0o644)).unwrap();
         let err = format!("{:#}", s.get("a").unwrap_err());
         assert!(err.contains("chmod 600"), "{err}");
         fs::remove_file(dir.join(IDENTITY)).unwrap();
-        let err = format!("{:#}", s.set("b", Kind::Generic, "two").unwrap_err());
+        let err = format!("{:#}", s.set("b", "two").unwrap_err());
         assert!(err.contains("missing"), "{err}");
         assert!(
             !dir.join(IDENTITY).exists(),
@@ -1417,28 +1341,29 @@ mod tests {
     }
 
     #[test]
-    fn validates_names_kinds_and_values() {
+    fn validates_names_and_values() {
         let (_t, dir) = temp();
         let s = file_store(&dir);
         for bad in ["", "Upper", ".dot", "a b", "x/y", &"a".repeat(65)] {
-            assert!(s.set(bad, Kind::Generic, "v").is_err(), "{bad:?}");
+            assert!(s.set(bad, "v").is_err(), "{bad:?}");
         }
-        assert!(s.set("cloudflare.api_token", Kind::Generic, "v").is_err());
-        assert!(s.set("a", Kind::Generic, "").is_err());
-        assert!(s.set("a", Kind::Generic, "x\0y").is_err());
-        assert!(s
-            .set("a", Kind::Generic, &"x".repeat(VALUE_LIMIT + 1))
-            .is_err());
-        assert_eq!("codex.api_key".parse::<Kind>().unwrap(), Kind::CodexApiKey);
-        assert!("nope".parse::<Kind>().is_err());
+        assert!(s.set("a", "").is_err());
+        assert!(s.set("a", "x\0y").is_err());
+        assert!(s.set("a", &"x".repeat(VALUE_LIMIT + 1)).is_err());
+        // The index records only what something reads: no kind or scope taxonomy.
+        s.set("a", "v").unwrap();
+        let meta = serde_json::to_value(s.meta("a").unwrap().unwrap()).unwrap();
+        let keys: Vec<_> = meta.as_object().unwrap().keys().cloned().collect();
         assert_eq!(
-            Kind::of_name("claude.gateway_key"),
-            Some(Kind::ClaudeGatewayKey)
-        );
-        assert_eq!(Kind::of_name("generic"), None);
-        assert_eq!(
-            serde_json::to_string(&Kind::AnthropicApiKey).unwrap(),
-            "\"anthropic.api_key\""
+            keys,
+            [
+                "backend",
+                "created",
+                "last_used",
+                "length",
+                "name",
+                "updated"
+            ]
         );
     }
 
@@ -1446,9 +1371,8 @@ mod tests {
     fn inject_sets_env_of_that_child_only() {
         let (_t, dir) = temp();
         let s = file_store(&dir);
-        s.set("cloudflare.api_token", Kind::CloudflareApiToken, "cf-v")
-            .unwrap();
-        s.set("robot.wifi-pass", Kind::Generic, "wifi-v").unwrap();
+        s.set("cloudflare.api_token", "cf-v").unwrap();
+        s.set("robot.wifi-pass", "wifi-v").unwrap();
         let mut cmd = std::process::Command::new("/bin/sh");
         cmd.args([
             "-c",
@@ -1471,9 +1395,27 @@ mod tests {
         let mut cmd = std::process::Command::new("true");
         assert!(s.inject(&["missing"], &mut cmd).is_err());
         assert!(s.inject(&["1BAD=robot.wifi-pass"], &mut cmd).is_err());
+        // Two specs setting one variable would let the second silently shadow the first.
+        assert!(s
+            .inject(
+                &[
+                    "cloudflare.api_token",
+                    "CLOUDFLARE_API_TOKEN=robot.wifi-pass"
+                ],
+                &mut cmd
+            )
+            .is_err());
         assert!(
             cmd.get_envs().next().is_none(),
             "nothing applied after a failure"
+        );
+        // Only the well-known name maps to the Cloudflare variable; any other name gets its own.
+        s.set("foo", "other").unwrap();
+        let mut cmd = std::process::Command::new("true");
+        assert_eq!(
+            s.inject(&["cloudflare.api_token", "foo"], &mut cmd)
+                .unwrap(),
+            ["CLOUDFLARE_API_TOKEN", "FOO"]
         );
     }
 
@@ -1482,7 +1424,7 @@ mod tests {
         let (_t, dir) = temp();
         let fake = Arc::new(FakeKeyring::default());
         let s = keyring_store(&dir, &fake, Duration::from_secs(2));
-        let meta = s.set("a", Kind::Generic, "in-keyring").unwrap();
+        let meta = s.set("a", "in-keyring").unwrap();
         assert_eq!(meta.backend, Backend::Keyring);
         assert_eq!(fake.map.lock().unwrap().get("a").unwrap(), "in-keyring");
         assert!(
@@ -1492,7 +1434,7 @@ mod tests {
         assert_eq!(s.get("a").unwrap().expose(), "in-keyring");
 
         fake.fail.store(true, Ordering::SeqCst);
-        let meta = s.set("b", Kind::Generic, "in-file").unwrap();
+        let meta = s.set("b", "in-file").unwrap();
         assert_eq!(meta.backend, Backend::File);
         assert_eq!(s.get("b").unwrap().expose(), "in-file");
         assert!(
@@ -1502,16 +1444,13 @@ mod tests {
 
         fake.fail.store(false, Ordering::SeqCst);
         // b moves to the keyring and leaves the file.
-        assert_eq!(
-            s.set("b", Kind::Generic, "moved").unwrap().backend,
-            Backend::Keyring
-        );
+        assert_eq!(s.set("b", "moved").unwrap().backend, Backend::Keyring);
         assert!(file_store(&dir).file.read().unwrap().is_empty());
         s.delete("a").unwrap();
         assert!(!fake.map.lock().unwrap().contains_key("a"));
 
         let strict = Secrets::at(dir.clone(), None, Mode::KeyringOnly);
-        assert!(strict.set("c", Kind::Generic, "v").is_err());
+        assert!(strict.set("c", "v").is_err());
     }
 
     #[test]
@@ -1519,46 +1458,38 @@ mod tests {
         let (_t, dir) = temp();
         let fake = Arc::new(FakeKeyring::default());
         let s = keyring_store(&dir, &fake, Duration::from_secs(2));
-        assert_eq!(
-            s.set("a", Kind::Generic, "old").unwrap().backend,
-            Backend::Keyring
-        );
+        assert_eq!(s.set("a", "old").unwrap().backend, Backend::Keyring);
 
         // Another session without a keyring replaces the value: it lands in the file, the old copy is noted.
         let headless = file_store(&dir);
-        assert_eq!(
-            headless.set("a", Kind::Generic, "new").unwrap().backend,
-            Backend::File
-        );
+        assert_eq!(headless.set("a", "new").unwrap().backend, Backend::File);
         assert_eq!(headless.stale_keyring().unwrap(), ["a"]);
         assert_eq!(fake.map.lock().unwrap().get("a").unwrap(), "old");
         assert_eq!(headless.get("a").unwrap().expose(), "new");
 
-        // A keyring that is reachable but failing: the value still goes to the file and the note stays.
+        // A keyring that is reachable but failing: the value still goes to the file, the note stays, and b is
+        // noted too in case the failed call landed after all.
         fake.fail.store(true, Ordering::SeqCst);
-        assert_eq!(
-            s.set("b", Kind::Generic, "x").unwrap().backend,
-            Backend::File
-        );
-        assert_eq!(s.stale_keyring().unwrap(), ["a"]);
+        assert_eq!(s.set("b", "x").unwrap().backend, Backend::File);
+        assert_eq!(s.stale_keyring().unwrap(), ["a", "b"]);
         assert!(fake.map.lock().unwrap().contains_key("a"));
 
         // Once the keyring answers, the next write removes the stranded copy; the file value is untouched.
         fake.fail.store(false, Ordering::SeqCst);
-        s.set("c", Kind::Generic, "y").unwrap();
+        s.set("c", "y").unwrap();
         assert!(!fake.map.lock().unwrap().contains_key("a"));
         assert!(s.stale_keyring().unwrap().is_empty());
         assert_eq!(s.get("a").unwrap().expose(), "new");
         assert_eq!(s.meta("a").unwrap().unwrap().backend, Backend::File);
 
         // Moving back into the keyring clears the note without deleting the fresh keyring value.
-        headless.set("d", Kind::Generic, "1").unwrap();
-        s.set("d", Kind::Generic, "2").unwrap();
+        headless.set("d", "1").unwrap();
+        s.set("d", "2").unwrap();
         let headless_again = file_store(&dir);
-        s.set("e", Kind::Generic, "k").unwrap();
-        headless_again.set("e", Kind::Generic, "f").unwrap();
+        s.set("e", "k").unwrap();
+        headless_again.set("e", "f").unwrap();
         assert_eq!(headless_again.stale_keyring().unwrap(), ["e"]);
-        s.set("e", Kind::Generic, "k2").unwrap();
+        s.set("e", "k2").unwrap();
         assert!(s.stale_keyring().unwrap().is_empty());
         assert_eq!(fake.map.lock().unwrap().get("e").unwrap(), "k2");
         s.delete("e").unwrap();
@@ -1572,7 +1503,7 @@ mod tests {
         fake.hang.store(true, Ordering::SeqCst);
         let s = keyring_store(&dir, &fake, Duration::from_millis(150));
         let start = std::time::Instant::now();
-        let meta = s.set("a", Kind::Generic, "v").unwrap();
+        let meta = s.set("a", "v").unwrap();
         assert_eq!(meta.backend, Backend::File);
         assert!(
             start.elapsed() < Duration::from_secs(1),
@@ -1580,15 +1511,33 @@ mod tests {
             start.elapsed()
         );
         let start = std::time::Instant::now();
-        assert_eq!(
-            s.set("b", Kind::Generic, "w").unwrap().backend,
-            Backend::File
-        );
+        assert_eq!(s.set("b", "w").unwrap().backend, Backend::File);
         assert!(
             start.elapsed() < Duration::from_millis(100),
             "a hung keyring is not retried"
         );
         assert!(s.keyring.as_ref().unwrap().is_hung());
+
+        // The timed-out call keeps running and lands in the keyring after the value went to the file. It is noted
+        // as stale, so once a keyring answers, `rm` (or any later write) deletes that late copy too.
+        fake.hang.store(false, Ordering::SeqCst);
+        assert_eq!(s.stale_keyring().unwrap(), ["a", "b"]);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !fake.map.lock().unwrap().contains_key("a") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "late write never landed"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let later = keyring_store(&dir, &fake, Duration::from_secs(2));
+        later.delete("a").unwrap();
+        assert!(
+            fake.map.lock().unwrap().is_empty(),
+            "late keyring copy left behind"
+        );
+        assert!(later.stale_keyring().unwrap().is_empty());
+        assert_eq!(later.get("b").unwrap().expose(), "w");
     }
 
     #[test]
@@ -1598,8 +1547,8 @@ mod tests {
         let k = keyring_store(&dir, &fake, Duration::from_secs(2));
         let f = file_store(&dir);
         let mut seen = Vec::new();
-        k.set("kr", Kind::Generic, CANARY).unwrap();
-        f.set("fl", Kind::AnthropicApiKey, CANARY).unwrap();
+        k.set("kr", CANARY).unwrap();
+        f.set("fl", CANARY).unwrap();
         let v = f.get("fl").unwrap();
         seen.push(format!("{v:?}"));
         seen.push(format!("{:?}", k.get("kr").unwrap()));
@@ -1608,13 +1557,9 @@ mod tests {
         seen.push(serde_json::to_string(&f.list().unwrap()).unwrap());
         seen.push(format!(
             "{:#}",
-            f.set("cloudflare.api_token", Kind::Generic, CANARY)
-                .unwrap_err()
+            f.set("fl", &format!("{CANARY}\0")).unwrap_err()
         ));
-        seen.push(format!(
-            "{:#}",
-            f.set("Bad", Kind::Generic, CANARY).unwrap_err()
-        ));
+        seen.push(format!("{:#}", f.set("Bad", CANARY).unwrap_err()));
         fake.fail.store(true, Ordering::SeqCst);
         seen.push(format!("{:#}", k.get("kr").unwrap_err()));
         let mut bytes = fs::read(dir.join(INDEX)).unwrap();

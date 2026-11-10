@@ -1,7 +1,7 @@
 //! `mission`: "mission control". A calm, dense-but-airy dashboard. The hub is a live
 //! network schematic (braille flow lines fanning out from this device), a strip of device
-//! tiles with micro-charts, and session thumbnails drawn as half-block minimaps of the
-//! real screen. One grammar everywhere: a device letter, then a verb or a session slot.
+//! tiles with micro-charts, and session thumbnails showing the live tail of each screen.
+//! One grammar everywhere: a device letter, then a verb or a session slot.
 //! See docs/design/concept-mission.md.
 use crate::ui::lab::{
     caps::{index_rgb, named_index, rgb_to_16, rgb_to_256, XTERM16},
@@ -26,7 +26,7 @@ impl Concept for Mission {
         "mission"
     }
     fn summary(&self) -> &str {
-        "mission control: live schematic, metric tiles, minimap session thumbnails; device letter + slot/verb"
+        "mission control: live schematic, metric tiles, live-tail session thumbnails; device letter + slot/verb"
     }
     fn render(
         &self,

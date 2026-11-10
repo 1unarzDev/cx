@@ -37,7 +37,7 @@ a verb or a session slot**.
 | View | What it shows |
 |---|---|
 | Hub | Schematic (top ~42 %), device tiles strip, session thumbnails ranked by attention (needs you, working, running, idle). Phone: compact schematic plus one row per device. |
-| Device (`letter`) | Header with identity, evidence, mesh badges, cpu chart and gauges; session thumbnails keyed `a s d g h j k l`; a ghost tile "new on <device>" with `c` claude, `x` codex, `n` shell; links column (peer, policy arrow, network, rtt trend). |
+| Device (`letter`) | Header with identity, evidence, mesh badges, cpu chart and gauges; session thumbnails keyed `a s d g h j k l`, each only as tall as its screen needs; a ghost tile "new on <device>" with `c` claude, `x` codex, `n` shell under them when there is room (otherwise the same three buttons sit on the label row); links column (peer, policy arrow, network, rtt trend). |
 | Session peek (`␣`) | The screen 1:1 on a deeper surface, a meta line (slot, state, provider, folder, uptime, clients, activity trend) and a filmstrip of the other sessions. `⏎` attaches, `i` types inline. |
 | Files (`letter f`) | Tree with a size micro-bar and age, git letters; inline syntax preview at ≥100 cols. |
 | Palette (`/`) | Jump to anything: devices, sessions and actions, each with the keys that reach it directly (so the palette teaches the shortcuts). |
@@ -55,8 +55,9 @@ link form column 1, grouped by mesh; devices reached through those form column 2
 ordered by parent to avoid crossings; at most three columns. Jump edges are not drawn
 (the route is visible through the hop). Links are cubic Bézier S-curves on a braille
 canvas (2x4 dots per cell) with horizontal tangents, so the fan out of the viewer reads
-like a schematic, not a TUI tree. Links between devices in the same column arc out to
-the right of their labels.
+like a schematic, not a TUI tree. Links between devices in the same column (mesh peers)
+are drawn only while one end is selected, as a tight bracket hugging the right of the
+column's labels, so the resting schematic is a clean left-to-right flow.
 
 - **Colour** is the network: mesh hue per mesh, `lan` teal, direct ssh `info`, down links
   `err` with a `✕` chip at the midpoint.

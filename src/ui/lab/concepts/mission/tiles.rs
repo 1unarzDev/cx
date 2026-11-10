@@ -1,6 +1,5 @@
-//! Tiles: device tiles with micro-charts and session thumbnails drawn as half-block
-//! minimaps of the real screen (ANSI colours downsampled), so sessions are recognised by
-//! their look. Text fallbacks for NO_COLOR and ASCII.
+//! Tiles: device tiles with micro-charts and session thumbnails that show the live tail
+//! of the real screen in its own colours, so sessions are recognised by their look.
 use super::{fmt, mix, to_rgb, Cx, Rgb};
 use crate::ui::lab::{ansi_lines, DeviceStatus, LabDevice, LabSession, Tok};
 use ratatui::{
@@ -334,145 +333,6 @@ pub(super) fn device_row(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, pick
     cx.hit(r, format!("device:{}", d.id));
 }
 
-/// Parse the session screen into cells: (char, fg, bg).
-fn cells(x: &LabSession) -> Vec<Vec<(char, Option<Rgb>, Option<Rgb>, bool)>> {
-    ansi_lines(&x.screen, x.screen_cols)
-        .into_iter()
-        .map(|l| {
-            let mut row = Vec::new();
-            for sp in l.spans {
-                let st = sp.style;
-                let (mut fg, mut bg) = (st.fg.and_then(to_rgb), st.bg.and_then(to_rgb));
-                if st.add_modifier.contains(Modifier::REVERSED) {
-                    std::mem::swap(&mut fg, &mut bg);
-                }
-                let dim = st.add_modifier.contains(Modifier::DIM);
-                for ch in sp.content.chars() {
-                    row.push((ch, fg, bg, dim));
-                }
-            }
-            row
-        })
-        .collect()
-}
-
-/// Rightmost used column across the screen (so minimaps fill their tile).
-fn used_cols(c: &[Vec<(char, Option<Rgb>, Option<Rgb>, bool)>]) -> usize {
-    c.iter()
-        .map(|r| {
-            r.iter()
-                .rposition(|(ch, _, bg, _)| !ch.is_whitespace() || bg.is_some())
-                .map_or(0, |i| i + 1)
-        })
-        .max()
-        .unwrap_or(0)
-        .clamp(24, 200)
-}
-
-/// Braille minimap of the whole screen (like an editor minimap): every source line is one
-/// dot row, every source column one dot column, so indentation, colour runs, diff blocks
-/// and prompts keep their shape. Cell colour is the block's most vivid ink; cell
-/// backgrounds keep the screen's own backgrounds (diffs, input boxes).
-pub(super) fn minimap(
-    cx: &Cx,
-    buf: &mut Buffer,
-    r: Rect,
-    x: &LabSession,
-    base: Rgb,
-    view: Option<(usize, usize)>,
-) {
-    if r.width == 0 || r.height == 0 {
-        return;
-    }
-    let c = cells(x);
-    let lines = c.len().max(1);
-    let cols = used_cols(&c);
-    let (dw, dh) = (usize::from(r.width) * 2, usize::from(r.height) * 4);
-    let fg0 = cx.fg0();
-    let line_of = |k: usize| if lines <= dh { k } else { k * lines / dh };
-    let span_of = |j: usize| {
-        let x0 = j * cols / dw;
-        (x0, ((j + 1) * cols / dw).max(x0 + 1))
-    };
-    let vivid = |c: Rgb| {
-        let (mx, mn) = (c.0.max(c.1).max(c.2), c.0.min(c.1).min(c.2));
-        u16::from(mx - mn) * 2 + u16::from(mx)
-    };
-    const BITS: [[u8; 4]; 2] = [[0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20, 0x80]];
-    for cy in 0..usize::from(r.height) {
-        for cxx in 0..usize::from(r.width) {
-            let mut mask = 0u8;
-            let mut ink: Option<(Rgb, u16)> = None;
-            let (mut bg_acc, mut bg_n) = ((0u32, 0u32, 0u32), 0u32);
-            for sy in 0..4 {
-                let k = cy * 4 + sy;
-                if k >= dh || (lines <= dh && k >= lines) {
-                    continue;
-                }
-                let Some(row) = c.get(line_of(k)) else {
-                    continue;
-                };
-                for sx in 0..2 {
-                    let (x0, x1) = span_of(cxx * 2 + sx);
-                    for i in x0..x1 {
-                        let Some(&(ch, fg, bg, dim)) = row.get(i) else {
-                            continue;
-                        };
-                        if let Some(b) = bg {
-                            bg_acc = (
-                                bg_acc.0 + u32::from(b.0),
-                                bg_acc.1 + u32::from(b.1),
-                                bg_acc.2 + u32::from(b.2),
-                            );
-                            bg_n += 1;
-                        }
-                        if ch.is_whitespace() || ch == '\u{a0}' {
-                            continue;
-                        }
-                        mask |= BITS[sx][sy];
-                        let f = fg.map_or(fg0, |f| adapt(cx, f, false));
-                        let f = if dim { mix(base, f, 0.5) } else { f };
-                        let v = vivid(f);
-                        if ink.is_none_or(|(_, best)| v > best) {
-                            ink = Some((f, v));
-                        }
-                    }
-                }
-            }
-            let cell = &mut buf[(r.x + cxx as u16, r.y + cy as u16)];
-            cell.reset();
-            let first = line_of(cy * 4);
-            let seen = view.is_some_and(|(a, b)| first + 1 >= a && first < b);
-            let base = if seen {
-                mix(base, cx.rgb(Tok::Accent), 0.1)
-            } else {
-                base
-            };
-            let bg = if bg_n > 0 {
-                let n = bg_n;
-                let avg = (
-                    (bg_acc.0 / n) as u8,
-                    (bg_acc.1 / n) as u8,
-                    (bg_acc.2 / n) as u8,
-                );
-                mix(base, adapt(cx, avg, true), 0.9)
-            } else {
-                base
-            };
-            if let Some(b) = cx.col(bg).filter(|_| cx.tc()) {
-                cell.set_bg(b);
-            }
-            if mask != 0 {
-                cell.set_char(char::from_u32(0x2800 + u32::from(mask)).unwrap_or(' '));
-                let f = ink.map_or(fg0, |(f, _)| mix(bg, f, 0.9));
-                if let Some(f) = cx.col(f) {
-                    cell.set_fg(f);
-                }
-            }
-        }
-    }
-}
-
 /// The screen's last informative lines, cropped, ending above trailing chrome (input
 /// boxes, key hints). Returns the source line range shown.
 pub(super) fn screen_text(
@@ -577,15 +437,16 @@ pub(super) fn caption(x: &LabSession) -> String {
         .unwrap_or_default()
 }
 
-/// Session thumbnail: header (keys, title, state), the screen's live tail beside a
-/// braille minimap of the whole screen, and a caption (provider, folder, activity, age).
+/// Session thumbnail: header (keys, title, state), the screen's live tail and a caption
+/// (provider, folder, activity, age).
 pub(super) fn thumb(
     cx: &Cx,
     buf: &mut Buffer,
     r: Rect,
     x: &LabSession,
     pick: Pick,
-    slot_key: bool,
+    key: Option<char>,
+    show_dev: bool,
 ) {
     if r.width < 12 || r.height < 3 {
         return;
@@ -595,13 +456,13 @@ pub(super) fn thumb(
     let d = cx.s.device(&x.device);
     let left = r.x + 1 + u16::from(pick.is_some());
     let right = r.right().saturating_sub(1);
-    // Header: the keys that open it (device letter + slot), title, state.
+    // Header: the key that opens it here, its device, title, state.
     let mut hx = left;
-    if let (false, Some(d)) = (slot_key, d) {
-        hx += cx.dchip(buf, hx, r.y, d, false);
-    }
-    if let Some(k) = cx.slot(x) {
+    if let Some(k) = key {
         hx += cx.put(buf, hx, r.y, 3, &format!(" {k} "), cx.key_style());
+    }
+    if let (true, Some(d)) = (show_dev, d) {
+        hx += cx.dchip(buf, hx, r.y, d, false);
     }
     hx += 1;
     let (g, word, sst) = cx.sstate(x);
@@ -643,22 +504,13 @@ pub(super) fn thumb(
         if cx.has_surface() {
             cx.fill(buf, body, cx.rgb_bg(base));
         }
-        let map_w = if cx.uni() && cx.c.has_color() && body.width >= 30 && body.height >= 3 {
-            (body.width / 4).clamp(8, 12)
-        } else {
-            0
-        };
         let text = Rect::new(
             body.x + 1,
             body.y,
-            body.width.saturating_sub(map_w + 2),
+            body.width.saturating_sub(2),
             body.height,
         );
-        let shown = screen_text(cx, buf, text, x, cx.c.has_color());
-        if map_w > 0 {
-            let mm = Rect::new(body.right() - map_w, body.y, map_w, body.height);
-            minimap(cx, buf, mm, x, mix(base, cx.fg0(), 0.04), Some(shown));
-        }
+        screen_text(cx, buf, text, x, cx.c.has_color());
     }
     // Caption: provider, folder, activity and age.
     let fy = r.bottom() - 1;

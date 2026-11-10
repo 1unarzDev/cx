@@ -100,8 +100,8 @@ fn pill_w(cx: &Cx, mode: Mode) -> u16 {
             .map_or(4, |d| d.name.chars().count() as u16);
     match mode {
         Mode::Chip => 5,
-        Mode::Name => 7 + name,
-        Mode::Full => 7 + name + 14,
+        Mode::Name => 8 + name,
+        Mode::Full => 8 + name,
     }
 }
 
@@ -220,19 +220,21 @@ fn plan(cx: &Cx, band: Rect) -> Plan {
     let fixed = pw + widths.iter().sum::<u16>();
     let gaps = widths.len() as u16;
     let free = band.width.saturating_sub(fixed);
+    // The fan out of this device spreads furthest, so the first gap gets double room.
     let gap = if gaps == 0 {
         0
     } else {
-        (free / (gaps + 1)).clamp(3, 34)
+        (free / (gaps + 2)).clamp(3, 30)
     };
-    let margin = free.saturating_sub(gap * gaps) / 2;
+    let gap0 = (gap * 2).min(free.saturating_sub(gap * gaps.saturating_sub(1)));
+    let margin = free.saturating_sub(gap0 + gap * gaps.saturating_sub(1)) / 2;
     let cy = band.y + h / 2;
     let pill_h = if h >= 5 { 3 } else { 1 };
     let pill = Rect::new(band.x + margin, cy.saturating_sub(pill_h / 2), pw, pill_h);
 
     let mut nodes = Vec::new();
     let mut more = Vec::new();
-    let mut x = pill.right() + gap;
+    let mut x = pill.right() + gap0;
     let rows = if tall { 2 } else { 1 };
     for (k, c) in cols.iter().enumerate() {
         let shown = if cap(c.len()) < c.len() {
@@ -338,8 +340,6 @@ impl Dots {
             };
             let sym = if cx.uni() {
                 char::from_u32(0x2800 + u32::from(m)).unwrap_or(' ')
-            } else if lvl == 0 {
-                continue;
             } else {
                 self.ch[i]
             };
@@ -442,7 +442,6 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, sel: Sel) {
     let s = cx.s;
     let p = plan(cx, band);
     let find = |id: &str| p.nodes.iter().find(|n| n.id == id);
-    let sub = |x: u16, y: u16| (f32::from(x) * 2.0 + 1.0, f32::from(y) * 4.0 + 2.0);
     let pill_mid = p.pill.y + p.pill.height / 2;
     let hl = |e: &LabEdge| match sel {
         Sel::Node(id, _) => e.from == id || e.to == id,
@@ -452,9 +451,17 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, sel: Sel) {
     // A faint blueprint grid gives the band depth without drawing boxes.
     if cx.uni() && cx.tc() && band.height >= 7 {
         let st = cx.ink(Tok::Faint, if cx.dark() { 0.55 } else { 0.7 });
+        let rows = if p.tall && p.mode == Mode::Full { 2 } else { 1 };
+        let near = |x: u16, y: u16| {
+            p.nodes
+                .iter()
+                .any(|n| y >= n.y && y < n.y + rows && x + 2 >= n.x && x <= n.x + n.w + 1)
+        };
         for y in (band.y..band.bottom()).step_by(2) {
             for x in (band.x + 2..band.right().saturating_sub(1)).step_by(4) {
-                cx.put(buf, x, y, 1, "·", st);
+                if !near(x, y) {
+                    cx.put(buf, x, y, 1, "·", st);
+                }
             }
         }
     }
@@ -466,45 +473,105 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, sel: Sel) {
         .map(|t| (t.from.as_str(), t.to.as_str()))
         .collect();
     let mut chips: Vec<(u16, u16, String, Tok, String)> = Vec::new();
+    // Rows a device occupies (the pill for the viewer) and its column.
+    let rows_of = |id: &str| -> (u16, u16) {
+        if id == s.viewer {
+            (p.pill.y, p.pill.height)
+        } else {
+            let rows = if p.tall && p.mode == Mode::Full { 2 } else { 1 };
+            find(id).map_or((band.y, 1), |n| (n.y, rows))
+        }
+    };
+    let col_of = |id: &str| {
+        if id == s.viewer {
+            Some(0)
+        } else {
+            find(id).map(|n| n.col)
+        }
+    };
+    // Links as (edge, left end, right end, same column).
+    let mut links: Vec<(&LabEdge, &str, &str, bool)> = Vec::new();
     for e in s.edges.iter().filter(|e| routed(e)) {
-        // (anchor, column) for each end, in from/to order.
-        let end = |id: &str, outgoing: bool| -> Option<((f32, f32), usize)> {
+        let (Some(fc), Some(tc)) = (col_of(&e.from), col_of(&e.to)) else {
+            continue;
+        };
+        let (l, r) = if fc <= tc {
+            (e.from.as_str(), e.to.as_str())
+        } else {
+            (e.to.as_str(), e.from.as_str())
+        };
+        // Links between peers in one column only appear when one end is selected, so
+        // the resting schematic reads as a clean left-to-right flow.
+        if fc == tc && !hl(e) {
+            continue;
+        }
+        links.push((e, l, r, fc == tc));
+    }
+    // Every link end gets its own port so a fan never braids: ends are grouped per
+    // (device, side), ordered by where the other end sits and spread over the rows.
+    // Side `true` is the right of the label, `false` the left of the status dot.
+    let mut ends: Vec<(&str, bool, usize, u16)> = Vec::new();
+    for (i, &(_, l, r, same)) in links.iter().enumerate() {
+        ends.push((l, true, i, rows_of(r).0));
+        ends.push((r, same, i, rows_of(l).0));
+    }
+    let port = |id: &str, side: bool, i: usize| -> (f32, f32) {
+        let mut mine: Vec<(u16, usize)> = ends
+            .iter()
+            .filter(|(d, sd, _, _)| *d == id && *sd == side)
+            .map(|&(_, _, j, oy)| (oy, j))
+            .collect();
+        mine.sort_unstable();
+        let n = mine.len().max(1) as f32;
+        let k = mine.iter().position(|&(_, j)| j == i).unwrap_or(0) as f32;
+        let (y0, h) = rows_of(id);
+        // The pill spreads its ports over its rows; nodes keep theirs on the name row
+        // (incoming links converge on the status dot).
+        let (top, bot) = if id == s.viewer {
+            (f32::from(y0) * 4.0 + 1.0, f32::from(y0 + h) * 4.0 - 2.0)
+        } else {
+            (f32::from(y0) * 4.0, f32::from(y0) * 4.0 + 3.0)
+        };
+        let y = if n <= 1.0 {
             if id == s.viewer {
-                return Some((sub(p.pill.right(), pill_mid), 0));
-            }
-            let n = find(id)?;
-            let x = if outgoing {
-                n.x + n.w + 1
+                f32::from(pill_mid) * 4.0 + 2.0
             } else {
-                n.x.saturating_sub(2)
-            };
-            Some((sub(x, n.y), n.col))
-        };
-        let (Some(fa), Some(ta)) = (end(&e.from, true), end(&e.to, true)) else {
-            continue;
-        };
-        // Lower column on the left; the curve leaves its right side and enters the dot.
-        let from_left = fa.1 <= ta.1;
-        let (l, r) = if from_left {
-            (&e.from, &e.to)
+                f32::from(y0) * 4.0 + 2.0
+            }
         } else {
-            (&e.to, &e.from)
+            top + (bot - top) * k / (n - 1.0)
         };
-        let (Some(la), Some(ra)) = (end(l, true), end(r, false)) else {
-            continue;
-        };
-        let (p0, p3, p1, p2) = if la.1 == ra.1 {
-            // Same column: an arc out to the right of both labels.
-            let (a, b) = (la.0, end(r, true).map_or(ra.0, |x| x.0));
-            let dy = (a.1 - b.1).abs() / 4.0;
-            let xr = a.0.max(b.0) + 4.0 + dy * 1.3;
-            (a, b, (xr, a.1), (xr, b.1))
+        let x = if id == s.viewer {
+            f32::from(p.pill.right()) * 2.0
         } else {
-            let (a, b) = (la.0, ra.0);
+            let n = find(id).expect("placed");
+            if side {
+                f32::from(n.x + n.w + 1) * 2.0
+            } else {
+                f32::from(n.x.saturating_sub(2)) * 2.0 + 1.0
+            }
+        };
+        (x, y)
+    };
+    for (i, &(e, l, r, same)) in links.iter().enumerate() {
+        let (a, b) = (port(l, true, i), port(r, same, i));
+        let (p1, p2) = if same {
+            // Same column: a shallow arc to the right of the column's labels.
+            let col = col_of(l).unwrap_or(0);
+            let edge = p
+                .nodes
+                .iter()
+                .filter(|n| n.col == col)
+                .map(|n| f32::from(n.x + n.w + 1) * 2.0)
+                .fold(0.0, f32::max);
+            let xr = edge + 6.0 + (a.1 - b.1).abs() * 0.05;
+            ((xr, a.1), (xr, b.1))
+        } else {
             let k = (b.0 - a.0) * 0.5;
-            (a, b, (a.0 + k, a.1), (b.0 - k, b.1))
+            ((a.0 + k, a.1), (b.0 - k, b.1))
         };
-        let pts = if *l == e.from {
+        let (p0, p3) = (a, b);
+        let pts = if l == e.from {
             [p0, p1, p2, p3]
         } else {
             [p3, p2, p1, p0]
@@ -525,16 +592,17 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, sel: Sel) {
             }
         }
         let closed = !e.up || (e.forward == Access::Denied && e.reverse == Access::Denied);
-        let every = if closed { 4 } else { 2 };
+        let every = if closed { 3 } else { 1 };
         let edge_mode = matches!(sel, Sel::Edge(_));
+        // Links between peers in one column are secondary: faint until selected.
         let base = if lit {
             2
-        } else if edge_mode {
+        } else if edge_mode || same {
             0
         } else {
             1
         };
-        if edge_mode && !lit {
+        if (edge_mode || same) && !lit {
             packets.clear();
         }
         let seed =
@@ -549,7 +617,7 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, sel: Sel) {
         if !e.up {
             chips.push((mx, my, cx.g("✕", "x").into(), Tok::Err, e.id.clone()));
         } else if lit && (cx.size() >= Size::M || matches!(sel, Sel::Edge(_))) {
-            chips.push((mx, my, policy(cx, e, *l == e.from), tok, e.id.clone()));
+            chips.push((mx, my, policy(cx, e, l == e.from), tok, e.id.clone()));
         }
     }
     dots.flush(cx, buf);
@@ -727,7 +795,7 @@ fn draw_pill(cx: &Cx, buf: &mut Buffer, pill: Rect, mode: Mode) {
     if mode > Mode::Chip {
         x += 1;
         let room = pill.right().saturating_sub(x + 1);
-        x += cx.put(
+        cx.put(
             buf,
             x,
             mid,
@@ -735,16 +803,6 @@ fn draw_pill(cx: &Cx, buf: &mut Buffer, pill: Rect, mode: Mode) {
             &d.name,
             cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD),
         );
-        if mode == Mode::Full {
-            cx.put(
-                buf,
-                x,
-                mid,
-                pill.right().saturating_sub(x + 1),
-                " · this device",
-                cx.ink(Tok::Muted, 0.95),
-            );
-        }
     }
     cx.hit(pill, format!("device:{}", d.id));
 }

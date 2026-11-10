@@ -31,19 +31,24 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
             if let Some(d) = d {
                 device(cx, buf, body, d);
             }
-            footer(
-                cx,
-                buf,
-                foot,
-                vec![
-                    ("a s d", "open", "attach"),
-                    ("c", "claude", "new-claude"),
-                    ("x", "codex", "new-codex"),
-                    ("n", "shell", "new-shell"),
-                    ("f", "files", "files"),
-                    ("esc", "hub", "back"),
-                ],
-            );
+            let n = d.map_or(0, |d| cx.s.sessions_on(&d.id).count());
+            let slots: String = SLOTS[..n.min(3)]
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let mut items = vec![(slots.as_str(), "attach", "attach")];
+            if n == 0 {
+                items.clear();
+            }
+            items.extend([
+                ("c", "claude", "new-claude"),
+                ("x", "codex", "new-codex"),
+                ("n", "shell", "new-shell"),
+                ("f", "files", "files"),
+                ("esc", "hub", "back"),
+            ]);
+            footer(cx, buf, foot, items);
         }
         LabView::SessionPeek(id) => {
             let x = cx.s.session(id).or(cx.s.sessions.first());
@@ -113,7 +118,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
             palette(cx, buf, a, q);
         }
         LabView::Secrets => {
-            top(cx, buf, &[Crumb::Text("keys".into())]);
+            top(cx, buf, &[Crumb::Text("secrets".into())]);
             secrets(cx, buf, body);
             footer(
                 cx,
@@ -172,7 +177,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
             );
         }
         LabView::Help => {
-            top(cx, buf, &[Crumb::Text("keys".into())]);
+            top(cx, buf, &[Crumb::Text("help".into())]);
             help(cx, buf, body);
             footer(cx, buf, foot, vec![("esc", "close", "back")]);
         }
@@ -347,11 +352,13 @@ fn hub_keys(cx: &Cx) -> Vec<(&'static str, &'static str, &'static str)> {
         ("/", "find", "palette"),
     ];
     if cx.size() >= Size::S {
+        v.insert(1, ("1-9", "session", "session"));
         v.push(("␣", "peek", "peek"));
     }
     if cx.size() >= Size::M {
         v.push(("+", "invite", "invite"));
-        v.push(("?", "keys", "help"));
+        v.push((",", "secrets", "secrets"));
+        v.push(("?", "help", "help"));
     }
     v
 }
@@ -452,7 +459,6 @@ fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         grid,
         &list,
         if on_sess { Some(cx.c.selected) } else { None },
-        false,
     );
     let noun = if list.len() == 1 {
         "session"
@@ -499,25 +505,15 @@ fn mesh_legend(cx: &Cx, buf: &mut Buffer, mut x: u16, y: u16, right: u16) {
         cx.hit(Rect::new(x0, y, x - x0, 1), format!("mesh:{}", m.id));
         x += 3;
     }
-    // Legend for flows at wide sizes.
+    // The other link colours, at wide sizes.
     if cx.size() >= Size::M {
-        let lan = format!("{} lan", cx.g("⠒⠒", ".."));
-        let w = super::width(&lan, cx.uni());
-        if x + w + 16 < right {
-            x += cx.put(buf, x, y, w, &lan, cx.ink(Tok::Lan, 0.9)) + 3;
-            let t = if cx.uni() {
-                "⠒⠶⣿ flow = allowed direction"
-            } else {
-                ".-= flow = allowed direction"
-            };
-            cx.put(
-                buf,
-                x,
-                y,
-                right.saturating_sub(x),
-                t,
-                cx.ink(Tok::Muted, 0.8),
-            );
+        for (name, tok) in [("lan", Tok::Lan), ("ssh", Tok::Info)] {
+            let t = format!("{} {name}", cx.g("──", "--"));
+            let w = super::width(&t, cx.uni());
+            if x + w + 2 > right {
+                break;
+            }
+            x += cx.put(buf, x, y, w, &t, cx.ink(tok, 0.9)) + 3;
         }
     }
 }
@@ -578,7 +574,7 @@ fn hub_compact(cx: &Cx, buf: &mut Buffer, r: Rect, focus: Pane) {
     }
 }
 
-/// Grid of session thumbnails; `slot_keys` labels them with their slot key. Columns are
+/// Grid of session thumbnails keyed `1`-`9` (attach in one key from the hub). Columns are
 /// balanced so the last row is not a lone tile. Returns how many tiles were shown.
 fn thumbs_grid(
     cx: &Cx,
@@ -586,7 +582,6 @@ fn thumbs_grid(
     r: Rect,
     list: &[&crate::ui::lab::LabSession],
     sel: Option<usize>,
-    slot_keys: bool,
 ) -> usize {
     if list.is_empty() || r.height < 3 {
         if r.height > 0 {
@@ -614,12 +609,18 @@ fn thumbs_grid(
     let (cols, rows) = (cols as u16, rows as u16);
     let tw = (r.width + 1) / cols - 1;
     let th = ((r.height + 1) / rows).saturating_sub(1).min(tw / 2 + 4);
-    let shown = (rows * cols) as usize;
+    let shown = ((rows * cols) as usize).min(list.len());
     for (i, x) in list.iter().enumerate().take(shown) {
         let (ci, ri) = (i as u16 % cols, i as u16 / cols);
-        let tr = Rect::new(r.x + ci * (tw + 1), r.y + ri * (th + 1), tw, th);
+        // A short last row stretches so the grid keeps a clean right edge.
+        let in_row = (shown - usize::from(ri * cols)).min(usize::from(cols)) as u16;
+        let w = (r.width + 1) / in_row - 1;
+        let x0 = r.x + ci * (w + 1);
+        let w = if ci + 1 == in_row { r.right() - x0 } else { w };
+        let tr = Rect::new(x0, r.y + ri * (th + 1), w, th);
         let pick = sel.and_then(|s| (s % list.len() == i).then_some(true));
-        tiles::thumb(cx, buf, tr, x, pick, slot_keys);
+        let key = char::from_digit(i as u32 + 1, 10).filter(|_| i < 9);
+        tiles::thumb(cx, buf, tr, x, pick, key, true);
     }
     shown.min(list.len())
 }
@@ -650,55 +651,72 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     );
     let list: Vec<&crate::ui::lab::LabSession> = s.sessions_on(&d.id).collect();
     cx.label(buf, main.x, main.y.saturating_sub(1), 30, "SESSIONS", true);
-    let keys: String = list
-        .iter()
-        .filter_map(|x| cx.slot(x))
-        .map(|c| c.to_string())
-        .collect::<Vec<_>>()
-        .join(" ");
-    if !keys.is_empty() && sz >= Size::S {
-        cx.put_r(
-            buf,
-            main.right(),
-            main.y.saturating_sub(1),
-            &format!("{keys}  attach"),
-            cx.st(Tok::Muted),
-        );
-    }
     if sz == Size::Xs {
         device_sessions_rows(cx, buf, main, &list);
+    } else if list.is_empty() {
+        new_tile(cx, buf, main, d, true);
     } else {
-        // Thumbnails plus a "new" tile.
-        let n = list.len() as u16 + 1;
-        let target = if sz == Size::S { 30 } else { 40 };
+        let n = list.len() as u16;
+        let target = if sz == Size::S { 30 } else { 44 };
         let cols = ((main.width + 1) / (target + 1)).clamp(1, n.min(3));
-        let tw = (main.width + 1) / cols - 1;
         let rows = n.div_ceil(cols);
-        let th = ((main.height + 1) / rows.max(1))
+        // Tiles are as tall as the tallest screen needs, so a device with few sessions
+        // leaves room under them for the "new session" ghost tile instead of empty glass.
+        let need = list
+            .iter()
+            .map(|x| x.screen.len() as u16)
+            .max()
+            .unwrap_or(0)
+            + 3;
+        let th = ((main.height + 1) / rows)
             .saturating_sub(1)
-            .clamp(4, tw / 2 + 2);
-        let sel = cx.c.selected % n as usize;
-        for i in 0..n {
-            let tr = Rect::new(
-                main.x + (i % cols) * (tw + 1),
-                main.y + (i / cols) * (th + 1),
-                tw,
-                th,
-            );
+            .max(4)
+            .min(need.max(8));
+        let sel = cx.c.selected % list.len();
+        let used = rows * (th + 1);
+        if main.height >= used + 6 {
+            let g = Rect::new(main.x, main.y + used, main.width.min(64), 5);
+            new_tile(cx, buf, g, d, false);
+        } else {
+            // "New" lives on the label row as three buttons; the sessions get the room.
+            let items = [
+                ("c", "claude", "new-claude"),
+                ("x", "codex", "new-codex"),
+                ("n", "shell", "new-shell"),
+            ];
+            let w: u16 = items
+                .iter()
+                .map(|(k, l, _)| super::width(k, cx.uni()) + 2 + 1 + super::width(l, cx.uni()) + 2)
+                .sum::<u16>()
+                + 4;
+            let y = main.y.saturating_sub(1);
+            let x = main.right().saturating_sub(w);
+            cx.put(buf, x, y, 4, "new", cx.ink(Tok::Muted, 0.9));
+            cx.chips(buf, x + 4, y, main.right() + 2, &items);
+        }
+        for (i, x) in list.iter().enumerate() {
+            let (ci, ri) = (i as u16 % cols, i as u16 / cols);
+            let in_row = (n - ri * cols).min(cols);
+            let tw = (main.width + 1) / in_row - 1;
+            let x0 = main.x + ci * (tw + 1);
+            let tw = if ci + 1 == in_row {
+                main.right() - x0
+            } else {
+                tw
+            };
+            let tr = Rect::new(x0, main.y + ri * (th + 1), tw, th);
             if tr.bottom() > main.bottom() {
                 break;
             }
-            match list.get(i as usize) {
-                Some(x) => tiles::thumb(
-                    cx,
-                    buf,
-                    tr,
-                    x,
-                    (usize::from(i) == sel).then_some(true),
-                    true,
-                ),
-                None => new_tile(cx, buf, tr, d, usize::from(i) == sel),
-            }
+            tiles::thumb(
+                cx,
+                buf,
+                tr,
+                x,
+                (i == sel).then_some(true),
+                cx.slot(x),
+                false,
+            );
         }
     }
     if side_w > 0 {
@@ -1233,7 +1251,7 @@ fn peek(cx: &Cx, buf: &mut Buffer, r: Rect, x: &crate::ui::lab::LabSession) {
             if y + th > r.bottom() {
                 break;
             }
-            tiles::thumb(cx, buf, Rect::new(sx, y, strip_w, th), o, None, false);
+            tiles::thumb(cx, buf, Rect::new(sx, y, strip_w, th), o, None, None, true);
             y += th + 1;
         }
     }
@@ -1662,10 +1680,18 @@ fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
 // -------------------------------------------------------------------------- secrets
 
 fn secrets(cx: &Cx, buf: &mut Buffer, r: Rect) {
+    // On tall screens the cards sit a quarter of the spare height down, not under the bar.
+    let need = 4 + cx.s.secrets.len() as u16 * 5;
+    let r = if r.height > need + 8 {
+        let dy = (r.height - need) / 4;
+        Rect::new(r.x, r.y + dy, r.width, r.height - dy)
+    } else {
+        r
+    };
     let w = r.width.saturating_sub(4).min(96);
     let x0 = r.x + (r.width - w) / 2;
     let mut top = r.y + 1;
-    cx.label(buf, x0, r.y, w, "KEYS", true);
+    cx.label(buf, x0, r.y, w, "SECRETS", true);
     let note = if w >= 60 {
         "stored in your keyring · never shown in full"
     } else {
@@ -1802,7 +1828,12 @@ fn onboarding(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let w = r.width.saturating_sub(4).min(72);
     let x0 = r.x + (r.width - w) / 2;
     let small = r.height < 24 || cx.size() == Size::Xs;
-    let mut y = r.y + if small { 1 } else { 2 };
+    let mut y = r.y
+        + if small {
+            1
+        } else {
+            2 + r.height.saturating_sub(34) / 4
+        };
     cx.put(
         buf,
         x0,
@@ -2317,7 +2348,9 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
 
 /// Keyboard map: each key shows its role, coloured by layer.
 fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
-    let rows = ["qwertyuiop", "asdfghjkl;", "zxcvbnm,./"];
+    let letters = ["qwertyuiop", "asdfghjkl;", "zxcvbnm,./"];
+    let with_digits = ["1234567890", "qwertyuiop", "asdfghjkl;", "zxcvbnm,./"];
+    let hub_order = cx.by_attention();
     let kw: u16 = if r.width >= 120 {
         9
     } else if r.width >= 80 {
@@ -2331,8 +2364,21 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
             let nm: String = d.name.chars().take(usize::from(kw.max(4)) - 1).collect();
             return (nm, cx.chip_style(cx.s.hue(&d.id)), "device".into());
         }
+        if let Some(x) = c
+            .to_digit(10)
+            .and_then(|n| hub_order.get((n as usize).checked_sub(1)?))
+        {
+            let t: String = x.title.chars().take(usize::from(kw.max(4)) - 1).collect();
+            let st = if cx.has_surface() {
+                cx.wash(Tok::Accent, 0.25).patch(cx.ink(Tok::Fg, 1.0))
+            } else {
+                cx.key_style()
+            };
+            return (t, st, String::new());
+        }
         let (label, tok) = match c {
             '/' => ("find", Tok::Accent),
+            ',' => ("secrets", Tok::Accent),
             _ => ("", Tok::Faint),
         };
         (label.into(), cx.st(tok), String::new())
@@ -2342,6 +2388,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         let mut y = r.y + 1;
         let items: Vec<(String, String)> = vec![
             ("letter".into(), "open that device".into()),
+            ("1-9".into(), "attach a hub session".into()),
             ("then a s d".into(), "attach a session".into()),
             ("then c x n".into(), "new claude / codex / shell".into()),
             ("then f / e".into(), "files / links".into()),
@@ -2376,51 +2423,52 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         buf,
         x0 + total_w + 3,
         y,
-        "letters jump to devices",
+        "letters open devices, digits attach",
         cx.st(Tok::Muted),
     );
     y += 2;
-    let key_rows = |y0: u16, buf: &mut Buffer, f: &dyn Fn(char) -> (String, Style, String)| {
-        for (ri, row) in rows.iter().enumerate() {
-            let y = y0 + ri as u16 * 3;
-            let off = ri as u16 * (kw / 3).max(1);
-            for (ci, c) in row.chars().enumerate() {
-                let x = x0 + off + ci as u16 * (kw + 1);
-                let (label, st, _) = f(c);
-                let kr = Rect::new(x, y, kw, 2);
-                let has = !label.is_empty();
-                let bst = if has {
-                    st
-                } else if cx.has_surface() {
-                    cx.surface()
-                } else {
-                    Style::default()
-                };
-                if cx.has_surface() || has {
-                    cx.fill(
-                        buf,
-                        kr,
-                        if cx.has_surface() || cx.c.has_color() {
-                            bst
-                        } else {
-                            bst
-                        },
-                    );
-                }
-                let kst = if has {
-                    bst.add_modifier(Modifier::BOLD)
-                } else {
-                    cx.ink(Tok::Muted, 0.6).patch(bst)
-                };
-                cx.put(buf, x + 1, y, 1, &c.to_string(), kst);
-                if has {
-                    cx.put(buf, x + 1, y + 1, kw - 1, &label, bst);
+    let key_rows =
+        |y0: u16, buf: &mut Buffer, rows: &[&str], f: &dyn Fn(char) -> (String, Style, String)| {
+            for (ri, row) in rows.iter().enumerate() {
+                let y = y0 + ri as u16 * 3;
+                let off = ri as u16 * (kw / 3).max(1);
+                for (ci, c) in row.chars().enumerate() {
+                    let x = x0 + off + ci as u16 * (kw + 1);
+                    let (label, st, _) = f(c);
+                    let kr = Rect::new(x, y, kw, 2);
+                    let has = !label.is_empty();
+                    let bst = if has {
+                        st
+                    } else if cx.has_surface() {
+                        cx.surface()
+                    } else {
+                        Style::default()
+                    };
+                    if cx.has_surface() || has {
+                        cx.fill(
+                            buf,
+                            kr,
+                            if cx.has_surface() || cx.c.has_color() {
+                                bst
+                            } else {
+                                bst
+                            },
+                        );
+                    }
+                    let kst = if has {
+                        bst.add_modifier(Modifier::BOLD)
+                    } else {
+                        cx.ink(Tok::Muted, 0.6).patch(bst)
+                    };
+                    cx.put(buf, x + 1, y, 1, &c.to_string(), kst);
+                    if has {
+                        cx.put(buf, x + 1, y + 1, kw - 1, &label, bst);
+                    }
                 }
             }
-        }
-    };
-    key_rows(y, buf, &role);
-    y += 9;
+        };
+    key_rows(y, buf, &with_digits, &role);
+    y += 12;
     if y + 10 < r.bottom() {
         cx.label(buf, x0, y, total_w, "DEVICE LAYER", false);
         cx.put_r(
@@ -2458,7 +2506,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                 _ => (String::new(), Style::default(), String::new()),
             }
         };
-        key_rows(y, buf, &dev_role);
+        key_rows(y, buf, &letters, &dev_role);
         y += 9;
     }
     if y + 1 < r.bottom() {

@@ -7170,6 +7170,51 @@ fn streamed_preview_chunks_extend_the_retained_layout() {
 /// Regression: an outdated inline-peek reply (file A, still in flight after the
 /// selection moved to B) must never open the full-screen preview, and must not
 /// replace the peek of B. While B loads, the previous peek frame is shown dimmed.
+/// A PDF page read takes seconds: Enter on a file whose peek read is still in
+/// flight waits for that reply instead of queueing a second read behind it.
+#[test]
+fn enter_waits_for_the_inflight_peek_read_instead_of_reading_twice() {
+    use std::time::{Duration, Instant};
+    let (mut a, rx) = file_app();
+    let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    terminal.draw(|frame| render(frame, &a)).unwrap();
+    let now = Instant::now();
+    a.files_tick(now);
+    a.files_tick(now + Duration::from_millis(200));
+    assert!(
+        matches!(rx.try_recv().unwrap().op, Operation::Preview { path } if path == "/files/alpha.txt")
+    );
+    let generation = a.generation;
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        a.browser.as_ref().unwrap().preview_path.as_deref() == Some("/files/alpha.txt"),
+        "Enter did not open the preview"
+    );
+    assert!(
+        rx.try_iter()
+            .all(|t| !matches!(t.op, Operation::Preview { .. })),
+        "Enter queued a second read of the same file"
+    );
+    a.apply(Reply {
+        device_id: None,
+        execution_target: None,
+        device: 0,
+        generation,
+        op: Operation::Preview {
+            path: "/files/alpha.txt".into(),
+        },
+        preview: None,
+        result: Ok(serde_json::json!({"kind":"text","text":"AAA"})),
+    });
+    let b = a.browser.as_ref().unwrap();
+    assert!(
+        b.preview.as_deref().is_some_and(|p| p.contains("AAA")),
+        "{:?}",
+        b.preview
+    );
+    assert!(b.peek.is_none());
+}
+
 #[test]
 fn stale_peek_reply_never_opens_the_full_preview() {
     use std::time::{Duration, Instant};
@@ -7304,11 +7349,16 @@ fn superseded_peek_reply_is_a_cancellation_not_content() {
     a.files_tick(Instant::now() + Duration::from_millis(200));
     let again = peek_requests(&rx);
     assert_eq!(again.len(), 1, "cancelled peek is requested again");
-    // (b) Enter supersedes the queued peek; after Esc, Enter must read the file again.
+    // (b) Enter waits for the in-flight peek read; when that read comes back
+    // cancelled, Enter's preview reads the file itself. After Esc, Enter reads again.
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let opened = peek_requests(&rx);
-    assert_eq!(opened.len(), 1, "Enter reads the file");
+    assert!(peek_requests(&rx).is_empty(), "Enter queued a second read");
     cancelled(&mut a, again[0]);
+    assert_eq!(
+        peek_requests(&rx).len(),
+        1,
+        "Enter did not read after the peek read was cancelled"
+    );
     let b = a.browser.as_ref().unwrap();
     assert!(!b.preview.as_deref().unwrap_or("").contains("unavailable"));
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));

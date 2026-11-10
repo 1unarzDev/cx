@@ -1498,11 +1498,32 @@ impl App {
                 return;
             }
         }
+        // The peek is still reading this file (a PDF page takes seconds): its reply
+        // opens the preview instead of a second read queued behind it.
+        if self
+            .browser
+            .as_ref()
+            .is_some_and(|b| b.peek_inflight.iter().any(|(p, _)| *p == path))
+        {
+            return;
+        }
         if !self.send(device, Operation::Preview { path }) {
             if let Some(b) = &mut self.browser {
                 b.preview_pending_page = None;
                 b.preview = Some("Preview queue busy · Escape and retry".into());
             }
+        }
+    }
+    /// Enter waited on the peek's read of `path` (see `open_preview`): now that it has
+    /// answered, show it, or read again when it failed or was cancelled.
+    pub(super) fn open_waiting_preview(&mut self, device: usize, path: String) {
+        let waiting = self.browser.as_ref().is_some_and(|b| {
+            b.device == device
+                && b.preview_path.as_ref() == Some(&path)
+                && b.preview_pending_page == Some(1)
+        });
+        if waiting {
+            self.open_preview(device, path);
         }
     }
     pub(super) fn start_pdf_page_request(&mut self) {

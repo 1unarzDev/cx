@@ -508,6 +508,7 @@ impl App {
                     if let Some(settle) = b.settle.as_mut().filter(|s| s.0 == path) {
                         settle.2 = false;
                     }
+                    self.open_waiting_preview(reply.device, path);
                     return true;
                 }
                 // A peek reply only ever feeds the peek; an outdated one is dropped.
@@ -530,6 +531,7 @@ impl App {
                         peek.preview_revision = peek.preview_revision.wrapping_add(1);
                     }
                 }
+                self.open_waiting_preview(reply.device, path);
                 true
             }
             Operation::ReadChunk { path, offset, .. } => {

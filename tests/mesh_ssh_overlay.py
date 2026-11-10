@@ -7,8 +7,9 @@ Two cx identities on this machine, each with its own temporary HOME and state. T
 viewer's temporary authorized_keys) proves the key the viewer installed logs in. Also: an enrolled
 identity refused, wrong codes refused and rate-limited, replay, a typo caught offline, expiry and
 Ctrl-C (the port closed each time), revoke, and `cx mesh backends --json` with a fake tailscale on PATH.
-Nothing outside the temporary tree changes: the real ~/.ssh/authorized_keys and cx state are compared
-by content hash before and after.
+Nothing outside the temporary tree changes: the real ~/.ssh/authorized_keys, known_hosts and cx devices are
+compared by content hash, and must not contain anything of this test (its keys, machine ids, temporary paths).
+A real cx viewer (or ssh) on this host may rewrite those files meanwhile, so a changed hash alone is only reported.
 
 Usage: python3 tests/mesh_ssh_overlay.py target/debug/cx
 """
@@ -266,6 +267,10 @@ AllowUsers {account}
         audit = [a["action"] for a in json.loads(cx(venv, "mesh", "audit", "--backend", "ssh-overlay", "--json", "--limit", "100").stdout)]
         assert audit[0] == "revoke" and "join" in audit and "invite-closed" in audit, audit
         result["revoke_and_audit"] = True
+        # What would show up in the real files if any of this leaked there.
+        markers = {str(root), host_key.split()[1], "viewer-machine", "joiner-machine", "victim-machine", "stranger-machine"}
+        markers |= {p.read_text().split()[1] for p in root.glob("*/state/cx/peer-ssh/id_ed25519.pub")}
+        assert len(markers) >= 8, markers
     finally:
         for i in invites:
             if i.process.poll() is None:
@@ -308,5 +313,8 @@ EOF
     result["backends_report"] = True
 
 after = [digest(p) for p in watched]
-assert before == after, "real ~/.ssh and cx state unchanged (content hashes)"
-print(json.dumps(dict(result="PASS", **result, real_state_untouched=True)))
+for p in watched:
+    text = p.read_text(errors="ignore") if p.exists() else ""
+    assert not [m for m in markers if m in text], f"this test's data reached {p}"
+changed = [str(p) for p, a, b in zip(watched, before, after) if a != b]
+print(json.dumps(dict(result="PASS", **result, real_state_untouched=True, changed_meanwhile_by_others=changed)))

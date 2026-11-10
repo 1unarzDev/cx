@@ -38,6 +38,8 @@ pub fn role(args: &[String]) -> &'static str {
         None | Some("restart") => "viewer",
         Some("helper") | Some("container-helper") => "helper",
         Some("transfer-worker") => "transfer-worker",
+        // `cx mesh invite`: an ssh-overlay invite listens until it expires; it is meant for a terminal.
+        Some("mesh") if args.get(2).map(String::as_str) == Some("invite") => "invite",
         Some(a) if a.starts_with("native-") => "native",
         Some(_) => "command",
     }
@@ -66,7 +68,8 @@ pub fn classify(proc: Proc, cpu_percent: f64, own_lineage: &[i32]) -> Finding {
         "transfer-worker" => false,
         // A viewer still on a live terminal is in use even if its launcher exited.
         "viewer" => gone || (orphaned && !live_terminal(proc.stdin.as_deref())),
-        "helper" => gone || orphaned,
+        // An invite nobody watches any more is an open listener for nothing.
+        "helper" | "invite" => gone || orphaned,
         _ => gone || (orphaned && cpu_percent >= SPINNING),
     };
     let stray = evidence && !own_lineage.contains(&proc.pid);
@@ -350,6 +353,11 @@ mod tests {
         assert!(classify(proc(18, 1, &["cx"], Some("/dev/null")), 0.0, &[]).stray);
         // Orphaned helper (ssh session died): stray.
         assert!(classify(proc(12, 1, &["cx", "helper"], Some("pipe:[1]")), 0.0, &[]).stray);
+        // An invite listener reparented to init (its shell went away): stray; one in its terminal: kept.
+        let invite = ["cx", "mesh", "invite", "--backend", "ssh-overlay"];
+        let f = classify(proc(19, 1, &invite, Some("pipe:[1]")), 0.0, &[]);
+        assert!(f.stray && f.role == "invite");
+        assert!(!classify(proc(20, 9, &invite, Some(live_tty)), 0.0, &[]).stray);
         // Detached transfer worker: never stray.
         assert!(
             !classify(

@@ -307,8 +307,171 @@ pub(super) fn read_input_batch() -> Result<Vec<(Event, Instant)>> {
     }
     Ok(batch)
 }
+/// DEC private mode 2026: begin / end synchronized update.
+const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
+const SYNC_END: &[u8] = b"\x1b[?2026l";
+/// At most one frame per this interval (~60 fps); bursts are coalesced.
+pub(super) const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+/// While requests are in flight the loop polls this often, so a reply is
+/// applied within a few milliseconds instead of after the idle poll timeout.
+pub(super) const REPLY_POLL: Duration = Duration::from_millis(4);
+/// How long the event loop may block on terminal input before its next pass.
+pub(super) fn loop_wait(app: &App, now: Instant, frame_wait: Option<Duration>) -> Duration {
+    let mut wait = notifications::poll_interval(app.notice_started, app.notice_deadline, now);
+    if app.view == View::Work {
+        wait = wait.min(Duration::from_millis(250));
+    }
+    if app.command_panel.as_ref().is_some_and(|p| p.alive) {
+        wait = wait.min(Duration::from_millis(80));
+    }
+    if app.pending_requests.get() > 0 {
+        wait = wait.min(REPLY_POLL);
+    }
+    if let Some(frame_wait) = frame_wait {
+        wait = wait.min(frame_wait);
+    }
+    for deadline in [app.press_deadline(), app.device_refresh_due]
+        .into_iter()
+        .flatten()
+    {
+        wait = wait.min(deadline.saturating_duration_since(now));
+    }
+    wait
+}
+
+/// What ratatui's crossterm backend writes after every frame's cell updates
+/// (colour/attribute resets), derived from the backend itself so it tracks
+/// the crate's features rather than a hard-coded byte string.
+fn frame_reset() -> &'static [u8] {
+    static RESET: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    RESET.get_or_init(|| {
+        use ratatui::backend::Backend;
+        struct Sink(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
+        impl io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.borrow_mut().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let bytes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut backend = CrosstermBackend::new(Sink(bytes.clone()));
+        let _ = backend.draw(std::iter::empty());
+        let reset = bytes.borrow().clone();
+        reset
+    })
+}
+fn find_last(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    (needle.len() <= haystack.len())
+        .then(|| {
+            (0..=haystack.len() - needle.len())
+                .rev()
+                .find(|&i| haystack[i..].starts_with(needle))
+        })
+        .flatten()
+}
+/// Decide what one composed frame must send. A frame with no cell updates
+/// whose cursor state matches the previous frame sends nothing at all (the
+/// idle redraws used to emit resets and cursor-hide on every tick).
+pub(super) fn frame_payload(bytes: &[u8], last_tail: &mut Vec<u8>) -> Option<Vec<u8>> {
+    let reset = frame_reset();
+    let (body, tail) = match find_last(bytes, reset) {
+        Some(at) => (&bytes[..at], &bytes[at + reset.len()..]),
+        None => (&bytes[..0], bytes),
+    };
+    if body.is_empty() {
+        if tail == last_tail.as_slice() {
+            return None;
+        }
+        *last_tail = tail.to_vec();
+        return Some(tail.to_vec());
+    }
+    *last_tail = tail.to_vec();
+    Some(bytes.to_vec())
+}
+#[derive(Default)]
+struct FrameState {
+    frame: Option<Vec<u8>>,
+    last_tail: Vec<u8>,
+}
+/// The terminal's writer. Outside a frame it passes through; inside a frame it
+/// buffers, then sends the frame once, wrapped in synchronized output.
+pub(super) struct FrameWriter {
+    out: io::Stdout,
+    state: std::rc::Rc<std::cell::RefCell<FrameState>>,
+}
+impl io::Write for FrameWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut state = self.state.borrow_mut();
+        if let Some(frame) = &mut state.frame {
+            frame.extend_from_slice(buf);
+            Ok(buf.len())
+        } else {
+            // Anything written between frames may move the cursor.
+            state.last_tail.clear();
+            self.out.write(buf)
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        if self.state.borrow().frame.is_some() {
+            Ok(())
+        } else {
+            self.out.flush()
+        }
+    }
+}
+/// Screen-side handle on the writer's frame buffer.
+struct FrameControl {
+    state: std::rc::Rc<std::cell::RefCell<FrameState>>,
+    sync: bool,
+}
+impl FrameControl {
+    fn begin(&self) {
+        self.state.borrow_mut().frame = Some(Vec::new());
+    }
+    /// Send the composed frame; false when it was a no-op and nothing was sent.
+    fn commit(&self) -> io::Result<bool> {
+        use io::Write;
+        let payload = {
+            let mut state = self.state.borrow_mut();
+            let bytes = state.frame.take().unwrap_or_default();
+            frame_payload(&bytes, &mut state.last_tail)
+        };
+        let Some(payload) = payload else {
+            return Ok(false);
+        };
+        let mut out = Vec::with_capacity(payload.len() + 16);
+        if self.sync {
+            out.extend_from_slice(SYNC_BEGIN);
+        }
+        out.extend_from_slice(&payload);
+        if self.sync {
+            out.extend_from_slice(SYNC_END);
+        }
+        let mut stdout = io::stdout();
+        stdout.write_all(&out)?;
+        stdout.flush()?;
+        Ok(true)
+    }
+}
+fn frame_writer() -> (FrameWriter, FrameControl) {
+    let state = std::rc::Rc::new(std::cell::RefCell::new(FrameState::default()));
+    // Terminals ignore unknown private modes; the Linux console and dumb
+    // terminals are skipped so nothing stray ever reaches them.
+    let sync = !std::env::var("TERM").is_ok_and(|t| t == "dumb" || t == "linux");
+    (
+        FrameWriter {
+            out: io::stdout(),
+            state: state.clone(),
+        },
+        FrameControl { state, sync },
+    )
+}
 pub(super) struct Screen {
-    terminal: Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: Terminal<CrosstermBackend<FrameWriter>>,
+    frames: FrameControl,
     active: bool,
     mouse: bool,
     paste: bool,
@@ -320,7 +483,8 @@ impl Screen {
             let _ = terminal::disable_raw_mode();
             return Err(e.into());
         }
-        let terminal = match Terminal::new(CrosstermBackend::new(io::stdout())) {
+        let (writer, frames) = frame_writer();
+        let terminal = match Terminal::new(CrosstermBackend::new(writer)) {
             Ok(t) => t,
             Err(e) => {
                 let _ = terminal::disable_raw_mode();
@@ -330,6 +494,7 @@ impl Screen {
         };
         Ok(Self {
             terminal,
+            frames,
             active: true,
             mouse: false,
             paste: false,
@@ -386,6 +551,16 @@ impl Screen {
             wipe?;
             cursor?;
         }
+        Ok(())
+    }
+    /// Draw one frame: composed off-screen, sent once (synchronized), or not
+    /// at all when nothing on screen changed.
+    fn draw(&mut self, render: impl FnOnce(&mut Frame<'_>)) -> Result<()> {
+        self.frames.begin();
+        let drawn = self.terminal.draw(render);
+        let committed = self.frames.commit();
+        drawn?;
+        committed?;
         Ok(())
     }
     fn resume(&mut self) -> Result<()> {
@@ -829,36 +1004,18 @@ pub(super) fn native_preview_area(app: &App, area: Rect) -> Option<Rect> {
     if !matches!(rich.kind.as_str(), "image" | "pdf") || rich.raster.is_none() {
         return None;
     }
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Min(5),
-            Constraint::Length(if browser.search.is_empty() { 4 } else { 7 }),
-        ])
-        .split(area);
-    let sidebar_width = if area.width < 60 && app.focus == Focus::Workspace {
-        14
-    } else if area.width < 70 {
-        17
-    } else {
-        21
-    };
-    let content = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(sidebar_width), Constraint::Min(15)])
-        .split(vertical[1]);
+    let main = rendering::frame_areas(app, area).main;
     let workspace = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(5),
-            Constraint::Length(if app.transfer_drawer && content[1].height >= 12 {
+            Constraint::Length(if app.transfer_drawer && main.height >= 12 {
                 4
             } else {
                 0
             }),
         ])
-        .split(content[1]);
+        .split(main);
     let inner = Block::default().borders(Borders::ALL).inner(workspace[0]);
     (inner.width > 0 && inner.height > 0).then_some(inner)
 }
@@ -967,6 +1124,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     // Drop ordering cleans owned bitmaps before Screen restores the original terminal.
     let mut native_preview = crate::terminal_preview::NativePreview::detect();
     let mut dirty = true;
+    let mut last_draw = Instant::now() - FRAME_INTERVAL;
     let (update_tx, update_rx) = mpsc::channel::<UpdateEvent>();
     start_update_check(&update_tx, false);
     let mut update_phase = UpdatePhase::Checking;
@@ -1395,21 +1553,22 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         screen.bracketed_paste(app.pane_focused())?;
         screen.mouse_capture(true)?;
         dirty |= app.refresh_session_preview(screen.terminal.size()?.width);
+        let now = Instant::now();
+        dirty |= app.tick_press(now);
+        dirty |= app.settle_device_refresh(now);
+        // Coalesce bursts (key repeat, reply floods) to at most ~60 fps.
+        let mut frame_wait = None;
         if dirty {
-            screen
-                .terminal
-                .draw(|frame| render_with_native(frame, &app, Some(&mut native_preview)))?;
-            dirty = false;
+            let since = last_draw.elapsed();
+            if since >= FRAME_INTERVAL {
+                screen.draw(|frame| render_with_native(frame, &app, Some(&mut native_preview)))?;
+                last_draw = Instant::now();
+                dirty = false;
+            } else {
+                frame_wait = Some(FRAME_INTERVAL - since);
+            }
         }
-        let mut wait =
-            notifications::poll_interval(app.notice_started, app.notice_deadline, Instant::now());
-        if app.view == View::Work {
-            wait = wait.min(Duration::from_millis(250));
-        }
-        if app.command_panel.as_ref().is_some_and(|p| p.alive) {
-            wait = wait.min(Duration::from_millis(80));
-        }
-        if event::poll(wait)? {
+        if event::poll(loop_wait(&app, now, frame_wait))? {
             for (input, observed) in read_input_batch()? {
                 if super::caps::swallow_stray_reply(&input) {
                     continue;

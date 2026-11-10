@@ -1,0 +1,24 @@
+ cx  ▸Sessions   Files   Network   Keys               viewing fixture@laptop  … 
+                                                                                
+╭ > ros█ ──────────────────────────────────────────────────────────────────────╮
+│ Sessions                                                                     │
+│▌ ros core                                   lab-arm · …emote/catkin_ws  Enter│
+│  New shell                                  laptop · …jects/robot-logs  Enter│
+│  build watcher                              laptop · …projects/cx-demo  Enter│
+│ Folders                                                                      │
+│  …re-matrix-vo99u78j/home/projects/cx-demo  laptop                           │
+│  …matrix-vo99u78j/home/projects/robot-logs  laptop                           │
+│  …capture-matrix-vo99u78j/remote/catkin_ws  lab-arm                          │
+╰ Enter attaches · Esc cancel · Tab section ───────────────────────────────────╯
+│ Transfers         ││External terminal · Enter to move into CX                │
+│ Watch · read-only ││                                                         │
+╰───────────────────╯│                                                         │
+ Selected ───────────│                                                         │
+ Host fixture@laptop │                                                         │
+ Folder /home/xxxxxx │                                                         │
+ Enter open · n new  │                                                         │
+                     ╰─────────────────────────────────────────────────────────╯
+ ● 2/3 devices           Focus: Palette · 13/13                           ↔ idle
+ Enter Confirm              Esc Cancel                Ctrl U Clear              
+                                                                                
+                                                                                

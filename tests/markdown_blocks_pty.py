@@ -53,8 +53,10 @@ for mono in (False, True):
             os.write(master,b'\r'); settle()
             wait(lambda: any('j/k' in line and 'Scroll' in line for line in screen.display))
             # Resize into the narrow labeled-row layout without losing the search.
-            screen.resize(lines=24,columns=48)
-            fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,48,0,0))
+            # The phone layout (<60 cols) gives the preview the full width, so
+            # the labeled rows start below ~38 columns of preview.
+            screen.resize(lines=24,columns=36)
+            fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,36,0,0))
             import signal
             os.kill(proc.pid,signal.SIGWINCH)
             wait(lambda: any('Device:' in line for line in screen.display) and any('Count: 42' in line for line in screen.display))

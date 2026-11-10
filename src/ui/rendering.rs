@@ -60,68 +60,14 @@ fn render_frame(
         );
         return;
     }
+    hitmap::begin();
+    let areas = frame_areas(app, area);
+    let phone = areas.phone;
+    let show_search = areas.show_search;
     let query = filters::visible_query(app);
-    let show_search = matches!(
-        app.input,
-        Some(Input::Search | Input::PreviewSearch | Input::Filter)
-    ) || !query.is_empty();
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Min(5),
-            Constraint::Length(if show_search { 7 } else { 4 }),
-        ])
-        .split(area);
-    let label = match (app.view, area.width < 70) {
-        (View::Work, true) => "Sessions",
-        (View::Files, true) => "Files",
-        (View::Containers, true) => "Containers",
-        (View::Containers, false) => "Sessions  Network  [Containers]",
-        (View::Network, true) => "Network",
-        (View::Work, false) => "[Sessions]  Network",
-        (View::Files, false) => "Sessions / Files  Network",
-        (View::Network, false) => "Sessions  [Network]",
-    };
-    let viewer = app
-        .devices
-        .iter()
-        .find(|d| d.target.is_none())
-        .map(identity)
-        .unwrap_or_else(|| "local viewer".into());
-    let top = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Min(20),
-            Constraint::Length(viewer.len().min(40) as u16 + 8),
-        ])
-        .split(vertical[0]);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" cx ", accent().add_modifier(Modifier::BOLD)),
-            Span::raw("  "),
-            Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
-        ])),
-        top[0],
-    );
-    frame.render_widget(
-        Paragraph::new(format!("viewing {viewer}"))
-            .style(muted())
-            .alignment(ratatui::layout::Alignment::Right),
-        top[1],
-    );
-    let sidebar_width: u16 =
-        if area.width < 60 && app.view == View::Files && app.focus == Focus::Workspace {
-            14
-        } else if area.width < 70 {
-            17
-        } else {
-            21
-        };
-    let content = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(sidebar_width), Constraint::Min(15)])
-        .split(vertical[1]);
+    render_header(frame, app, areas.header);
+    let sidebar_width = areas.sidebar_width;
+    let content = [areas.rail, areas.main];
     let mut device_items = vec![ListItem::new("All devices")];
     for (i, d) in app
         .devices
@@ -204,18 +150,51 @@ fn render_frame(
             Constraint::Min(0),
         ])
         .split(content[0]);
-    app.session_hits.borrow_mut().clear();
-    *app.panels.borrow_mut() = vec![
-        (Focus::Devices, false, sidebar[0]),
-        (Focus::Actions, false, sidebar[1]),
-    ];
+    *app.panels.borrow_mut() = if phone {
+        vec![(Focus::Devices, false, areas.strip)]
+    } else {
+        vec![
+            (Focus::Devices, false, sidebar[0]),
+            (Focus::Actions, false, sidebar[1]),
+        ]
+    };
+    if phone {
+        render_device_strip(frame, app, areas.strip);
+    }
     if app.view != View::Files || app.other_browser.is_none() {
         app.panels
             .borrow_mut()
             .push((Focus::Workspace, app.destination_active, content[1]));
     }
+    let device_rows = app.device_rows();
+    let device_selected = device_rows.iter().position(|d| *d == app.device);
+    let device_height = sidebar[0].height.saturating_sub(2) as usize;
+    let device_offset = navigation::viewport(
+        "devices",
+        device_selected.unwrap_or(0),
+        device_rows.len(),
+        device_height,
+    );
     let mut state = ratatui::widgets::ListState::default()
-        .with_selected(app.device_rows().iter().position(|d| *d == app.device));
+        .with_selected(device_selected)
+        .with_offset(device_offset);
+    if !phone {
+        let inner = Rect::new(
+            sidebar[0].x + 1,
+            sidebar[0].y + 1,
+            sidebar[0].width.saturating_sub(2),
+            device_height as u16,
+        );
+        for (line, index) in (device_offset..device_rows.len()).enumerate() {
+            if line >= device_height {
+                break;
+            }
+            hitmap::register(
+                Rect::new(inner.x, inner.y + line as u16, inner.width, 1),
+                hitmap::Hit::Row(hitmap::ListId::Devices, device_rows[index]),
+            );
+        }
+    }
     frame.render_stateful_widget(
         List::new(device_items)
             .block(
@@ -234,6 +213,22 @@ fn render_frame(
         sidebar[0],
         &mut state,
     );
+    if !phone {
+        hitmap::scrollbar(
+            frame,
+            hitmap::ListId::Devices,
+            Rect::new(
+                sidebar[0].x,
+                sidebar[0].y + 1,
+                sidebar[0].width,
+                device_height as u16,
+            ),
+            state.offset(),
+            device_rows.len(),
+            device_height,
+            device_rows.len(),
+        );
+    }
     let actions = sidebar_actions(app);
     let items = actions
         .iter()
@@ -272,6 +267,18 @@ fn render_frame(
         sidebar[1],
         &mut state,
     );
+    if !phone {
+        for (line, (action, _)) in actions.iter().enumerate() {
+            let y = sidebar[1].y + 1 + line as u16;
+            if y + 1 >= sidebar[1].bottom() {
+                break;
+            }
+            hitmap::register(
+                Rect::new(sidebar[1].x + 1, y, sidebar[1].width.saturating_sub(2), 1),
+                hitmap::Hit::Cmd(keymap::Cmd::Do(*action)),
+            );
+        }
+    }
     let details = if app.view == View::Containers {
         app.selected_container()
             .map(|(d, c)| {
@@ -320,7 +327,11 @@ fn render_frame(
             .unwrap_or_else(|| "No devices or LAN observations".into())
     } else if app.view == View::Files {
         String::new() // Render the selected file context as styled hierarchy below.
-    } else if let Some((i, s)) = app.selected_session() {
+    } else if let Some((i, s)) = app
+        .selected_session()
+        // The Keys placeholder has no session row to open.
+        .filter(|_| app.view != View::Secrets)
+    {
         if let Some(scope) = &s.container {
             format!(
                 "Host {}\n{} {}\nFolder {}\nEnter open · n new",
@@ -642,8 +653,15 @@ fn render_frame(
                         }),
                     );
                 }
+                // Remembered viewport with scrolloff: the list moves only when
+                // the bar nears an edge, never per frame (spec 12.4).
+                let body_height = table_area.height.saturating_sub(4) as usize;
+                let offset =
+                    navigation::viewport("sessions", selected_row, display_rows.len(), body_height);
+                let display_len = display_rows.len();
                 let mut state = TableState::default()
-                    .with_selected((app.selected < rows.len()).then_some(selected_row));
+                    .with_selected((app.selected < rows.len()).then_some(selected_row))
+                    .with_offset(offset);
                 let table = Table::new(
                     display_rows,
                     if compact {
@@ -684,19 +702,27 @@ fn render_frame(
                 // the rendered rows, not index arithmetic over logical sessions.
                 let body_y = table_area.y.saturating_add(3); // border + header + margin
                 let bottom = table_area.bottom().saturating_sub(1);
-                let mut hits = app.session_hits.borrow_mut();
                 for (row, index) in session_display_rows {
                     if row < state.offset() {
                         continue;
                     }
                     let y = body_y.saturating_add((row - state.offset()) as u16);
                     if y < bottom {
-                        hits.push((
+                        hitmap::register(
                             Rect::new(table_area.x + 1, y, table_area.width.saturating_sub(2), 1),
-                            index,
-                        ));
+                            hitmap::Hit::Row(hitmap::ListId::Sessions, index),
+                        );
                     }
                 }
+                hitmap::scrollbar(
+                    frame,
+                    hitmap::ListId::Sessions,
+                    Rect::new(table_area.x, body_y, table_area.width, body_height as u16),
+                    state.offset(),
+                    display_len,
+                    body_height,
+                    rows.len(),
+                );
             }
         }
         View::Files => {
@@ -780,6 +806,7 @@ fn render_frame(
         }
         View::Containers => render_containers(frame, app, workspace),
         View::Network => render_network(frame, app, workspace),
+        View::Secrets => render_secrets(frame, app, workspace),
     }
     if split_workspace[1].height > 0 {
         let rows = app.job_rows();
@@ -849,23 +876,28 @@ fn render_frame(
             split_workspace[1],
         );
     }
+    // Phone: one chip row, then the bottom tab bar (separator + tabs).
+    let (key_rows, tail) = if phone { (1, 2) } else { (2, 1) };
     let footer = Layout::default()
         .direction(Direction::Vertical)
         .constraints(if show_search {
             vec![
                 Constraint::Length(3),
                 Constraint::Length(1),
-                Constraint::Length(2),
-                Constraint::Length(1),
+                Constraint::Length(key_rows),
+                Constraint::Length(tail),
             ]
         } else {
             vec![
                 Constraint::Length(1),
-                Constraint::Length(2),
-                Constraint::Length(1),
+                Constraint::Length(key_rows),
+                Constraint::Length(tail),
             ]
         })
-        .split(vertical[2]);
+        .split(areas.footer);
+    if phone {
+        render_tab_bar(frame, app, footer[footer.len() - 1]);
+    }
     let status_row = if show_search { 1 } else { 0 };
     let key_row = if show_search { 2 } else { 1 };
     let mut unique_jobs = std::collections::BTreeMap::new();
@@ -986,7 +1018,10 @@ fn render_frame(
                 accent().add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                if app.dialog.is_some() || app.help {
+                if app.dialog.is_some()
+                    || app.help
+                    || (app.view == View::Secrets && app.focus == Focus::Workspace)
+                {
                     String::new()
                 } else {
                     format!(" · {shown}/{total}")
@@ -997,7 +1032,13 @@ fn render_frame(
         .alignment(ratatui::layout::Alignment::Center),
         status_sections[1],
     );
-    let transfer = if active > 0 {
+    let transfer = if active > 0 && phone {
+        // The phone layout has no Actions panel; the status line animates.
+        format!(
+            "{} Transfers {active} ",
+            transfer_spinner(app.transfer_frame, ascii())
+        )
+    } else if active > 0 {
         format!("{} {active} active", if ascii() { "~" } else { "↔" })
     } else if failed > 0 {
         format!("{} {failed} failed", if ascii() { "x" } else { "×" })
@@ -1152,12 +1193,12 @@ fn render_frame(
         vec![("Enter", "Connect"), ("Esc", "Cancel"), ("Ctrl U", "Clear")]
     } else if matches!(
         app.input,
-        Some(Input::Rename | Input::Mkdir | Input::Palette | Input::Command)
+        Some(Input::Rename | Input::Mkdir | Input::Palette)
     ) {
         vec![
             (
                 "Enter",
-                if app.input == Some(Input::Command) {
+                if app.palette_run_mode() {
                     "Run"
                 } else {
                     "Confirm"
@@ -1187,159 +1228,52 @@ fn render_frame(
             ("Esc", "Done"),
             ("Tab", "Focus"),
         ]
-    } else if app.view == View::Files
-        && app.focus == Focus::Workspace
-        && app.browser.as_ref().is_some_and(|b| b.preview.is_some())
-    {
-        let mut hints = vec![
-            (
-                "j/k",
-                if app.pdf_preview_active() {
-                    "Pages"
-                } else {
-                    "Scroll"
-                },
-            ),
-            ("gg / G", "Top / bottom"),
-            ("Esc", "Back"),
-            ("?", "Help"),
-        ];
-        if app.text_preview_active() {
-            hints.insert(2, ("/", "Search"));
-            hints.insert(3, ("n / N", "Next / previous"));
-            if app.markdown_preview_active() {
-                hints[1] = ("o", "Links");
-            }
-        }
-        hints
-    } else if app.view == View::Network && app.focus == Focus::Workspace {
-        vec![
-            ("j/k", "Devices / LAN"),
-            ("Enter", "Open / connect"),
-            if app.device == 0 {
-                ("h / l", "Fold / expand")
-            } else {
-                ("Home", "Host details")
-            },
-            ("J / K", "Scroll details"),
-            ("Ctrl P", "Actions"),
-            ("?", "Help"),
-            ("Ctrl C", "Quit"),
-        ]
-    } else if app.view == View::Containers && app.focus == Focus::Workspace {
-        vec![
-            ("Enter", "Actions"),
-            ("n", "New session"),
-            ("h / l", "Fold / expand"),
-            ("r", "Refresh"),
-            ("/", "Search"),
-            ("Ctrl P", "Actions"),
-        ]
-    } else if app.view == View::Files
-        && app.focus == Focus::Workspace
-        && app.destination_active
-        && app.clipboard.is_some()
-    {
-        vec![
-            ("Enter", "Transfer here"),
-            ("h / l", "Parent / open"),
-            ("Tab", "Source"),
-            ("o", "Conflict policy"),
-            ("T", "Progress"),
-            ("?", "All keys"),
-        ]
-    } else if app.view == View::Files && app.focus == Focus::Workspace {
-        vec![
-            ("s", "Sessions here"),
-            ("Space", "Select"),
-            ("c / x", "Copy / cut"),
-            ("p / t", "Paste / transfer"),
-            (
-                if app.browser.as_ref().is_some_and(|b| !b.search.is_empty()) {
-                    "n / N"
-                } else {
-                    "n / :"
-                },
-                if app.browser.as_ref().is_some_and(|b| !b.search.is_empty()) {
-                    "Next / previous"
-                } else {
-                    "Session / command"
-                },
-            ),
-            ("r / d", "Rename / delete"),
-            ("?", "All keys"),
-        ]
-    } else if empty_work_can_create(app) && app.focus == Focus::Workspace {
-        vec![
-            ("Enter/n", "New session"),
-            (
-                if local_only(app) { "a" } else { "/" },
-                if local_only(app) {
-                    "Add by SSH address"
-                } else {
-                    "Search"
-                },
-            ),
-            ("Tab", "Focus"),
-            ("Ctrl P", "Actions"),
-            ("Ctrl C", "Quit"),
-            ("?", "Help"),
-        ]
-    } else if app.view == View::Work && app.focus == Focus::Workspace {
-        vec![
-            ("Enter", "Open"),
-            ("n", "New session"),
-            ("w", "Watch · read-only"),
-            ("p", "Pin / unpin"),
-            ("s", "Agent tasks"),
-            ("d", "Stop · confirm"),
-            ("Ctrl P", "Actions"),
-            ("?", "Help"),
-        ]
     } else {
-        vec![
-            (
-                "Enter",
-                if app.focus == Focus::Actions {
-                    "Run"
-                } else {
-                    "Open"
-                },
-            ),
-            ("/", "Search"),
-            ("Tab", "Focus"),
-            ("Ctrl P", "Actions"),
-            ("?", "Help"),
-            ("Ctrl C", "Quit"),
-        ]
+        Vec::new()
     };
-    let columns = if footer[key_row].width >= 60 { 3 } else { 2 };
+    // Workspace hints come from the keymap, so they match dispatch and help
+    // and each chip is a tap target running the same command as its key.
+    let modal = !hints.is_empty();
+    let mut chips: Vec<(&str, &str, Option<keymap::Cmd>)> = if modal {
+        hints.drain(..).map(|(k, l)| (k, l, None)).collect()
+    } else {
+        keymap::hints(app)
+            .into_iter()
+            .map(|(hint, cmd)| (hint.key, hint.label, Some(cmd)))
+            .collect()
+    };
+    let columns = if phone {
+        3
+    } else if footer[key_row].width >= 60 {
+        3
+    } else {
+        2
+    };
+    let capacity = columns * usize::from(key_rows);
     if columns == 2
         && !matches!(
             app.input,
             Some(Input::Search | Input::PreviewSearch | Input::Filter)
         )
     {
-        hints.retain(|(_, label)| !matches!(*label, "Search" | "Focus"));
-        hints.truncate(4);
-        if app.dialog.is_none()
-            && app.input.is_none()
-            && !app.help
-            && app.view == View::Files
-            && app.browser.as_ref().is_some_and(|b| b.preview.is_none())
+        chips.retain(|(_, label, _)| !matches!(*label, "Search" | "Focus"));
+    }
+    // Help stays reachable by tap even when the chips overflow.
+    if !modal && chips.len() > capacity && capacity > 1 {
+        if let Some(help) = chips
+            .iter()
+            .position(|(_, _, cmd)| *cmd == Some(keymap::Cmd::Help))
         {
-            hints[3] = if app.destination_active && app.clipboard.is_some() {
-                ("T", "Progress")
-            } else {
-                ("t / T", "Send / jobs")
-            };
+            let help = chips.remove(help);
+            chips.truncate(capacity - 1);
+            chips.push(help);
         }
     }
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .constraints(vec![Constraint::Length(1); usize::from(key_rows)])
         .split(footer[key_row]);
-    for (i, (key, label)) in hints.into_iter().take(columns * 2).enumerate() {
+    for (i, (key, label, cmd)) in chips.into_iter().take(capacity).enumerate() {
         let key = if ascii() && key == "↑↓" {
             "j/k"
         } else {
@@ -1350,13 +1284,31 @@ fn render_frame(
             .constraints(vec![Constraint::Ratio(1, columns as u32); columns])
             .split(rows[i / columns]);
         let key_style = accent().add_modifier(Modifier::BOLD);
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
+        let cell = cells[i % columns];
+        let text = if phone && !modal {
+            // Touch targets: one short word per chip, bracketed like a button.
+            let word = label
+                .split([' ', '/', '·'])
+                .find(|w| !w.is_empty())
+                .unwrap_or(label);
+            Line::from(vec![Span::styled(format!(" [{word}] "), key_style)])
+                .alignment(ratatui::layout::Alignment::Center)
+        } else {
+            Line::from(vec![
                 Span::styled(format!(" {key} "), key_style),
                 Span::raw(label),
-            ])),
-            cells[i % columns],
-        );
+            ])
+        };
+        if let Some(cmd) = cmd.filter(|c| *c != keymap::Cmd::Motion) {
+            // Phone chips take their whole cell (larger touch targets).
+            let width = if phone {
+                cell.width
+            } else {
+                (text.width() as u16 + 1).min(cell.width)
+            };
+            hitmap::register(Rect::new(cell.x, cell.y, width, 1), hitmap::Hit::Cmd(cmd));
+        }
+        frame.render_widget(Paragraph::new(text), cell);
     }
     // Overlays from here on: they own the focused treatment.
     set_panels_dimmed(false);
@@ -1404,51 +1356,17 @@ fn render_frame(
         let rect = popup(
             area,
             if input == Input::Add { 64 } else { 76 },
-            if input == Input::Palette {
-                19
-            } else if matches!(input, Input::Rename | Input::Command | Input::Add) {
+            if matches!(input, Input::Rename | Input::Add) {
                 3
             } else {
                 5
             },
         );
-        frame.render_widget(Clear, rect);
         if input == Input::Palette {
-            let parts = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(3),
-                    Constraint::Min(1),
-                    Constraint::Length(3),
-                ])
-                .split(rect);
-            frame.render_widget(
-                Paragraph::new(format!("> {}", safe_text(&app.text)))
-                    .block(block("Actions · type to filter".into(), true)),
-                parts[0],
-            );
-            let items = app
-                .palette()
-                .iter()
-                .map(|(_, s)| ListItem::new(*s))
-                .collect::<Vec<_>>();
-            let mut state =
-                ratatui::widgets::ListState::default().with_selected(Some(app.palette_selected));
-            frame.render_stateful_widget(
-                List::new(items)
-                    .block(plain_block())
-                    .highlight_style(selected_style()),
-                parts[1],
-                &mut state,
-            );
-            frame.render_widget(
-                Paragraph::new(app.palette_scope())
-                    .wrap(Wrap { trim: false })
-                    .block(plain_block()),
-                parts[2],
-            );
+            render_palette(frame, app, area, phone);
         } else {
-            let editing = matches!(input, Input::Rename | Input::Command | Input::Add);
+            frame.render_widget(Clear, rect);
+            let editing = matches!(input, Input::Rename | Input::Add);
             let cursor_width = if editing {
                 Span::raw(safe_label(if input == Input::Add {
                     &app.text
@@ -1462,33 +1380,14 @@ fn render_frame(
             };
             let scroll = cursor_width.saturating_sub(rect.width.saturating_sub(3));
             frame.render_widget(
-                Paragraph::new(
-                    if matches!(input, Input::Rename | Input::Command | Input::Add) {
-                        format!("> {}", safe_label(&app.text))
-                    } else {
-                        format!("> {}\nEnter confirm · Escape cancel", safe_label(&app.text))
-                    },
-                )
+                Paragraph::new(if matches!(input, Input::Rename | Input::Add) {
+                    format!("> {}", safe_label(&app.text))
+                } else {
+                    format!("> {}\nEnter confirm · Escape cancel", safe_label(&app.text))
+                })
                 .scroll((0, scroll))
                 .block(block(
-                    if input == Input::Command {
-                        app.command_target
-                            .as_ref()
-                            .map(|(d, path)| {
-                                format!(
-                                    "Run command · {} · {}",
-                                    identity(&app.devices[*d]),
-                                    safe_label(
-                                        app.browser
-                                            .as_ref()
-                                            .filter(|b| b.device == *d && b.path == *path)
-                                            .map(|b| b.display_path.as_str())
-                                            .unwrap_or(path)
-                                    )
-                                )
-                            })
-                            .unwrap_or_else(|| "Run command".into())
-                    } else if input == Input::Add && app.network_add_target.is_some() {
+                    if input == Input::Add && app.network_add_target.is_some() {
                         let (d, address) = app.network_add_target.as_ref().unwrap();
                         format!(
                             "SSH account · {} via {}",
@@ -1505,7 +1404,6 @@ fn render_frame(
                             Input::Search | Input::PreviewSearch => "Search",
                             Input::Add => "Add by SSH address · alias or user@host",
                             Input::Rename => "Rename",
-                            Input::Command => "Run command",
                             _ => "Directory name",
                         }
                         .into()
@@ -1902,173 +1800,727 @@ fn render_frame(
         }
     }
     if app.help {
-        let rect = popup(area, 76, 20);
+        hitmap::modal();
+        // One box over a dimmed backdrop (P12). Below 100 columns a centered
+        // box would leave 1-2 column slivers of the panels at the edges, so
+        // the overlay takes the full frame there.
+        dim_backdrop(frame);
+        let rect = if phone || area.width < 100 {
+            Rect::new(area.x, area.y, area.width, area.height)
+        } else {
+            popup(area, 76, area.height.saturating_sub(4).clamp(20, 40))
+        };
         frame.render_widget(Clear, rect);
         let key_style = accent().add_modifier(Modifier::BOLD);
-        let key_row = |keys: &str, description: &str| {
-            Line::from(vec![
-                Span::styled(format!("{keys:<22} "), key_style),
-                Span::raw(description.to_owned()),
-            ])
+        let key_width = if rect.width < 50 { 12 } else { 18 };
+        // Descriptions wrap under their own column, never back into the key
+        // column (the block border takes one cell on each side).
+        let description_width = usize::from(rect.width.saturating_sub(2))
+            .saturating_sub(key_width + 1)
+            .max(8);
+        let key_row = |keys: &str, description: &str| -> Vec<Line<'static>> {
+            help_wrap(description, description_width)
+                .into_iter()
+                .enumerate()
+                .map(|(index, part)| {
+                    let keys = if index == 0 { keys } else { "" };
+                    Line::from(vec![
+                        Span::styled(format!("{keys:<key_width$} "), key_style),
+                        Span::raw(part),
+                    ])
+                })
+                .collect()
         };
-        let mut help = vec![
-            key_row("Arrows / h j k l", "Navigate"),
-            key_row("Ctrl+arrows / hjkl", "Move panel focus (hold Ctrl)"),
-            key_row("Enter", "Open / enter session with input"),
-            key_row("Escape", "Back / clear current mode"),
-            key_row("Tab / Shift+Tab", "Next / previous panel"),
-            key_row("/", "Search"),
-            key_row("Ctrl+P", "Actions"),
-            key_row(
-                "n",
-                if app.view == View::Files
-                    && app.browser.as_ref().is_some_and(|b| !b.search.is_empty())
-                {
-                    "Next matching file; clear search for New session"
-                } else {
-                    "New session in current folder"
-                },
-            ),
-            key_row(":", "Run command in current folder"),
-            key_row("Ctrl+C", "Quit cx; work keeps running"),
-        ];
-        if app.view == View::Work {
-            help.push(key_row("p", "Pin / unpin; keep an ended-work bookmark"));
-            help.push(key_row("d", "Stop selected CX-managed session · confirm"));
-            help.push(key_row("w", "Watch selected session · read-only"));
-            help.push(key_row(
-                "s",
-                "Inspect selected session's tasks and subagents",
-            ));
-        }
-        if app.focus == Focus::Devices {
-            help.push(key_row(
-                "b",
-                "Toggle selected remote device access · * means single-direction",
-            ));
-        }
-        if app.view == View::Files && app.browser.as_ref().is_some_and(|b| b.preview.is_some()) {
-            help.extend([
-                key_row("gg / G", "Preview top / bottom (first/last PDF page)"),
-                key_row("j/k · PgUp/PgDn", "Scroll preview / change PDF page"),
-                key_row(
-                    "Escape",
-                    "Finish search / clear highlights / return to files",
-                ),
-            ]);
-            if app.text_preview_active() {
-                help.extend([
-                    key_row("/", "Search preview text, live fuzzy matches"),
-                    key_row("n / N", "Next / previous match, wrap around"),
-                    key_row(
-                        "o / click link",
-                        "Inspect links; Enter opens viewer browser",
-                    ),
-                ]);
+        // Generated from the keymap: the same table dispatches the keys.
+        let mut help = Vec::new();
+        for (index, (title, rows)) in keymap::help_sections(app).into_iter().enumerate() {
+            if index > 0 {
+                help.push(Line::default());
             }
-        } else if app.view == View::Files {
-            help.push(Line::from(Span::styled("Files", key_style)));
-            for (keys, description) in [
-                ("s", "Sessions in selected / current folder"),
-                ("Left/h · Right/l", "Parent / enter directory"),
-                ("Space", "Select and advance"),
-                ("v · u", "Visual range / clear selection"),
-                (".", "Show / hide hidden files"),
-                ("/ · n / N", "Highlight names / next / previous match"),
-                ("f", "Filter names"),
-                (
-                    "c/y · x",
-                    "Copy / cut, then choose another folder or device",
-                ),
-                ("p · Y", "Paste here / clear clipboard"),
-                (
-                    "t",
-                    "Transfer to… choose device, folder, then Enter (h/l navigate)",
-                ),
-                ("T", "Transfer jobs and results"),
-                ("r · d", "Rename / confirm permanent deletion"),
-                ("M · o", "New folder / cycle copy conflict policy"),
-                ("gg / G · 5j / 5k", "First/last file / counted movement"),
-            ] {
-                help.push(key_row(keys, description));
+            help.push(Line::from(Span::styled(
+                title,
+                Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            )));
+            for (keys, description) in rows {
+                help.extend(key_row(keys, description));
             }
         }
         if matches!(app.dialog, Some(Dialog::Jobs)) {
+            help.push(Line::default());
             help.push(Line::from(Span::styled("Transfer jobs", key_style)));
-            help.extend([
-                key_row("c · r", "Cancel / retry saved job"),
-                key_row("Enter / Tab", "Focus details"),
-                key_row("PgUp/PgDn", "Scroll details"),
-            ]);
+            for (keys, description) in [
+                ("c · r", "Cancel / retry saved job"),
+                ("Enter / Tab", "Focus details"),
+                ("PgUp/PgDn", "Scroll details"),
+            ] {
+                help.extend(key_row(keys, description));
+            }
         }
         help.push(Line::default());
-        if app.view == View::Work
-            && app
-                .selected_session()
-                .is_some_and(|(_, s)| !s.external && s.provider == "shell")
-        {
-            help.push(key_row(
-                "d",
-                "Stop selected CX-managed session · confirmation",
-            ));
-        }
+        help.push(Line::from(Span::styled(
+            "Inside sessions",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )));
         help.push(Line::raw("Native terminals own their input."));
-        help.push(key_row("Ctrl+]", "Return from a managed session"));
+        help.extend(key_row(DETACH_KEY, "Return from a managed session"));
         help.push(Line::raw("External sessions keep their tmux bindings."));
         help.push(Line::default());
         help.push(Line::from(Span::styled(
-            "Available actions · Ctrl+P",
-            key_style,
+            "Mouse and touch",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )));
-        for (action, label) in ACTIONS
-            .iter()
-            .filter(|(a, _)| workspace_action(*a) && app.action_enabled(*a))
-        {
-            let keys = match action {
-                Action::TransferTo => "t",
-                Action::Jobs => "T",
-                Action::Copy => "c / y",
-                Action::Cut => "x",
-                Action::Rename => "r",
-                Action::Delete => "d",
-                Action::Hidden => ".",
-                Action::Filter => "f",
-                Action::Select => "Space",
-                Action::Visual => "v",
-                Action::Paste => "p",
-                Action::Help => "? / F1",
-                Action::Quit => "Ctrl+C",
-                _ => "",
-            };
-            let description = if matches!(
-                action,
-                Action::TransferTo
-                    | Action::Copy
-                    | Action::Cut
-                    | Action::Rename
-                    | Action::Delete
-                    | Action::Hidden
-                    | Action::Filter
-                    | Action::Select
-                    | Action::Visual
-            ) {
-                label
-                    .rsplit_once(" · ")
-                    .map(|(description, _)| description)
-                    .unwrap_or(label)
-            } else {
-                label
-            };
-            help.push(key_row(keys, description));
-        }
+        help.extend(key_row("tap", "Select a row; tap it again to open"));
+        help.extend(key_row(
+            "hold / right",
+            "Actions for the row (same as its keys)",
+        ));
+        help.extend(key_row("tab · chip", "Go to the view / run the chip's key"));
+        help.extend(key_row("wheel", "Move one row per detent"));
         frame.render_widget(
             Paragraph::new(help)
                 .wrap(Wrap { trim: false })
                 .scroll((app.help_scroll, 0))
-                .block(block("Help".into(), true)),
+                .block(block("Help · Esc close".into(), true)),
             rect,
         );
     }
+    hitmap::render_context_menu(frame, app, area);
+}
+/// Word-wraps a help description to `width` cells; a word longer than the
+/// column is cut with an ellipsis rather than spilling into the key column.
+pub(super) fn help_wrap(text: &str, width: usize) -> Vec<String> {
+    let w = |t: &str| Span::raw(t).width();
+    let width = width.max(2);
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let word = if w(word) > width {
+            let mut cut = String::new();
+            for c in word.chars() {
+                if w(&cut) + w(c.encode_utf8(&mut [0; 4])) + 1 > width {
+                    break;
+                }
+                cut.push(c);
+            }
+            cut.push('…');
+            cut
+        } else {
+            word.to_owned()
+        };
+        if line.is_empty() {
+            line = word;
+        } else if w(&line) + 1 + w(&word) <= width {
+            line.push(' ');
+            line.push_str(&word);
+        } else {
+            lines.push(std::mem::take(&mut line));
+            line = word;
+        }
+    }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+/// Key that returns from a managed session. The sessions wave moves this to
+/// Ctrl+\ together with the tmux binding; help reads it from here.
+pub(super) const DETACH_KEY: &str = "Ctrl+]";
+/// Width class XS (phones): single column, device chip strip, bottom tab bar.
+pub(super) fn phone(width: u16) -> bool {
+    width < 60
+}
+/// The frame's fixed regions, shared by rendering and the native-preview
+/// placement so they cannot disagree.
+pub(super) struct Areas {
+    pub phone: bool,
+    pub show_search: bool,
+    pub header: Rect,
+    pub rail: Rect,
+    /// Device chip strip (phone only).
+    pub strip: Rect,
+    pub main: Rect,
+    pub footer: Rect,
+    pub sidebar_width: u16,
+}
+pub(super) fn frame_areas(app: &App, area: Rect) -> Areas {
+    let query = filters::visible_query(app);
+    let show_search = matches!(
+        app.input,
+        Some(Input::Search | Input::PreviewSearch | Input::Filter)
+    ) || !query.is_empty();
+    let phone = phone(area.width);
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(if phone { 1 } else { 2 }),
+            Constraint::Min(5),
+            Constraint::Length(if show_search { 7 } else { 4 }),
+        ])
+        .split(area);
+    let sidebar_width: u16 = if phone {
+        0
+    } else if area.width < 70 {
+        17
+    } else {
+        21
+    };
+    let content = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(sidebar_width), Constraint::Min(15)])
+        .split(vertical[1]);
+    let (strip, main) = if phone {
+        let parts = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(4)])
+            .split(content[1]);
+        (parts[0], parts[1])
+    } else {
+        (Rect::default(), content[1])
+    };
+    Areas {
+        phone,
+        show_search,
+        header: vertical[0],
+        rail: content[0],
+        strip,
+        main,
+        footer: vertical[2],
+        sidebar_width,
+    }
+}
+fn tab_label(view: View, phone: bool) -> &'static str {
+    keymap::TABS
+        .iter()
+        .find(|(v, _, _)| *v == view)
+        .map(|(_, long, short)| if phone { *short } else { *long })
+        .unwrap_or("Sessions")
+}
+/// Header: product mark, clickable view tabs and the palette button.
+fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let row = Rect::new(area.x, area.y, area.width, 1);
+    let active = keymap::tab_index(app.view);
+    let mark = Span::styled(" cx ", accent().add_modifier(Modifier::BOLD));
+    // U+2026 is in every common terminal font (U+22EF often is not).
+    let more = if ascii() { " ... " } else { " … " };
+    let more_width = more.chars().count() as u16;
+    let palette = Rect::new(
+        row.right().saturating_sub(more_width),
+        row.y,
+        more_width.min(row.width),
+        1,
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(more, accent().add_modifier(Modifier::BOLD))),
+        palette,
+    );
+    hitmap::register(palette, hitmap::Hit::Cmd(keymap::Cmd::Palette));
+    if phone(area.width) {
+        // Tabs move to the bottom bar; the header names the current view.
+        let name = if app.view == View::Containers {
+            "Containers"
+        } else {
+            keymap::TABS[active].1
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                mark,
+                Span::styled(if ascii() { "- " } else { "· " }, muted()),
+                Span::styled(name, Style::default().add_modifier(Modifier::BOLD)),
+            ])),
+            Rect::new(row.x, row.y, row.width.saturating_sub(more_width), 1),
+        );
+        return;
+    }
+    let mut spans = vec![mark, Span::raw(" ")];
+    let mut x = row.x + 5;
+    for (index, (view, label, _)) in keymap::TABS.iter().enumerate() {
+        let selected = index == active;
+        let text = format!(
+            "{}{label} ",
+            if selected {
+                if ascii() {
+                    ">"
+                } else {
+                    "▸"
+                }
+            } else {
+                " "
+            }
+        );
+        let width = text.chars().count() as u16;
+        if x + width > palette.x {
+            break;
+        }
+        hitmap::register(Rect::new(x, row.y, width, 1), hitmap::Hit::Tab(*view));
+        spans.push(Span::styled(
+            text,
+            if selected {
+                accent().add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            },
+        ));
+        spans.push(Span::raw(" "));
+        x += width + 1;
+    }
+    if app.view == View::Containers && x + 13 <= palette.x {
+        spans.push(Span::styled(
+            format!("{}Containers", if ascii() { ">" } else { "▸" }),
+            accent().add_modifier(Modifier::BOLD),
+        ));
+        x += 11;
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), row);
+    let viewer = app
+        .devices
+        .iter()
+        .find(|d| d.target.is_none())
+        .map(identity)
+        .unwrap_or_else(|| "local viewer".into());
+    let text = format!("viewing {viewer} ");
+    let width = text.chars().count() as u16;
+    if x + width + 2 <= palette.x {
+        frame.render_widget(
+            Paragraph::new(text).style(muted()),
+            Rect::new(palette.x - width, row.y, width, 1),
+        );
+    }
+}
+/// Phone bottom tab bar: a separator row and four equal, tall tab targets.
+fn render_tab_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    let rule = if ascii() { "=" } else { "━" };
+    frame.render_widget(
+        Paragraph::new(rule.repeat(area.width as usize)).style(muted()),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    let labels = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
+    let cells = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(vec![Constraint::Ratio(1, 4); 4])
+        .split(labels);
+    let active = keymap::tab_index(app.view);
+    for (index, (view, _, _)) in keymap::TABS.iter().enumerate() {
+        let selected = index == active;
+        let label = format!(
+            "{}{}",
+            if selected {
+                if ascii() {
+                    ">"
+                } else {
+                    "▸"
+                }
+            } else {
+                ""
+            },
+            tab_label(*view, true)
+        );
+        frame.render_widget(
+            Paragraph::new(label)
+                .alignment(ratatui::layout::Alignment::Center)
+                .style(if selected {
+                    accent().add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                }),
+            cells[index],
+        );
+        hitmap::register(
+            Rect::new(cells[index].x, area.y, cells[index].width, area.height),
+            hitmap::Hit::Tab(*view),
+        );
+    }
+}
+fn device_glyph(app: &App, d: usize) -> (&'static str, Style) {
+    let w = &app.work[d];
+    let (unicode, plain, style) = if w.loading {
+        ("◌", ".", info())
+    } else if w.error.is_some() {
+        ("✕", "x", warn())
+    } else if w.fetched > 0 && transport::now().saturating_sub(w.fetched) <= 60 {
+        ("●", "+", ok())
+    } else {
+        ("·", "-", Style::default())
+    };
+    (if ascii() { plain } else { unicode }, style)
+}
+/// Phone device rail: one row of tappable device chips.
+fn render_device_strip(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let rows = app.device_rows();
+    let focused = app.focus == Focus::Devices;
+    let chips: Vec<(usize, Vec<Span<'static>>, u16)> = rows
+        .iter()
+        .map(|value| {
+            let mut spans = Vec::new();
+            if *value == 0 {
+                spans.push(Span::raw("All".to_string()));
+            } else {
+                let (glyph, style) = device_glyph(app, value - 1);
+                spans.push(Span::styled(glyph.to_string(), style));
+                if app.device_policy(value - 1).access == store::AccessMode::Directed {
+                    spans.push(Span::raw("* ".to_string()));
+                }
+                spans.push(Span::raw(fit_label(&app.devices[value - 1].name, 14)));
+            }
+            let width = spans.iter().map(|s| s.width() as u16).sum::<u16>() + 2;
+            (*value, spans, width)
+        })
+        .collect();
+    let selected = rows.iter().position(|v| *v == app.device).unwrap_or(0);
+    // Hidden chips are never silent: `‹N` / `N›` markers count them and are
+    // tap targets that step to the nearest hidden device.
+    let marker = |n: usize, left: bool| -> String {
+        match (left, ascii()) {
+            (true, true) => format!("<{n} "),
+            (true, false) => format!("‹{n} "),
+            (false, true) => format!(" {n}>"),
+            (false, false) => format!(" {n}›"),
+        }
+    };
+    let marker_width = |n: usize| marker(n, true).chars().count() as u16;
+    // Last chip shown when the strip starts at `first`, leaving room for the
+    // markers it needs.
+    let fit = |first: usize| -> usize {
+        let left = if first > 0 { marker_width(first) } else { 0 };
+        let mut x = left;
+        let mut last = first;
+        for (index, (_, _, width)) in chips.iter().enumerate().skip(first) {
+            let remaining = chips.len() - index - 1;
+            let reserve = if remaining > 0 {
+                marker_width(remaining)
+            } else {
+                0
+            };
+            if index > first && x + width + reserve > area.width {
+                break;
+            }
+            last = index;
+            x += width + 1;
+        }
+        last
+    };
+    // Scroll the strip so the selected chip is always visible.
+    let mut first = 0;
+    while first < selected && fit(first) < selected {
+        first += 1;
+    }
+    let last = fit(first);
+    let mut x = area.x;
+    let mut line = Vec::new();
+    if first > 0 {
+        let text = marker(first, true);
+        let width = text.chars().count() as u16;
+        line.push(Span::styled(text, accent()));
+        hitmap::register(
+            Rect::new(x, area.y, width, 1),
+            hitmap::Hit::Row(hitmap::ListId::Devices, chips[first - 1].0),
+        );
+        x += width;
+    }
+    let hidden_after = chips.len().saturating_sub(last + 1);
+    let next_hidden = chips.get(last + 1).map(|(value, _, _)| *value);
+    for (index, (value, spans, width)) in chips.into_iter().enumerate().skip(first) {
+        if index > last {
+            break;
+        }
+        let width = width.min(area.right().saturating_sub(x));
+        let chosen = index == selected;
+        let style = if chosen && focused {
+            selected_style().add_modifier(Modifier::REVERSED)
+        } else if chosen {
+            accent().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        line.push(Span::styled("[", style));
+        for span in spans {
+            let merged = span.style.patch(style);
+            line.push(Span::styled(span.content, merged));
+        }
+        line.push(Span::styled("]", style));
+        line.push(Span::raw(" "));
+        hitmap::register(
+            Rect::new(x, area.y, width, 1),
+            hitmap::Hit::Row(hitmap::ListId::Devices, value),
+        );
+        x += width + 1;
+    }
+    if let Some(next) = next_hidden {
+        let text = marker(hidden_after, false);
+        let width = text.chars().count() as u16;
+        let at = area.right().saturating_sub(width);
+        let used: u16 = line.iter().map(|s| s.width() as u16).sum();
+        let gap = at.saturating_sub(area.x + used);
+        line.push(Span::raw(" ".repeat(gap as usize)));
+        line.push(Span::styled(text, accent()));
+        hitmap::register(
+            Rect::new(at, area.y, width, 1),
+            hitmap::Hit::Row(hitmap::ListId::Devices, next),
+        );
+    }
+    frame.render_widget(Paragraph::new(Line::from(line)), area);
+}
+/// Keys / Secrets view placeholder (the inventory lands in a later wave).
+fn render_secrets(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "Keys and secrets",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from("Credentials cx uses will be listed here, always masked."),
+            Line::from(Span::styled(
+                "Nothing is read yet · provider credentials are never read.",
+                muted(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "g s Sessions · g f Files · g n Network",
+                muted(),
+            )),
+        ])
+        .wrap(Wrap { trim: false })
+        .block(block("Keys".into(), app.focus == Focus::Workspace).padding(Padding::horizontal(1))),
+        area,
+    );
+}
+/// The command palette: one box, dimmed background, sections, MRU ranking.
+/// Dim everything already drawn so an overlay reads as the only live layer
+/// (P12): DIM plus, with color, the muted fg so terminals that ignore SGR 2
+/// still recede.
+pub(super) fn dim_backdrop(frame: &mut Frame<'_>) {
+    let colored = !no_color();
+    for cell in frame.buffer_mut().content.iter_mut() {
+        cell.modifier.insert(Modifier::DIM);
+        cell.modifier.remove(Modifier::BOLD | Modifier::REVERSED);
+        if colored {
+            cell.fg = Color::DarkGray;
+            cell.bg = Color::Reset;
+        }
+    }
+}
+/// Fit a `head · path` detail: the path keeps its tail (spec 7), the head
+/// gets what is left.
+pub(super) fn fit_detail(detail: &str, width: usize) -> String {
+    let detail = safe_label(detail);
+    let tail = |text: &str, width: usize| -> String {
+        let count = text.chars().count();
+        if count <= width {
+            return text.to_owned();
+        }
+        let keep: String = text.chars().skip(count + 1 - width.max(1)).collect();
+        format!("{}{keep}", if ascii() { "~" } else { "…" })
+    };
+    if detail.chars().count() <= width {
+        return detail;
+    }
+    match detail.rsplit_once(" · ") {
+        // Long path: the path keeps its tail in at least three fifths of the
+        // room; the head (device) takes what is left, whole when it fits, and
+        // anything the head does not need goes back to the path.
+        Some((head, path)) if width >= 20 => {
+            let room = width - 3;
+            let path_min = path.chars().count().min(room * 3 / 5);
+            let head_width = head.chars().count().min(room - path_min).max(4);
+            let head = fit_label(head, head_width);
+            let rest = width - head.chars().count() - 3;
+            format!("{head} · {}", tail(path, rest))
+        }
+        Some((_, path)) => tail(path, width),
+        None => tail(&detail, width),
+    }
+}
+/// Tail-preserving fit for paths (spec 7: `…/cx-demo`, never `/home/p…`).
+fn fit_path(path: &str, width: usize) -> String {
+    let path = safe_label(path);
+    let count = path.chars().count();
+    if count <= width {
+        return path;
+    }
+    let keep: String = path.chars().skip(count + 1 - width.max(1)).collect();
+    format!("{}{keep}", if ascii() { "~" } else { "…" })
+}
+fn render_palette(frame: &mut Frame<'_>, app: &App, area: Rect, phone: bool) {
+    // Dim everything beneath; nothing bleeds through the box edges (P12).
+    dim_backdrop(frame);
+    hitmap::modal();
+    let items = app.palette_view();
+    // Below 100 columns a centered 76-wide box would sit a cell or two from
+    // the panels' own borders (two borders side by side, P12); span the frame
+    // instead, like the help overlay.
+    let wide = !phone && area.width >= 100;
+    let width = if wide { 76 } else { area.width };
+    // Rows: one per item plus one header per section.
+    let sections = items
+        .iter()
+        .enumerate()
+        .filter(|(i, item)| *i == 0 || items[*i - 1].section != item.section)
+        .count();
+    let content = (items.len() + sections).max(1) as u16;
+    let max_height = if phone {
+        area.height.saturating_sub(2).min(16)
+    } else {
+        area.height.saturating_sub(4).min(19)
+    };
+    let height = (content + 2).min(max_height);
+    let rect = if phone {
+        Rect::new(area.x, area.bottom() - height, width, height)
+    } else {
+        // Anchor the top edge where a full box would start, so the box
+        // grows downwards as results appear instead of jumping around.
+        let full = popup(area, width, max_height);
+        let x = if wide { full.x } else { area.x };
+        Rect::new(x, full.y, width, height)
+    };
+    frame.render_widget(Clear, rect);
+    let cursor = if ascii() { "_" } else { "█" };
+    let search = ">";
+    let footer = if app.palette_run_mode() {
+        format!(" {} ", app.palette_scope())
+    } else {
+        format!(" {} · Tab section ", app.palette_scope())
+    };
+    let at = app.rename_cursor.min(app.text.len());
+    let at = if app.text.is_char_boundary(at) {
+        at
+    } else {
+        app.text.len()
+    };
+    let before = safe_text(&app.text[..at]);
+    let after = safe_text(&app.text[at..]);
+    // Keep the cursor in view for long commands: show the tail before it.
+    let room = (rect.width as usize).saturating_sub(8);
+    let before_chars = before.chars().count();
+    let before = if before_chars > room {
+        before.chars().skip(before_chars - room).collect::<String>()
+    } else {
+        before
+    };
+    let after = fit_label(&after, room.saturating_sub(before.chars().count()));
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .border_set(overlay_border())
+        .border_style(accent())
+        .title(Line::from(vec![
+            Span::styled(format!(" {search} "), accent().add_modifier(Modifier::BOLD)),
+            Span::raw(before),
+            Span::styled(cursor.to_string(), accent()),
+            Span::raw(format!("{after} ")),
+        ]))
+        .title_bottom(Line::styled(
+            fit_label(&footer, rect.width.saturating_sub(2) as usize),
+            muted(),
+        ));
+    let inner = outer.inner(rect);
+    frame.render_widget(outer, rect);
+    if items.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No matches · Backspace to widen · Esc close").style(muted()),
+            inner,
+        );
+        return;
+    }
+    // Interleave section headers; remember which line shows which item.
+    let mut lines: Vec<(Option<usize>, Line<'static>)> = Vec::new();
+    let key_width = 6usize;
+    let width = inner.width as usize;
+    let room = width.saturating_sub(2 + key_width + 1);
+    // One fixed label column for every row with a detail, so details align
+    // across sections (spec 7: columns are fixed).
+    let label_column = items
+        .iter()
+        .filter(|i| !i.detail.is_empty())
+        .map(|i| Span::raw(safe_label(&i.label)).width())
+        .max()
+        .unwrap_or(0)
+        .clamp(room.min(12), (room * 3 / 5).max(room.min(12)));
+    for (index, item) in items.iter().enumerate() {
+        if index == 0 || items[index - 1].section != item.section {
+            lines.push((
+                None,
+                Line::styled(
+                    format!(" {}", item.section),
+                    muted().add_modifier(Modifier::BOLD),
+                ),
+            ));
+        }
+        let selected = index == app.palette_selected;
+        let bar = if selected {
+            if ascii() {
+                "> "
+            } else {
+                "▌ "
+            }
+        } else {
+            "  "
+        };
+        let label_width = if item.detail.is_empty() {
+            room
+        } else {
+            label_column
+        };
+        let label = if item.section == "Folders" {
+            fit_path(&item.label, label_width)
+        } else {
+            fit_label(&safe_label(&item.label), label_width)
+        };
+        let label = if item.detail.is_empty() {
+            label
+        } else {
+            format!("{label:<label_column$}")
+        };
+        let detail_width = room.saturating_sub(label.chars().count() + 2);
+        let detail = if item.detail.is_empty() || detail_width < 4 {
+            String::new()
+        } else {
+            format!("  {}", fit_detail(&item.detail, detail_width))
+        };
+        let used = 2 + label.chars().count() + detail.chars().count();
+        let pad = width.saturating_sub(used + key_width.min(width));
+        lines.push((
+            Some(index),
+            Line::from(vec![
+                Span::styled(bar, accent()),
+                Span::styled(
+                    label,
+                    if selected {
+                        selected_style()
+                    } else {
+                        Style::default()
+                    },
+                ),
+                Span::styled(detail, muted()),
+                Span::raw(" ".repeat(pad)),
+                Span::styled(
+                    format!("{:>key_width$}", fit_label(&item.key, key_width)),
+                    muted(),
+                ),
+            ]),
+        ));
+    }
+    let selected_line = lines
+        .iter()
+        .position(|(i, _)| *i == Some(app.palette_selected))
+        .unwrap_or(0);
+    let height = inner.height as usize;
+    // Scrolloff keeps a section header visible above its first row.
+    let offset = navigation::viewport("palette", selected_line, lines.len(), height);
+    let visible: Vec<_> = lines.into_iter().skip(offset).take(height).collect();
+    for (row, (index, _)) in visible.iter().enumerate() {
+        if let Some(index) = index {
+            hitmap::register(
+                Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
+                hitmap::Hit::PaletteRow(*index),
+            );
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(visible.into_iter().map(|(_, l)| l).collect::<Vec<_>>()),
+        inner,
+    );
 }
 fn render_containers(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let rows = app.container_rows();

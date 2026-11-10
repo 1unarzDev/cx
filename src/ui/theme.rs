@@ -548,13 +548,6 @@ pub(super) fn block_for(title: String, focused: bool, caps: Caps) -> Block<'stat
 pub(super) fn block(title: String, focused: bool) -> Block<'static> {
     block_for(title, focused && !panels_dimmed(), caps())
 }
-/// Untitled unfocused frame (overlay sub-boxes), still honouring ASCII.
-pub(super) fn plain_block() -> Block<'static> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_set(overlay_border())
-        .border_style(faint())
-}
 
 /// ASCII substitute for a UI glyph, or `None` when the symbol is not a known
 /// UI glyph (user content is left alone).

@@ -1,0 +1,40 @@
+ cx  ▸Sessions   Files   Network   Keys                                                       viewing fixture@laptop  … 
+                                                                                                                        
+╭ Devices ──────────╮╭ ▸ Sessions · 13 sessions ─────────────────╮╭ New shell · fixture@laptop ────────────────────────╮
+│ › All devices     ││  SESSION                        STATE     ││Enter · focus terminal · Wheel · scroll             │
+│   ●  laptop       ││                                           ││run-05 step 1 ok  lidar=11Hz                        │
+│   ●  * lab-arm    ││  /home/lunxrz                             ││run-05 step 2 ok  lidar=12Hz                        │
+│   ○  * field-rov… ││  shell · xxxxxx · terminal      idle      ││run-05 step 3 ok  lidar=13Hz                        │
+╰───────────────────╯│  shell · xxxxxx · terminal      idle      ││run-05 step 4 ok  lidar=14Hz                        │
+╭ Actions ──────────╮│  shell · xxxxxx · terminal      idle      ││run-05 step 5 ok  lidar=15Hz                        │
+│ Files             ││  shell · xxxxxx · terminal      idle      ││run-05 step 6 ok  lidar=16Hz                        │
+│ Network           ││  shell · xxxxxx · terminal      idle      ││[xxxxxx@xxxxxxxxxx robot-logs]$                     │
+│ Containers        ││  shell · xxxxxx · terminal      idle      ││                                                    │
+│ Transfers         ││  shell · xxxxxx · terminal      idle      ││                                                    │
+│ Watch · read-only ││  shell · xxxxxx · terminal      idle      ││                                                    │
+╰───────────────────╯│  shell · xxxxxx · terminal      idle      ││                                                    │
+ Selected ───────────│  shell · xxxxxx · terminal      idle      ││                                                    │
+ Host fixture@laptop │                                           ││                                                    │
+ Folder /tmp/cx-cap… │  /tmp/tmp-xxxxxx                          ││                                                    │
+ Enter open · n new  │  build watcher                  idle      ││                                                    │
+                     │                                           ││                                                    │
+                     │  /tmp/tmp-xxxxxx                          ││                                                    │
+                     │› New shell                      idle      ││                                                    │
+                     │                                           ││                                                    │
+                     │  /tmp/tmp-xxxxxx                          ││                                                    │
+                     │  ros core                       idle      ││                                                    │
+                     │                                           ││                                                    │
+                     │                                           ││                                                    │
+                     │                                           ││                                                    │
+                     │                                           ││                                                    │
+                     │                                           ││                                                    │
+                     │                                           ││                                                    │
+                     │                                           ││                                                    │
+                     │                                           ││                                                    │
+                     │                                           ││                                                    │
+                     │                                           ││                                                    │
+                     ╰───────────────────────────────────────────╯╰────────────────────────────────────────────────────╯
+ ● 2/3 devices                             Focus: Sessions · 13/13                                                ↔ idle
+ Enter Open                              n New session                           w Watch · read-only                    
+ p Pin / unpin                           s Agent tasks                           ? Help                                 
+                                                                                                                        

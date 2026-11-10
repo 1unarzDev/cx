@@ -1,0 +1,20 @@
+ cx · Sessions                        … 
+[All] [●laptop] [●* lab-arm]          1›
+╭ ▸ Sessions · 13 sessions ────────────╮
+│  SESSION                   STATE     │
+│                                      │
+│                                      │
+│  /tmp/tmp-xxxxxx                     │
+│› build watcher             idle      │
+│                                      ┃
+│  /tmp/tmp-xxxxxx                     │
+╭ > ros█ ──────────────────────────────╮
+│ Sessions                             │
+│▌ ros core           …catkin_ws  Enter│
+│  New shell          …obot-logs  Enter│
+│  build watcher      …s/cx-demo  Enter│
+│ Folders                              │
+│  …projects/cx-demo  laptop           │
+│  …jects/robot-logs  laptop           │
+│  …remote/catkin_ws  lab-arm          │
+╰ Enter attaches · Esc cancel · Tab se…╯

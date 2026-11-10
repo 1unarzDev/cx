@@ -1,0 +1,24 @@
+ cx  ▸Sessions   Files   Network   Keys               viewing fixture@laptop  … 
+                                                                                
+╭ > █ ─────────────────────────────────────────────────────────────────────────╮
+│ Sessions                                                                     │
+│▌ build watcher                              laptop · …projects/cx-demo  Enter│
+│  New shell                                  laptop · …jects/robot-logs  Enter│
+│  ros core                                   lab-arm · …emote/catkin_ws  Enter│
+│ Actions                                                                      │
+│  Pin / unpin selected session                                               p│
+│  Containers · choose device / All devices                                    │
+│  Add by SSH address · alias / user@host                                      │
+│  Files · choose device · browse home                                         │
+│  New session · choose device, provider and folder                            │
+│  Transfers · progress / cancel / retry                                      T│
+│  Watch session · read-only terminal, no input                                │
+│  Network · choose device / All devices                                       │
+│  Sessions · choose device / All devices                                      │
+│  Refresh                                                                     │
+│  Keyboard help                                                               │
+│  Update cx v0.1.95: check releases                                           │
+╰ Enter attaches · Esc cancel · Tab section ───────────────────────────────────╯
+ Enter Confirm              Esc Cancel                Ctrl U Clear              
+                                                                                
+                                                                                

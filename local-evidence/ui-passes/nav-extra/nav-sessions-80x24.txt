@@ -1,0 +1,24 @@
+ cx  ▸Sessions   Files   Network   Keys               viewing fixture@laptop  … 
+                                                                                
+╭ Devices ──────────╮╭ ▸ Sessions · 13 sessions ───────────────────────────────╮
+│ › All devices     ││  SESSION                                      STATE     │
+│   ◌  laptop       ││                                                         │
+│   ◌  * lab-arm    ││  /home/xxxxxx                                           ┃
+│   ○  * field-rov… ││› shell · xxxxxx · terminal                    ● ext     │
+╰───────────────────╯│  shell · xxxxxx · terminal                    ● ext     │
+╭ Actions ──────────╮│  shell · xxxxxx · terminal                    ● ext     │
+│ Files             ││  shell · xxxxxx · terminal                    ● ext     │
+│ Network           │╰─────────────────────────────────────────────────────────╯
+│ Containers        │╭ shell · xxxxxx · fixture@laptop ────────────────────────╮
+│ Transfers         ││External terminal · Enter to move into CX                │
+│ Watch · read-only ││                                                         │
+╰───────────────────╯│╭ Error ────────────────────────────────────────────────╮│
+ Selected ───────────││ robot@field-rover: Device unreachable over SSH ·      ││
+ Host fixture@laptop ││ check its connection, then Refresh: helper closed     ││
+ Folder /home/xxxxxx ││ before response                                       ││
+ Enter open · n new  │╰───────────────────────────────────────────────────────╯│
+                     ╰─────────────────────────────────────────────────────────╯
+ ● 2/3 devices           Focus: Sessions · 13/13                          ↔ idle
+ Enter Open                 n New session             w Watch · read-only       
+ p Pin / unpin              s Agent tasks             ? Help                    
+                                                                                

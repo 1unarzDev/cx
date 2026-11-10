@@ -1,0 +1,60 @@
+ cx  ▸Sessions   Files   Network   Keys                                                                                                                                       viewing fixture@laptop  … 
+                                                                                                                                                                                                        
+╭ Devices ──────────╮╭ ▸ Sessions · 7 sessions ──────────────────────────────────────────────────────╮╭ shell · xxxxxx · fixture@laptop ───────────────────────────────────────────────────────────────╮
+│   All devices     ││  AGENT      SESSION                       EXECUTION                 STATE     ││External terminal · Enter to move into CX                                                       │
+│ › ●  laptop       ││                                                                               ││                                                                                                │
+│   ●  * lab-arm    ││             /home/xxxxxx                                                      ││                                                                                                │
+│   ○  * field-rov… ││› [shell]    shell · xxxxxx · terminal     fixture@laptop            ● ext     ││                                                                                                │
+╰───────────────────╯│  [shell]    shell · xxxxxx · terminal     fixture@laptop            ● ext     ││                                                                                                │
+╭ Actions ──────────╮│  [shell]    shell · xxxxxx · terminal     fixture@laptop            ● ext     ││                                                                                                │
+│ Files             ││  [shell]    shell · xxxxxx · terminal     fixture@laptop            ● ext     ││                                                                                                │
+│ Network           ││  [shell]    shell · xxxxxx · terminal     fixture@laptop            ● ext     ││                                                                                                │
+│ Containers        ││                                                                               ││                                                                                                │
+│ Transfers         ││             /tmp/tmp-xxxxxx                                                   ││                                                                                                │
+│ Watch · read-only ││  [shell]    build watcher                 fixture@laptop            idle      ││                                                                                                │
+╰───────────────────╯│                                                                               ││                                                                                                │
+ Selected ───────────│             /tmp/tmp-xxxxxx                                                   ││                                                                                                │
+ Host fixture@laptop │  [shell]    New shell                     fixture@laptop            idle      ││                                                                                                │
+ Folder /home/xxxxxx │                                                                               ││                                                                                                │
+ Enter open · n new  │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     │                                                                               ││                                                                                                │
+                     ╰───────────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ● 2/3 devices                                                                  Focus: Sessions · 7/7                                                                                             ↔ idle
+ Enter Open                                                         n New session                                                     w Watch · read-only                                               
+ p Pin / unpin                                                      s Agent tasks                                                     ? Help                                                            
+                                                                                                                                                                                                        

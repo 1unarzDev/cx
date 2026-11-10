@@ -63,19 +63,11 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
             .cloned()
             .unwrap_or_default()
     };
-    orbit::draw(
-        cx,
-        buf,
-        band,
-        &cx.s.viewer,
-        3,
-        orbit::Sel::Node(&sel_id, on_graph),
-    );
-    // Rows the drawing left empty at its foot go to the thumbnails (up to what their
-    // screens hold), keeping one blank row under the map; with room for two, a second
+    // Rows the drawing leaves empty go to the thumbnails (up to what their screens
+    // hold), keeping a blank row either side of the map; with room for two, a second
     // row of tiles shows the rest of the sessions and the ghost.
-    let last = super::last_row(buf, band).unwrap_or(band.y);
-    let room = th + (band.bottom() + 1).saturating_sub(last + 2);
+    let gh = orbit::drawn_h(cx, band);
+    let room = th + band.height.saturating_sub(gh + 1);
     // (Only when each row keeps ten rows: a tile must still show enough of its screen
     // to be told apart.)
     let (rows, th) = if list.len() >= usize::from(cols) && room > 2 * th_min.max(10) {
@@ -85,6 +77,17 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     };
     let grid_h = rows * th + rows - 1;
     let mut y = band.bottom() + 1 + band_th - grid_h;
+    // The map sits centred in the rows above the vitals strip.
+    let above = (y - band.y).saturating_sub(gh) / 2;
+    let band = Rect::new(band.x, band.y + above, band.width, gh);
+    orbit::draw(
+        cx,
+        buf,
+        band,
+        &cx.s.viewer,
+        3,
+        orbit::Sel::Node(&sel_id, on_graph),
+    );
     if let Some(d) = cx.s.device(&sel_id) {
         vitals(
             cx,
@@ -162,11 +165,7 @@ fn legend(cx: &Cx, buf: &mut Buffer, mut x: u16, y: u16, right: u16) -> u16 {
             (text, orbit::mesh_tok(cx, &m.id), Some(m))
         })
         .collect();
-    // Lan is a hue; without colour its tree rows say nothing more (the device view's
-    // link rows name the network).
-    if cx.c.has_color() {
-        items.push(("lan".into(), Tok::Lan, None));
-    }
+    items.push(("lan".into(), Tok::Lan, None));
     for (t, tok, mesh) in &items {
         let alert = mesh.is_some_and(|m| !m.healthy);
         let w = super::width(t, cx.uni()) + if alert { 2 } else { 0 };
@@ -543,8 +542,8 @@ fn phone_alert(cx: &Cx, buf: &mut Buffer, r: Rect, a: &Alert, kw: u16) {
 }
 
 /// One device in the phone tree: branch guides in the hue of the link to its parent
-/// (dotted where only a password is allowed), keycap, name, rtt or last sighting and
-/// session pips; with two rows its cpu trend and temperature underneath.
+/// (dotted where only a password is allowed), its letter, name, and rtt or last
+/// sighting; with two rows its cpu trend and temperature underneath.
 fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
     let d = t.d;
     let bg = if sel && cx.has_surface() {
@@ -589,7 +588,15 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
         }
         x += 2;
     }
-    x += cx.dchip(buf, x, r.y, d, false) + 1;
+    // The letter in its hue; the selected row gets the keycap.
+    if sel {
+        cx.dchip(buf, x, r.y, d, false);
+    } else {
+        let k = format!(" {} ", d.hotkey);
+        let st = cx.ink(Tok::Id(cx.s.hue(&d.id)), 1.0).add_modifier(Modifier::BOLD);
+        cx.put(buf, x, r.y, 3, &k, st.patch(bg));
+    }
+    x += 4;
     let up = cx.up(d);
     let nst = if sel {
         cx.st(Tok::Accent).add_modifier(Modifier::BOLD)
@@ -599,13 +606,9 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
         cx.st(Tok::Muted)
     }
     .patch(bg);
-    let pw: u16 = tiles::pip_segs(cx, d, 3)
-        .iter()
-        .map(|(t, _)| super::width(t, cx.uni()) + 1)
-        .sum();
     let meta = cx.meta(d);
     let (g, sst) = cx.status(d.status);
-    let tail = super::width(&meta, cx.uni()) + 3 + pw;
+    let tail = super::width(&meta, cx.uni()) + 3;
     let room = right.saturating_sub(x + tail);
     cx.put(
         buf,
@@ -622,10 +625,7 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
     } else {
         cx.ink(Tok::Err, 0.85)
     };
-    tx += cx.put(buf, tx, r.y, 8, &meta, mst.patch(bg)) + 1;
-    for (p, st) in tiles::pip_segs(cx, d, 3) {
-        tx += cx.put(buf, tx, r.y, 3, &p, st.patch(bg)) + 1;
-    }
+    cx.put(buf, tx, r.y, 8, &meta, mst.patch(bg));
     if r.height > 1 {
         let ex = x;
         if let Some(m) = d.metrics.as_ref().filter(|_| up) {

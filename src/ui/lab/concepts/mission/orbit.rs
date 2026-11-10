@@ -7,7 +7,7 @@
 //! ssh; a line shared by several links is neutral); the selection's route is brighter.
 //! The stroke is the access policy, used sparingly: solid where a key is allowed, dashed
 //! where only a password is, an arrowhead at the end access reaches where it goes one
-//! way, a faint line where nothing crosses (`⊘` at its end when closed, the device's
+//! way, a faint line where nothing crosses (`⊘` at its inner end when closed, the device's
 //! `✕` when down). Nothing here dispatches.
 use super::{fit, tiles, Cx, Size};
 use crate::ui::lab::{Access, DeviceStatus, EdgeKind, LabDevice, LabEdge, Tok};
@@ -285,18 +285,28 @@ fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, depth: usize, keys_only: bool, 
     // Every named mode with a clear row between labels first, then packed: names
     // packed closer beat bare keycaps. (An even spacing keeps two peers symmetric
     // about their relay.)
-    let spacings: &[i32] = &[2, 1];
+    // Big screens try a wider spacing first (still even); columns draw closer (down
+    // to the shortest stub that keeps a corner) before a name is cut.
+    let spacings: &[i32] = if cx.size() == Size::L { &[4, 2, 1] } else { &[2, 1] };
+    let full: u16 = match cx.size() {
+        Size::L => 12,
+        Size::M => 10,
+        Size::S => 8,
+        Size::Xs => 6,
+    };
     let mut best = None;
     for &sp in spacings {
         for &(mode, nmax) in modes {
             if sp > 1 && mode == Mode::Key && !keys_only {
                 continue;
             }
-            let p = place(cx, band, tree(cx, root, depth), root, mode, nmax, sp, keys);
-            let ok = p.hidden == 0;
-            best = Some(p);
-            if ok {
-                return best.expect("set");
+            for gap in (full.min(6)..=full).rev() {
+                let p = place(cx, band, tree(cx, root, depth), root, mode, nmax, sp, keys, gap);
+                let ok = p.hidden == 0;
+                best = Some(p);
+                if ok {
+                    return best.expect("set");
+                }
             }
         }
     }
@@ -317,6 +327,7 @@ fn place<'a>(
     nmax: usize,
     sp: i32,
     keys: bool,
+    gap: u16,
 ) -> Plan<'a> {
     let n = nodes.len();
     let kids: Vec<Vec<usize>> = (0..n)
@@ -362,12 +373,6 @@ fn place<'a>(
             row[i] = (a + b).div_euclid(2);
         }
     }
-    let gap: u16 = match cx.size() {
-        Size::L => 12,
-        Size::M => 10,
-        Size::S => 8,
-        Size::Xs => 6,
-    };
     let rootd = cx.s.device(root);
     let pw = rootd.map_or(5, |d| pill_w(cx, d, mode, keys));
     let c = (
@@ -420,7 +425,7 @@ fn place<'a>(
         });
     let (bx0, bx1) = (i32::from(band.x), i32::from(band.right()));
     let (by0, by1) = (i32::from(band.y), i32::from(band.bottom()));
-    let dx = ((bx0 + bx1 - lo - hi) / 2).min(bx1 - hi).max(bx0 - lo);
+    let dx = ((bx0 + bx1 - lo - hi) / 2).min(bx1 - 1 - hi).max(bx0 + 1 - lo);
     let dy = ((by0 + by1 - top - bot) / 2)
         .min(by1 - bot)
         .max(by0 - top)
@@ -428,7 +433,8 @@ fn place<'a>(
     for (i, &(x, y, w)) in pos.iter().enumerate() {
         let (x, y) = (x + dx, y + dy);
         nodes[i].label = Rect::new(x.max(0) as u16, y.max(0) as u16, w as u16, 1);
-        nodes[i].shown = x >= bx0 && x + w <= bx1 && y >= by0 && y < by1;
+        // (A clear column at either edge: nothing butts into the screen's side.)
+        nodes[i].shown = x > bx0 && x + w < bx1 && y >= by0 && y < by1;
     }
     // A device whose relay is hidden hides too (it would hang from nothing).
     for i in 0..n {
@@ -457,6 +463,14 @@ pub(super) fn want_h(cx: &Cx) -> u16 {
         Size::S => 11,
         Size::Xs => 9,
     }
+}
+
+/// Rows the hub map's drawing takes in `band` (it sits one row under the band's top).
+pub(super) fn drawn_h(cx: &Cx, band: Rect) -> u16 {
+    let p = plan(cx, band, &cx.s.viewer, 3, cx.touch(), Sel::Node("", false));
+    let ys = p.nodes.iter().filter(|n| n.shown).map(|n| n.label.y).chain([p.pill.y]);
+    let (lo, hi) = ys.fold((u16::MAX, 0), |a, y| (a.0.min(y), a.1.max(y)));
+    hi + 1 - lo
 }
 
 /// The most rows a hub map uses.
@@ -719,12 +733,27 @@ pub(super) fn draw_with(
         };
         let pa = anchor(n.parent);
         let (py, ky) = (i32::from(pa.y), i32::from(n.label.y));
-        let (start, end, trunk) = if n.side > 0 {
-            let end = i32::from(n.label.x) - 3;
-            (i32::from(pa.right()) + 2, end, end - half + 2)
+        let pid = n.parent.map_or(root, |q| p.nodes[q].d.id.as_str());
+        let toward_kid = if e.from == pid {
+            e.forward != Access::Denied
         } else {
-            let end = i32::from(n.label.right()) + 2;
-            (i32::from(pa.x) - 3, end, end + half - 2)
+            e.reverse != Access::Denied
+        };
+        // An arrowhead into the label keeps one more clear cell before it, where the
+        // columns are far enough apart.
+        let clear = 3 + i32::from(e.up && e.one_way() && toward_kid && half >= 4);
+        let (start, end, trunk) = if n.side > 0 {
+            let end = i32::from(n.label.x) - clear;
+            (i32::from(pa.right()) + 2, end, end - half + clear - 1)
+        } else {
+            let end = i32::from(n.label.right()) + clear - 1;
+            (i32::from(pa.x) - 3, end, end + half - clear + 1)
+        };
+        // Close columns: the stub starts a cell nearer its relay, so it keeps a run.
+        let start = if n.side > 0 {
+            start.min(trunk - 1)
+        } else {
+            start.max(trunk + 1)
         };
         let trunk = if n.side > 0 {
             trunk.clamp(start.min(end), end)
@@ -733,18 +762,17 @@ pub(super) fn draw_with(
         };
         let li = links.len();
         grid.path(&[(start, py), (trunk, py), (trunk, ky), (end, ky)], li);
-        let pid = n.parent.map_or(root, |q| p.nodes[q].d.id.as_str());
         let lit = match sel {
             Sel::Node(id, _) => route.contains(&k) || id == pid,
             Sel::Edge(id) => e.id == id,
             Sel::Root | Sel::Targets => n.parent.is_none(),
         };
-        let toward_kid = if e.from == pid {
-            e.forward != Access::Denied
-        } else {
-            e.reverse != Access::Denied
-        };
-        let alone = p.nodes.iter().filter(|m| m.shown && m.up.is_some() && m.parent == n.parent).count() == 1;
+        let alone = p
+            .nodes
+            .iter()
+            .filter(|m| m.shown && m.up.is_some() && m.parent == n.parent && m.side == n.side)
+            .count()
+            == 1;
         let par_end = if trunk == end { (end, ky) } else { (trunk + n.side, ky) };
         links.push(Link {
             e,
@@ -767,10 +795,12 @@ pub(super) fn draw_with(
     // One style per cell: the link's own where one link runs through it; where several
     // share it, their common hue and stroke, else neutral and solid.
     let style = |tok: Tok, lit: bool, pat: Pat| {
+        // A quiet line (closed or down) stays faint even when lit: it is no route.
         let alpha: f32 = match (lit, fade_all) {
             (false, true) => 0.2,
-            (true, _) => 0.95,
+            (true, true) => 0.95,
             _ if pat == Pat::Quiet => 0.3,
+            (true, false) => 0.95,
             _ => 0.55,
         };
         // On white a pale hue vanishes: light themes deepen link hues like session
@@ -782,8 +812,13 @@ pub(super) fn draw_with(
             cx.ink(tok, alpha)
         }
     };
+    // The edge editor's subject is drawn in the accent, so it reads at a glance.
     let ink = |l: &Link| {
-        let tok = if l.e.up { hue_tok(cx, l.e) } else { Tok::Muted };
+        let tok = match (l.e.up, l.lit && fade_all) {
+            (_, true) => Tok::Accent,
+            (true, _) => hue_tok(cx, l.e),
+            _ => Tok::Muted,
+        };
         style(tok, l.lit, pattern(l.e))
     };
     for y in 0..band.height {
@@ -793,35 +828,34 @@ pub(super) fn draw_with(
             if b == 0 {
                 continue;
             }
+            // A cell shared by several links: a lit one's ink, else their common hue and
+            // stroke, else neutral and solid.
             let ls: Vec<&Link> = grid.links[i].iter().map(|&k| &links[k]).collect();
-            let same = |f: &dyn Fn(&Link) -> Tok| ls.iter().all(|l| f(l) == f(ls[0]));
-            let tok = if same(&|l: &Link| hue_tok(cx, l.e)) {
-                if ls[0].e.up {
-                    hue_tok(cx, ls[0].e)
-                } else {
-                    Tok::Muted
-                }
-            } else {
-                Tok::Muted
-            };
             let pat0 = pattern(ls[0].e);
             let pat = if ls.iter().all(|l| pattern(l.e) == pat0) {
                 pat0
             } else {
                 Pat::Solid
             };
-            let lit = ls.iter().any(|l| l.lit);
-            let st = if ls.len() == 1 {
-                ink(ls[0])
-            } else {
-                style(tok, lit, pat)
+            let st = match ls.iter().find(|l| l.lit) {
+                Some(l) => ink(l),
+                None if ls.len() == 1 => ink(ls[0]),
+                None => {
+                    let h0 = hue_tok(cx, ls[0].e);
+                    let same = ls.iter().all(|l| hue_tok(cx, l.e) == h0) && ls[0].e.up;
+                    style(if same { h0 } else { Tok::Muted }, false, pat)
+                }
+            };
+            let pat = match ls.iter().find(|l| l.lit) {
+                Some(l) => pattern(l.e),
+                None => pat,
             };
             let (bx, by) = (band.x + x, band.y + y);
             buf[(bx, by)].set_char(line_ch(b, pat, cx.uni())).set_style(st);
         }
     }
     // Ends: an arrowhead where access goes one way, at the end it reaches; `⊘` at the
-    // device's end of a link closed both ways.
+    // inner end of a link closed both ways (`/` in ASCII).
     for l in &links {
         let st = ink(l);
         let mut put = |at: (i32, i32), g: &str| {
@@ -838,8 +872,9 @@ pub(super) fn draw_with(
                 (false, false) => "<",
             };
             put(if l.toward_kid { l.kid_end } else { l.par_end }, g);
-        } else if l.e.up && closed(l.e) && cx.uni() {
-            put(l.kid_end, "⊘");
+        } else if l.e.up && closed(l.e) {
+            // At the inner end, away from the device's own status dot.
+            put(l.par_end, cx.g("⊘", "/"));
         }
     }
     // Nodes. Letters are keys on the hub and in the send-to picker only.

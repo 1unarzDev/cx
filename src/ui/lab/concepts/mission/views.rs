@@ -268,22 +268,11 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
             let ends = e.and_then(|e| Some((cx.s.device(&e.from)?, cx.s.device(&e.to)?)));
             let crumbs: Vec<Crumb> = ends.map(|(a, b)| Crumb::Link(a, b)).into_iter().collect();
             top(cx, buf, &crumbs, true);
-            let (out, inb) = edge_editor(cx, buf, body, id);
-            // Each lane's keys named by its direction first (`a p o  t→i`); `j k` stay
-            // motion. The segmented controls already name the verbs.
-            let (lo, li) = if cx.size() >= Size::M {
-                (format!("{out} key/pass/off"), inb)
-            } else {
-                (out, inb)
-            };
-            let mut items: Keys = vec![
-                ("a p o", &lo, "policy-out"),
-                ("A P O", &li, "policy-in"),
-                ("u", "undo", "undo"),
-                ("esc", "done", "back"),
-            ];
+            edge_editor(cx, buf, body, id);
+            // The lanes above name their keys; the footer keeps the rest.
+            let mut items: Keys = vec![("u", "undo", "undo"), ("esc", "done", "back")];
             if cx.size() >= Size::M {
-                items.insert(2, ("j k", "lane", "lane"));
+                items.insert(0, ("j k", "lane", "lane"));
             }
             footer(cx, buf, foot, items);
         }
@@ -458,7 +447,7 @@ fn footer(cx: &Cx, buf: &mut Buffer, r: Rect, items: Keys) {
             let k = match k {
                 "␣" => "spc",
                 "⏎" if !cx.uni() || cx.touch() => "ret",
-                "⌫" if cx.touch() => "del",
+                "⌫" if cx.touch() => "bksp",
                 "⌫" if !cx.uni() => "bksp",
                 "↑↓" if !cx.uni() => "up/dn",
                 other => other,
@@ -750,26 +739,21 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         // The footer says `e links`; the zone label is the tap target.
         zone(cx, buf, main.x, fy, right, "LINKS", false);
         cx.hit(Rect::new(main.x, fy, 12, 1), "links");
-        // The star, then (when rows are left) one block per link: its facts on the
-        // first row of its rtt chart. The star may take all but the charts' smallest form (one row each); the
-        // charts then grow into whatever rows its drawing leaves.
+        // The star, then (when rows are left) one row per link under it, a blank row
+        // between them.
         let left = r.bottom().saturating_sub(fy + 2);
         let n = edges.len() as u16;
         let table = left >= fan_want + 2 + n && sz >= Size::M;
         // (A star never needs more than ten rows: two-row labels with air.)
         let fan_h = if table {
-            (left - (2 * n - 1) - 1).min(fan_want.max(9) + 1)
+            (left - (2 * n - 1) - 2).min(fan_want.max(9) + 1)
         } else {
             left
         };
         let band = Rect::new(r.x, fy + 1, r.width, fan_h);
         orbit::draw_with(cx, buf, band, &d.id, 1, orbit::Sel::Root, false);
         if table {
-            // One rtt scale for every chart, named on the zone's rule.
-            let hi = link_scale(&edges);
-            let lbl = format!(" rtt 0{}{}ms", cx.g("–", "-"), hi as u32);
-            cx.put_r(buf, right, fy, &lbl, cx.st(Tok::Muted));
-            let ty = super::last_row(buf, band).map_or(band.y, |y| y + 2);
+            let ty = super::last_row(buf, band).map_or(band.y, |y| y + 3);
             link_rows(
                 cx,
                 buf,
@@ -855,31 +839,20 @@ fn link_tail(cx: &Cx, e: &LabEdge, loss: bool) -> String {
     }
 }
 
-/// One block per link of `d`: the far end, its network and the policy as seen from `d`
-/// on the first row of its rtt history (an area chart up to three rows tall), the latest
-/// rtt and loss at the right. A link closed both ways has no live rtt to chart: it says
-/// so, with the last value seen, in muted text.
+/// One row per link of `d` (a blank row between them when there is room): the far end,
+/// its network, the policy as seen from `d`, a thin muted rtt sparkline and the latest
+/// rtt and loss at the right. A link closed both ways has no live rtt: it says so, with
+/// the last value seen.
 fn link_rows(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, edges: &[&LabEdge]) {
-    // Charts share the rows a big screen leaves, less a breathing row above the footer (a
-    // closed link takes one row and a gap),
-    // up to eight rows each, on one scale from 0.
-    let shut = |e: &LabEdge| e.forward == Access::Denied && e.reverse == Access::Denied;
-    let closed = edges.iter().filter(|e| shut(e)).count() as u16;
-    let open = (edges.len() as u16 - closed).max(1);
-    let ch = (r.height.saturating_sub(2 * closed) / open)
-        .saturating_sub(1)
-        .clamp(1, 8);
-    let hi = link_scale(edges);
-    // The stats column is as wide as its widest entry; charts run to it, less a gutter.
+    let step = if r.height >= 2 * edges.len() as u16 { 2 } else { 1 };
     let tail_w = edges
         .iter()
-        .filter(|e| !(e.forward == Access::Denied && e.reverse == Access::Denied))
         .map(|e| super::width(&link_tail(cx, e, true), cx.uni()))
         .max()
         .unwrap_or(0);
-    let mut top = r.y;
-    for e in edges {
-        if top + 1 > r.bottom() {
+    for (i, e) in edges.iter().enumerate() {
+        let y = r.y + i as u16 * step;
+        if y >= r.bottom() {
             break;
         }
         let other = if e.from == d.id { &e.to } else { &e.from };
@@ -888,54 +861,27 @@ fn link_rows(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, edges: &[&LabEdg
         };
         // Names are plain: in a device, letters are slots and verbs.
         let mut x = r.x + 1;
-        cx.put(
-            buf,
-            x,
-            top,
-            18,
-            &fit(&o.name, 18, cx.uni()),
-            cx.ink(Tok::Fg, 0.95),
-        );
+        let name = fit(&o.name, 18, cx.uni());
+        cx.put(buf, x, y, 18, &name, cx.ink(Tok::Fg, 0.95));
         x += 19;
         let (kind, tok) = edge_kind(cx, e);
-        cx.put(buf, x, top, 20, &fit(&kind, 20, cx.uni()), cx.ink(tok, 0.9));
+        cx.put(buf, x, y, 20, &fit(&kind, 20, cx.uni()), cx.ink(tok, 0.9));
         x += 21;
         let pol = orbit::policy(cx, e, e.from == d.id, false);
-        cx.put(buf, x, top, 11, &pol, cx.ink(Tok::Muted, 0.95));
+        cx.put(buf, x, y, 11, &pol, cx.ink(Tok::Muted, 0.95));
         x += 12;
-        let tail = link_tail(cx, e, true);
-        let closed = e.up && e.forward == Access::Denied && e.reverse == Access::Denied;
-        if closed {
-            cx.put(
-                buf,
-                x,
-                top,
-                r.right().saturating_sub(x),
-                "closed both ways",
-                cx.ink(Tok::Muted, 0.8),
-            );
-            cx.put_r(buf, r.right(), top, &tail, cx.ink(Tok::Muted, 0.8));
+        let shut = e.forward == Access::Denied && e.reverse == Access::Denied;
+        let sw = r.right().saturating_sub(x + tail_w + 2).min(40);
+        if shut {
+            cx.put(buf, x, y, sw, "closed both ways", cx.ink(Tok::Muted, 0.8));
         } else {
-            let sw = r.right().saturating_sub(x + tail_w + 2);
-            let h = ch.min(r.bottom() - top);
-            let tok = if e.up { tok } else { Tok::Err };
-            tiles::rtt_chart(cx, buf, Rect::new(x, top, sw, h), &e.rtt_hist, tok, hi);
-            cx.put_r(buf, r.right(), top, &tail, cx.st(Tok::Muted));
+            let tok = if e.up { Tok::Muted } else { Tok::Err };
+            tiles::spark(cx, buf, x, y, sw, &e.rtt_hist, cx.ink(tok, 0.6));
         }
-        let h = if shut(e) { 1 } else { ch };
-        cx.hit(Rect::new(r.x, top, r.width, h), format!("edge:{}", e.id));
-        top += h + 1;
+        let tail = link_tail(cx, e, true);
+        cx.put_r(buf, r.right(), y, &tail, cx.ink(Tok::Muted, if shut { 0.8 } else { 1.0 }));
+        cx.hit(Rect::new(r.x, y, r.width, 1), format!("edge:{}", e.id));
     }
-}
-
-/// The rtt scale shared by a device's link charts (links closed both ways draw none).
-fn link_scale(edges: &[&LabEdge]) -> f32 {
-    tiles::rtt_scale(
-        edges
-            .iter()
-            .filter(|e| !(e.forward == Access::Denied && e.reverse == Access::Denied))
-            .map(|e| e.rtt_hist.as_slice()),
-    )
 }
 
 fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
@@ -1071,7 +1017,6 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
             buf,
             Rect::new(mx, my + 1, cw, ch.saturating_sub(1).max(1)),
             &m.cpu_hist,
-            None,
         );
         let gx = mx + cw + 3;
         let mut rows: Vec<(String, f32, Style)> = vec![(
@@ -1102,10 +1047,12 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     } else {
         let label = format!("cpu {:.0}%", m.cpu * 100.0);
         cx.put(buf, mx, my, 9, &label, cx.heat(m.cpu));
-        let w = mw.saturating_sub(10 + 9);
-        tiles::chart(cx, buf, Rect::new(mx + 9, my, w, 1), &m.cpu_hist, None);
+        // A short trend, not a run across the row.
+        let w = mw.saturating_sub(9 + 3 + 8).min(24);
+        let v: Vec<Option<f32>> = m.cpu_hist.iter().map(|v| Some(*v)).collect();
+        tiles::spark(cx, buf, mx + 9, my, w, &v, cx.spark_heat(m.cpu));
         let rest = format!("mem {:.0}%", m.mem * 100.0);
-        cx.put_r(buf, mx + mw, my, &rest, cx.st(Tok::Info));
+        cx.put(buf, mx + 9 + w + 3, my, 10, &rest, cx.st(Tok::Info));
     }
 }
 
@@ -1292,11 +1239,7 @@ fn stop_confirm(cx: &Cx, buf: &mut Buffer, tr: Rect, x: &LabSession) {
     let row = Rect::new(tr.x + 1, y, tr.width.saturating_sub(1), 1);
     let bg = cx.wash(Tok::Err, 0.22);
     cx.fill(buf, row, bg);
-    let del = if cx.touch() {
-        "del"
-    } else {
-        cx.g("⌫", "bksp")
-    };
+    let del = if cx.touch() { "bksp" } else { cx.g("⌫", "bksp") };
     let keys = format!(" {del} ");
     let tail = "again to stop, any key keeps it";
     let kw = super::width(&keys, cx.uni());
@@ -3007,8 +2950,7 @@ fn big_text(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, code: &str, st: Style) {
 
 // ------------------------------------------------------------------------ edge edit
 
-/// Returns the two lanes' directions (`t→i`, `i→t`) for the footer.
-fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) -> (String, String) {
+fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
     // The id names the opener first (`i e t` opens `innovation-tranquility`), so the
     // opener's outbound direction is the first lane and takes the lowercase keys.
     let rev = id.split_once('-').map(|(a, b)| format!("{b}-{a}"));
@@ -3017,7 +2959,7 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) -> (String, String)
         (None, Some(e)) => (e, true),
         _ => match cx.s.edges.first() {
             Some(e) => (e, false),
-            None => return ("out".into(), "in".into()),
+            None => return,
         },
     };
     let sheet_min: u16 = if cx.size() == Size::Xs { 9 } else { 11 }.min(r.height);
@@ -3067,7 +3009,7 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) -> (String, String)
     panel(cx, buf, sheet);
     let inner = inset(sheet, 2, 1);
     let (Some(a), Some(b)) = (cx.s.device(&e.from), cx.s.device(&e.to)) else {
-        return ("out".into(), "in".into());
+        return;
     };
     let (a, b) = if flipped { (b, a) } else { (a, b) };
     let arrow = cx.g("→", "->");
@@ -3226,22 +3168,13 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) -> (String, String)
     }
     let ry = inner.y + 8;
     if ry < inner.bottom() && cx.size() >= Size::S {
-        // Below: the sessions a change would affect (their live thumbnails) and the
-        // link's figures; the rtt history (an area chart up to three rows) over them
-        // when the sheet is tall enough, else beside the figures' column.
-        let left = inner.bottom() - ry;
-        let ch = if left >= 9 { 3 } else { left.min(2) };
+        // Below: the rtt history (one thin row), then the sessions a change would
+        // affect (their live thumbnails) and the link's figures.
         let label = format!("rtt {} samples", e.rtt_hist.len());
-        cx.put(buf, inner.x, ry + ch - 1, 15, &label, cx.st(Tok::Muted));
-        tiles::rtt_chart(
-            cx,
-            buf,
-            Rect::new(inner.x + 16, ry, inner.width.saturating_sub(16), ch),
-            &e.rtt_hist,
-            tok,
-            tiles::rtt_scale(std::iter::once(e.rtt_hist.as_slice())),
-        );
-        let ty = ry + ch + 1;
+        cx.put(buf, inner.x, ry, 15, &label, cx.st(Tok::Muted));
+        let sw = inner.width.saturating_sub(16).min(48);
+        tiles::spark(cx, buf, inner.x + 16, ry, sw, &e.rtt_hist, cx.ink(Tok::Muted, 0.6));
+        let ty = ry + 2;
         let th = inner.bottom().saturating_sub(ty);
         if th >= 4 {
             let stats_w = if cx.size() >= Size::M { 44 } else { 0 };
@@ -3267,7 +3200,6 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) -> (String, String)
             }
         }
     }
-    dirs
 }
 
 /// A link's figures in a two-column table: rtt now / min / max / jitter, loss, network.
@@ -3370,14 +3302,14 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let key = |k: &'static str| -> &'static str {
         match k {
             "⏎" if !cx.uni() || cx.touch() => "ret",
-            "⌫" if cx.touch() => "del",
+            "⌫" if cx.touch() => "bksp",
             "⌫" if !cx.uni() => "bksp",
             o => o,
         }
     };
     let groups: [(&str, &[(&str, &str)]); 3] = [
-        ("move", &[("j k", "previous / next device"), ("tab", "next zone"), ("⏎", "open the selection")]),
-        ("look", &[("spc", "peek a session"), ("-", "last session")]),
+        ("move", &[("j k", "step through devices"), ("tab", "next zone"), ("⏎", "open the selection"), ("-", "last session")]),
+        ("look", &[("spc", "peek a session")]),
         ("act", &[("e", "edit a link"), ("⌫", "stop a session")]),
     ];
     // (`esc` is on the footer, where it closes this.)
@@ -3414,7 +3346,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
     .collect();
     let devs: Vec<&LabDevice> = cx.s.devices.iter().take(4).collect();
     let more = cx.s.devices.len() > devs.len();
-    let caps_w = devs.len() as u16 * 4 + if more { 2 } else { 0 };
+    let caps_w = devs.len() as u16 * 4 + if more { 3 } else { 0 };
     // Beside the keycaps when the column is wide, under them on phones.
     let (tx, beside) = if w >= 56 {
         (x0 + caps_w + 2, true)
@@ -3455,8 +3387,9 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let air = body + 1 + air_n <= r.height;
     let label = body + 1 + 2 <= r.height || air;
     let total = body + if air { air_n } else { 2 } + u16::from(label);
+    // Top-aligned under an even margin (a centred block floats on tall screens).
     let spare = r.height.saturating_sub(total);
-    let mut y = r.y + spare.div_ceil(2).min(spare.saturating_sub(1));
+    let mut y = r.y + (spare / 4).min(2);
     if label {
         zone(cx, buf, x0, y, right, "ON THE HUB", true);
         y += 1 + u16::from(air);
@@ -3488,7 +3421,12 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         x += cx.dchip(buf, x, y, d, false) + 1;
     }
     if more {
-        cx.put(buf, x, y, 2, cx.g("…", ".."), cx.st(Tok::Muted));
+        let t = if cx.uni() {
+            "…".to_string()
+        } else {
+            format!("+{}", cx.s.devices.len() - devs.len())
+        };
+        cx.put(buf, x, y, 3, &t, cx.st(Tok::Muted));
     }
     if !beside {
         y += 1;
@@ -3514,7 +3452,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
             (cx.g("──", "--"), "key"),
             (cx.g("┄┄", "=="), "password"),
             (cx.g("→", ">"), "one way"),
-            (cx.g("⊘", ".."), "closed"),
+            (cx.g("⊘", "/"), "closed"),
         ] {
             let need = super::width(g, cx.uni()) + 1 + super::width(t, cx.uni());
             if x + need > right {

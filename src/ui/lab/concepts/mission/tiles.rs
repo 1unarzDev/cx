@@ -39,7 +39,7 @@ fn pick_bar(cx: &Cx, buf: &mut Buffer, r: Rect, pick: Pick) {
 }
 
 /// Eighth-block area chart (newest on the right), shaded by height.
-pub(super) fn chart(cx: &Cx, buf: &mut Buffer, r: Rect, vals: &[f32], tok: Option<Tok>) {
+pub(super) fn chart(cx: &Cx, buf: &mut Buffer, r: Rect, vals: &[f32]) {
     if r.width == 0 || r.height == 0 || vals.is_empty() {
         return;
     }
@@ -54,10 +54,7 @@ pub(super) fn chart(cx: &Cx, buf: &mut Buffer, r: Rect, vals: &[f32], tok: Optio
         }
         .clamp(0.0, 1.0);
         let total = (v * f32::from(r.height) * 8.0).round() as i32;
-        let st = match tok {
-            Some(t) => cx.ink(t, 0.85),
-            None => cx.spark_heat(v),
-        };
+        let st = cx.spark_heat(v);
         for row in 0..r.height {
             let y = r.bottom() - 1 - row;
             let fill = (total - i32::from(row) * 8).clamp(0, 8) as usize;
@@ -73,52 +70,13 @@ pub(super) fn chart(cx: &Cx, buf: &mut Buffer, r: Rect, vals: &[f32], tok: Optio
             } else {
                 " "
             };
-            // A hued chart is a faint body under a full-hue top edge, so a tall chart
-            // never outweighs the names beside it (lighter still on a light theme). A
-            // column whose top lands on a cell boundary gets a thin `▔` cap over a body
-            // cell, never a full-hue block, so a dip reads as a lower value, not a notch.
-            let top_cell = total - (i32::from(row) + 1) * 8 <= 0;
-            let body_a = if cx.dark() { 0.32 } else { 0.18 };
-            let (s, shade) = match tok {
-                Some(t) if cx.tc() && fill > 0 && !top_cell => (s, cx.ink(t, body_a)),
-                Some(t) if cx.tc() && fill == 8 && cx.uni() => ("▔", st.patch(cx.wash(t, body_a))),
-                _ => (s, st),
-            };
             if fill == 0 && row == 0 && cx.uni() {
                 cx.put(buf, r.x + i as u16, y, 1, "▁", cx.ink(Tok::Faint, 0.8));
             } else if fill > 0 || !cx.uni() {
-                cx.put(buf, r.x + i as u16, y, 1, s, shade);
+                cx.put(buf, r.x + i as u16, y, 1, s, st);
             }
         }
     }
-}
-
-/// An rtt history as an area chart from 0 to `hi` (shared by every chart on a screen,
-/// so a calm 10-17 ms link looks calm); a lost sample is a gap.
-pub(super) fn rtt_chart(
-    cx: &Cx,
-    buf: &mut Buffer,
-    r: Rect,
-    hist: &[Option<f32>],
-    tok: Tok,
-    hi: f32,
-) {
-    let hi = hi.max(1e-3);
-    let vals: Vec<f32> = hist
-        .iter()
-        .map(|v| v.map_or(0.0, |v| (v / hi).max(0.04)))
-        .collect();
-    chart(cx, buf, r, &vals, Some(tok));
-}
-
-/// A round rtt scale above every sample in `hists` (5, 10, 20, 50, 100 ... ms).
-pub(super) fn rtt_scale<'a>(hists: impl Iterator<Item = &'a [Option<f32>]>) -> f32 {
-    let top = hists.flatten().flatten().fold(1.0f32, |a, b| a.max(*b));
-    let mut s = 5.0;
-    while s < top {
-        s *= if (s as u32).to_string().starts_with('2') { 2.5 } else { 2.0 };
-    }
-    s
 }
 
 /// One-row sparkline with gaps for lost samples.
@@ -190,7 +148,7 @@ pub(super) fn gauge(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, w: u16, v: f32, s
 /// header legend repeats, so membership reads without colour.
 pub(super) fn mesh_glyph(cx: &Cx, id: &str) -> String {
     if cx.uni() {
-        "▄".into()
+        "■".into()
     } else {
         let i = cx.s.meshes.iter().position(|m| m.id == id).unwrap_or(0);
         (i + 1).to_string()

@@ -147,7 +147,13 @@ pub(super) fn spark_str(cx: &Cx, vals: &[Option<f32>], w: u16) -> String {
         })
         .map(|v| v.map(|v| 0.1 + 0.9 * (v - lo) / range))
         .collect();
-    fmt::spark(&pick, cx.uni())
+    let s = fmt::spark(&pick, cx.uni());
+    if cx.uni() {
+        s
+    } else {
+        // ASCII sparks use only `_ = #`: `.` and `-` are link strokes on the map.
+        s.replace('.', "_").replace('-', "=")
+    }
 }
 
 /// Thin horizontal gauge with a faint track.

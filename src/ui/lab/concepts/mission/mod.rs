@@ -251,40 +251,71 @@ impl<'a> Cx<'a> {
     }
     /// Make the targets recorded since `from` disjoint: where two overlap, the larger one
     /// gives up the overlapping rows (or columns, when the overlap spans its full height),
-    /// so a thumb tap between two nodes is never ambiguous.
+    /// so a thumb tap between two nodes is never ambiguous. Repeats until no pair
+    /// overlaps (a trim can change which of two targets is the larger).
     pub fn unclash(&self, from: usize) {
         let mut v = self.hits.borrow_mut();
-        let n = v.len();
-        for i in from..n {
-            for j in from..n {
-                let (a, b) = (v[i].area, v[j].area);
-                let area = |r: Rect| u32::from(r.width) * u32::from(r.height);
-                if i == j || area(a) < area(b) || (area(a) == area(b) && i > j) {
-                    continue;
-                }
-                let o = a.intersection(b);
-                if o.width == 0 || o.height == 0 {
-                    continue;
-                }
-                // Trim `a` (the larger) on the side where the overlap sits.
-                let mut r = a;
-                if o.height == a.height {
-                    if o.x == a.x {
-                        r.x = o.right().min(a.right());
-                        r.width = a.right() - r.x;
-                    } else {
-                        r.width = o.x - a.x;
+        let area = |r: Rect| u32::from(r.width) * u32::from(r.height);
+        for _ in 0..8 {
+            let mut changed = false;
+            let n = v.len();
+            for i in from..n {
+                for j in from..n {
+                    let (a, b) = (v[i].area, v[j].area);
+                    if i == j || area(a) < area(b) || (area(a) == area(b) && i > j) {
+                        continue;
                     }
-                } else if o.y == a.y {
-                    r.y = o.bottom().min(a.bottom());
-                    r.height = a.bottom() - r.y;
-                } else {
-                    r.height = o.y - a.y;
+                    let o = a.intersection(b);
+                    if o.width == 0 || o.height == 0 {
+                        continue;
+                    }
+                    // Trim `a` (the larger) on the side where the overlap sits.
+                    let mut r = a;
+                    if o.height == a.height {
+                        if o.x == a.x {
+                            r.x = o.right().min(a.right());
+                            r.width = a.right() - r.x;
+                        } else {
+                            r.width = o.x - a.x;
+                        }
+                    } else if o.y == a.y {
+                        r.y = o.bottom().min(a.bottom());
+                        r.height = a.bottom() - r.y;
+                    } else {
+                        r.height = o.y - a.y;
+                    }
+                    v[i].area = r;
+                    changed = true;
                 }
-                v[i].area = r;
+            }
+            if !changed {
+                break;
             }
         }
         v.retain(|t| t.area.width > 0 && t.area.height > 0);
+    }
+    /// Drop every target recorded so far: an overlay (palette, sheet) owns the taps, so
+    /// nothing under its scrim stays live.
+    pub fn clear_hits(&self) {
+        self.hits.borrow_mut().clear();
+    }
+
+    /// The focused selection's tint (`accent.bg`); nothing without tints, where the bar
+    /// and a bold accent name carry the selection (never a reversed block).
+    pub fn sel_bg(&self) -> Style {
+        if self.has_surface() {
+            self.st(Tok::AccentBg)
+        } else {
+            Style::default()
+        }
+    }
+    /// The selection bar down the left of `h` rows: `▌` (ASCII `>` on the first row and
+    /// `|` below, so a column of `>` never reads as shell prompts).
+    pub fn bar(&self, buf: &mut Buffer, x: u16, y: u16, h: u16, st: Style) {
+        for yy in y..y + h {
+            let a = if yy == y { ">" } else { "|" };
+            self.put(buf, x, yy, 1, self.g("▌", a), st);
+        }
     }
 
     /// Write text clipped to `max` columns and the frame; returns columns written.
@@ -620,7 +651,11 @@ pub(super) fn fit(s: &str, w: usize, unicode: bool) -> String {
     }
     // ASCII marks a cut with `..` (`~` means degraded there).
     let mark = if unicode || w < 3 { 1 } else { 2 };
-    let head: String = s.chars().take(w - mark).collect();
+    let mut head: String = s.chars().take(w - mark).collect();
+    // The text's own ellipsis inside the kept part: cut there, so a cut never shows two.
+    if let Some(i) = head.find('…') {
+        head.truncate(i);
+    }
     let head = head.trim_end_matches(['…', '.', ' ', '·', '(']);
     format!(
         "{head}{}",
@@ -643,7 +678,9 @@ pub(super) fn asciify(s: &str) -> String {
             '·' => out.push('-'),
             '…' => out.push_str(".."),
             '─' | '━' | '╌' => out.push('-'),
-            '│' | '┃' | '▌' | '▍' | '▎' => out.push('|'),
+            '│' | '┃' => out.push('|'),
+            // An agent's own prompt bar: `:`, so `|` stays cx's focus-bar continuation.
+            '▌' | '▍' | '▎' => out.push(':'),
             '╭' | '╮' | '╰' | '╯' | '┌' | '┐' | '└' | '┘' => out.push('+'),
             '↓' => out.push('v'),
             '↑' => out.push('^'),

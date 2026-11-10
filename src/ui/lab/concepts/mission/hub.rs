@@ -16,8 +16,9 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let list = cx.by_attention();
     let right = r.right().saturating_sub(1);
 
-    // Bottom up: ticker, one row of thumbnails, the vitals strip, the legend; the orbit
-    // takes the rest (up to what it wants; more rows go to the thumbnails).
+    // Bottom up: ticker, one row of thumbnails, the vitals strip; the NETWORK label
+    // (with the stroke legend on its rule) on top; the orbit takes the rest, and the
+    // rows it leaves empty go to the thumbnails.
     let tick_h = u16::from(!alerts(cx).is_empty());
     let vit_h: u16 = if sz >= Size::M { 2 } else { 1 };
     let (cols, th_min) = views::grid_shape(cx, r.width.saturating_sub(2), r.height);
@@ -32,15 +33,17 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         Size::M => 9,
         _ => 6,
     };
-    let fixed = tick_h + 1 + vit_h + 1 + 1 + 1; // ticker, sessions label, vitals, legend, gaps
+    let fixed = tick_h + 1 + vit_h + 1 + 1 + 1; // ticker, sessions label, vitals, network label, gaps
     let orbit_min = orbit::want_h(cx).min(r.height.saturating_sub(fixed + th_min));
     let th = r
         .height
         .saturating_sub(fixed + orbit_min)
         .clamp(th_min.min(r.height), need.clamp(th_min, th_max));
     let band_h = r.height.saturating_sub(fixed + th);
-    let band = Rect::new(r.x, r.y, r.width, band_h);
-    let mut y = band.bottom();
+    let lx = cx.label(buf, r.x + 1, r.y, 16, "NETWORK", on_graph) + r.x + 1;
+    let lend = legend(cx, buf, lx + 2, r.y, right);
+    cx.rule(buf, lend + 1, right, r.y);
+    let band = Rect::new(r.x, r.y + 1, r.width, band_h);
     let ids = orbit::order(cx, band);
     let sel_id = if on_sess && !list.is_empty() {
         list[cx.c.selected % list.len()].device.clone()
@@ -57,8 +60,16 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         3,
         orbit::Sel::Node(&sel_id, on_graph),
     );
-    legend(cx, buf, r.x + 2, y, right);
-    y += 1;
+    // Rows the drawing left empty at its foot go to the thumbnails (up to what their
+    // screens hold), keeping one blank row under the map.
+    let last = (band.y..band.bottom())
+        .rev()
+        .find(|&yy| (band.x..band.right()).any(|xx| buf[(xx, yy)].symbol() != " "))
+        .unwrap_or(band.y);
+    let slack = band.bottom().saturating_sub(last + 2);
+    let give = slack.min(need.saturating_sub(th));
+    let th = th + give;
+    let mut y = band.bottom() - give;
     if let Some(d) = cx.s.device(&sel_id) {
         vitals(
             cx,
@@ -72,10 +83,11 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
 
     // Sessions: one row, ranked by attention; the full grid lives in each device.
     let n = list.len();
+    // `›` (a crumb, "goes on") in Unicode; ASCII keeps the words (`>` is selection).
     let hint = format!(
-        "{n} {} {}",
+        "{n} {}{}",
         if n == 1 { "session" } else { "sessions" },
-        cx.g("›", ">")
+        cx.g(" ›", "")
     );
     let hw = super::width(&hint, cx.uni());
     let lx = views::zone(
@@ -121,7 +133,8 @@ fn legend(cx: &Cx, buf: &mut Buffer, mut x: u16, y: u16, right: u16) -> u16 {
     ];
     if cx.size() < Size::M {
         items.truncate(4);
-        items[2].0 = cx.g("⠒→", "->").to_string();
+        // The arrow is the only cue for a directed policy: it keeps a word.
+        items[2].0 = format!("{} 1-way", cx.g("⠒→", "->"));
     }
     let sep = if cx.size() >= Size::M { 3 } else { 2 };
     for (t, tok) in &items {
@@ -247,8 +260,9 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, focused: bool) {
         .iter()
         .map(|(k, l, _)| super::width(k, cx.uni()) + 3 + super::width(l, cx.uni()) + 2)
         .sum();
+    let mut kx = r.right();
     if r.height >= 2 || x + kw <= right {
-        let kx = if r.height >= 2 {
+        kx = if r.height >= 2 {
             right.saturating_sub(kw) + 2
         } else {
             x
@@ -256,7 +270,11 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, focused: bool) {
         cx.chips(buf, kx, ky, right + 1, &items);
     }
     if r.height < 2 {
-        cx.hit(r, format!("device:{}", d.id));
+        // The strip opens the device; its key chips keep their own taps.
+        cx.hit(
+            Rect::new(r.x, r.y, kx.saturating_sub(r.x + 1), 1),
+            format!("device:{}", d.id),
+        );
         return;
     }
     // Second row: live vitals.
@@ -492,14 +510,9 @@ fn phone_alert(cx: &Cx, buf: &mut Buffer, r: Rect, a: &Alert) {
         &fit(text, usize::from(room), cx.uni()),
         cx.ink(Tok::Fg, 0.92).patch(bg),
     );
-    cx.chips(
-        buf,
-        r.right().saturating_sub(kw + 1),
-        r.y,
-        r.right(),
-        &[(keys, verb, act)],
-    );
-    cx.hit(r, act.clone());
+    let kx = r.right().saturating_sub(kw + 1);
+    cx.chips(buf, kx, r.y, r.right(), &[(keys, verb, act)]);
+    cx.hit(Rect::new(r.x, r.y, kx - r.x, 1), act.clone());
 }
 
 /// One device in the phone tree: branch guides in the hue of the link to its parent

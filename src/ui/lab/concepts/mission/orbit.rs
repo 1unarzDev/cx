@@ -477,7 +477,8 @@ fn place<'a>(
     // The root's own evidence row, centred under the pill.
     let pev = match (mode, rootd) {
         (Mode::Full, Some(d)) => {
-            let w = 4 + ev_w(cx, &evidence(cx, d));
+            let word = if d.id == cx.s.viewer { 4 } else { 5 };
+            let w = word + ev_w(cx, &evidence(cx, d));
             Rect::new((c.0 - f32::from(w) / 2.0).round() as u16, pill.y + 1, w, 1)
         }
         _ => Rect::default(),
@@ -779,10 +780,13 @@ impl Canvas {
                 if pat.on(i) {
                     self.dot(sx, sy, st, pri, asc);
                     if thick {
+                        // Three dots across the stroke: clearly heavier than any other.
                         if dx.abs() > dy.abs() {
                             self.dot(sx, sy + 1, st, pri, ' ');
+                            self.dot(sx, sy - 1, st, pri, ' ');
                         } else {
                             self.dot(sx + 1, sy, st, pri, ' ');
+                            self.dot(sx - 1, sy, st, pri, ' ');
                         }
                     }
                 } else if asc != ' ' && matches!(pat, Pat::Dot | Pat::DashDot) {
@@ -900,14 +904,19 @@ fn cellp(p: (u16, u16)) -> P {
     (f32::from(p.0) + 0.5, f32::from(p.1) + 0.5)
 }
 
-/// An arrowhead for a direction on screen.
+/// An arrowhead for a direction on screen (ASCII: `->` or `<-` by its horizontal sense).
 fn arrow(cx: &Cx, dx: f32, dy: f32) -> &'static str {
     let a = (dy * 2.0).atan2(dx);
     let k = ((a / (PI / 4.0)).round() as i32).rem_euclid(8);
     if cx.uni() {
         ["→", "↘", "↓", "↙", "←", "↖", "↑", "↗"][k as usize]
     } else {
-        [">", "v", "v", "v", "<", "^", "^", "^"][k as usize]
+        // Two cells: `>`, `^` and `v` already mean selection, alerts and nothing else.
+        if dx >= 0.0 {
+            "->"
+        } else {
+            "<-"
+        }
     }
 }
 
@@ -975,7 +984,15 @@ pub(super) fn draw_with(
         ));
     }
     cv.block(Rect::new(p.pill.x, p.pill.y, p.pill.width, 1));
-    cv.block(p.pev);
+    // The root's evidence keeps a clear cell each side (a stroke never touches `a s`).
+    if p.pev.width > 0 {
+        cv.block(Rect::new(
+            p.pev.x.saturating_sub(2),
+            p.pev.y,
+            p.pev.width + 4,
+            1,
+        ));
+    }
 
     // Mesh arcs: a soft dotted arc just outside its members, named in its hue.
     let mut mesh_names: Vec<(Vec<P>, String, Tok, String)> = Vec::new();
@@ -1051,7 +1068,7 @@ pub(super) fn draw_with(
         0.0,
         TAU,
     );
-    if p.halo.height > 1 {
+    if p.halo.height > 1 && !fade_all {
         cv.stroke(&halo, Pat::Halo, cx.ink(Tok::Accent, 0.8), 2, false);
     }
 
@@ -1118,22 +1135,10 @@ pub(super) fn draw_with(
         }
         chips.push((e, bez(a, c, b, 0.5), on));
     }
-    cv.flush(cx, buf);
-    for (spots, g, st) in arrows {
-        let free = spots
-            .iter()
-            .map(|q| (q.0 as u16, q.1 as u16))
-            .find(|&(x, y)| {
-                cv.cell(i32::from(x), i32::from(y))
-                    .is_some_and(|i| !cv.mask[i])
-            });
-        if let Some((x, y)) = free {
-            cx.put(buf, x, y, 1, g, st);
-        }
-    }
-
-    // Chips on the links' middles: the rtt (with the policy word at L), or what is
-    // wrong. Below 100 columns only closed and down links carry one.
+    // Chips on the links' middles (the rtt, with the policy word at L, or what is
+    // wrong; below 100 columns only closed and down links carry one) and the mesh names
+    // on their arcs are placed before the strokes are flushed: their cells, plus one
+    // column each side, are kept clear, so no stroke or bead ever restyles a letter.
     let mut taken: Vec<Rect> = p
         .nodes
         .iter()
@@ -1141,14 +1146,15 @@ pub(super) fn draw_with(
         .map(|n| n.label)
         .chain([p.pill, p.pev])
         .collect();
+    let mut placed: Vec<(&LabEdge, Rect, String, bool)> = Vec::new();
     for (e, q, on) in chips {
-        let text = chip_text(cx, e, p.mode);
-        let Some(text) = text else {
-            let r = Rect::new(q.0 as u16, q.1 as u16, 1, 1);
-            cx.hit(
-                Rect::new(r.x.saturating_sub(1), r.y, 3, 1),
-                format!("edge:{}", e.id),
-            );
+        let Some(text) = chip_text(cx, e, p.mode) else {
+            // No chip: a 3x1 spot at the middle is the tap target (not on phones, where
+            // the tree rows are the targets and a 3-cell spot is too small for a thumb).
+            if !cx.touch() {
+                let r = Rect::new((q.0 as u16).saturating_sub(1), q.1 as u16, 3, 1);
+                cx.hit(r, format!("edge:{}", e.id));
+            }
             continue;
         };
         let w = super::width(&text, cx.uni()) + 2;
@@ -1165,6 +1171,43 @@ pub(super) fn draw_with(
             continue;
         }
         taken.push(r);
+        cv.block(Rect::new(r.x.saturating_sub(1), r.y, r.width + 2, 1));
+        placed.push((e, r, text, on));
+    }
+    let mut names: Vec<(Rect, String, Tok, String)> = Vec::new();
+    for (spots, name, tok, id) in mesh_names {
+        let w = super::width(&name, cx.uni());
+        let free = spots.iter().find_map(|q| {
+            let x = (q.0 - f32::from(w) / 2.0).round().max(f32::from(band.x)) as u16;
+            let y =
+                q.1.round()
+                    .clamp(f32::from(band.y), f32::from(band.bottom() - 1)) as u16;
+            let r = Rect::new(x, y, w, 1);
+            let pad = Rect::new(r.x.saturating_sub(1), r.y, r.width + 2, 1);
+            (r.right() <= band.right() && !taken.iter().any(|t| t.intersects(pad))).then_some(r)
+        });
+        let Some(r) = free else { continue };
+        taken.push(r);
+        cv.block(Rect::new(r.x.saturating_sub(1), r.y, r.width + 2, 1));
+        names.push((r, name, tok, id));
+    }
+    cv.flush(cx, buf);
+    for (spots, g, st) in arrows {
+        let gw = super::width(g, cx.uni());
+        let free = spots
+            .iter()
+            .map(|q| (q.0 as u16, q.1 as u16))
+            .find(|&(x, y)| {
+                (x..x + gw).all(|xx| {
+                    cv.cell(i32::from(xx), i32::from(y))
+                        .is_some_and(|i| !cv.mask[i])
+                })
+            });
+        if let Some((x, y)) = free {
+            cx.put(buf, x, y, gw, g, st);
+        }
+    }
+    for (e, r, text, on) in placed {
         let tok = if !e.up {
             Tok::Err
         } else if closed(e) {
@@ -1179,37 +1222,33 @@ pub(super) fn draw_with(
         };
         let fg = cx.ink(
             if e.up { Tok::Fg } else { Tok::Err },
-            if on { 1.0 } else { 0.8 },
+            if on {
+                1.0
+            } else if fade_all {
+                0.45
+            } else {
+                0.8
+            },
         );
         cx.fill(buf, r, bg);
-        cx.put(buf, r.x + 1, r.y, w - 2, &text, fg.patch(bg));
-        cx.hit(r, format!("edge:{}", e.id));
+        cx.put(buf, r.x + 1, r.y, r.width - 2, &text, fg.patch(bg));
+        if !cx.touch() {
+            cx.hit(r, format!("edge:{}", e.id));
+        }
     }
-
-    // Mesh names on their arcs.
-    for (spots, name, tok, id) in mesh_names {
-        let w = super::width(&name, cx.uni());
-        let free = spots.iter().find_map(|q| {
-            let x = (q.0 - f32::from(w) / 2.0).round().max(f32::from(band.x)) as u16;
-            let y =
-                q.1.round()
-                    .clamp(f32::from(band.y), f32::from(band.bottom() - 1)) as u16;
-            let r = Rect::new(x, y, w, 1);
-            let pad = Rect::new(r.x.saturating_sub(1), r.y, r.width + 2, 1);
-            (r.right() <= band.right() && !taken.iter().any(|t| t.intersects(pad))).then_some(r)
-        });
-        let Some(r) = free else { continue };
-        let (x, y) = (r.x, r.y);
+    for (r, name, tok, id) in names {
+        // A full restyle (fill resets the cell), never a patch over a stroke's attrs.
+        cx.fill(buf, r, Style::default());
+        let a = if fade_all { 0.45 } else { 0.9 };
         cx.put(
             buf,
-            x,
-            y,
-            w,
+            r.x,
+            r.y,
+            r.width,
             &name,
-            cx.ink(tok, 0.9).add_modifier(Modifier::ITALIC),
+            cx.ink(tok, a).add_modifier(Modifier::ITALIC),
         );
         cx.hit(r, format!("mesh:{id}"));
-        taken.push(r);
     }
 
     // Nodes.
@@ -1244,6 +1283,7 @@ pub(super) fn draw_with(
             _ => None,
         },
         keys,
+        fade_all,
     );
     if p.hidden > 0 {
         let t = format!("+{} more", p.hidden);
@@ -1257,8 +1297,17 @@ pub(super) fn draw_with(
 }
 
 fn chip_text(cx: &Cx, e: &LabEdge, mode: Mode) -> Option<String> {
+    let small = mode == Mode::Key || cx.size() <= Size::S;
     if !e.up {
-        return Some(if mode == Mode::Key || cx.size() <= Size::S {
+        // A lone `✕` beside a node that already shows `✕` would read as a repeat.
+        let end_down = [&e.from, &e.to].iter().any(|id| {
+            cx.s.device(id)
+                .is_some_and(|d| d.status == DeviceStatus::Down)
+        });
+        if small && end_down {
+            return None;
+        }
+        return Some(if small {
             cx.g("✕", "x").to_string()
         } else {
             format!("{} down", cx.g("✕", "x"))
@@ -1305,7 +1354,8 @@ fn transfer_rate(cx: &Cx, e: &LabEdge) -> Option<String> {
 }
 
 /// A device's name with its hotkey letter underlined in the device hue (letters are
-/// keys); where letters are not keys the name is plain. Returns columns written.
+/// keys); where letters are not keys the name is entirely plain (no letter stands out,
+/// so nothing suggests a key that does something else there). Returns columns written.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn name(
     cx: &Cx,
@@ -1318,34 +1368,20 @@ pub(super) fn name(
     keys: bool,
 ) -> u16 {
     let nm = fit(&d.name, nmax, cx.uni());
+    if !keys {
+        return cx.put(buf, x, y, nmax as u16 + 1, &nm, st);
+    }
     let mut w = 0;
     let at = has_letter(d).filter(|&i| i + 1 < nm.chars().count() || nm == d.name);
     if at.is_none() {
-        w += if keys {
-            cx.dchip(buf, x, y, d, false)
-        } else {
-            cx.put(
-                buf,
-                x,
-                y,
-                3,
-                &format!(" {} ", d.hotkey),
-                cx.ink(Tok::Id(cx.s.hue(&d.id)), 1.0),
-            )
-        };
-        w += 1;
+        w += cx.dchip(buf, x, y, d, false) + 1;
     }
-    let under = if keys {
-        Modifier::UNDERLINED
-    } else {
-        Modifier::empty()
-    };
     // On a solid capsule (no tints) the letter keeps the capsule's ink.
     let key = if st.bg.is_some() && !cx.has_surface() {
-        st.add_modifier(Modifier::BOLD | under)
+        st.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     } else {
         cx.ink(Tok::Id(cx.s.hue(&d.id)), 1.0)
-            .add_modifier(Modifier::BOLD | under)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     };
     for (i, ch) in nm.chars().enumerate() {
         let s = ch.to_string();
@@ -1422,9 +1458,12 @@ fn node(cx: &Cx, buf: &mut Buffer, p: &Plan, n: &Node, pick: Option<bool>, keys:
         }
     }
     let (g, gst) = cx.status(d.status);
+    let gst = if fade { cx.ink(Tok::Faint, 1.0) } else { gst };
     let nst = if pick == Some(true) {
         cx.st(Tok::Accent).add_modifier(Modifier::BOLD)
-    } else if up && !fade {
+    } else if fade {
+        cx.ink(Tok::Muted, 0.6)
+    } else if up {
         cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD)
     } else {
         cx.ink(Tok::Muted, 0.9)
@@ -1433,7 +1472,7 @@ fn node(cx: &Cx, buf: &mut Buffer, p: &Plan, n: &Node, pick: Option<bool>, keys:
     let nw = r.width - 2;
     if left {
         cx.put(buf, r.right() - 1, r.y, 1, g, gst.patch(bg));
-        let w = name_w(cx, d, p.nmax);
+        let w = name_w(cx, d, p.nmax, keys);
         name(
             cx,
             buf,
@@ -1464,10 +1503,10 @@ fn node(cx: &Cx, buf: &mut Buffer, p: &Plan, n: &Node, pick: Option<bool>, keys:
     );
 }
 
-fn name_w(cx: &Cx, d: &LabDevice, nmax: usize) -> u16 {
+fn name_w(cx: &Cx, d: &LabDevice, nmax: usize, keys: bool) -> u16 {
     let nm = fit(&d.name, nmax, cx.uni());
     let at = has_letter(d).filter(|&i| i + 1 < nm.chars().count() || nm == d.name);
-    super::width(&nm, cx.uni()) + if at.is_none() { 4 } else { 0 }
+    super::width(&nm, cx.uni()) + if at.is_none() && keys { 4 } else { 0 }
 }
 
 fn hit_node(cx: &Cx, r: Rect, d: &LabDevice) {
@@ -1488,10 +1527,19 @@ fn hit_node(cx: &Cx, r: Rect, d: &LabDevice) {
 
 /// The root: a tinted capsule with its name (hotkey underlined) and, with room, its own
 /// evidence beneath, all inside the dotted halo.
-fn pill(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str, pick: Option<bool>, keys: bool) {
+fn pill(
+    cx: &Cx,
+    buf: &mut Buffer,
+    p: &Plan,
+    root: &str,
+    pick: Option<bool>,
+    keys: bool,
+    fade: bool,
+) {
     let Some(d) = cx.s.device(root) else { return };
     let r = p.pill;
     let strength = match (pick, cx.dark()) {
+        _ if fade => 0.1,
         (Some(true), true) => 0.42,
         (Some(true), false) => 0.32,
         (_, true) => 0.26,
@@ -1555,7 +1603,13 @@ fn pill(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str, pick: Option<bool>, key
         }
     }
     let hit = if cx.touch() {
-        Rect::new(r.x, r.y.saturating_sub(1), r.width, 3)
+        let w = r.width.max(7);
+        Rect::new(
+            r.x.saturating_sub((w - r.width) / 2),
+            r.y.saturating_sub(1),
+            w,
+            3,
+        )
     } else {
         r
     };

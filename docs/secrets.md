@@ -1,7 +1,7 @@
 # Secrets
 
 `cx secrets` keeps API tokens and keys out of plaintext files, shell history and argv. Values go into the OS keyring
-when one answers, else into an age-encrypted file. A metadata index (names, dates, backend, length; never
+when one answers, else into a private file stored the way `ssh-keygen` stores an unencrypted private key. A metadata index (names, dates, backend, length; never
 values) lets `cx secrets list` work without touching either backend; it is still read from disk on each call.
 
 ```
@@ -32,19 +32,22 @@ name cx itself reads is `cloudflare.api_token`, which sets `CLOUDFLARE_API_TOKEN
    answer (locked collection waiting on a prompt nobody sees, wedged dbus) makes `set` fall back to the file, and is
    not retried for the rest of that process. A secret stored in the keyring is readable only from sessions that reach
    that keyring; from a plain SSH login without a bus, `get` reports that instead of guessing.
-2. **age file** `$XDG_STATE_HOME/cx/secrets.age` (default `~/.local/state/cx`), encrypted to an X25519 identity in
-   `secrets.key` next to it. Both are 0600 in the 0700 state directory. Writes go to a temporary file, are fsynced and
-   renamed into place, under a lock (`secrets.lock`). A corrupt or truncated file, or a missing identity, is reported
-   and left untouched; cx never mints a new identity over an existing store.
+2. **Fallback file** `$XDG_STATE_HOME/cx/secrets.values.json` (default `~/.local/state/cx`): the values as plain
+   JSON, 0600 in the 0700 state directory. It is opened without following symlinks and refused unless it is a
+   regular file owned by this user with no group or other permission bits. Writes go to a 0600 temporary file, are
+   fsynced and renamed into place, under a lock (`secrets.lock`). A corrupt or truncated file is reported and left
+   untouched.
 
 `CX_SECRETS_BACKEND=file` never touches the keyring; `CX_SECRETS_BACKEND=keyring` refuses to fall back.
 
 ## Threat model
 
-- The age file with its identity file is protected the way an SSH private key without a passphrase is: file modes
-  keep other users out, and a copy of `secrets.age` alone (backup, sync folder, bug report) reveals nothing. It does
-  **not** protect against root, against other processes of the same user, or against someone who copies both files.
-  That is the deliberate trade-off for headless robots, which must start without a person typing a passphrase.
+- The fallback file is exactly as safe as `~/.ssh/id_ed25519` without a passphrase, and no safer: file modes keep
+  other users out, and nothing else does. Root, any process of the same user, and anyone who gets a copy of the file
+  (backup, sync folder, bug report) can read the values. Encrypting it with a key kept next to it would not change
+  that, so cx does not (an earlier draft used age and was dropped for its dependency weight). That is the
+  deliberate trade-off for headless robots, which must start without a person typing a passphrase; put the state
+  directory where you would put SSH keys, and prefer the keyring where one exists.
 - The OS keyring adds what the platform gives: encryption at rest tied to the login password, and locking when the
   session locks. Any process of the same unlocked session can still ask it for the value.
 - The index reveals names, timestamps and value lengths (for the masked `•••• (40)` display).

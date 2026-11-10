@@ -115,7 +115,7 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// OS keyring / age-file secrets (docs/secrets.md): list, set, get --fd/--exec, rm, migrate.
+    /// OS keyring / private-file secrets (docs/secrets.md): list, set, get --fd/--exec, rm, migrate.
     Secrets {
         #[command(subcommand)]
         command: secrets::Cli,

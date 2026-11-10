@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """`cx secrets` keeps values out of stdout/stderr, argv and files, offline in a temp HOME.
 
-Uses the age-file backend only (CX_SECRETS_BACKEND=file, no session bus), so the user's keyring is never
+Uses the file backend only (CX_SECRETS_BACKEND=file, no session bus), so the user's keyring is never
 touched. Checks: set from stdin, list/--json carry metadata only, get --fd to a pipe (a terminal is refused),
 get --exec puts the value in the child's env and in no process's /proc/PID/cmdline, migrate imports the
 plaintext `cx mesh` token and deletes it only with --delete-plaintext, `cx mesh` hands the stored token to
@@ -281,15 +281,18 @@ with tempfile.TemporaryDirectory(prefix='cx-secrets-') as tmp:
         cx('mesh', 'join', 'https://mesh.example.org/abc', extra=dict(PATH=curl_path, CX_FAKE_OUT=str(out_file), **extra))
         assert out_file.read_text() == 'unset', f'join script saw the token ({sorted(extra)})'
 
-    # Nothing on disk or in any output carries a value in clear; modes stay private.
+    # Values are only in the 0600 fallback file (stored like an unencrypted SSH key), never in the index or any
+    # other state file; modes stay private.
     for p in state.iterdir():
         data = p.read_bytes()
-        assert CANARY.encode() not in data and CANARY2.encode() not in data, p
+        if p.name != 'secrets.values.json':
+            assert CANARY.encode() not in data and CANARY2.encode() not in data, p
         if p.is_file():
             assert stat.S_IMODE(p.stat().st_mode) == 0o600, (p, oct(p.stat().st_mode))
     assert stat.S_IMODE(state.stat().st_mode) == 0o700
-    for f in ('secrets.age', 'secrets.key', 'secrets.json'):
+    for f in ('secrets.values.json', 'secrets.json', 'secrets.lock'):
         assert (state / f).exists(), f
+    assert not (state / 'secrets.key').exists() and not (state / 'secrets.age').exists()
 
     cx('secrets', 'rm', 'robot.wifi')
     assert [m['name'] for m in json.loads(cx('secrets', 'list', '--json').stdout)] == ['cloudflare.api_token']
@@ -299,4 +302,4 @@ with tempfile.TemporaryDirectory(prefix='cx-secrets-') as tmp:
     for blob in seen:
         assert CANARY.encode() not in blob and CANARY2.encode() not in blob, blob[-500:]
         assert CANARY[:16].encode() not in blob
-print('secrets CLI: values stayed out of output, argv and disk')
+print('secrets CLI: values stayed out of output, argv and every file but the 0600 value file')

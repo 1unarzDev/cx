@@ -1,24 +1,23 @@
-//! Secrets: one interface over the OS keyring and an age-encrypted file (docs/secrets.md).
+//! Secrets: one interface over the OS keyring and a private fallback file (docs/secrets.md).
 //!
 //! * [`Secrets::list`] returns metadata only (never values) from `secrets.json` and never contacts a backend; it
 //!   still reads the index from disk on each call.
 //! * [`Secrets::get`] returns a [`SecretValue`], which zeroizes on drop and has no `Display` and a redacted `Debug`.
-//! * [`Secrets::set`] stores in the OS keyring when one answers within [`KEYRING_TIMEOUT`], else in the age file.
+//! * [`Secrets::set`] stores in the OS keyring when one answers within [`KEYRING_TIMEOUT`], else in the fallback file.
 //! * [`Secrets::inject`] puts values into one child's environment, never into argv.
 //!
 //! Backends: the keyring is the Secret Service over a pure-Rust zbus connection on Linux (no libdbus, so the static
 //! musl release keeps working) and the Keychain on macOS. Every keyring call runs on its own thread with a bounded
 //! wait; a call that hangs marks the keyring unusable for the rest of the process. The fallback is
-//! `$XDG_STATE_HOME/cx/secrets.age`, encrypted to an X25519 identity in `secrets.key` (0600, in the 0700 state
-//! dir). That protects like an SSH private key: against other users and against copies of `secrets.age` alone,
-//! not against this user's own processes or root.
+//! `$XDG_STATE_HOME/cx/secrets.values.json`: the values in plain JSON, 0600 in the 0700 state dir. That is how
+//! `~/.ssh/id_ed25519` without a passphrase is stored: other users are kept out by file modes, this user's own
+//! processes and root are not, and a copy of the file is a copy of the values.
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, OnceLock};
 use std::time::Duration;
@@ -33,8 +32,7 @@ const STORE_LIMIT: u64 = 8 * 1024 * 1024;
 const INDEX_LIMIT: u64 = 512 * 1024;
 const KEYRING_SERVICE: &str = "cx";
 const INDEX: &str = "secrets.json";
-const STORE: &str = "secrets.age";
-const IDENTITY: &str = "secrets.key";
+const STORE: &str = "secrets.values.json";
 const LOCK: &str = "secrets.lock";
 
 /// The stored Cloudflare token `cx mesh` and `cx claude` hand to mesh.py.
@@ -215,7 +213,7 @@ impl TimedVault {
 }
 
 /// Whether an OS keyring might be reachable from this session. On Linux that needs a session bus; headless robots
-/// and plain SSH logins usually have none, and then the age file is used without trying.
+/// and plain SSH logins usually have none, and then the fallback file is used without trying.
 pub fn keyring_reachable() -> bool {
     if cfg!(target_os = "macos") {
         return true;
@@ -234,7 +232,7 @@ pub fn keyring_reachable() -> bool {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// Keyring when it answers, else the age file.
+    /// Keyring when it answers, else the fallback file.
     Auto,
     /// Never touch the keyring (`CX_SECRETS_BACKEND=file`).
     FileOnly,
@@ -244,119 +242,31 @@ pub enum Mode {
 
 type Map = BTreeMap<String, Zeroizing<String>>;
 
-/// The age-encrypted fallback file and its identity.
+/// The fallback file: `{"version": 1, "secrets": {name: value}}`, 0600 in the 0700 state dir.
 struct FileVault {
     dir: PathBuf,
 }
 
 impl FileVault {
-    fn store(&self) -> PathBuf {
-        self.dir.join(STORE)
-    }
-    fn identity_path(&self) -> PathBuf {
-        self.dir.join(IDENTITY)
-    }
-
-    fn identity(&self, create: bool) -> Result<Option<age::x25519::Identity>> {
-        use age::secrecy::ExposeSecret;
-        let path = self.identity_path();
-        match fs::symlink_metadata(&path) {
-            Ok(m) => {
-                ensure!(
-                    m.file_type().is_file() && m.uid() == unsafe { libc::geteuid() },
-                    "{} is not a regular file owned by this user; refusing to use it",
-                    path.display()
-                );
-                ensure!(
-                    m.mode() & 0o077 == 0,
-                    "{} is readable by other users; run chmod 600 on it",
-                    path.display()
-                );
-                let mut text = Zeroizing::new(String::new());
-                fs::File::open(&path)?
-                    .take(4096)
-                    .read_to_string(&mut text)
-                    .with_context(|| format!("read {}", path.display()))?;
-                let line = text
-                    .lines()
-                    .find(|l| l.starts_with("AGE-SECRET-KEY-"))
-                    .unwrap_or("");
-                let id = line
-                    .parse::<age::x25519::Identity>()
-                    .map_err(|_| anyhow::anyhow!("{} is not an age identity", path.display()))?;
-                Ok(Some(id))
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                if fs::symlink_metadata(self.store()).is_ok() {
-                    bail!(
-                        "{} exists but its identity {} is missing; the file cannot be decrypted",
-                        self.store().display(),
-                        path.display()
-                    );
-                }
-                if !create {
-                    return Ok(None);
-                }
-                let id = age::x25519::Identity::generate();
-                let body = Zeroizing::new(format!(
-                    "# cx secrets identity: decrypts secrets.age. Protect it like an SSH private key.\n# public key: {}\n{}\n",
-                    id.to_public(),
-                    id.to_string().expose_secret()
-                ));
-                atomic_write(&self.dir, IDENTITY, body.as_bytes())?;
-                Ok(Some(id))
-            }
-            Err(e) => Err(e).with_context(|| format!("inspect {}", path.display())),
-        }
-    }
-
-    fn corrupt(&self) -> String {
-        format!(
-            "{} is unreadable (corrupt, truncated or not encrypted to {}); it was left untouched. Move it aside to start an empty store",
-            self.store().display(),
-            self.identity_path().display()
+    fn corrupt(&self) -> anyhow::Error {
+        anyhow::anyhow!(
+            "{} is unreadable (corrupt or truncated); it was left untouched. Move it aside to start an empty store",
+            self.dir.join(STORE).display()
         )
     }
 
     fn read(&self) -> Result<Map> {
-        let path = self.store();
-        let m = match fs::symlink_metadata(&path) {
-            Ok(m) => m,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Still validate an existing identity, so a bad key is reported before the first write.
-                self.identity(false)?;
-                return Ok(Map::new());
-            }
-            Err(e) => return Err(e).with_context(|| format!("inspect {}", path.display())),
+        let path = self.dir.join(STORE);
+        let Some(bytes) = crate::store::read_private(&path, STORE_LIMIT)? else {
+            return Ok(Map::new());
         };
-        ensure!(
-            m.file_type().is_file() && m.uid() == unsafe { libc::geteuid() },
-            "{} is not a regular file owned by this user",
-            path.display()
-        );
-        ensure!(
-            m.len() <= STORE_LIMIT,
-            "{} exceeds its size limit",
-            path.display()
-        );
-        let id = self.identity(false)?.context("secrets identity missing")?;
-        let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-        let decryptor =
-            age::Decryptor::new(&bytes[..]).map_err(|_| anyhow::anyhow!(self.corrupt()))?;
-        let mut reader = decryptor
-            .decrypt(std::iter::once(&id as &dyn age::Identity))
-            .map_err(|_| anyhow::anyhow!(self.corrupt()))?;
-        let mut plain = Zeroizing::new(Vec::new());
-        reader
-            .read_to_end(&mut plain)
-            .map_err(|_| anyhow::anyhow!(self.corrupt()))?;
+        let bytes = Zeroizing::new(bytes);
         #[derive(Deserialize)]
         struct Body {
             version: u32,
             secrets: Map,
         }
-        let body: Body =
-            serde_json::from_slice(&plain).map_err(|_| anyhow::anyhow!(self.corrupt()))?;
+        let body: Body = serde_json::from_slice(&bytes).map_err(|_| self.corrupt())?;
         ensure!(
             body.version == 1,
             "{} has unsupported version",
@@ -366,99 +276,27 @@ impl FileVault {
     }
 
     fn write(&self, map: &Map) -> Result<()> {
-        let id = self.identity(true)?.context("secrets identity missing")?;
-        let recipient = id.to_public();
         #[derive(Serialize)]
         struct Body<'a> {
             version: u32,
             secrets: &'a Map,
         }
-        let plain = Zeroizing::new(serde_json::to_vec(&Body {
-            version: 1,
-            secrets: map,
-        })?);
-        let encryptor =
-            age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
-                .map_err(|_| anyhow::anyhow!("age encryption setup failed"))?;
-        let mut out = Vec::with_capacity(plain.len() + 256);
-        let mut w = encryptor.wrap_output(&mut out)?;
-        w.write_all(&plain)?;
-        w.finish()?;
-        atomic_write(&self.dir, STORE, &out)
+        // Sized up front so the serialized values are not left behind in a reallocated buffer.
+        let size: usize = map.iter().map(|(k, v)| k.len() + 2 * v.len() + 8).sum();
+        let mut plain = Zeroizing::new(Vec::with_capacity(size + 64));
+        serde_json::to_writer(
+            &mut *plain,
+            &Body {
+                version: 1,
+                secrets: map,
+            },
+        )?;
+        crate::store::atomic_write(&self.dir, STORE, &plain)
     }
 }
 
-/// Write `name` in `dir` by temp file (0600, create_new) + fsync + rename + directory fsync.
-fn atomic_write(dir: &Path, name: &str, bytes: &[u8]) -> Result<()> {
-    let temporary = dir.join(format!(
-        ".{name}.{}.{}.tmp",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
-    let result = (|| -> Result<()> {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&temporary, dir.join(name))?;
-        if let Ok(d) = fs::File::open(dir) {
-            let _ = d.sync_all();
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result.with_context(|| format!("write {}", dir.join(name).display()))
-}
-
-/// Refuse a state file that is not a regular file owned by this user without group/other bits (the checks
-/// store.rs applies to its private files). `file` was opened with O_NOFOLLOW, so a symlink never gets here.
-fn ensure_private(file: &fs::File, path: &Path) -> Result<()> {
-    let m = file.metadata()?;
-    ensure!(
-        m.is_file() && m.uid() == unsafe { libc::geteuid() } && m.mode() & 0o077 == 0,
-        "{} is not a private file owned by this user; refusing to use it",
-        path.display()
-    );
-    Ok(())
-}
-
-struct Lock(fs::File);
-
-impl Lock {
-    fn take(dir: &Path) -> Result<Lock> {
-        use std::os::fd::AsRawFd;
-        let path = dir.join(LOCK);
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&path)
-            .context("open secrets lock")?;
-        ensure_private(&file, &path)?;
-        ensure!(
-            unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0,
-            "lock secrets store"
-        );
-        Ok(Lock(file))
-    }
-}
-
-impl Drop for Lock {
-    fn drop(&mut self) {
-        use std::os::fd::AsRawFd;
-        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
-    }
+fn lock(dir: &std::path::Path) -> Result<crate::store::PrivateLock> {
+    crate::store::private_lock(dir, LOCK, true)?.context("lock secrets store")
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -560,28 +398,12 @@ impl Secrets {
 
     fn read_index(&self) -> Result<Index> {
         let path = self.dir.join(INDEX);
-        let file = match fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(&path)
-        {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Index {
-                    version: 1,
-                    ..Index::default()
-                })
-            }
-            Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
+        let Some(bytes) = crate::store::read_private(&path, INDEX_LIMIT)? else {
+            return Ok(Index {
+                version: 1,
+                ..Index::default()
+            });
         };
-        ensure_private(&file, &path)?;
-        let mut bytes = Vec::new();
-        file.take(INDEX_LIMIT + 1).read_to_end(&mut bytes)?;
-        ensure!(
-            bytes.len() as u64 <= INDEX_LIMIT,
-            "{} exceeds its size limit",
-            path.display()
-        );
         let index: Index = serde_json::from_slice(&bytes).map_err(|_| {
             anyhow::anyhow!(
                 "{} is corrupt; it was left untouched (it holds names only, no values)",
@@ -597,7 +419,7 @@ impl Secrets {
     }
 
     fn write_index(&self, index: &Index) -> Result<()> {
-        atomic_write(&self.dir, INDEX, &serde_json::to_vec_pretty(index)?)
+        crate::store::atomic_write(&self.dir, INDEX, &serde_json::to_vec_pretty(index)?)
     }
 
     /// Metadata of every secret, by name. Reads only the index: no backend is contacted.
@@ -639,7 +461,7 @@ impl Secrets {
     }
 
     fn touch(&self, name: &str, t: u64) -> Result<()> {
-        let _lock = Lock::take(&self.dir)?;
+        let _lock = lock(&self.dir)?;
         let mut index = self.read_index()?;
         if let Some(m) = index.secrets.get_mut(name) {
             m.last_used = Some(t);
@@ -665,7 +487,7 @@ impl Secrets {
             !value.contains('\0'),
             "secret contains a NUL byte, which no environment variable can carry"
         );
-        let _lock = Lock::take(&self.dir)?;
+        let _lock = lock(&self.dir)?;
         let mut index = self.read_index()?;
         let previous = index.secrets.get(name).cloned();
         if previous.is_none() {
@@ -729,7 +551,7 @@ impl Secrets {
     /// Remove a secret from its backend and the index.
     pub fn delete(&self, name: &str) -> Result<SecretMeta> {
         validate_name(name)?;
-        let _lock = Lock::take(&self.dir)?;
+        let _lock = lock(&self.dir)?;
         let mut index = self.read_index()?;
         let meta = index
             .secrets
@@ -1145,6 +967,7 @@ pub fn run_cli(command: Cli) -> Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
     use std::sync::Mutex;
 
     const CANARY: &str = "cx-canary-7f3a9d1e-DO-NOT-LOG";
@@ -1231,10 +1054,18 @@ mod tests {
         s.set("robot.wifi", "second").unwrap();
         assert_eq!(s.get("robot.wifi").unwrap().expose(), "second");
         assert_eq!(s.meta("robot.wifi").unwrap().unwrap().created, created);
-        for f in [STORE, IDENTITY, INDEX, LOCK] {
+        for f in [STORE, INDEX, LOCK] {
             assert_eq!(mode(&dir.join(f)), 0o600, "{f}");
         }
-        // A fresh handle (another process) decrypts with the same identity.
+        assert_eq!(mode(&dir), 0o700);
+        // Exactly these files, no key file: the fallback is a plain private file.
+        let mut names: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, [INDEX, LOCK, STORE]);
+        // A fresh handle (another process) reads the same file.
         assert_eq!(
             file_store(&dir).get("robot.wifi").unwrap().expose(),
             "second"
@@ -1272,22 +1103,29 @@ mod tests {
         let (_t, dir) = temp();
         let s = file_store(&dir);
         s.set("a", "one").unwrap();
-        let mut bytes = fs::read(dir.join(STORE)).unwrap();
-        let n = bytes.len();
-        bytes[n - 10] ^= 0xff;
-        fs::write(dir.join(STORE), &bytes).unwrap();
-        let err = format!("{:#}", s.get("a").unwrap_err());
-        assert!(err.contains("unreadable"), "{err}");
-        let err = format!("{:#}", s.set("b", "two").unwrap_err());
-        assert!(err.contains("left untouched"), "{err}");
-        assert_eq!(fs::read(dir.join(STORE)).unwrap(), bytes);
-        assert!(s.meta("b").unwrap().is_none());
-        // Not-age garbage and a truncated file are refused the same way.
-        for junk in [&b"not age at all"[..], &bytes[..40]] {
+        let good = fs::read(dir.join(STORE)).unwrap();
+        let wrong_version = String::from_utf8(good.clone())
+            .unwrap()
+            .replace("\"version\":1", "\"version\":2");
+        // Truncated, not JSON, invalid UTF-8, and a version this build does not know: all refused, none replaced.
+        for junk in [
+            &good[..good.len() / 2],
+            &b"not json at all"[..],
+            &[0xff, 0xfe, b'{'][..],
+            wrong_version.as_bytes(),
+        ] {
             fs::write(dir.join(STORE), junk).unwrap();
             assert!(s.get("a").is_err());
+            let err = format!("{:#}", s.set("b", "two").unwrap_err());
+            assert!(
+                err.contains("left untouched") || err.contains("unsupported version"),
+                "{err}"
+            );
+            assert_eq!(fs::read(dir.join(STORE)).unwrap(), junk);
+            assert!(s.meta("b").unwrap().is_none());
         }
         // A corrupt index holds no values and is reported, not replaced.
+        fs::write(dir.join(STORE), &good).unwrap();
         fs::write(dir.join(INDEX), b"{").unwrap();
         let err = format!("{:#}", s.list().unwrap_err());
         assert!(err.contains("corrupt"), "{err}");
@@ -1324,20 +1162,39 @@ mod tests {
     }
 
     #[test]
-    fn identity_must_be_private_and_present() {
+    fn value_file_must_be_private_and_is_never_followed() {
         let (_t, dir) = temp();
         let s = file_store(&dir);
         s.set("a", "one").unwrap();
-        fs::set_permissions(dir.join(IDENTITY), fs::Permissions::from_mode(0o644)).unwrap();
+        // Readable by others: refused for reads and writes, and left as it is.
+        fs::set_permissions(dir.join(STORE), fs::Permissions::from_mode(0o644)).unwrap();
         let err = format!("{:#}", s.get("a").unwrap_err());
-        assert!(err.contains("chmod 600"), "{err}");
-        fs::remove_file(dir.join(IDENTITY)).unwrap();
-        let err = format!("{:#}", s.set("b", "two").unwrap_err());
-        assert!(err.contains("missing"), "{err}");
-        assert!(
-            !dir.join(IDENTITY).exists(),
-            "must not mint a new identity over an old store"
-        );
+        assert!(err.contains("not a private file"), "{err}");
+        assert!(s.set("b", "two").is_err());
+        assert_eq!(mode(&dir.join(STORE)), 0o644);
+        fs::set_permissions(dir.join(STORE), fs::Permissions::from_mode(0o600)).unwrap();
+        // A planted symlink is refused, never read through, and a write never lands in its target.
+        let elsewhere = dir.join("elsewhere.json");
+        fs::rename(dir.join(STORE), &elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, dir.join(STORE)).unwrap();
+        assert!(s.get("a").is_err());
+        assert!(s.set("b", "two").is_err());
+        let before = fs::read(&elsewhere).unwrap();
+        assert!(fs::symlink_metadata(dir.join(STORE))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read(&elsewhere).unwrap(), before);
+        fs::remove_file(dir.join(STORE)).unwrap();
+        fs::rename(&elsewhere, dir.join(STORE)).unwrap();
+        // Oversized: refused before it is parsed.
+        let big = vec![b' '; STORE_LIMIT as usize + 1];
+        let good = fs::read(dir.join(STORE)).unwrap();
+        fs::write(dir.join(STORE), &big).unwrap();
+        let err = format!("{:#}", s.get("a").unwrap_err());
+        assert!(err.contains("size limit"), "{err}");
+        fs::write(dir.join(STORE), &good).unwrap();
+        assert_eq!(s.get("a").unwrap().expose(), "one");
     }
 
     #[test]
@@ -1541,7 +1398,7 @@ mod tests {
     }
 
     #[test]
-    fn values_never_reach_logs_metadata_or_disk_in_clear() {
+    fn values_never_reach_logs_metadata_or_the_index() {
         let (_t, dir) = temp();
         let fake = Arc::new(FakeKeyring::default());
         let k = keyring_store(&dir, &fake, Duration::from_secs(2));
@@ -1562,14 +1419,17 @@ mod tests {
         seen.push(format!("{:#}", f.set("Bad", CANARY).unwrap_err()));
         fake.fail.store(true, Ordering::SeqCst);
         seen.push(format!("{:#}", k.get("kr").unwrap_err()));
-        let mut bytes = fs::read(dir.join(INDEX)).unwrap();
-        bytes.extend(fs::read(dir.join(STORE)).unwrap());
-        bytes.extend(fs::read(dir.join(IDENTITY)).unwrap());
+        let index = fs::read(dir.join(INDEX)).unwrap();
         for text in &seen {
             assert!(!text.contains(CANARY), "leaked in {text}");
             assert!(!text.contains(&CANARY[..12]), "partial leak in {text}");
         }
-        assert!(!bytes.windows(CANARY.len()).any(|w| w == CANARY.as_bytes()));
+        assert!(!index.windows(12).any(|w| w == &CANARY.as_bytes()[..12]));
+        // The fallback file holds the file-backend value in the clear (protected by its 0600 mode, like an
+        // unencrypted SSH key) and never the keyring-backend one.
+        let store = String::from_utf8(fs::read(dir.join(STORE)).unwrap()).unwrap();
+        assert_eq!(store.matches(CANARY).count(), 1);
+        assert_eq!(mode(&dir.join(STORE)), 0o600);
         assert!(seen[0].contains("redacted"));
     }
 }

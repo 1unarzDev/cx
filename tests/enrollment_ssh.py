@@ -2,7 +2,8 @@
 """Disposable native OpenSSH enrollment broker/multiplex regression fixture.
 Usage: python tests/enrollment_ssh.py [source-root]
 Compiles the actual auth/store/model modules in an isolated temporary harness.
-No personal SSH configuration, trust files, accounts, or installed helpers change.
+No personal SSH configuration, trust files, accounts, or installed helpers change, and nothing is
+left in /tmp (the harness builds into the source tree's target/).
 """
 import json, os, pathlib, pwd, shutil, signal, socket, subprocess, sys, tempfile, time
 
@@ -120,7 +121,9 @@ fn main()->Result<()> {
  Ok(())
 }
 ''')
-    environment = dict(os.environ, XDG_STATE_HOME=str(root/'state'), PATH=str(tools)+os.pathsep+os.environ['PATH'], CX_FIXTURE_CONFIG=str(root/'client.conf'), CX_FIXTURE_HELPER_COMMAND=f'{sys.executable} {root}/info-helper.py', CX_FIXTURE_PORT=str(first_port), CX_FIXTURE_CHANGED_PORT=str(changed_port))
+    # TMPDIR: the askpass broker's private directory lands in this temporary tree and goes with it,
+    # even when the probe is killed before the broker can remove it.
+    environment = dict(os.environ, TMPDIR=str(root), XDG_STATE_HOME=str(root/'state'), PATH=str(tools)+os.pathsep+os.environ['PATH'], CX_FIXTURE_CONFIG=str(root/'client.conf'), CX_FIXTURE_HELPER_COMMAND=f'{sys.executable} {root}/info-helper.py', CX_FIXTURE_PORT=str(first_port), CX_FIXTURE_CHANGED_PORT=str(changed_port))
     log = open(root/'daemon.log','wb')
     daemon = subprocess.Popen([sshd,'-D','-e','-f',str(root/'daemon.conf')],stdout=log,stderr=log,start_new_session=True)
     try:
@@ -129,14 +132,17 @@ fn main()->Result<()> {
             try:
                 with socket.create_connection(('127.0.0.1',first_port),timeout=.1): break
             except OSError: time.sleep(.02)
-        subprocess.run([cargo,'build','--quiet','--offline','--manifest-path',str(harness/'Cargo.toml')],check=True,timeout=90,stderr=subprocess.PIPE)
-        probe = subprocess.Popen([str(harness/'target/debug/cx-enrollment-fixture')],env=environment,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
+        # The harness builds into the source tree's target/ (never a target dir in the /tmp tmpfs).
+        build = source/'target/enrollment-fixture'
+        subprocess.run([cargo,'build','--quiet','--offline','--manifest-path',str(harness/'Cargo.toml'),'--target-dir',str(build)],check=True,timeout=300,stderr=subprocess.PIPE)
+        probe = subprocess.Popen([str(build/'debug/cx-enrollment-fixture')],env=environment,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
         try:
             output, errors = probe.communicate(timeout=25)
         except subprocess.TimeoutExpired:
             os.killpg(probe.pid,signal.SIGKILL); probe.communicate(timeout=3); raise
         assert probe.returncode==0, errors + (root/'daemon.log').read_text()[-3000:]
         assert 'alias_port_isolated=true' in output, output
+        assert not list(pathlib.Path('/tmp').glob(f'cx-askpass-{probe.pid}-*')), 'no askpass directory left in /tmp'
         print(json.dumps({'result':'PASS','encrypted_key_prompt':True,'explicit_host_trust':True,'owned_probe_group_reaped_master_survives':True,'background_batchmode_info_reuses_master':True,'changed_alias_port_does_not_reuse_master':True}))
     finally:
         # Close only private fixture masters. Their files are never user sockets.

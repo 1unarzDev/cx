@@ -14,9 +14,6 @@
 // - Claude lends (docs/claude.md): the owner posts a gateway bundle (POST /v1/admin/claude); GET /claude/<code>
 //   answers with claude.sh / claude.ps1 / a page, and the script claims the bundle once (POST /v1/claude/claim).
 //   The bundle is stored AES-GCM sealed with a key derived from the code, which only its SHA-256 identifies.
-// - ssh-overlay short codes (docs/mesh.md, "cx mesh pair"): the owner stashes an invite cx sealed itself
-//   (POST /v1/admin/pairs {lookup, sealed, hours}); `cx mesh pair <host>/<code>` takes it once
-//   (POST /v1/pair/redeem {lookup}). The Worker holds only the seal and a hash of the code.
 // Invites are minted at most MINT_PER_HOUR an hour; enrolments are limited per source address; every
 // state change is in the audit table.
 import JOIN_SH from "./join.sh";
@@ -399,45 +396,6 @@ body{background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif;max
   );
 }
 
-const LOOKUP_RE = /^[0-9a-f]{64}$/;
-const SEALED_RE = /^[A-Za-z0-9+/=]{44,4096}$/;
-const PAIR_PER_HOUR = 10;
-
-async function pairAdmin(req, env, actor, ip, now) {
-  const b = await req.json().catch(() => ({}));
-  const lookup = String(b.lookup ?? "");
-  const sealed = String(b.sealed ?? "");
-  if (!LOOKUP_RE.test(lookup) || !SEALED_RE.test(sealed)) return json({ error: "lookup: 64 hex; sealed: base64" }, 400);
-  const wait = await limited(env, "mint", MINT_PER_HOUR);
-  if (wait) return json({ error: "too many codes this hour", retry_after_s: wait }, 429);
-  const hours = Math.min(24 * 7, Math.max(0.05, Number(b.hours ?? 1)));
-  const expires = new Date(now.getTime() + hours * 3_600_000).toISOString();
-  await env.DB.prepare("DELETE FROM pairs WHERE expires <= ? OR state != 'pending'").bind(now.toISOString()).run();
-  const r = await env.DB.prepare("INSERT OR IGNORE INTO pairs (lookup, sealed, expires, state, created) VALUES (?, ?, ?, 'pending', ?)")
-    .bind(lookup, sealed, expires, now.toISOString()).run();
-  if ((r.meta?.changes ?? 0) !== 1) return json({ error: "that code is already stashed" }, 409);
-  await audit(env, actor, "pair", `${lookup.slice(0, 8)} until ${expires}`, ip);
-  return json({ url: CONFIG.url, expires });
-}
-
-async function pairRedeem(req, env) {
-  const ip = clientIp(req);
-  const wait = await limited(env, `pair:${ip}`, PAIR_PER_HOUR);
-  if (wait) return json({ error: "too many codes from this address; try again later", retry_after_s: wait }, 429, { "retry-after": String(wait) });
-  const b = await req.json().catch(() => ({}));
-  const lookup = String(b.lookup ?? "");
-  const now = new Date().toISOString();
-  const row = LOOKUP_RE.test(lookup)
-    ? await env.DB.prepare("SELECT sealed FROM pairs WHERE lookup = ? AND state = 'pending' AND sealed IS NOT NULL AND expires > ?").bind(lookup, now).first()
-    : null;
-  // take it: only one redeem's UPDATE matches
-  const took = row && (await env.DB.prepare("UPDATE pairs SET state = 'redeemed', sealed = NULL, redeemed = ?2, redeemed_ip = ?3 WHERE lookup = ?1 AND state = 'pending'")
-    .bind(lookup, now, ip).run()).meta?.changes === 1;
-  if (!took) return json({ error: "this join code is unknown, already used or expired; ask for a new one" }, 403);
-  await audit(env, "pair", "redeem", lookup.slice(0, 8), ip);
-  return json({ sealed: row.sealed });
-}
-
 async function admin(req, env, p) {
   const actor = await owner(req);
   if (!actor) return json({ error: "an active API token of this Cloudflare account is required" }, 401);
@@ -472,7 +430,6 @@ async function admin(req, env, p) {
   }
   if (p === "/v1/admin/audit" && req.method === "GET")
     return json({ audit: (await env.DB.prepare("SELECT at, actor, action, detail, ip FROM audit ORDER BY id DESC LIMIT 200").all()).results });
-  if (p === "/v1/admin/pairs" && req.method === "POST") return await pairAdmin(req, env, actor, ip, now);
   if (p.startsWith("/v1/admin/claude")) {
     const r = await lendAdmin(req, env, p, actor, ip, now);
     if (r) return r;
@@ -521,13 +478,10 @@ export default {
         const lc = /^\/claude\/([a-z0-9]{1,40})$/i.exec(p);
         if (lc) return await claudeScript(env, kind, lc[1].toLowerCase());
         if (p === "/v1/keys") return plain((CONFIG.ssh_keys ?? []).join("\n") + "\n");
-        const pc = /^\/p\/([0-9A-Za-z-]{12,20})$/.exec(p);
-        if (pc) return plain(`Run this on the device that joins (cx installed):\n  cx mesh pair ${CONFIG.url.replace(/^https?:\/\//, "")}/${pc[1]}\n`);
       }
       if (req.method === "POST" && p === "/v1/enroll") return await enroll(req, env);
       if (req.method === "POST" && p === "/v1/registered") return await registered(req, env);
       if (req.method === "POST" && p === "/v1/claude/claim") return await claim(req, env);
-      if (req.method === "POST" && p === "/v1/pair/redeem") return await pairRedeem(req, env);
       if (req.method === "POST" && p === "/v1/leave") return await leave(req, env);
       if (p.startsWith("/v1/admin/")) return await admin(req, env, p);
       return json({ error: "not found" }, 404);

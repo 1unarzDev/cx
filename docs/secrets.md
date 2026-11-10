@@ -26,12 +26,18 @@ name cx itself reads is `cloudflare.api_token`, which sets `CLOUDFLARE_API_TOKEN
 
 ## Backends
 
-1. **OS keyring** (service `cx`, account = secret name): the Secret Service (GNOME Keyring, KWallet, KeePassXC) over
-   a pure-Rust D-Bus client, or the macOS Keychain. It is tried only when a session bus exists
-   (`$DBUS_SESSION_BUS_ADDRESS` or `$XDG_RUNTIME_DIR/bus`). Each call is bounded to 3 s; a keyring that does not
-   answer (locked collection waiting on a prompt nobody sees, wedged dbus) makes `set` fall back to the file, and is
-   not retried for the rest of that process. A secret stored in the keyring is readable only from sessions that reach
-   that keyring; from a plain SSH login without a bus, `get` reports that instead of guessing.
+1. **OS keyring** (Linux): the Secret Service (GNOME Keyring, KWallet, KeePassXC) through libsecret's `secret-tool`,
+   with the attributes `service=cx name=<secret>`. The value goes to `secret-tool store` on its stdin and comes back
+   from `secret-tool lookup` on its stdout; argv only ever holds the name. cx links no D-Bus or keyring library. The
+   keyring is tried only when a session bus exists (`$DBUS_SESSION_BUS_ADDRESS` or `$XDG_RUNTIME_DIR/bus`) and
+   `secret-tool` is on PATH (on Debian and Ubuntu, package `libsecret-tools`). Each call is bounded to 3 s; a
+   keyring that does not answer (a locked collection waiting on a prompt nobody sees, a wedged bus) makes `set` fall
+   back to the file, is not retried for the rest of that process, and its `secret-tool` process group is killed a
+   second later. A secret stored in the keyring is readable only from sessions that reach that keyring; from a
+   plain SSH login without a bus, `get` reports that instead of guessing. `secret-tool lookup` exits 1 both for a
+   missing entry and for some keyring failures, so cx reads both as "not in the keyring".
+   **macOS** uses the fallback file: `security add-generic-password` takes the password only in argv (`-w`, which
+   any local process can read from the process table) or at an interactive prompt, so cx does not use it.
 2. **Fallback file** `$XDG_STATE_HOME/cx/secrets.values.json` (default `~/.local/state/cx`): the values as plain
    JSON, 0600 in the 0700 state directory. It is opened without following symlinks and refused unless it is a
    regular file owned by this user with no group or other permission bits. Writes go to a 0600 temporary file, are
@@ -52,7 +58,7 @@ name cx itself reads is `cloudflare.api_token`, which sets `CLOUDFLARE_API_TOKEN
   session locks. Any process of the same unlocked session can still ask it for the value.
 - The index reveals names, timestamps and value lengths (for the masked `•••• (40)` display).
 - Values live in memory in zeroize-on-drop buffers, and `SecretValue` has no `Display` and a redacted `Debug`.
-  Copies made by the keyring library, the JSON parser or `std::process::Command` (which holds the environment it is
+  Copies made by the pipe from `secret-tool`, the JSON parser or `std::process::Command` (which holds the environment it is
   given) are not zeroized; this is best effort, not a guarantee against memory inspection.
 - `--exec` places values in the child's environment, which the same user can read via `/proc/PID/environ` while it
   runs; argv (`/proc/PID/cmdline`, world-readable) never carries them.

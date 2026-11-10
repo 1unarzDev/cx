@@ -5,7 +5,8 @@
 //! The mesh is a pluggable feature: [`MeshBackend`] has three implementations, listed by
 //! [`backends`] (`cx mesh backends`):
 //! - `ssh-overlay` (ssh_overlay.rs): the built-in default over plain SSH, coexisting with any VPN;
-//!   devices join with `cx mesh pair <code>` (code.rs, the protocol and threat model in docs/mesh.md).
+//!   devices join with `cx mesh pair <code> <host>` while `cx mesh invite` listens (code.rs, the protocol
+//!   and threat model in docs/mesh.md).
 //! - `cloudflare-warp` (cloudflare.rs): the WARP mesh of mesh.py, through its `--json` contract.
 //! - `tailscale` (tailscale.rs): read-only adoption of `tailscale status --json`.
 //!
@@ -222,7 +223,7 @@ pub struct Plan {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Invite {
     pub backend: String,
-    /// What the new device types or pastes (`cx mesh pair <code>` for ssh-overlay).
+    /// What the new device types (with `cx mesh pair <code> <host>` for ssh-overlay).
     pub code: String,
     pub url: Option<String>,
     pub one_liner_sh: String,
@@ -230,8 +231,9 @@ pub struct Invite {
     /// RFC 3339 UTC.
     pub expires: String,
     pub uses: u32,
-    /// ssh-overlay with a mesh Worker: the 12-character code redeemable through `url`.
-    pub short_code: Option<String>,
+    /// ssh-overlay: where the invite listens (`ip` or `ip:port`), best first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -569,17 +571,17 @@ struct BackendArgs {
     uses: Option<u32>,
     #[arg(long)]
     name: Option<String>,
-    /// ssh-overlay invite: an address to put in the code (repeatable; default: this host's own).
+    /// ssh-overlay invite: an address to listen on (repeatable; default: this host's mesh/LAN addresses).
     #[arg(long)]
     address: Vec<String>,
+    /// ssh-overlay invite: the port to listen on.
+    #[arg(long)]
+    port: Option<u16>,
     /// ssh-overlay invite: the host key to pin, when sshd does not use the default one.
     #[arg(long)]
     host_key: Option<PathBuf>,
     #[arg(long)]
     limit: Option<usize>,
-    /// ssh-overlay invite: also stash the code on the mesh Worker for a short code.
-    #[arg(long)]
-    short: bool,
     #[arg(long)]
     dry_run: bool,
     #[arg(long)]
@@ -591,6 +593,9 @@ struct BackendArgs {
 fn run_backend(args: &[String]) -> Result<()> {
     use clap::Parser;
     let a = BackendArgs::try_parse_from(args).unwrap_or_else(|e| e.exit());
+    if a.sub == "invite" && a.backend == ssh_overlay::ID {
+        return ssh_overlay_invite(&a);
+    }
     let out = backend_command(&a)?;
     if a.json {
         println!("{}", serde_json::to_string_pretty(&out)?);
@@ -609,6 +614,51 @@ fn run_backend(args: &[String]) -> Result<()> {
         );
     } else {
         println!("{}", serde_json::to_string_pretty(&out)?);
+    }
+    Ok(())
+}
+
+/// `cx mesh invite --backend ssh-overlay`: print the invite, then serve it in the foreground until one
+/// device joins, it expires, or Ctrl-C.
+fn ssh_overlay_invite(a: &BackendArgs) -> Result<()> {
+    anyhow::ensure!(
+        a.uses.is_none_or(|u| u == 1),
+        "ssh-overlay invites are single use"
+    );
+    let opts = ssh_overlay::InviteOptions {
+        ttl_hours: a.hours,
+        device_name: a.name.clone(),
+        addresses: a.address.clone(),
+        port: a.port,
+        host_key_file: a.host_key.clone(),
+    };
+    let joined = ssh_overlay::invite(&opts, |inv| {
+        let mut out = std::io::stdout().lock();
+        if a.json {
+            writeln!(out, "{}", serde_json::to_string(inv)?)?;
+        } else {
+            writeln!(
+                out,
+                "Pair code {} (single use, until {})",
+                inv.code, inv.expires
+            )?;
+            writeln!(out, "On the new device:  {}", inv.one_liner_sh)?;
+            if inv.hosts.len() > 1 {
+                writeln!(out, "Also listening on:  {}", inv.hosts[1..].join(" "))?;
+            }
+            writeln!(out, "Waiting for it; Ctrl-C cancels the invite.")?;
+        }
+        out.flush()?;
+        Ok(())
+    })?;
+    if a.json {
+        println!("{}", serde_json::to_string(&joined)?);
+    } else {
+        println!(
+            "joined: {} ({})",
+            joined["name"].as_str().unwrap_or(""),
+            joined["target"].as_str().unwrap_or("")
+        );
     }
     Ok(())
 }
@@ -640,19 +690,6 @@ fn backend_command(a: &BackendArgs) -> Result<Value> {
             b.revoke(name)?
         }
         "invite" => serde_json::to_value(match b.id() {
-            ssh_overlay::ID => {
-                anyhow::ensure!(
-                    a.uses.is_none_or(|u| u == 1),
-                    "ssh-overlay invites are single use"
-                );
-                ssh_overlay::create_invite(&ssh_overlay::InviteOptions {
-                    ttl_hours: a.hours,
-                    device_name: a.name.clone(),
-                    addresses: a.address.clone(),
-                    host_key_file: a.host_key.clone(),
-                    short: a.short,
-                })?
-            }
             cloudflare::ID => cloudflare::invite(
                 a.uses.unwrap_or(1),
                 a.hours.unwrap_or(24.0),
@@ -664,32 +701,27 @@ fn backend_command(a: &BackendArgs) -> Result<Value> {
     })
 }
 
-/// `cx mesh pair <code> [--name N]`, and the viewer's forced command `cx mesh pair --redeem <id>`.
+/// `cx mesh pair <code> <host[:port]> [--name N]`: join an invite `cx mesh invite --backend ssh-overlay` serves.
 #[derive(clap::Parser)]
 #[command(name = "cx mesh pair", no_binary_name = true)]
 struct PairArgs {
-    /// The code from `cx mesh invite --backend ssh-overlay`, or <mesh host>/<short code>.
-    #[arg(required_unless_present = "redeem")]
-    code: Option<String>,
+    /// The code `cx mesh invite --backend ssh-overlay` printed.
+    code: String,
+    /// Where that invite listens: an IP or DNS name, with `:port` if it printed one.
+    host: String,
     /// The name this device gets on the viewer (default: the hostname).
     #[arg(long)]
     name: Option<String>,
     #[arg(long)]
     json: bool,
-    /// The viewer side, run by sshd as the invite key's forced command.
-    #[arg(long, hide = true, conflicts_with = "code")]
-    redeem: Option<String>,
 }
 
 fn pair(args: &[String]) -> Result<()> {
     use clap::Parser;
     let a = PairArgs::try_parse_from(args).unwrap_or_else(|e| e.exit());
-    if let Some(id) = &a.redeem {
-        return ssh_overlay::redeem(id);
-    }
-    let code = a.code.as_deref().context("cx mesh pair <code>")?;
     let r = ssh_overlay::join(
-        code,
+        &a.code,
+        &a.host,
         &ssh_overlay::JoinOptions {
             name: a.name.clone(),
         },
@@ -1121,11 +1153,11 @@ mod tests {
             assert!(!super::MESH_API.contains(&s));
             assert!(!super::CLAUDE_API.contains(&s));
         }
-        // The cloudflare-warp backend's API calls get the token; its Worker pairing calls do not need it.
+        // The cloudflare-warp backend's API calls get the token; join and leave do not need it.
         for s in ["devices", "revoke", "audit"] {
             assert!(super::mesh_api(s), "{s}");
         }
-        for s in ["pair-stash", "pair-redeem", "join", "leave"] {
+        for s in ["join", "leave"] {
             assert!(!super::mesh_api(s), "{s}");
         }
         // Every allowlisted name is a real subcommand of the embedded utils.

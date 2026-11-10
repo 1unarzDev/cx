@@ -49,36 +49,6 @@ fn mesh_json_status(
 const QUICK: Duration = Duration::from_secs(20);
 const SLOW: Duration = Duration::from_secs(300);
 
-/// Stash a sealed ssh-overlay invite on the mesh Worker (owner side). `{"url", "expires"}`.
-pub fn stash_pair(lookup: &str, sealed: &str, hours: f64) -> Result<Value> {
-    let h = format!("{hours}");
-    mesh_json(
-        &[
-            "pair-stash",
-            "--lookup",
-            lookup,
-            "--hours",
-            &h,
-            "--sealed-stdin",
-        ],
-        Some(sealed.as_bytes()),
-        QUICK,
-    )
-}
-
-/// Redeem a stashed invite (device side; needs no config or token). Returns the sealed blob.
-pub fn redeem_pair(url: &str, lookup: &str) -> Result<String> {
-    let v = mesh_json(
-        &["pair-redeem", "--url", url, "--lookup", lookup],
-        None,
-        QUICK,
-    )?;
-    Ok(v["sealed"]
-        .as_str()
-        .context("the mesh Worker sent no invite")?
-        .to_owned())
-}
-
 pub fn config_dir() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -196,7 +166,7 @@ pub fn invite(uses: u32, ttl_hours: f64, device_name: Option<&str>) -> Result<In
         expires: d["expires"].as_str().unwrap_or_default().to_owned(),
         uses: d["uses"].as_u64().unwrap_or(uses as u64) as u32,
         backend: ID.into(),
-        short_code: None,
+        hosts: Vec::new(),
     })
 }
 
@@ -294,7 +264,6 @@ impl MeshBackend for CloudflareWarp {
             "audit",
             "lend",
             "onboarding",
-            "pair-rendezvous",
         ]
     }
     fn status(&self) -> Result<Status> {

@@ -48,6 +48,8 @@ fn file_app() -> (App, mpsc::Receiver<Task>) {
             identity: Some(format!("identity-{name}")),
             hidden: name.starts_with('.'),
             rename_name: Some((*name).into()),
+            modified: None,
+            items: None,
         })
         .collect();
     a.browser = Some(b);
@@ -1723,6 +1725,8 @@ fn restart_restores_browser_host_search_focus_and_copy_without_preview_content()
         identity: None,
         hidden: false,
         rename_name: None,
+        modified: None,
+        items: None,
     });
     a.clipboard = Some(Clipboard {
         container: None,
@@ -2038,6 +2042,8 @@ fn restored_file_identity_survives_page_one_clamping() {
             identity: None,
             hidden: false,
             rename_name: None,
+            modified: None,
+            items: None,
         })
         .collect();
     browser.selected = 1100;
@@ -2779,6 +2785,8 @@ fn containers_ui_capture_matrix_and_default_background() {
                         identity: None,
                         hidden: false,
                         rename_name: None,
+                        modified: None,
+                        items: None,
                     },
                     Entry {
                         name: "README.md".into(),
@@ -2788,6 +2796,8 @@ fn containers_ui_capture_matrix_and_default_background() {
                         identity: None,
                         hidden: false,
                         rename_name: None,
+                        modified: None,
+                        items: None,
                     },
                     Entry {
                         name: "devcontainer.json".into(),
@@ -2797,8 +2807,11 @@ fn containers_ui_capture_matrix_and_default_background() {
                         identity: None,
                         hidden: false,
                         rename_name: None,
+                        modified: None,
+                        items: None,
                     },
-                ];
+                ]
+                .into();
             }
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|f| render(f, &a)).unwrap();
@@ -3070,6 +3083,8 @@ fn destination_transfer_fixture() -> (App, mpsc::Receiver<Task>) {
         identity: None,
         hidden: false,
         rename_name: None,
+        modified: None,
+        items: None,
     });
     a.browser = Some(source);
     a.execute(Action::Copy);
@@ -3084,6 +3099,8 @@ fn destination_transfer_fixture() -> (App, mpsc::Receiver<Task>) {
         identity: None,
         hidden: false,
         rename_name: None,
+        modified: None,
+        items: None,
     });
     a.browser = Some(destination);
     a.destination_active = true;
@@ -3225,6 +3242,8 @@ fn transfer_locations_stay_independent_and_submit_real_spec() {
         identity: None,
         hidden: false,
         rename_name: None,
+        modified: None,
+        items: None,
     });
     a.browser = Some(source);
     a.execute(Action::Copy);
@@ -3360,7 +3379,10 @@ fn horizontal_folder_keys_enter_and_leave_without_previewing_files() {
             identity: None,
             hidden: false,
             rename_name: None,
-        }];
+            modified: None,
+            items: None,
+        }]
+        .into();
         a.key(KeyEvent::new(forward, KeyModifiers::NONE));
         assert_eq!(a.browser.as_ref().unwrap().path, "/fixture/child");
         a.browser.as_mut().unwrap().parent = Some("/fixture".into());
@@ -3449,6 +3471,8 @@ fn file_find_highlights_without_filtering_and_wraps_between_files() {
             identity: None,
             hidden: name.starts_with('.'),
             rename_name: None,
+            modified: None,
+            items: None,
         })
         .collect();
     b.marked.insert("/fixture/1".into());
@@ -3516,6 +3540,8 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             identity: None,
             hidden: false,
             rename_name: None,
+            modified: None,
+            items: None,
         },
         Entry {
             name: "recording-second.bin".into(),
@@ -3525,6 +3551,8 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             identity: None,
             hidden: false,
             rename_name: None,
+            modified: None,
+            items: None,
         },
         Entry {
             name: "other".into(),
@@ -3534,8 +3562,11 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             identity: None,
             hidden: false,
             rename_name: None,
+            modified: None,
+            items: None,
         },
-    ];
+    ]
+    .into();
     a.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
     for c in "rcb".chars() {
         a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
@@ -3597,7 +3628,10 @@ fn enter_file_previews_never_launches() {
         identity: None,
         hidden: false,
         rename_name: None,
-    }];
+        modified: None,
+        items: None,
+    }]
+    .into();
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(a.pending_attach.is_none());
 }
@@ -3894,7 +3928,11 @@ fn stacked_path_is_only_in_sidebar_and_keeps_current_folder_visible() {
                 continue;
             }
             assert!(left.contains("recordings"), "{width}: {left}");
-            assert!(!right.contains("recordings"), "{right}");
+            // The breadcrumb title may name the folder; no staircase repeats it below.
+            assert!(
+                !right.lines().skip(3).any(|row| row.contains("recordings")),
+                "{right}"
+            );
             assert!(right.contains("alpha.txt"), "file list obscured: {right}");
             if let Some(dir) = std::env::var_os("CX_HIERARCHY_CAPTURE_DIR") {
                 let dir = std::path::PathBuf::from(dir);
@@ -3929,6 +3967,8 @@ fn selected_context_is_a_bounded_folder_and_item_hierarchy() {
         hidden: false,
         identity: None,
         rename_name: None,
+        modified: None,
+        items: None,
     };
     for height in [3, 4, 6, 12] {
         let lines = file_context_hierarchy(
@@ -4878,6 +4918,8 @@ fn preview_reply_is_scoped_and_content_is_not_serialized() {
         result: Ok(reply()),
     });
     assert!(a.browser.as_ref().unwrap().preview.is_none());
+    // Only a requested preview applies (open_preview records the path).
+    a.browser.as_mut().unwrap().preview_path = Some("/files/a".into());
     a.apply(Reply {
         device_id: None,
         execution_target: None,
@@ -5170,6 +5212,7 @@ fn native_bitmap_geometry_tracks_workspace_and_suppresses_overlays() {
 #[test]
 fn accepted_preview_responses_change_native_identity_even_when_metadata_matches() {
     let (mut a, _rx) = file_app();
+    a.browser.as_mut().unwrap().preview_path = Some("/files/alpha.txt".into());
     for revision in [1, 2] {
         a.apply(Reply {
             device_id: None,
@@ -6911,4 +6954,782 @@ fn ansi16_focused_row_is_uniform_and_keeps_its_bar() {
     );
     assert_eq!(theme::selection_symbol_for(true, c), "> ");
     assert_eq!(theme::selection_symbol_for(false, c), "▏ ");
+}
+
+fn page(dir: &str, from: usize, to: usize, next: Option<usize>, total: usize) -> Value {
+    let entries = (from..to)
+        .map(|i| serde_json::json!({"name":format!("e{i:06}"),"path":format!("{dir}/e{i:06}"),"kind":"file","size":i,"modified":1}))
+        .collect::<Vec<_>>();
+    serde_json::json!({"path":dir,"display_path":dir,"entries":entries,"next_offset":next,
+        "order":"directories-first-name","total":total})
+}
+#[test]
+fn ordered_listing_pages_append_incrementally_beyond_the_old_cap() {
+    let (mut a, rx) = queued_app();
+    a.browser = Some(Browser::new(0, "/big".into()));
+    a.view = View::Files;
+    let total = 24_000;
+    let mut offset = 0;
+    while offset < total {
+        let end = (offset + 4000).min(total);
+        let next = (end < total).then_some(end);
+        a.apply(Reply {
+            device_id: None,
+            execution_target: None,
+            preview: None,
+            device: 0,
+            op: if offset == 0 {
+                Operation::List {
+                    path: "/big".into(),
+                }
+            } else {
+                Operation::ListPage {
+                    path: "/big".into(),
+                    offset: offset as u64,
+                    limit: 4000,
+                }
+            },
+            generation: a.generation,
+            result: Ok(page("/big", offset, end, next, total)),
+        });
+        // Search caches extend with each page instead of being rebuilt from scratch.
+        a.browser.as_mut().unwrap().search = "e0000".into();
+        assert!(!browser_matches(a.browser.as_ref().unwrap()).is_empty());
+        a.browser.as_mut().unwrap().search.clear();
+        offset = end;
+    }
+    let b = a.browser.as_ref().unwrap();
+    assert_eq!(a.visible_entries().len(), total);
+    assert_eq!(b.entries[total - 1].name, "e023999");
+    assert_eq!(b.entries[0].modified, Some(1));
+    // Continuations asked for the larger page once the helper reported its order.
+    let limits: Vec<u32> = rx
+        .try_iter()
+        .filter_map(|t| match t.op {
+            Operation::ListPage { limit, .. } => Some(limit),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !limits.is_empty() && limits.iter().all(|l| *l == 4000),
+        "{limits:?}"
+    );
+}
+#[test]
+fn file_rows_are_windowed_and_clickable_with_breadcrumb_targets() {
+    let (mut a, _rx) = queued_app();
+    let mut b = Browser::new(0, "/srv/data/big".into());
+    b.display_path = "/srv/data/big".into();
+    b.entries = (0..5000)
+        .map(|i| Entry {
+            name: format!("row-{i:05}.log"),
+            path: format!("/srv/data/big/row-{i:05}.log"),
+            kind: "file".into(),
+            size: i,
+            identity: None,
+            hidden: false,
+            rename_name: None,
+            modified: None,
+            items: None,
+        })
+        .collect();
+    b.selected = 2500;
+    a.browser = Some(b);
+    a.view = View::Files;
+    a.focus = Focus::Workspace;
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|f| render(f, &a)).unwrap();
+    let b = a.browser.as_ref().unwrap();
+    let rows: Vec<usize> = b
+        .hits
+        .borrow()
+        .iter()
+        .filter_map(|(_, hit)| match hit {
+            FileHit::Row(i) => Some(*i),
+            _ => None,
+        })
+        .collect();
+    assert!(rows.len() < 30 && rows.contains(&2500), "{rows:?}");
+    let crumb = b
+        .hits
+        .borrow()
+        .iter()
+        .find(|(_, hit)| matches!(hit, FileHit::Crumb(p) if p == "/srv/data"))
+        .map(|(rect, _)| *rect)
+        .expect("parent breadcrumb is a target");
+    // A click on another row selects it; a second click on it opens (Enter).
+    let (rect, _) = b.hits.borrow()[b.hits.borrow().len() - 1].clone();
+    let target = rows[rows.len() - 1];
+    assert!(a.file_click(rect.x + 3, rect.y));
+    assert_eq!(a.browser.as_ref().unwrap().selected, target);
+    assert!(a.file_click(crumb.x, crumb.y));
+    assert_eq!(a.browser.as_ref().unwrap().path, "/srv/data");
+}
+#[test]
+fn streamed_preview_chunks_extend_the_retained_layout() {
+    let (mut a, rx) = file_app();
+    let b = a.browser.as_mut().unwrap();
+    b.entries[0].size = 300_000;
+    let first: String = (0..10).map(|i| format!("line {i}\n")).collect();
+    b.preview_path = Some("/files/alpha.txt".into());
+    a.apply(Reply {
+        device_id: None,
+        execution_target: None,
+        preview: None,
+        device: 0,
+        op: Operation::Preview { path: "/files/alpha.txt".into() },
+        generation: a.generation,
+        result: Ok(serde_json::json!({"text":first,"truncated":true,"binary":false,"kind":"text","title":"x"})),
+    });
+    let read = rx
+        .try_iter()
+        .find_map(|t| match t.op {
+            Operation::ReadChunk {
+                offset, identity, ..
+            } => Some((offset, identity)),
+            _ => None,
+        })
+        .expect("truncated text starts streaming");
+    assert_eq!(read, (0, "identity-alpha.txt".into()));
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|f| render(f, &a)).unwrap();
+    let chunk = |offset: u64, from: usize, to: usize, limit: u32| {
+        let text: String = (from..to).map(|i| format!("line {i}\n")).collect();
+        let mut data = text.clone().into_bytes();
+        data.resize(limit as usize, b'x'); // a partial trailing line is not consumed
+        let op = Operation::ReadChunk {
+            path: "/files/alpha.txt".into(),
+            offset,
+            limit,
+            identity: "identity-alpha.txt".into(),
+        };
+        use base64::Engine;
+        let value =
+            serde_json::json!({"data":base64::engine::general_purpose::STANDARD.encode(&data)});
+        (stream_chunk(&op, &value), op, value, text.len() as u64)
+    };
+    let (prepared, op, value, consumed) = chunk(0, 0, 2000, 20_000);
+    assert_eq!(
+        prepared.as_ref().unwrap().chunk.as_ref().unwrap().consumed,
+        consumed
+    );
+    a.apply(Reply {
+        device_id: None,
+        execution_target: None,
+        preview: prepared,
+        device: 0,
+        op,
+        generation: a.generation,
+        result: Ok(value),
+    });
+    let b = a.browser.as_ref().unwrap();
+    assert!(b.preview.as_deref().unwrap().contains("line 1999\n"));
+    assert!(!b.preview.as_deref().unwrap().contains('x'));
+    // End follows the stream; the retained layout's row count drives the scroll.
+    a.key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    let next = rx
+        .try_iter()
+        .find_map(|t| match t.op {
+            Operation::ReadChunk { offset, .. } => Some(offset),
+            _ => None,
+        })
+        .expect("next chunk requested");
+    assert_eq!(next, consumed);
+    let (prepared, op, value, _) = chunk(consumed, 2000, 2100, 131_072);
+    a.apply(Reply {
+        device_id: None,
+        execution_target: None,
+        preview: prepared,
+        device: 0,
+        op,
+        generation: a.generation,
+        result: Ok(value),
+    });
+    terminal.draw(|f| render(f, &a)).unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect::<String>();
+    assert!(
+        text.contains("line 2099"),
+        "end of the streamed file is reachable"
+    );
+}
+
+/// Regression: an outdated inline-peek reply (file A, still in flight after the
+/// selection moved to B) must never open the full-screen preview, and must not
+/// replace the peek of B. While B loads, the previous peek frame is shown dimmed.
+#[test]
+fn stale_peek_reply_never_opens_the_full_preview() {
+    use std::time::{Duration, Instant};
+    let (mut a, rx) = file_app();
+    let draw = |a: &App| {
+        let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+        terminal.draw(|frame| render(frame, a)).unwrap();
+        terminal.backend().buffer().clone()
+    };
+    let settle = |a: &mut App| {
+        let now = Instant::now();
+        a.files_tick(now);
+        a.files_tick(now + Duration::from_millis(200));
+    };
+    let reply = |a: &mut App, path: &str, text: &str| {
+        let generation = a.generation;
+        a.apply(Reply {
+            device_id: None,
+            execution_target: None,
+            device: 0,
+            generation,
+            op: Operation::Preview { path: path.into() },
+            preview: None,
+            result: Ok(serde_json::json!({"kind":"text","text":text})),
+        });
+    };
+    draw(&a);
+    assert!(a.browser.as_ref().unwrap().peek_shown.get());
+    settle(&mut a);
+    assert!(
+        matches!(rx.try_recv().unwrap().op, Operation::Preview { path } if path == "/files/alpha.txt")
+    );
+    press(&mut a, 'j');
+    settle(&mut a);
+    assert!(
+        matches!(rx.try_recv().unwrap().op, Operation::Preview { path } if path == "/files/beta.txt")
+    );
+    // The late reply for alpha arrives first.
+    reply(&mut a, "/files/alpha.txt", "AAA");
+    let b = a.browser.as_ref().unwrap();
+    assert_eq!(
+        b.preview_path, None,
+        "stale peek reply opened the full preview"
+    );
+    assert_eq!(b.preview, None);
+    let peek = b.peek.as_ref().unwrap();
+    assert_eq!(peek.preview_path.as_deref(), Some("/files/beta.txt"));
+    assert_ne!(peek.preview.as_deref(), Some("AAA"));
+    reply(&mut a, "/files/beta.txt", "BBB");
+    let b = a.browser.as_ref().unwrap();
+    assert_eq!(b.preview, None);
+    assert_eq!(b.peek.as_ref().unwrap().preview.as_deref(), Some("BBB"));
+    // Moving on to gamma keeps BBB on screen, dimmed, until gamma's reply arrives.
+    press(&mut a, 'j');
+    settle(&mut a);
+    let buffer = draw(&a);
+    let width = buffer.area.width as usize;
+    // The peek's "BBB" cells (not the "15 B" size column beside them) are dimmed.
+    let dimmed = buffer.content.chunks(width).any(|row| {
+        row.windows(3).any(|w| {
+            w.iter()
+                .all(|c| c.symbol() == "B" && c.modifier.contains(ratatui::style::Modifier::DIM))
+        })
+    });
+    assert!(
+        dimmed,
+        "the previous peek frame must stay visible and dimmed"
+    );
+    // A stray Preview reply nobody asked for never opens the full preview either.
+    reply(&mut a, "/files/.secret", "SSS");
+    assert_eq!(a.browser.as_ref().unwrap().preview, None);
+}
+
+/// Regression: the runtime answers a queued read it cancelled (superseded by a newer
+/// navigation read) with `Ok(Null)` at the old generation. For an inline peek that is
+/// a cancellation: neither the peek nor the next Enter may show "Preview unavailable",
+/// and the peek is requested again.
+#[test]
+fn superseded_peek_reply_is_a_cancellation_not_content() {
+    use std::time::{Duration, Instant};
+    let (mut a, rx) = file_app();
+    let draw = |a: &App| {
+        let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+        terminal.draw(|frame| render(frame, a)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>()
+    };
+    let settle = |a: &mut App| {
+        let now = Instant::now();
+        a.files_tick(now);
+        a.files_tick(now + Duration::from_millis(200));
+    };
+    let cancelled = |a: &mut App, generation: u64| {
+        a.apply(Reply {
+            device_id: None,
+            execution_target: None,
+            device: 0,
+            generation,
+            op: Operation::Preview {
+                path: "/files/alpha.txt".into(),
+            },
+            preview: None,
+            result: Ok(Value::Null),
+        });
+    };
+    let peek_requests = |rx: &mpsc::Receiver<Task>| {
+        rx.try_iter()
+            .filter(|t| matches!(&t.op, Operation::Preview { path } if path == "/files/alpha.txt"))
+            .map(|t| t.generation)
+            .collect::<Vec<_>>()
+    };
+    draw(&a);
+    settle(&mut a);
+    let first = peek_requests(&rx);
+    assert_eq!(first.len(), 1, "peek requested once");
+    // (a) A refresh supersedes the queued peek while the selection stays put.
+    a.refresh_browser();
+    let _ = rx.try_iter().count();
+    cancelled(&mut a, first[0]);
+    let b = a.browser.as_ref().unwrap();
+    assert!(b.peek.as_ref().is_none_or(|p| !p
+        .preview
+        .as_deref()
+        .unwrap_or("")
+        .contains("unavailable")));
+    assert!(!draw(&a).contains("Preview unavailable"));
+    a.files_tick(Instant::now() + Duration::from_millis(200));
+    let again = peek_requests(&rx);
+    assert_eq!(again.len(), 1, "cancelled peek is requested again");
+    // (b) Enter supersedes the queued peek; after Esc, Enter must read the file again.
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let opened = peek_requests(&rx);
+    assert_eq!(opened.len(), 1, "Enter reads the file");
+    cancelled(&mut a, again[0]);
+    let b = a.browser.as_ref().unwrap();
+    assert!(!b.preview.as_deref().unwrap_or("").contains("unavailable"));
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(a.browser.as_ref().unwrap().preview, None, "Esc closes");
+    assert!(!draw(&a).contains("Preview unavailable"));
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let b = a.browser.as_ref().unwrap();
+    assert!(
+        !b.preview.as_deref().unwrap_or("").contains("unavailable"),
+        "open_preview reused a cancelled peek"
+    );
+    assert!(!draw(&a).contains("Preview unavailable"));
+}
+
+/// Spec 7.3/C5/C6: a directory row shows its child count (`1 item`) in the size
+/// column, in the bold `dir` token (256-color 111, not ANSI bright blue), and the
+/// unknown-file icon is not the `·` unknown-value glyph.
+#[test]
+fn directory_rows_show_item_count_and_dir_token() {
+    let (mut a, _rx) = file_app();
+    let b = a.browser.as_mut().unwrap();
+    let mut entries: Vec<Entry> = b.entries.iter().cloned().collect();
+    entries.insert(
+        0,
+        Entry {
+            name: "docs".into(),
+            path: "/files/docs".into(),
+            kind: "directory".into(),
+            size: 4096,
+            identity: None,
+            hidden: false,
+            rename_name: Some("docs".into()),
+            modified: None,
+            items: Some(1),
+        },
+    );
+    entries.push(Entry {
+        name: "data".into(),
+        path: "/files/data".into(),
+        kind: "file".into(),
+        size: 3,
+        identity: None,
+        hidden: false,
+        rename_name: Some("data".into()),
+        modified: None,
+        items: None,
+    });
+    b.entries = entries.into();
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|frame| render(frame, &a)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let width = buffer.area.width as usize;
+    let rows: Vec<String> = buffer
+        .content
+        .chunks(width)
+        .map(|row| row.iter().map(|c| c.symbol()).collect())
+        .collect();
+    let docs = rows
+        .iter()
+        .position(|r| r.contains("docs/"))
+        .expect("docs row");
+    assert!(rows[docs].contains("1 item"), "{}", rows[docs]);
+    let x = rows[docs].find("docs/").unwrap();
+    let x = rows[docs][..x].chars().count();
+    let cell = &buffer.content[docs * width + x];
+    assert_eq!(Some(cell.fg), theme::dir().fg);
+    assert!(cell.modifier.contains(ratatui::style::Modifier::BOLD));
+    let data = rows.iter().find(|r| r.contains("data ")).expect("data row");
+    let before = &data[..data.find("data ").unwrap()];
+    assert!(!before.contains('·'), "{data}");
+}
+
+/// Spec 6.2/7.3: optional columns come from the space left after the names really
+/// needed, so M/L list widths keep the type tag and size bar beside short names.
+#[test]
+fn file_row_columns_follow_needed_name_width() {
+    use super::files_view::RowColumns;
+    // About the list's inner width at 80x24 and in the 120x40 split.
+    for width in [52, 57] {
+        let c = RowColumns::fit(width, 10, 0);
+        assert!(
+            c.show_size && c.show_age && c.show_type && c.show_bar,
+            "{width}: {c:?}"
+        );
+        assert_eq!(c.name_width + 4 + 1 + 5 + 9 + 2 + 5, width);
+    }
+    // Long names keep at least 16 cells before columns are added.
+    let narrow = RowColumns::fit(36, 40, 0);
+    assert!(narrow.show_size && narrow.show_age && !narrow.show_bar);
+    assert!(narrow.name_width >= 16);
+    let tiny = RowColumns::fit(20, 40, 0);
+    assert!(!tiny.show_size && tiny.name_width >= 4);
+}
+
+/// Evidence dump (not a check): renders the dimmed loading peek (spec 12.5) and the
+/// directory item counts at the review sizes, as JSON cell grids for
+/// tests/render_buffer_png.py (pyte drops SGR 2, so PTY captures cannot show dim).
+/// Run: CX_FILES_CAPTURE_DIR=dir cargo test loading_peek_capture_dump -- --ignored
+#[test]
+#[ignore]
+fn loading_peek_capture_dump() {
+    use std::time::{Duration, Instant};
+    let Some(dir) = std::env::var_os("CX_FILES_CAPTURE_DIR") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let entry = |name: &str, kind: &str, size: u64, items: Option<u64>| Entry {
+        name: name.into(),
+        path: format!("/home/fixture/projects/cx-demo/{name}"),
+        kind: kind.into(),
+        size,
+        identity: None,
+        hidden: name.starts_with('.'),
+        rename_name: Some(name.into()),
+        modified: Some(transport::now() as i64 - 120),
+        items,
+    };
+    for (cols, rows) in [(40u16, 20u16), (80, 24), (120, 40), (200, 60)] {
+        let (mut a, _rx) = queued_app();
+        let mut b = Browser::new(0, "/home/fixture/projects/cx-demo".into());
+        b.entries = vec![
+            entry("docs", "directory", 4096, Some(1)),
+            entry("src", "directory", 4096, Some(12)),
+            entry(".gitignore", "file", 9, None),
+            entry("Cargo.toml", "file", 312, None),
+            entry("README.md", "file", 1840, None),
+            entry("data.bin", "file", 14_000, None),
+        ]
+        .into();
+        b.selected = 2;
+        a.browser = Some(b);
+        a.view = View::Files;
+        let settle = |a: &mut App| {
+            let now = Instant::now();
+            a.files_tick(now);
+            a.files_tick(now + Duration::from_millis(200));
+        };
+        let mut terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();
+        terminal.draw(|f| render(f, &a)).unwrap();
+        settle(&mut a);
+        let generation = a.generation;
+        a.apply(Reply {
+            device_id: None,
+            execution_target: None,
+            device: 0,
+            generation,
+            op: Operation::Preview {
+                path: "/home/fixture/projects/cx-demo/Cargo.toml".into(),
+            },
+            preview: None,
+            result: Ok(serde_json::json!({"kind":"text","text":
+                "[package]\nname = \"cx-demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"})),
+        });
+        press(&mut a, 'j');
+        settle(&mut a);
+        terminal.draw(|f| render(f, &a)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let cells: Vec<_> = buffer
+            .content
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "s": c.symbol(),
+                    "fg": format!("{:?}", c.fg),
+                    "bg": format!("{:?}", c.bg),
+                    "m": format!("{:?}", c.modifier),
+                })
+            })
+            .collect();
+        let doc = serde_json::json!({"cols": cols, "rows": rows, "cells": cells});
+        std::fs::write(
+            dir.join(format!("files-loading-peek-{cols}x{rows}.json")),
+            doc.to_string(),
+        )
+        .unwrap();
+        let text: Vec<String> = buffer
+            .content
+            .chunks(cols as usize)
+            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+            .collect();
+        std::fs::write(
+            dir.join(format!("files-loading-peek-{cols}x{rows}.txt")),
+            text.join("\n") + "\n",
+        )
+        .unwrap();
+    }
+}
+
+/// A file app whose first rows are folders `/files/dir0..dirN`, drawn wide enough for
+/// the inline peek.
+fn folder_app(count: usize) -> (App, mpsc::Receiver<Task>) {
+    let (mut a, rx) = file_app();
+    let b = a.browser.as_mut().unwrap();
+    let mut entries: Vec<Entry> = (0..count)
+        .map(|i| Entry {
+            name: format!("dir{i}"),
+            path: format!("/files/dir{i}"),
+            kind: "directory".into(),
+            size: 4096,
+            identity: None,
+            hidden: false,
+            rename_name: Some(format!("dir{i}")),
+            modified: None,
+            items: None,
+        })
+        .collect();
+    entries.extend(b.entries.iter().cloned());
+    b.entries = entries.into();
+    (a, rx)
+}
+fn draw_text(a: &App) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    terminal.draw(|frame| render(frame, a)).unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect()
+}
+fn settle_files(a: &mut App) {
+    let now = std::time::Instant::now();
+    a.files_tick(now);
+    a.files_tick(now + std::time::Duration::from_millis(200));
+}
+fn listed(rx: &mpsc::Receiver<Task>) -> Vec<(String, u64)> {
+    rx.try_iter()
+        .filter_map(|t| match t.op {
+            Operation::List { path } => Some((path, t.generation)),
+            _ => None,
+        })
+        .collect()
+}
+fn list_reply(a: &mut App, path: &str, generation: u64, result: Result<Value>) {
+    a.apply(Reply {
+        device_id: None,
+        execution_target: None,
+        device: 0,
+        generation,
+        op: Operation::List { path: path.into() },
+        preview: None,
+        result,
+    });
+}
+
+/// Review: an uncached folder's peek showed "Empty folder" and was never filled by
+/// its prefetch reply. It must read as loading, then show the prefetched children.
+#[test]
+fn folder_peek_loads_then_shows_prefetched_children() {
+    let (mut a, rx) = folder_app(1);
+    draw_text(&a);
+    settle_files(&mut a);
+    let sent = listed(&rx);
+    assert_eq!(sent, vec![("/files/dir0".into(), a.generation)]);
+    let screen = draw_text(&a);
+    assert!(
+        !screen.contains("Empty folder"),
+        "uncached peek claims empty"
+    );
+    assert!(screen.contains("Loading"));
+    let child = serde_json::json!({"entries":[{"name":"inner.txt","path":"/files/dir0/inner.txt","kind":"file","size":1}]});
+    let generation = a.generation;
+    list_reply(&mut a, "/files/dir0", generation, Ok(child));
+    let screen = draw_text(&a);
+    assert!(screen.contains("inner.txt"), "prefetched children shown");
+    assert!(!screen.contains("Empty folder"));
+    let b = a.browser.as_ref().unwrap();
+    assert!(b.prefetch.is_empty());
+    assert!(a
+        .browser_cache
+        .keys()
+        .any(|(_, path, _)| path == "/files/dir0"));
+    // A really empty folder still says so once its listing arrives.
+    let (mut a, rx) = folder_app(1);
+    draw_text(&a);
+    settle_files(&mut a);
+    let generation = listed(&rx)[0].1;
+    list_reply(
+        &mut a,
+        "/files/dir0",
+        generation,
+        Ok(serde_json::json!({"entries":[]})),
+    );
+    assert!(draw_text(&a).contains("Empty folder"));
+}
+
+/// Folder prefetch (review: untested): a settled folder queues one List; outdated,
+/// cancelled and failed replies are never cached (and outdated ones ask again); at
+/// most 4 prefetches are in flight, and a skipped folder is retried once a slot frees.
+#[test]
+fn folder_prefetch_caches_valid_replies_and_stays_bounded() {
+    let (mut a, rx) = folder_app(6);
+    draw_text(&a);
+    settle_files(&mut a);
+    let (path, generation) = listed(&rx).pop().unwrap();
+    assert_eq!(path, "/files/dir0");
+    // A refresh outdates it; the stale (or cancelled `Ok(Null)`) reply is dropped and
+    // the peek asks again instead of caching nothing as an empty folder.
+    a.generation += 1;
+    list_reply(&mut a, &path, generation, Ok(Value::Null));
+    assert!(a.browser_cache.is_empty());
+    a.files_tick(std::time::Instant::now() + std::time::Duration::from_millis(400));
+    let again = listed(&rx);
+    assert_eq!(again, vec![(path.clone(), a.generation)]);
+    // A failure is dropped silently: no cache entry, no notice, no "Empty folder".
+    let generation = a.generation;
+    list_reply(&mut a, &path, generation, Err(anyhow::anyhow!("denied")));
+    assert!(a.browser_cache.is_empty());
+    assert!(a.notice.is_empty(), "{}", a.notice);
+    assert!(!draw_text(&a).contains("Empty folder"));
+    // Bound: dir1..dir4 fill the 4 slots; dir5 waits.
+    for _ in 1..6 {
+        press(&mut a, 'j');
+        settle_files(&mut a);
+    }
+    let sent: Vec<String> = listed(&rx).into_iter().map(|(p, _)| p).collect();
+    assert_eq!(
+        sent,
+        ["/files/dir1", "/files/dir2", "/files/dir3", "/files/dir4"]
+    );
+    assert_eq!(a.browser.as_ref().unwrap().prefetch.len(), 4);
+    let entries = serde_json::json!({"entries":[]});
+    let generation = a.generation;
+    list_reply(&mut a, "/files/dir1", generation, Ok(entries));
+    assert!(a
+        .browser_cache
+        .keys()
+        .any(|(_, path, _)| path == "/files/dir1"));
+    a.files_tick(std::time::Instant::now() + std::time::Duration::from_millis(400));
+    assert_eq!(listed(&rx), vec![("/files/dir5".into(), a.generation)]);
+}
+
+/// Perf 4: a code preview paints as plain text first; the worker's later `highlight`
+/// reply styles it without counting as a request, and never styles other text.
+#[test]
+fn code_preview_paints_plain_then_highlights() {
+    let (mut a, _rx) = file_app();
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let path = "/files/alpha.txt";
+    let text = "fn main() {}\n";
+    let value = serde_json::json!({"kind":"code","text":text,"path":"x.rs"});
+    let generation = a.generation;
+    let reply = |preview, result| Reply {
+        device_id: None,
+        execution_target: None,
+        device: 0,
+        generation,
+        op: Operation::Preview { path: path.into() },
+        preview: Some(preview),
+        result,
+    };
+    a.apply(reply(RichPreview::plain(&value), Ok(value.clone())));
+    let b = a.browser.as_ref().unwrap();
+    assert_eq!(b.preview.as_deref(), Some(text));
+    assert!(
+        b.preview_rich.as_ref().unwrap().styled.is_none(),
+        "plain first"
+    );
+    let pending = a.pending_requests.get();
+    // Highlighting of some other text (an older read of the file) is ignored.
+    a.apply(reply(
+        highlighted_preview("fn old() {}\n".into(), "x.rs"),
+        Ok(Value::Null),
+    ));
+    assert!(a
+        .browser
+        .as_ref()
+        .unwrap()
+        .preview_rich
+        .as_ref()
+        .unwrap()
+        .styled
+        .is_none());
+    a.apply(reply(
+        highlighted_preview(text.into(), "x.rs"),
+        Ok(Value::Null),
+    ));
+    let b = a.browser.as_ref().unwrap();
+    let styled = b
+        .preview_rich
+        .as_ref()
+        .unwrap()
+        .styled
+        .as_ref()
+        .expect("highlighted");
+    assert!(styled
+        .iter()
+        .flat_map(|l| &l.spans)
+        .any(|s| s.style.fg.is_some()));
+    assert_eq!(b.preview.as_deref(), Some(text));
+    assert_eq!(
+        a.pending_requests.get(),
+        pending,
+        "a highlight is not a request"
+    );
+}
+
+/// Perf 4 (worker side): the request worker replies with the plain preview before it
+/// highlights, then sends the highlighting as a second reply.
+#[test]
+fn preview_worker_replies_before_highlighting() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("main.rs");
+    std::fs::write(&file, "fn main() {\n    println!(\"hi\");\n}\n").unwrap();
+    let (tx, rx) = mpsc::sync_channel(4);
+    let (reply_tx, replies) = mpsc::channel();
+    start_task_workers(rx, reply_tx);
+    tx.send(Task {
+        device: 0,
+        execution: app().devices[0].clone(),
+        op: Operation::Preview {
+            path: crate::files::encode_path(&file),
+        },
+        generation: 7,
+    })
+    .unwrap();
+    let wait = std::time::Duration::from_secs(10);
+    let first = replies.recv_timeout(wait).unwrap();
+    let rich = first.preview.as_ref().unwrap();
+    assert_eq!(rich.kind, "code");
+    assert!(rich.styled.is_none(), "first reply is plain");
+    let second = replies.recv_timeout(wait).unwrap();
+    assert_eq!(second.generation, 7);
+    let chunk = second.preview.unwrap().chunk.unwrap();
+    assert_eq!(
+        Some(chunk.text.as_str()),
+        first.result.as_ref().unwrap()["text"].as_str()
+    );
+    assert!(chunk.lines.is_some());
 }

@@ -1,0 +1,24 @@
+ cx   Sessions / Files  Network                           viewing fixture@laptop
+                                                                                
+╭ Devices ──────────╮╭ ▸ laptop › ~ › projects ────────────────────────────────╮
+│   All devices     ││▌ ▸ cx-demo/                         dir        ·    31s │
+│ › ●  laptop       ││  ▸ robot-logs/                      dir        ·    31s │
+│   ●  * lab-arm    ││                                                         │
+│   ○  * field-rov… ││                                                         │
+╰───────────────────╯│                                                         │
+╭ Actions ──────────╮│                                                         │
+│ Sessions          ││                                                         │
+│ Network           ││                                                         │
+│ Containers        ││                                                         │
+│ Transfers         ││                                                         │
+╰───────────────────╯│                                                         │
+ Selected ───────────│                                                         │
+ laptop              │                                                         │
+ …/cx-capture-matri… │                                                         │
+  home/              │                                                         │
+   └─ projects/      │                                                         │
+     └─ cx-demo/     ╰─ 2 items ───────────────────────────────────────────────╯
+ ● 2/3 devices             Focus: Files · 2/2                             ↔ idle
+ s Sessions here            Space Select              c / x Copy / cut          
+ p / t Paste / transfer     n / : Session / command   r / d Rename / delete     
+                                                                                

@@ -11,7 +11,8 @@ use std::{
 const INPUT: u64 = 16 * 1024 * 1024;
 const TEXT: usize = 32 * 1024;
 
-fn safe_text(bytes: &[u8]) -> String {
+/// Inert, tab-expanded text for previews; also applied by the viewer to streamed chunks.
+pub(super) fn safe_text(bytes: &[u8]) -> String {
     let normalized = String::from_utf8_lossy(bytes)
         .replace("\r\n", "\n")
         .replace('\r', "\n");
@@ -85,6 +86,30 @@ fn extension(path: &Path) -> String {
         .unwrap_or("")
         .to_ascii_lowercase()
 }
+/// Text preview kind by name: markdown, code or text.
+pub(super) fn text_kind(path: &Path) -> &'static str {
+    match extension(path).as_str() {
+        "md" | "markdown" | "mdown" => "markdown",
+        "rs" | "py" | "sh" | "fish" | "js" | "ts" | "tsx" | "jsx" | "c" | "h" | "cpp" | "go"
+        | "java" | "json" | "toml" | "yaml" | "yml" | "css" | "html" | "rb" | "php" | "pl"
+        | "lua" | "sql" | "xml" | "ini" | "cs" | "swift" | "r" | "R" | "make" | "cmake" | "tex" => {
+            "code"
+        }
+        _ if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                matches!(
+                    name,
+                    "Makefile" | "Dockerfile" | "CMakeLists.txt" | ".bashrc" | ".zshrc"
+                )
+            }) =>
+        {
+            "code"
+        }
+        _ => "text",
+    }
+}
 pub(super) fn render(path: &Path, file: File) -> Result<Value> {
     render_inner(path, file, None)
 }
@@ -112,30 +137,7 @@ fn render_inner(path: &Path, mut file: File, requested_page: Option<u32>) -> Res
     let tar = bytes.get(257..262) == Some(b"ustar");
     let gzip = bytes.starts_with(&[0x1f, 0x8b]) && matches!(ext.as_str(), "gz" | "tgz");
     let binary = bytes.contains(&0) || pdf || image || tar || gzip;
-    let mut kind = if binary {
-        "binary"
-    } else {
-        match ext.as_str() {
-            "md" | "markdown" | "mdown" => "markdown",
-            "rs" | "py" | "sh" | "fish" | "js" | "ts" | "tsx" | "jsx" | "c" | "h" | "cpp"
-            | "go" | "java" | "json" | "toml" | "yaml" | "yml" | "css" | "html" | "rb" | "php"
-            | "pl" | "lua" | "sql" | "xml" | "ini" | "cs" | "swift" | "r" | "R" | "make"
-            | "cmake" | "tex" => "code",
-            _ if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    matches!(
-                        name,
-                        "Makefile" | "Dockerfile" | "CMakeLists.txt" | ".bashrc" | ".zshrc"
-                    )
-                }) =>
-            {
-                "code"
-            }
-            _ => "text",
-        }
-    };
+    let mut kind = if binary { "binary" } else { text_kind(path) };
     let mut title = format!("{size} bytes");
     let mut img = Value::Null;
     let mut truncated = size > TEXT as u64;

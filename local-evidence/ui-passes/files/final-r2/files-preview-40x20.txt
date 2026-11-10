@@ -1,0 +1,20 @@
+ cx   Files         viewing fixture@lapt
+                                        
+╭ Devices ───╮╭ ▸ README.md · 69 B · … ╮
+│   All devi ││cx demo                 │
+│ › ●  lapt… ││                        │
+│   ●  * la… ││A fixture project for UI│
+│   ○  * fi… ││captures.               │
+╰────────────╯│                        │
+╭ Actions ───╮│• item one              │
+│ Sessions   ││• item two              │
+│ Network    ││                        │
+│ Containers ││                        │
+╰────────────╯│                        │
+              │                        │
+              │                        │
+              ╰────────────────────────╯
+  Focus: Files · 5/6              ↔ idle
+ j/k Scroll          o Links            
+ n / N Next / previo Esc Back           
+                                        

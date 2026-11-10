@@ -37,10 +37,17 @@ for mono in (False, True):
             wait(lambda: any('sample.py' in line for line in screen.display))
             os.write(master, b'\r')
             wait(lambda: any('print("hello")' in line for line in screen.display))
-            row = next(i for i, line in enumerate(screen.display) if 'print("hello")' in line)
-            column = screen.display[row].index('hello')
-            color = screen.buffer[row][column].fg
-            assert color in (('default',) if mono else ('green', '00cd00')), (mono, color)
+            expected = ('default',) if mono else ('green', '00cd00')
+            def string_color():
+                row = next((i for i, line in enumerate(screen.display) if 'print("hello")' in line), None)
+                return None if row is None else screen.buffer[row][screen.display[row].index('hello')].fg
+            # Source paints as plain text first; highlighting follows from the worker.
+            try:
+                wait(lambda: string_color() in expected)
+            except AssertionError:
+                pass
+            color = string_color()
+            assert color in expected, (mono, color)
             assert not (root/'EXECUTED').exists() and not (source/'EXECUTED').exists()
             os.write(master, b'j')
             deadline = time.monotonic()+.2

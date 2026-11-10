@@ -1,14 +1,21 @@
 //! Task reply dispatch: shared bookkeeping, then per-operation-group handlers.
 mod containers;
-mod files;
+pub(super) mod files;
 mod network;
 mod sessions;
 use super::*;
 
 impl App {
     pub(super) fn apply(&mut self, mut reply: Reply) {
-        self.pending_requests
-            .set(self.pending_requests.get().saturating_sub(1));
+        // A highlight follow-up is not a request of its own.
+        let highlight = reply
+            .preview
+            .as_ref()
+            .is_some_and(|p| p.kind == "highlight");
+        if !highlight {
+            self.pending_requests
+                .set(self.pending_requests.get().saturating_sub(1));
+        }
         let file_action = matches!(
             match &reply.op {
                 Operation::ContainerFileAction { operation, .. } => operation.as_ref(),
@@ -38,6 +45,10 @@ impl App {
             reply.device = device;
         }
         if reply.device >= self.devices.len() || reply.device >= self.work.len() {
+            return;
+        }
+        if highlight {
+            self.apply_highlight_reply(reply);
             return;
         }
         if let Operation::SessionPaneInput {
@@ -85,6 +96,11 @@ impl App {
         if let Operation::ContainerFileAction { operation, .. } = &reply.op {
             // Mutation replies release the serialized queue even after navigating away.
             reply.op = *operation.clone();
+        }
+        // Folder prefetch, the inline peek and streamed preview chunks never touch the
+        // visible listing or raise error notices of their own.
+        if self.apply_files_side_reply(&mut reply) {
+            return;
         }
         let failed_attachment_check = matches!(reply.op, Operation::Sessions)
             && reply.result.is_err()

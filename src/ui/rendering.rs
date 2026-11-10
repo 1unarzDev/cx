@@ -1091,11 +1091,7 @@ fn render_frame(
                     .as_ref()
                     .filter(|b| b.preview.is_some() && app.view == View::Files)
                 {
-                    let count = preview_matches(
-                        &preview_display_lines(b, b.preview.as_deref().unwrap_or("")),
-                        &b.preview_find.query,
-                    )
-                    .len();
+                    let count = doc_matches(b, &b.preview_find.query).len();
                     format!(
                         "Search · {}/{}",
                         if count == 0 {

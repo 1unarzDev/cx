@@ -377,7 +377,7 @@ impl NavigationCache {
                 b.marked.clear();
                 b.loading = true;
                 // Persisted identities are stale hints; mutations require a fresh listing.
-                for entry in &mut b.entries {
+                for entry in b.entries.iter_mut() {
                     entry.identity = None;
                 }
                 app.browser_cache.insert(

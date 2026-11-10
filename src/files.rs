@@ -310,8 +310,18 @@ fn snapshot(path: &Path, offset: u64) -> Result<(std::sync::Arc<Vec<SnapshotEntr
     }
     Ok(found)
 }
-/// Keys, punctuation, the longest kind, a u64 size, a bool and the separating comma.
-const ENTRY_JSON_OVERHEAD: usize = 128;
+/// Keys, punctuation, the longest kind, a u64 size, a u64 mtime, a bool and the comma.
+/// Also covers the optional `"items":1000` child count of a directory.
+const ENTRY_JSON_OVERHEAD: usize = 176;
+/// Child counts (`items`) are reported for at most this many directories of the first page,
+/// each counted up to `ITEM_COUNT_CAP` entries, so a page costs a bounded number of
+/// extra directory reads. Larger counts report the cap; the UI shows `999+`.
+const ITEM_COUNT_DIRS: usize = 64;
+const ITEM_COUNT_CAP: usize = 1000;
+fn child_count(path: &Path) -> Option<u64> {
+    let entries = fs::read_dir(path).ok()?;
+    Some(entries.take(ITEM_COUNT_CAP).count() as u64)
+}
 /// Serialized length of `text` as a JSON string, quotes included.
 fn json_string_len(text: &str) -> usize {
     2 + text
@@ -332,8 +342,10 @@ fn list_page(path: &Path, offset: u64, limit: u32) -> Result<Value> {
     }
     let path = fs::canonicalize(path).context("open directory")?;
     let (snapshot, incomplete) = snapshot(&path, offset)?;
+    let parent_dev = fs::metadata(&path).ok().map(|m| m.dev());
     let mut entries = Vec::new();
     let mut bytes = 0;
+    let mut counted = 0;
     let mut index = (offset as usize).min(snapshot.len());
     while index < snapshot.len() && entries.len() < limit as usize {
         let item = &snapshot[index];
@@ -369,8 +381,27 @@ fn list_page(path: &Path, offset: u64, limit: u32) -> Result<Value> {
             + json_string_len(&opaque)
             + json_string_len(&identity)
             + rename_name.map_or(4, json_string_len);
-        let entry = json!({"name":item.display,"path":opaque,"kind":kind,"size":metadata.len(),
-            "hidden":hidden,"rename_name":rename_name,"identity":identity});
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs());
+        let mut entry = json!({"name":item.display,"path":opaque,"kind":kind,"size":metadata.len(),
+            "hidden":hidden,"rename_name":rename_name,"identity":identity,"modified":modified});
+        // Only the first page: directories sort first, so it holds the rows a user
+        // sees, and later pages of a huge listing stay one lstat per entry.
+        // Never open a mount point (or an unmounted autofs/systemd automount, which
+        // has its own device): reading it would mount it or block on a dead share.
+        if kind == "directory"
+            && offset == 0
+            && counted < ITEM_COUNT_DIRS
+            && parent_dev == Some(metadata.dev())
+        {
+            counted += 1;
+            if let Some(items) = child_count(&child) {
+                entry["items"] = items.into();
+            }
+        }
         if !entries.is_empty() && bytes + size > LIST_BYTES {
             break;
         }
@@ -408,6 +439,15 @@ fn open_read(path: &Path) -> Result<File> {
         bail!("only regular files are supported");
     }
     Ok(f)
+}
+/// The helper's preview text normalization (lossy UTF-8, CR/LF, tabs, escaped controls),
+/// so viewer-streamed continuations match the first preview window exactly.
+pub(crate) fn preview_text(bytes: &[u8]) -> String {
+    file_preview::safe_text(bytes)
+}
+/// The helper's text preview kind for a name: "markdown", "code" or "text".
+pub(crate) fn preview_kind(path: &Path) -> &'static str {
+    file_preview::text_kind(path)
 }
 fn preview(path: &Path) -> Result<Value> {
     file_preview::render(path, open_read(path)?)
@@ -1891,6 +1931,49 @@ mod tests {
         });
     }
     #[test]
+    fn directory_entries_report_bounded_child_counts() {
+        let d = tempdir().unwrap();
+        fs::create_dir(d.path().join("one")).unwrap();
+        fs::write(d.path().join("one/a"), b"a").unwrap();
+        fs::create_dir(d.path().join("many")).unwrap();
+        for i in 0..(ITEM_COUNT_CAP + 5) {
+            fs::write(d.path().join(format!("many/{i}")), b"").unwrap();
+        }
+        fs::write(d.path().join("file"), b"x").unwrap();
+        let page = list(d.path()).unwrap();
+        let find = |name: &str| {
+            page["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["name"] == name)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(find("one")["items"], 1);
+        assert_eq!(find("many")["items"], ITEM_COUNT_CAP as u64);
+        assert!(find("file").get("items").is_none());
+    }
+    #[test]
+    fn child_counts_never_open_mount_points() {
+        // /proc is always its own filesystem; counting it would mean opening a mount
+        // point, which for an automount mounts it (or blocks on an unreachable share).
+        let root = fs::metadata("/").unwrap().dev();
+        if fs::symlink_metadata("/proc").map_or(true, |m| m.dev() == root) {
+            return;
+        }
+        let page = list(Path::new("/")).unwrap();
+        let proc = page["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == "proc")
+            .unwrap()
+            .clone();
+        assert_eq!(proc["kind"], "directory");
+        assert!(proc.get("items").is_none(), "{proc}");
+    }
+    #[test]
     fn twenty_thousand_entry_listing_is_fast_sorted_and_matches_old_pages() {
         let d = tempdir().unwrap();
         for i in 0..20_000u32 {
@@ -1918,8 +2001,18 @@ mod tests {
         let old_time = started.elapsed();
         ui_sort(&mut old);
         let started = std::time::Instant::now();
-        let (new, requests) = all_pages(d.path(), || list(d.path()).unwrap(), 1000);
+        let (mut new, requests) = all_pages(d.path(), || list(d.path()).unwrap(), 1000);
         let new_time = started.elapsed();
+        // The additive `modified` (Unix seconds) and directory `items` fields are the
+        // only differences from old pages.
+        for entry in &mut new {
+            assert!(entry["modified"].is_u64(), "{entry}");
+            entry.as_object_mut().unwrap().remove("modified");
+            if let Some(items) = entry.as_object_mut().unwrap().remove("items") {
+                assert_eq!(entry["kind"], "directory");
+                assert_eq!(items, 0);
+            }
+        }
         eprintln!(
             "20002-entry listing: old {old_time:?} (21 requests), new {new_time:?} ({requests} requests)"
         );

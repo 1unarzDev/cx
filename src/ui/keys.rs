@@ -616,6 +616,11 @@ impl App {
                     && self.dialog.is_none()
                     && self.input.is_none() =>
             {
+                // Rows, breadcrumb segments and the inline preview are tap targets.
+                if mouse.modifiers == KeyModifiers::NONE && self.file_click(mouse.column, mouse.row)
+                {
+                    return true;
+                }
                 let target = self
                     .panels
                     .borrow()
@@ -630,7 +635,7 @@ impl App {
                 let Some(destination) = target else {
                     return false;
                 };
-                // Click-to-focus applies only to previews, never opens or selects files.
+                // Click-to-focus on a preview never opens or selects files.
                 let browser =
                     if self.other_browser.is_some() && destination != self.destination_active {
                         self.other_browser.as_ref()

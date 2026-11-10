@@ -1,0 +1,20 @@
+ cx   Files         viewing fixture@lapt
+                                        
+╭ Devices ───╮╭ ▸ … › cx-demo ─────────╮
+│   All devi ││▌ ▸ docs/             · │
+│ › ●  lapt… ││  ▸ src/              · │
+│   ●  * la… ││  ▤ Cargo.toml     45 B │
+│   ○  * fi… ││  ≡ README.md      69 B │
+╰────────────╯│  · data.bin     16 KiB │
+╭ Actions ───╮│                        │
+│ Sessions   ││                        │
+│ Network    ││                        │
+│ Containers ││                        │
+╰────────────╯│                        │
+              │                        │
+              │                        │
+              ╰─ 5 items · 1 hidden ───╯
+  Focus: Files · 5/6              ↔ idle
+ s Sessions here     Space Select       
+ c / x Copy / cut    t / T Send / jobs  
+                                        

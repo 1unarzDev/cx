@@ -324,6 +324,9 @@ pub(super) fn loop_wait(app: &App, now: Instant, frame_wait: Option<Duration>) -
     if app.command_panel.as_ref().is_some_and(|p| p.alive) {
         wait = wait.min(Duration::from_millis(80));
     }
+    if let Some(due) = app.files_due(now) {
+        wait = wait.min(due);
+    }
     if app.pending_requests.get() > 0 {
         wait = wait.min(REPLY_POLL);
     }
@@ -962,25 +965,50 @@ pub(super) fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender
                     },
                     Operation::Preview { .. } | Operation::PreviewPage { .. }
                 ) {
-                    result.as_ref().ok().map(RichPreview::from_value)
+                    // Plain text paints first; source highlighting follows below.
+                    result.as_ref().ok().map(RichPreview::plain)
+                } else if matches!(task.op, Operation::ReadChunk { .. }) {
+                    // Streamed text previews: decode and highlight off the UI thread.
+                    result
+                        .as_ref()
+                        .ok()
+                        .and_then(|value| stream_chunk(&task.op, value))
                 } else {
                     None
                 };
+                let source = preview
+                    .as_ref()
+                    .filter(|p| p.kind == "code")
+                    .and(result.as_ref().ok())
+                    .map(|value| {
+                        let text = safe_text(value["text"].as_str().unwrap_or(""));
+                        (text, value["path"].as_str().unwrap_or("").to_owned())
+                    });
+                let reply = |preview, op, result| Reply {
+                    device_id: Some(task.execution.id.clone()),
+                    execution_target: Some(task.execution.target.clone()),
+                    preview,
+                    device: task.device,
+                    op,
+                    generation: task.generation,
+                    result,
+                };
                 let delivered = replies
-                    .send(Reply {
-                        device_id: Some(task.execution.id.clone()),
-                        execution_target: Some(task.execution.target.clone()),
-                        preview,
-                        device: task.device,
-                        op: task.op,
-                        generation: task.generation,
-                        result,
-                    })
+                    .send(reply(preview, task.op.clone(), result))
                     .is_ok();
                 lock.lock().unwrap().busy.remove(&host);
                 changed.notify_all();
                 if !delivered {
                     return;
+                }
+                if let Some((text, path)) = source {
+                    let highlighted = highlighted_preview(text, &path);
+                    if replies
+                        .send(reply(Some(highlighted), task.op, Ok(Value::Null)))
+                        .is_err()
+                    {
+                        return;
+                    }
                 }
             }
         });
@@ -1556,6 +1584,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         let now = Instant::now();
         dirty |= app.tick_press(now);
         dirty |= app.settle_device_refresh(now);
+        dirty |= app.files_tick(now);
         // Coalesce bursts (key repeat, reply floods) to at most ~60 fps.
         let mut frame_wait = None;
         if dirty {

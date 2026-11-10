@@ -19,8 +19,8 @@ mod sessions;
 mod store;
 /// These sessions are local, which the edge guard always allows.
 mod edges {
-    pub fn guard(_: &crate::model::Device) -> anyhow::Result<()> {
-        Ok(())
+    pub fn interactive_ssh(d: &crate::model::Device) -> anyhow::Result<std::process::Command> {
+        crate::store::ssh(d.target.as_deref().unwrap_or_default(), true)
     }
 }
 use model::CreateSession;

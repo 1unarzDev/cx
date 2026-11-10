@@ -760,18 +760,6 @@ fn background_ssh_config() -> Result<PathBuf> {
     }
     Ok(path)
 }
-/// The interactive ssh to an enrolled device (attach, login terminal, run command, ptrace setup). It is
-/// refused when edge policy refuses the viewer's direction or a hop of the device's route, as
-/// transport::request is, so connections the UI starts honour refused edges too. Edge enforcement itself
-/// connects through [`ssh`] and the verified helper channel, never through this.
-pub fn interactive_ssh(device: &Device) -> Result<std::process::Command> {
-    let target = device
-        .target
-        .as_deref()
-        .context("the local device has no SSH target")?;
-    crate::edges::guard(device)?;
-    ssh(target, true)
-}
 pub fn ssh(target: &str, interactive: bool) -> Result<std::process::Command> {
     if !valid_target(target) {
         anyhow::bail!("invalid SSH target")

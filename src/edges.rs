@@ -831,6 +831,18 @@ pub fn guard(device: &Device) -> Result<()> {
     let hops = s.routes.get(target).cloned().unwrap_or_default();
     check_route_with(&s, target, &hops)
 }
+/// The interactive ssh to an enrolled device (attach, login terminal, run command, ptrace setup). It is
+/// refused when edge policy refuses the viewer's direction or a hop of the device's route, as
+/// transport::request is, so connections the UI starts honour refused edges too. Edge enforcement itself
+/// connects through store::ssh and the verified helper channel, never through this.
+pub fn interactive_ssh(device: &Device) -> Result<std::process::Command> {
+    let target = device
+        .target
+        .as_deref()
+        .context("the local device has no SSH target")?;
+    guard(device)?;
+    store::ssh(target, true)
+}
 /// Resolve a CLI endpoint: "local", the local name, or an enrolled name/id/target.
 pub fn resolve(name: &str) -> Result<String> {
     let devices = store::devices()?;
@@ -1312,7 +1324,7 @@ mod tests {
             store::write_state("edges.json", &file, 64 * 1024).unwrap();
         };
         edge("none");
-        let refused = store::interactive_ssh(&robot).unwrap_err().to_string();
+        let refused = interactive_ssh(&robot).unwrap_err().to_string();
         assert!(refused.contains("edge policy refuses"), "{refused}");
         assert!(crate::sessions::login_terminal(&robot)
             .unwrap_err()
@@ -1331,14 +1343,14 @@ mod tests {
             {"from": LOCAL, "to": robot.id, "policy": "key", "updated_at": 1},
             {"from": LOCAL, "to": hop.id, "policy": "none", "updated_at": 1}]});
         store::write_state("edges.json", &file, 64 * 1024).unwrap();
-        assert!(store::interactive_ssh(&robot).is_err());
-        assert!(store::interactive_ssh(&hop).is_err());
+        assert!(interactive_ssh(&robot).is_err());
+        assert!(interactive_ssh(&hop).is_err());
         store::set_route("robot@192.0.2.9", &[]).unwrap();
         edge("key");
-        let allowed = store::interactive_ssh(&robot).unwrap();
+        let allowed = interactive_ssh(&robot).unwrap();
         assert_eq!(allowed.get_program(), "ssh");
         assert!(
-            store::interactive_ssh(&store::local_device()).is_err(),
+            interactive_ssh(&store::local_device()).is_err(),
             "local has no SSH target"
         );
     }

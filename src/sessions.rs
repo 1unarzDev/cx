@@ -3194,7 +3194,7 @@ pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
             guard: None,
         })?;
         if device.target.is_some() {
-            let routed = crate::store::interactive_ssh(device)?;
+            let routed = crate::edges::interactive_ssh(device)?;
             let mut command = Command::new("ssh");
             command.arg("-t").args(routed.get_args());
             command.arg(format!(
@@ -3246,7 +3246,7 @@ pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
         if target.starts_with('-') || target.bytes().any(|b| b.is_ascii_whitespace() || b < 32) {
             bail!("invalid SSH target");
         }
-        let mut c = crate::store::interactive_ssh(device)?;
+        let mut c = crate::edges::interactive_ssh(device)?;
         // Insert PTY options before the destination already owned by ssh().
         let ssh_args = c.get_args().map(|a| a.to_os_string()).collect::<Vec<_>>();
         let mut with_pty = Command::new("ssh");
@@ -3437,7 +3437,7 @@ pub fn pane_close(id: &str) -> Result<serde_json::Value> {
 
 pub fn login_terminal(device: &Device) -> Result<()> {
     let mut command = if device.target.is_some() {
-        let routed = crate::store::interactive_ssh(device)?;
+        let routed = crate::edges::interactive_ssh(device)?;
         let mut command = Command::new("ssh");
         command.arg("-tt").args(routed.get_args());
         command
@@ -3468,7 +3468,7 @@ pub fn run_command(device: &Device, request: &RunCommand) -> Result<()> {
         {
             bail!("invalid SSH target");
         }
-        let routed = crate::store::interactive_ssh(device)?;
+        let routed = crate::edges::interactive_ssh(device)?;
         let mut command = Command::new("ssh");
         command.arg("-tt").args(routed.get_args());
         // Only base64's fixed alphabet enters the remote shell command.

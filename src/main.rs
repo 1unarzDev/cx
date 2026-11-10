@@ -681,7 +681,7 @@ pub(crate) fn device_ptrace(
             quoted.join(" ")
         );
         let ok = if device.target.is_some() {
-            let routed = store::interactive_ssh(&device)?;
+            let routed = edges::interactive_ssh(&device)?;
             let mut c = Command::new("ssh");
             c.arg("-tt").args(routed.get_args()).arg(command);
             c.status()?.success()

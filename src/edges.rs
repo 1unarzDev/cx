@@ -172,12 +172,18 @@ pub struct Snapshot {
 /// Load one snapshot so a caller's decisions all come from the same files.
 pub fn load() -> Result<Snapshot> {
     let devices = store::devices()?;
-    let mut core = BTreeSet::new();
-    for d in devices.iter().filter(|d| d.target.is_some()) {
-        if store::policy(d)?.access == store::AccessMode::Core {
-            core.insert(d.id.clone());
-        }
-    }
+    // One policy read for all devices: this runs on every transport request (the edge guard).
+    let policies = store::policies()?;
+    let core = devices
+        .iter()
+        .filter(|d| d.target.is_some())
+        .filter(|d| {
+            policies
+                .get(&d.id)
+                .is_some_and(|p| p.access == store::AccessMode::Core)
+        })
+        .map(|d| d.id.clone())
+        .collect();
     let file = read()?;
     Ok(Snapshot {
         devices,

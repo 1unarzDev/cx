@@ -542,6 +542,10 @@ fn write_policies(policies: &PolicyFile) -> Result<()> {
 
 /// Return the effective policy. The local execution device is always core;
 /// remote devices default to one-way/direct access for safe migration.
+/// Every remote device's recorded policy by id, from one read (devices without a record use the default).
+pub fn policies() -> Result<std::collections::BTreeMap<String, DevicePolicy>> {
+    Ok(read_policies()?.devices)
+}
 pub fn policy(device: &Device) -> Result<DevicePolicy> {
     if device.target.is_none() {
         return Ok(DevicePolicy {

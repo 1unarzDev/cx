@@ -2169,7 +2169,8 @@ fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
         g.dedup();
         g.len() as u16
     };
-    let want = rows.len() as u16 + groups + 6;
+    // (A breathing row between sections when every row still fits.)
+    let want = rows.len() as u16 + groups + 6 + groups.saturating_sub(1);
     let w = 64.min(a.width.saturating_sub(4));
     let h = want
         .min(a.height * 3 / 4)
@@ -2259,6 +2260,7 @@ fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
         inner.height.saturating_sub(2),
     );
     let mut yy = y + 2;
+    let airy = inner.height + 2 >= want - 2;
     let mut last_group = String::new();
     let sel = cx.c.selected % rows.len().max(1);
     for (i, (group, spans, key, act, dev)) in rows.iter().enumerate() {
@@ -2271,6 +2273,9 @@ fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
                 cx.put(buf, inner.x + 1, yy, inner.width, &t, cx.st(Tok::Muted));
             }
             break;
+        }
+        if head > 0 && i > 0 && airy {
+            yy += 1;
         }
         if head > 0 {
             cx.put(

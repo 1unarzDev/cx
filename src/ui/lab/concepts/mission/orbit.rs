@@ -1697,7 +1697,15 @@ fn pill(
         (_, true) => 0.26,
         (_, false) => 0.18,
     };
-    let body = capsule(cx, buf, r, strength);
+    // Phone maps (keycaps) draw the root as its keycap between brackets: tinted
+    // shoulders beside a keycap read as a render artefact at that size.
+    let key_root = p.mode == Mode::Key && cx.has_surface();
+    let body = if key_root {
+        Style::default()
+    } else {
+        capsule(cx, buf, r, strength)
+    };
+    let pick = if key_root { pick.or(Some(false)) } else { pick };
     if p.mode == Mode::Key {
         cx.put(
             buf,

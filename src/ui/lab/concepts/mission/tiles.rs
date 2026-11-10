@@ -724,8 +724,12 @@ pub(super) fn thumb_with(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pic
         cx.put_r(buf, right, fy, &age, cx.ink(Tok::Muted, 0.9));
         if sw > 0 {
             let v: Vec<Option<f32>> = x.activity.iter().map(|v| Some(*v)).collect();
+            // A shell's neutral ink is black or white in 16 colours, the heaviest mark on
+            // the row: its activity is gray there.
             let tok = if x.state == crate::ui::lab::SessionState::Idle {
                 Tok::Faint
+            } else if ptok == Tok::Shell && !cx.tc() {
+                Tok::Muted
             } else {
                 ptok
             };

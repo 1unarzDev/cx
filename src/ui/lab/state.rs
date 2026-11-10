@@ -750,7 +750,7 @@ fn secrets(all: bool) -> Vec<LabSecret> {
             "codex.api_key",
             "Codex API key",
             Some("sk-••••••••••••b0d4"),
-            "age file",
+            "0600 file",
             Some(3600 * 7),
             &["codex sessions on 3 devices"],
         ));

@@ -1224,16 +1224,21 @@ pub(super) fn draw_with(
     for (e, a, b, c, from_a) in links {
         let on = lit(e);
         let tok = edge_tok(cx, e);
-        let alpha = match (on, fade_all) {
+        let alpha: f32 = match (on, fade_all) {
             (true, _) => 1.0,
             (false, true) => 0.25,
             (false, false) => 0.62,
         };
-        let st = if on {
-            cx.ink(tok, alpha).add_modifier(Modifier::BOLD)
+        // On white a pale hue at 62 % vanishes: light themes draw unlit links nearly
+        // full strength and deepened like session inks (`tiles::adapt`), so every link
+        // hue keeps about 3:1 against the background.
+        let st = if cx.tc() && !cx.dark() && !fade_all {
+            let c = super::mix(cx.bg0(), cx.rgb(tok), alpha.max(0.8));
+            cx.rgb_fg(tiles::adapt(cx, c, false))
         } else {
             cx.ink(tok, alpha)
         };
+        let st = if on { st.add_modifier(Modifier::BOLD) } else { st };
         let pts = curve(a, c, b);
         let heavy = fade_all && on;
         cv.stroke(&pts, pattern(e), st, if on { 6 } else { 4 }, heavy);
@@ -1415,7 +1420,7 @@ pub(super) fn draw_with(
         cx.put(buf, x, y, w, &t, cx.st(Tok::Muted));
         cx.hit(Rect::new(x, y, w, 1), "palette:devices");
     }
-    cx.unclash(mark);
+    cx.unclash(mark, matches!(sel, Sel::Node(..)));
 }
 
 fn chip_text(cx: &Cx, e: &LabEdge, mode: Mode) -> Option<String> {
@@ -1443,12 +1448,20 @@ fn chip_text(cx: &Cx, e: &LabEdge, mode: Mode) -> Option<String> {
             mode == Mode::Key || cx.size() <= Size::S,
         ));
     }
-    if cx.size() <= Size::S || mode == Mode::Key {
+    // Without colour, lan is not a hue: its chip carries the word (`lan 1.2ms`).
+    let lan = !cx.c.has_color() && matches!(e.kind, crate::ui::lab::EdgeKind::Lan);
+    if mode == Mode::Key {
         return None;
+    }
+    if cx.size() <= Size::S {
+        return lan.then(|| "lan".to_string());
     }
     let rate = transfer_rate(cx, e);
     let ms = e.rtt_ms.map(ms_text);
     let num = rate.or(ms)?;
+    if lan {
+        return Some(format!("lan {num}"));
+    }
     Some(if cx.size() >= Size::L {
         let word = match (e.forward, e.reverse) {
             (Access::Key, _) | (_, Access::Key) => "key",
@@ -1518,10 +1531,15 @@ fn node(cx: &Cx, buf: &mut Buffer, p: &Plan, n: &Node, pick: Option<bool>, keys:
     let r = n.label;
     let up = cx.up(d);
     if p.mode == Mode::Key {
-        let st = if fade {
-            cx.ink(Tok::Muted, 0.6)
-        } else {
+        // Keycaps in every map, so the phone orbit reads the same everywhere: a faded
+        // node is a faint keycap, never a bare letter.
+        let st = if !fade {
             cx.chip_style(cx.s.hue(&d.id))
+        } else if cx.has_surface() {
+            cx.rgb_bg(super::mix(cx.bg0(), cx.rgb(Tok::Faint), 0.55))
+                .patch(cx.ink(Tok::Muted, 0.9))
+        } else {
+            cx.ink(Tok::Muted, 0.6)
         };
         if let Some(f) = pick {
             let bar = if f {
@@ -1538,18 +1556,16 @@ fn node(cx: &Cx, buf: &mut Buffer, p: &Plan, n: &Node, pick: Option<bool>, keys:
             r.y,
             3,
             &format!(" {} ", d.hotkey),
-            if keys || fade {
-                st
-            } else {
-                cx.ink(Tok::Id(cx.s.hue(&d.id)), 1.0)
-                    .add_modifier(Modifier::BOLD)
-            },
+            st,
         );
         if !matches!(d.status, DeviceStatus::Online) && pick.is_none() {
             let (g, gst) = cx.status(d.status);
             cx.put(buf, r.x + 3, r.y, 1, g, gst);
         }
-        hit_node(cx, r, d);
+        // A faded node (edge editor) is scenery, not a target.
+        if !fade {
+            hit_node(cx, r, d);
+        }
         return;
     }
     let bg = match pick {
@@ -1613,6 +1629,9 @@ fn node(cx: &Cx, buf: &mut Buffer, p: &Plan, n: &Node, pick: Option<bool>, keys:
             let st = if fade { cx.ink(Tok::Muted, 0.5) } else { st };
             x += cx.put(buf, x, r.y + 1, nw, &t, st.patch(bg)) + 1;
         }
+    }
+    if fade {
+        return;
     }
     hit_node(
         cx,

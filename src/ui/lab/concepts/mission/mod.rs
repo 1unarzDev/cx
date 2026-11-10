@@ -269,7 +269,7 @@ impl<'a> Cx<'a> {
     /// gives up the overlapping rows (or columns, when the overlap spans its full height),
     /// so a thumb tap between two nodes is never ambiguous. Repeats until no pair
     /// overlaps (a trim can change which of two targets is the larger).
-    pub fn unclash(&self, from: usize) {
+    pub fn unclash(&self, from: usize, covered: bool) {
         let mut v = self.hits.borrow_mut();
         let area = |r: Rect| u32::from(r.width) * u32::from(r.height);
         for _ in 0..8 {
@@ -309,6 +309,47 @@ impl<'a> Cx<'a> {
             }
         }
         v.retain(|t| t.area.width > 0 && t.area.height > 0);
+        if !self.touch() {
+            return;
+        }
+        // Touch: a trimmed target grows back toward 3 rows by 7 columns into free cells.
+        // One that still cannot is dropped when `covered` (the phone hub, whose device
+        // tree rows are the thumb targets); elsewhere the lint names it.
+        let ok = |r: Rect| r.height >= 3 && r.width >= 7;
+        for i in from..v.len() {
+            for _ in 0..8 {
+                let r = v[i].area;
+                if ok(r) {
+                    break;
+                }
+                let mut tries = Vec::new();
+                if r.height < 3 {
+                    tries.push(Rect::new(r.x, r.y + r.height, r.width, 1));
+                    tries.push(Rect::new(r.x, r.y.saturating_sub(1), r.width, 1));
+                }
+                if r.width < 7 {
+                    tries.push(Rect::new(r.x + r.width, r.y, 1, r.height));
+                    tries.push(Rect::new(r.x.saturating_sub(1), r.y, 1, r.height));
+                }
+                let free = |g: Rect| {
+                    g.intersection(self.area) == g
+                        && !r.intersects(g)
+                        && (from..v.len()).all(|j| j == i || !v[j].area.intersects(g))
+                };
+                match tries.into_iter().find(|g| free(*g)) {
+                    Some(g) => v[i].area = r.union(g),
+                    None => break,
+                }
+            }
+        }
+        if covered {
+            let keep: Vec<LabTarget> = v.drain(from..).filter(|t| ok(t.area)).collect();
+            v.extend(keep);
+        } else {
+            for t in v[from..].iter().filter(|t| !ok(t.area)) {
+                eprintln!("lint touch target {} under 3x7", t.action);
+            }
+        }
     }
     /// Drop every target recorded so far: an overlay (palette, sheet) owns the taps, so
     /// nothing under its scrim stays live.
@@ -328,8 +369,18 @@ impl<'a> Cx<'a> {
     /// The selection bar down the left of `h` rows: `▌` (ASCII `>` on the first row and
     /// `|` below, so a column of `>` never reads as shell prompts).
     pub fn bar(&self, buf: &mut Buffer, x: u16, y: u16, h: u16, st: Style) {
+        self.bar_in(buf, x, y, h, st, true);
+    }
+    /// The bar of a selection in a focused or unfocused zone: without colour the two
+    /// would differ only by ink, so ASCII marks the unfocused one `:` on every row and
+    /// keeps `>` for the focused zone.
+    pub fn bar_in(&self, buf: &mut Buffer, x: u16, y: u16, h: u16, st: Style, focused: bool) {
         for yy in y..y + h {
-            let a = if yy == y { ">" } else { "|" };
+            let a = match (focused, yy == y) {
+                (false, _) => ":",
+                (true, true) => ">",
+                (true, false) => "|",
+            };
             self.put(buf, x, yy, 1, self.g("▌", a), st);
         }
     }
@@ -570,7 +621,16 @@ impl<'a> Cx<'a> {
         }
     }
 
-    /// A row of key chips (` ⏎ open  ␣ peek `); records taps. Returns end x.
+    /// A chip key's drawn width: ` k ` (an address `@t a` is one keycap per key).
+    pub fn key_w(&self, k: &str) -> u16 {
+        if k.contains('@') {
+            k.split(' ').count() as u16 * 3
+        } else {
+            width(k, self.uni()) + 2
+        }
+    }
+    /// A row of key chips (` ⏎ open  ␣ peek `); records taps. Returns end x. A key
+    /// written `@t a` is an address: the device letter `t` in its hue, then `a`.
     pub fn chips(
         &self,
         buf: &mut Buffer,
@@ -593,22 +653,35 @@ impl<'a> Cx<'a> {
     ) -> u16 {
         let mut cx = x;
         for (k, label, action) in items {
-            let kw = width(k, self.uni()) + 2;
+            let kw = self.key_w(k);
             let lw = width(label, self.uni());
             let need = kw + if lw > 0 { lw + 1 } else { 0 };
             if cx + need > right {
                 break;
             }
             let x0 = cx;
-            cx += self.put(buf, cx, y, kw, &format!(" {k} "), self.key_style());
+            if k.contains('@') {
+                // An address: one keycap per key, a device letter in its hue.
+                for t in k.split(' ') {
+                    let (c, st) = match t.strip_prefix('@') {
+                        Some(c) => {
+                            let hue = self.s.devices.iter().find(|d| c.starts_with(d.hotkey));
+                            (c, hue.map_or(self.key_style(), |d| self.chip_style(self.s.hue(&d.id))))
+                        }
+                        None => (t, self.key_style()),
+                    };
+                    cx += self.put(buf, cx, y, 3, &format!(" {c} "), st);
+                }
+            } else {
+                cx += self.put(buf, cx, y, kw, &format!(" {k} "), self.key_style());
+            }
             if lw > 0 {
                 cx += 1;
                 cx += self.put(buf, cx, y, lw, label, self.st(Tok::Muted));
             }
             let top = y.saturating_sub(th - 1);
             self.hit(Rect::new(x0, top, cx - x0, y + 1 - top), *action);
-            // Phones space chips by one column so a fourth verb still fits at 40.
-            cx += if self.area.width < 50 { 1 } else { 2 };
+            cx += 2;
         }
         cx
     }
@@ -718,8 +791,8 @@ pub(super) fn asciify(s: &str) -> String {
             '…' => out.push_str(".."),
             '─' | '━' | '╌' => out.push('-'),
             '│' | '┃' => out.push('|'),
-            // An agent's own prompt bar: `:`, so `|` stays cx's focus-bar continuation.
-            '▌' | '▍' | '▎' => out.push(':'),
+            // An agent's own prompt bar is blank: `|` and `:` are cx's selection bars.
+            '▌' | '▍' | '▎' => out.push(' '),
             '╭' | '╮' | '╰' | '╯' | '┌' | '┐' | '└' | '┘' => out.push('+'),
             // `v` and `^` are reserved (`^` is an alert), so arrows are words.
             '↓' => out.push_str("dn"),

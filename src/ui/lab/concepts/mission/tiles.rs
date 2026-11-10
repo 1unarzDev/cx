@@ -34,7 +34,7 @@ fn pick_bar(cx: &Cx, buf: &mut Buffer, r: Rect, pick: Pick) {
         };
         // ASCII: `>` on the first row only, `|` below it (a column of `>` reads as
         // shell prompts); an unfocused selection is the same bar, dimmer.
-        cx.bar(buf, r.x, r.y, r.height, st);
+        cx.bar_in(buf, r.x, r.y, r.height, st, f);
     }
 }
 
@@ -66,24 +66,19 @@ pub(super) fn chart(cx: &Cx, buf: &mut Buffer, r: Rect, vals: &[f32], tok: Optio
             } else if fill >= 6 {
                 "#"
             } else if fill >= 2 {
-                if row == 0 {
-                    "="
-                } else {
-                    ":"
-                }
+                // (`:` is the unfocused selection bar.)
+                "="
             } else if row == 0 {
                 "_"
             } else {
                 " "
             };
-            let shade = if cx.tc() && fill > 0 {
-                let a = 0.45 + 0.55 * (f32::from(row) + 1.0) / f32::from(r.height);
-                match tok {
-                    Some(t) => cx.ink(t, a),
-                    None => st,
-                }
-            } else {
-                st
+            // A hued chart is a faint body under a full-hue top cell, so a tall chart
+            // never outweighs the names beside it.
+            let top_cell = total - (i32::from(row) + 1) * 8 <= 0;
+            let shade = match tok {
+                Some(t) if cx.tc() && fill > 0 && !top_cell => cx.ink(t, 0.32),
+                _ => st,
             };
             if fill == 0 && row == 0 && cx.uni() {
                 cx.put(buf, r.x + i as u16, y, 1, "▁", cx.ink(Tok::Faint, 0.8));
@@ -94,17 +89,32 @@ pub(super) fn chart(cx: &Cx, buf: &mut Buffer, r: Rect, vals: &[f32], tok: Optio
     }
 }
 
-/// An rtt history as an area chart, scaled between its min and max so jitter shows; a
-/// lost sample is a gap.
-pub(super) fn rtt_chart(cx: &Cx, buf: &mut Buffer, r: Rect, hist: &[Option<f32>], tok: Tok) {
-    let hi = hist.iter().flatten().fold(f32::MIN, |a, b| a.max(*b));
-    let lo = hist.iter().flatten().fold(f32::MAX, |a, b| a.min(*b));
-    let range = (hi - lo).max(1e-3);
+/// An rtt history as an area chart from 0 to `hi` (shared by every chart on a screen,
+/// so a calm 10-17 ms link looks calm); a lost sample is a gap.
+pub(super) fn rtt_chart(
+    cx: &Cx,
+    buf: &mut Buffer,
+    r: Rect,
+    hist: &[Option<f32>],
+    tok: Tok,
+    hi: f32,
+) {
+    let hi = hi.max(1e-3);
     let vals: Vec<f32> = hist
         .iter()
-        .map(|v| v.map_or(0.0, |v| 0.12 + 0.88 * (v - lo) / range))
+        .map(|v| v.map_or(0.0, |v| (v / hi).max(0.04)))
         .collect();
     chart(cx, buf, r, &vals, Some(tok));
+}
+
+/// A round rtt scale above every sample in `hists` (5, 10, 20, 50, 100 ... ms).
+pub(super) fn rtt_scale<'a>(hists: impl Iterator<Item = &'a [Option<f32>]>) -> f32 {
+    let top = hists.flatten().flatten().fold(1.0f32, |a, b| a.max(*b));
+    let mut s = 5.0;
+    while s < top {
+        s *= if (s as u32).to_string().starts_with('2') { 2.5 } else { 2.0 };
+    }
+    s
 }
 
 /// One-row sparkline with gaps for lost samples.

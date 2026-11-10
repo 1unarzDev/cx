@@ -142,44 +142,67 @@ fn legend(cx: &Cx, buf: &mut Buffer, mut x: u16, y: u16, right: u16) -> u16 {
         (format!("{} pass", cx.g("⠂⠐⠂", "...")), Tok::Muted),
         (format!("{} one way", cx.g("⠒→", "->")), Tok::Muted),
         (format!("{} down", cx.g("⠒⠂⠒", "-.-")), Tok::Err),
-        (format!("{} lan", cx.g("⠒⠒⠒", "---")), Tok::Lan),
     ];
+    // Lan is a hue; without colour its links carry the word on their chip instead
+    // (`---` would read as key).
+    if cx.c.has_color() {
+        items.push((format!("{} lan", cx.g("⠒⠒⠒", "---")), Tok::Lan));
+    }
     if cx.size() < Size::M {
         items.truncate(4);
         // The arrow is the only cue for a directed policy: it keeps a word.
         items[2].0 = format!("{} 1-way", cx.g("⠒→", "->"));
     }
     let sep = if cx.size() >= Size::M { 3 } else { 2 };
+    // Meshes first: a swatch on the map must always find its name here, so stroke
+    // entries give way (from the last) before a mesh does.
+    let meshes: Vec<(String, Tok, &crate::ui::lab::LabMesh)> = cx
+        .s
+        .meshes
+        .iter()
+        .map(|m| {
+            let up = m
+                .members
+                .iter()
+                .filter(|id| cx.s.device(id).is_some_and(|d| cx.up(d)))
+                .count();
+            let g = tiles::mesh_glyph(cx, &m.id);
+            let text = if cx.size() >= Size::M {
+                format!("{g} {} {up}/{}", m.name, m.members.len())
+            } else {
+                format!("{g} {}", m.name)
+            };
+            (text, orbit::mesh_tok(cx, &m.id), m)
+        })
+        .collect();
+    let mesh_w: u16 = meshes
+        .iter()
+        .map(|(t, _, m)| super::width(t, cx.uni()) + if m.healthy { 0 } else { 2 } + sep)
+        .sum();
+    // (Phones draw keycaps without swatches: strokes come first there.)
+    let stroke_right = if x + mesh_w <= right && !cx.touch() {
+        right - mesh_w
+    } else {
+        right
+    };
     for (t, tok) in &items {
         let w = super::width(t, cx.uni());
-        if x + w + 2 > right {
-            return x;
+        if x + w + 2 > stroke_right {
+            break;
         }
         let (g, word) = t.split_once(' ').unwrap_or((t, ""));
         let gw = cx.put(buf, x, y, w, g, cx.ink(*tok, 0.95));
         cx.put(buf, x + gw + 1, y, w, word, cx.ink(Tok::Muted, 0.95));
         x += w + sep;
     }
-    // Meshes: their hue on the arcs and links, with how many members are up.
-    for m in &cx.s.meshes {
-        let tok = orbit::mesh_tok(cx, &m.id);
-        let up = m
-            .members
-            .iter()
-            .filter(|id| cx.s.device(id).is_some_and(|d| cx.up(d)))
-            .count();
-        let g = tiles::mesh_glyph(cx, &m.id);
-        let text = if cx.size() >= Size::M {
-            format!("{g} {} {up}/{}", m.name, m.members.len())
-        } else {
-            format!("{g} {}", m.name)
-        };
-        let w = super::width(&text, cx.uni()) + if m.healthy { 0 } else { 2 };
+    // Meshes: their hue on the links, with how many members are up.
+    for (text, tok, m) in &meshes {
+        let w = super::width(text, cx.uni()) + if m.healthy { 0 } else { 2 };
         if x + w + 1 > right {
             break;
         }
         let x0 = x;
-        x += cx.put(buf, x, y, w, &text, cx.ink(tok, 0.95));
+        x += cx.put(buf, x, y, w, text, cx.ink(*tok, 0.95));
         if !m.healthy {
             x += cx.put(buf, x, y, 2, cx.g(" ▲", " ^"), cx.st(Tok::Warn));
         }
@@ -246,10 +269,10 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     let k = d.hotkey;
     let n = cx.s.sessions_on(&d.id).count();
     let (attach, new, files, link) = (
-        format!("{k} a"),
-        format!("{k} c"),
-        format!("{k} f"),
-        format!("e {k}"),
+        format!("@{k} a"),
+        format!("@{k} c"),
+        format!("@{k} f"),
+        format!("e @{k}"),
     );
     let mut items: Vec<(&str, &str, &str)> = Vec::new();
     if n > 0 {
@@ -265,7 +288,7 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     let ky = r.bottom() - 1;
     let kw: u16 = items
         .iter()
-        .map(|(k, l, _)| super::width(k, cx.uni()) + 3 + super::width(l, cx.uni()) + 2)
+        .map(|(k, l, _)| cx.key_w(k) + 1 + super::width(l, cx.uni()) + 2)
         .sum();
     let mut kx = r.right();
     if r.height >= 2 || x + kw <= right {
@@ -386,7 +409,7 @@ fn alerts(cx: &Cx) -> Vec<Alert> {
             cx.g("◆", "!"),
             text,
             Tok::Warn,
-            format!("{} {}", d.hotkey, cx.slot(x).unwrap_or('a')),
+            format!("@{} {}", d.hotkey, cx.slot(x).unwrap_or('a')),
             "attach",
             format!("session:{}:{}", d.id, x.id),
         ));
@@ -406,8 +429,8 @@ fn alerts(cx: &Cx) -> Vec<Alert> {
         };
         let head = n.text.replace(" for ", " ");
         let (keys, verb) = match (d, n.action.as_deref()) {
-            (Some(d), Some("retry")) => (format!("{} r", d.hotkey), "retry"),
-            (Some(d), _) => (d.hotkey.to_string(), "inspect"),
+            (Some(d), Some("retry")) => (format!("@{} r", d.hotkey), "retry"),
+            (Some(d), _) => (format!("@{}", d.hotkey), "inspect"),
             _ => ("/".to_string(), "find"),
         };
         let act = d.map_or("notices".to_string(), |d| format!("retry:{}", d.id));
@@ -418,12 +441,20 @@ fn alerts(cx: &Cx) -> Vec<Alert> {
 
 /// The alert ticker: each problem in its colour, then its fix as a key chip.
 fn ticker(cx: &Cx, buf: &mut Buffer, r: Rect) {
-    let items = alerts(cx);
+    // The first-ranked session is the first tile right above: its alert is not repeated.
+    let top = cx
+        .by_attention()
+        .first()
+        .map(|x| format!("session:{}:{}", x.device, x.id));
+    let items: Vec<Alert> = alerts(cx)
+        .into_iter()
+        .filter(|a| Some(&a.5) != top.as_ref())
+        .collect();
     let mut x = r.x + 1;
     let right = r.right();
     let n = items.len();
     for (i, (g, text, tok, keys, verb, act)) in items.into_iter().enumerate() {
-        let kw = super::width(&keys, cx.uni()) + 2 + 1 + super::width(verb, cx.uni());
+        let kw = cx.key_w(&keys) + 1 + super::width(verb, cx.uni());
         let room = right.saturating_sub(x + kw + 4);
         // The first item keeps its words; later ones only when they fit whole-ish.
         let tw = super::width(&text, cx.uni()).min(room);
@@ -502,7 +533,7 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // One key column for every row, so the fix keys line up.
     let kw = shown
         .iter()
-        .map(|a| super::width(&a.3, cx.uni()) + 3 + super::width(a.4, cx.uni()))
+        .map(|a| cx.key_w(&a.3) + 1 + super::width(a.4, cx.uni()))
         .max()
         .unwrap_or(0);
     for (i, a) in shown.iter().enumerate() {
@@ -559,11 +590,11 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
             x,
             r.y,
             1,
-            if more { cx.g("│", ":") } else { " " },
+            if more { cx.g("│", " ") } else { " " },
             gst(Tok::Faint),
         );
         if r.height > 1 && more {
-            cx.put(buf, x, r.y + 1, 1, cx.g("│", ":"), gst(Tok::Faint));
+            cx.put(buf, x, r.y + 1, 1, cx.g("│", " "), gst(Tok::Faint));
         }
         x += 2;
     }
@@ -578,7 +609,7 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
         };
         cx.put(buf, x, r.y, 2, g, gst(tok));
         if r.height > 1 && !t.last {
-            cx.put(buf, x, r.y + 1, 1, cx.g("│", ":"), gst(Tok::Faint));
+            cx.put(buf, x, r.y + 1, 1, cx.g("│", " "), gst(Tok::Faint));
         }
         x += 2;
     }

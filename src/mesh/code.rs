@@ -5,8 +5,9 @@
 //! The check makes the weighted sum of all 11 symbols zero in GF(32), so every single mistyped symbol and every
 //! swap of two neighbours is caught offline. The code carries no address: the joiner names the viewer's host.
 //!
-//! The code is never stored. The viewer keeps only [`key`], a SHA-256 of it, which keys the HMAC-SHA256
-//! confirmations of the pairing ([`mac`], [`verify`]; RustCrypto `hmac`, constant-time comparison).
+//! The code is never stored: it and its [`key`], the SHA-256 of it, live only in the `cx mesh invite` serving it.
+//! The key keys the HMAC-SHA256 confirmations of the pairing ([`mac`], [`verify`]; RustCrypto `hmac`,
+//! constant-time comparison).
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use hmac::{Hmac, Mac};
@@ -96,15 +97,15 @@ pub fn parse(text: &str) -> Result<String> {
         syndrome(&symbols) == 0,
         "pair code check failed; check for a mistyped character"
     );
-    Ok(symbols.iter().map(|&v| ALPHABET[v as usize] as char).collect())
+    Ok(symbols
+        .iter()
+        .map(|&v| ALPHABET[v as usize] as char)
+        .collect())
 }
 
-/// What the viewer stores of a code, and the HMAC key of its pairing: SHA-256("cx-pair-v1|key|" || code).
+/// The HMAC key of a pairing: SHA-256 of the normalized code.
 pub fn key(code: &str) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(b"cx-pair-v1|key|");
-    h.update(code.as_bytes());
-    h.finalize().into()
+    Sha256::digest(code.as_bytes()).into()
 }
 
 fn hmac(key: &[u8; 32], label: &str, fields: &[&[u8]]) -> Hmac<Sha256> {
@@ -227,7 +228,12 @@ mod tests {
         assert!(!verify(&k, "accept", &[b"ssh-ed25519 AAAA", b"fp"], &t));
         assert!(!verify(&k, "join", &[b"ssh-ed25519 AAAB", b"fp"], &t));
         assert!(!verify(&k, "join", &[b"ssh-ed25519 AAAAf", b"p"], &t));
-        assert!(!verify(&key("X"), "join", &[b"ssh-ed25519 AAAA", b"fp"], &t));
+        assert!(!verify(
+            &key("X"),
+            "join",
+            &[b"ssh-ed25519 AAAA", b"fp"],
+            &t
+        ));
         assert!(!verify(&k, "join", &[b"ssh-ed25519 AAAA", b"fp"], &t[..62]));
         assert!(!verify(&k, "join", &[b"ssh-ed25519 AAAA", b"fp"], "zz"));
         // The HMAC-SHA256 the hmac crate computes is the standard one (RFC 4231 test case 2).

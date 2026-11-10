@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
-"""ssh-overlay `cx mesh pair` end to end over a disposable loopback sshd (docs/mesh.md, "ssh-overlay").
+"""ssh-overlay pairing end to end on loopback (docs/mesh.md, "ssh-overlay").
 
-Two cx identities on this machine, each with its own temporary HOME and state: the viewer invites,
-a private sshd (running as this user, authorizing only the viewer's temporary authorized_keys, with
-SetEnv pointing the forced command at the viewer's temporary HOME) serves the redeem, the joiner joins.
-Also: replay refused, a changed host key refused before any authentication, revoke, and
-`cx mesh backends --json` with a fake tailscale on PATH. Nothing outside the temporary tree changes;
-the real ~/.ssh/authorized_keys and cx state are checked unchanged (stat only).
+Two cx identities on this machine, each with its own temporary HOME and state. The viewer runs
+`cx mesh invite --backend ssh-overlay` (a one-shot listener on 127.0.0.1) and the joiner runs
+`cx mesh pair CODE 127.0.0.1:PORT`. Then a private sshd (running as this user, authorizing only the
+viewer's temporary authorized_keys) proves the key the viewer installed logs in. Also: an enrolled
+identity refused, wrong codes refused and rate-limited, replay, a typo caught offline, expiry and
+Ctrl-C (the port closed each time), revoke, and `cx mesh backends --json` with a fake tailscale on PATH.
+Nothing outside the temporary tree changes: the real ~/.ssh/authorized_keys and cx state are compared
+by content hash before and after.
 
 Usage: python3 tests/mesh_ssh_overlay.py target/debug/cx
 """
+import hashlib
 import json
 import os
 import pathlib
 import pwd
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -25,19 +29,34 @@ binary = str(pathlib.Path(sys.argv[1]).resolve())
 account = pwd.getpwuid(os.getuid()).pw_name
 sshd = shutil.which("sshd") or "/usr/sbin/sshd"
 real_home = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
-watched = [real_home / ".ssh/authorized_keys", real_home / ".local/state/cx/devices.json", real_home / ".config/cx/mesh/config.toml"]
+watched = [real_home / ".ssh/authorized_keys", real_home / ".ssh/known_hosts", real_home / ".local/state/cx/devices.json",
+           real_home / ".config/cx/mesh/config.toml"]
 
 
-def stamp(p):
+def digest(p):
     try:
-        s = p.stat()
-        return (s.st_mtime_ns, s.st_size)
+        return hashlib.sha256(p.read_bytes()).hexdigest()
     except FileNotFoundError:
         return None
 
 
-before = [stamp(p) for p in watched]
+before = [digest(p) for p in watched]
 result = {}
+
+
+def free_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def is_open(port):
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
 
 with tempfile.TemporaryDirectory(prefix="cx-mesh-join-") as temporary:
     root = pathlib.Path(temporary)
@@ -52,51 +71,34 @@ with tempfile.TemporaryDirectory(prefix="cx-mesh-join-") as temporary:
 
     viewer, venv = side("viewer", "viewer-machine")
     joiner, jenv = side("joiner", "joiner-machine")
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    for name in ("host", "changed-host"):
-        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(root / name)], check=True, timeout=10)
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(root / "host")], check=True, timeout=10)
+    host_key = " ".join((root / "host.pub").read_text().split()[:2])
 
-    def cx(env, *args, input=None, check=True):
-        r = subprocess.run([binary, *args], env=env, input=input, capture_output=True, text=True, timeout=60)
+    def cx(env, *args, check=True):
+        r = subprocess.run([binary, *args], env=env, capture_output=True, text=True, timeout=60)
         if check:
             assert r.returncode == 0, (args, r.stdout, r.stderr)
         return r
 
-    def invite(*extra):
-        r = cx(venv, "mesh", "invite", "--backend", "ssh-overlay", "--address", f"127.0.0.1:{port}",
-               "--host-key", str(root / "host.pub"), "--json", *extra)
-        return json.loads(r.stdout)
+    class Invite:
+        """A `cx mesh invite` running in the background of this test, as it runs in a terminal."""
 
-    configuration = root / "sshd.conf"
-    log = (root / "sshd.log").open("wb")
-    daemon = None
+        def __init__(self, *extra):
+            self.port = free_port()
+            self.process = subprocess.Popen(
+                [binary, "mesh", "invite", "--backend", "ssh-overlay", "--address", "127.0.0.1", "--port", str(self.port),
+                 "--host-key", str(root / "host.pub"), "--json", *extra],
+                env=venv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            line = self.process.stdout.readline()
+            assert line, self.process.stderr.read()
+            self.invite = json.loads(line)
+            self.code = self.invite["code"]
+            self.host = f"127.0.0.1:{self.port}"
 
-    def start(key):
-        setenv = " ".join(f"{k}={venv[k]}" for k in ("HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CX_JOIN_MACHINE_ID"))
-        configuration.write_text(f"""Port {port}
-ListenAddress 127.0.0.1
-HostKey {root / key}
-PidFile {root}/sshd.pid
-AuthorizedKeysFile {viewer}/.ssh/authorized_keys
-StrictModes no
-UsePAM no
-PasswordAuthentication no
-KbdInteractiveAuthentication no
-PubkeyAuthentication yes
-AllowUsers {account}
-SetEnv {setenv}
-""")
-        process = subprocess.Popen([sshd, "-D", "-e", "-f", str(configuration)], stdout=log, stderr=log)
-        for _ in range(100):
-            assert process.poll() is None, (root / "sshd.log").read_text()
-            try:
-                with socket.create_connection(("127.0.0.1", port), timeout=0.1):
-                    return process
-            except OSError:
-                time.sleep(0.02)
-        raise AssertionError("fixture sshd did not start")
+        def finish(self, timeout=30):
+            out, err = self.process.communicate(timeout=timeout)
+            assert not is_open(self.port), "the listener port is closed once the invite is"
+            return self.process.returncode, out, err
 
     def authorized(home):
         p = home / ".ssh/authorized_keys"
@@ -106,46 +108,60 @@ SetEnv {setenv}
         p = home / "state/cx/devices.json"
         return json.loads(p.read_text()) if p.exists() else []
 
+    daemon = None
+    invites = []
     try:
-        inv = invite("--name", "rover")
-        code = inv["code"]
-        assert inv["one_liner_sh"] == f"cx mesh pair {code}" and inv["uses"] == 1, inv
-        line = [l for l in authorized(viewer).splitlines() if "cx-join-invite:" in l]
-        assert len(line) == 1 and line[0].startswith("restrict,command=") and "expiry-time=" in line[0], line
-        assert f"{binary} mesh pair --redeem " in line[0]
-        # ssh-keygen made the invite key in a private scratch dir that is gone again: the code is its only copy.
-        mesh_state = viewer / "state/cx/mesh/ssh-overlay"
-        assert not [p.name for p in mesh_state.iterdir() if p.name.startswith(("invite-key-", "join-"))], list(mesh_state.iterdir())
-        assert not [p for p in viewer.rglob("*") if p.is_file() and "OPENSSH PRIVATE KEY" in p.read_text(errors="ignore") and "peer-ssh" not in str(p) and ".ssh" not in p.parts], "no invite key file kept"
-
-        daemon = start("host")
         # Takeover: an invite holder claiming an enrolled identity (here a directed device with no
-        # SSH pins) is refused, and the record keeps its target and access. Runs before any pairing
-        # so that no 127.0.0.1 endpoint pin masks the identity check.
+        # SSH pins) is refused, and the record keeps its target and access. The right code uses the
+        # invite up, so the listener closes with it.
         victim = {"id": f"victim-machine:{account}", "name": "victim", "target": f"{account}@10.9.9.9",
                   "account": account, "host": "victim", "status": "seeded", "observed_at": 1}
-        (viewer / "state/cx/devices.json").write_text(json.dumps([d for d in devices(viewer)] + [victim]))
+        (viewer / "state/cx").mkdir(parents=True, mode=0o700)
+        (viewer / "state/cx/devices.json").write_text(json.dumps([victim]))
         policy_file = viewer / "state/cx/device-policies.json"
         policies_before = policy_file.read_text() if policy_file.exists() else None
         intruder, ienv = side("intruder", "victim-machine")
-        r = cx(ienv, "mesh", "pair", invite()["code"], "--name", "mallory", check=False)
+        first = Invite()
+        invites.append(first)
+        r = cx(ienv, "mesh", "pair", first.code, first.host, "--name", "mallory", check=False)
         assert r.returncode != 0 and "already enrolled" in r.stderr, r.stderr
+        code, _, err = first.finish()
+        assert code != 0 and "cancelled" in err, err
         assert [d for d in devices(viewer) if d["id"] == victim["id"]] == [victim], devices(viewer)
         assert (policy_file.read_text() if policy_file.exists() else None) == policies_before
         assert not any(l.endswith(" cx-managed-peer") for l in authorized(viewer).splitlines())
         pins = viewer / "state/cx/peer-ssh/peers.json"
         assert not pins.exists() or "victim-machine" not in pins.read_text()
-        (viewer / "state/cx/devices.json").write_text(json.dumps([d for d in devices(viewer) if d["id"] != victim["id"]]))
+        (viewer / "state/cx/devices.json").write_text(json.dumps([]))
         result["takeover_refused"] = True
 
-        r = cx(jenv, "mesh", "pair", code, "--json")
+        inv = Invite("--name", "rover")
+        invites.append(inv)
+        assert inv.invite["one_liner_sh"] == f"cx mesh pair {inv.code} {inv.host}" and inv.invite["uses"] == 1, inv.invite
+        assert len(inv.code) == 13 and inv.invite["hosts"] == [inv.host], inv.invite
+        # The code lives only in the listener's memory.
+        bare = inv.code.replace("-", "")
+        assert not [p for p in viewer.rglob("*") if p.is_file() and (bare in p.read_text(errors="ignore") or inv.code in p.read_text(errors="ignore"))]
+        # A wrong code (with a valid check symbol: another fresh invite's) is refused and the invite stays open.
+        other = Invite()
+        invites.append(other)
+        r = cx(jenv, "mesh", "pair", other.code, inv.host, check=False)
+        assert r.returncode != 0 and "wrong pair code" in r.stderr, r.stderr
+        assert inv.process.poll() is None and is_open(inv.port)
+        other.process.send_signal(signal.SIGINT)
+        code, _, _ = other.finish()
+        assert code != 0
+        result["wrong_code_refused_ctrl_c_closes"] = True
+
+        r = cx(jenv, "mesh", "pair", inv.code, inv.host, "--json")
         joined = json.loads(r.stdout)
         assert joined["joined"] and joined["target"] == f"{account}@127.0.0.1" and joined["as"] != "", joined
+        code, out, err = inv.finish()
+        assert code == 0, err
+        assert json.loads(out.splitlines()[-1])["name"] == "rover", out
         result["joined"] = True
 
-        assert not [p.name for p in (joiner / "state/cx/mesh/ssh-overlay").iterdir() if p.name.startswith("join-")], "joiner scratch removed"
-        # The viewer: the invite is burnt, the joiner enrolled as core with a restricted managed key.
-        assert "cx-join-invite:" not in authorized(viewer), "invite authorization removed after use"
+        # The viewer: the joiner enrolled as core with a restricted managed key.
         managed = [l for l in authorized(viewer).splitlines() if l.endswith(" cx-managed-peer")]
         assert len(managed) == 1 and managed[0].startswith("no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc ssh-ed25519 "), managed
         vdev = [d for d in devices(viewer) if d.get("target")]
@@ -155,48 +171,82 @@ SetEnv {setenv}
         joiner_pub = (joiner / "state/cx/peer-ssh/id_ed25519.pub").read_text().split()[:2]
         assert managed[0].split()[1:3] == joiner_pub, "the viewer authorized exactly the joiner's own key"
 
-        # The joiner: the viewer enrolled and pinned with the code-verified host key.
+        # The joiner: the viewer enrolled and pinned with the code-confirmed host key.
         jdev = [d for d in devices(joiner) if d.get("target")]
         assert [(d["id"], d["target"]) for d in jdev] == [(f"viewer-machine:{account}", f"{account}@127.0.0.1")], jdev
-        host_key = " ".join((root / "host.pub").read_text().split()[:2])
         assert (joiner / "state/cx/peer-ssh/known_hosts").read_text() == f"127.0.0.1 {host_key}\n"
         assert any(l.endswith(" cx-managed-peer") for l in authorized(joiner).splitlines()), "the joiner authorized the viewer"
         result["pinned_both_ways"] = True
 
-        # The joiner's managed identity now authenticates to the viewer's sshd (strict host key).
+        # The joiner's managed identity logs in to a loopback sshd that serves the viewer's authorized_keys.
+        sport = free_port()
+        configuration = root / "sshd.conf"
+        configuration.write_text(f"""Port {sport}
+ListenAddress 127.0.0.1
+HostKey {root / "host"}
+PidFile {root}/sshd.pid
+AuthorizedKeysFile {viewer}/.ssh/authorized_keys
+StrictModes no
+UsePAM no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AllowUsers {account}
+""")
+        log = (root / "sshd.log").open("wb")
+        daemon = subprocess.Popen([sshd, "-D", "-e", "-f", str(configuration)], stdout=log, stderr=log)
+        for _ in range(100):
+            assert daemon.poll() is None, (root / "sshd.log").read_text()
+            if is_open(sport):
+                break
+            time.sleep(0.02)
         kh = root / "kh"
-        kh.write_text(f"[127.0.0.1]:{port} {host_key}\n")
+        kh.write_text(f"[127.0.0.1]:{sport} {host_key}\n")
         probe = subprocess.run(["ssh", "-F", "none", "-i", str(joiner / "state/cx/peer-ssh/id_ed25519"), "-o", "IdentitiesOnly=yes",
                                 "-o", "IdentityAgent=none", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
-                                "-o", f"UserKnownHostsFile={kh}", "-p", str(port), f"{account}@127.0.0.1", "echo managed-ok"],
+                                "-o", f"UserKnownHostsFile={kh}", "-p", str(sport), f"{account}@127.0.0.1", "echo managed-ok"],
                                capture_output=True, text=True, timeout=20, env=jenv)
         assert probe.stdout.strip() == "managed-ok", probe.stderr
         result["managed_key_authenticates"] = True
 
-        # Replay: the same code no longer authenticates.
-        r = cx(jenv, "mesh", "pair", code, check=False)
-        assert r.returncode != 0 and "could not join" in r.stderr, r.stderr
+        # Replay: the invite is closed, so nothing answers.
+        r = cx(jenv, "mesh", "pair", inv.code, inv.host, check=False)
+        assert r.returncode != 0 and "no invite is open" in r.stderr, r.stderr
         result["replay_refused"] = True
 
-        # A changed host key is refused before authenticating; the invite stays pending.
-        second = invite()
-        daemon.terminate()
-        daemon.wait(timeout=3)
-        daemon = start("changed-host")
-        r = cx(jenv, "mesh", "pair", second["code"], "--name", "rover2", check=False)
-        assert r.returncode != 0 and "different SSH host key" in r.stderr, r.stderr
-        assert "cx-join-invite:" in authorized(viewer), "never connected, so the invite is still pending"
-        result["changed_host_key_refused"] = True
+        # A mistyped code fails its check symbol offline.
+        typo = inv.code[:-1] + ("0" if inv.code[-1] != "0" else "1")
+        r = cx(jenv, "mesh", "pair", typo, inv.host, check=False)
+        assert r.returncode != 0 and "mistyped" in r.stderr, r.stderr
 
-        # A mistyped code fails its checksum offline.
-        typo = second["code"][:-1] + ("0" if second["code"][-1] != "0" else "1")
-        r = cx(jenv, "mesh", "pair", typo, check=False)
-        assert r.returncode != 0 and ("checksum" in r.stderr or "mistyped" in r.stderr), r.stderr
+        # Rate limit: after 3 wrong codes within a minute even the right one is refused unchecked.
+        limited = Invite()
+        invites.append(limited)
+        stranger, senv = side("stranger", "stranger-machine")
+        for _ in range(3):
+            wrong = Invite()
+            r = cx(senv, "mesh", "pair", wrong.code, limited.host, check=False)
+            assert "wrong pair code" in r.stderr, r.stderr
+            wrong.process.send_signal(signal.SIGINT)
+            wrong.finish()
+        r = cx(senv, "mesh", "pair", limited.code, limited.host, check=False)
+        assert r.returncode != 0 and "wait a minute" in r.stderr, r.stderr
+        assert limited.process.poll() is None, "still open, unused"
+        limited.process.send_signal(signal.SIGINT)
+        limited.finish()
+        assert not [d for d in devices(viewer) if d["id"].startswith("stranger-machine")]
+        result["rate_limited"] = True
 
-        # Teardown cancels pending invites (and their authorizations); revoke removes the member.
+        # Expiry closes the listener.
+        brief = Invite("--hours", "0.0005")
+        invites.append(brief)
+        code, _, err = brief.finish(timeout=15)
+        assert code != 0 and "expired" in err, err
+        result["expiry_closes"] = True
+
+        # Teardown has nothing to cancel; revoke removes the member.
         plan = json.loads(cx(venv, "mesh", "teardown", "--backend", "ssh-overlay", "--yes", "--json").stdout)
-        assert plan["applied"] and len(plan["steps"]) == 1, plan
-        assert "cx-join-invite:" not in authorized(viewer)
+        assert not plan["applied"], plan
         members = json.loads(cx(venv, "mesh", "members", "--backend", "ssh-overlay", "--json").stdout)
         assert [m["name"] for m in members if m["state"] != "local"] == ["rover"], members
         assert [m["role"] for m in members if m["name"] == "rover"] == ["core"]
@@ -213,60 +263,17 @@ SetEnv {setenv}
         assert (joiner / "state/cx/peer-ssh/known_hosts").read_text() == ""
         assert not [d for d in devices(joiner) if d.get("target")]
         result["device_remove_revokes_ssh"] = True
-        audit = json.loads(cx(venv, "mesh", "audit", "--backend", "ssh-overlay", "--json").stdout)
-        assert [a["action"] for a in audit][:2] == ["revoke", "teardown"], audit
-        assert "join" in [a["action"] for a in audit]
-        result["revoke_and_teardown"] = True
-
-        # --short end to end: cx -> embedded mesh.py -> the mesh Worker (local HTTPS fake) -> cx mesh pair <host>/<code>.
-        node = shutil.which("node")
-        assert node, "node is needed for the Worker fixture"
-        daemon.terminate()
-        daemon.wait(timeout=3)
-        daemon = start("host")
-        subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
-                        "-keyout", str(root / "tls.key"), "-out", str(root / "tls.crt"), "-days", "1", "-subj", "/CN=localhost",
-                        "-addext", "subjectAltName=DNS:localhost"], check=True, capture_output=True, timeout=30)
-        with socket.socket() as sock:
-            sock.bind(("127.0.0.1", 0))
-            wport = sock.getsockname()[1]
-        owner = "owner-test-token"
-        worker = subprocess.Popen([node, str(pathlib.Path(__file__).resolve().parent / "mesh_worker_server.mjs"),
-                                   str(root / "tls.crt"), str(root / "tls.key"), str(wport), owner],
-                                  stdout=subprocess.PIPE, stderr=log, text=True)
-        try:
-            assert worker.stdout.readline().strip() == "ready"
-            mesh_dir = viewer / "config/cx/mesh"
-            mesh_dir.mkdir(parents=True)
-            (mesh_dir / "config.toml").write_text('name = "demo"\naccount = "acct"\n')
-            (mesh_dir / "demo.state.json").write_text(json.dumps({"url": f"https://localhost:{wport}", "account": "acct"}))
-            tls = {"SSL_CERT_FILE": str(root / "tls.crt")}
-            senv = dict(venv, CLOUDFLARE_API_TOKEN=owner, **tls)
-            short = json.loads(cx(senv, "mesh", "invite", "--backend", "ssh-overlay", "--address",
-                                                                 f"127.0.0.1:{port}", "--host-key", str(root / "host.pub"),
-                                                                 "--short", "--json").stdout)
-            sc = short["short_code"]
-            assert len(sc.replace("-", "")) == 12 and short["one_liner_sh"] == f"cx mesh pair localhost:{wport}/{sc}", short
-            assert short["url"] == f"https://localhost:{wport}/p/{sc}", short
-            assert short["code"] not in json.dumps(short["one_liner_sh"])
-            shorty, shenv = side("shorty", "shorty-machine")
-            shenv.update(tls)
-            r = cx(shenv, "mesh", "pair", f"localhost:{wport}/{sc}", "--name", "shorty", "--json")
-            j = json.loads(r.stdout)
-            assert j["joined"] and j["target"] == f"{account}@127.0.0.1", j
-            assert [d["name"] for d in devices(viewer) if d.get("target")] == ["shorty"], devices(viewer)
-            again = cx(shenv, "mesh", "pair", f"localhost:{wport}/{sc}", check=False)
-            assert again.returncode != 0 and "already used" in again.stderr, again.stderr
-            result["short_code_end_to_end"] = True
-        finally:
-            worker.terminate()
-            worker.wait(timeout=3)
-            shutil.rmtree(viewer / "config/cx/mesh", ignore_errors=True)
+        audit = [a["action"] for a in json.loads(cx(venv, "mesh", "audit", "--backend", "ssh-overlay", "--json", "--limit", "100").stdout)]
+        assert audit[0] == "revoke" and "join" in audit and "invite-closed" in audit, audit
+        result["revoke_and_audit"] = True
     finally:
+        for i in invites:
+            if i.process.poll() is None:
+                i.process.kill()
+                i.process.wait(timeout=3)
         if daemon is not None and daemon.poll() is None:
             daemon.terminate()
             daemon.wait(timeout=3)
-        log.close()
 
     # Backends: tailscale adopted read-only from a fake binary on PATH; ranges and collisions reported.
     tools = root / "tools"
@@ -300,6 +307,6 @@ EOF
     assert not {b["id"]: b for b in json.loads(plain.stdout)["backends"]}["tailscale"]["status"]["available"] or shutil.which("tailscale")
     result["backends_report"] = True
 
-after = [stamp(p) for p in watched]
-assert before == after, "real ~/.ssh and cx state untouched"
+after = [digest(p) for p in watched]
+assert before == after, "real ~/.ssh and cx state unchanged (content hashes)"
 print(json.dumps(dict(result="PASS", **result, real_state_untouched=True)))

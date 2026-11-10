@@ -165,136 +165,130 @@ interface address is attributed by interface name first (`tailscale0`, `Cloudfla
 specific range. The same rule fills `overlays.interfaces` in the network observation, so a `tailscale0` address
 in `100.100.0.0/16` stays Tailscale's. The network observation's `overlay` field is now `observed`, `configured` or
 `none`, and `overlays` carries the details. Every network observation computes it from local files and the
-interface list only: it never runs `tailscale status` or takes the ssh-overlay invite lock. `cx mesh backends` is
+interface list only: it never runs `tailscale status` or takes the ssh-overlay audit lock. `cx mesh backends` is
 where each backend's full status is read.
 
 ## ssh-overlay: `cx mesh pair`
 
 ```sh
-# the viewer (a device already in your cx mesh)
-cx mesh invite --backend ssh-overlay [--hours 1] [--name rover] [--address IP]... [--short]
-# the new device (cx installed; Linux)
-cx mesh pair 06RRQ-B741Q-E4FQ7-...   # or, with --short on a Cloudflare mesh: cx mesh pair mesh.example.org/7KQ2-M9XD-4HT0
+# the viewer (a device already in your cx mesh); runs in the foreground until one device joins
+cx mesh invite --backend ssh-overlay [--hours 24] [--name rover] [--address IP]... [--port 7241]
+# the new device (cx installed; Linux), with the line the viewer printed
+cx mesh pair 7K2Q-M9XD-4HT host[:port] [--name N]
 ```
 
 `cx mesh join` is the WARP join above; `cx mesh pair` is this one.
 
-A **direct code** is Crockford base32. Input ignores case, `I`/`L` read as `1` and `O` as `0`, and dashes are
-ignored. It holds:
+**The code** is 11 Crockford base32 symbols, shown as `XXXX-XXXX-XXX`: 10 random symbols (50 bits) and a check
+symbol (a weighted sum in GF(32)) that catches every single mistyped symbol and every swap of two neighbours
+offline. Input ignores case, dashes and spaces; `I`/`L` read as `1` and `O` as `0`. The code carries no address:
+the joiner names the viewer's host, which the viewer prints. The code and its key are never written to disk:
+they live only in the memory of the `cx mesh invite` that serves them.
 
-- a version (2)
-- the one-time *invite key*: an Ed25519 key `ssh-keygen` made for this invite, as its 32-byte seed and 32-byte
-  public half
-- the first 10 bytes of the SHA-256 of the viewer's SSH Ed25519 host key
-- the expiry (to the minute)
-- the viewer's SSH account
-- 1 to 4 addresses (IPv4/IPv6; the format has room for a port, but cx pairs over port 22 only)
-- a CRC-16 checksum
+**The listener.** `cx mesh invite --backend ssh-overlay` opens a plain TCP listener on this host's mesh and LAN
+addresses only: private IPv4, the CGNAT range overlays use (`100.64.0.0/10`: Tailscale, WARP), and IPv6 ULA
+(`fc00::/7`). It never binds a public, link-local or unspecified address. `--address IP` (repeatable) picks the
+addresses instead; loopback is allowed there, and anything else outside those ranges is refused. The port is
+7241 unless `--port` says otherwise; the printed line names it when it is not the default. The listener runs in
+the foreground of `cx mesh invite`, so nothing is left running in the background. It closes after one join, at
+expiry (24 hours by default, at most 7 days), on Ctrl-C, or when the invite is cancelled. Connections are served
+one at a time. Each request is one CX1 frame (`CX1 <len>` plus JSON, at most 64 KiB), read within 10 seconds
+however slowly it arrives.
 
-With one IPv4 address it is about 150 characters, meant to be pasted (or use a short code). A single mistyped
-character always fails the checksum.
+**The protocol.** The HMAC key is `K = SHA-256(code)`. Each MAC is HMAC-SHA256 (the RustCrypto `hmac` crate,
+compared in constant time) over `cx-pair-v1|<label>|` and then each field with a 4-byte length prefix.
 
-A 10 to 12 character code cannot carry an address and a host key pin at a useful strength. So the **short code**
-(12 symbols: 50 random bits and a CRC-10 check) exists only with a `cloudflare-warp` mesh Worker. cx seals the
-direct code (SHA-256 keystream with HMAC-SHA256, keys derived from the short code) and stashes it with
-`POST /v1/admin/pairs`. The Worker stores only the seal and a separate hash of the short code. `cx mesh pair
-<host>/<code>` takes it once (`POST /v1/pair/redeem`, rate limited per address) and unseals it.
+1. **The joiner checks itself.** It checks the code's check symbol, its own name, host name, account and machine
+   id (whatever the viewer would refuse, so a bad request never uses up an invite). Then it makes or reads its
+   cx peer SSH key (peer_ssh.rs).
+2. **The joiner asks.** It connects to `host[:port]` and sends its client key, its identity (name, host,
+   account, machine id, SSH host key), the viewer address it actually dialed, a 16-byte random nonce, and
+   `HMAC(K, "join", those fields)`.
+3. **The viewer checks.** If 3 requests failed within the last minute, it refuses without checking. A wrong MAC
+   (or an unreadable request) is refused and counted, and the invite stays open; the 20th failure cancels the
+   invite. A right MAC **uses up the invite before anything else**. Then it checks the dialed address against the
+   address the connection really reached (a mismatch means a relay), and checks the identity. An id that is
+   already enrolled is refused (see the threat model). Any failure after the invite is used up cancels it, and
+   the listener closes.
+4. **The viewer pairs.** It installs the joiner's key as `no-agent-forwarding,no-port-forwarding,
+   no-X11-forwarding,no-user-rc … cx-managed-peer` (the existing peer_ssh line writer). It pins the joiner's host
+   key and enrolls the joiner as a **core** device at `account@<connection source>`, with the claimed
+   `machine-id:account` as its id.
+5. **The viewer answers** with its SSH host key (`/etc/ssh/ssh_host_ed25519_key.pub`, or `--host-key FILE`), its
+   cx client key, its id, name, host and account, and `HMAC(K, "accept", the request nonce and those fields)`.
+   Then the listener closes.
+6. **The joiner verifies** the accept MAC. Only then does it pin the viewer's host key, authorize its client key
+   the same way, and enroll it as core at `account@<the host it dialed>`. If the viewer's id is already enrolled
+   here, the joiner refuses too. The viewer has then recorded the joiner already, and the error says to revoke it
+   there before joining again. `cx device sync` then verifies both directions with the existing pairing.
 
-**The protocol.**
-
-1. **The viewer creates the invite.** `ssh-keygen -t ed25519` makes the invite key in a private scratch directory
-   under the mesh state directory; cx reads its seed and public half into the code and removes the files, so the
-   code is the only copy. The viewer appends only the public half to `~/.ssh/authorized_keys`:
-   `restrict,command="<cx> mesh pair --redeem <id>",expiry-time="<UTC>Z" ssh-ed25519 … cx-join-invite:<id>`.
-2. **The joiner checks the host key.** It decodes the code and checks the expiry, the port, and its own name,
-   host name, account and machine id (what the viewer would refuse, before any invite is used). It runs `ssh-keyscan -t ed25519`
-   on each address in turn and accepts a host key only when its digest matches the code. A mismatch stops the
-   attempt before any authentication.
-3. **The joiner connects.** It writes the accepted key as the only known host and connects with
-   `ssh -F none -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes`, with no agent and no forwarding, using the
-   invite key from the code, written as an OpenSSH private key file (0600, in a private scratch directory removed
-   afterwards). cx only formats the file: OpenSSH made the key and does every signature with it.
-4. **The viewer redeems.** sshd runs only the forced redeem command. The command takes one framed request (`CX1
-   <len>` plus JSON, at most 64 KiB):
-   - It burns the invite first (single use) and removes its `authorized_keys` line.
-   - It installs the joiner's own Ed25519 key as `no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc
-     … cx-managed-peer`.
-   - It pins the joiner's host key and enrolls the joiner as a **core** device, at `account@<SSH_CONNECTION
-     source>`. The device id is the joiner's claimed `machine-id:account`. An id that is already enrolled is
-     refused before any key is installed (see the threat model).
-   - It answers with the viewer's identity and its cx client key.
-5. **The joiner pairs back.** It pins the code-verified host key and authorizes the viewer's client key the same
-   way, then enrolls the viewer as core. If the viewer's id is already enrolled here, the joiner refuses too.
-   The viewer has then recorded the joiner already, and the error says to revoke it there before joining again. `cx device sync` then verifies both directions with the existing pairing.
-
-`cx mesh revoke NAME --backend ssh-overlay --yes` removes the device, its pins and exactly its `cx-managed-peer`
-line. `cx device remove NAME` does the same (its JSON reports `ssh.unpinned` and `ssh.authorizations_removed`).
-`cx mesh teardown --backend ssh-overlay --yes` cancels pending invites, and every invite line no longer pending
-(expired ones included) is removed then and whenever an invite is created. Invites, redemptions and refusals are
-in `~/.local/state/cx/mesh/ssh-overlay/audit.jsonl`. cx device targets carry no port, so invites and joins refuse
-any SSH port other than 22.
+cx device targets carry no port, so the pairing assumes sshd on port 22 on both sides; the invite port is only
+for the pairing exchange. `cx mesh revoke NAME --backend ssh-overlay --yes` removes the device, its pins and
+exactly its `cx-managed-peer` line. `cx device remove NAME` does the same (its JSON reports `ssh.unpinned` and
+`ssh.authorizations_removed`). `cx mesh teardown --backend ssh-overlay` has nothing to cancel: an invite exists
+only while its `cx mesh invite` runs. Invites, joins and closed invites are in
+`~/.local/state/cx/mesh/ssh-overlay/audit.jsonl`.
 
 **Threat model.**
 
-- **What the code is.** It is a bearer secret and a pin. Deliver it over a channel you trust for integrity and
-  confidentiality: a terminal you see, a password manager, an end-to-end encrypted message.
-- **Interception.** Whoever holds the code first can join once, before it expires, as a *core* device: their key
-  gets a full interactive shell as the viewer's account (only forwarding, the agent and user rc are disabled).
-  Treat the code like a password for that account. Mitigations:
-  - Codes are single use, and the default lifetime is one hour (at most 7 days).
-  - Redeem is logged with the source address. `cx mesh members --backend ssh-overlay` shows the result, and revoke
-    undoes it.
-  - Bind the name with `--name` to spot surprises.
-- **Substitution.** An attacker who swaps the code can make the joiner pair with *their* host. The checksum does
-  not stop this: only the delivery channel does.
-- **Network attacker (no code).** They cannot impersonate the viewer: the 80-bit host key pin needs a second
-  preimage of SHA-256. They cannot use the invite: authenticating needs the invite key's private half, which only
-  the code carries, with expiry enforced by both sshd (`expiry-time`) and cx. Replaying the session is defeated by
-  SSH itself.
-- **What sshd allows the invite key.** `restrict` disables PTY, forwarding, agent and X11. The forced command
-  ignores the requested command. The line disappears at redemption, at teardown, or when sshd's expiry passes.
-- **What the joiner's own key may do.** Everything the viewer's account may do, in a shell: `cx-managed-peer` keys
-  have the options of automatic core pairing (`no-agent-forwarding,no-port-forwarding,no-X11-forwarding,
-  no-user-rc`), with no forced command. Agent forwarding is never used.
-- **Short codes.** The Worker sees only a hash of the short code and the seal, and gives the seal out once. An
-  operator of the Worker (you, the account owner) could brute-force the 50-bit code offline within its lifetime.
-  The account owner is already trusted with the mesh. Rate limits and single use stop online guessing.
+- **What the code is.** A short bearer secret, good for one join before it expires. Deliver it over a channel you
+  trust for integrity and confidentiality: a terminal you see, a password manager, an end-to-end encrypted
+  message. **Whoever sees the code before it is used can join first**, as a *core* device: their key gets a full
+  interactive shell as the viewer's account (only forwarding, the agent and user rc are disabled). Treat the code
+  like a password for that account. Mitigations: single use, a listener that runs only while you wait for the
+  device, `--name` to spot surprises, the audit log with the source address, and `cx mesh members` and revoke to
+  check and undo.
+- **Online guessing** is bounded by single use and the rate limit: at most 3 checked guesses a minute and 20 in
+  all before the invite is cancelled, against 2^50 codes.
+- **A man in the middle on the first TCP exchange** (someone on the mesh or LAN path) can read the joiner's
+  request. That gives them one HMAC, from which they could brute-force the 50-bit code offline. They cannot
+  complete the join meanwhile: changing any field of the request breaks its MAC, and relaying it as is installs
+  the joiner's own key, not theirs. They cannot forge the accept without the code, so the joiner pins nothing
+  from them. A joiner that sees a failure says so; **cancel the invite** (Ctrl-C on the viewer) and make a new
+  one. On the viewer, any failed handshake with the right code cancels the invite itself. Online, the rate limit
+  above applies to them like anyone else.
+- **Network exposure.** The listener only binds mesh/LAN addresses and only while the invite is open. Each
+  connection is bounded in size and time and served one at a time, so a flood can delay a join but not exhaust the
+  host; it can also burn the invite (20 failures), which costs only a new invite.
+- **Substitution.** An attacker who swaps the code *and* the host the joiner is told can make the joiner pair with
+  their host. Only the delivery channel stops that.
+- **What the joiner's key may do.** Everything the viewer's account may do, in a shell: `cx-managed-peer` keys
+  have the options of automatic core pairing, with no forced command. Agent forwarding is never used.
 - **Identity claims.** The joiner names its own `machine-id:account`, and nothing proves it. An invite holder
   could claim the id of a device that is already enrolled, for example a directed device or an alias with no SSH
   pins. Overwriting that record would move its target to the attacker's address and promote it to core. So an
   invite only ever adds a **new** device: an enrolled id is refused, and the existing record, its target and its
-  access are left alone. The refusal happens before any key is pinned or authorized, and the invite is still
-  burnt. Re-pairing a known device means removing it first (`cx mesh revoke NAME --backend ssh-overlay --yes`
-  or `cx device remove`). A new endpoint already enrolled for another device is refused as well. On the joiner
-  side, the viewer's identity comes from a host whose key matched the code. The same new-only rule applies there.
+  access are left alone. The refusal happens before any key is pinned or authorized, and the invite is used up.
+  Re-pairing a known device means removing it first (`cx mesh revoke NAME --backend ssh-overlay --yes` or `cx
+  device remove`). A new endpoint already enrolled for another device is refused as well. The same new-only rule
+  applies on the joiner side.
 - **Out of scope.** A compromised viewer or joiner, and a viewer whose sshd host key was stolen.
 
 ## Tests
 
-`python3 tests/mesh_ssh_overlay.py target/debug/cx` runs `cx mesh pair` end to end against a disposable loopback
-sshd, with two temporary cx identities (debug builds read the fixture's `CX_JOIN_MACHINE_ID`, which also lets its
-sshd use a free port):
+`python3 tests/mesh_ssh_overlay.py target/debug/cx` pairs two temporary cx identities on loopback (debug builds
+read the fixture's `CX_JOIN_MACHINE_ID`), each `cx mesh invite` listening on `127.0.0.1` on a free port:
 
-- an invite holder claiming an already-enrolled device id, refused with that record untouched
-- the join, and the pins and keys it leaves on both sides
-- a replay, refused
-- a changed host key, refused before authentication
-- a mistyped code, refused offline
-- teardown and revoke
-- `--short` end to end: cx, the embedded mesh.py and the Worker (`tests/mesh_worker_server.mjs`, the real
-  worker.js over local HTTPS with an in-memory D1), then `cx mesh pair <host>/<code>` and its single use
+- an invite holder claiming an already-enrolled device id: refused, that record untouched, the invite cancelled
+- a wrong code refused with the invite left open, and Ctrl-C closing another invite
+- the join, the pins and keys it leaves on both sides, and no copy of the code on disk
+- the key the viewer installed logging in to a disposable loopback sshd that serves the viewer's
+  `authorized_keys`
+- a replay (nothing listens any more), a mistyped code refused offline, the rate limit refusing even the right
+  code after 3 wrong ones, and expiry closing the listener
+- after every invite, the listener port closed
+- teardown, revoke and `cx device remove`
 - `cx mesh backends` with a fake `tailscale` on PATH, and no WARP claim without a WARP config
+- the real `~/.ssh/authorized_keys`, `~/.ssh/known_hosts` and cx state compared by content hash before and after
 
-The Rust unit tests cover code encoding, decoding, the checksum and expiry, the invite key's trip through the code
-(made by `ssh-keygen`, rebuilt from the code, read back by `ssh-keygen -y`, and signing with `ssh-keygen -Y sign`
-verified by `-Y verify` against an `allowed_signers` entry in the `cx-pair@v1` namespace), the key-file parser's
-refusals (other key types, a passphrase, inconsistent halves), ranges and collisions, and backend mapping. The
-loopback test also checks that no invite key file or scratch directory is left behind and that `cx device remove`
-revokes the pins and managed line on the joiner.
+The Rust unit tests cover the code (encoding, decoding, the check symbol catching every typo and neighbour swap),
+the HMACs (against RFC 4231), the listen addresses, the viewer's checks (wrong code, tampered key, changed
+address, expiry, single use, a relay, the rate limit and the cancelling cap), forged and replayed answers on the
+joiner, and the listener over real sockets (an oversized frame, a silent connection cut off, expiry, the port
+closed), plus ranges, collisions and backend mapping.
 
 `python3 tests/mesh_util.py` covers the profile excludes, the config, setup against a fake Cloudflare API
-(idempotent, dry run read-only, teardown complete and its dry run), a dry-run join, and the onboarding and
-short-code helpers (`token-url`, `verify`, `zones`, `pair-stash`, `pair-redeem`) against fakes. `node tests/mesh_worker.mjs` runs the Worker
-against an in-memory D1 and a fake API, through invite, enrol, register, leave, revoke, the rate limits and the
-short-code stash and redeem.
+(idempotent, dry run read-only, teardown complete and its dry run), a dry-run join, and the onboarding
+helpers (`token-url`, `verify`, `zones`) against fakes. `node tests/mesh_worker.mjs` runs the Worker
+against an in-memory D1 and a fake API, through invite, enrol, register, leave, revoke, and the rate limits.
 Neither touches an account.

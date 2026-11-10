@@ -663,43 +663,6 @@ pub(crate) fn host_public_key() -> Result<String> {
     public_key(&fs::read_to_string("/etc/ssh/ssh_host_ed25519_key.pub")?)
 }
 
-/// Append one restricted authorized_keys line (a mesh join invite). Unrelated lines stay intact.
-pub(crate) fn authorize_line(line: &str) -> Result<()> {
-    authorize_line_at(root(), &ssh_dir()?, line)
-}
-fn authorize_line_at(root: PathBuf, ssh: &Path, line: &str) -> Result<()> {
-    anyhow::ensure!(
-        !line.is_empty() && line.len() <= 2048 && !line.contains(['\n', '\r', '\0']),
-        "invalid authorized_keys line"
-    );
-    let _locked = Locked::new(root)?;
-    private_dir(ssh)?;
-    let authorized = read(&ssh.join("authorized_keys"))?;
-    if authorized.lines().any(|l| l == line) {
-        return Ok(());
-    }
-    let prefix = if !authorized.is_empty() && !authorized.ends_with('\n') {
-        "\n"
-    } else {
-        ""
-    };
-    let addition = format!("{prefix}{line}\n");
-    anyhow::ensure!(
-        (authorized.len() + addition.len()) as u64 <= MAX,
-        "authorized_keys too large"
-    );
-    let mut file = open(&ssh.join("authorized_keys"), true)?;
-    file.write_all(addition.as_bytes())?;
-    file.sync_all()?;
-    Ok(())
-}
-
-/// Remove the authorized_keys lines `drop` selects (atomic rewrite; every other line is kept
-/// byte-for-byte). Returns how many were removed.
-pub(crate) fn remove_authorized(drop: impl Fn(&str) -> bool) -> Result<usize> {
-    let _locked = Locked::new(root())?;
-    remove_authorized_at(&ssh_dir()?, drop)
-}
 /// Callers hold the peer-ssh lock so authorized_keys changes serialize with configure.
 fn remove_authorized_at(ssh: &Path, drop: impl Fn(&str) -> bool) -> Result<usize> {
     let path = ssh.join("authorized_keys");
@@ -1189,27 +1152,6 @@ mod tests {
         )
         .unwrap();
         configure_at(root.clone(), &ssh, &peer(), &key(1), &key(2), true).unwrap();
-        authorize_line_at(
-            root.clone(),
-            &ssh,
-            &format!("restrict {} cx-join-invite:ab", key(3)),
-        )
-        .unwrap();
-        authorize_line_at(
-            root.clone(),
-            &ssh,
-            &format!("restrict {} cx-join-invite:ab", key(3)),
-        )
-        .unwrap();
-        let text = fs::read_to_string(ssh.join("authorized_keys")).unwrap();
-        assert_eq!(text.lines().count(), 3, "invite line added once");
-        {
-            let _locked = Locked::new(root.clone()).unwrap();
-            assert_eq!(
-                remove_authorized_at(&ssh, |l| l.ends_with("cx-join-invite:ab")).unwrap(),
-                1
-            );
-        }
         let result = unpin_at(root.clone(), &ssh, "machine:alice").unwrap();
         assert_eq!(result["unpinned"], 1);
         assert_eq!(result["authorizations_removed"], 1);
@@ -1218,6 +1160,5 @@ mod tests {
             unrelated
         );
         assert_eq!(fs::read_to_string(root.join("known_hosts")).unwrap(), "");
-        assert!(authorize_line_at(root, &ssh, "a\nb").is_err());
     }
 }

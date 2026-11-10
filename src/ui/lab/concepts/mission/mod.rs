@@ -446,6 +446,21 @@ impl<'a> Cx<'a> {
         w
     }
 
+    /// A faint horizontal rule from `x0` to `x1` (exclusive).
+    pub fn rule(&self, buf: &mut Buffer, x0: u16, x1: u16, y: u16) {
+        let st = self.ink(Tok::Faint, if self.dark() { 0.8 } else { 0.7 });
+        for x in x0..x1 {
+            self.put(buf, x, y, 1, self.g("─", "-"), st);
+        }
+    }
+    /// A faint vertical separator (tiles without tints).
+    pub fn vsep(&self, buf: &mut Buffer, x: u16, y: u16, h: u16) {
+        let st = self.ink(Tok::Faint, 1.0);
+        for yy in y..y + h {
+            self.put(buf, x, yy, 1, self.g("│", "|"), st);
+        }
+    }
+
     /// A row of key chips (` ⏎ open  ␣ peek `); records taps. Returns end x.
     pub fn chips(
         &self,
@@ -454,6 +469,18 @@ impl<'a> Cx<'a> {
         y: u16,
         right: u16,
         items: &[(&str, &str, &str)],
+    ) -> u16 {
+        self.chips_h(buf, x, y, right, items, 1)
+    }
+    /// Chips whose tap targets extend `th - 1` rows upward (phone footers).
+    pub fn chips_h(
+        &self,
+        buf: &mut Buffer,
+        x: u16,
+        y: u16,
+        right: u16,
+        items: &[(&str, &str, &str)],
+        th: u16,
     ) -> u16 {
         let mut cx = x;
         for (k, label, action) in items {
@@ -469,7 +496,8 @@ impl<'a> Cx<'a> {
                 cx += 1;
                 cx += self.put(buf, cx, y, lw, label, self.st(Tok::Muted));
             }
-            self.hit(Rect::new(x0, y, cx - x0, 1), *action);
+            let top = y.saturating_sub(th - 1);
+            self.hit(Rect::new(x0, top, cx - x0, y + 1 - top), *action);
             cx += 2;
         }
         cx
@@ -533,6 +561,20 @@ pub(super) fn ms_text(ms: f32) -> String {
     }
 }
 
+/// Truncate to `w` columns with one ellipsis (a trailing `…` in the source is dropped
+/// first, so a cut never shows two).
+pub(super) fn fit(s: &str, w: usize, unicode: bool) -> String {
+    if s.chars().count() <= w {
+        return s.to_string();
+    }
+    if w == 0 {
+        return String::new();
+    }
+    let head: String = s.chars().take(w - 1).collect();
+    let head = head.trim_end_matches(['…', '.', ' ', '·', '(']);
+    format!("{head}{}", if unicode { "…" } else { "~" })
+}
+
 /// ASCII stand-ins for the fixture text's few non-ASCII characters.
 pub(super) fn asciify(s: &str) -> String {
     s.chars()
@@ -546,6 +588,9 @@ pub(super) fn asciify(s: &str) -> String {
             '↓' => 'v',
             '↑' => '^',
             '→' | '⏎' => '>',
+            '⎿' => 'L',
+            '✻' | '✶' | '✳' | '∗' => '*',
+            '°' => 'C',
             '←' => '<',
             _ => '?',
         })

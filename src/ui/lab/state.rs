@@ -464,7 +464,7 @@ fn claude_screen(title: &str, working: bool) -> Vec<String> {
         v.push("\x1b[2m  idle · last reply 2h ago\x1b[0m".into());
     }
     v.push("\x1b[2m╭──────────────────────────────────────────────────────────────╮\x1b[0m".into());
-    v.push("\x1b[2m│\x1b[0m > \x1b[7m \x1b[0m                                                           \x1b[2m│\x1b[0m".into());
+    v.push("\x1b[2m│\x1b[0m > \x1b[7m \x1b[0m                                                          \x1b[2m│\x1b[0m".into());
     v.push("\x1b[2m╰──────────────────────────────────────────────────────────────╯\x1b[0m".into());
     v.push("  \x1b[2m? for shortcuts\x1b[0m                               \x1b[38;2;224;163;122mopus\x1b[0m".into());
     v

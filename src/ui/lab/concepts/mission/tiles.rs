@@ -1,6 +1,6 @@
 //! Tiles: device tiles with micro-charts and session thumbnails that show the live tail
 //! of the real screen in its own colours, so sessions are recognised by their look.
-use super::{fmt, mix, to_rgb, Cx, Rgb};
+use super::{fit, fmt, mix, to_rgb, Cx, Rgb};
 use crate::ui::lab::{ansi_lines, DeviceStatus, LabDevice, LabSession, Tok};
 use ratatui::{
     buffer::Buffer,
@@ -29,7 +29,7 @@ fn pick_bar(cx: &Cx, buf: &mut Buffer, r: Rect, pick: Pick) {
             cx.ink(Tok::Muted, 0.8)
         };
         for y in r.y..r.bottom() {
-            cx.put(buf, r.x, y, 1, cx.g("▌", if f { ">" } else { ":" }), st);
+            cx.put(buf, r.x, y, 1, cx.g("▌", if f { ">" } else { " " }), st);
         }
     }
 }
@@ -218,7 +218,7 @@ pub(super) fn device_tile(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, pic
         cx0,
         r.y,
         name_room,
-        &fmt::fit(&d.name, name_room as usize, cx.uni()),
+        &fit(&d.name, name_room as usize, cx.uni()),
         nst,
     );
     if glyph {
@@ -252,7 +252,7 @@ pub(super) fn device_tile(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, pic
                 };
                 cx.put(buf, x, r.y + 1, r.width - 2, why, cx.ink(Tok::Err, 0.9));
                 if body >= 2 {
-                    let ev = fmt::fit(&d.evidence, usize::from(r.width - 2), cx.uni());
+                    let ev = fit(&d.evidence, usize::from(r.width - 2), cx.uni());
                     cx.put(buf, x, r.y + 2, r.width - 2, &ev, cx.st(Tok::Muted));
                 }
             }
@@ -313,7 +313,7 @@ pub(super) fn device_row(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, pick
         x,
         r.y,
         room,
-        &fmt::fit(&d.name, room as usize, cx.uni()),
+        &fit(&d.name, room as usize, cx.uni()),
         nst,
     );
     let _ = x;
@@ -353,11 +353,34 @@ pub(super) fn screen_text(
         .iter()
         .rposition(|l| !boring(text(l).trim()))
         .map_or(0, |i| i + 1);
-    let start = used.saturating_sub(usize::from(r.height));
-    for (i, l) in lines[start..used].iter().enumerate() {
-        let y = r.y + i as u16;
+    // The last lines that carry something; when the tile is short, blank lines go first.
+    let h = usize::from(r.height);
+    let start = used.saturating_sub(h);
+    let mut pick: Vec<usize> = (start..used).collect();
+    if used > h {
+        pick = (0..used)
+            .rev()
+            .filter(|&i| !text(&lines[i]).trim().is_empty())
+            .take(h)
+            .collect();
+        pick.reverse();
+    }
+    // Narrow tiles drop the indentation the shown lines share.
+    let indent = if r.width < x.screen_cols {
+        pick.iter()
+            .map(|&i| text(&lines[i]))
+            .filter(|t| !t.trim().is_empty())
+            .map(|t| t.chars().take_while(|c| *c == ' ').count())
+            .min()
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    for (row, &i) in pick.iter().enumerate() {
+        let y = r.y + row as u16;
         let mut xx = r.x;
-        for sp in &l.spans {
+        let mut skip = indent;
+        for sp in &lines[i].spans {
             if xx >= r.right() {
                 break;
             }
@@ -366,10 +389,21 @@ pub(super) fn screen_text(
             } else {
                 plain(sp.style)
             };
-            xx += cx.put(buf, xx, y, r.right() - xx, &sp.content, st);
+            let n = sp.content.chars().count();
+            let content: String = if skip > 0 {
+                let k = skip.min(n);
+                skip -= k;
+                sp.content.chars().skip(k).collect()
+            } else {
+                sp.content.to_string()
+            };
+            if content.is_empty() {
+                continue;
+            }
+            xx += cx.put(buf, xx, y, r.right() - xx, &content, st);
         }
     }
-    (start, used)
+    (pick.first().copied().unwrap_or(0), used)
 }
 
 fn boring(t: &str) -> bool {
@@ -387,9 +421,37 @@ fn plain(s: Style) -> Style {
     Style::default().add_modifier(s.add_modifier & keep)
 }
 
-/// Re-express a session screen's style at this terminal's colour level and theme.
+/// Re-express a session screen's style at this terminal's colour level and theme. In 16
+/// colours, named colours stay themselves and rgb inks map by hue, so red stays red.
 pub(super) fn degrade(cx: &Cx, s: Style) -> Style {
     let mut out = plain(s);
+    if cx.c.color == crate::ui::lab::ColorLevel::C16 {
+        // No tinted backgrounds in 16 colours: a coloured background (a diff row) becomes
+        // ink of its hue instead, so + stays green and - stays red without a loud block.
+        let ink = |c: ratatui::style::Color| -> Option<ratatui::style::Color> {
+            if crate::ui::lab::caps::named_index(c).is_some_and(|i| i < 16) {
+                return Some(c);
+            }
+            to_rgb(c).map(|c| crate::ui::lab::caps::indexed_16(ansi16(c, false)))
+        };
+        let from_bg = s.bg.and_then(to_rgb).and_then(|c| {
+            let (hi, lo) = (c.0.max(c.1).max(c.2), c.0.min(c.1).min(c.2));
+            (u16::from(hi - lo) * 4 > u16::from(hi) && hi > 24).then(|| {
+                let full = |v: u8| ((u16::from(v - lo) * 255) / u16::from(hi - lo).max(1)) as u8;
+                crate::ui::lab::caps::indexed_16(ansi16((full(c.0), full(c.1), full(c.2)), true))
+            })
+        });
+        let fg = s.fg.and_then(ink);
+        let grey = |c: Option<ratatui::style::Color>| {
+            c.and_then(crate::ui::lab::caps::named_index)
+                .is_none_or(|i| matches!(i, 0 | 7 | 8 | 15))
+        };
+        return match (from_bg, fg) {
+            (Some(b), f) if grey(f) => out.fg(b),
+            (_, Some(f)) => out.fg(f),
+            _ => out,
+        };
+    }
     if let Some(f) =
         s.fg.and_then(to_rgb)
             .and_then(|c| cx.col(adapt(cx, c, false)))
@@ -405,15 +467,60 @@ pub(super) fn degrade(cx: &Cx, s: Style) -> Style {
     out
 }
 
+/// Nearest ANSI colour by hue (a nearest-distance match turns muted reds grey).
+fn ansi16(c: Rgb, bg: bool) -> u8 {
+    let (r, g, b) = (f32::from(c.0), f32::from(c.1), f32::from(c.2));
+    let (hi, lo) = (r.max(g).max(b), r.min(g).min(b));
+    let light = (hi + lo) / 510.0;
+    if hi - lo < 40.0 {
+        return match light {
+            l if l < 0.2 => 0,
+            l if l < 0.5 => 8,
+            l if l < 0.8 => 7,
+            _ => 15,
+        };
+    }
+    let h = if hi == r {
+        ((g - b) / (hi - lo)).rem_euclid(6.0)
+    } else if hi == g {
+        (b - r) / (hi - lo) + 2.0
+    } else {
+        (r - g) / (hi - lo) + 4.0
+    } * 60.0;
+    let base = match h {
+        h if !(20.0..330.0).contains(&h) => 1,
+        h if h < 70.0 => 3,
+        h if h < 160.0 => 2,
+        h if h < 200.0 => 6,
+        h if h < 260.0 => 4,
+        _ => 5,
+    };
+    // Backgrounds keep the plain hue; bright inks use the bright half.
+    if !bg && light > 0.62 {
+        base + 8
+    } else {
+        base
+    }
+}
+
 /// Screens are mostly authored for dark terminals; on a light theme, dark backgrounds
-/// become pale tints of their hue and pale inks are deepened so they stay legible.
+/// become pale tints that keep their hue (a diff stays green / red) and pale inks deepen.
 pub(super) fn adapt(cx: &Cx, c: Rgb, bg: bool) -> Rgb {
     if cx.dark() {
         return c;
     }
     let lum = (0.3 * f32::from(c.0) + 0.59 * f32::from(c.1) + 0.11 * f32::from(c.2)) / 255.0;
     match (bg, lum) {
-        (true, l) if l < 0.5 => mix((0xff, 0xff, 0xff), c, 0.22),
+        (true, l) if l < 0.5 => {
+            // Stretch the channels to full saturation, then tint white with it.
+            let hi = c.0.max(c.1).max(c.2);
+            let lo = c.0.min(c.1).min(c.2);
+            if hi - lo < 12 {
+                return mix((0xff, 0xff, 0xff), c, 0.12);
+            }
+            let st = |v: u8| ((u16::from(v - lo) * 255) / u16::from(hi - lo)) as u8;
+            mix((0xff, 0xff, 0xff), (st(c.0), st(c.1), st(c.2)), 0.16)
+        }
         (false, l) if l > 0.5 => mix(c, (0, 0, 0), 0.42),
         _ => c,
     }
@@ -437,17 +544,20 @@ pub(super) fn caption(x: &LabSession) -> String {
         .unwrap_or_default()
 }
 
+/// A session's address, the same everywhere: its device keycap then its slot keycap
+/// (`i` `a`), which is exactly what you type from the hub. Returns the width.
+pub(super) fn addr(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, s: &LabSession) -> u16 {
+    let mut w = 0;
+    if let Some(d) = cx.s.device(&s.device) {
+        w += cx.dchip(buf, x, y, d, false);
+    }
+    let k = cx.slot(s).unwrap_or(' ');
+    w + cx.put(buf, x + w, y, 3, &format!(" {k} "), cx.key_style())
+}
+
 /// Session thumbnail: header (keys, title, state), the screen's live tail and a caption
 /// (provider, folder, activity, age).
-pub(super) fn thumb(
-    cx: &Cx,
-    buf: &mut Buffer,
-    r: Rect,
-    x: &LabSession,
-    pick: Pick,
-    key: Option<char>,
-    show_dev: bool,
-) {
+pub(super) fn thumb(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pick: Pick) {
     if r.width < 12 || r.height < 3 {
         return;
     }
@@ -458,12 +568,7 @@ pub(super) fn thumb(
     let right = r.right().saturating_sub(1);
     // Header: the key that opens it here, its device, title, state.
     let mut hx = left;
-    if let Some(k) = key {
-        hx += cx.put(buf, hx, r.y, 3, &format!(" {k} "), cx.key_style());
-    }
-    if let (true, Some(d)) = (show_dev, d) {
-        hx += cx.dchip(buf, hx, r.y, d, false);
-    }
+    hx += addr(cx, buf, hx, r.y, x);
     hx += 1;
     let (g, word, sst) = cx.sstate(x);
     let state = if x.state == crate::ui::lab::SessionState::Idle {
@@ -480,7 +585,7 @@ pub(super) fn thumb(
         hx,
         r.y,
         room,
-        &fmt::fit(&x.title, room as usize, cx.uni()),
+        &fit(&x.title, room as usize, cx.uni()),
         tst,
     );
     if show_state {
@@ -528,7 +633,7 @@ pub(super) fn thumb(
             fx,
             fy,
             rest,
-            &fmt::fit(&x.cwd, rest as usize, cx.uni()),
+            &fit(&x.cwd, rest as usize, cx.uni()),
             cx.ink(Tok::Muted, 0.9),
         );
         cx.put_r(buf, right, fy, &age, cx.ink(Tok::Muted, 0.9));

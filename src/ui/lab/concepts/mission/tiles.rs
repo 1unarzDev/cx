@@ -33,10 +33,10 @@ fn pick_bar(cx: &Cx, buf: &mut Buffer, r: Rect, pick: Pick) {
             cx.ink(Tok::Muted, 0.8)
         };
         // ASCII: `>` on the first row only, `|` below it (a column of `>` reads as
-        // shell prompts).
+        // shell prompts); an unfocused selection keeps a dim `|` column.
         for y in r.y..r.bottom() {
             let a = match (f, y == r.y) {
-                (false, _) => " ",
+                (false, _) => "|",
                 (true, true) => ">",
                 (true, false) => "|",
             };
@@ -63,7 +63,7 @@ pub(super) fn chart(cx: &Cx, buf: &mut Buffer, r: Rect, vals: &[f32], tok: Optio
         let total = (v * f32::from(r.height) * 8.0).round() as i32;
         let st = match tok {
             Some(t) => cx.ink(t, 0.85),
-            None => cx.heat(v),
+            None => cx.spark_heat(v),
         };
         for row in 0..r.height {
             let y = r.bottom() - 1 - row;
@@ -301,7 +301,7 @@ pub(super) fn device_row(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, pick
             .min(if two { 12 } else { 99 });
         if sw >= 3 {
             let v: Vec<Option<f32>> = m.cpu_hist.iter().map(|v| Some(*v)).collect();
-            spark(cx, buf, ex, ey, sw, &v, cx.heat(m.cpu));
+            spark(cx, buf, ex, ey, sw, &v, cx.spark_heat(m.cpu));
             if two {
                 let t = match m.temp_c {
                     Some(t) => format!("{:.0}% {t:.0}{}", m.cpu * 100.0, cx.g("°", "C")),

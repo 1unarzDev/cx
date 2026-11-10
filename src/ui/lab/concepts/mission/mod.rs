@@ -132,6 +132,12 @@ impl<'a> Cx<'a> {
         }
     }
     pub fn st(&self, t: Tok) -> Style {
+        // 16 colours: brightblack is the background in some palettes (Solarized Dark's
+        // base03), so evidence ink is the default foreground, dimmed; brightblack stays
+        // for faint strokes and beads only.
+        if self.c.color == ColorLevel::C16 && matches!(t, Tok::Muted) {
+            return Style::default().add_modifier(Modifier::DIM);
+        }
         self.c.tok(t)
     }
     pub fn tc(&self) -> bool {
@@ -217,6 +223,16 @@ impl<'a> Cx<'a> {
     }
 
     /// Value 0..1 to a calm ok → warn → err ramp.
+    /// Sparkline and chart fill: the heat ramp, but on a light theme calm values are a
+    /// half tint, so the bars never outweigh the names; only warm values keep full hue.
+    pub fn spark_heat(&self, v: f32) -> Style {
+        if self.tc() && !self.dark() && v < 0.6 {
+            let c = mix(self.rgb(Tok::Ok), self.rgb(Tok::Warn), v.max(0.0) / 0.6);
+            self.rgb_fg(mix(self.bg0(), c, 0.5))
+        } else {
+            self.heat(v)
+        }
+    }
     pub fn heat(&self, v: f32) -> Style {
         let v = v.clamp(0.0, 1.0);
         if self.tc() {
@@ -686,8 +702,9 @@ pub(super) fn asciify(s: &str) -> String {
             // An agent's own prompt bar: `:`, so `|` stays cx's focus-bar continuation.
             '▌' | '▍' | '▎' => out.push(':'),
             '╭' | '╮' | '╰' | '╯' | '┌' | '┐' | '└' | '┘' => out.push('+'),
-            '↓' => out.push('v'),
-            '↑' => out.push('^'),
+            // `v` and `^` are reserved (`^` is an alert), so arrows are words.
+            '↓' => out.push_str("dn"),
+            '↑' => out.push_str("up"),
             '→' => out.push_str("->"),
             '←' => out.push_str("<-"),
             '⏎' => out.push_str("ret"),

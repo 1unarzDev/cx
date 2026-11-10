@@ -12,7 +12,8 @@ tap targets), then into SHEET_DIR (default: FRAMES_DIR/..):
 Cells are drawn the way kitty/foot/ghostty do: box drawing, block elements and
 sextants are drawn as geometry so they join seamlessly; everything else (text,
 braille, symbols, CJK, emoji) comes from the font, with fontconfig fallback per glyph.
-Env: CX_LAB_FONT (family, default JetBrains Mono), CX_LAB_FONT_PX (default 16).
+Env: CX_LAB_FONT (family, default JetBrains Mono), CX_LAB_FONT_PX (default 16),
+CX_LAB_PALETTE=solarized (Solarized Dark 16-colour palette for the dark theme).
 """
 import json
 import math
@@ -41,6 +42,14 @@ THEMES = {
                  '#8c959f', '#d9433f', '#2f9a48', '#b07a00', '#2b73d9', '#a050d0', '#0f94a2', '#a8b0b8'],
     },
 }
+# CX_LAB_PALETTE=solarized: Solarized Dark, whose brightblack (base03) is the background,
+# to prove that nothing readable is drawn in brightblack in the 16-colour tier.
+if os.environ.get('CX_LAB_PALETTE') == 'solarized':
+    THEMES['dark'] = {
+        'fg': (0x83, 0x94, 0x96), 'bg': (0x00, 0x2b, 0x36),
+        'ansi': ['#073642', '#dc322f', '#859900', '#b58900', '#268bd2', '#d33682', '#2aa198', '#eee8d5',
+                 '#002b36', '#cb4b16', '#586e75', '#657b83', '#839496', '#6c71c4', '#93a1a1', '#fdf6e3'],
+    }
 BOLD, DIM, ITALIC, UNDER, REV, HIDDEN, STRIKE = 1, 2, 4, 8, 64, 128, 256
 
 

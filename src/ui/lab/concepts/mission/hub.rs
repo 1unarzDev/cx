@@ -40,9 +40,18 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         .saturating_sub(fixed + orbit_min)
         .clamp(th_min.min(r.height), need.clamp(th_min, th_max));
     let band_h = r.height.saturating_sub(fixed + th);
+    // Past its natural height the map stops growing (its rings are capped): the rows go
+    // to the thumbnails, up to what their screens hold.
+    let give = band_h
+        .saturating_sub(orbit::MAX_H)
+        .min(need.saturating_sub(th));
+    let (band_h, th) = (band_h - give, th + give);
     let lx = cx.label(buf, r.x + 1, r.y, 16, "NETWORK", on_graph) + r.x + 1;
     let lend = legend(cx, buf, lx + 2, r.y, right);
-    cx.rule(buf, lend + 1, right, r.y);
+    // A short stub of rule after the legend reads as debris: only a real run.
+    if right.saturating_sub(lend) >= 12 {
+        cx.rule(buf, lend + 1, right, r.y);
+    }
     let band = Rect::new(r.x, r.y + 1, r.width, band_h);
     let ids = orbit::order(cx, band);
     let sel_id = if on_sess && !list.is_empty() {
@@ -76,7 +85,6 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
             buf,
             Rect::new(r.x + 1, y, r.width.saturating_sub(2), vit_h),
             d,
-            on_graph,
         );
     }
     y += vit_h + 1;
@@ -178,21 +186,15 @@ fn legend(cx: &Cx, buf: &mut Buffer, mut x: u16, y: u16, right: u16) -> u16 {
 
 /// The selected device: identity, route with the rtt of every hop, live vitals and the
 /// keys that act on it from the hub (a letter, then a verb).
-fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, focused: bool) {
+fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     let bg = if cx.has_surface() {
         cx.surface()
     } else {
         ratatui::style::Style::default()
     };
     cx.fill(buf, r, bg);
-    let bar = if focused {
-        cx.st(Tok::Accent)
-    } else {
-        cx.ink(Tok::Muted, 0.8)
-    };
-    for yy in r.y..r.bottom() {
-        cx.put(buf, r.x, yy, 1, cx.g("▌", "|"), bar);
-    }
+    // No bar: column 0 is the focus bar only, and the strip is neither focused nor a
+    // selection (it mirrors the map's).
     let right = r.right().saturating_sub(1);
     let y = r.y;
     let mut x = r.x + 2;
@@ -285,7 +287,7 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, focused: bool) {
     if let Some(m) = d.metrics.as_ref().filter(|_| up) {
         x += cx.put(buf, x, y, 4, "cpu ", lab);
         let v: Vec<Option<f32>> = m.cpu_hist.iter().map(|v| Some(*v)).collect();
-        tiles::spark(cx, buf, x, y, 16, &v, cx.heat(m.cpu).patch(bg));
+        tiles::spark(cx, buf, x, y, 16, &v, cx.spark_heat(m.cpu).patch(bg));
         x += 17;
         x += cx.put(
             buf,
@@ -422,9 +424,10 @@ fn ticker(cx: &Cx, buf: &mut Buffer, r: Rect) {
         let tw = super::width(&text, cx.uni()).min(room);
         if tw < 12 || (i > 0 && tw < super::width(&text, cx.uni()).min(28)) {
             if i > 0 && x + 6 < right {
-                let more = format!("+{}", n - i);
-                cx.put(buf, x, r.y, 4, &more, cx.st(Tok::Muted));
-                cx.hit(Rect::new(x, r.y, 3, 1), "notices");
+                // A chip, so the alerts that did not fit are one tap away.
+                let more = format!(" +{} ", n - i);
+                let w = cx.put(buf, x, r.y, 5, &more, cx.key_style());
+                cx.hit(Rect::new(x, r.y, w, 1), "notices");
             }
             break;
         }
@@ -612,7 +615,7 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
         if let Some(m) = d.metrics.as_ref().filter(|_| up) {
             let v: Vec<Option<f32>> = m.cpu_hist.iter().map(|v| Some(*v)).collect();
             let sw = right.saturating_sub(ex + 12).min(12);
-            tiles::spark(cx, buf, ex, r.y + 1, sw, &v, cx.heat(m.cpu).patch(bg));
+            tiles::spark(cx, buf, ex, r.y + 1, sw, &v, cx.spark_heat(m.cpu).patch(bg));
             let t = match m.temp_c {
                 Some(t) => format!("{:.0}% {t:.0}{}", m.cpu * 100.0, cx.g("°", "C")),
                 None => format!("{:.0}%", m.cpu * 100.0),

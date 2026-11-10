@@ -73,6 +73,9 @@ struct Plan<'a> {
     /// The halo around the pill (also kept clear of labels).
     halo: Rect,
     hidden: usize,
+    /// Session slot letters on the labels (only where letters are keys: the hub).
+    pips: bool,
+    star: bool,
 }
 
 /// Jump edges are drawn through the hop they use, not as their own line.
@@ -319,7 +322,7 @@ fn sectors(nodes: &mut [Node]) {
     }
 }
 
-fn evidence(cx: &Cx, d: &LabDevice) -> Vec<(String, Style)> {
+fn evidence(cx: &Cx, d: &LabDevice, pips: bool) -> Vec<(String, Style)> {
     let mut v = Vec::new();
     if !cx.up(d) {
         let t = if d.status == DeviceStatus::Unknown {
@@ -332,17 +335,42 @@ fn evidence(cx: &Cx, d: &LabDevice) -> Vec<(String, Style)> {
     }
     if let Some(m) = &d.metrics {
         let h: Vec<Option<f32>> = m.cpu_hist.iter().map(|v| Some(*v)).collect();
-        v.push((tiles::spark_str(cx, &h, 5), cx.heat(m.cpu)));
+        v.push((tiles::spark_str(cx, &h, 5), cx.spark_heat(m.cpu)));
         v.push((format!("{:.0}%", m.cpu * 100.0), cx.ink(Tok::Muted, 1.0)));
         if let Some(t) = m.temp_c.filter(|_| cx.size() >= Size::L) {
             let hv = ((t - 35.0) / 50.0).clamp(0.0, 1.0);
             v.push((format!("{t:.0}{}", cx.g("°", "C")), cx.heat(hv)));
         }
     }
-    for (t, st) in tiles::pip_segs(cx, d, 4) {
-        v.push((t, st));
+    if pips {
+        v.extend(tiles::pip_segs(cx, d, 4));
     }
     v
+}
+
+/// Mesh membership: one swatch per mesh in its hue (ASCII its number), on the label's
+/// outer side, so a mesh reads as the members sharing a colour with their links.
+fn marks_w(cx: &Cx, d: &LabDevice) -> u16 {
+    let n = d.meshes.len() as u16;
+    match (n, cx.uni()) {
+        (0, _) => 0,
+        (_, true) => n + 1,
+        // ASCII numbers keep a space between them (`1 2`, never `12`).
+        (_, false) => 2 * n,
+    }
+}
+
+fn marks(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, d: &LabDevice, fade: bool, bg: Style) {
+    let step = if cx.uni() { 1 } else { 2 };
+    for (i, m) in d.meshes.iter().enumerate() {
+        let st = if fade {
+            cx.ink(Tok::Faint, 1.0)
+        } else {
+            cx.ink(mesh_tok(cx, m), 0.9)
+        };
+        let g = tiles::mesh_glyph(cx, m);
+        cx.put(buf, x + step * i as u16, y, 1, &g, st.patch(bg));
+    }
 }
 
 fn ev_w(cx: &Cx, v: &[(String, Style)]) -> u16 {
@@ -359,7 +387,7 @@ fn has_letter(d: &LabDevice) -> Option<usize> {
         .position(|c| c.eq_ignore_ascii_case(&d.hotkey))
 }
 
-fn label_w(cx: &Cx, d: &LabDevice, mode: Mode, nmax: usize) -> u16 {
+fn label_w(cx: &Cx, d: &LabDevice, mode: Mode, nmax: usize, pips: bool) -> u16 {
     match mode {
         Mode::Key => 3 + u16::from(!matches!(d.status, DeviceStatus::Online)),
         _ => {
@@ -369,9 +397,9 @@ fn label_w(cx: &Cx, d: &LabDevice, mode: Mode, nmax: usize) -> u16 {
             } else {
                 4
             };
-            let row0 = 2 + cap + n;
+            let row0 = 2 + cap + n + marks_w(cx, d);
             if mode == Mode::Full {
-                row0.max(2 + ev_w(cx, &evidence(cx, d)))
+                row0.max(2 + ev_w(cx, &evidence(cx, d, pips)))
             } else {
                 row0
             }
@@ -379,16 +407,45 @@ fn label_w(cx: &Cx, d: &LabDevice, mode: Mode, nmax: usize) -> u16 {
     }
 }
 
-fn pill_w(d: &LabDevice, mode: Mode) -> u16 {
+/// One cell each side, the status glyph, a space and the name.
+fn pill_w(cx: &Cx, d: &LabDevice, mode: Mode, keys: bool) -> u16 {
     match mode {
         Mode::Key => 5,
-        _ => 4 + d.name.chars().count().min(16) as u16 + 1,
+        _ => 4 + name_w(cx, d, 16, keys),
     }
 }
 
-fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, depth: usize, keys_only: bool) -> Plan<'a> {
+fn plan<'a>(
+    cx: &Cx<'a>,
+    band: Rect,
+    root: &str,
+    depth: usize,
+    keys_only: bool,
+    sel: Sel,
+) -> Plan<'a> {
     let mut nodes = tree(cx, root, depth);
     sectors(&mut nodes);
+    let star = depth == 1;
+    if star {
+        // A device's own star: its peers left and right of it, where rows are long (a
+        // short band has no room above or below the root), top first on each side.
+        let k = nodes.len();
+        let right = k.div_ceil(2);
+        for (i, n) in nodes.iter_mut().enumerate() {
+            let (j, m) = if i < right { (i, right) } else { (i - right, k - right) };
+            let t = if m == 1 {
+                0.0
+            } else {
+                j as f32 / (m - 1) as f32 - 0.5
+            };
+            n.ang = if i < right { t * 1.1 } else { PI - t * 1.1 };
+        }
+    }
+    let opts = Opts {
+        star,
+        pips: matches!(sel, Sel::Node(..)),
+        keys: matches!(sel, Sel::Node(..) | Sel::Targets),
+    };
     let rings = nodes.iter().map(|n| n.hop).max().unwrap_or(1);
     let rootd = cx.s.device(root);
     let modes: &[(Mode, usize)] = if keys_only {
@@ -412,7 +469,7 @@ fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, depth: usize, keys_only: bool) 
     };
     let mut best: Option<Plan> = None;
     for &(mode, nmax) in modes {
-        let p = place(cx, band, &nodes, rings, rootd, mode, nmax);
+        let p = place(cx, band, &nodes, rings, rootd, mode, nmax, opts);
         let ok = p.hidden == 0;
         best = Some(p);
         if ok {
@@ -431,7 +488,16 @@ fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, depth: usize, keys_only: bool) 
     p
 }
 
+#[derive(Clone, Copy)]
+struct Opts {
+    /// One ring, peers beside the root (a device's LINKS).
+    star: bool,
+    pips: bool,
+    keys: bool,
+}
+
 /// Place every label for one mode; overlapping ones are hidden (counted in `hidden`).
+#[allow(clippy::too_many_arguments)]
 fn place<'a>(
     cx: &Cx<'a>,
     band: Rect,
@@ -440,11 +506,12 @@ fn place<'a>(
     rootd: Option<&'a LabDevice>,
     mode: Mode,
     nmax: usize,
+    o: Opts,
 ) -> Plan<'a> {
     let rows: u16 = if mode == Mode::Full { 2 } else { 1 };
     let widest = nodes
         .iter()
-        .map(|n| label_w(cx, n.d, mode, nmax))
+        .map(|n| label_w(cx, n.d, mode, nmax, o.pips))
         .max()
         .unwrap_or(4);
     let c = (
@@ -452,18 +519,33 @@ fn place<'a>(
         f32::from(band.y) + f32::from(band.height.saturating_sub(rows)) / 2.0,
     );
     let rx = (f32::from(band.width) / 2.0 - f32::from(widest) - 2.0).max(4.0);
-    let ry = (f32::from(band.height.saturating_sub(rows)) / 2.0 - 0.5).max(1.0);
-    // Never flatter than about 2.6:1 on screen (a cell is twice as tall as wide).
-    let rx = rx.min(ry * 5.2);
-    let pw = rootd.map_or(5, |d| pill_w(d, mode));
+    // Radii follow the node count, not the band, past a calm size: the first ring stays
+    // within about 30 columns and 9 rows of the root, and big screens give the rows to
+    // the session thumbnails instead of spreading a few nodes thin.
+    let ry = (f32::from(band.height.saturating_sub(rows)) / 2.0 - 0.5).clamp(1.0, 11.5);
+    let rx = if o.star {
+        // Beside the root on its row: as long as a chip needs, never the whole width.
+        rx.min(30.0)
+    } else {
+        // Never flatter than about 2.6:1 on screen (a cell is twice as tall as wide).
+        rx.min(ry * 5.2)
+    };
+    let pw = rootd.map_or(5, |d| pill_w(cx, d, mode, o.keys));
     let pill = Rect::new(
         (c.0 - f32::from(pw) / 2.0).round() as u16,
         c.1.round() as u16,
         pw,
         1,
     );
-    // Short maps keep only the capsule (a halo would crowd the first ring).
-    let halo = if band.height < 12 {
+    // Short maps keep only the capsule (a halo would crowd the first ring); a star's
+    // peers sit beside the root, so its halo fits any band of five rows that is wide
+    // enough to leave its links their length.
+    let tight = if o.star {
+        band.height < 5 || band.width < 80
+    } else {
+        band.height < 12
+    };
+    let halo = if tight {
         Rect::new(pill.x.saturating_sub(1), pill.y, pw + 2, 1)
     } else {
         Rect::new(
@@ -478,7 +560,7 @@ fn place<'a>(
     let pev = match (mode, rootd) {
         (Mode::Full, Some(d)) => {
             let word = if d.id == cx.s.viewer { 4 } else { 5 };
-            let w = word + ev_w(cx, &evidence(cx, d));
+            let w = word + ev_w(cx, &evidence(cx, d, o.pips));
             Rect::new((c.0 - f32::from(w) / 2.0).round() as u16, pill.y + 1, w, 1)
         }
         _ => Rect::default(),
@@ -492,10 +574,12 @@ fn place<'a>(
         for nudge in [0.0, 0.2, -0.2, 0.4, -0.4] {
             let ang = n.ang + nudge;
             let (fx, fy) = ring_f(n.hop, rings);
-            // The first ring keeps clear of the pill, whatever the band's shape.
-            let rx1 = (rx * fx).max(f32::from(pw) / 2.0 + 7.0);
+            // The first ring keeps clear of the pill, whatever the band's shape, and
+            // where links carry chips, room for one between the halo and the label.
+            let clear = if cx.size() >= Size::M { 15.0 } else { 7.0 };
+            let rx1 = (rx * fx).max(f32::from(pw) / 2.0 + clear);
             let p = (c.0 + rx1 * ang.cos(), c.1 + ry * fy * ang.sin());
-            let w = label_w(cx, n.d, mode, nmax);
+            let w = label_w(cx, n.d, mode, nmax, o.pips);
             let (px, py) = (p.0.round() as i32, p.1.round() as i32);
             let cos = ang.cos();
             let x0 = if mode == Mode::Key {
@@ -557,20 +641,41 @@ fn place<'a>(
         .fold((i32::MAX, i32::MIN), |(lo, hi), r| {
             (lo.min(i32::from(r.x)), hi.max(i32::from(r.right())))
         });
-    let dx = ((i32::from(band.x) + i32::from(band.right()) - lo - hi) / 2)
-        .clamp(i32::from(band.x) - lo, i32::from(band.right()) - hi);
-    let mv = |r: &mut Rect| r.x = (i32::from(r.x) + dx).max(0) as u16;
+    // A star keeps its root centred: it is the subject of the screen.
+    let dx = if o.star {
+        0
+    } else {
+        ((i32::from(band.x) + i32::from(band.right()) - lo - hi) / 2)
+            .clamp(i32::from(band.x) - lo, i32::from(band.right()) - hi)
+    };
+    // And vertically: a map whose labels do not reach the band's edges sits in the
+    // middle (the hub gives the rows left at its foot to the thumbnails).
+    let (top, bot) = out
+        .iter()
+        .filter(|n| n.shown)
+        .map(|n| n.label)
+        .chain([halo, pev].into_iter().filter(|r| r.width > 0))
+        .fold((i32::MAX, i32::MIN), |(lo, hi), r| {
+            (lo.min(i32::from(r.y)), hi.max(i32::from(r.bottom())))
+        });
+    let dy = ((i32::from(band.y) + i32::from(band.bottom()) - top - bot) / 2)
+        .clamp(i32::from(band.y) - top, i32::from(band.bottom()) - bot);
+    let mv = |r: &mut Rect| {
+        r.x = (i32::from(r.x) + dx).max(0) as u16;
+        r.y = (i32::from(r.y) + dy).max(0) as u16;
+    };
     let (mut pill, mut pev, mut halo) = (pill, pev, halo);
     for n in out.iter_mut() {
         mv(&mut n.label);
         n.dot.0 = (i32::from(n.dot.0) + dx).max(0) as u16;
+        n.dot.1 = (i32::from(n.dot.1) + dy).max(0) as u16;
     }
     mv(&mut pill);
     if pev.width > 0 {
         mv(&mut pev);
     }
     mv(&mut halo);
-    let c = (c.0 + dx as f32, c.1);
+    let c = (c.0 + dx as f32, c.1 + dy as f32);
     Plan {
         nodes: out,
         rings,
@@ -583,6 +688,8 @@ fn place<'a>(
         pev,
         halo,
         hidden,
+        pips: o.pips,
+        star: o.star,
     }
 }
 
@@ -607,11 +714,15 @@ pub(super) fn want_h(cx: &Cx) -> u16 {
     }
 }
 
+/// The most rows a hub map uses: its capped rings (radius at most 11.5 rows) with
+/// two-row labels.
+pub(super) const MAX_H: u16 = 27;
+
 /// Device ids in selection order: the root first (launch focus, so `⏎` opens this
 /// device), then ring by ring, clockwise from the top.
 pub(super) fn order(cx: &Cx, band: Rect) -> Vec<String> {
     let root = cx.s.viewer.as_str();
-    let p = plan(cx, band, root, 3, cx.touch());
+    let p = plan(cx, band, root, 3, cx.touch(), Sel::Node("", false));
     let mut v: Vec<&Node> = p.nodes.iter().filter(|n| n.shown).collect();
     let clock = |a: f32| (a + PI / 2.0).rem_euclid(TAU);
     v.sort_by(|a, b| {
@@ -680,8 +791,6 @@ enum Pat {
     DashDot,
     /// Soft beads: closed links.
     Sparse,
-    /// Mesh arcs: a faint continuous orbit (`'` beads in ASCII, never a link stroke).
-    Orbit,
     /// The root's halo: dots (`'` beads in ASCII).
     Halo,
 }
@@ -693,7 +802,6 @@ impl Pat {
             Pat::Dot => i % 3 == 0,
             Pat::DashDot => matches!(i % 9, 0..=3 | 6),
             Pat::Sparse => i % 4 == 0,
-            Pat::Orbit => true,
             Pat::Halo => i % 3 == 0,
         }
     }
@@ -853,7 +961,7 @@ fn ascii_for(pat: Pat, i: usize, dx: f32, dy: f32) -> char {
                 ' '
             }
         }
-        Pat::Orbit | Pat::Halo => {
+        Pat::Halo => {
             if i % 2 == 0 {
                 '\''
             } else {
@@ -941,7 +1049,7 @@ pub(super) fn draw_with(
         return;
     }
     let s = cx.s;
-    let p = plan(cx, band, root, depth, keys_only);
+    let p = plan(cx, band, root, depth, keys_only, sel);
     let mark = cx.hit_mark();
     let idx = |id: &str| p.nodes.iter().position(|n| n.d.id == id);
     let at = |i: Option<usize>| match i {
@@ -994,70 +1102,6 @@ pub(super) fn draw_with(
         ));
     }
 
-    // Mesh arcs: a soft dotted arc just outside its members, named in its hue.
-    let mut mesh_names: Vec<(Vec<P>, String, Tok, String)> = Vec::new();
-    if p.mode != Mode::Key {
-        for m in &s.meshes {
-            let mem: Vec<&Node> = p
-                .nodes
-                .iter()
-                .filter(|n| n.shown && m.members.contains(&n.d.id))
-                .collect();
-            if mem.len() < 2 {
-                continue;
-            }
-            let ring = mem.iter().map(|n| n.hop).max().unwrap_or(1);
-            let (fx, fy) = ring_f(ring, p.rings);
-            // The smallest arc over every member: the complement of the widest gap.
-            let mut angs: Vec<f32> = mem.iter().map(|n| n.ang.rem_euclid(TAU)).collect();
-            angs.sort_by(f32::total_cmp);
-            let k = angs.len();
-            // A gap holding a device outside the mesh must stay open, so the arc never
-            // seems to include it; then the widest gap.
-            let others: Vec<f32> = p
-                .nodes
-                .iter()
-                .filter(|n| n.shown && n.hop <= ring && !m.members.contains(&n.d.id))
-                .map(|n| n.ang.rem_euclid(TAU))
-                .collect();
-            let (gap_at, _) = (0..k)
-                .map(|i| {
-                    let (g0, len) = (angs[i], (angs[(i + 1) % k] - angs[i]).rem_euclid(TAU));
-                    let len = if k == 1 { TAU } else { len };
-                    let holds = others.iter().any(|&o| (o - g0).rem_euclid(TAU) < len);
-                    (i, (holds, len))
-                })
-                .max_by(|a, b| a.1 .0.cmp(&b.1 .0).then(a.1 .1.total_cmp(&b.1 .1)))
-                .unwrap_or((0, (false, 0.0)));
-            let a0 = angs[(gap_at + 1) % k] - 0.2;
-            let mut a1 = angs[gap_at] + 0.2;
-            if a1 < a0 {
-                a1 += TAU;
-            }
-            // Halfway out to the next ring, or just outside the last one.
-            let (rxm, rym) = if ring < p.rings {
-                let (nx, ny) = ring_f(ring + 1, p.rings);
-                (p.rx * (fx + nx) / 2.0 + 1.0, p.ry * (fy + ny) / 2.0 + 0.5)
-            } else {
-                // Just outside the last ring: hugging its members, not framing the map.
-                (p.rx * fx + 2.5, p.ry * fy + 1.0)
-            };
-            let tok = mesh_tok(cx, &m.id);
-            let pts = ellipse(p.c, rxm, rym, a0, a1);
-            // A faint continuous orbit, so it never reads as a dotted (password) link.
-            let a = if fade_all { 0.2 } else { 0.36 };
-            cv.stroke(&pts, Pat::Orbit, cx.ink(tok, a), 1, false);
-            // The name rides just outside the arc, at its middle or the nearest free spot.
-            let spots = [0.5, 0.35, 0.65, 0.2, 0.8]
-                .map(|t| {
-                    let a = a0 + (a1 - a0) * t;
-                    (p.c.0 + (rxm + 1.0) * a.cos(), p.c.1 + (rym + 0.8) * a.sin())
-                })
-                .to_vec();
-            mesh_names.push((spots, m.name.clone(), tok, m.id.clone()));
-        }
-    }
-
     // The halo around the root.
     let pc = centre(p.pill);
     let hy = if p.mode == Mode::Full { 1.7 } else { 1.25 };
@@ -1074,9 +1118,9 @@ pub(super) fn draw_with(
     }
 
     // Links: the tree, plus the selected device's (or edited) peer links.
-    let mut chips: Vec<(&LabEdge, P, bool)> = Vec::new();
+    let mut chips: Vec<(&LabEdge, [P; 3], bool)> = Vec::new();
     let mut arrows: Vec<(Vec<P>, &'static str, Style)> = Vec::new();
-    let mut links: Vec<(&LabEdge, P, P, f32, bool)> = Vec::new();
+    let mut links: Vec<(&LabEdge, P, P, P, bool)> = Vec::new();
     for (i, n) in p.nodes.iter().enumerate() {
         let (Some(e), true) = (n.up, n.shown) else {
             continue;
@@ -1084,10 +1128,23 @@ pub(super) fn draw_with(
         if n.parent.is_some_and(|q| !p.nodes[q].shown) {
             continue;
         }
-        let a = at(n.parent);
         let b = at(Some(i));
         let from_a = n.parent.map_or(root, |q| p.nodes[q].d.id.as_str()) == e.from;
-        links.push((e, a, b, 0.1, from_a));
+        if p.star {
+            // A star's links leave the capsule's end facing their peer and arrive level
+            // with it, so each chip rides on its peer's row.
+            let pc = centre(p.pill);
+            let x = if b.0 < pc.0 {
+                f32::from(p.pill.x) - 1.5
+            } else {
+                f32::from(p.pill.right()) + 1.5
+            };
+            let a = (x, pc.1);
+            links.push((e, a, b, (a.0 + (b.0 - a.0) * 0.3, b.1), from_a));
+        } else {
+            let a = at(n.parent);
+            links.push((e, a, b, ctrl(a, b, 0.1), from_a));
+        }
     }
     for e in s.edges.iter().filter(|e| routed(e) && lit(e)) {
         let (Some(i), Some(j)) = (idx(&e.from), idx(&e.to)) else {
@@ -1104,9 +1161,9 @@ pub(super) fn draw_with(
         let out = ctrl(a, b, 0.18);
         let d2 = |q: P| (q.0 - p.c.0).powi(2) + ((q.1 - p.c.1) * 2.0).powi(2);
         let bow = if d2(out) >= d2(m) { 0.18 } else { -0.18 };
-        links.push((e, a, b, bow, true));
+        links.push((e, a, b, ctrl(a, b, bow), true));
     }
-    for (e, a, b, bow, from_a) in links {
+    for (e, a, b, c, from_a) in links {
         let on = lit(e);
         let tok = edge_tok(cx, e);
         let alpha = match (on, fade_all) {
@@ -1119,7 +1176,6 @@ pub(super) fn draw_with(
         } else {
             cx.ink(tok, alpha)
         };
-        let c = ctrl(a, b, bow);
         let pts = curve(a, c, b);
         let heavy = fade_all && on;
         cv.stroke(&pts, pattern(e), st, if on { 6 } else { 4 }, heavy);
@@ -1134,77 +1190,79 @@ pub(super) fn draw_with(
                 .to_vec();
             arrows.push((spots, arrow(cx, p1.0 - p0.0, p1.1 - p0.1), st));
         }
-        chips.push((e, bez(a, c, b, 0.5), on));
+        chips.push((e, [a, c, b], on));
     }
     // Chips on the links' middles (the rtt, with the policy word at L, or what is
-    // wrong; below 100 columns only closed and down links carry one) and the mesh names
-    // on their arcs are placed before the strokes are flushed: their cells, plus one
-    // column each side, are kept clear, so no stroke or bead ever restyles a letter.
+    // wrong; below 100 columns only closed and down links carry one) are placed before
+    // the strokes are flushed: their cells, plus one column each side, are kept clear,
+    // so no stroke ever restyles a letter. A chip the labels crowd out of the middle
+    // slides along its curve; a link with no chip keeps a 3x1 tap target on it.
     let mut taken: Vec<Rect> = p
         .nodes
         .iter()
         .filter(|n| n.shown)
         .map(|n| n.label)
-        .chain([p.pill, p.pev])
+        .chain([p.pill, p.pev, p.halo])
         .collect();
     let mut placed: Vec<(&LabEdge, Rect, String, bool)> = Vec::new();
-    for (e, q, on) in chips {
-        let Some(text) = chip_text(cx, e, p.mode) else {
-            // No chip: a 3x1 spot at the middle is the tap target (not on phones, where
-            // the tree rows are the targets and a 3-cell spot is too small for a thumb).
-            if !cx.touch() {
-                let r = Rect::new((q.0 as u16).saturating_sub(1), q.1 as u16, 3, 1);
+    // A running transfer's chip first (it carries the rate), then the lit links.
+    chips.sort_by_key(|(e, _, on)| (transfer_rate(cx, e).is_none(), !on));
+    for (e, [a, c, b], on) in chips {
+        let text = chip_text(cx, e, p.mode);
+        let w = text.as_ref().map_or(3, |t| super::width(t, cx.uni()) + 2);
+        let ts: &[f32] = if p.star {
+            &[0.7, 0.62, 0.78, 0.54]
+        } else {
+            &[0.5, 0.6, 0.4, 0.7, 0.3, 0.78, 0.22]
+        };
+        let spot = ts.iter().find_map(|&t| {
+            let q = bez(a, c, b, t);
+            let x = (q.0 - f32::from(w) / 2.0).round();
+            let r = Rect::new(x.max(0.0) as u16, q.1 as u16, w, 1);
+            let pad = Rect::new(r.x.saturating_sub(1), r.y, w + 2, 1);
+            (x >= f32::from(band.x)
+                && band.contains(r.into())
+                && r.right() <= band.right()
+                && !taken.iter().any(|t| t.intersects(pad)))
+            .then_some(r)
+        });
+        match (text, spot) {
+            (Some(text), Some(r)) => {
+                taken.push(r);
+                cv.block(Rect::new(r.x.saturating_sub(1), r.y, r.width + 2, 1));
+                placed.push((e, r, text, on));
+            }
+            // Not on phones, where the tree rows are the targets and a 3-cell spot is
+            // too small for a thumb.
+            _ if !cx.touch() => {
+                let q = bez(a, c, b, 0.5);
+                let mid = Rect::new((q.0 as u16).saturating_sub(1), q.1 as u16, 3, 1);
+                let r = spot.map_or(mid, |r| Rect::new(r.x + (r.width - 3) / 2, r.y, 3, 1));
                 cx.hit(r, format!("edge:{}", e.id));
             }
-            continue;
-        };
-        let w = super::width(&text, cx.uni()) + 2;
-        let r = Rect::new(
-            (q.0 - f32::from(w) / 2.0).max(f32::from(band.x)) as u16,
-            q.1 as u16,
-            w,
-            1,
-        );
-        if !band.contains(r.into())
-            || r.right() > band.right()
-            || taken.iter().any(|t| t.intersects(r))
-        {
-            continue;
+            _ => {}
         }
-        taken.push(r);
-        cv.block(Rect::new(r.x.saturating_sub(1), r.y, r.width + 2, 1));
-        placed.push((e, r, text, on));
-    }
-    let mut names: Vec<(Rect, String, Tok, String)> = Vec::new();
-    for (spots, name, tok, id) in mesh_names {
-        let w = super::width(&name, cx.uni());
-        let free = spots.iter().find_map(|q| {
-            let x = (q.0 - f32::from(w) / 2.0).round().max(f32::from(band.x)) as u16;
-            let y =
-                q.1.round()
-                    .clamp(f32::from(band.y), f32::from(band.bottom() - 1)) as u16;
-            let r = Rect::new(x, y, w, 1);
-            let pad = Rect::new(r.x.saturating_sub(1), r.y, r.width + 2, 1);
-            (r.right() <= band.right() && !taken.iter().any(|t| t.intersects(pad))).then_some(r)
-        });
-        let Some(r) = free else { continue };
-        taken.push(r);
-        cv.block(Rect::new(r.x.saturating_sub(1), r.y, r.width + 2, 1));
-        names.push((r, name, tok, id));
     }
     cv.flush(cx, buf);
     for (spots, g, st) in arrows {
         let gw = super::width(g, cx.uni());
+        // ASCII keeps one clear cell each side (`<-` beside a `.` stroke or a bracket
+        // would read as the down stroke `-.-`).
+        let pad = u16::from(!cx.uni());
         let free = spots
             .iter()
             .map(|q| (q.0 as u16, q.1 as u16))
             .find(|&(x, y)| {
-                (x..x + gw).all(|xx| {
+                (x.saturating_sub(pad)..x + gw + pad).all(|xx| {
                     cv.cell(i32::from(xx), i32::from(y))
                         .is_some_and(|i| !cv.mask[i])
                 })
             });
         if let Some((x, y)) = free {
+            if pad > 0 {
+                cx.put(buf, x - 1, y, 1, " ", Style::default());
+                cx.put(buf, x + gw, y, 1, " ", Style::default());
+            }
             cx.put(buf, x, y, gw, g, st);
         }
     }
@@ -1237,21 +1295,6 @@ pub(super) fn draw_with(
             cx.hit(r, format!("edge:{}", e.id));
         }
     }
-    for (r, name, tok, id) in names {
-        // A full restyle (fill resets the cell), never a patch over a stroke's attrs.
-        cx.fill(buf, r, Style::default());
-        let a = if fade_all { 0.45 } else { 0.9 };
-        cx.put(
-            buf,
-            r.x,
-            r.y,
-            r.width,
-            &name,
-            cx.ink(tok, a).add_modifier(Modifier::ITALIC),
-        );
-        cx.hit(r, format!("mesh:{id}"));
-    }
-
     // Nodes.
     // Letters are keys on the hub and in the send-to picker only.
     let keys = matches!(sel, Sel::Node(..) | Sel::Targets);
@@ -1463,7 +1506,8 @@ fn node(cx: &Cx, buf: &mut Buffer, p: &Plan, n: &Node, pick: Option<bool>, keys:
     let nst = if pick == Some(true) {
         cx.st(Tok::Accent).add_modifier(Modifier::BOLD)
     } else if fade {
-        cx.ink(Tok::Muted, 0.6)
+        // Muted, not faint: a faded name stays readable (faint is for strokes).
+        cx.ink(Tok::Muted, 0.85)
     } else if up {
         cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD)
     } else {
@@ -1471,25 +1515,20 @@ fn node(cx: &Cx, buf: &mut Buffer, p: &Plan, n: &Node, pick: Option<bool>, keys:
     };
     let left = n.dot.0 + 1 == r.right() && r.width > 3;
     let nw = r.width - 2;
+    // Mesh swatches sit on the outer side, away from the links.
     if left {
         cx.put(buf, r.right() - 1, r.y, 1, g, gst.patch(bg));
         let w = name_w(cx, d, p.nmax, keys);
-        name(
-            cx,
-            buf,
-            r.right() - 2 - w,
-            r.y,
-            d,
-            p.nmax,
-            nst.patch(bg),
-            keys,
-        );
+        let x = r.right() - 2 - w;
+        name(cx, buf, x, r.y, d, p.nmax, nst.patch(bg), keys);
+        marks(cx, buf, x.saturating_sub(marks_w(cx, d)), r.y, d, fade, bg);
     } else {
         cx.put(buf, r.x, r.y, 1, g, gst.patch(bg));
-        name(cx, buf, r.x + 2, r.y, d, p.nmax, nst.patch(bg), keys);
+        let w = name(cx, buf, r.x + 2, r.y, d, p.nmax, nst.patch(bg), keys);
+        marks(cx, buf, r.x + 3 + w, r.y, d, fade, bg);
     }
     if r.height > 1 {
-        let ev = evidence(cx, d);
+        let ev = evidence(cx, d, p.pips);
         let w = ev_w(cx, &ev);
         let mut x = if left { r.right() - 2 - w } else { r.x + 2 };
         for (t, st) in ev {
@@ -1526,6 +1565,27 @@ fn hit_node(cx: &Cx, r: Rect, d: &LabDevice) {
     cx.hit(r, format!("device:{}", d.id));
 }
 
+/// The capsule that marks the root (hub, device star, onboarding): an accent tint, a
+/// solid accent row in 16 colours, reversed without colour; in ASCII its padding cells
+/// are `(` `)`. Returns the body style.
+pub(super) fn capsule(cx: &Cx, buf: &mut Buffer, r: Rect, strength: f32) -> Style {
+    let body = if cx.has_surface() {
+        cx.rgb_bg(super::mix(cx.bg0(), cx.rgb(Tok::Accent), strength))
+    } else if cx.c.has_color() {
+        Style::default()
+            .bg(cx.st(Tok::Accent).fg.unwrap_or_default())
+            .fg(ratatui::style::Color::Black)
+    } else {
+        Style::default().add_modifier(Modifier::REVERSED)
+    };
+    cx.fill(buf, r, body);
+    if !cx.uni() {
+        cx.put(buf, r.x, r.y, 1, "(", body);
+        cx.put(buf, r.right() - 1, r.y, 1, ")", body);
+    }
+    body
+}
+
 /// The root: a tinted capsule with its name (hotkey underlined) and, with room, its own
 /// evidence beneath, all inside the dotted halo.
 fn pill(
@@ -1546,16 +1606,7 @@ fn pill(
         (_, true) => 0.26,
         (_, false) => 0.18,
     };
-    let body = if cx.has_surface() {
-        cx.rgb_bg(super::mix(cx.bg0(), cx.rgb(Tok::Accent), strength))
-    } else if cx.c.has_color() {
-        Style::default()
-            .bg(cx.st(Tok::Accent).fg.unwrap_or_default())
-            .fg(ratatui::style::Color::Black)
-    } else {
-        Style::default().add_modifier(Modifier::REVERSED)
-    };
-    cx.fill(buf, r, body);
+    let body = capsule(cx, buf, r, strength);
     if p.mode == Mode::Key {
         cx.put(
             buf,
@@ -1566,7 +1617,14 @@ fn pill(
             cx.chip_style(cx.s.hue(&d.id)),
         );
     } else {
+        // `◉` marks the root on every map (the hub's viewer, a device's own star) unless
+        // its status has something to say.
         let (g, gst) = cx.status(d.status);
+        let g = if matches!(d.status, DeviceStatus::Online) {
+            cx.g("◉", "@")
+        } else {
+            g
+        };
         let gst = if cx.has_surface() {
             gst.patch(body)
         } else {
@@ -1596,7 +1654,7 @@ fn pill(
             if d.id == cx.s.viewer { "you" } else { "here" }.to_string(),
             cx.st(Tok::Accent),
         )];
-        ev.extend(evidence(cx, d));
+        ev.extend(evidence(cx, d, p.pips));
         let w = ev_w(cx, &ev);
         let mut x = (centre(r).0 - f32::from(w) / 2.0).round() as u16;
         for (t, st) in ev {

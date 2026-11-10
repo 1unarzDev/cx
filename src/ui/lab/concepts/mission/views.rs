@@ -206,7 +206,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                 vec![
                     ("⏎", "connect", "connect"),
                     ("j", "join code", "join"),
-                    ("esc", "skip", "skip"),
+                    ("esc", "plain SSH", "skip"),
                 ],
             );
         }
@@ -434,19 +434,31 @@ fn footer(cx: &Cx, buf: &mut Buffer, r: Rect, items: Keys) {
         .collect();
     let (x0, right) = (r.x + 1, r.right().saturating_sub(1));
     let sep = if cx.area.width < 50 { 1 } else { 2 };
-    let mut fit_n = 0;
-    let mut x = x0;
-    for (k, l, _) in &items {
-        let lw = super::width(l, cx.uni());
-        let need = super::width(k, cx.uni()) + 2 + if lw > 0 { lw + 1 } else { 0 };
-        if x + need > right {
-            break;
+    // How many of `items` fit one row.
+    let fits = |items: &[(&str, &str, &str)]| {
+        let mut x = x0;
+        let mut n = 0;
+        for (k, l, _) in items {
+            let lw = super::width(l, cx.uni());
+            let need = super::width(k, cx.uni()) + 2 + if lw > 0 { lw + 1 } else { 0 };
+            if x + need > right {
+                break;
+            }
+            x += need + sep;
+            n += 1;
         }
-        x += need + sep;
-        fit_n += 1;
-    }
+        n
+    };
+    let fit_n = fits(&items);
     if cx.touch() && fit_n < items.len() && r.y > cx.area.y + 1 {
         // Read top to bottom in priority order: the primary verb leads the upper row.
+        // The rows are balanced (no lone chip below) when the rest still fits.
+        let half = items.len().div_ceil(2).min(fit_n);
+        let fit_n = if fits(&items[half..]) == items.len() - half {
+            half
+        } else {
+            fit_n
+        };
         cx.chips_h(buf, x0, r.y - 1, right, &items[..fit_n], 1);
         cx.chips_h(buf, x0, r.y, right, &items[fit_n..], 1);
     } else {
@@ -1365,16 +1377,15 @@ fn attached(cx: &Cx, buf: &mut Buffer, x: &LabSession) {
     cx.hit(Rect::new(a.x, y, 3, 1), "hub");
     let sep = cx.g(" › ", " / ");
     bx += cx.put(buf, bx, y, 3, sep, cx.ink(Tok::Faint, 1.0).patch(bar));
-    if let Some(d) = cx.s.device(&x.device) {
+    // `cx › innovation › i a refactor transport`: the session's address sits before
+    // its title exactly as on its tile (one address everywhere); phones drop the name.
+    if let Some(d) = cx.s.device(&x.device).filter(|_| a.width >= 60) {
         let x0 = bx;
-        bx += cx.dchip(buf, bx, y, d, false);
-        if a.width >= 60 {
-            bx += 1;
-            bx += cx.put(buf, bx, y, 20, &d.name, cx.ink(Tok::Fg, 0.9).patch(bar));
-        }
+        bx += cx.put(buf, bx, y, 20, &d.name, cx.ink(Tok::Fg, 0.9).patch(bar));
         cx.hit(Rect::new(x0, y, bx - x0, 1), format!("device:{}", d.id));
         bx += cx.put(buf, bx, y, 3, sep, cx.ink(Tok::Faint, 1.0).patch(bar));
     }
+    bx += tiles::addr(cx, buf, bx, y, x) + 1;
     let (g, word, sst) = cx.sstate(x);
     let state = if a.width >= 80 {
         format!("{g} {word}")
@@ -1444,7 +1455,8 @@ fn files(cx: &Cx, buf: &mut Buffer, r: Rect) {
         let mut x = list.x + 1;
         // Indent guides.
         for _ in 0..e.depth {
-            x += cx.put(buf, x, y, 2, cx.g("│ ", "| "), cx.ink(Tok::Faint, 1.0));
+            // ASCII `:` (`|` is the focus bar's continuation).
+            x += cx.put(buf, x, y, 2, cx.g("│ ", ": "), cx.ink(Tok::Faint, 1.0));
         }
         let (icon, nst) = match e.kind {
             FileKind::Dir => (
@@ -1512,8 +1524,8 @@ fn files(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // as the same device keycaps the schematic uses.
     let shown = f.entries.len().saturating_sub(first).min(rows) as u16;
     let dy = list.y + shown + 1;
-    if let Some(e) = f.entries.get(sel).filter(|_| dy + 5 <= list.bottom()) {
-        zone(cx, buf, list.x, dy, list.right(), "SELECTED", false);
+    let left = list.bottom().saturating_sub(dy);
+    if let Some(e) = f.entries.get(sel).filter(|_| left >= 2) {
         let path = format!(
             "{}/{}",
             f.cwd.trim_end_matches('/'),
@@ -1525,32 +1537,40 @@ fn files(cx: &Cx, buf: &mut Buffer, r: Rect) {
             Some('?') => "untracked",
             _ => "unchanged",
         };
-        let facts = [
-            path,
-            format!(
-                "{} {} modified {} ago",
-                fmt::bytes(e.size),
-                cx.g("·", "-"),
-                fmt::age(e.modified_secs)
-            ),
-            format!("git: {git}"),
-        ];
+        let sep = cx.g("·", "-");
+        let size_age = format!(
+            "{} {sep} modified {} ago",
+            fmt::bytes(e.size),
+            fmt::age(e.modified_secs)
+        );
+        let w = list.width.saturating_sub(1);
+        // Five rows: a SELECTED zone with one fact per row; fewer: the path, then the
+        // facts and the send targets on one row.
+        let (facts, sy) = if left >= 5 {
+            zone(cx, buf, list.x, dy, list.right(), "SELECTED", false);
+            (vec![path, size_age, format!("git: {git}")], dy + 6)
+        } else {
+            (vec![path], dy + 1)
+        };
+        let fy = if left >= 5 { dy + 2 } else { dy };
         for (i, t) in facts.iter().enumerate() {
-            let w = list.width.saturating_sub(1);
             cx.put(
                 buf,
                 list.x + 1,
-                dy + 2 + i as u16,
+                fy + i as u16,
                 w,
                 &fit(t, w as usize, cx.uni()),
                 cx.ink(Tok::Fg, 0.85),
             );
         }
-        let sy = dy + 6;
         if sy < list.bottom() {
+            let mut x = list.x + 1;
+            if left < 5 {
+                let t = format!("{} {sep} {} ago  ", fmt::bytes(e.size), fmt::age(e.modified_secs));
+                x += cx.put(buf, x, sy, w, &t, cx.st(Tok::Muted));
+            }
             // `s` is the key; the letters after it are what `s` then takes, drawn as
             // plain coloured text (here they are not keys on their own).
-            let mut x = list.x + 1;
             x += cx.put(buf, x, sy, 3, " s ", cx.key_style()) + 1;
             x += cx.put(buf, x, sy, 9, "send to ", cx.st(Tok::Muted));
             for d in cx.s.devices.iter().filter(|d| d.id != f.device && cx.up(d)) {
@@ -2063,12 +2083,24 @@ fn secrets(cx: &Cx, buf: &mut Buffer, r: Rect) {
             x += cx.put(buf, x, y, 3, &format!(" {k} "), cx.key_style()) + 1;
         }
         x += cx.put(buf, x, y, 1, g, gst) + 1;
-        let lw = if missing {
-            right.saturating_sub(x + 12)
-        } else {
-            right.saturating_sub(x)
-        }
-        .min(w / 2);
+        // A missing card's button names the key that acts on it: `⏎` on the selected
+        // card, its slot key on the others (`g add`).
+        let button = missing.then(|| {
+            let label = if s.key.starts_with("cloudflare") {
+                "connect"
+            } else {
+                "add"
+            };
+            let key = match SLOTS.get(i) {
+                Some(k) if !picked => k.to_string(),
+                _ => cx.ret().to_string(),
+            };
+            format!(" {key} {label} ")
+        });
+        // The name is cut against the room really left (the button only on its row).
+        let bw = button.as_ref().map_or(0, |t| super::width(t, cx.uni()) + 1);
+        let lw = right.saturating_sub(x + bw);
+        let lw = if compact { lw } else { lw.min(w / 2) };
         x += cx.put(
             buf,
             x,
@@ -2081,13 +2113,7 @@ fn secrets(cx: &Cx, buf: &mut Buffer, r: Rect) {
             cx.put(buf, x + 2, y, w / 3, &s.key, cx.ink(Tok::Muted, 0.8));
         }
         let vx = ix + 4;
-        if missing {
-            let label = if s.key.starts_with("cloudflare") {
-                "connect"
-            } else {
-                "add"
-            };
-            let t = format!(" {} {label} ", cx.ret());
+        if let Some(t) = button {
             // A solid accent button with a background-coloured label (legible on a
             // tinted card in both themes).
             let st = cx
@@ -2273,22 +2299,18 @@ fn onboarding(cx: &Cx, buf: &mut Buffer, r: Rect) {
     if let Some(d) = cx.s.device(&cx.s.viewer) {
         let mid = ill.y + ill.height / 2;
         // The same capsule as the hub's root: `◉ name` on the accent tint.
-        let pw = super::width(&d.name, cx.uni()) + 5;
+        let pw = super::width(&d.name, cx.uni()) + 4;
         let px = ill.x + (ill.width.saturating_sub(pw)) / 2;
-        let tint = cx.rgb_bg(mix(cx.bg0(), cx.rgb(Tok::Accent), 0.26));
-        cx.fill(buf, Rect::new(px, mid, pw, 1), tint);
+        let body = orbit::capsule(cx, buf, Rect::new(px, mid, pw, 1), 0.26);
         let (g, gst) = cx.status(d.status);
-        cx.put(buf, px + 1, mid, 1, g, gst.patch(tint));
-        cx.put(
-            buf,
-            px + 3,
-            mid,
-            pw,
-            &d.name,
-            cx.ink(Tok::Fg, 1.0)
-                .add_modifier(Modifier::BOLD)
-                .patch(tint),
-        );
+        let gst = if cx.has_surface() { gst.patch(body) } else { body };
+        cx.put(buf, px + 1, mid, 1, g, gst);
+        let nst = if cx.has_surface() {
+            cx.ink(Tok::Fg, 1.0).patch(body)
+        } else {
+            body
+        };
+        cx.put(buf, px + 3, mid, pw - 4, &d.name, nst.add_modifier(Modifier::BOLD));
     }
     y += ill_h + 1;
     // Primary action.
@@ -2394,8 +2416,15 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
         return;
     };
     let n = inv.qr.len() as u16;
-    let qw = n + 4;
-    let qh = (n + 4).div_ceil(2);
+    // A four-module quiet zone (the standard) wherever it fits beside or above the
+    // text, two only when the alternative is no QR.
+    let q: u16 = if r.height >= (n + 8).div_ceil(2) + 4 && r.width >= n + 8 {
+        4
+    } else {
+        2
+    };
+    let qw = n + 2 * q;
+    let qh = (n + 2 * q).div_ceil(2);
     let side_by_side = r.width >= qw + 44 && r.height >= qh;
     let (qx, qy, tx, ty, tw) = if side_by_side {
         // The QR and the text column centre as one group, the column as wide as its
@@ -2423,8 +2452,8 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
         for row in 0..qh {
             for col in 0..qw {
                 let (t, b) = (
-                    module(row as i32 * 2 - 2, col as i32 - 2),
-                    module(row as i32 * 2 - 1, col as i32 - 2),
+                    module(row as i32 * 2 - q as i32, col as i32 - q as i32),
+                    module(row as i32 * 2 + 1 - q as i32, col as i32 - q as i32),
                 );
                 let (f, bg) = (if t { dark } else { light }, if b { dark } else { light });
                 let st = match cx.c.color {
@@ -2752,7 +2781,7 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) -> (String, String)
     let how = if cx.size() == Size::Xs {
         ""
     } else {
-        "A key applies at once; u undoes. "
+        "Each press applies at once; u undoes. "
     };
     let msg = format!(
         "{how}{users} open session{} cross{} this link.",
@@ -2924,7 +2953,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         ("⌫", "stop"),
         ("`", "hub"),
         ("esc", "back"),
-        ("ctrl \\", "detach"),
+        ("ctrl+\\", "detach"),
     ];
     let key = |k: &'static str| -> &'static str {
         if cx.uni() && !cx.touch() {
@@ -2939,35 +2968,48 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         }
     };
     if kw == 0 {
-        // Phone: a compact list in the order you use it.
-        let mut y = r.y + 1;
-        let items: Vec<(&str, &str)> = vec![
-            ("letter", "open that device"),
-            ("then a s d", "attach its session"),
-            ("then c x n", "new claude/codex/shell"),
-            ("then f / e", "files / links"),
-            ("then del", "stop a session"),
-            ("ret / spc", "open / peek"),
-            ("/", "find anything"),
-            ("+ / K", "invite / keys"),
-            ("esc / `", "back / hub"),
-            ("ctrl \\", "detach"),
+        // Phone: a compact list in the order you use it, centred. Keycaps hold only
+        // real keys; `then` is plain text in its own column, so the keys and the
+        // descriptions sit on fixed columns.
+        let dk: Vec<String> = devs.iter().take(3).map(|d| d.hotkey.to_string()).collect();
+        let dk: Vec<&str> = dk.iter().map(String::as_str).collect();
+        let del = if cx.uni() { "del" } else { "bksp" };
+        let items: Vec<(&str, Vec<&str>, &str)> = vec![
+            ("", dk, "open that device"),
+            ("then", vec!["a", "s", "d"], "attach its session"),
+            ("then", vec!["c", "x", "n"], "claude/codex/shell"),
+            ("then", vec!["f", "e"], "files / link"),
+            ("then", vec![del], "stop a session"),
+            ("", vec!["ret", "spc"], "open / peek"),
+            ("", vec!["-"], "last session"),
+            ("", vec!["/"], "find anything"),
+            ("", vec!["+", "K"], "invite / keys"),
+            ("", vec!["esc", "`"], "back / hub"),
+            ("", vec!["ctrl+\\"], "detach"),
         ];
-        for (k, v) in items {
+        let n = items.len() as u16;
+        let mut y = r.y + r.height.saturating_sub(n) / 2;
+        let kx = r.x + 6;
+        let dx = kx + 13;
+        for (row, (lead, keys, v)) in items.into_iter().enumerate() {
             if y >= r.bottom() {
                 break;
             }
-            let k = if cx.uni() {
-                k.to_string()
-            } else {
-                super::asciify(k).replace('>', "ret")
-            };
-            cx.put(buf, r.x + 1, y, 12, &format!(" {k} "), cx.key_style());
+            cx.put(buf, r.x + 1, y, 4, lead, cx.st(Tok::Muted));
+            let mut x = kx;
+            for (j, k) in keys.into_iter().enumerate() {
+                // The first row's letters are devices: their own keycap hue.
+                let st = match devs.get(j).filter(|_| row == 0) {
+                    Some(d) => cx.chip_style(cx.s.hue(&d.id)),
+                    None => cx.key_style(),
+                };
+                x += cx.put(buf, x, y, 9, &format!(" {k} "), st) + 1;
+            }
             cx.put(
                 buf,
-                r.x + 14,
+                dx,
                 y,
-                r.width.saturating_sub(15),
+                r.width.saturating_sub(dx - r.x + 1),
                 v,
                 cx.ink(Tok::Fg, 0.9),
             );
@@ -3030,12 +3072,33 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         .find(|p| n_g % p == 0)
         .unwrap_or(1);
     let glob_rows = n_g.div_ceil(per_g);
-    let base_h = 2 + 9 + leg_rows + 1 + glob_rows;
+    let base0 = 2 + 9 + leg_rows + 1 + glob_rows;
+    // The number-row stub only where it costs no global key (the legend has `-` too).
+    let stub = base0 + 3 + 2 < r.height;
+    let base_h = base0 + if stub { 3 } else { 0 };
     let full_dev = base_h + 11 <= r.height.saturating_sub(1);
     let total = base_h + if full_dev { 11 } else { 2 };
     let mut y = r.y + 1 + r.height.saturating_sub(total + 1) / 2;
     zone(cx, buf, x0, y, right, "HUB", true);
     y += 2;
+    // A number-row stub with the two keys of the round trip: `` ` `` (hub) and `-`
+    // (the last session, the way back after a detach).
+    let stubs = if stub {
+        vec![(x0, '`', "hub"), (x0 + 9 * (kw + 1), '-', "last")]
+    } else {
+        Vec::new()
+    };
+    for (x, k, label) in stubs {
+        let ks = cx.key_style();
+        if cx.has_surface() {
+            cx.fill(buf, Rect::new(x, y, kw, 2), ks);
+        }
+        cx.put(buf, x + 1, y, 1, &k.to_string(), ks.add_modifier(Modifier::BOLD));
+        cx.put(buf, x + 1, y + 1, kw - 1, label, ks);
+    }
+    if stub {
+        y += 3;
+    }
     key_rows(
         y,
         buf,
@@ -3055,6 +3118,9 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
             }
             None => match c {
                 '/' => ("find".into(), cx.key_style()),
+                // Never device letters: motion in the sessions row and the phone tree.
+                'j' => ("down".into(), cx.key_style()),
+                'k' => ("up".into(), cx.key_style()),
                 // `e` then a letter: the link from this device to that one.
                 'e' => ("link".into(), cx.key_style()),
                 _ => (String::new(), Style::default()),

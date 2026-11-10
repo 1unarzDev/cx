@@ -1211,7 +1211,9 @@ pub fn large() -> LabState {
         ("old-thinkpad-x220", Laptop, Down),
         ("vps-fra1", Server, Online),
     ];
-    let keys = "adefghjkmopqruvwxyz";
+    // `e` is never a device (it is the hub's link verb); `j` and `k` are hub motion, so
+    // they are assigned last, only past 23 devices.
+    let keys = "adfghmopqruvwxyzjk";
     for (i, (name, kind, status)) in extra.iter().enumerate() {
         let seed = 100 + i as u32;
         let up = matches!(status, Online | Stale);

@@ -86,7 +86,9 @@ pub(crate) trait Probe {
 }
 
 /// A probe that knows nothing; detection then uses the environment alone.
+#[cfg(test)]
 pub(crate) struct NoProbe;
+#[cfg(test)]
 impl Probe for NoProbe {}
 
 impl Caps {
@@ -189,12 +191,6 @@ impl Caps {
             nerd_font_likely: kitty || ghostty || wezterm,
             icons: get("CX_ICONS").as_deref() == Some("1"),
         }
-    }
-
-    /// Phone layout: always below 60 columns, and up to 70 on a phone terminal
-    /// in portrait (rows > cols x 0.5).
-    pub(crate) fn prefers_xs(&self, cols: u16, rows: u16) -> bool {
-        cols < 60 || (self.phone && cols < 70 && u32::from(rows) * 2 > u32::from(cols))
     }
 
     /// One bounded line for debug logs: no environment values, only verdicts.
@@ -822,13 +818,10 @@ mod tests {
             UTF8,
         ]);
         assert!(termux.termux && termux.phone);
-        assert!(
-            termux.prefers_xs(66, 40) && !termux.prefers_xs(66, 20) && !termux.prefers_xs(80, 60)
-        );
         let blink = detect(&[("TERM", "xterm-256color"), ("TERM_PROGRAM", "Blink"), UTF8]);
         assert!(blink.phone && !blink.termux);
         let desk = detect(&[("TERM", "foot"), UTF8]);
-        assert!(!desk.phone && desk.prefers_xs(40, 20) && !desk.prefers_xs(66, 40));
+        assert!(!desk.phone);
 
         assert_eq!(
             detect(&[("CX_THEME", "light")]).background,

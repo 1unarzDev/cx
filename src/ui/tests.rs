@@ -392,14 +392,15 @@ fn markdown_lists_continuations_unicode_and_code_keep_layout() {
         assert!(lines.iter().all(|l| l.width() <= usize::from(width)
             || l.spans.iter().any(|s| s.content.contains("literal code"))));
     }
-    let raw = preview_inline(
+    let raw = preview_inline_tagged(
         "Unsupported $\\begin{matrix}x_1\\end{matrix}$ and escaped \\$x^2\\$ and `x^2`",
+        false,
     );
     let content = raw.iter().map(|s| s.content.as_ref()).collect::<String>();
     assert!(content.contains("$\\begin{matrix}x_1\\end{matrix}$"));
     assert!(content.contains("\\$x^2\\$"));
     assert_eq!(
-        preview_inline("Costs $5 and $10")
+        preview_inline_tagged("Costs $5 and $10", false)
             .iter()
             .map(|s| s.content.as_ref())
             .collect::<String>(),
@@ -7472,28 +7473,26 @@ fn loading_peek_capture_dump() {
             Color::Reset => serde_json::Value::Null,
             Color::Rgb(r, g, b) => serde_json::json!(format!("#{r:02x}{g:02x}{b:02x}")),
             Color::Indexed(i) => serde_json::json!(i),
-            named => serde_json::json!(
-                [
-                    Color::Black,
-                    Color::Red,
-                    Color::Green,
-                    Color::Yellow,
-                    Color::Blue,
-                    Color::Magenta,
-                    Color::Cyan,
-                    Color::Gray,
-                    Color::DarkGray,
-                    Color::LightRed,
-                    Color::LightGreen,
-                    Color::LightYellow,
-                    Color::LightBlue,
-                    Color::LightMagenta,
-                    Color::LightCyan,
-                    Color::White,
-                ]
-                .iter()
-                .position(|c| *c == named)
-            ),
+            named => serde_json::json!([
+                Color::Black,
+                Color::Red,
+                Color::Green,
+                Color::Yellow,
+                Color::Blue,
+                Color::Magenta,
+                Color::Cyan,
+                Color::Gray,
+                Color::DarkGray,
+                Color::LightRed,
+                Color::LightGreen,
+                Color::LightYellow,
+                Color::LightBlue,
+                Color::LightMagenta,
+                Color::LightCyan,
+                Color::White,
+            ]
+            .iter()
+            .position(|c| *c == named)),
         };
         let cells: Vec<Vec<_>> = buffer
             .content

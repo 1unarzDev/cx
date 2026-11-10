@@ -47,9 +47,6 @@ pub(super) fn markdown_link_tag(target: &str) -> Color {
     let hash = sha2::Sha256::digest(target.as_bytes());
     Color::Rgb(hash[0], hash[1], hash[2])
 }
-pub(super) fn preview_inline(text: &str) -> Vec<Span<'static>> {
-    preview_inline_tagged(text, false)
-}
 pub(super) fn preview_inline_tagged(text: &str, tagged: bool) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut at = 0;

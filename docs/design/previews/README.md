@@ -1,5 +1,19 @@
 # cx redesign preview
 
+## Converged design
+
+Mission control plus the judges' grafts, after 6 critic rounds (final scores: lowest axis 7/10, average 8.0; not yet at the 9/10 target). Dark truecolor at 120×40 unless noted.
+
+<table>
+<tr><td width="33%" valign="top"><img src="final/hub-120x40.png" alt="Network hub (start view)" width="100%"><br><sub>Network hub (start view)</sub></td><td width="33%" valign="top"><img src="final/device-innovation-120x40.png" alt="Device: innovation" width="100%"><br><sub>Device: innovation</sub></td><td width="33%" valign="top"><img src="final/session-refactor-120x40.png" alt="Attached session" width="100%"><br><sub>Attached session</sub></td></tr>
+<tr><td width="33%" valign="top"><img src="final/files-120x40.png" alt="Files" width="100%"><br><sub>Files</sub></td><td width="33%" valign="top"><img src="final/file-preview-120x40.png" alt="File preview" width="100%"><br><sub>File preview</sub></td><td width="33%" valign="top"><img src="final/edge-tranquility_innovation-120x40.png" alt="Edge policy" width="100%"><br><sub>Edge policy</sub></td></tr>
+<tr><td width="33%" valign="top"><img src="final/palette-inno-120x40.png" alt="Command palette" width="100%"><br><sub>Command palette</sub></td><td width="33%" valign="top"><img src="final/join-120x40.png" alt="Join code" width="100%"><br><sub>Join code</sub></td><td width="33%" valign="top"><img src="final/secrets-120x40.png" alt="Keys / secrets" width="100%"><br><sub>Keys / secrets</sub></td></tr>
+<tr><td width="33%" valign="top"><img src="final/onboarding-120x40.png" alt="First-run onboarding" width="100%"><br><sub>First-run onboarding</sub></td><td width="33%" valign="top"><img src="final/help-120x40.png" alt="Help" width="100%"><br><sub>Help</sub></td><td width="33%" valign="top"><img src="final/hub-40x20.png" alt="Phone: hub (40×20)" width="100%"><br><sub>Phone: hub (40×20)</sub></td></tr>
+<tr><td width="33%" valign="top"><img src="final/hub-120x40-light-truecolor.png" alt="Hub, light theme" width="100%"><br><sub>Hub, light theme</sub></td><td width="33%" valign="top"><img src="final/hub-120x40-dark-16.png" alt="Hub, 16 colours" width="100%"><br><sub>Hub, 16 colours</sub></td><td width="33%" valign="top"><img src="final/hub-120x40-ascii.png" alt="Hub, ASCII" width="100%"><br><sub>Hub, ASCII</sub></td></tr>
+</table>
+
+## The four original concepts
+
 Four concepts from the cx UI redesign studio, rendered from the synthetic lab fixture (same devices and sessions in each). These are in-progress captures, not the shipped UI; critics are still iterating on each concept, and judges will pick a direction. All images are real terminal cell renders at 120×40 (phone: 40×20), dark truecolor.
 
 ## At a glance: the network hub

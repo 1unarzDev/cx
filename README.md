@@ -5,11 +5,11 @@ CX is a lightweight terminal workspace for SSH devices, persistent shells, Claud
 
 ## Redesign preview
 
-In-progress concepts for the cx UI redesign. [See all concepts and screens →](docs/design/previews/README.md)
+The converged cx design: **Mission control**, the judges' unanimous pick, with grafts from the other concepts (orbital mesh hub, one-line alert ticker, underlined device hotkeys, full-screen sessions with a `ctrl+\ detach` chip, an indented device tree on phones). In-progress lab renders from synthetic data, not the shipped UI. [All screens and the four original concepts →](docs/design/previews/README.md)
 
 <table>
-<tr><td width="50%" valign="top"><b>Constellation</b><br><img src="docs/design/previews/constellation/hub-120x40.png" alt="Constellation hub" width="100%"></td><td width="50%" valign="top"><b>Stage</b><br><img src="docs/design/previews/stage/hub-120x40.png" alt="Stage hub" width="100%"></td></tr>
-<tr><td width="50%" valign="top"><b>Mission control</b><br><img src="docs/design/previews/mission/hub-120x40.png" alt="Mission control hub" width="100%"></td><td width="50%" valign="top"><b>Focus flow</b><br><img src="docs/design/previews/focus-flow/hub-120x40.png" alt="Focus flow hub" width="100%"></td></tr>
+<tr><td width="33%" valign="top"><img src="docs/design/previews/final/hub-120x40.png" alt="Network hub (start view)" width="100%"><br><sub>Network hub (start view)</sub></td><td width="33%" valign="top"><img src="docs/design/previews/final/device-innovation-120x40.png" alt="Device: innovation" width="100%"><br><sub>Device: innovation</sub></td><td width="33%" valign="top"><img src="docs/design/previews/final/session-refactor-120x40.png" alt="Attached session" width="100%"><br><sub>Attached session</sub></td></tr>
+<tr><td width="33%" valign="top"><img src="docs/design/previews/final/files-120x40.png" alt="Files" width="100%"><br><sub>Files</sub></td><td width="33%" valign="top"><img src="docs/design/previews/final/file-preview-120x40.png" alt="File preview" width="100%"><br><sub>File preview</sub></td><td width="33%" valign="top"><img src="docs/design/previews/final/edge-tranquility_innovation-120x40.png" alt="Edge policy" width="100%"><br><sub>Edge policy</sub></td></tr>
 </table>
 
 ## Get started

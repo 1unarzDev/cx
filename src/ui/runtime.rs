@@ -280,6 +280,8 @@ pub(super) fn spawn_exit_watchdog(stopping: std::sync::Arc<std::sync::atomic::At
                 stop_seen += 1;
             }
             if terminal_gone() || stop_seen >= 6 {
+                // _exit skips destructors: drop the askpass directory first.
+                crate::auth::sweep_askpass_dirs(true);
                 // SAFETY: _exit is async-signal-safe and skips destructors on purpose.
                 unsafe { libc::_exit(1) }
             }

@@ -56,6 +56,42 @@ impl Drop for PrivateDir {
     }
 }
 
+/// Remove askpass directories this user left in the temp dir: those of dead
+/// viewers (a killed process skips `PrivateDir`'s drop) and, with `own`, this
+/// process's (its exit path skips destructors). Only `cx-askpass-<pid>-*`
+/// directories owned by us are touched, and only their socket is deleted.
+pub fn sweep_askpass_dirs(own: bool) {
+    sweep_askpass_in(&std::env::temp_dir(), own);
+}
+fn sweep_askpass_in(dir: &std::path::Path, own: bool) {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let me = std::process::id();
+    let uid = unsafe { libc::geteuid() };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix("cx-askpass-"))
+            .and_then(|rest| rest.split_once('-'))
+            .and_then(|(pid, _)| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let path = entry.path();
+        let ours = fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir() && m.uid() == uid);
+        // kill(pid, 0) fails with ESRCH only when no such process exists.
+        let dead = pid != me
+            && unsafe { libc::kill(pid as libc::pid_t, 0) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if ours && (dead || (own && pid == me)) {
+            drop(PrivateDir(path));
+        }
+    }
+}
+
 // Volatile clearing is best effort; the UI and OpenSSH also hold transient copies.
 fn clear(bytes: &mut [u8]) {
     for byte in bytes {
@@ -247,6 +283,7 @@ pub struct Pending {
 }
 impl Broker {
     pub fn start() -> Result<Broker> {
+        sweep_askpass_dirs(false);
         let token = nonce()?;
         let directory = std::env::temp_dir().join(format!(
             "cx-askpass-{}-{}",
@@ -445,6 +482,30 @@ pub fn with_broker(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn askpass_sweep_removes_only_dead_or_own_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead = child.id();
+        child.wait().unwrap();
+        let me = std::process::id();
+        let make = |name: String| {
+            let path = tmp.path().join(name);
+            fs::create_dir(&path).unwrap();
+            fs::write(path.join("askpass"), b"").unwrap();
+            path
+        };
+        let stale = make(format!("cx-askpass-{dead}-0123456789abcdef"));
+        let live = make("cx-askpass-1-0123456789abcdef".into());
+        let mine = make(format!("cx-askpass-{me}-0123456789abcdef"));
+        let other = make(format!("not-cx-{dead}"));
+        super::sweep_askpass_in(tmp.path(), false);
+        assert!(!stale.exists(), "a dead viewer's directory stays");
+        assert!(live.exists() && mine.exists() && other.exists());
+        super::sweep_askpass_in(tmp.path(), true);
+        assert!(!mine.exists(), "own directory survives the exit sweep");
+        assert!(live.exists() && other.exists());
+    }
     use super::*;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},

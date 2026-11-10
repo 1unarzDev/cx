@@ -23,7 +23,6 @@ use std::{
 
 pub mod cloudflare;
 pub mod code;
-mod ed25519;
 pub mod ranges;
 pub mod ssh_overlay;
 pub mod tailscale;

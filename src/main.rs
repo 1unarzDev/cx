@@ -1722,12 +1722,14 @@ fn run() -> Result<()> {
                     );
                 }
                 DeviceCommand::Remove { name } => {
-                    let removed = store::remove_device(&name)?;
+                    // Also unpins it and drops its cx-managed-peer authorization (MB-9/MB-12).
+                    let (removed, ssh) = peer_ssh::remove_device(&name)?;
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "removed": removed.name,
                             "id": removed.id,
+                            "ssh": ssh,
                         }))?
                     );
                 }

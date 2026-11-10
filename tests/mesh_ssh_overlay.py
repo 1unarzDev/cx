@@ -113,6 +113,10 @@ SetEnv {setenv}
         line = [l for l in authorized(viewer).splitlines() if "cx-join-invite:" in l]
         assert len(line) == 1 and line[0].startswith("restrict,command=") and "expiry-time=" in line[0], line
         assert f"{binary} mesh pair --redeem " in line[0]
+        # ssh-keygen made the invite key in a private scratch dir that is gone again: the code is its only copy.
+        mesh_state = viewer / "state/cx/mesh/ssh-overlay"
+        assert not [p.name for p in mesh_state.iterdir() if p.name.startswith(("invite-key-", "join-"))], list(mesh_state.iterdir())
+        assert not [p for p in viewer.rglob("*") if p.is_file() and "OPENSSH PRIVATE KEY" in p.read_text(errors="ignore") and "peer-ssh" not in str(p) and ".ssh" not in p.parts], "no invite key file kept"
 
         daemon = start("host")
         # Takeover: an invite holder claiming an enrolled identity (here a directed device with no
@@ -139,6 +143,7 @@ SetEnv {setenv}
         assert joined["joined"] and joined["target"] == f"{account}@127.0.0.1" and joined["as"] != "", joined
         result["joined"] = True
 
+        assert not [p.name for p in (joiner / "state/cx/mesh/ssh-overlay").iterdir() if p.name.startswith("join-")], "joiner scratch removed"
         # The viewer: the invite is burnt, the joiner enrolled as core with a restricted managed key.
         assert "cx-join-invite:" not in authorized(viewer), "invite authorization removed after use"
         managed = [l for l in authorized(viewer).splitlines() if l.endswith(" cx-managed-peer")]
@@ -198,6 +203,16 @@ SetEnv {setenv}
         gone = json.loads(cx(venv, "mesh", "revoke", "rover", "--backend", "ssh-overlay", "--yes", "--json").stdout)
         assert gone["ssh"]["authorizations_removed"] == 1, gone
         assert not any(l.endswith(" cx-managed-peer") for l in authorized(viewer).splitlines())
+        # `cx device remove` on the joiner does the same for the viewer: no pin, no managed line, user lines kept.
+        (joiner / ".ssh/authorized_keys").write_text(authorized(joiner) + "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl user-own\n")
+        vname = [d["name"] for d in devices(joiner) if d.get("target")][0]
+        removed = json.loads(cx(jenv, "device", "remove", vname).stdout)
+        assert removed["ssh"] == {"unpinned": 1, "authorizations_removed": 1}, removed
+        assert not any(l.endswith(" cx-managed-peer") for l in authorized(joiner).splitlines())
+        assert authorized(joiner).endswith(" user-own\n"), "the user's own line is kept"
+        assert (joiner / "state/cx/peer-ssh/known_hosts").read_text() == ""
+        assert not [d for d in devices(joiner) if d.get("target")]
+        result["device_remove_revokes_ssh"] = True
         audit = json.loads(cx(venv, "mesh", "audit", "--backend", "ssh-overlay", "--json").stdout)
         assert [a["action"] for a in audit][:2] == ["revoke", "teardown"], audit
         assert "join" in [a["action"] for a in audit]

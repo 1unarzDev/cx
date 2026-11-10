@@ -182,15 +182,17 @@ cx mesh pair 06RRQ-B741Q-E4FQ7-...   # or, with --short on a Cloudflare mesh: cx
 A **direct code** is Crockford base32. Input ignores case, `I`/`L` read as `1` and `O` as `0`, and dashes are
 ignored. It holds:
 
-- a version
-- an 8-byte one-time token
+- a version (2)
+- the one-time *invite key*: an Ed25519 key `ssh-keygen` made for this invite, as its 32-byte seed and 32-byte
+  public half
 - the first 10 bytes of the SHA-256 of the viewer's SSH Ed25519 host key
 - the expiry (to the minute)
 - the viewer's SSH account
 - 1 to 4 addresses (IPv4/IPv6; the format has room for a port, but cx pairs over port 22 only)
 - a CRC-16 checksum
 
-With one IPv4 address it is about 60 characters. A single mistyped character always fails the checksum.
+With one IPv4 address it is about 150 characters, meant to be pasted (or use a short code). A single mistyped
+character always fails the checksum.
 
 A 10 to 12 character code cannot carry an address and a host key pin at a useful strength. So the **short code**
 (12 symbols: 50 random bits and a CRC-10 check) exists only with a `cloudflare-warp` mesh Worker. cx seals the
@@ -200,8 +202,9 @@ direct code (SHA-256 keystream with HMAC-SHA256, keys derived from the short cod
 
 **The protocol.**
 
-1. **The viewer creates the invite.** The token derives an Ed25519 *invite key* (seed = SHA-512 of a label and
-   the token). The viewer appends only its public half to `~/.ssh/authorized_keys`:
+1. **The viewer creates the invite.** `ssh-keygen -t ed25519` makes the invite key in a private scratch directory
+   under the mesh state directory; cx reads its seed and public half into the code and removes the files, so the
+   code is the only copy. The viewer appends only the public half to `~/.ssh/authorized_keys`:
    `restrict,command="<cx> mesh pair --redeem <id>",expiry-time="<UTC>Z" ssh-ed25519 … cx-join-invite:<id>`.
 2. **The joiner checks the host key.** It decodes the code and checks the expiry, the port, and its own name,
    host name, account and machine id (what the viewer would refuse, before any invite is used). It runs `ssh-keyscan -t ed25519`
@@ -209,7 +212,8 @@ direct code (SHA-256 keystream with HMAC-SHA256, keys derived from the short cod
    attempt before any authentication.
 3. **The joiner connects.** It writes the accepted key as the only known host and connects with
    `ssh -F none -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes`, with no agent and no forwarding, using the
-   invite key derived from the code.
+   invite key from the code, written as an OpenSSH private key file (0600, in a private scratch directory removed
+   afterwards). cx only formats the file: OpenSSH made the key and does every signature with it.
 4. **The viewer redeems.** sshd runs only the forced redeem command. The command takes one framed request (`CX1
    <len>` plus JSON, at most 64 KiB):
    - It burns the invite first (single use) and removes its `authorized_keys` line.
@@ -224,7 +228,7 @@ direct code (SHA-256 keystream with HMAC-SHA256, keys derived from the short cod
    The viewer has then recorded the joiner already, and the error says to revoke it there before joining again. `cx device sync` then verifies both directions with the existing pairing.
 
 `cx mesh revoke NAME --backend ssh-overlay --yes` removes the device, its pins and exactly its `cx-managed-peer`
-line. `cx device remove` does not yet remove the pins and that line, so use revoke for a paired device.
+line. `cx device remove NAME` does the same (its JSON reports `ssh.unpinned` and `ssh.authorizations_removed`).
 `cx mesh teardown --backend ssh-overlay --yes` cancels pending invites, and every invite line no longer pending
 (expired ones included) is removed then and whenever an invite is created. Invites, redemptions and refusals are
 in `~/.local/state/cx/mesh/ssh-overlay/audit.jsonl`. cx device targets carry no port, so invites and joins refuse
@@ -244,9 +248,9 @@ any SSH port other than 22.
 - **Substitution.** An attacker who swaps the code can make the joiner pair with *their* host. The checksum does
   not stop this: only the delivery channel does.
 - **Network attacker (no code).** They cannot impersonate the viewer: the 80-bit host key pin needs a second
-  preimage of SHA-256. They cannot use the invite: authenticating needs the token, at 64 bits, online only and
-  rate limited by sshd, with expiry enforced by both sshd (`expiry-time`) and cx. Replaying the session is
-  defeated by SSH itself.
+  preimage of SHA-256. They cannot use the invite: authenticating needs the invite key's private half, which only
+  the code carries, with expiry enforced by both sshd (`expiry-time`) and cx. Replaying the session is defeated by
+  SSH itself.
 - **What sshd allows the invite key.** `restrict` disables PTY, forwarding, agent and X11. The forced command
   ignores the requested command. The line disappears at redemption, at teardown, or when sshd's expiry passes.
 - **What the joiner's own key may do.** Everything the viewer's account may do, in a shell: `cx-managed-peer` keys
@@ -281,8 +285,12 @@ sshd use a free port):
   worker.js over local HTTPS with an in-memory D1), then `cx mesh pair <host>/<code>` and its single use
 - `cx mesh backends` with a fake `tailscale` on PATH, and no WARP claim without a WARP config
 
-The Rust unit tests cover code encoding, decoding, the checksum and expiry, Ed25519 derivation (RFC 8032 vectors
-and `ssh-keygen -Y` signatures), ranges and collisions, and backend mapping.
+The Rust unit tests cover code encoding, decoding, the checksum and expiry, the invite key's trip through the code
+(made by `ssh-keygen`, rebuilt from the code, read back by `ssh-keygen -y`, and signing with `ssh-keygen -Y sign`
+verified by `-Y verify` against an `allowed_signers` entry in the `cx-pair@v1` namespace), the key-file parser's
+refusals (other key types, a passphrase, inconsistent halves), ranges and collisions, and backend mapping. The
+loopback test also checks that no invite key file or scratch directory is left behind and that `cx device remove`
+revokes the pins and managed line on the joiner.
 
 `python3 tests/mesh_util.py` covers the profile excludes, the config, setup against a fake Cloudflare API
 (idempotent, dry run read-only, teardown complete and its dry run), a dry-run join, and the onboarding and

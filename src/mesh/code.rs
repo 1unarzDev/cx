@@ -3,19 +3,22 @@
 //! Two forms share Crockford base32 (0-9 A-Z without I L O U; input is case-insensitive, `I`/`L`
 //! read as 1 and `O` as 0, dashes and spaces are ignored):
 //! - A **direct code** carries everything the joiner needs: the viewer's SSH account and reachable
-//!   addresses, a one-time token, a truncated SHA-256 of the viewer's SSH host key, and the expiry,
-//!   followed by a CRC-16 that catches every single mistyped symbol. It is about 60 symbols, meant to be pasted.
+//!   addresses, the one-time invite key (an Ed25519 key `ssh-keygen` made: its 32-byte seed and public
+//!   half), a truncated SHA-256 of the viewer's SSH host key, and the expiry, followed by a CRC-16 that
+//!   catches every single mistyped symbol. It is about 150 symbols, meant to be pasted.
 //! - A **short code** is 12 symbols (50 random bits and a CRC-10), redeemable only through
 //!   a mesh Worker the owner runs: the Worker holds the direct code sealed under a key derived from
 //!   the short code, identified by a separate hash of it, and hands it out once.
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use sha2::{Digest, Sha256, Sha512};
+use sha2::{Digest, Sha256};
 use std::net::{IpAddr, SocketAddr};
 
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-pub const VERSION: u8 = 1;
-pub const TOKEN_LEN: usize = 8;
+/// 2: the invite key itself (seed and public half) instead of a token that derived it.
+pub const VERSION: u8 = 2;
+/// An Ed25519 seed followed by its public key, as in OpenSSH's private key section.
+pub const KEY_LEN: usize = 64;
 pub const FINGERPRINT_LEN: usize = 10;
 pub const SHORT_LEN: usize = 12;
 const MAX_ADDRESSES: usize = 4;
@@ -167,14 +170,26 @@ pub fn host_key_digest(key: &str) -> Result<[u8; 32]> {
     Ok(sha(&[&blob]))
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Direct {
-    pub token: [u8; TOKEN_LEN],
+    /// The invite key: seed, then public key. A bearer secret, kept out of Debug.
+    pub key: [u8; KEY_LEN],
     pub fingerprint: [u8; FINGERPRINT_LEN],
     /// Unix seconds, minute precision.
     pub expires: u64,
     pub account: String,
     pub addresses: Vec<SocketAddr>,
+}
+
+impl std::fmt::Debug for Direct {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Direct")
+            .field("invite", &self.invite_id())
+            .field("expires", &self.expires)
+            .field("account", &self.account)
+            .field("addresses", &self.addresses)
+            .finish_non_exhaustive()
+    }
 }
 
 fn valid_account(a: &str) -> bool {
@@ -186,10 +201,12 @@ fn valid_account(a: &str) -> bool {
 }
 
 impl Direct {
+    /// `key` is the invite key's seed and public half ([`parse_openssh_private`] of what `ssh-keygen` wrote).
     pub fn new(
         account: &str,
         addresses: Vec<SocketAddr>,
         host_key: &str,
+        key: [u8; KEY_LEN],
         ttl_secs: u64,
         now: u64,
     ) -> Result<Self> {
@@ -204,7 +221,7 @@ impl Direct {
         let mut fingerprint = [0u8; FINGERPRINT_LEN];
         fingerprint.copy_from_slice(&host_key_digest(host_key)?[..FINGERPRINT_LEN]);
         Ok(Self {
-            token: random()?,
+            key,
             fingerprint,
             expires: (now + ttl_secs).div_ceil(60) * 60,
             account: account.into(),
@@ -214,7 +231,7 @@ impl Direct {
 
     fn payload(&self) -> Vec<u8> {
         let mut p = vec![VERSION];
-        p.extend_from_slice(&self.token);
+        p.extend_from_slice(&self.key);
         p.extend_from_slice(&self.fingerprint);
         p.extend_from_slice(&((self.expires / 60) as u32).to_be_bytes());
         p.push(self.account.len() as u8);
@@ -254,7 +271,7 @@ impl Direct {
         );
         let bytes = decode_bytes(&sym);
         anyhow::ensure!(
-            bytes.len() >= 1 + TOKEN_LEN + FINGERPRINT_LEN + 4 + 2 + 2,
+            bytes.len() >= 1 + KEY_LEN + FINGERPRINT_LEN + 4 + 2 + 2,
             "join code too short"
         );
         let (body, check) = bytes.split_at(bytes.len() - 2);
@@ -278,8 +295,8 @@ impl Direct {
             body[0]
         );
         let mut r = Reader { b: body, i: 1 };
-        let mut token = [0u8; TOKEN_LEN];
-        token.copy_from_slice(r.take(TOKEN_LEN)?);
+        let mut key = [0u8; KEY_LEN];
+        key.copy_from_slice(r.take(KEY_LEN)?);
         let mut fingerprint = [0u8; FINGERPRINT_LEN];
         fingerprint.copy_from_slice(r.take(FINGERPRINT_LEN)?);
         let minutes = u32::from_be_bytes(r.take(4)?.try_into()?);
@@ -315,7 +332,7 @@ impl Direct {
         }
         anyhow::ensure!(r.i == body.len(), "join code has trailing data");
         Ok(Self {
-            token,
+            key,
             fingerprint,
             expires: minutes as u64 * 60,
             account,
@@ -331,24 +348,132 @@ impl Direct {
         host_key_digest(key).is_ok_and(|d| eq(&d[..FINGERPRINT_LEN], &self.fingerprint))
     }
 
-    /// The invite's Ed25519 seed; the viewer authorizes its public key, the joiner signs with it.
-    pub fn invite_seed(&self) -> [u8; 32] {
-        let mut h = Sha512::new();
-        h.update(b"cx-join-v1 invite key");
-        h.update(self.token);
-        let d = h.finalize();
-        let mut seed = [0u8; 32];
-        seed.copy_from_slice(&d[..32]);
-        seed
+    /// `ssh-ed25519 AAAA...`: what the viewer authorizes for the forced redeem command.
+    pub fn invite_public(&self) -> String {
+        openssh_public(&self.key[32..])
     }
 
-    /// A stable id of the invite that never reveals the token.
+    /// The invite key as an unencrypted OpenSSH private key file, for the joiner's `ssh -i`.
+    pub fn invite_private(&self) -> Result<String> {
+        openssh_private(&self.key, "cx-join", u32::from_be_bytes(random()?))
+    }
+
+    /// A stable id of the invite, from its public half (never the secret seed).
     pub fn invite_id(&self) -> String {
-        sha(&[b"cx-join-id-v1", &self.token])[..8]
+        sha(&[b"cx-join-id-v2", &self.key[32..]])[..8]
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect()
     }
+}
+
+// ---- the invite key's OpenSSH files: formatting only; OpenSSH makes the key and signs with it
+
+fn string(out: &mut Vec<u8>, b: &[u8]) {
+    out.extend_from_slice(&(b.len() as u32).to_be_bytes());
+    out.extend_from_slice(b);
+}
+
+fn ed25519_blob(public: &[u8]) -> Vec<u8> {
+    let mut blob = Vec::new();
+    string(&mut blob, b"ssh-ed25519");
+    string(&mut blob, public);
+    blob
+}
+
+fn openssh_public(public: &[u8]) -> String {
+    format!("ssh-ed25519 {}", STANDARD.encode(ed25519_blob(public)))
+}
+
+/// The base64 public key blob of an invite key (the second field of its `ssh-ed25519` line).
+pub fn openssh_public_blob(key: &[u8; KEY_LEN]) -> String {
+    STANDARD.encode(ed25519_blob(&key[32..]))
+}
+
+/// An unencrypted `openssh-key-v1` file for `key` (seed, then public). `check` is the random check word the
+/// format repeats twice.
+fn openssh_private(key: &[u8; KEY_LEN], comment: &str, check: u32) -> Result<String> {
+    let public = &key[32..];
+    let mut private = zeroize::Zeroizing::new(Vec::with_capacity(256));
+    private.extend_from_slice(&check.to_be_bytes());
+    private.extend_from_slice(&check.to_be_bytes());
+    string(&mut private, b"ssh-ed25519");
+    string(&mut private, public);
+    string(&mut private, key);
+    string(&mut private, comment.as_bytes());
+    let mut pad = 1u8;
+    while private.len() % 8 != 0 {
+        private.push(pad);
+        pad += 1;
+    }
+    let mut file = zeroize::Zeroizing::new(Vec::with_capacity(512));
+    file.extend_from_slice(b"openssh-key-v1\0");
+    string(&mut file, b"none");
+    string(&mut file, b"none");
+    string(&mut file, b"");
+    file.extend_from_slice(&1u32.to_be_bytes());
+    string(&mut file, &ed25519_blob(public));
+    string(&mut file, &private);
+    let encoded = zeroize::Zeroizing::new(STANDARD.encode(&*file));
+    let mut out = String::with_capacity(encoded.len() + 80);
+    out.push_str("-----BEGIN OPENSSH PRIVATE KEY-----\n");
+    for chunk in encoded.as_bytes().chunks(70) {
+        out.push_str(std::str::from_utf8(chunk)?);
+        out.push('\n');
+    }
+    out.push_str("-----END OPENSSH PRIVATE KEY-----\n");
+    Ok(out)
+}
+
+/// The seed and public key of an unencrypted Ed25519 `openssh-key-v1` file (what `ssh-keygen -t ed25519 -N ''`
+/// writes). Anything else (another key type, a passphrase, several keys, inconsistent halves) is refused.
+pub fn parse_openssh_private(text: &str) -> Result<[u8; KEY_LEN]> {
+    let body: zeroize::Zeroizing<String> = text
+        .lines()
+        .skip_while(|l| l.trim() != "-----BEGIN OPENSSH PRIVATE KEY-----")
+        .skip(1)
+        .take_while(|l| l.trim() != "-----END OPENSSH PRIVATE KEY-----")
+        .map(str::trim)
+        .collect::<String>()
+        .into();
+    let raw = zeroize::Zeroizing::new(
+        STANDARD
+            .decode(body.as_bytes())
+            .context("invite key file is not an OpenSSH private key")?,
+    );
+    let bad = || anyhow::anyhow!("invite key file is not an unencrypted Ed25519 OpenSSH key");
+    let mut r = Reader { b: &raw, i: 0 };
+    let field = |r: &mut Reader<'_>| -> Result<Vec<u8>> {
+        let n = u32::from_be_bytes(r.take(4)?.try_into()?) as usize;
+        Ok(r.take(n)?.to_vec())
+    };
+    anyhow::ensure!(r.take(15).ok() == Some(&b"openssh-key-v1\0"[..]), bad());
+    anyhow::ensure!(
+        field(&mut r)? == b"none" && field(&mut r)? == b"none",
+        bad()
+    );
+    anyhow::ensure!(
+        field(&mut r)?.is_empty() && r.take(4)? == 1u32.to_be_bytes(),
+        bad()
+    );
+    let public_blob = field(&mut r)?;
+    let private = zeroize::Zeroizing::new(field(&mut r)?);
+    anyhow::ensure!(r.i == raw.len(), bad());
+    let mut p = Reader { b: &private, i: 0 };
+    anyhow::ensure!(p.take(4)? == p.take(4)?, bad());
+    anyhow::ensure!(field(&mut p)? == b"ssh-ed25519", bad());
+    let public = field(&mut p)?;
+    let pair = zeroize::Zeroizing::new(field(&mut p)?);
+    anyhow::ensure!(
+        public.len() == 32
+            && pair.len() == KEY_LEN
+            && pair[32..] == public[..]
+            && public_blob == ed25519_blob(&public),
+        bad()
+    );
+    let mut key = [0u8; KEY_LEN];
+    key.copy_from_slice(&pair);
+    Ok(key)
 }
 
 struct Reader<'a> {
@@ -465,6 +590,11 @@ mod tests {
     const KEY: &str =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
 
+    /// Random stand-in key material: code tests need no real key pair.
+    fn invite() -> [u8; KEY_LEN] {
+        random().unwrap()
+    }
+
     fn sample() -> Direct {
         Direct::new(
             "lunar_z",
@@ -473,6 +603,7 @@ mod tests {
                 "[fd7a:115c:a1e0::5]:2222".parse().unwrap(),
             ],
             KEY,
+            invite(),
             3600,
             1_800_000_000,
         )
@@ -496,17 +627,18 @@ mod tests {
     fn direct_code_round_trips_with_normalization() {
         let d = sample();
         let code = d.encode();
-        assert!(code.replace('-', "").len() < 100, "{code} is pasteable");
+        assert!(code.replace('-', "").len() < 200, "{code} is pasteable");
         let one = Direct::new(
             "lunarz",
             vec!["192.168.1.20:22".parse().unwrap()],
             KEY,
+            invite(),
             3600,
             0,
         )
         .unwrap();
         assert!(
-            one.encode().replace('-', "").len() <= 64,
+            one.encode().replace('-', "").len() <= 160,
             "one IPv4 address: {}",
             one.encode()
         );
@@ -524,7 +656,138 @@ mod tests {
             "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
         ));
         assert_eq!(d.invite_id().len(), 16);
-        assert_ne!(d.invite_seed(), sample().invite_seed(), "tokens are random");
+        assert_ne!(
+            d.invite_id(),
+            sample().invite_id(),
+            "each invite has its own key"
+        );
+        // The secret half never shows in Debug (logs, panics).
+        let debug = format!("{d:?}");
+        assert!(!debug.contains(&format!("{:?}", &d.key[..8])), "{debug}");
+        assert!(debug.contains(&d.invite_id()));
+    }
+
+    /// OpenSSH makes the invite key; the file the joiner rebuilds from the code is one OpenSSH reads back to the
+    /// same public key and signs with, verified against an allowed_signers entry for the public half the viewer
+    /// authorizes (namespace cx-pair@v1).
+    #[test]
+    fn openssh_key_survives_the_code_and_signs() {
+        let run = |args: &[&str], dir: &std::path::Path| {
+            std::process::Command::new("ssh-keygen")
+                .args(args)
+                .current_dir(dir)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let made = run(
+            &["-q", "-t", "ed25519", "-N", "", "-C", "c", "-f", "made"],
+            d,
+        );
+        assert!(made.status.success());
+        let made_text = std::fs::read_to_string(d.join("made")).unwrap();
+        let key = parse_openssh_private(&made_text).unwrap();
+        let generated_pub = std::fs::read_to_string(d.join("made.pub")).unwrap();
+        let code =
+            Direct::new("u", vec!["127.0.0.1:22".parse().unwrap()], KEY, key, 60, 0).unwrap();
+        let joined = Direct::decode(&code.encode()).unwrap();
+        assert!(generated_pub.starts_with(&joined.invite_public()));
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(d.join("rebuilt"))
+            .unwrap()
+            .write_all(joined.invite_private().unwrap().as_bytes())
+            .unwrap();
+        let y = run(&["-y", "-f", "rebuilt"], d);
+        assert!(y.status.success());
+        assert!(String::from_utf8(y.stdout)
+            .unwrap()
+            .starts_with(&joined.invite_public()));
+        std::fs::write(d.join("m"), b"cx pair").unwrap();
+        let sign = run(&["-Y", "sign", "-n", "cx-pair@v1", "-f", "rebuilt", "m"], d);
+        assert!(
+            sign.status.success(),
+            "{}",
+            String::from_utf8_lossy(&sign.stderr)
+        );
+        std::fs::write(
+            d.join("allowed_signers"),
+            format!(
+                "viewer namespaces=\"cx-pair@v1\" {}\n",
+                code.invite_public()
+            ),
+        )
+        .unwrap();
+        let verify = |namespace: &str| {
+            std::process::Command::new("ssh-keygen")
+                .args([
+                    "-Y",
+                    "verify",
+                    "-f",
+                    "allowed_signers",
+                    "-I",
+                    "viewer",
+                    "-n",
+                    namespace,
+                    "-s",
+                    "m.sig",
+                ])
+                .current_dir(d)
+                .stdin(std::fs::File::open(d.join("m")).unwrap())
+                .output()
+                .unwrap()
+                .status
+                .success()
+        };
+        assert!(verify("cx-pair@v1"));
+        assert!(!verify("cx-other@v1"), "the namespace is bound");
+        // The parser refuses what ssh-keygen -N '' never writes for an invite.
+        assert!(parse_openssh_private("").is_err());
+        assert!(parse_openssh_private(&made_text.replace("OPENSSH", "RSA")).is_err());
+        let rsa = run(&["-q", "-t", "rsa", "-b", "2048", "-N", "", "-f", "rsa"], d);
+        assert!(rsa.status.success());
+        assert!(parse_openssh_private(&std::fs::read_to_string(d.join("rsa")).unwrap()).is_err());
+        let locked = run(
+            &["-q", "-t", "ed25519", "-N", "pass-phrase", "-f", "locked"],
+            d,
+        );
+        assert!(locked.status.success());
+        assert!(
+            parse_openssh_private(&std::fs::read_to_string(d.join("locked")).unwrap()).is_err()
+        );
+        // A file whose outer public key is not the private section's is refused.
+        let mut other = key;
+        other[40] ^= 1;
+        let mut private = Vec::new();
+        private.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 1]);
+        string(&mut private, b"ssh-ed25519");
+        string(&mut private, &key[32..]);
+        string(&mut private, &key);
+        string(&mut private, b"");
+        let mut file = b"openssh-key-v1\0".to_vec();
+        for f in [&b"none"[..], b"none", b""] {
+            string(&mut file, f);
+        }
+        file.extend_from_slice(&1u32.to_be_bytes());
+        let armored = |file: &[u8]| {
+            format!(
+                "-----BEGIN OPENSSH PRIVATE KEY-----\n{}\n-----END OPENSSH PRIVATE KEY-----\n",
+                STANDARD.encode(file)
+            )
+        };
+        let mut good = file.clone();
+        string(&mut good, &ed25519_blob(&key[32..]));
+        string(&mut good, &private);
+        assert_eq!(parse_openssh_private(&armored(&good)).unwrap(), key);
+        string(&mut file, &ed25519_blob(&other[32..]));
+        string(&mut file, &private);
+        assert!(parse_openssh_private(&armored(&file)).is_err());
     }
 
     #[test]
@@ -591,9 +854,10 @@ mod tests {
 
     #[test]
     fn rejects_bad_fields() {
-        assert!(Direct::new("-x", vec!["1.2.3.4:22".parse().unwrap()], KEY, 60, 0).is_err());
-        assert!(Direct::new("a", vec![], KEY, 60, 0).is_err());
-        assert!(Direct::new("a", vec!["1.2.3.4:22".parse().unwrap(); 5], KEY, 60, 0).is_err());
+        let k = invite();
+        assert!(Direct::new("-x", vec!["1.2.3.4:22".parse().unwrap()], KEY, k, 60, 0).is_err());
+        assert!(Direct::new("a", vec![], KEY, k, 60, 0).is_err());
+        assert!(Direct::new("a", vec!["1.2.3.4:22".parse().unwrap(); 5], KEY, k, 60, 0).is_err());
         assert!(Direct::decode("ABCD").is_err());
     }
 

@@ -6,7 +6,7 @@
 //!
 //! 1. `cx mesh invite --backend ssh-overlay` on the viewer makes a direct code (code.rs) holding
 //!    its SSH account, reachable addresses, the SHA-256 prefix of its SSH host key and a one-time
-//!    token. The token derives an Ed25519 *invite key*; the viewer authorizes only its public half,
+//!    Ed25519 *invite key* that `ssh-keygen` made (no key file is kept); the viewer authorizes its public half,
 //!    as `restrict,command="<cx> mesh pair --redeem <id>",expiry-time=...` tagged
 //!    `cx-join-invite:<id>`.
 //! 2. `cx mesh pair <code>` on the joiner fetches the viewer's host key, accepts it only when its digest
@@ -17,7 +17,8 @@
 //!    disabled), pins the joiner's host key, enrolls it as a core device, and answers with the
 //!    viewer's public keys. The joiner pins and authorizes those the same way.
 use super::{
-    code::Direct, ed25519, iso, AuditEntry, Invite, IpNet, Member, MeshBackend, Plan, Status,
+    code::{self, Direct},
+    iso, AuditEntry, Invite, IpNet, Member, MeshBackend, Plan, Status,
 };
 use crate::{model::Device, peer_ssh, store, transport};
 use anyhow::{bail, Context, Result};
@@ -135,6 +136,54 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+/// A private scratch directory under the mesh state dir, removed (with what is in it) on drop.
+struct Work(PathBuf);
+impl Work {
+    fn new(label: &str) -> Result<Work> {
+        let path = ensure_dir()?.join(format!("{label}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+        fs::DirBuilder::new().mode(0o700).create(&path)?;
+        Ok(Work(path))
+    }
+}
+impl Drop for Work {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A fresh invite key (seed and public half) from `ssh-keygen`, in a private scratch directory that is
+/// removed at once: the join code is the only copy that leaves this function.
+fn new_invite_key() -> Result<[u8; code::KEY_LEN]> {
+    let work = Work::new("invite-key")?;
+    let path = work.0.join("invite");
+    let mut keygen = Command::new("ssh-keygen");
+    keygen
+        .args([
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            "cx-join-invite",
+            "-f",
+        ])
+        .arg(&path);
+    let (ok, _) = super::run_bounded(keygen, &[], 4096, Duration::from_secs(20))
+        .context("cx mesh invite needs ssh-keygen")?;
+    anyhow::ensure!(ok, "ssh-keygen could not make the invite key");
+    let text = zeroize::Zeroizing::new(fs::read_to_string(&path)?);
+    let key = code::parse_openssh_private(&text)?;
+    // What ssh-keygen wrote as the public file must be the public half read from the private one.
+    let public = peer_ssh::public_key(&fs::read_to_string(path.with_extension("pub"))?)?;
+    anyhow::ensure!(
+        public == format!("ssh-ed25519 {}", &code::openssh_public_blob(&key)),
+        "ssh-keygen's invite key files disagree"
+    );
+    Ok(key)
 }
 
 fn write_invites(_l: &Lock, inv: &Invites) -> Result<()> {
@@ -289,9 +338,16 @@ pub fn create_invite(opts: &InviteOptions) -> Result<Invite> {
     };
     let account = store::local_device().account;
     let now = transport::now();
-    let direct = Direct::new(&account, addresses, &host_key, (ttl * 3600.0) as u64, now)?;
+    let direct = Direct::new(
+        &account,
+        addresses,
+        &host_key,
+        new_invite_key()?,
+        (ttl * 3600.0) as u64,
+        now,
+    )?;
     let id = direct.invite_id();
-    let public = ed25519::openssh_public(&ed25519::public_key(&direct.invite_seed()));
+    let public = direct.invite_public();
     let exe = exe()?;
     {
         let l = lock()?;
@@ -720,29 +776,10 @@ pub fn join(text: &str, opts: &JoinOptions) -> Result<Value> {
             .into(),
         host_key: identity["host_key"].as_str().context("no host key")?.into(),
     };
-    let work = ensure_dir()?.join(format!("join-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&work);
-    fs::DirBuilder::new().mode(0o700).create(&work)?;
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-    let _cleanup = Cleanup(work.clone());
-    let seed = code.invite_seed();
-    let public = ed25519::public_key(&seed);
+    let scratch = Work::new("join")?;
+    let work = scratch.0.clone();
     let key_path = work.join("invite");
-    write_private(
-        &key_path,
-        ed25519::openssh_private(
-            &seed,
-            &public,
-            "cx-join",
-            u32::from_be_bytes(super::code::random()?),
-        )
-        .as_bytes(),
-    )?;
+    write_private(&key_path, code.invite_private()?.as_bytes())?;
     let mut failures = Vec::new();
     for addr in &code.addresses {
         let attempt = (|| -> Result<Value> {
@@ -1253,6 +1290,7 @@ mod tests {
             "alice",
             vec!["192.0.2.1:22".parse().unwrap()],
             key,
+            code::random().unwrap(),
             3600,
             transport::now(),
         )

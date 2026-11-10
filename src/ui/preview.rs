@@ -719,6 +719,8 @@ fn wrapped_rows(line: &Line<'static>, width: u16) -> usize {
     }
 }
 
+/// Search matches per wrapped line: (line, match columns).
+type SearchHits = std::sync::Arc<Vec<(usize, Vec<usize>)>>;
 /// Retained preview layout: display lines, the visual row where each starts at the
 /// current width, search matches per query and whether link hit-testing is needed.
 /// Scrolling renders only the visible slice; nothing here is recomputed per frame.
@@ -731,7 +733,7 @@ pub(super) struct DocCache {
     hit_lines: Vec<Line<'static>>,
     /// `starts[i]` is the first visual row of line `i`; `starts[lines.len()]` is the total.
     starts: Vec<usize>,
-    search: Option<(String, std::sync::Arc<Vec<(usize, Vec<usize>)>>)>,
+    search: Option<(String, SearchHits)>,
     links: bool,
     /// (scroll, area) of the last link hit map, so unchanged frames skip the rebuild.
     link_frame: std::cell::Cell<Option<(u32, Rect)>>,

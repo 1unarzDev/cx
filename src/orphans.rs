@@ -429,7 +429,7 @@ pub fn scan_masters() -> Vec<Master> {
                 &inodes,
                 &table,
                 &directory,
-                &owner_known,
+                owner_known,
                 |path| fs::symlink_metadata(path).is_ok(),
             ))
         })

@@ -1076,9 +1076,7 @@ fn render_frame(
             .map(|(hint, cmd)| (hint.key, hint.label, Some(cmd)))
             .collect()
     };
-    let columns = if phone {
-        3
-    } else if footer[key_row].width >= 60 {
+    let columns = if phone || footer[key_row].width >= 60 {
         3
     } else {
         2

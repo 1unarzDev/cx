@@ -829,7 +829,7 @@ fn network_numeric_order_stale_port_and_linklocal_enrollment() {
     let (mut a, _rx) = queued_app();
     network_fixture(&mut a);
     let stale = serde_json::json!({"address":"fe80::1","interface":"eth0","observed_at":transport::now().saturating_sub(100),"ssh":{"state":"tcp_reachable"}});
-    assert_eq!(neighbor_ssh(&stale), "unknown");
+    assert_eq!(neighbor_ssh(&stale, transport::now()), "unknown");
     assert!(!neighbor_connectable(&stale));
     a.dialog = Some(Dialog::Neighbor(0, stale));
     a.dialog_selected = 1;
@@ -1151,7 +1151,7 @@ fn network_auto_ssh_is_bounded_cached_and_scoped_without_redraw_work() {
     assert!(a
         .network_candidates()
         .iter()
-        .any(|c| c["address"] == *address && neighbor_ssh(c) == "port open"));
+        .any(|c| c["address"] == *address && neighbor_ssh(c, transport::now()) == "port open"));
     assert!(!rx
         .try_iter()
         .any(|t| matches!(t.op, Operation::ProbeCandidate {address:ref ip,..} if ip == address)));

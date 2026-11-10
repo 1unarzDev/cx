@@ -153,6 +153,10 @@ back to a neutral provider label; Claude preserves terminal transparency.
   default true, omitted when true), capability `peer-authorize-v1`, `edges.json`,
   the `cx edge` CLI and an edge guard in `transport::request`. All are additive;
   root re-lands or accepts them before merge.
+- Network graph core (`src/ui/graph`, revamp): layout + routing misses the spec 10.4
+  target of 2 ms in debug builds. Measured best 3.5 ms for 24 nodes at 200x60 (1.4 ms at
+  120x40); larger graphs use the outline. Check with `cargo test --locked graph_layout_perf
+  -- --ignored --test-threads=1`.
 
 Removal/demotion prevents future enrollment but does not revoke existing SSH keys.
 Automatic setup requires supported helpers and direct port-22 connectivity; offline

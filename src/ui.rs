@@ -11,6 +11,7 @@ mod workspaces;
 #[cfg(test)]
 use rendering::render;
 use rendering::render_with_native;
+mod graph;
 mod menus;
 mod navigation;
 mod notifications;

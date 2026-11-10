@@ -31,6 +31,7 @@ Record changes in [CHANGELOG.md](../CHANGELOG.md). Before tagging a stable versi
 | `files_view.rs` | File browser state, transfers and `render_browser` |
 | `preview.rs` | File preview state and rendering: text, markdown layout/links, raster fallback, in-preview find |
 | `network_view.rs` | Network/neighbor state, probes and the network render |
+| `graph/` | Pure Network hub graph: model/builder from store data, layered layout, routing, hit map, hotkeys; no I/O or environment reads. Neighbor SSH evidence comes from `network_view::neighbor_ssh` |
 | `containers_view.rs` | Container panel state, tree rows and container sessions |
 | `theme.rs` | Shared styles (`accent`, `muted`, `block`, `tint`) and the `no_color()`/`ascii()` switches; restyle here |
 | `navigation.rs` | Counted key motions and the `Target` interface; no requests or rendering |

@@ -70,20 +70,6 @@
   "png": "help-40x20.png"
  },
  {
-  "view": "network",
-  "cols": 40,
-  "rows": 20,
-  "txt": "network-40x20.txt",
-  "png": "network-40x20.png"
- },
- {
-  "view": "network-expanded",
-  "cols": 40,
-  "rows": 20,
-  "txt": "network-expanded-40x20.txt",
-  "png": "network-expanded-40x20.png"
- },
- {
   "view": "startup",
   "cols": 80,
   "rows": 24,
@@ -152,20 +138,6 @@
   "rows": 24,
   "txt": "help-80x24.txt",
   "png": "help-80x24.png"
- },
- {
-  "view": "network",
-  "cols": 80,
-  "rows": 24,
-  "txt": "network-80x24.txt",
-  "png": "network-80x24.png"
- },
- {
-  "view": "network-expanded",
-  "cols": 80,
-  "rows": 24,
-  "txt": "network-expanded-80x24.txt",
-  "png": "network-expanded-80x24.png"
  },
  {
   "view": "startup",
@@ -238,20 +210,6 @@
   "png": "help-120x40.png"
  },
  {
-  "view": "network",
-  "cols": 120,
-  "rows": 40,
-  "txt": "network-120x40.txt",
-  "png": "network-120x40.png"
- },
- {
-  "view": "network-expanded",
-  "cols": 120,
-  "rows": 40,
-  "txt": "network-expanded-120x40.txt",
-  "png": "network-expanded-120x40.png"
- },
- {
   "view": "startup",
   "cols": 200,
   "rows": 60,
@@ -320,19 +278,5 @@
   "rows": 60,
   "txt": "help-200x60.txt",
   "png": "help-200x60.png"
- },
- {
-  "view": "network",
-  "cols": 200,
-  "rows": 60,
-  "txt": "network-200x60.txt",
-  "png": "network-200x60.png"
- },
- {
-  "view": "network-expanded",
-  "cols": 200,
-  "rows": 60,
-  "txt": "network-expanded-200x60.txt",
-  "png": "network-expanded-200x60.png"
  }
 ]

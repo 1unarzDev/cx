@@ -1,0 +1,110 @@
+{
+ "harness": "tests/capture_matrix.py at 603e076",
+ "bin": "target/debug/cx",
+ "cx_version": "cx 0.1.95",
+ "note": "regenerated Network captures of the pass-0 UI (src identical to revamp/base); the original pass-0 Network captures were withdrawn because they showed real interface names",
+ "terminal_palette": "dark",
+ "ascii": false,
+ "nocolor": false,
+ "env": [],
+ "sizes": [
+  "40x20",
+  "80x24",
+  "120x40",
+  "200x60"
+ ],
+ "views": [
+  "network",
+  "network-expanded"
+ ],
+ "captures": [
+  {
+   "view": "network",
+   "cols": 40,
+   "rows": 20,
+   "txt": "network-40x20.txt",
+   "png": "network-40x20.png",
+   "ascii": false,
+   "nocolor": false,
+   "unmasked": 0,
+   "terminal_palette": "dark"
+  },
+  {
+   "view": "network-expanded",
+   "cols": 40,
+   "rows": 20,
+   "txt": "network-expanded-40x20.txt",
+   "png": "network-expanded-40x20.png",
+   "ascii": false,
+   "nocolor": false,
+   "unmasked": 0,
+   "terminal_palette": "dark"
+  },
+  {
+   "view": "network",
+   "cols": 80,
+   "rows": 24,
+   "txt": "network-80x24.txt",
+   "png": "network-80x24.png",
+   "ascii": false,
+   "nocolor": false,
+   "unmasked": 0,
+   "terminal_palette": "dark"
+  },
+  {
+   "view": "network-expanded",
+   "cols": 80,
+   "rows": 24,
+   "txt": "network-expanded-80x24.txt",
+   "png": "network-expanded-80x24.png",
+   "ascii": false,
+   "nocolor": false,
+   "unmasked": 0,
+   "terminal_palette": "dark"
+  },
+  {
+   "view": "network",
+   "cols": 120,
+   "rows": 40,
+   "txt": "network-120x40.txt",
+   "png": "network-120x40.png",
+   "ascii": false,
+   "nocolor": false,
+   "unmasked": 0,
+   "terminal_palette": "dark"
+  },
+  {
+   "view": "network-expanded",
+   "cols": 120,
+   "rows": 40,
+   "txt": "network-expanded-120x40.txt",
+   "png": "network-expanded-120x40.png",
+   "ascii": false,
+   "nocolor": false,
+   "unmasked": 0,
+   "terminal_palette": "dark"
+  },
+  {
+   "view": "network",
+   "cols": 200,
+   "rows": 60,
+   "txt": "network-200x60.txt",
+   "png": "network-200x60.png",
+   "ascii": false,
+   "nocolor": false,
+   "unmasked": 0,
+   "terminal_palette": "dark"
+  },
+  {
+   "view": "network-expanded",
+   "cols": 200,
+   "rows": 60,
+   "txt": "network-expanded-200x60.txt",
+   "png": "network-expanded-200x60.png",
+   "ascii": false,
+   "nocolor": false,
+   "unmasked": 0,
+   "terminal_palette": "dark"
+  }
+ ]
+}

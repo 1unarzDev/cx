@@ -6,13 +6,19 @@ small amount of new local state the Network and Secrets views need. Nothing here
 changes the wire protocol. Additive data needs are listed in section 14.
 
 Evidence: `tests/capture_matrix.py` captures the real UI. Pass 0 (the current
-v0.1.95 UI) is in `local-evidence/ui-passes/pass0/`: 12 states at 40x20, 80x24,
-120x40 and 200x60, plus `ascii-nocolor/` at 80x24. The fixture is two local
+v0.1.95 UI) is in `local-evidence/ui-passes/pass0/`: 10 states at 40x20, 80x24,
+120x40 and 200x60, plus `ascii-nocolor/` at 80x24, and the 2 Network states in
+`pass0/network-remask/`. The fixture is two local
 managed shells, one "online" fake remote (`lab-arm`, served by a fake `ssh` that
 runs `cx helper` under a second temp HOME), one refused remote (`field-rover`) and
 a small file tree. IPs, MACs, `*.local` names, the real user and hostname, and the
-temp directory name are masked in every capture. A run of spaces after
-`/tmp/tmp-xxxxxx` comes from the masking, not from cx.
+temp directory name are masked in every capture. Pass 0 masked the temp directory
+as `/tmp/tmp-xxxxxx` plus padding spaces; the padding comes from that old masking,
+not from cx. The original pass-0 Network captures showed real interface names, so
+they were withdrawn; `pass0/network-remask/` holds them regenerated from the same
+v0.1.95 source by the fixed harness (interface names masked as `ifN…`, same-length
+masks, no padding), with its own `index.json`. The current harness reproduces
+all 12 states.
 
 ---
 
@@ -32,7 +38,7 @@ Each item cites a capture or a code location. Numbers are referenced later as P1
 | P8 | The "Selected" panel draws a staircase tree of the path, which uses 6 rows and a stray highlight bar. | `files-preview-120x40.png` |
 | P9 | The file browser looks rough. Directories are ANSI blue on a dark background (low contrast). There is a `/` type column, vim jargon (`NORMAL 0 selected · hidden off`), names cut from the left at narrow widths (`…go.toml`), and an earlier run showed the size column clipped (`203.9 Ki`). | `files-*-40x20.png`, `files-inside-80x24.png` |
 | P10 | The error toast covers the bottom of the list at every size and most of the screen at 40x20. It repeats long text. | `startup-*.png` |
-| P11 | Network is a list, not a graph. At 200 cols the link column sits 1200 px from its row and the middle is empty. `?` and `!` glyphs are unexplained. Details are pinned to the bottom, far from the selection. | `network-expanded-200x60.png` |
+| P11 | Network is a list, not a graph. At 200 cols the link column sits 1200 px from its row and the middle is empty. `?` and `!` glyphs are unexplained. Details are pinned to the bottom, far from the selection. | `network-remask/network-expanded-200x60.png` |
 | P12 | Overlays (palette, device chooser) stack 2-3 separate boxes and let the background borders show through at their edges. | `palette-80x24.txt`, `files-chooser-*.txt` |
 | P13 | Files and Network add a device-chooser step after the palette, although the sidebar already holds a device selection. | `files-chooser-*`, `network-*` |
 | P14 | Three footer rows of key hints at every size duplicate the help. The status line `● 2/3 devices` is yellow, which reads as a warning. | all |
@@ -279,7 +285,7 @@ See section 10 for rendering. **L (200x60)**:
 ┃  │ ● laptop     │━━━━━━━━━━━━━━━━━━━▶│ ● lab-arm    │━━━━━━━━▶│ ✕ field-rover│   ┆                            ┃│ reverse key (core) ⇄             │
 ┃  │ ⌂ you · 2 ses│◀━━━━━━━━━━━━━━━━━━━│ ◆ 12ms · 1 se│  pwd → │ ◆ seen 5m    │   ┆                            ┃│ rtt     12ms ▁▂▁▃▂ p95 31ms      │
 ┃  ╰──────┬───────╯                ┆  ╰──────┬───────╯        ╰──────────────╯   ┆                            ┃│ checked 3s ago (authenticated)   │
-┃         │ lan enp5s0              ┆         │ jump ↳                             ┆                            ┃│                                  │
+┃         │ lan eth0                ┆         │ jump ↳                             ┆                            ┃│                                  │
 ┃         ┊                         ╰┄┄┄┄┄┄┄┄┄│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄╯                            ┃│ Policy                           │
 ┃  ╭──────┴────────╮                         ╰─────────▶╭──────────────╮                                       ┃│  (•) key auto      1             │
 ┃  │ ~ 10 LAN  +   │                            key →   │ ◌ jetson-01  │                                       ┃│  ( ) password req. 2             │
@@ -303,7 +309,7 @@ See section 10 for rendering. **L (200x60)**:
 ┃ ├━▶ ● lab-arm ◆ ⇄ key 12ms   ┃
 ┃ │   ├━▶ ✕ field-rover ◆ → pwd┃
 ┃ │   └─▶ ◌ jetson-01 ↳ key    ┃
-┃ └┄  ~ 10 LAN (enp5s0)  +     ┃
+┃ └┄  ~ 10 LAN (eth0)    +     ┃
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
  [ Open ] [ Policy ] [ Enrol ]
 ```
@@ -563,11 +569,16 @@ Counts are keystrokes (or taps) from the stated start, excluding typed names. "B
 Each pass runs:
 
 ```
-cargo build && uv run --with pyte --with pillow python tests/capture_matrix.py target/debug/cx \
-  local-evidence/ui-passes/passN --network
-uv run --with pyte --with pillow python tests/capture_matrix.py target/debug/cx \
-  local-evidence/ui-passes/passN/ascii-nocolor --sizes 80x24 --env CX_ASCII=1 --env NO_COLOR=1
+cargo build
+PY="uv run --with pyte --with pillow python"   # or a venv python with pyte + pillow
+$PY tests/capture_matrix.py --out local-evidence/ui-passes/passN/dark --network   # --network: real LAN SSH-port checks
+$PY tests/capture_matrix.py --out local-evidence/ui-passes/passN/light --theme light
+$PY tests/capture_matrix.py --out local-evidence/ui-passes/passN/ascii-nocolor --ascii --nocolor --sizes 40x20,80x24
 ```
+
+`--theme light` only switches the emulated terminal (PNG palette, `COLORFGBG`,
+`CX_THEME`); until cx reads those, light captures show the dark-designed UI on a
+light terminal, recorded as `terminal_palette` in `index.json`.
 
 A reviewer (human or agent) opens every PNG and scores each criterion 0-3 per size. A pass ships only when no criterion scores 0 and the mean is ≥2.5.
 

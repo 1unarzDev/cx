@@ -53,8 +53,8 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     if right.saturating_sub(lend) >= 12 {
         cx.rule(buf, lend + 1, right, r.y);
     }
-    // (Its last row stays blank: the map never touches the vitals strip.)
-    let band = Rect::new(r.x, r.y + 1, r.width, band_h.saturating_sub(1));
+    // (A blank row either side: the map never touches the legend or the vitals strip.)
+    let band = Rect::new(r.x, r.y + 2, r.width, band_h.saturating_sub(2));
     let ids = orbit::order(cx, band);
     let sel_id = if on_sess && !list.is_empty() {
         list[cx.c.selected % list.len()].device.clone()
@@ -67,7 +67,7 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // hold), keeping a blank row either side of the map; with room for two, a second
     // row of tiles shows the rest of the sessions and the ghost.
     let gh = orbit::drawn_h(cx, band);
-    let room = th + band.height.saturating_sub(gh + 1);
+    let room = th + band.height.saturating_sub(gh);
     // (Only when each row keeps ten rows: a tile must still show enough of its screen
     // to be told apart.)
     let (rows, th) = if list.len() >= usize::from(cols) && room > 2 * th_min.max(10) {
@@ -78,8 +78,8 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let grid_h = rows * th + rows - 1;
     let mut y = band.bottom() + 1 + band_th - grid_h;
     // The map sits centred in the rows above the vitals strip.
-    let above = (y - band.y).saturating_sub(gh) / 2;
-    let band = Rect::new(band.x, band.y + above, band.width, gh);
+    let above = ((y - r.y - 1).saturating_sub(gh) / 2).max(1);
+    let band = Rect::new(band.x, r.y + 1 + above, band.width, gh);
     orbit::draw(
         cx,
         buf,

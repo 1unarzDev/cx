@@ -2,14 +2,16 @@
 """Capture the real cx UI across a size x view matrix for design/critic passes.
 
   python tests/capture_matrix.py [--bin target/debug/cx] [--out DIR]
-      [--sizes 40x20,80x24,120x40,200x60]
-      [--views sessions,files,files-preview,network,help,palette]
+      [--sizes 40x20,80x24,120x40,200x60] [--views startup,files,...] [--network]
       [--theme dark|light] [--ascii] [--nocolor] [--env K=V ...]
+  python tests/capture_matrix.py --self-test   # masking/arguments/cleanup checks, no cx
 
 Needs pyte and pillow (for example the worktrees .venv-test interpreter,
 or `uv run --with pyte --with pillow python ...`). Writes <view>-<cols>x<rows>.txt
 and .png per capture plus index.json into --out (default
 local-evidence/ui-passes/latest). Every view is captured from a fresh cx process.
+--theme picks the emulated terminal: the PNG palette plus COLORFGBG/CX_THEME. cx
+reads neither variable yet, so index.json records it as `terminal_palette`.
 
 Isolation (everything lives under one owned temp root, removed at exit):
   * cx starts from an allowlisted environment, never the parent's: a fixed system
@@ -26,11 +28,13 @@ Isolation (everything lives under one owned temp root, removed at exit):
     `timeout` (name lookups), `nmcli`, `docker` and `podman` keep the Network and
     container probes local and deterministic. `ip` is read-only and always the
     host's (cx resolves /usr/sbin/ip itself), so Network captures mask every
-    interface name, address, MAC, *.local name, user and hostname. Note: the
-    network/network-expanded views run cx's normal automatic neighbour check (a
-    bounded TCP connect to port 22 of current LAN neighbour-cache entries, no
-    payload, no auth); there is no fixture hook for it yet. Omit those views with
-    --views to avoid it.
+    interface name, address, MAC, *.local name, user and hostname (re-read before
+    each capture). `unmasked` counts snapshot identifiers still visible whole or
+    cut short (`name…`, or at the screen edge).
+  * --network (off by default) adds the network/network-expanded views. They run
+    cx's normal automatic neighbour check (a bounded TCP connect to port 22 of
+    current LAN neighbour-cache entries, no payload, no auth); there is no
+    fixture hook for it yet.
   * cleanup is registered before anything is created: every managed tmux socket,
     every socket in the private TMUX_TMPDIR, the cx-tmux-<sha256(socket)> units of
     our sockets (only if their ExecStart names our temp root), and every process
@@ -38,40 +42,46 @@ Isolation (everything lives under one owned temp root, removed at exit):
     removed and re-checked. The result line reports leftovers.
 Never runs ~/.local/bin/cx; never touches the user's state, tmux servers, SSH or network config.
 """
-import argparse, fcntl, getpass, hashlib, json, os, pathlib, pty, re, select, shlex, shutil, signal
+import argparse, fcntl, getpass, hashlib, ipaddress, json, os, pathlib, pty, re, select, shlex, shutil, signal
 import socket, struct, subprocess, sys, tempfile, termios, time
 
+try:
+    import pyte
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError as e:
+    sys.exit(f'capture_matrix needs pyte and pillow: {e}')
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
-DEFAULT_VIEWS = ['sessions', 'files', 'files-preview', 'network', 'help', 'palette']
-ALL_VIEWS = DEFAULT_VIEWS + ['network-expanded']
+DEFAULT_VIEWS = ['startup', 'files', 'files-projects', 'files-inside', 'files-preview', 'sessions', 'sessions-all',
+                 'sessions-next', 'palette', 'help']
+NETWORK_VIEWS = ['network', 'network-expanded']
+ALL_VIEWS = DEFAULT_VIEWS + NETWORK_VIEWS
 SYSTEM_PATH = '/usr/local/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
 
 
 def parse_args(argv):
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    p.add_argument('legacy', nargs='*', help=argparse.SUPPRESS)  # old form: BIN [OUT]
-    p.add_argument('--bin', help='cx binary (default target/debug/cx)')
-    p.add_argument('--out', help='output directory')
+    p.add_argument('--bin', default=str(REPO / 'target/debug/cx'), help='cx binary (default target/debug/cx)')
+    p.add_argument('--out', default=str(REPO / 'local-evidence/ui-passes/latest'), help='output directory')
     p.add_argument('--sizes', default='40x20,80x24,120x40,200x60')
     p.add_argument('--views', default=','.join(DEFAULT_VIEWS), help=f'comma list from {ALL_VIEWS}')
     p.add_argument('--theme', choices=['dark', 'light'], default='dark')
     p.add_argument('--ascii', action='store_true', help='set CX_ASCII=1')
     p.add_argument('--nocolor', action='store_true', help='set NO_COLOR=1')
-    p.add_argument('--merge-index', action='store_true',
-                   help='keep other captures already listed in DIR/index.json (partial reruns)')
     p.add_argument('--env', action='append', default=[], metavar='K=V', help='extra explicit test variable')
-    p.add_argument('--network', action='store_true', help=argparse.SUPPRESS)  # old flag; network is a view now
+    p.add_argument('--network', action='store_true',
+                   help="also capture network views (runs cx's real LAN neighbour SSH-port checks)")
     a = p.parse_args(argv)
-    legacy = list(a.legacy)
-    a.bin = a.bin or (legacy.pop(0) if legacy else str(REPO / 'target/debug/cx'))
-    a.out = a.out or (legacy.pop(0) if legacy else str(REPO / 'local-evidence/ui-passes/latest'))
-    if legacy:
-        p.error(f'unexpected arguments: {legacy}')
     a.bin = str(pathlib.Path(a.bin).resolve())
     if not os.access(a.bin, os.X_OK):
         p.error(f'not an executable: {a.bin}')
-    a.sizes = [tuple(int(n) for n in s.split('x')) for s in a.sizes.split(',') if s]
+    sizes = [s for s in a.sizes.split(',') if s]
+    for s in sizes:
+        if not re.fullmatch(r'[1-9]\d*x[1-9]\d*', s):
+            p.error(f'--sizes expects COLSxROWS, got {s!r}')
+    a.sizes = [tuple(int(n) for n in s.split('x')) for s in sizes]
     a.views = [v for v in a.views.split(',') if v]
+    a.views += [v for v in NETWORK_VIEWS if a.network and v not in a.views]
     unknown = [v for v in a.views if v not in ALL_VIEWS]
     if unknown:
         p.error(f'unknown views {unknown}; choose from {ALL_VIEWS}')
@@ -106,19 +116,17 @@ for chars, segs in [('─━═', 'lr'), ('│┃║', 'ud'), ('╭┌┏╔', '
 
 class Renderer:
     def __init__(self, theme):
-        from PIL import ImageFont
         self.scheme = LIGHT if theme == 'light' else DARK
         self.fonts = {}
-        self.ImageFont = ImageFont
 
     def font(self, bold):
         if bold not in self.fonts:
             try:
                 path = subprocess.check_output(['fc-match', '-f', '%{file}', f'monospace:{"bold" if bold else "regular"}'],
                                                text=True, timeout=10)
-                self.fonts[bold] = self.ImageFont.truetype(path, 16)
+                self.fonts[bold] = ImageFont.truetype(path, 16)
             except Exception:
-                self.fonts[bold] = self.ImageFont.load_default()
+                self.fonts[bold] = ImageFont.load_default()
         return self.fonts[bold]
 
     def color(self, name, fallback):
@@ -132,7 +140,6 @@ class Renderer:
         return fallback
 
     def png(self, screen, cols, rows, path):
-        from PIL import Image, ImageDraw
         bg0, fg0 = self.scheme['bg'], self.scheme['palette']['default']
         cw, ch, pad = 10, 21, 12
         im = Image.new('RGB', (cols * cw + 2 * pad, rows * ch + 2 * pad), bg0)
@@ -167,55 +174,66 @@ class Renderer:
 
 
 # --------------------------------------------------------------------------- masking
+def host_identifiers():
+    """(interface names, addresses, user/host names) from a bounded read-only `ip -j` snapshot."""
+    ifnames, addrs = set(), set()
+    for args in (['-j', 'address', 'show'], ['-j', 'neigh', 'show'], ['-j', 'route', 'show']):
+        try:  # bounded read-only observation of the same data cx itself reads
+            out = subprocess.run(['ip', *args], capture_output=True, text=True, timeout=5,
+                                 env={'PATH': SYSTEM_PATH, 'LC_ALL': 'C'}).stdout
+            data = json.loads(out or '[]')
+        except Exception:
+            data = []
+        for item in data if isinstance(data, list) else []:
+            for key in ('ifname', 'dev', 'link'):
+                if isinstance(item.get(key), str):
+                    ifnames.add(item[key])
+            for key in ('dst', 'gateway', 'prefsrc', 'lladdr', 'address', 'broadcast'):
+                if isinstance(item.get(key), str):
+                    addrs.add(item[key].split('/')[0])
+            for info in item.get('addr_info', []) or []:
+                for key in ('local', 'broadcast', 'address'):
+                    if isinstance(info.get(key), str):
+                        addrs.add(info[key])
+    ids = {getpass.getuser(), socket.gethostname().split('.')[0], socket.gethostname()}
+    try:
+        ids.add(pathlib.Path('/proc/sys/kernel/hostname').read_text().strip())
+    except OSError:
+        pass
+    return ifnames, addrs, ids
+
+
 class Masker:
     """Same-length masks, so masking never shifts or pads the layout."""
 
-    def __init__(self, root):
+    def __init__(self, root, idents):
+        ifnames, addrs, ids = idents
         self.literal = []  # (text, replacement)
         # The temp root is the only random part of fixture paths; mask its suffix in place.
         name = root.name
         self.literal.append((name, re.sub(r'(?<=cxcap-)\w+$', lambda m: 'x' * len(m.group()), name)))
-        ifnames, addrs = set(), set()
-        for args in (['-j', 'address', 'show'], ['-j', 'neigh', 'show'], ['-j', 'route', 'show']):
-            try:  # bounded read-only observation of the same data cx itself reads
-                out = subprocess.run(['ip', *args], capture_output=True, text=True, timeout=5,
-                                     env={'PATH': SYSTEM_PATH, 'LC_ALL': 'C'}).stdout
-                data = json.loads(out or '[]')
-            except Exception:
-                data = []
-            for item in data if isinstance(data, list) else []:
-                for key in ('ifname', 'dev', 'link'):
-                    if isinstance(item.get(key), str):
-                        ifnames.add(item[key])
-                for key in ('dst', 'gateway', 'prefsrc', 'lladdr', 'address', 'broadcast'):
-                    if isinstance(item.get(key), str):
-                        addrs.add(item[key].split('/')[0])
-                for info in item.get('addr_info', []) or []:
-                    for key in ('local', 'broadcast', 'address'):
-                        if isinstance(info.get(key), str):
-                            addrs.add(info[key])
-        # Longest first so a name that contains another is masked whole.
-        for i, n in enumerate(sorted((n for n in ifnames if len(n) >= 2 and n != 'lo'), key=len, reverse=True)):
+        # Longest first so a name that contains another is masked whole; ties by name keep ifN stable.
+        longest = lambda n: (-len(n), n)
+        for i, n in enumerate(sorted((n for n in ifnames if len(n) >= 2 and n != 'lo'), key=longest)):
             self.literal.append((n, f'if{i}'.ljust(len(n), 'x')[:len(n)]))
-        for a in sorted((a for a in addrs if len(a) >= 3 and a not in ('default',)), key=len, reverse=True):
+        for a in sorted((a for a in addrs if len(a) >= 3 and a != 'default'), key=longest):
             self.literal.append((a, ''.join(c if c in '.:/' else 'x' for c in a)))
-        ids = {getpass.getuser(), socket.gethostname().split('.')[0], socket.gethostname()}
-        try:
-            ids.add(pathlib.Path('/proc/sys/kernel/hostname').read_text().strip())
-        except OSError:
-            pass
-        for w in sorted((w for w in ids if len(w) > 2), key=len, reverse=True):
+        for w in sorted((w for w in ids if len(w) > 2), key=longest):
             self.literal.append((w, 'x' * len(w)))
         self.regex = [re.compile(p, re.I) for p in [
             r'\b(?:\d{1,3}\.){3}\d{1,3}\b',
-            r'(?<![\w:])(?:[0-9a-f]{1,4}:){2,7}:?(?::?[0-9a-f]{1,4}){1,7}\b',
-            r'(?<![\w:])(?:[0-9a-f]{1,4}:){1,7}:(?![\w:])',
             r'\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b',
             r'\b[\w-]+\.(?:local|lan|home|internal)\b']]
+        # IPv6 candidates (any compressed form); masked only when they parse, so times stay.
+        self.ipv6 = re.compile(r'(?<![\w:.])[0-9a-f]*:[0-9a-f:]*:[0-9a-f.:]*[0-9a-f]', re.I)
 
     @staticmethod
     def bounded(text):
         return re.compile(r'(?<![A-Za-z0-9])' + re.escape(text) + r'(?![A-Za-z0-9])')
+
+    @staticmethod
+    def mask(text):
+        return ''.join(c if c in '.:-/' else 'x' for c in text)
 
     def spans(self, row):
         hits = []
@@ -224,9 +242,13 @@ class Masker:
                 hits.append((m.start(), rep))
         for pattern in self.regex:
             for m in pattern.finditer(row):
-                if m.group() in ('0:0', ):
-                    continue
-                hits.append((m.start(), ''.join(c if c in '.:-/' else 'x' for c in m.group())))
+                hits.append((m.start(), self.mask(m.group())))
+        for m in self.ipv6.finditer(row):
+            try:
+                ipaddress.IPv6Address(m.group())
+            except ValueError:
+                continue
+            hits.append((m.start(), self.mask(m.group())))
         return hits
 
     def apply(self, screen, cols, rows):
@@ -239,8 +261,18 @@ class Masker:
                         line[start + i] = line[start + i]._replace(data=ch)
 
     def leaks(self, text):
-        """How many host identifiers survived masking (never the values themselves)."""
-        return sum(1 for t, rep in self.literal if t != rep and self.bounded(t).search(text))
+        """How many host identifiers are still visible, whole or cut short (`name…`, `name...`
+        or at the screen edge, at least 4 chars); a count, never the values themselves."""
+        rows = text.split('\n')
+        count = 0
+        for t, rep in self.literal[1:]:  # host identifiers; [0] is the temp root, not one
+            if t == rep:
+                continue
+            cut = '|'.join(re.escape(t[:k]) for k in range(len(t) - 1, 3, -1))
+            pattern = self.bounded(t).pattern + (f'|(?<![A-Za-z0-9])(?:{cut})(?:…|\\.\\.\\.|$)' if cut else '')
+            if any(re.search(pattern, r) for r in rows):
+                count += 1
+        return count
 
 
 # --------------------------------------------------------------------------- ownership
@@ -300,12 +332,19 @@ class Owned:
                     p.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     pass
+        # One failed or slow step must never skip the rest (or the rmtree).
         for sock in self.all_sockets():
-            subprocess.run(['tmux', '-S', str(sock), 'kill-server'], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, env={'PATH': SYSTEM_PATH}, timeout=10)
+            try:
+                subprocess.run(['tmux', '-S', str(sock), 'kill-server'], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, env={'PATH': SYSTEM_PATH}, timeout=10)
+            except (OSError, subprocess.SubprocessError):
+                pass
         for unit in self.owned_units():
-            subprocess.run(['systemctl', '--user', 'stop', '--', unit], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=20)
+            try:
+                subprocess.run(['systemctl', '--user', 'stop', '--', unit], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=20)
+            except (OSError, subprocess.SubprocessError):
+                pass
         for sig in (signal.SIGTERM, signal.SIGKILL):
             pids = self.marked_pids()
             for pid in pids:
@@ -477,8 +516,6 @@ exit 255
 
 # --------------------------------------------------------------------------- driving
 def make_screen(cols, rows):
-    import pyte
-
     class S(pyte.Screen):
         def report_device_status(self, *args, **kwargs):
             pass
@@ -495,9 +532,14 @@ def make_screen(cols, rows):
 # Keep recipes short and data-only: UI keymap changes should only need edits here.
 ESC, CTRL_P = b'\x1b', b'\x10'
 RECIPES = {
+    'startup': [],  # read at 2.5s, before the device probes settle (P10's error toast)
     'files': [],
+    'files-projects': [(b'j', .3), (b'\r', 1.2)],
+    'files-inside': [(b'j', .3), (b'\r', 1.2), (b'\r', 1.2)],
     'files-preview': [(b'j', .3), (b'\r', 1.2), (b'\r', 1.2), (b'G', .3), (b'k', .3), (b'\r', 1.5)],
-    'sessions': [(ESC, .8), (ESC, .4), (b'gg', .4), (b'\r', 1.5)],
+    'sessions': [(ESC, .8)],
+    'sessions-all': [(ESC, .8), (ESC, .4), (b'gg', .4), (b'\r', 1.5)],
+    'sessions-next': [(ESC, .8), (ESC, .4), (b'gg', .4), (b'\r', 1.5), (b'j', 1.5)],
     'network': [(CTRL_P, .5), (b'Network', .5), (b'\r', 1.0), (b'\r', 2.5)],
     'network-expanded': [(CTRL_P, .5), (b'Network', .5), (b'\r', 1.0), (b'\r', 2.5), (b'j', 1.0), (b'l', 1.0)],
     'help': [(b'?', .8)],
@@ -505,7 +547,7 @@ RECIPES = {
 }
 
 
-def capture(a, env, owned, masker, renderer, out, view, cols, rows):
+def capture(a, env, owned, renderer, out, view, cols, rows):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
 
@@ -529,18 +571,19 @@ def capture(a, env, owned, masker, renderer, out, view, cols, rows):
                     except OSError:
                         break
 
-        read(5.0)  # startup: device probes (online lab-arm, refused field-rover) settle
+        read(2.5 if view == 'startup' else 5.0)  # device probes (online lab-arm, refused field-rover) settle
         for keys, wait in RECIPES[view]:
             os.write(master, keys)
             read(wait)
         read(0.6)
+        masker = Masker(owned.root, host_identifiers())  # fresh snapshot: names that appeared mid-run
         masker.apply(screen, cols, rows)
         name = f'{view}-{cols}x{rows}'
         text = '\n'.join(screen.display) + '\n'
         (out / f'{name}.txt').write_text(text)
         renderer.png(screen, cols, rows, out / f'{name}.png')
-        return dict(view=view, cols=cols, rows=rows, txt=f'{name}.txt', png=f'{name}.png', theme=a.theme,
-                    ascii=a.ascii, nocolor=a.nocolor, unmasked=masker.leaks(text))
+        return dict(view=view, cols=cols, rows=rows, txt=f'{name}.txt', png=f'{name}.png',
+                    terminal_palette=a.theme, ascii=a.ascii, nocolor=a.nocolor, unmasked=masker.leaks(text))
     finally:
         if proc is not None:
             try:
@@ -553,46 +596,100 @@ def capture(a, env, owned, masker, renderer, out, view, cols, rows):
         os.close(slave)
 
 
-def main(argv):
-    a = parse_args(argv)
+def self_test():
+    """Masking, argument and cleanup checks with synthetic identifiers; needs no cx, tmux or network."""
+    root = pathlib.Path('/tmp/cxcap-selftest')
+    idents = ({'lo', 'wg0', 'br0', 'tun0', 'eth0', 'CloudflareWARP'}, {'10.9.8.7', 'fe80::1'}, {'fixturehost'})
+    m = Masker(root, idents)
+    ifmask = {t: r for t, r in m.literal if t in idents[0]}
+    assert ifmask == {'CloudflareWARP': 'if0xxxxxxxxxxx', 'eth0': 'if1x', 'tun0': 'if2x', 'br0': 'if3', 'wg0': 'if4'}, ifmask
+    masked = ['fe80::1', '2001::1', '2001:db8::1', 'fe80::a00:27ff:fe4e:66a1', '::1', 'aa:bb:cc:dd:ee:ff',
+              '10.0.0.1', 'host.local', 'eth0', 'fixturehost']
+    kept = ['12:30:45', 'ver 1:2:3', 'use std::env;', 'env::args()', '0:0', 'cx 0.1.95', 'a:b:c']
+    for text in masked + kept:
+        screen, stream = make_screen(40, 1)
+        stream.feed(text)
+        m.apply(screen, 40, 1)
+        out = screen.display[0][:len(text)]
+        if text in masked:
+            assert out != text and len(screen.display[0].rstrip()) == len(text), (text, out)  # same length
+        else:
+            assert out == text, (text, out)
+    assert m.leaks('dev if0xxxxxxxxxxx xx.x.x.x\n') == 0
+    assert m.leaks('dev Cloudflare…\n') == 1  # truncated name
+    assert m.leaks('dev Cloudflare...\n') == 1  # ASCII truncation
+    assert m.leaks('dev ' + ' ' * 30 + 'Cloudf\nlareWARP\n') == 1  # wrapped at the screen edge
+    assert m.leaks('cxcap-…  /tmp/cxcap-self\n') == 0  # the temp root is not a host identifier
+    exe = sys.executable
+    assert parse_args(['--bin', exe]).views == DEFAULT_VIEWS and not set(NETWORK_VIEWS) & set(DEFAULT_VIEWS)
+    assert parse_args(['--bin', exe, '--network']).views == DEFAULT_VIEWS + NETWORK_VIEWS
+    assert parse_args(['--bin', exe, '--sizes', '80x24,40x20']).sizes == [(80, 24), (40, 20)]
+    for bad in (['--sizes', '80x'], ['--sizes', '80'], ['--views', 'nope'], ['legacy-bin']):
+        try:
+            with open(os.devnull, 'w') as null:
+                stderr, sys.stderr = sys.stderr, null
+                try:
+                    parse_args(['--bin', exe, *bad])
+                finally:
+                    sys.stderr = stderr
+        except SystemExit:
+            continue
+        raise AssertionError(f'accepted {bad}')
+    # A hung kill-server must not skip the remaining cleanup steps or the rmtree.
+    owned, run = Owned(), subprocess.run
+    owned.root = pathlib.Path(tempfile.mkdtemp(prefix='cxcap-selftest-', dir='/tmp'))
+    owned.sockets = [owned.root / 'missing.sock']
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd[0])
+        if cmd[0] == 'tmux':
+            raise subprocess.TimeoutExpired(cmd, kw.get('timeout'))
+        return subprocess.CompletedProcess(cmd, 0, f'LoadState=loaded\nExecStart={owned.root}\n', '')
+    subprocess.run = fake_run
     try:
-        import pyte  # noqa: F401
-        import PIL  # noqa: F401
-    except ImportError as e:
-        sys.exit(f'capture_matrix needs pyte and pillow: {e}')
+        owned.cleanup()
+    finally:
+        subprocess.run = run
+    assert calls == ['tmux', 'systemctl', 'systemctl'] and not owned.root.exists(), (calls, owned.root.exists())
+    print('capture_matrix self-test: PASS')
+    return 0
+
+
+def main(argv):
+    if argv == ['--self-test']:
+        return self_test()
+    a = parse_args(argv)
     out = pathlib.Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     renderer = Renderer(a.theme)
     owned = Owned()
     # SIGTERM/SIGHUP take the same finally path as Ctrl+C.
+    def interrupt(*_):
+        raise KeyboardInterrupt
     for sig in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
-    index, left, failure = [], None, None
+        signal.signal(sig, interrupt)
+    index, left, failure, version = [], None, None, None
     try:
         owned.root = pathlib.Path(tempfile.mkdtemp(prefix='cxcap-', dir='/tmp'))
         owned.marker = owned.root.name
-        masker = Masker(owned.root)
         env = build_fixture(owned, a)
+        version = subprocess.run([a.bin, '--version'], env=env, capture_output=True, text=True,
+                                 timeout=10).stdout.strip()[:80]
         for cols, rows in a.sizes:
             for view in a.views:
-                index.append(capture(a, env, owned, masker, renderer, out, view, cols, rows))
+                index.append(capture(a, env, owned, renderer, out, view, cols, rows))
     except BaseException as e:  # still clean up and report
         failure = f'{type(e).__name__}: {e}'
     finally:
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(sig, signal.SIG_IGN)  # a second signal must not cut cleanup short
         owned.cleanup()
         left = owned.leftovers()
-    captures = index
-    if a.merge_index:
-        try:
-            old = json.loads((out / 'index.json').read_text())
-            old = old.get('captures', []) if isinstance(old, dict) else old
-            mine = {c['txt'] for c in index}
-            captures = [c for c in old if isinstance(c, dict) and c.get('txt') not in mine] + index
-        except (OSError, ValueError):
-            pass
     meta = dict(harness='tests/capture_matrix.py', bin=os.path.relpath(a.bin, REPO) if a.bin.startswith(str(REPO)) else
-                pathlib.Path(a.bin).name, theme=a.theme, ascii=a.ascii, nocolor=a.nocolor, env=sorted(a.extra_env),
-                sizes=[f'{c}x{r}' for c, r in a.sizes], views=a.views, captures=captures)
+                pathlib.Path(a.bin).name, cx_version=version, terminal_palette=a.theme, ascii=a.ascii,
+                nocolor=a.nocolor, env=sorted(a.extra_env), sizes=[f'{c}x{r}' for c, r in a.sizes], views=a.views,
+                captures=index)
     (out / 'index.json').write_text(json.dumps(meta, indent=1) + '\n')
     leaks = sum(c['unmasked'] for c in index)
     ok = failure is None and not leaks and not left['pids'] and not left['units'] and not left['root_exists']

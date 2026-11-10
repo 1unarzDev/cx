@@ -1,388 +1,282 @@
-{
- "harness": "tests/capture_matrix.py",
- "bin": "target/debug/cx",
- "theme": "dark",
- "ascii": false,
- "nocolor": false,
- "env": [],
- "sizes": [
-  "40x20",
-  "80x24",
-  "120x40",
-  "200x60"
- ],
- "views": [
-  "network",
-  "network-expanded"
- ],
- "captures": [
-  {
-   "view": "startup",
-   "cols": 40,
-   "rows": 20,
-   "txt": "startup-40x20.txt",
-   "png": "startup-40x20.png"
-  },
-  {
-   "view": "files",
-   "cols": 40,
-   "rows": 20,
-   "txt": "files-40x20.txt",
-   "png": "files-40x20.png"
-  },
-  {
-   "view": "files-projects",
-   "cols": 40,
-   "rows": 20,
-   "txt": "files-projects-40x20.txt",
-   "png": "files-projects-40x20.png"
-  },
-  {
-   "view": "files-inside",
-   "cols": 40,
-   "rows": 20,
-   "txt": "files-inside-40x20.txt",
-   "png": "files-inside-40x20.png"
-  },
-  {
-   "view": "files-preview",
-   "cols": 40,
-   "rows": 20,
-   "txt": "files-preview-40x20.txt",
-   "png": "files-preview-40x20.png"
-  },
-  {
-   "view": "sessions",
-   "cols": 40,
-   "rows": 20,
-   "txt": "sessions-40x20.txt",
-   "png": "sessions-40x20.png"
-  },
-  {
-   "view": "sessions-all",
-   "cols": 40,
-   "rows": 20,
-   "txt": "sessions-all-40x20.txt",
-   "png": "sessions-all-40x20.png"
-  },
-  {
-   "view": "sessions-next",
-   "cols": 40,
-   "rows": 20,
-   "txt": "sessions-next-40x20.txt",
-   "png": "sessions-next-40x20.png"
-  },
-  {
-   "view": "palette",
-   "cols": 40,
-   "rows": 20,
-   "txt": "palette-40x20.txt",
-   "png": "palette-40x20.png"
-  },
-  {
-   "view": "help",
-   "cols": 40,
-   "rows": 20,
-   "txt": "help-40x20.txt",
-   "png": "help-40x20.png"
-  },
-  {
-   "view": "startup",
-   "cols": 80,
-   "rows": 24,
-   "txt": "startup-80x24.txt",
-   "png": "startup-80x24.png"
-  },
-  {
-   "view": "files",
-   "cols": 80,
-   "rows": 24,
-   "txt": "files-80x24.txt",
-   "png": "files-80x24.png"
-  },
-  {
-   "view": "files-projects",
-   "cols": 80,
-   "rows": 24,
-   "txt": "files-projects-80x24.txt",
-   "png": "files-projects-80x24.png"
-  },
-  {
-   "view": "files-inside",
-   "cols": 80,
-   "rows": 24,
-   "txt": "files-inside-80x24.txt",
-   "png": "files-inside-80x24.png"
-  },
-  {
-   "view": "files-preview",
-   "cols": 80,
-   "rows": 24,
-   "txt": "files-preview-80x24.txt",
-   "png": "files-preview-80x24.png"
-  },
-  {
-   "view": "sessions",
-   "cols": 80,
-   "rows": 24,
-   "txt": "sessions-80x24.txt",
-   "png": "sessions-80x24.png"
-  },
-  {
-   "view": "sessions-all",
-   "cols": 80,
-   "rows": 24,
-   "txt": "sessions-all-80x24.txt",
-   "png": "sessions-all-80x24.png"
-  },
-  {
-   "view": "sessions-next",
-   "cols": 80,
-   "rows": 24,
-   "txt": "sessions-next-80x24.txt",
-   "png": "sessions-next-80x24.png"
-  },
-  {
-   "view": "palette",
-   "cols": 80,
-   "rows": 24,
-   "txt": "palette-80x24.txt",
-   "png": "palette-80x24.png"
-  },
-  {
-   "view": "help",
-   "cols": 80,
-   "rows": 24,
-   "txt": "help-80x24.txt",
-   "png": "help-80x24.png"
-  },
-  {
-   "view": "startup",
-   "cols": 120,
-   "rows": 40,
-   "txt": "startup-120x40.txt",
-   "png": "startup-120x40.png"
-  },
-  {
-   "view": "files",
-   "cols": 120,
-   "rows": 40,
-   "txt": "files-120x40.txt",
-   "png": "files-120x40.png"
-  },
-  {
-   "view": "files-projects",
-   "cols": 120,
-   "rows": 40,
-   "txt": "files-projects-120x40.txt",
-   "png": "files-projects-120x40.png"
-  },
-  {
-   "view": "files-inside",
-   "cols": 120,
-   "rows": 40,
-   "txt": "files-inside-120x40.txt",
-   "png": "files-inside-120x40.png"
-  },
-  {
-   "view": "files-preview",
-   "cols": 120,
-   "rows": 40,
-   "txt": "files-preview-120x40.txt",
-   "png": "files-preview-120x40.png"
-  },
-  {
-   "view": "sessions",
-   "cols": 120,
-   "rows": 40,
-   "txt": "sessions-120x40.txt",
-   "png": "sessions-120x40.png"
-  },
-  {
-   "view": "sessions-all",
-   "cols": 120,
-   "rows": 40,
-   "txt": "sessions-all-120x40.txt",
-   "png": "sessions-all-120x40.png"
-  },
-  {
-   "view": "sessions-next",
-   "cols": 120,
-   "rows": 40,
-   "txt": "sessions-next-120x40.txt",
-   "png": "sessions-next-120x40.png"
-  },
-  {
-   "view": "palette",
-   "cols": 120,
-   "rows": 40,
-   "txt": "palette-120x40.txt",
-   "png": "palette-120x40.png"
-  },
-  {
-   "view": "help",
-   "cols": 120,
-   "rows": 40,
-   "txt": "help-120x40.txt",
-   "png": "help-120x40.png"
-  },
-  {
-   "view": "startup",
-   "cols": 200,
-   "rows": 60,
-   "txt": "startup-200x60.txt",
-   "png": "startup-200x60.png"
-  },
-  {
-   "view": "files",
-   "cols": 200,
-   "rows": 60,
-   "txt": "files-200x60.txt",
-   "png": "files-200x60.png"
-  },
-  {
-   "view": "files-projects",
-   "cols": 200,
-   "rows": 60,
-   "txt": "files-projects-200x60.txt",
-   "png": "files-projects-200x60.png"
-  },
-  {
-   "view": "files-inside",
-   "cols": 200,
-   "rows": 60,
-   "txt": "files-inside-200x60.txt",
-   "png": "files-inside-200x60.png"
-  },
-  {
-   "view": "files-preview",
-   "cols": 200,
-   "rows": 60,
-   "txt": "files-preview-200x60.txt",
-   "png": "files-preview-200x60.png"
-  },
-  {
-   "view": "sessions",
-   "cols": 200,
-   "rows": 60,
-   "txt": "sessions-200x60.txt",
-   "png": "sessions-200x60.png"
-  },
-  {
-   "view": "sessions-all",
-   "cols": 200,
-   "rows": 60,
-   "txt": "sessions-all-200x60.txt",
-   "png": "sessions-all-200x60.png"
-  },
-  {
-   "view": "sessions-next",
-   "cols": 200,
-   "rows": 60,
-   "txt": "sessions-next-200x60.txt",
-   "png": "sessions-next-200x60.png"
-  },
-  {
-   "view": "palette",
-   "cols": 200,
-   "rows": 60,
-   "txt": "palette-200x60.txt",
-   "png": "palette-200x60.png"
-  },
-  {
-   "view": "help",
-   "cols": 200,
-   "rows": 60,
-   "txt": "help-200x60.txt",
-   "png": "help-200x60.png"
-  },
-  {
-   "view": "network",
-   "cols": 40,
-   "rows": 20,
-   "txt": "network-40x20.txt",
-   "png": "network-40x20.png",
-   "theme": "dark",
-   "ascii": false,
-   "nocolor": false,
-   "unmasked": 0
-  },
-  {
-   "view": "network-expanded",
-   "cols": 40,
-   "rows": 20,
-   "txt": "network-expanded-40x20.txt",
-   "png": "network-expanded-40x20.png",
-   "theme": "dark",
-   "ascii": false,
-   "nocolor": false,
-   "unmasked": 0
-  },
-  {
-   "view": "network",
-   "cols": 80,
-   "rows": 24,
-   "txt": "network-80x24.txt",
-   "png": "network-80x24.png",
-   "theme": "dark",
-   "ascii": false,
-   "nocolor": false,
-   "unmasked": 0
-  },
-  {
-   "view": "network-expanded",
-   "cols": 80,
-   "rows": 24,
-   "txt": "network-expanded-80x24.txt",
-   "png": "network-expanded-80x24.png",
-   "theme": "dark",
-   "ascii": false,
-   "nocolor": false,
-   "unmasked": 0
-  },
-  {
-   "view": "network",
-   "cols": 120,
-   "rows": 40,
-   "txt": "network-120x40.txt",
-   "png": "network-120x40.png",
-   "theme": "dark",
-   "ascii": false,
-   "nocolor": false,
-   "unmasked": 0
-  },
-  {
-   "view": "network-expanded",
-   "cols": 120,
-   "rows": 40,
-   "txt": "network-expanded-120x40.txt",
-   "png": "network-expanded-120x40.png",
-   "theme": "dark",
-   "ascii": false,
-   "nocolor": false,
-   "unmasked": 0
-  },
-  {
-   "view": "network",
-   "cols": 200,
-   "rows": 60,
-   "txt": "network-200x60.txt",
-   "png": "network-200x60.png",
-   "theme": "dark",
-   "ascii": false,
-   "nocolor": false,
-   "unmasked": 0
-  },
-  {
-   "view": "network-expanded",
-   "cols": 200,
-   "rows": 60,
-   "txt": "network-expanded-200x60.txt",
-   "png": "network-expanded-200x60.png",
-   "theme": "dark",
-   "ascii": false,
-   "nocolor": false,
-   "unmasked": 0
-  }
- ]
-}
+[
+ {
+  "view": "startup",
+  "cols": 40,
+  "rows": 20,
+  "txt": "startup-40x20.txt",
+  "png": "startup-40x20.png"
+ },
+ {
+  "view": "files",
+  "cols": 40,
+  "rows": 20,
+  "txt": "files-40x20.txt",
+  "png": "files-40x20.png"
+ },
+ {
+  "view": "files-projects",
+  "cols": 40,
+  "rows": 20,
+  "txt": "files-projects-40x20.txt",
+  "png": "files-projects-40x20.png"
+ },
+ {
+  "view": "files-inside",
+  "cols": 40,
+  "rows": 20,
+  "txt": "files-inside-40x20.txt",
+  "png": "files-inside-40x20.png"
+ },
+ {
+  "view": "files-preview",
+  "cols": 40,
+  "rows": 20,
+  "txt": "files-preview-40x20.txt",
+  "png": "files-preview-40x20.png"
+ },
+ {
+  "view": "sessions",
+  "cols": 40,
+  "rows": 20,
+  "txt": "sessions-40x20.txt",
+  "png": "sessions-40x20.png"
+ },
+ {
+  "view": "sessions-all",
+  "cols": 40,
+  "rows": 20,
+  "txt": "sessions-all-40x20.txt",
+  "png": "sessions-all-40x20.png"
+ },
+ {
+  "view": "sessions-next",
+  "cols": 40,
+  "rows": 20,
+  "txt": "sessions-next-40x20.txt",
+  "png": "sessions-next-40x20.png"
+ },
+ {
+  "view": "palette",
+  "cols": 40,
+  "rows": 20,
+  "txt": "palette-40x20.txt",
+  "png": "palette-40x20.png"
+ },
+ {
+  "view": "help",
+  "cols": 40,
+  "rows": 20,
+  "txt": "help-40x20.txt",
+  "png": "help-40x20.png"
+ },
+ {
+  "view": "startup",
+  "cols": 80,
+  "rows": 24,
+  "txt": "startup-80x24.txt",
+  "png": "startup-80x24.png"
+ },
+ {
+  "view": "files",
+  "cols": 80,
+  "rows": 24,
+  "txt": "files-80x24.txt",
+  "png": "files-80x24.png"
+ },
+ {
+  "view": "files-projects",
+  "cols": 80,
+  "rows": 24,
+  "txt": "files-projects-80x24.txt",
+  "png": "files-projects-80x24.png"
+ },
+ {
+  "view": "files-inside",
+  "cols": 80,
+  "rows": 24,
+  "txt": "files-inside-80x24.txt",
+  "png": "files-inside-80x24.png"
+ },
+ {
+  "view": "files-preview",
+  "cols": 80,
+  "rows": 24,
+  "txt": "files-preview-80x24.txt",
+  "png": "files-preview-80x24.png"
+ },
+ {
+  "view": "sessions",
+  "cols": 80,
+  "rows": 24,
+  "txt": "sessions-80x24.txt",
+  "png": "sessions-80x24.png"
+ },
+ {
+  "view": "sessions-all",
+  "cols": 80,
+  "rows": 24,
+  "txt": "sessions-all-80x24.txt",
+  "png": "sessions-all-80x24.png"
+ },
+ {
+  "view": "sessions-next",
+  "cols": 80,
+  "rows": 24,
+  "txt": "sessions-next-80x24.txt",
+  "png": "sessions-next-80x24.png"
+ },
+ {
+  "view": "palette",
+  "cols": 80,
+  "rows": 24,
+  "txt": "palette-80x24.txt",
+  "png": "palette-80x24.png"
+ },
+ {
+  "view": "help",
+  "cols": 80,
+  "rows": 24,
+  "txt": "help-80x24.txt",
+  "png": "help-80x24.png"
+ },
+ {
+  "view": "startup",
+  "cols": 120,
+  "rows": 40,
+  "txt": "startup-120x40.txt",
+  "png": "startup-120x40.png"
+ },
+ {
+  "view": "files",
+  "cols": 120,
+  "rows": 40,
+  "txt": "files-120x40.txt",
+  "png": "files-120x40.png"
+ },
+ {
+  "view": "files-projects",
+  "cols": 120,
+  "rows": 40,
+  "txt": "files-projects-120x40.txt",
+  "png": "files-projects-120x40.png"
+ },
+ {
+  "view": "files-inside",
+  "cols": 120,
+  "rows": 40,
+  "txt": "files-inside-120x40.txt",
+  "png": "files-inside-120x40.png"
+ },
+ {
+  "view": "files-preview",
+  "cols": 120,
+  "rows": 40,
+  "txt": "files-preview-120x40.txt",
+  "png": "files-preview-120x40.png"
+ },
+ {
+  "view": "sessions",
+  "cols": 120,
+  "rows": 40,
+  "txt": "sessions-120x40.txt",
+  "png": "sessions-120x40.png"
+ },
+ {
+  "view": "sessions-all",
+  "cols": 120,
+  "rows": 40,
+  "txt": "sessions-all-120x40.txt",
+  "png": "sessions-all-120x40.png"
+ },
+ {
+  "view": "sessions-next",
+  "cols": 120,
+  "rows": 40,
+  "txt": "sessions-next-120x40.txt",
+  "png": "sessions-next-120x40.png"
+ },
+ {
+  "view": "palette",
+  "cols": 120,
+  "rows": 40,
+  "txt": "palette-120x40.txt",
+  "png": "palette-120x40.png"
+ },
+ {
+  "view": "help",
+  "cols": 120,
+  "rows": 40,
+  "txt": "help-120x40.txt",
+  "png": "help-120x40.png"
+ },
+ {
+  "view": "startup",
+  "cols": 200,
+  "rows": 60,
+  "txt": "startup-200x60.txt",
+  "png": "startup-200x60.png"
+ },
+ {
+  "view": "files",
+  "cols": 200,
+  "rows": 60,
+  "txt": "files-200x60.txt",
+  "png": "files-200x60.png"
+ },
+ {
+  "view": "files-projects",
+  "cols": 200,
+  "rows": 60,
+  "txt": "files-projects-200x60.txt",
+  "png": "files-projects-200x60.png"
+ },
+ {
+  "view": "files-inside",
+  "cols": 200,
+  "rows": 60,
+  "txt": "files-inside-200x60.txt",
+  "png": "files-inside-200x60.png"
+ },
+ {
+  "view": "files-preview",
+  "cols": 200,
+  "rows": 60,
+  "txt": "files-preview-200x60.txt",
+  "png": "files-preview-200x60.png"
+ },
+ {
+  "view": "sessions",
+  "cols": 200,
+  "rows": 60,
+  "txt": "sessions-200x60.txt",
+  "png": "sessions-200x60.png"
+ },
+ {
+  "view": "sessions-all",
+  "cols": 200,
+  "rows": 60,
+  "txt": "sessions-all-200x60.txt",
+  "png": "sessions-all-200x60.png"
+ },
+ {
+  "view": "sessions-next",
+  "cols": 200,
+  "rows": 60,
+  "txt": "sessions-next-200x60.txt",
+  "png": "sessions-next-200x60.png"
+ },
+ {
+  "view": "palette",
+  "cols": 200,
+  "rows": 60,
+  "txt": "palette-200x60.txt",
+  "png": "palette-200x60.png"
+ },
+ {
+  "view": "help",
+  "cols": 200,
+  "rows": 60,
+  "txt": "help-200x60.txt",
+  "png": "help-200x60.png"
+ }
+]

@@ -93,6 +93,7 @@ CORE=(
     "browser_find_pty|pyte|BIN"
     "list_wheel_pty|pyte|BIN"
     "pdf_pages_pty|pyte poppler|BIN"
+    "capture_matrix|pyte pillow|--self-test"
 )
 SSH=(
     "jump_routes_cli|sshd|BIN"
@@ -181,6 +182,7 @@ fi
 have() {
     case "$1" in
     pyte) python3 -c 'import pyte' >/dev/null 2>&1 ;;
+    pillow) python3 -c 'import PIL' >/dev/null 2>&1 ;;
     fish) command -v fish >/dev/null 2>&1 ;;
     poppler) command -v pdftoppm >/dev/null 2>&1 && command -v pdfinfo >/dev/null 2>&1 ;;
     sshd) [ -x /usr/sbin/sshd ] || [ -x /usr/bin/sshd ] || command -v sshd >/dev/null 2>&1 ;;

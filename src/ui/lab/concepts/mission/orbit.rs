@@ -968,9 +968,9 @@ pub(super) fn draw_with(
     let mut cv = Canvas::new(band);
     for n in p.nodes.iter().filter(|n| n.shown) {
         cv.block(Rect::new(
-            n.label.x.saturating_sub(1),
+            n.label.x.saturating_sub(2),
             n.label.y,
-            n.label.width + 2,
+            n.label.width + 4,
             n.label.height,
         ));
     }
@@ -1083,9 +1083,9 @@ pub(super) fn draw_with(
         let (a, b) = (at(Some(i)), at(Some(j)));
         // Bow away from the pill, so a peer link rounds the outside of the ring.
         let m = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
-        let out = ctrl(a, b, 0.3);
+        let out = ctrl(a, b, 0.18);
         let d2 = |q: P| (q.0 - p.c.0).powi(2) + ((q.1 - p.c.1) * 2.0).powi(2);
-        let bow = if d2(out) >= d2(m) { 0.3 } else { -0.3 };
+        let bow = if d2(out) >= d2(m) { 0.18 } else { -0.18 };
         links.push((e, a, b, bow, true));
     }
     for (e, a, b, bow, from_a) in links {

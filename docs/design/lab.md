@@ -16,7 +16,7 @@ as `!` in contact-sheet captions. Fixtures are `small` (3 devices), `typical` (7
 the v0.1.95 layout and is the bar to beat. `glyphs` is a renderer test card.
 
 ```sh
-tests/lab.sh baseline                         # every view x 5 sizes x 4 variants
+tests/lab.sh baseline                         # every view x 5 sizes x 5 variants (dark/light truecolor, dark/light 16, ascii)
 tests/lab.sh mydesign hub,device:innovation   # only some views
 CX_LAB_SIZES=40x20,60x30 CX_LAB_VARIANTS=dark-truecolor,ascii \
   CX_LAB_FIXTURES=typical,large tests/lab.sh mydesign hub

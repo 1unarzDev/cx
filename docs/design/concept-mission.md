@@ -353,7 +353,9 @@ Decisions where reviewers disagreed (recorded, not asked):
 
 ## 7. Degradation
 
-- **256 colours**: identical layout; blends resolve to the nearest xterm index.
+- **256 colours** (also tmux with `tmux-256color` and no RGB): identical layout; blends
+  resolve to the nearest xterm index. Keycaps sit a step above the sheet surface, so they
+  stay cells after quantisation on panels too (captured: `CX_LAB_VARIANTS=dark-256,light-256`).
 - **16 colours**: no tints; keycaps are a brightblack cell with white bold text on dark backgrounds and a white-gray (`Gray`) cell with black text on light ones, where white on brightblack is too faint (device keycaps keep their hue cell). Tiles separate by a faint `│` gutter and zones by their rule;
   selection is the same left bar plus a bold accent name; the pill is a solid accent row
   shaped like a keycap; charts keep the heat ramp; screen inks keep their hue (section 4).

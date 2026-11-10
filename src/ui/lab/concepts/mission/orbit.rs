@@ -1091,7 +1091,15 @@ pub(super) fn draw_with(
             n.label.height,
         ));
     }
-    cv.block(Rect::new(p.pill.x, p.pill.y, p.pill.width, 1));
+    // The capsule plus its selection brackets; ASCII keeps one more clear cell (`..[`
+    // would read as one stroke).
+    let pad = if cx.uni() { 1 } else { 2 };
+    cv.block(Rect::new(
+        p.pill.x.saturating_sub(pad),
+        p.pill.y,
+        p.pill.width + 2 * pad,
+        1,
+    ));
     // The root's evidence keeps a clear cell each side (a stroke never touches `a s`).
     if p.pev.width > 0 {
         cv.block(Rect::new(

@@ -47,7 +47,7 @@ ROW = re.compile(r'\b([bs])-(\d{6})\.txt')
 # Both layouts: v0.1.95 ('╭ ▸ N items' title, '▸ name' row) and the revamp (bar '▌', a
 # type glyph before the name, a trailing '/' on folders, 'N items' or 'loaded/total items'
 # on the bottom border).
-PREVIEW_TITLE = re.compile(r'┏ \S.*? · [\d.]+ (?:B|KiB|MiB|GiB) · ')
+PREVIEW_TITLE = re.compile(r'┏ (?:\S.*? · [\d.]+ (?:B|KiB|MiB|GiB) · |PDF · \d+/\d+ )')
 COUNT = re.compile(r'(?:╭ ▸ |[━─] )(?:(\d+)/)?(\d+) items')
 SELECTED = re.compile(r'(?:│\s+(?:/\s+)?▸ |[┃│]▌ \S )(\S(?:.*?\S)?)/?(?:\s{2,}|\s*[│┃])')
 
@@ -81,6 +81,17 @@ class Results:
             m['p95'] = pct(s, .95) if s else None
             m['min'] = min(s) if s else None
             m['max'] = max(s) if s else None
+
+
+def shown_as(shown, name):
+    """A list row shows name, or (narrow revamp list) name with its middle cut to '…'."""
+    if shown is None or shown == name:
+        return shown == name
+    for text in (shown, re.sub(r' \S+$', '', shown)):  # a narrow row puts the type right after
+        head, cut, tail = text.partition('…')
+        if text == name or (cut and name.startswith(head) and name.endswith(tail)):
+            return True
+    return False
 
 
 def ms(t0, t1):
@@ -710,7 +721,7 @@ def scenario_previews(binary, fx, side, device_index, ssh, tag, res, run, line_m
         env = BenchEnv(binary, tag, ssh)
         path = spec['path']
         try:
-            viewer = open_viewer(env, device_index, path.parent, path, lambda v: v.selected() == path.name)
+            viewer = open_viewer(env, device_index, path.parent, path, lambda v: shown_as(v.selected(), path.name))
             try:
                 base = f'{side}.preview.{key}'
                 dropped = drop_file_cache(path)
@@ -749,7 +760,7 @@ def scenario_scroll(binary, fx, side, device_index, ssh, tag, res, run, presses=
         path = spec['path']
         env = BenchEnv(binary, tag, ssh)
         try:
-            viewer = open_viewer(env, device_index, path.parent, path, lambda v: v.selected() == path.name)
+            viewer = open_viewer(env, device_index, path.parent, path, lambda v: shown_as(v.selected(), path.name))
             try:
                 viewer.write_at(b'\r')
                 viewer.until(lambda: first_content(viewer, spec), timeout=60, what='scroll preview')

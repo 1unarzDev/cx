@@ -161,7 +161,7 @@ the legend, so membership reads without colour); the separator `·` / `-`; a cut
 the preview edge `›` / `$`; keycaps are coloured cells in every tier
 (`REVERSED|BOLD` without colour); link lines become `- | +`; `⎿` is `L` and `✻` is `*`;
 charts become `_ : = #` and sparklines `_ = #` (`.` and `-` are link strokes; `#` is used by nothing else); sheet and palette frames are `+--+` / `|`; the minimap is omitted in ASCII
-and NO_COLOR; the QR is drawn with `▀▄█` even in NO_COLOR and dropped only in ASCII.
+and NO_COLOR; the QR is drawn with `▀▄█` even in NO_COLOR and dropped in ASCII and where it cannot fit above the code (40x20: the code and one-liner carry it);
 Fixture text is transliterated in ASCII (`asciify`), so the lint stays at 0 warnings.
 Inside thumbnails an emphasised lone letter (`a Always` in an agent prompt) takes the
 muted caption ink, one step below every cx keycap and name, so cx keys stay unique.
@@ -319,7 +319,7 @@ Decisions where reviewers disagreed (recorded, not asked):
 ## 7. Degradation
 
 - **256 colours**: identical layout; blends resolve to the nearest xterm index.
-- **16 colours**: no tints. Tiles separate by a faint `│` gutter and zones by their rule;
+- **16 colours**: no tints; keycaps are a brightblack cell with white bold text (device keycaps keep their hue cell). Tiles separate by a faint `│` gutter and zones by their rule;
   selection is the same left bar plus a bold accent name; the pill is a solid accent row
   shaped like a keycap; charts keep the heat ramp; screen inks keep their hue (section 4).
   Overlays clear the backdrop instead of dimming it; every selection (files, palette,

@@ -420,7 +420,11 @@ impl<'a> Cx<'a> {
     pub fn key_style(&self) -> Style {
         match self.c.color {
             ColorLevel::None => Style::default().add_modifier(Modifier::REVERSED),
-            ColorLevel::C16 => self.st(Tok::Accent).add_modifier(Modifier::BOLD),
+            // A brightblack cell, so keys are coloured cells in every tier.
+            ColorLevel::C16 => Style::default()
+                .bg(Color::DarkGray)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
             _ => self
                 .st(Tok::Surface2)
                 .patch(self.ink(Tok::Fg, 1.0))

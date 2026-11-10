@@ -1039,7 +1039,8 @@ pub(super) fn draw_with(
                 let (nx, ny) = ring_f(ring + 1, p.rings);
                 (p.rx * (fx + nx) / 2.0 + 1.0, p.ry * (fy + ny) / 2.0 + 0.5)
             } else {
-                (p.rx * fx + 4.0, p.ry * fy + 1.4)
+                // Just outside the last ring: hugging its members, not framing the map.
+                (p.rx * fx + 2.5, p.ry * fy + 1.0)
             };
             let tok = mesh_tok(cx, &m.id);
             let pts = ellipse(p.c, rxm, rym, a0, a1);

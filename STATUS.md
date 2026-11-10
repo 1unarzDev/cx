@@ -1,10 +1,10 @@
 # CX status
 
 ## Revamp (in progress, branch `revamp/base`)
-- Integrated so far: UI module split (`src/ui.rs` 9.8k → 1.6k lines), files listed in one cached pass, perf harness, regression ledger (`tests/REGRESSIONS.md`, `tests/run_regressions.sh`: 56 fixtures plus the Rust suite, all green), design spec (`docs/design/ui-revamp.md`).
-- Running: wave 2 (theme/caps/focus, sessions flow with Ctrl+\ detach, files UX/scroll perf, keymap/hitmap/palette/phone layout, SSH multiplexing fix, capture harness fix) and wave 3a (secrets, mesh backends and Cloudflare onboarding, per-edge policy, graph core).
-- Decided: Network hub start view with per-node letter hotkeys; visual-first layout; Ctrl+\ detach accepted; per-edge, per-direction policy; keyring with age-file fallback.
-- Open questions: none.
+- Integrated so far: UI module split (`src/ui.rs` 9.8k → 1.6k lines), files listed in one cached pass, perf harness, regression ledger (`tests/REGRESSIONS.md`, `tests/run_regressions.sh`: 57 fixtures plus the Rust suite, all green), design spec (`docs/design/ui-revamp.md`), and wave 3a: secrets (OS keyring, plain 0600 fallback file; age dropped), mesh backends with `cx mesh pair` (invite keys from `ssh-keygen`; hand-written Ed25519 removed; `cx device remove` revokes pins and managed keys), per-edge policy (`cx edge`, guard on transport and interactive SSH), graph core.
+- Running: wave 2 (theme/caps/focus, sessions flow with Ctrl+\ detach, files UX/scroll perf, keymap/hitmap/palette/phone layout, SSH multiplexing fix, capture harness fix); wave 3a is integrated.
+- Decided: Network hub start view with per-node letter hotkeys; visual-first layout; Ctrl+\ detach accepted; per-edge, per-direction policy; OS keyring with a plain 0600 file fallback (like an SSH key); no hand-written crypto (mesh uses OpenSSH).
+- Open questions: (1) direct `cx mesh pair` codes grew from about 60 to about 150 symbols because they now carry the ssh-keygen invite key; accept, or derive keys another way (newer OpenSSH or `openssl` on both ends, or a vetted crate)? (2) the keyring stack adds about 87 crates and about 3 MB to the binary; keep it?
 
 ## Claude gateway lends (Unreleased)
 - `cx claude lend | revoke | list` (mesh/claude.py, docs/claude.md): a better-ccflare key, an Access service token and policy, and a single-use code; the teammate runs `curl -sL <endpoint>/claude/<code>|sh` or `irm …|iex`. `cx mesh deploy` redeploys only the Worker.

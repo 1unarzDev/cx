@@ -1,0 +1,290 @@
+{
+ "schema": 1,
+ "harness": "tests/perf_harness.py",
+ "binary_version": "cx 0.1.95",
+ "build": "debug",
+ "host": {
+  "kernel": "7.2.9-arch1-1",
+  "cpus": 20,
+  "python": "3.14.8",
+  "tmux": "tmux 3.8"
+ },
+ "terminal": {
+  "cols": 120,
+  "rows": 40
+ },
+ "quiet_ms": 60.0,
+ "burst_gap_ms": 3.0,
+ "iterations": 18,
+ "repeat": 1,
+ "detach_key": "Ctrl+\\",
+ "result": "PASS",
+ "cleanup_failures": [],
+ "errors": [],
+ "aggregate": null,
+ "runs": [
+  {
+   "sessions_attach": {
+    "detach_key": "Ctrl+\\",
+    "cx_new_ms": 246.54,
+    "inline_to_focused_pane": {
+     "settled_ms": {
+      "n": 3,
+      "failed": 0,
+      "p50": 9.36,
+      "p95": 9.78,
+      "max": 9.83
+     },
+     "visible_ms": {
+      "n": 3,
+      "failed": 0,
+      "p50": 9.36,
+      "p95": 9.78,
+      "max": 9.83
+     },
+     "bytes_median": 1676,
+     "bursts_median": 1
+    },
+    "pane_echo": {
+     "settled_ms": {
+      "n": 9,
+      "failed": 0,
+      "p50": 73.18,
+      "p95": 93.74,
+      "max": 102.62
+     },
+     "visible_ms": {
+      "n": 9,
+      "failed": 0,
+      "p50": 72.6,
+      "p95": 79.25,
+      "max": 80.41
+     },
+     "bytes_median": 104,
+     "bursts_median": 3
+    },
+    "detach_pane_to_list": {
+     "settled_ms": {
+      "n": 3,
+      "failed": 0,
+      "p50": 11.13,
+      "p95": 15.99,
+      "max": 16.53
+     },
+     "visible_ms": {
+      "n": 3,
+      "failed": 0,
+      "p50": 11.13,
+      "p95": 15.99,
+      "max": 16.53
+     },
+     "bytes_median": 2212,
+     "bursts_median": 2
+    },
+    "enter_to_native_prompt": {
+     "settled_ms": {
+      "n": 3,
+      "failed": 0,
+      "p50": 58.62,
+      "p95": 86.52,
+      "max": 89.62
+     },
+     "visible_ms": {
+      "n": 3,
+      "failed": 0,
+      "p50": 58.62,
+      "p95": 86.52,
+      "max": 89.62
+     },
+     "bytes_median": 1110,
+     "bursts_median": 2
+    },
+    "detach_native_to_ui": {
+     "settled_ms": {
+      "n": 3,
+      "failed": 0,
+      "p50": 263.34,
+      "p95": 291.74,
+      "max": 294.9
+     },
+     "visible_ms": {
+      "n": 3,
+      "failed": 0,
+      "p50": 4.4,
+      "p95": 7.33,
+      "max": 7.65
+     },
+     "bytes_median": 9144,
+     "bursts_median": 8
+    },
+    "cycles": 3,
+    "sessions_after": 1,
+    "viewer": {
+     "clean_exit": true,
+     "termios_restored": true
+    },
+    "cleanup": {
+     "pids_observed": 4,
+     "survivors_killed": 0,
+     "remaining": 0,
+     "orphans_ours": 0,
+     "orphans_ours_stray": 0,
+     "stale_handoffs": 0
+    },
+    "wall_s": 7.6
+   },
+   "mouse_motion": {
+    "sessions": {
+     "mouse_modes": [
+      "1000",
+      "1002",
+      "1003",
+      "1006",
+      "1015"
+     ],
+     "any_motion_reporting": true,
+     "spacing_ms": 40.0,
+     "idle_baseline": {
+      "seconds": 1.6,
+      "bytes": 0,
+      "bursts": 0
+     },
+     "same_row": {
+      "events": 40,
+      "bytes": 171,
+      "bursts": 2,
+      "bytes_per_event": 4.3,
+      "bursts_per_event": 0.05,
+      "events_with_output": 2
+     },
+     "outside": {
+      "events": 40,
+      "bytes": 146,
+      "bursts": 1,
+      "bytes_per_event": 3.6,
+      "bursts_per_event": 0.025,
+      "events_with_output": 1
+     },
+     "across_rows": {
+      "events": 40,
+      "bytes": 3764,
+      "bursts": 40,
+      "bytes_per_event": 94.1,
+      "bursts_per_event": 1.0,
+      "events_with_output": 40
+     },
+     "viewer": {
+      "clean_exit": true,
+      "termios_restored": true
+     },
+     "cleanup": {
+      "pids_observed": 2,
+      "survivors_killed": 0,
+      "remaining": 0,
+      "orphans_ours": 0,
+      "orphans_ours_stray": 0,
+      "stale_handoffs": 0
+     }
+    },
+    "files": {
+     "mouse_modes": [
+      "1000",
+      "1002",
+      "1003",
+      "1006",
+      "1015"
+     ],
+     "any_motion_reporting": true,
+     "spacing_ms": 40.0,
+     "idle_baseline": {
+      "seconds": 1.6,
+      "bytes": 0,
+      "bursts": 0
+     },
+     "same_row": {
+      "events": 40,
+      "bytes": 0,
+      "bursts": 0,
+      "bytes_per_event": 0.0,
+      "bursts_per_event": 0.0,
+      "events_with_output": 0
+     },
+     "outside": {
+      "events": 40,
+      "bytes": 0,
+      "bursts": 0,
+      "bytes_per_event": 0.0,
+      "bursts_per_event": 0.0,
+      "events_with_output": 0
+     },
+     "across_rows": {
+      "events": 40,
+      "bytes": 25,
+      "bursts": 1,
+      "bytes_per_event": 0.6,
+      "bursts_per_event": 0.025,
+      "events_with_output": 1
+     },
+     "viewer": {
+      "clean_exit": true,
+      "termios_restored": true
+     },
+     "cleanup": {
+      "pids_observed": 1,
+      "survivors_killed": 0,
+      "remaining": 0,
+      "orphans_ours": 0,
+      "orphans_ours_stray": 0,
+      "stale_handoffs": 0
+     }
+    },
+    "wall_s": 18.17
+   },
+   "idle": {
+    "files": {
+     "seconds": 5.0,
+     "viewer_cpu_s": 0.02,
+     "tree_cpu_s": 0.02,
+     "processes": 2,
+     "bytes": 25,
+     "bytes_per_s": 5.0,
+     "bursts": 1,
+     "viewer": {
+      "clean_exit": true,
+      "termios_restored": true
+     },
+     "cleanup": {
+      "pids_observed": 2,
+      "survivors_killed": 0,
+      "remaining": 0,
+      "orphans_ours": 0,
+      "orphans_ours_stray": 0,
+      "stale_handoffs": 0
+     }
+    },
+    "sessions": {
+     "seconds": 5.0,
+     "viewer_cpu_s": 0.04,
+     "tree_cpu_s": 0.06,
+     "processes": 3,
+     "bytes": 207,
+     "bytes_per_s": 41.4,
+     "bursts": 3,
+     "viewer": {
+      "clean_exit": true,
+      "termios_restored": true
+     },
+     "cleanup": {
+      "pids_observed": 3,
+      "survivors_killed": 0,
+      "remaining": 0,
+      "orphans_ours": 0,
+      "orphans_ours_stray": 0,
+      "stale_handoffs": 0
+     }
+    },
+    "wall_s": 15.19
+   }
+  }
+ ]
+}

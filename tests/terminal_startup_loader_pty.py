@@ -7,7 +7,7 @@ def process_identity(pid):
     try:
         # The command name may contain spaces and closing parentheses.
         fields = pathlib.Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
     return fields[19], fields[0]
 
@@ -84,7 +84,7 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-loader-') as tmp:
         # so a slow remote attach cannot flash the prior "[detached]" teardown text
         # before tmux repaints. crossterm emits LeaveAlternateScreen then Clear(All).
         assert b'\x1b[?1049l\x1b[2J' in raw, 'handoff did not clear the primary screen'
-        os.write(master,b'\x1d'); wait(lambda:'Files' in text())
+        os.write(master,b'\x1c'); wait(lambda:'Files' in text())
         os.write(master,b'\x03');proc.wait(timeout=5)
         assert termios.tcgetattr(slave)==before
     finally:

@@ -48,14 +48,14 @@ with tempfile.TemporaryDirectory(prefix='cx-shell-return-') as tmp:
             italic_line = next(line for line in pane.splitlines()
                                if line.endswith(b'CX_ITALIC\x1b[0m') or
                                   line.endswith(b'CX_ITALIC\x1b[23m'))
-            os.write(master, b'\x1d')
+            os.write(master, b'\x1c')
             returned = read(1)
             os.write(master, b'\x03')
             p.wait(timeout=3)
             alive = subprocess.run(['tmux', '-S', socket, 'has-session'],
                                    capture_output=True).returncode == 0
             result = {'workspace_before': b'Work' in initial,
-                      'return_hint_complete': b'Ctrl+]' in attached,
+                      'return_hint_complete': b'Ctrl+\\' in attached,
                       'utf8_with_ascii_ssh_locale': sample.encode() in glyph_output,
                       'italic_not_reverse': b'\x1b[3m' in italic_line and b'\x1b[7m' not in italic_line,
                       'terminal_italic_not_reverse': b'\x1b[3m' in tail and b'\x1b[7m' not in tail,

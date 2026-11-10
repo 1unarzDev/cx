@@ -1,0 +1,24 @@
+ cx   [Sessions]  Network                                 viewing fixture@laptop
+                                                                                
+╭ ╭ ▸ Help ──────────────────────────────────────────────────────────────────╮─╮
+│ │Arrows / h j k l       Navigate                                           │ │
+│ │Ctrl+arrows / hjkl     Move panel focus (hold Ctrl)                       │ │
+│ │Enter                  Open / enter session with input                    │ │
+│ │Escape                 Back / clear current mode                          │ │
+╰─│Tab / Shift+Tab        Next / previous panel                              │ │
+╭ │/                      Search                                             │ │
+│ │Ctrl+P                 Actions                                            │ │
+│ │n                      New session in current folder                      │─╯
+│ │:                      Run command in current folder                      │─╮
+│ │Ctrl+C                 Quit cx; work keeps running                        │ │
+│ │p                      Pin / unpin; keep an ended-work bookmark           │ │
+╰─│d                      Stop selected CX-managed session · confirm         │ │
+ S│w                      Watch selected session · read-only                 │ │
+ H│s                      Inspect selected session's tasks and subagents     │ │
+ F│                                                                          │ │
+ ⏎│d                      Stop selected CX-managed session · confirmation    │ │
+  │Native terminals own their input.                                         │─╯
+ ●│Enter · w              Attach · watch read-only                           │le
+ ↑╰──────────────────────────────────────────────────────────────────────────╯  
+                                                                                
+                                                                                

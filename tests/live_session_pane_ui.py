@@ -24,12 +24,16 @@ def run(binary):
             return state
         ui.restart_state = local_restart
         viewer = ui.Viewer(f)
-        viewer.wait(lambda: 'focus terminal' in viewer.text(), 'live terminal pane not shown')
+        viewer.wait(lambda: ' live' in viewer.text(), 'live terminal pane not shown')
         viewer.pump(2) # Allow actual Info reply to arrive; it must not disable previews.
         require('New shell' not in viewer.text(), 'duplicate shell button remains')
         target_row = next(i for i,line in enumerate(viewer.screen.display) if 'Hover terminal proof' in line[22:65])
+        # Hover only highlights: it must not select or fetch (spec P16).
         viewer.send(f'\x1b[<35;31;{target_row+1}M'.encode())
-        viewer.wait(lambda: 'HOVER-SCREEN-PROOF' in viewer.text(), 'mouse hover did not display actual selected terminal after Info')
+        viewer.pump(0.5)
+        require('HOVER-SCREEN-PROOF' not in viewer.text(), 'mouse hover selected a session')
+        viewer.send(f'\x1b[<0;31;{target_row+1}M\x1b[<0;31;{target_row+1}m'.encode())
+        viewer.wait(lambda: 'HOVER-SCREEN-PROOF' in viewer.text(), 'click did not display actual selected terminal after Info')
         f.send(second['id'], "for i in $(seq 1 100); do printf 'HISTORY-ROW-%03d\\n' $i; done")
         viewer.wait(lambda: 'HISTORY-ROW-100' in viewer.text(), 'history fixture not ready')
         for _ in range(12):
@@ -44,10 +48,10 @@ def run(binary):
             viewer.send(b'\x1b[<65;100;15M')
             viewer.pump(0.01)
         viewer.wait(lambda: 'NEW-LIVE-OUTPUT' in viewer.text(), 'scroll down did not resume live output')
-        viewer.send(b'\r')
-        viewer.wait(lambda: 'back to sessions' in viewer.text(), 'Enter did not focus pane')
+        viewer.send(b'i')
+        viewer.wait(lambda: '⏏ detach' in viewer.text(), 'i did not focus pane')
         viewer.send(b'\x1b[<64;100;15M')
-        viewer.wait(lambda: 'Scrollback' in viewer.text(), 'focused pane did not scroll')
+        viewer.wait(lambda: 'scrollback' in viewer.text(), 'focused pane did not scroll')
         proof = f.root / 'focused-proof'
         # Real bracketed paste into the viewer, then explicit Enter to submit.
         command = 'printf integrated > ' + str(proof)
@@ -55,14 +59,14 @@ def run(binary):
         viewer.send(b'\r')
         viewer.wait(proof.exists, 'focused paste/Enter did not reach running shell')
         require(proof.read_text() == 'integrated', 'shell input corrupted')
-        viewer.send(b'\x1d')
-        viewer.wait(lambda: 'back to sessions' not in viewer.text(), 'Ctrl+] did not return navigation')
+        viewer.send(b'\x1c')
+        viewer.wait(lambda: '⏏ detach' not in viewer.text(), 'Ctrl+\\ did not return navigation')
         viewer.send(b'n')
         viewer.wait(lambda: 'Shell' in viewer.text() and 'Session' in viewer.text(), 'unified New session chooser missing Shell')
         viewer.send(b'\x1b')
         viewer.quit()
         require(len(f.rows()) == 2, 'focus created or killed a session')
-        print(json.dumps(dict(status='PASS',checks=['wheel reveals scrollback', 'reading position stays fixed', 'scroll down resumes live output', 'focused pane scrolling and paste resume', 'actual live pane in viewer PTY','Enter focuses same running shell','bracketed paste and Enter delivered','Ctrl+] returns navigation','unified New session chooser','termios restored; runtime preserved'])))
+        print(json.dumps(dict(status='PASS',checks=['wheel reveals scrollback', 'reading position stays fixed', 'scroll down resumes live output', 'focused pane scrolling and paste resume', 'actual live pane in viewer PTY','i focuses same running shell','bracketed paste and Enter delivered','Ctrl+\\ returns navigation','hover never selects','unified New session chooser','termios restored; runtime preserved'])))
     finally:
         if viewer: viewer.close()
         f.close()

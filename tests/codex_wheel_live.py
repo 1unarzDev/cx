@@ -73,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix='cx-wheel-') as temporary:
         wait(lambda: 'Back to bottom' not in visible(),'Escape did not return native transcript live')
         assert 'CX_SCROLL_DRAFT' in visible()
         assert original()==before,'Codex process replaced'
-        os.write(master,b'\x1d');client.wait(timeout=5)
+        os.write(master,b'\x1c');client.wait(timeout=5)
         print(json.dumps(dict(result='PASS',codex='0.160.1',backend=tmux('-V'),stale_mouse_policy=True,native_transcript_scrolled=True,draft_preserved=True,same_frontend_identity=True,inference_prompt_sent=False)))
     finally:
         if client.poll() is None: client.terminate(); client.wait(timeout=5)

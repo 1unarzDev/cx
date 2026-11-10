@@ -79,6 +79,7 @@ CORE=(
     "shell_labels_live|fish|BIN"
     "login_terminal_pty||BIN"
     "attach_terminal_pty||BIN"
+    "ctrl_bracket_attach_pty||BIN"
     "folder_command_ui_pty||BIN"
     "mesh_util||"
     "session_chooser_pty|pyte|BIN"

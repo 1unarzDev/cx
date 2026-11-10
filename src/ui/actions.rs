@@ -133,7 +133,7 @@ impl App {
             Action::Paste => {
                 self.view == View::Files && self.clipboard.is_some() && self.browser.is_some()
             }
-            Action::Observe | Action::PinSession => {
+            Action::Observe | Action::PinSession | Action::SendCtrlBackslash => {
                 self.view == View::Work && self.selected_session().is_some()
             }
             Action::FolderSessions => {
@@ -333,6 +333,7 @@ impl App {
                 }
             }
             Action::PinSession => self.toggle_pin(),
+            Action::SendCtrlBackslash => self.send_ctrl_backslash(),
             Action::FolderSessions => self.sessions_here(),
             Action::Observe => {
                 if let Some((d, s)) = self.selected_session() {

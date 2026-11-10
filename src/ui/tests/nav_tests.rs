@@ -142,7 +142,8 @@ fn moving_clamps_without_wrapping_and_keeps_scrolloff() {
     draw(&a, 120, 40);
     let row_of = |text: &str, name: &str| {
         text.lines()
-            .position(|l| l.contains(name) && l.contains("live"))
+            // List rows, not the preview's titled border.
+            .position(|l| l.contains(name) && !l.contains('━') && !l.contains('─'))
     };
     for _ in 0..30 {
         a.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));

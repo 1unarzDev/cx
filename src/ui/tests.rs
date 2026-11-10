@@ -3715,7 +3715,9 @@ fn selected_file_context_follows_focused_pane_and_keeps_destination() {
     }
 }
 #[test]
-fn project_headers_render_immediately_above_sessions_with_space_before_later_group() {
+fn session_folders_are_a_column_and_each_session_is_one_row() {
+    // Spec 7.1: group headers are gone; the folder is a column on the row, so
+    // one step moves the bar exactly one row and folders still tell rows apart.
     let (mut a, _rx) = queued_app();
     a.device = 1;
     for (id, name, directory) in [
@@ -3732,41 +3734,17 @@ fn project_headers_render_immediately_above_sessions_with_space_before_later_gro
     for width in [80, 120] {
         let rendered = capture_app(&a, width);
         let lines: Vec<_> = rendered.lines().collect();
-        let first = lines
-            .iter()
-            .position(|line| {
-                line.chars()
-                    .take(if width >= 120 { 75 } else { 80 })
-                    .collect::<String>()
-                    .contains("alpha-session")
-            })
-            .expect("first session");
-        let second = lines
-            .iter()
-            .position(|line| {
-                line.chars()
-                    .take(if width >= 120 { 75 } else { 80 })
-                    .collect::<String>()
-                    .contains("beta-session")
-            })
-            .expect("second session");
-        assert!(lines[first - 1].contains("/alpha"), "{rendered}");
-        assert!(lines[second - 1].contains("/beta"), "{rendered}");
-        // Ignore the sidebar; the workspace column must be blank before its later header.
-        let workspace_start = lines[second - 1][..lines[second - 1].find("/beta").unwrap()]
-            .chars()
-            .count();
+        let row = |needle: &str, folder: &str| {
+            lines
+                .iter()
+                .position(|line| line.contains(needle) && line.contains(folder))
+                .unwrap_or_else(|| panic!("{needle} with {folder} missing: {rendered}"))
+        };
+        let (first, second) = (row("alpha-session", "/alpha"), row("beta-session", "/beta"));
+        assert_eq!(second, first + 1, "{rendered}");
         assert!(
-            lines[second - 2]
-                .chars()
-                .skip(workspace_start)
-                .take(if width >= 120 {
-                    75usize.saturating_sub(workspace_start)
-                } else {
-                    usize::MAX
-                })
-                .all(|c| c.is_whitespace() || matches!(c, '│' | '┃' | '|')),
-            "{rendered}"
+            !lines[first - 1].contains("/alpha"),
+            "no header row: {rendered}"
         );
     }
 }
@@ -3832,8 +3810,11 @@ fn workspace_polish_capture_matrix() {
                     "{state} {width}x{height}: opaque background"
                 );
                 if state == "sessions" {
-                    assert!(text.contains("STATE"), "{width}x{height}: {text}");
-                    assert!(text.contains("live"), "{width}x{height}: {text}");
+                    assert!(text.contains("Sessions 1"), "{width}x{height}: {text}");
+                    assert!(
+                        text.contains("● ") || text.contains("+ "),
+                        "{width}x{height}: {text}"
+                    );
                 }
                 if state == "first-run" {
                     assert!(text.contains("New session"), "{width}x{height}: {text}");
@@ -5262,7 +5243,9 @@ fn scoped_sessions_have_evidence_based_devcontainer_labels_at_all_widths() {
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join(format!("{width}-sessions.txt")), &text).unwrap();
         }
-        assert!(text.contains("devcontainer"), "{width}: {text}");
+        // Phones have no details rail; the row's DC badge carries it.
+        let label = if width < 60 { "DC " } else { "devcontainer" };
+        assert!(text.contains(label), "{width}: {text}");
         assert!(!text.contains("[shell]"));
     }
     assert_eq!(session.provider, "shell");
@@ -6247,7 +6230,9 @@ fn unknown_native_folder_never_becomes_a_command_or_new_session_path() {
     a.view = View::Work;
     a.focus = Focus::Workspace;
     assert!(a.command_context().is_none());
-    assert!(capture_app(&a, 120).contains("Directory unavailable"));
+    // An unknown folder renders as evidence, never as a path.
+    a.work[0].fetched = transport::now();
+    assert!(capture_app(&a, 120).contains("? folder"));
     a.execute(Action::New);
     assert!(matches!(a.dialog, Some(Dialog::Provider(0, None))));
     assert!(!rx.try_iter().any(|t| matches!(t.op, Operation::Create(_))));
@@ -6428,6 +6413,12 @@ fn selected_snapshot_rejects_late_reply_and_clears_when_hidden() {
     let first = rx.try_recv().unwrap();
     a.work[0].sessions[0].terminal.as_mut().unwrap().created = "replacement".into();
     assert!(a.refresh_session_preview(160));
+    assert!(
+        rx.try_recv().is_err(),
+        "a moved selection settles before fetching"
+    );
+    std::thread::sleep(session_preview::SELECT_DEBOUNCE + Duration::from_millis(5));
+    a.refresh_session_preview(160);
     let second = rx.try_recv().unwrap();
     let reply = |task: Task| Reply {
         device_id: Some("local".into()),
@@ -6545,7 +6536,7 @@ fn selected_snapshot_mouse_does_not_navigate_session_list() {
     let mut s = disposable_shell();
     s.directory = "/".into();
     s.name = "shell".into();
-    assert!(session_preview::label(&s).starts_with("/ ·"));
+    assert_eq!(session_preview::label(&s), "/ shell");
 }
 
 #[test]
@@ -6568,7 +6559,7 @@ fn live_pane_focus_input_return_and_runtime_invalidation() {
     let task = rx.try_recv().unwrap();
     a.apply(Reply {device_id:Some("local".into()),execution_target:Some(None),preview:None,device:0,op:task.op,generation:task.generation,result:Ok(serde_json::json!({"live":true,"pane_id":"%1","styled_lines":["\u{1b}[31mlive screen"],"cursor_x":2,"cursor_y":0,"cursor_visible":true,"bracketed_paste":true,"application_cursor":true}))});
     a.focus = Focus::Workspace;
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    press(&mut a, 'i');
     assert!(a.pane_focused());
     assert!(rx.try_recv().is_err());
     a.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
@@ -6595,10 +6586,23 @@ fn live_pane_focus_input_return_and_runtime_invalidation() {
         .map(|c| c.symbol())
         .collect();
     assert!(text.contains("live screen"));
-    assert!(text.contains("Ctrl+]"));
-    a.key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::CONTROL));
-    assert!(!a.pane_focused());
-    assert!(rx.try_recv().is_err());
+    assert!(text.contains("Ctrl+\\") && text.contains("detach"));
+    // Ctrl+] (legacy 0x1d, crossterm Ctrl+5) and Ctrl+O now reach the pane.
+    for (code, hex) in [(']', "1d"), ('5', "1d"), ('o', "0f")] {
+        a.key(KeyEvent::new(KeyCode::Char(code), KeyModifiers::CONTROL));
+        assert!(a.pane_focused(), "Ctrl+{code} must not leave input");
+        assert!(
+            matches!(rx.try_recv().unwrap().op, Operation::SessionPaneInput { hex: sent, .. } if sent == hex),
+            "Ctrl+{code}"
+        );
+    }
+    // Every Ctrl+\ encoding leaves inline input without sending bytes.
+    for code in ['4', '\\'] {
+        assert!(a.pane_focused() || a.focus_session_pane());
+        a.key(KeyEvent::new(KeyCode::Char(code), KeyModifiers::CONTROL));
+        assert!(!a.pane_focused(), "Ctrl+{code} did not leave input");
+        assert!(rx.try_recv().is_err());
+    }
     assert!(a.focus_session_pane());
     a.work[0].sessions.clear();
     a.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
@@ -6684,7 +6688,10 @@ fn session_hover_selects_rendered_row_without_opening() {
     assert!(a.mouse(at(MouseEventKind::Down(event::MouseButton::Left)), area));
     assert!(a.mouse(at(MouseEventKind::Up(event::MouseButton::Left)), area));
     assert!(
-        a.attach_check.is_some() || a.pane_focused() || a.dialog.is_some(),
+        a.attach_check.is_some()
+            || a.pending_attach.is_some()
+            || a.pane_focused()
+            || a.dialog.is_some(),
         "second tap did not run Enter: {}",
         a.notice
     );

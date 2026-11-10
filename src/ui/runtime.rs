@@ -286,6 +286,17 @@ pub(super) fn spawn_exit_watchdog(stopping: std::sync::Arc<std::sync::atomic::At
         }
     });
 }
+/// Reports that cannot change cx state relevant to a pending attachment.
+pub(super) fn passive_input(input: &Event) -> bool {
+    match input {
+        Event::Mouse(m) => matches!(
+            m.kind,
+            MouseEventKind::Moved | MouseEventKind::Up(_) | MouseEventKind::Drag(_)
+        ),
+        Event::FocusGained | Event::FocusLost | Event::Resize(..) => true,
+        _ => false,
+    }
+}
 pub(super) fn read_input_batch() -> Result<Vec<(Event, Instant)>> {
     let first = event::read()?;
     let wheel = wheel_report(&first).is_some();
@@ -326,6 +337,9 @@ pub(super) fn loop_wait(app: &App, now: Instant, frame_wait: Option<Duration>) -
     }
     if let Some(due) = app.files_due(now) {
         wait = wait.min(due);
+    }
+    if let Some(preview) = app.session_preview_wait() {
+        wait = wait.min(preview);
     }
     if app.pending_requests.get() > 0 {
         wait = wait.min(REPLY_POLL);
@@ -1153,6 +1167,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     let mut native_preview = crate::terminal_preview::NativePreview::detect();
     let mut dirty = true;
     let mut last_draw = Instant::now() - FRAME_INTERVAL;
+    let mut carried: Vec<(Event, Instant)> = Vec::new();
     let (update_tx, update_rx) = mpsc::channel::<UpdateEvent>();
     start_update_check(&update_tx, false);
     let mut update_phase = UpdatePhase::Checking;
@@ -1323,6 +1338,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
         let mut cache_changed = false;
         while let Ok(reply) = result_rx.try_recv() {
+            // An identical live capture changes nothing on screen: skip the frame.
+            let preview = matches!(reply.op, Operation::SessionPreview { .. });
+            let revision = app.session_preview_revision();
             cache_changed |= matches!(
                 reply.op,
                 Operation::Sessions
@@ -1333,8 +1351,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     | Operation::ContainerFiles { .. }
             ) && reply.result.is_ok();
             app.apply(reply);
-            dirty = true;
+            dirty |= !preview || app.session_preview_revision() != revision;
         }
+        dirty |= app.session_preview_staleness_changed();
         if cache_changed {
             navigation_writer.save(workspaces::NavigationCache::snapshot(&app));
         }
@@ -1515,7 +1534,19 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             }
             dirty = true;
         }
-        if app.pending_attach.is_some() && !event::poll(Duration::ZERO)? {
+        if app.pending_attach.is_some() && carried.is_empty() {
+            // Typed input stays cx-owned: a queued key, paste, click or wheel is
+            // handled first and may cancel the attachment. Passive reports
+            // (pointer motion, button release, focus, resize) never postpone it.
+            while event::poll(Duration::ZERO)? {
+                let input = event::read()?;
+                if !passive_input(&input) {
+                    carried.push((input, Instant::now()));
+                    break;
+                }
+            }
+        }
+        if app.pending_attach.is_some() && carried.is_empty() {
             let (d, session, observe) = app.pending_attach.take().unwrap();
             cleanup_native_preview(&mut screen, &mut native_preview)?;
             screen.suspend(true)?;
@@ -1597,8 +1628,15 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 frame_wait = Some(FRAME_INTERVAL - since);
             }
         }
-        if event::poll(loop_wait(&app, now, frame_wait))? {
-            for (input, observed) in read_input_batch()? {
+        let batch = if !carried.is_empty() {
+            std::mem::take(&mut carried)
+        } else if event::poll(loop_wait(&app, now, frame_wait))? {
+            read_input_batch()?
+        } else {
+            Vec::new()
+        };
+        {
+            for (input, observed) in batch {
                 if super::caps::swallow_stray_reply(&input) {
                     continue;
                 }

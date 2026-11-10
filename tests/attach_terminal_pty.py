@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix='cx-attach-term-') as tmp:
   pane=subprocess.check_output(['tmux','-S',str(root/'state/cx/managed.sock'),
       'capture-pane','-p','-t',session['id']+':0.0'],env=env,timeout=3)
   assert b'CX_TERMINAL_COMMAND_PROOF' in pane.splitlines(),'command output absent from pane'
-  os.write(master,b'\x1d')
+  os.write(master,b'\x1c')
   deadline=time.monotonic()+5
   while p.poll() is None and time.monotonic()<deadline:
    if select.select([master],[],[],.05)[0]:os.read(master,8192)

@@ -99,7 +99,7 @@ fn ids(managed: bool) -> Result<Vec<String>> {
 
 // Only tmux-generated numeric fields enter this framing. Names and paths may
 // contain tabs/newlines and must remain separate reads, never inventory records.
-const SNAPSHOT_FORMAT: &str = "#{session_id}\t#{pane_pid}\t#{session_created}\t#{pane_id}\t#{pane_dead}\t#{pid}\t#{session_windows}\t#{window_panes}";
+const SNAPSHOT_FORMAT: &str = "#{session_id}\t#{pane_pid}\t#{session_created}\t#{pane_id}\t#{pane_dead}\t#{pid}\t#{session_windows}\t#{window_panes}\t#{window_activity}";
 #[derive(Debug)]
 struct SessionSnapshot {
     id: String,
@@ -111,6 +111,8 @@ struct SessionSnapshot {
     server_start: Option<String>,
     windows: u32,
     panes: u32,
+    /// Unix seconds of the window's last output; empty or zero means unknown.
+    activity: Option<u64>,
 }
 impl SessionSnapshot {
     fn ended(&self) -> bool {
@@ -129,7 +131,7 @@ fn parse_snapshot(raw: &str) -> Result<Vec<SessionSnapshot>> {
     raw.lines()
         .map(|line| {
             let columns: Vec<_> = line.split('\t').collect();
-            anyhow::ensure!(columns.len() == 8, "invalid tmux inventory metadata");
+            anyhow::ensure!(columns.len() == 9, "invalid tmux inventory metadata");
             let id = columns[0]
                 .strip_prefix('$')
                 .context("invalid tmux session identity")?;
@@ -146,6 +148,12 @@ fn parse_snapshot(raw: &str) -> Result<Vec<SessionSnapshot>> {
             let server_pid = number(columns[5])?;
             let windows = number(columns[6])?;
             let panes = number(columns[7])?;
+            // Optional evidence: malformed activity loses its age, not its session.
+            let activity = (!columns[8].is_empty()
+                && columns[8].bytes().all(|b| b.is_ascii_digit()))
+            .then(|| columns[8].parse::<u64>().ok())
+            .flatten()
+            .filter(|t| *t > 0);
             anyhow::ensure!(
                 dead <= 1 && server_pid > 0 && windows > 0 && panes > 0,
                 "invalid tmux runtime metadata"
@@ -165,9 +173,18 @@ fn parse_snapshot(raw: &str) -> Result<Vec<SessionSnapshot>> {
                 server_start: None,
                 windows,
                 panes,
+                activity,
             })
         })
         .collect()
+}
+/// Seconds since `activity`, measured on this host; future stamps count as now.
+fn idle_seconds(activity: Option<u64>) -> Option<u64> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    activity.map(|t| now.saturating_sub(t))
 }
 fn snapshot(managed: bool) -> Result<Vec<SessionSnapshot>> {
     let mut c = tmux(managed)?;
@@ -859,7 +876,7 @@ fn inspect_observed(
                 .collect()
         })
         .unwrap_or_default();
-    {
+    let last_output = {
         let expected = observed;
         // A pane can move between sessions while enrichment is in flight. Never
         // return its new metadata under the old attachment/ownership identity.
@@ -873,7 +890,8 @@ fn inspect_observed(
                 && !current[0].ended(),
             "session changed during observation"
         );
-    }
+        current[0].activity.or(expected.activity)
+    };
     let terminal = terminal_identity(observed, process_start_ticks(observed.server_pid))?;
     Ok(Session {
         terminal,
@@ -894,6 +912,7 @@ fn inspect_observed(
         process,
         activity,
         agent_tasks,
+        idle_seconds: idle_seconds(last_output),
         origin: prior.as_ref().and_then(|s| s.origin.clone()),
         container: prior.as_ref().and_then(|s| s.container.clone()),
         launcher: prior.as_ref().and_then(|s| s.launcher.clone()),
@@ -1178,6 +1197,7 @@ fn external_terminal(terminal: &crate::adoption::Terminal) -> Option<Session> {
         container: None,
         activity,
         agent_tasks,
+        idle_seconds: None,
         origin: Some(origin(terminal)),
     })
 }
@@ -1426,7 +1446,7 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
         f.write_all(&serde_json::to_vec(&session)?)?;
         f.sync_all()?;
         fs::rename(&temp, &record)?;
-        set_managed_status(&session)?;
+        set_managed_status(&session, viewer_ascii())?;
         Ok(session)
     };
     let outcome = finish();
@@ -2060,20 +2080,10 @@ fn managed_config() -> String {
         "set -g default-terminal 'tmux-256color'",
         &format!("set -g default-terminal '{terminal}'"),
     );
-    // Reuse the bounded process-group probe; custom tmux wrappers cannot block setup.
-    let mut version = Command::new("/bin/sh");
-    version.args([
-        "-c",
-        r#"version=$("$1" -V 2>/dev/null | /usr/bin/head -c 128)
-case "$version" in 'tmux '*) version=${version#tmux };; *) exit 1;; esac
-major=${version%%.*}; minor=${version#*.}; minor=${minor%%[!0-9]*}
-case "$major:$minor" in *[!0-9:]*|:*|*:) exit 1;; esac
-[ "$major" -gt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -ge 4 ]; }
-"#,
-        "cx-tmux-version",
-    ]);
-    version.arg(tmux_executable());
-    let supports_terminal_color = bounded_provider_check(version, Duration::from_millis(200));
+    let supports_terminal_color = tmux_at_least(3, 4);
+    if !supports_terminal_color && !tmux_at_least(3, 0) {
+        config = without_status_mouse(&config);
+    }
     if !supports_terminal_color {
         // Older tmux rejects `terminal`, opening an error pager instead of the shell.
         config = config.replace("fg=terminal,bg=terminal", "fg=default,bg=default");
@@ -2092,6 +2102,48 @@ case "$major:$minor" in *[!0-9:]*|:*|*:) exit 1;; esac
         }).collect::<Vec<_>>().join("\n");
     }
     config
+}
+/// Status-line mouse locations are unverified before tmux 3.0, and an unknown
+/// key name would fail the whole `source-file`. There the chip stays plain
+/// text and Ctrl+\ remains the detach key.
+fn without_status_mouse(config: &str) -> String {
+    config
+        .lines()
+        .filter(|line| !line.starts_with("bind-key -n MouseDown1StatusLeft "))
+        .map(|line| {
+            if line.starts_with("set -g status-left ") {
+                "set -g status-left 'detach: Ctrl+\\ #{?pane_in_mode,Scroll: y copy / Esc,- cx} '"
+                    .to_owned()
+            } else if line.starts_with("set -g status-left-length ") {
+                "set -g status-left-length 40".to_owned()
+            } else if line.starts_with("set -g window-status-current-format ") {
+                "set -g window-status-current-format \"\"".to_owned()
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+/// Bounded `tmux -V` comparison; custom tmux wrappers cannot block setup and
+/// an unparseable version counts as old.
+fn tmux_at_least(major: u32, minor: u32) -> bool {
+    let mut version = Command::new("/bin/sh");
+    version.args([
+        "-c",
+        r#"version=$("$1" -V 2>/dev/null | /usr/bin/head -c 128)
+case "$version" in 'tmux '*) version=${version#tmux };; *) exit 1;; esac
+major=${version%%.*}; minor=${version#*.}; minor=${minor%%[!0-9]*}
+case "$major:$minor" in *[!0-9:]*|:*|*:) exit 1;; esac
+[ "$major" -gt "$2" ] || { [ "$major" -eq "$2" ] && [ "$minor" -ge "$3" ]; }
+"#,
+        "cx-tmux-version",
+    ]);
+    version
+        .arg(tmux_executable())
+        .arg(major.to_string())
+        .arg(minor.to_string());
+    bounded_provider_check(version, Duration::from_millis(200))
 }
 pub fn configure_managed() -> Result<()> {
     let conf = state()?.join("tmux.conf");
@@ -2510,6 +2562,7 @@ fn create_with_permissions(
         process: None,
         activity: None,
         agent_tasks: vec![],
+        idle_seconds: None,
         origin: None,
         container: container.cloned(),
     };
@@ -2600,7 +2653,7 @@ fn create_with_permissions(
     f.write_all(&serde_json::to_vec(&session)?)?;
     f.sync_all()?;
     fs::rename(temp, root.join(format!("{name}.json")))?;
-    set_managed_status(&session).context("terminal unavailable during startup")?;
+    set_managed_status(&session, viewer_ascii()).context("terminal unavailable during startup")?;
     wait_for_first_screen(&name).context("terminal unavailable during startup")?;
     Ok(session)
 }
@@ -2695,7 +2748,8 @@ fn restore_managed_style(session: &Session) -> Result<()> {
     // Also clear opaque per-window overrides left by older CX versions.
     for option in ["window-style", "window-active-style"] {
         let mut query = tmux(true)?;
-        query.args(["show-options", "-g", "-v", option]);
+        // `-w`: these are window options; tmux < 3.0 rejects them without it.
+        query.args(["show-options", "-g", "-w", "-v", option]);
         let style = output(query)?;
         let mut command = tmux(true)?;
         command.args(["set-option", "-w", "-t", &session.id, option, style.trim()]);
@@ -2704,7 +2758,7 @@ fn restore_managed_style(session: &Session) -> Result<()> {
     Ok(())
 }
 
-fn set_managed_status(session: &Session) -> Result<()> {
+fn set_managed_status(session: &Session, ascii: bool) -> Result<()> {
     let safe = |value: &str| {
         value
             .chars()
@@ -2716,16 +2770,44 @@ fn set_managed_status(session: &Session) -> Result<()> {
             .take(50)
             .collect::<String>()
     };
+    // The title sits beside the detach chip (status-left/window cell); the
+    // right side names the host and the detach key. An ASCII viewer gets
+    // ASCII glyphs in the chip and separators. One tmux command list.
     let status = format!(
-        "{}@{} | {}",
+        "{}@{}{}Ctrl+\\ detach",
         safe(&session.account),
         safe(&session.host),
-        safe(&session.name)
+        if ascii { " | " } else { " · " }
     );
+    let title = safe(&session.name);
     let mut command = tmux(true)?;
-    command.args(["set-option", "-t", &session.id, "status-right", &status]);
+    command.args([
+        "set-option",
+        "-t",
+        &session.id,
+        "status-right",
+        &status,
+        ";",
+        // Read by the status line as `cx · <title>` next to the detach chip.
+        "set-option",
+        "-t",
+        &session.id,
+        "@cx_title",
+        &title,
+        ";",
+        "set-option",
+        "-t",
+        &session.id,
+        "@cx_ascii",
+        if ascii { "1" } else { "0" },
+    ]);
     output(command)?;
     Ok(())
+}
+/// The viewer asked for ASCII-only output (CX_ASCII or a dumb TERM); the UI's
+/// `theme::ascii()` uses the same switch.
+pub(crate) fn viewer_ascii() -> bool {
+    std::env::var_os("CX_ASCII").is_some() || std::env::var("TERM").is_ok_and(|v| v == "dumb")
 }
 // Codex can spawn an editor in its own foreground process group. A provider
 // ancestor is not enough: another process on this PTY must retain input.
@@ -2907,6 +2989,11 @@ pub fn native_wheel(pane: &str, direction: &str, x: u16, y: u16, client: u32) ->
 }
 
 pub fn refresh_managed_status(id: &str) -> Result<()> {
+    refresh_managed_status_as(id, viewer_ascii())
+}
+/// `ascii` comes from the viewer: over SSH only TERM reaches the host, so a
+/// remote attach carries the viewer's CX_ASCII in its payload.
+fn refresh_managed_status_as(id: &str, ascii: bool) -> Result<()> {
     let id = id.strip_prefix('=').unwrap_or(id);
     if !id.starts_with("cx-") || id.len() != 67 || !id[3..].bytes().all(|b| b.is_ascii_hexdigit()) {
         bail!("invalid managed session identity");
@@ -2916,7 +3003,7 @@ pub fn refresh_managed_status(id: &str) -> Result<()> {
     // Older tmux builds may lack pane-colours; optional styling must not
     // prevent reaching a working terminal.
     let _ = restore_codex_contrast(&session);
-    set_managed_status(&session)
+    set_managed_status(&session, ascii)
 }
 
 pub fn quote(s: &str) -> String {
@@ -2931,6 +3018,10 @@ struct CheckedAttach {
     observe: bool,
     #[serde(default)]
     guard: Option<String>,
+    /// The viewer's ASCII switch. Omitted when false so older helpers, which
+    /// deny unknown fields, still accept ordinary payloads.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    ascii: bool,
 }
 fn attach_payload(request: &CheckedAttach) -> Result<String> {
     use base64::Engine;
@@ -3120,7 +3211,7 @@ pub fn native_attach_checked(payload: &str) -> Result<()> {
     let predicate_payload = attach_payload(&request)?;
     if !request.session.external {
         configure_managed()?;
-        refresh_managed_status(&request.session.id)?;
+        refresh_managed_status_as(&request.session.id, request.ascii || viewer_ascii())?;
         // A focus attach lands live rather than in leftover copy-mode; a
         // read-only watch keeps the scrollback view. Best effort.
         if !request.observe {
@@ -3192,6 +3283,7 @@ pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
             session: session.clone(),
             observe,
             guard: None,
+            ascii: viewer_ascii(),
         })?;
         if device.target.is_some() {
             let routed = crate::edges::interactive_ssh(device)?;
@@ -3821,7 +3913,7 @@ panes=1
 case "$op" in
 list-sessions)
     if [ "$last" = '#{session_id}' ]; then printf '$1\n'
-    else printf '$1\t%s\t100\t%%1\t%s\t%s\t1\t%s\n' "$pane" "$dead" "$server" "$panes"; fi;;
+    else printf '$1\t%s\t100\t%%1\t%s\t%s\t1\t%s\t1700000000\n' "$pane" "$dead" "$server" "$panes"; fi;;
 display-message)
     case "$last" in
     '#{session_name}') printf 'cx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n';;
@@ -3834,7 +3926,7 @@ display-message)
     '#{session_id}'*)
         selected=1
         [ "$CX_INVENTORY_CASE" = moved ] && selected=2
-        printf '$%s\t%s\t100\t%%1\t%s\t%s\t1\t%s\n' "$selected" "$pane" "$dead" "$server" "$panes";;
+        printf '$%s\t%s\t100\t%%1\t%s\t%s\t1\t%s\t1700000000\n' "$selected" "$pane" "$dead" "$server" "$panes";;
     *) printf '\n';;
     esac;;
 esac
@@ -3950,6 +4042,7 @@ esac
                     session: session.clone(),
                     observe: false,
                     guard: Some(guard.token.clone()),
+                    ascii: false,
                 })
                 .unwrap();
                 assert!(native_attach_check(
@@ -4011,6 +4104,7 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
                     session: session.clone(),
                     observe: false,
                     guard: Some(guard.token.clone()),
+                    ascii: false,
                 })
                 .unwrap();
                 let predicate = attach_predicate(&shim, &payload)
@@ -4038,6 +4132,7 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
                     session: session.clone(),
                     observe: true,
                     guard: Some(guard.token.clone()),
+                    ascii: false,
                 })
                 .unwrap();
                 let destination = state().unwrap().join("guard-symlink-target");
@@ -4060,7 +4155,8 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
                     &attach_payload(&CheckedAttach {
                         session: stale,
                         observe: false,
-                        guard: None
+                        guard: None,
+                        ascii: false,
                     })
                     .unwrap()
                 )
@@ -4210,6 +4306,30 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
     }
 
     #[test]
+    fn checked_attach_carries_the_viewers_ascii_switch_only_when_set() {
+        let session: Session = serde_json::from_value(serde_json::json!({
+            "id": "cx-a", "name": "shell", "directory": "/", "provider": "shell",
+            "host": "h", "account": "a", "pid": 1, "started": "", "boot_id": "b",
+            "external": false, "socket": null
+        }))
+        .unwrap();
+        let request = |ascii| CheckedAttach {
+            session: session.clone(),
+            observe: false,
+            guard: None,
+            ascii,
+        };
+        // Older helpers deny unknown fields: an ordinary payload omits it.
+        let plain = serde_json::to_value(request(false)).unwrap();
+        assert!(plain.get("ascii").is_none());
+        let ascii = serde_json::to_vec(&request(true)).unwrap();
+        let parsed: CheckedAttach = serde_json::from_slice(&ascii).unwrap();
+        assert!(parsed.ascii);
+        let parsed: CheckedAttach = serde_json::from_value(plain).unwrap();
+        assert!(!parsed.ascii);
+    }
+
+    #[test]
     fn checked_attach_metadata_is_bounded_and_guard_tokens_are_fixed() {
         assert!(parse_attach_payload(&"A".repeat(ATTACH_PAYLOAD_LIMIT + 1)).is_err());
         assert!(parse_attach_payload("not base64").is_err());
@@ -4222,7 +4342,7 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
 
     #[test]
     fn terminal_generation_rejects_replaced_or_exited_server() {
-        let mut observed = parse_snapshot("$1\t10\t100\t%2\t0\t42\t1\t1")
+        let mut observed = parse_snapshot("$1\t10\t100\t%2\t0\t42\t1\t1\t90")
             .unwrap()
             .remove(0);
         observed.server_start = Some("700".into());
@@ -4264,33 +4384,55 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
 
     #[test]
     fn runtime_snapshot_rejects_malformed_identity_and_framing() {
-        let valid = "$1\t10\t100\t%2\t0\t42\t1\t1";
+        let valid = "$1\t10\t100\t%2\t0\t42\t1\t1\t90";
         assert_eq!(parse_snapshot(valid).unwrap().len(), 1);
         for invalid in [
-            "$1\t10\t100\t%2\t0\t42\t1\t1\textra",
-            "$1\t10\t100\t%2\t0\t42\t1",
-            "$name\t10\t100\t%2\t0\t42\t1\t1",
-            "$1\t10\t100\t%2\t2\t42\t1\t1",
-            "$1\t10\t100\t%2\t0\t0\t1\t1",
-            "$1\t10\t100\t%2\t0\t42\t0\t1",
-            "$1\t10\t100\t%2\t0\t42\t1\t1\nforged",
+            "$1\t10\t100\t%2\t0\t42\t1\t1\t90\textra",
+            "$1\t10\t100\t%2\t0\t42\t1\t1",
+            "$name\t10\t100\t%2\t0\t42\t1\t1\t90",
+            "$1\t10\t100\t%2\t2\t42\t1\t1\t90",
+            "$1\t10\t100\t%2\t0\t0\t1\t1\t90",
+            "$1\t10\t100\t%2\t0\t42\t0\t1\t90",
+            "$1\t10\t100\t%2\t0\t42\t1\t1\t90\nforged",
         ] {
             assert!(parse_snapshot(invalid).is_err());
         }
     }
 
     #[test]
+    fn runtime_snapshot_activity_is_optional_evidence() {
+        let row = |activity: &str| {
+            parse_snapshot(&format!("$1\t10\t100\t%2\t0\t42\t1\t1\t{activity}"))
+                .unwrap()
+                .remove(0)
+                .activity
+        };
+        assert_eq!(row("1700000000"), Some(1_700_000_000));
+        // Unknown or malformed activity loses its age, never the session.
+        for unknown in ["", "0", "-5", "12x", "99999999999999999999999"] {
+            assert_eq!(row(unknown), None, "{unknown:?}");
+        }
+        assert_eq!(idle_seconds(None), None);
+        assert_eq!(
+            idle_seconds(Some(u64::MAX)),
+            Some(0),
+            "future stamps are now"
+        );
+        assert!(idle_seconds(Some(1)).unwrap() > 1_000_000);
+    }
+
+    #[test]
     fn runtime_snapshot_accepts_cleared_pid_only_for_dead_pane() {
-        let dead = parse_snapshot("$1\t\t100\t%2\t1\t42\t1\t1")
+        let dead = parse_snapshot("$1\t\t100\t%2\t1\t42\t1\t1\t")
             .unwrap()
             .remove(0);
         assert_eq!(dead.pane_pid, 0);
         assert!(dead.ended());
-        let expanded = parse_snapshot("$1\t\t100\t%2\t1\t42\t1\t2")
+        let expanded = parse_snapshot("$1\t\t100\t%2\t1\t42\t1\t2\t90")
             .unwrap()
             .remove(0);
         assert!(!expanded.ended());
-        assert!(parse_snapshot("$1\t\t100\t%2\t0\t42\t1\t1").is_err());
+        assert!(parse_snapshot("$1\t\t100\t%2\t0\t42\t1\t1\t90").is_err());
     }
 
     #[test]
@@ -4620,6 +4762,7 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
             process: None,
             activity: None,
             agent_tasks: vec![],
+            idle_seconds: None,
             origin: None,
             container: None,
         };
@@ -4757,6 +4900,44 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
             output.stdout,
             b"\x1b]104\x1b\\\x1b]110\x1b\\\x1b]111\x1b\\AFTER"
         );
+    }
+    #[test]
+    fn managed_detach_is_ctrl_backslash_with_a_tappable_chip() {
+        let config = include_str!("../assets/tmux.conf");
+        let lines: Vec<_> = config.lines().collect();
+        assert!(lines.contains(&"bind-key -n 'C-\\' detach-client"));
+        assert!(lines.contains(&"bind-key -n MouseDown1StatusLeft detach-client"));
+        // A running server that sourced an older config releases Ctrl+] too.
+        assert!(lines.contains(&"unbind-key -n C-]"));
+        assert!(!lines
+            .iter()
+            .any(|l| l.contains("C-]") && l.contains("detach")));
+        assert!(config.contains("⏏ detach") && config.contains("[detach]"));
+        let legacy = without_status_mouse(config);
+        assert!(!legacy.contains("MouseDown1StatusLeft") && !legacy.contains("⏏"));
+        assert!(legacy.contains("detach: ") && legacy.contains("'C-\\' detach-client"));
+        assert!(!legacy
+            .lines()
+            .any(|l| !l.starts_with('#') && l.contains("@cx_title")));
+        // The clickable status-left is the chip alone: the title and the
+        // copy-mode hint live in the window cell, so tapping them never detaches.
+        let left = lines
+            .iter()
+            .find(|l| l.starts_with("set -g status-left '"))
+            .unwrap();
+        assert_eq!(
+            *left,
+            "set -g status-left '#[reverse]#{?@cx_ascii, [detach] , ⏏ detach }#[noreverse] '"
+        );
+        assert!(lines.contains(
+            &"set -g window-status-current-format '#{?pane_in_mode,Scroll: y copy / Esc,cx#{?@cx_ascii, | , · }#{@cx_title}}'"
+        ));
+        // Legacy (tmux < 3.0) status text is ASCII for every viewer.
+        let legacy_left = legacy
+            .lines()
+            .find(|l| l.starts_with("set -g status-left '"))
+            .unwrap();
+        assert!(legacy_left.is_ascii());
     }
     #[test]
     fn managed_launcher_preserves_fish_palette_quoting() {

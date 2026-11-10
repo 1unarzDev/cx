@@ -30,6 +30,10 @@ pub(super) enum Cmd {
     Jobs,
     AddDevice,
     Watch,
+    /// Type into the selected session's live preview.
+    TypeInline,
+    /// Zoom the live preview over the list (Esc returns).
+    Zoom,
     Pin,
     Stop,
     AgentTasks,
@@ -267,8 +271,8 @@ pub(super) const BINDINGS: &[Binding] = &[
         [code(Enter)],
         "Enter",
         Cmd::Primary,
-        "Open the selected session",
-        hint("Enter", "Open", 0),
+        "Attach the selected session",
+        hint("Enter", "Attach", 0),
         Some(sessions_selected)
     ),
     bind!(
@@ -279,6 +283,24 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Start a new session here",
         hint("Enter/n", "New session", 0),
         Some(sessions_empty)
+    ),
+    bind!(
+        Sessions,
+        [ch('i')],
+        "i",
+        Cmd::TypeInline,
+        "Type into the live preview · Ctrl+\\ leaves",
+        hint("i", "Type", 1),
+        Some(sessions_selected)
+    ),
+    bind!(
+        Sessions,
+        [ch('z')],
+        "z",
+        Cmd::Zoom,
+        "Zoom the live preview · z / Esc back",
+        hint("z", "Zoom", 1),
+        Some(sessions_selected)
     ),
     bind!(
         Sessions,

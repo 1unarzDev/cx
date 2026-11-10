@@ -44,7 +44,8 @@ Record changes in [CHANGELOG.md](../CHANGELOG.md). Before tagging a stable versi
 | `menus.rs` | Session choices shared by labels/shortcuts/dispatch; container display labels |
 | `notifications.rs` | Typed floating panels, bounded layout and timed animation |
 | `rendering.rs` | Layout and rendering; no request dispatch |
-| `session_preview.rs`, `workspaces.rs`, `container_agents.rs` | Session pane preview, workspace session identity, container agent profiles |
+| `session_preview.rs`, `workspaces.rs`, `container_agents.rs` | Session pane preview (zoom, inline input, detach chip, echo polling, parsed-screen cache), workspace session identity and attach, container agent profiles |
+| `session_rows.rs` | Session row anatomy, identity swatches, activity history/sparkline, hover state |
 | `tests.rs` | Existing UI and cross-panel regression fixtures |
 
 Reuse a navigation target when adding a panel; keep panel-specific side effects in its adapter. Change session choices in `menus.rs` rather than maintaining parallel label/key/provider arrays. Rendering never changes the session provider: devcontainer identity is a display scope, while shell/agent behavior stays in the session runtime. Preserve typed-input ownership and the existing host/container scope guards. Verify UI changes with the capture matrices and native PTY fixtures in `tests/`.

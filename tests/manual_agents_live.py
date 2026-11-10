@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory(prefix='cx-manual-agent-') as directory:
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         drain()
-        if b'Return: Ctrl+]' in terminal_output and not (termios.tcgetattr(slave)[3] & termios.ICANON):
+        if b'Ctrl+\\' in terminal_output and not (termios.tcgetattr(slave)[3] & termios.ICANON):
             break
         if client.poll() is not None:
             raise AssertionError('tmux client exited before terminal readiness')

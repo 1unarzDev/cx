@@ -12,7 +12,7 @@ Plain `cx` opens the current folder in Files on the invocation device. An update
 | `/`, Ctrl+P, `?` | Search, workspace actions, help |
 | `n`, `:` | New session / run command on current device and folder |
 | Tab / Shift+Tab, Ctrl+arrows | Change panel focus |
-| Ctrl+] inside managed terminals | Return; session keeps running |
+| Ctrl+\ (or the `⏏ detach` chip) inside managed terminals | Detach; session keeps running |
 | Ctrl+C in cx | Exit viewer; work keeps running |
 | Files: `.`, Space, `v`, `f` | Hidden files, select/advance, range, filter |
 | `gg`, `G`, `5j` / `5k`, `5G` | First, last, counted movement, jump to row 5 |
@@ -114,11 +114,13 @@ CX shares one SSH connection per device and route. The first contact opens a pri
 
 Sessions preserve provider-authored titles. Generic labels include folder, provider,
 and a compact runtime identity; separate conversations are never merged by label.
-Hovering over a session selects it and displays its styled tmux screen beside
-the list on wide terminals, or below it on narrower layouts. **Enter focuses that terminal** and expands its viewport within CX. Keys
-then go to the same running shell or agent. **Ctrl+] returns to session navigation**;
-**Ctrl+O opens a native full-terminal attachment**. Escape and Ctrl+C go to the
-focused application. At narrow widths Enter still focuses the integrated terminal.
+Hovering over a session only highlights it. The selected session's styled tmux
+screen shows beside the list on wide terminals, or below it on narrower layouts.
+**Enter attaches** to the running shell or agent; `w` watches it read-only.
+**`i` types into the live preview** inside CX and `z` zooms it to the workspace.
+**Ctrl+\ (or a tap on the `⏏ detach` chip) detaches** from either; Ctrl+], Ctrl+O,
+Escape and Ctrl+C go to the application. To send a literal Ctrl+\ (SIGQUIT,
+nvim Ctrl+\ Ctrl+N), use Ctrl+P → **Send Ctrl+\ to session**.
 
 The pane preserves colors, blank rows, alternate-screen content and cursor location.
 It refreshes at up to 4 Hz while browsing and 10 Hz while focused. Its viewport
@@ -144,7 +146,7 @@ preview, letting the application navigate its own conversation history. Other
 mouse input is not forwarded. Applications that do not expose history through
 terminal scrollback or mouse scrolling still need their own history controls.
 Older remote helpers keep their earlier preview behavior; update the helper for
-paged history and application wheel support. Use Ctrl+O for native attachment.
+paged history and application wheel support. Press Enter for native attachment.
 
 Prompt backgrounds preserve trailing painted cells and SGR styling across rows,
 so muted prompt blocks render consistently instead of highlighting only letters.

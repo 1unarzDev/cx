@@ -334,17 +334,19 @@ fn render_frame(
     {
         if let Some(scope) = &s.container {
             format!(
-                "Host {}\n{} {}\nFolder {}\nEnter open · n new",
+                "Host {}\n{} {}\nFolder {}\n{}",
                 identity(&app.devices[i]),
                 menus::session_label(app, i, &s),
                 safe_label(&scope.name),
-                session_folder_label(&s.directory)
+                session_folder_label(&s.directory),
+                selected_hint()
             )
         } else {
             format!(
-                "Host {}\nFolder {}\nEnter open · n new",
+                "Host {}\nFolder {}\n{}",
                 identity(&app.devices[i]),
-                session_folder_label(&s.directory)
+                session_folder_label(&s.directory),
+                selected_hint()
             )
         }
     } else if let Some(i) = app.actual_device() {
@@ -545,184 +547,7 @@ fn render_frame(
                 } else {
                     workspace
                 };
-                let compact = workspace.width < 70;
-                let state_width = if rows.iter().any(|(_, s)| s.activity.is_some()) {
-                    10
-                } else {
-                    8
-                };
-                let mut display_rows = Vec::new();
-                let mut session_display_rows = Vec::new();
-                let mut selected_row = 0;
-                let mut last_project = None;
-                for (index, (i, s)) in rows.iter().enumerate() {
-                    if last_project != Some(s.directory.as_str()) {
-                        if last_project.is_some() {
-                            display_rows.push(Row::new(vec![Cell::from("")]).height(1));
-                        }
-                        display_rows.push(
-                            Row::new(if compact {
-                                vec![
-                                    Cell::from(session_folder_label(&s.directory)),
-                                    Cell::from(""),
-                                ]
-                            } else {
-                                vec![
-                                    Cell::from(""),
-                                    Cell::from(session_folder_label(&s.directory)),
-                                    Cell::from(""),
-                                    Cell::from(""),
-                                ]
-                            })
-                            .style(muted().add_modifier(Modifier::BOLD))
-                            .height(1),
-                        );
-                        last_project = Some(s.directory.as_str());
-                    }
-                    session_display_rows.push((display_rows.len(), index));
-                    if index == app.selected {
-                        selected_row = display_rows.len();
-                    }
-                    let status = app.session_status(*i, s);
-                    let fresh = status.starts_with('+');
-                    let badge = format!("[{}]", safe_label(menus::session_label(app, *i, s)));
-                    let name = if s.agent_tasks.is_empty() {
-                        session_preview::label(s)
-                    } else {
-                        format!(
-                            "{} · {} tasks",
-                            session_preview::label(s),
-                            s.agent_tasks.len()
-                        )
-                    };
-                    let name = format!("{}{}", if app.pinned(*i, s) { "* " } else { "" }, name);
-                    let name = match s.origin.as_ref().filter(|_| s.id.starts_with("ext-")) {
-                        Some(origin) => format!("{name} · {}", origin_label(&origin.kind)),
-                        None => name,
-                    };
-                    let cells = vec![
-                        Cell::from(badge).style(provider(&s.provider)),
-                        Cell::from(if compact && s.container.is_some() {
-                            format!("{} · {}", menus::session_label(app, *i, s), name)
-                        } else {
-                            name
-                        }),
-                        Cell::from(identity(&app.devices[*i])),
-                        Cell::from(if !fresh {
-                            status.to_string()
-                        } else if s.activity.is_some() && !session_activity_current(&app.work[*i]) {
-                            "? state".into()
-                        } else if session_busy(s) {
-                            let frames = if ascii() {
-                                ["|", "/", "-", "\\"]
-                            } else {
-                                ["◐", "◓", "◑", "◒"]
-                            };
-                            format!(
-                                "{} {}",
-                                frames[app.transfer_frame % frames.len()],
-                                s.activity.as_deref().unwrap_or("")
-                            )
-                        } else if let Some(activity) = &s.activity {
-                            safe_label(activity)
-                        } else if s.external {
-                            if ascii() {
-                                "+ ext".into()
-                            } else {
-                                "● ext".into()
-                            }
-                        } else {
-                            if ascii() {
-                                "+ live".into()
-                            } else {
-                                "● live".into()
-                            }
-                        })
-                        .style(if !fresh { muted() } else { accent() }),
-                    ];
-                    display_rows.push(
-                        Row::new(if compact {
-                            vec![cells[1].clone(), cells[3].clone()]
-                        } else {
-                            cells
-                        })
-                        .style(if fresh {
-                            Style::default()
-                        } else {
-                            muted()
-                        }),
-                    );
-                }
-                // Remembered viewport with scrolloff: the list moves only when
-                // the bar nears an edge, never per frame (spec 12.4).
-                let body_height = table_area.height.saturating_sub(4) as usize;
-                let offset =
-                    navigation::viewport("sessions", selected_row, display_rows.len(), body_height);
-                let display_len = display_rows.len();
-                let mut state = TableState::default()
-                    .with_selected((app.selected < rows.len()).then_some(selected_row))
-                    .with_offset(offset);
-                let table = Table::new(
-                    display_rows,
-                    if compact {
-                        vec![Constraint::Min(10), Constraint::Length(state_width)]
-                    } else {
-                        vec![
-                            Constraint::Length(
-                                if rows.iter().any(|(_, s)| s.container.is_some()) {
-                                    14
-                                } else {
-                                    9
-                                },
-                            ),
-                            Constraint::Min(10),
-                            Constraint::Length(if workspace.width > 65 { 24 } else { 18 }),
-                            Constraint::Length(state_width),
-                        ]
-                    },
-                )
-                .header(
-                    Row::new(if compact {
-                        vec!["SESSION", "STATE"]
-                    } else {
-                        vec!["AGENT", "SESSION", "EXECUTION", "STATE"]
-                    })
-                    .style(muted())
-                    .bottom_margin(1),
-                )
-                .column_spacing(if compact { 1 } else { 2 })
-                .block(block(
-                    format!("Sessions · {} sessions", rows.len()),
-                    app.focus == Focus::Workspace,
-                ))
-                .row_highlight_style(selection(app.focus == Focus::Workspace))
-                .highlight_symbol(selection_symbol(app.focus == Focus::Workspace));
-                frame.render_stateful_widget(table, table_area, &mut state);
-                // Table offset includes group headers/spacers. Hit boxes must use
-                // the rendered rows, not index arithmetic over logical sessions.
-                let body_y = table_area.y.saturating_add(3); // border + header + margin
-                let bottom = table_area.bottom().saturating_sub(1);
-                for (row, index) in session_display_rows {
-                    if row < state.offset() {
-                        continue;
-                    }
-                    let y = body_y.saturating_add((row - state.offset()) as u16);
-                    if y < bottom {
-                        hitmap::register(
-                            Rect::new(table_area.x + 1, y, table_area.width.saturating_sub(2), 1),
-                            hitmap::Hit::Row(hitmap::ListId::Sessions, index),
-                        );
-                    }
-                }
-                hitmap::scrollbar(
-                    frame,
-                    hitmap::ListId::Sessions,
-                    Rect::new(table_area.x, body_y, table_area.width, body_height as u16),
-                    state.offset(),
-                    display_len,
-                    body_height,
-                    rows.len(),
-                );
+                session_rows::render(frame, app, table_area, &rows);
             }
         }
         View::Files => {
@@ -1117,7 +942,20 @@ fn render_frame(
         }
     }
     let mut hints = if app.pane_focused() {
-        vec![("Ctrl+]", "Sessions"), ("Ctrl+O", "Expand terminal")]
+        vec![("Ctrl+\\", "Leave input"), ("Wheel", "Scroll")]
+    } else if app.view == View::Work
+        && app.focus == Focus::Workspace
+        && app.preview_zoomed()
+        && app.dialog.is_none()
+        && app.input.is_none()
+        && !app.help
+    {
+        vec![
+            ("Enter", "Attach"),
+            ("i", "Type"),
+            ("z / Esc", "Back to list"),
+            ("w", "Watch"),
+        ]
     } else if app.help {
         vec![("↑↓", "Scroll"), ("PgUpDn", "Page"), ("Esc", "Close")]
     } else if let Some(dialog) = &app.dialog {
@@ -1859,6 +1697,8 @@ fn render_frame(
         )));
         help.push(Line::raw("Native terminals own their input."));
         help.extend(key_row(DETACH_KEY, "Return from a managed session"));
+        help.extend(key_row("Enter · w", "Attach · watch read-only"));
+        help.extend(key_row("i · z", "Type into the preview · zoom it"));
         help.push(Line::raw("External sessions keep their tmux bindings."));
         help.push(Line::default());
         help.push(Line::from(Span::styled(
@@ -1920,7 +1760,7 @@ pub(super) fn help_wrap(text: &str, width: usize) -> Vec<String> {
 }
 /// Key that returns from a managed session. The sessions wave moves this to
 /// Ctrl+\ together with the tmux binding; help reads it from here.
-pub(super) const DETACH_KEY: &str = "Ctrl+]";
+pub(super) const DETACH_KEY: &str = "Ctrl+\\";
 /// Width class XS (phones): single column, device chip strip, bottom tab bar.
 pub(super) fn phone(width: u16) -> bool {
     width < 60
@@ -2625,18 +2465,6 @@ fn render_containers(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
 }
 
-/// Where an outside-CX terminal currently lives, from its master holder.
-fn origin_label(kind: &str) -> &'static str {
-    match kind {
-        "terminal" => "terminal",
-        "sshd" => "ssh",
-        "tmux" => "tmux",
-        "screen" => "screen",
-        _ => "external",
-    }
-}
-
-/// Floating live view of a command running in a managed pane.
 /// Printable width of a `capture-pane -e` line, ignoring SGR escapes.
 fn visible_width(raw: &str) -> usize {
     let mut width = 0;
@@ -2986,5 +2814,14 @@ mod contrast_regressions {
             .style
             .add_modifier
             .intersects(Modifier::ITALIC | Modifier::UNDERLINED | Modifier::REVERSED));
+    }
+}
+
+/// The Selected panel's key hint, matching the footer's `Enter Attach` chip.
+fn selected_hint() -> &'static str {
+    if ascii() {
+        "Enter attach, n new"
+    } else {
+        "⏎ attach · n new"
     }
 }

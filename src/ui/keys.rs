@@ -170,6 +170,8 @@ impl App {
             Cmd::Jobs => self.execute(Action::Jobs),
             Cmd::AddDevice => self.execute(Action::Add),
             Cmd::Watch => self.execute(Action::Observe),
+            Cmd::TypeInline => self.type_into_preview(),
+            Cmd::Zoom => self.toggle_preview_zoom(),
             Cmd::Pin => self.toggle_pin(),
             Cmd::Stop => self.stop_selected_session(),
             Cmd::AgentTasks => {
@@ -349,10 +351,9 @@ impl App {
                 View::Secrets => {}
                 View::Containers => self.open_container_actions(),
                 View::Work => {
+                    // Enter attaches directly; `i` types inline, `z` zooms.
                     if let Some((d, s)) = self.selected_session() {
-                        if !self.focus_session_pane() {
-                            self.open_session(d, s, false);
-                        }
+                        self.open_session(d, s, false);
                     } else if empty_work_can_create(self) {
                         self.session_shortcut();
                     }
@@ -381,6 +382,10 @@ impl App {
     }
     /// Esc: back / clear / focus up one level.
     pub(super) fn back(&mut self) {
+        if self.view == View::Work && self.focus == Focus::Workspace && self.preview_zoomed() {
+            self.toggle_preview_zoom();
+            return;
+        }
         if self.view == View::Files && self.focus == Focus::Workspace {
             if let Some(b) = self.browser.as_mut().filter(|b| b.preview.is_some()) {
                 if !b.preview_find.query.is_empty() {
@@ -571,7 +576,7 @@ impl App {
         self.focus = next;
     }
     pub(super) fn mouse(&mut self, mouse: MouseEvent, area: Rect) -> bool {
-        if self.scroll_session_preview(mouse) {
+        if self.scroll_session_preview(mouse) || self.click_session_preview(mouse) {
             return true;
         }
         if self.pane_focused() {

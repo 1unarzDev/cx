@@ -641,6 +641,14 @@ pub(super) fn asciify(buf: &mut ratatui::buffer::Buffer, area: Rect) {
 pub(super) fn ascii() -> bool {
     !caps().unicode
 }
+/// Field separator: ` · `, or ` | ` where only ASCII is safe.
+pub(super) fn sep() -> &'static str {
+    if ascii() {
+        " | "
+    } else {
+        " · "
+    }
+}
 /// True when colors are off (`NO_COLOR`, any value, or `TERM=dumb`).
 pub(super) fn no_color() -> bool {
     caps().color == ColorDepth::None

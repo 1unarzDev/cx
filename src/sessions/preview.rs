@@ -37,18 +37,30 @@ fn bounded(mut command: Command) -> Result<String> {
                     bytes.extend_from_slice(&buf[..n]);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(5))
+                    // Block until output or the deadline instead of sleeping in
+                    // fixed steps: keystroke echo pays this on every capture.
+                    let mut fd = libc::pollfd {
+                        fd: pipe.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    let wait = end.saturating_duration_since(Instant::now()).as_millis();
+                    unsafe { libc::poll(&mut fd, 1, wait.clamp(1, 750) as libc::c_int) };
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(e) => return Err(e.into()),
             }
         }
+        // The pipe closed, so the child is exiting; reap it without a 5 ms step.
+        let mut pause = Duration::from_micros(200);
         loop {
             if let Some(status) = child.try_wait()? {
                 anyhow::ensure!(status.success(), "preview unavailable");
                 return Ok(String::from_utf8_lossy(&bytes).into_owned());
             }
             anyhow::ensure!(Instant::now() < end, "preview timed out");
-            thread::sleep(Duration::from_millis(5));
+            thread::sleep(pause);
+            pause = (pause * 2).min(Duration::from_millis(5));
         }
     })();
     if result.is_err() {
@@ -75,6 +87,7 @@ pub fn preview(
         session: session.clone(),
         observe: true,
         guard: None,
+        ascii: false,
     };
     let request = parse_attach_payload(&attach_payload(&request)?)?;
     let terminal = request.session.terminal.as_ref().unwrap();
@@ -187,6 +200,7 @@ pub fn session_pane_input(
         session: session.clone(),
         observe: false,
         guard: None,
+        ascii: false,
     };
     let mut request = parse_attach_payload(&attach_payload(&request)?)?;
     let terminal = request.session.terminal.clone().unwrap();
@@ -199,19 +213,20 @@ pub fn session_pane_input(
     let mut guard = AttachGuard::new()?;
     request.guard = Some(guard.token.clone());
     let predicate = attach_predicate(&std::env::current_exe()?, &attach_payload(&request)?)?;
-    let bytes = hex
-        .as_bytes()
-        .chunks_exact(2)
-        .map(|b| std::str::from_utf8(b).unwrap())
-        .collect::<Vec<_>>()
-        .join(" ");
+    // `send-keys -H` (raw bytes) needs tmux 3.0; checked once per process.
+    static HEX: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let keys = if *HEX.get_or_init(|| tmux_at_least(3, 0)) {
+        format!("-H {}", hex_pairs(hex))
+    } else {
+        legacy_key_names(hex)?
+    };
     let mut command = tmux(!session.external)?;
     command.args([
         "if-shell",
         "-t",
         &terminal.session_id,
         &predicate,
-        &format!("send-keys -t {pane_id} -H {bytes}"),
+        &format!("send-keys -t {pane_id} {keys}"),
         "",
     ]);
     bounded(command)?;
@@ -219,6 +234,27 @@ pub fn session_pane_input(
     Ok(serde_json::json!({"delivered": true}))
 }
 
+fn hex_pairs(hex: &str) -> String {
+    hex.as_bytes()
+        .chunks_exact(2)
+        .map(|b| std::str::from_utf8(b).unwrap())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+/// tmux < 3.0 (Rocky 8 ships 2.7) has no `-H`, but takes `0x<codepoint>` key
+/// names, which it writes back as UTF-8. Input must therefore be UTF-8.
+fn legacy_key_names(hex: &str) -> Result<String> {
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let text = std::str::from_utf8(&bytes).context("input is not UTF-8")?;
+    Ok(text
+        .chars()
+        .map(|c| format!("0x{:x}", u32::from(c)))
+        .collect::<Vec<_>>()
+        .join(" "))
+}
 /// Preserve screen rows and only SGR styling; discard OSC/DCS/other controls.
 fn styled_screen(text: &str) -> Vec<String> {
     let mut out = String::new();
@@ -374,5 +410,19 @@ mod tests {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "head -c 270000 /dev/zero"]);
         assert!(bounded(cmd).is_err());
+    }
+}
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    #[test]
+    fn legacy_tmux_input_uses_codepoint_key_names() {
+        assert_eq!(hex_pairs("1d61"), "1d 61");
+        // Ctrl+], a, Esc [ A, é (UTF-8 c3 a9) as one key.
+        assert_eq!(
+            legacy_key_names("1d611b5b41c3a9").unwrap(),
+            "0x1d 0x61 0x1b 0x5b 0x41 0xe9"
+        );
+        assert!(legacy_key_names("ff").is_err());
     }
 }

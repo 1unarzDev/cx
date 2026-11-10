@@ -13,8 +13,8 @@ Scenarios (all times in milliseconds):
                    screen settled (expected preview change visible and PTY quiet), plus a
                    30 Hz key-repeat burst.
   directory_list   Enter on a 20,000-entry local directory: first rows visible, final count.
-  sessions_attach  `cx new` shell session; Enter -> focused pane, pane echo, detach -> list,
-                   expand (native attach) -> prompt visible, detach -> cx UI back.
+  sessions_attach  `cx new` shell session; i -> focused pane, pane echo, Ctrl+\\ -> list,
+                   Enter (native attach) -> prompt visible, Ctrl+\\ -> cx UI back.
   mouse_motion     pure pointer motion (no buttons) over the Sessions and Files lists: bytes
                    and write bursts per motion event, against an idle baseline window.
   idle             5 s idle in Files and Sessions: CPU seconds and bytes/s written.
@@ -29,10 +29,11 @@ import argparse, fcntl, json, os, pathlib, platform, pty, re, select, shutil, st
 import struct, subprocess, sys, tempfile, termios, time
 import pyte
 
-# The detach key is expected to change to Ctrl+\ later; keep it in one place.
-DETACH_KEY = b'\x1d'          # Ctrl+]
-DETACH_LABEL = 'Ctrl+]'
-EXPAND_KEY = b'\x0f'          # Ctrl+O from a focused session pane
+# The detach key lives in one place: Ctrl+\ (legacy byte 0x1c).
+DETACH_KEY = b'\x1c'          # Ctrl+\
+DETACH_LABEL = 'Ctrl+\\'
+INLINE_KEY = b'i'             # type into the inline preview
+ATTACH_KEY = b'\r'            # Enter attaches natively, directly
 QUIT_KEY = b'\x03'
 COLS, ROWS = 120, 40
 QUIET = 0.06
@@ -491,43 +492,39 @@ def scenario_sessions(binary, cycles):
         assert created.returncode == 0, 'cx new failed'
         viewer = Viewer(env, 'Work')
         try:
-            viewer.wait(lambda: 'perf-shell' in viewer.text() and 'Enter Open' in viewer.text(), what='session row')
+            viewer.wait(lambda: 'perf-shell' in viewer.text() and 'Enter Attach' in viewer.text(), what='session row')
             viewer.wait(lambda: '$' in viewer.text(), what='session preview prompt')
             viewer.quiesce(.1)
 
             def focused():
-                return 'back to sessions' in viewer.text()
+                return '⏏ detach' in viewer.text()
 
             def listing():
-                return 'Enter Open' in viewer.text() and not focused()
+                return 'Enter Attach' in viewer.text() and not focused()
 
             def native():
-                return 'Return:' in viewer.screen.display[-1] and '╭ Devices' not in viewer.text() and '$' in viewer.text()
+                return 'detach' in viewer.screen.display[-1] and '╭ Devices' not in viewer.text() and '$' in viewer.text()
 
             def ui_back():
                 return '╭ Devices' in viewer.text()
-            enter, echo, back, expand, ret = Timings(), Timings(), Timings(), Timings(), Timings()
+            enter, echo, back, attach, ret = Timings(), Timings(), Timings(), Timings(), Timings()
             for _ in range(cycles):
-                enter.add(viewer.measure(b'\r', lambda: focused() and '$' in viewer.text(), timeout=TIMEOUT))
+                enter.add(viewer.measure(INLINE_KEY, lambda: focused() and '$' in viewer.text(), timeout=TIMEOUT))
                 viewer.quiesce(.1)
                 for _ in range(3):
                     before = viewer.text()
                     echo.add(viewer.measure(b'x', lambda: viewer.text() != before))
                     before = viewer.text()
                     viewer.measure(b'\x7f', lambda: viewer.text() != before)
-                expand.add(viewer.measure(EXPAND_KEY, native, timeout=TIMEOUT))
+                back.add(viewer.measure(DETACH_KEY, listing, timeout=TIMEOUT))
+                viewer.quiesce(.1)
+                attach.add(viewer.measure(ATTACH_KEY, native, timeout=TIMEOUT))
                 viewer.quiesce(.1)
                 ret.add(viewer.measure(DETACH_KEY, ui_back, timeout=TIMEOUT))
                 viewer.quiesce(.1)
-                if not focused():
-                    # Returning from expand landed on the list; refocus the pane first.
-                    viewer.measure(b'\r', focused, timeout=TIMEOUT)
-                    viewer.quiesce(.1)
-                back.add(viewer.measure(DETACH_KEY, listing, timeout=TIMEOUT))
-                viewer.quiesce(.1)
                 env.owned_pids()
-            result.update(enter_to_focused_pane=enter.report(), pane_echo=echo.report(),
-                          detach_pane_to_list=back.report(), expand_to_native_prompt=expand.report(),
+            result.update(inline_to_focused_pane=enter.report(), pane_echo=echo.report(),
+                          detach_pane_to_list=back.report(), enter_to_native_prompt=attach.report(),
                           detach_native_to_ui=ret.report(), cycles=cycles)
             sessions = json.loads(env.cx('sessions').stdout or b'[]')
             result['sessions_after'] = len(sessions)

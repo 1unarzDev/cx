@@ -1,0 +1,40 @@
+ cx   [Sessions]  Network                                                                         viewing fixture@laptop
+                                                                                                                        
+╭ Devices ──────────╮╭ ▸ Sessions 3 ──────────────────────────────────╮╭ robot-logs shell · laptop ────────────────────╮
+│ › All devices     ││ ■ ● SH build watcher       cx-demo    [la]   1m││ No live preview · Enter attaches              │
+│   ●  laptop       ││▌■ ● SH robot-logs shell    robot-logs [la]   1m││                                               │
+│   ●  * lab-arm    ││ ■ ● SH ros core            catkin_ws  [lb]   1m││                                               │
+│   ○  * field-rov… ││                                                ││                                               │
+╰───────────────────╯│                                                ││                                               │
+╭ Actions ──────────╮│                                                ││                                               │
+│ Files             ││                                                ││                                               │
+│ Network           ││╭ ▸ Help ──────────────────────────────────────────────────────────────────╮                     │
+│ Containers        │││Arrows / h j k l       Navigate                                           │                     │
+│ Transfers         │││Ctrl+arrows / hjkl     Move panel focus (hold Ctrl)                       │                     │
+│ Watch · read-only │││Enter                  Open / enter session with input                    │                     │
+╰───────────────────╯││Escape                 Back / clear current mode                          │                     │
+ Selected ───────────││Tab / Shift+Tab        Next / previous panel                              │                     │
+ Host fixture@laptop ││/                      Search                                             │                     │
+ Folder /tmp/cx-cap… ││Ctrl+P                 Actions                                            │                     │
+ ⏎ attach · n new    ││n                      New session in current folder                      │                     │
+                     ││:                      Run command in current folder                      │                     │
+                     ││Ctrl+C                 Quit cx; work keeps running                        │                     │
+                     ││p                      Pin / unpin; keep an ended-work bookmark           │                     │
+                     ││d                      Stop selected CX-managed session · confirm         │                     │
+                     ││w                      Watch selected session · read-only                 │                     │
+                     ││s                      Inspect selected session's tasks and subagents     │                     │
+                     ││                                                                          │                     │
+                     ││d                      Stop selected CX-managed session · confirmation    │                     │
+                     ││Native terminals own their input.                                         │                     │
+                     ││Enter · w              Attach · watch read-only                           │                     │
+                     │╰──────────────────────────────────────────────────────────────────────────╯                     │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     │                                                ││                                               │
+                     ╰────────────────────────────────────────────────╯╰ no preview ────────────────────────── z zoom ─╯
+ ● 2/3 devices                                   Focus: Help                                                      ↔ idle
+ ↑↓ Scroll                               PgUpDn Page                             Esc Close                              
+                                                                                                                        
+                                                                                                                        

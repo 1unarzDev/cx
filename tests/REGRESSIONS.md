@@ -59,6 +59,14 @@ Guard notation:
 | `f7c90f3` v0.1.92 | Prompt background blocks stopped at the text; colours broke across rows | trailing cells were not painted, and style was not carried across rows | rust:captured_rows_share_style_and_paint_trailing_cells, py:preview_fidelity_live [local] |
 | `88c54f5` v0.1.95 | Every live preview showed "Terminal unavailable" on tmux 3.4 (Ubuntu 24.04) | `#{bracket_paste_flag}` does not exist before tmux 3.5; it expanded to nothing, giving 10 fields | rust:live_view_flags_always_print_a_digit_on_older_tmux |
 | `f91242a` v0.1.95 | Live previews vanished once availability returned; hover did not select rows | Info ingestion overwrote the live-preview capabilities; there were no rendered row hit boxes | rust:info_reply_keeps_live_terminal_capability_and_preview_enabled, rust:session_hover_selects_rendered_row_without_opening (revamp: hover never selects, spec P16; the guard now asserts a click selects the rendered row through the hit map and a second tap opens) |
+| revamp/w2-sessions | Review: typing into a focused preview while scrolled back pinned a CPU core | `session_preview_wait` returned a zero wait while `refresh_session_preview` skipped the request (loaded history page, or no selection) | rust:focused_scrollback_and_missing_selection_never_spin_the_event_loop |
+| revamp/w2-sessions | Review: Enter suspended the viewer into `ssh -t` for errored, offline or startup-cache devices | the direct attach did not require a fresh successful listing | rust:unreachable_or_cached_devices_keep_the_in_cx_round_trip |
+| revamp/w2-sessions | Review: tapping the copy-mode hint or title in the managed status line detached | `MouseDown1StatusLeft` covers all of status-left, which also held the hint | py:mouse_scrollback_pty (title cell not a detach target; chip tap detaches), rust:managed_detach_is_ctrl_backslash_with_a_tappable_chip |
+| revamp/w2-sessions | Review: two devices showed the same `[la]` chip, distinguishable only by colour | the initials took the first two letters of each name | rust:device_initials_stay_unique_without_color |
+| revamp/w2-sessions | tmux < 3.0 rejected the managed config (status-left mouse binding, `show-options` without `-w`) and inline input key names | tmux 2.7 lacks `MouseDown1StatusLeft`, window options need `-w`, older key names | rust:managed_detach_is_ctrl_backslash_with_a_tappable_chip (string rewrite only); real tmux 2.7 is manual: `python tests/legacy_tmux_run.py TMUX27/bin tests/run_regressions.sh --no-rust --only ctrl_bracket_attach_pty list_wheel_pty` with a locally built tmux 2.7 |
+| revamp/w2-sessions | Review: a remote attach ignored the viewer's CX_ASCII, showing `⏏` glyphs | ssh forwards TERM but not CX_ASCII; the host read its own environment | rust:checked_attach_carries_the_viewers_ascii_switch_only_when_set |
+| revamp/w2-sessions | Review: there was no way to send a literal Ctrl+\ once it always detaches | no palette action | rust:palette_sends_a_literal_ctrl_backslash_to_the_session |
+| revamp/w2-sessions | Review: clicking the preview while search was open sent the typed search to the shell | preview click guard ignored open inputs | rust:preview_clicks_leave_an_open_text_input_in_charge |
 | `8d978cc` v0.1.72 | Claude lost terminal transparency; old CX left opaque window backgrounds | the managed contrast was set on a solid window style | py:claude_contrast_live [ci] |
 | v0.1.69 | Claude question descriptions had low contrast | default-cell backgrounds | py:claude_contrast_live [ci], py:session_color_live [local] |
 | `10e4a10` v0.1.5 | The viewer palette was reset after native Fish commands | OSC 104 was emitted by the Fish theme | py:native_command_pty [rel], rust:fish_palette_reset_is_after_config_before_command |
@@ -269,7 +277,10 @@ cargo test --locked markdown_links_math_and_click_picker_are_safe
 cargo test --locked leaving_linked_preview_discards_history_even_in_cached_locations
 cargo test --locked clipped_directory_find_has_a_distinct_noncolor_modifier
 cargo test --locked info_reply_keeps_live_terminal_capability_and_preview_enabled
-cargo test --locked session_hover_selects_rendered_row_without_opening
+cargo test --locked session_hover_highlights_rendered_row_without_selecting
+cargo test --locked focused_scrollback_and_missing_selection_never_spin_the_event_loop
+cargo test --locked unreachable_or_cached_devices_keep_the_in_cx_round_trip
+cargo test --locked device_initials_stay_unique_without_color
 cargo test --locked horizontal_folder_keys_enter_and_leave_without_previewing_files
 cargo test --locked reverse_tab_cycles_focus_and_leaves_search
 cargo test --locked file_device_selection_retargets_only_the_focused_location

@@ -655,7 +655,7 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         let table = left >= fan_want + 2 + edges.len() as u16 && sz >= Size::M;
         let fan_h = if table { fan_want + 1 } else { left };
         let band = Rect::new(r.x, fy + 1, r.width, fan_h);
-        orbit::draw(cx, buf, band, &d.id, 1, orbit::Sel::Root);
+        orbit::draw_with(cx, buf, band, &d.id, 1, orbit::Sel::Root, false);
         if table {
             link_rows(
                 cx,

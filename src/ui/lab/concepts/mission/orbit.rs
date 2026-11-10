@@ -1326,14 +1326,18 @@ pub(super) fn name(
         };
         w += 1;
     }
-    let key = cx.ink(Tok::Id(cx.s.hue(&d.id)), 1.0).add_modifier(
-        Modifier::BOLD
-            | if keys {
-                Modifier::UNDERLINED
-            } else {
-                Modifier::empty()
-            },
-    );
+    let under = if keys {
+        Modifier::UNDERLINED
+    } else {
+        Modifier::empty()
+    };
+    // On a solid capsule (no tints) the letter keeps the capsule's ink.
+    let key = if st.bg.is_some() && !cx.has_surface() {
+        st.add_modifier(Modifier::BOLD | under)
+    } else {
+        cx.ink(Tok::Id(cx.s.hue(&d.id)), 1.0)
+            .add_modifier(Modifier::BOLD | under)
+    };
     for (i, ch) in nm.chars().enumerate() {
         let s = ch.to_string();
         let cst = if at == Some(i) { st.patch(key) } else { st };
@@ -1518,7 +1522,7 @@ fn pill(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str, pick: Option<bool>, key
         } else {
             body.add_modifier(Modifier::BOLD)
         };
-        name(cx, buf, r.x + 3, r.y, d, 16, st, keys && cx.has_surface());
+        name(cx, buf, r.x + 3, r.y, d, 16, st, keys);
     }
     if let Some(f) = pick {
         let bar = if f {

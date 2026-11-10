@@ -1,7 +1,7 @@
 //! The hub: the network orbit on top, a legend row, the selected device's vitals strip,
 //! one row of live session thumbnails (what needs you first) and the alert ticker that
-//! pairs each problem with the keys that fix it. Phones get a mini orbit over an
-//! indented device tree (relays above the devices reached through them).
+//! pairs each problem with the keys that fix it. Phones get the indented device tree
+//! (relays above the devices reached through them).
 use super::{fit, orbit, tiles, views, Cx, Size};
 use crate::ui::lab::{caps::Pane, Access, LabDevice, NoticeKind, SessionState, Tok};
 use ratatui::{buffer::Buffer, layout::Rect, style::Modifier};
@@ -139,28 +139,11 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     }
 }
 
-/// The line grammar, said once under the map: stroke is policy, hue is network.
+/// One quiet line beside the NETWORK label: the meshes in their hue (members up), lan's
+/// teal, then the two strokes that carry a policy. Solid needs no entry: it is a link.
 fn legend(cx: &Cx, buf: &mut Buffer, mut x: u16, y: u16, right: u16) -> u16 {
-    let mut items: Vec<(String, Tok)> = vec![
-        (format!("{} key", cx.g("⠒⠒⠒", "---")), Tok::Muted),
-        (format!("{} pass", cx.g("⠂⠐⠂", "...")), Tok::Muted),
-        (format!("{} one way", cx.g("⠒→", "->")), Tok::Muted),
-        (format!("{} down", cx.g("⠒⠂⠒", "-.-")), Tok::Err),
-    ];
-    // Lan is a hue; without colour its links carry the word on their chip instead
-    // (`---` would read as key).
-    if cx.c.has_color() {
-        items.push((format!("{} lan", cx.g("⠒⠒⠒", "---")), Tok::Lan));
-    }
-    if cx.size() < Size::M {
-        items.truncate(4);
-        // The arrow is the only cue for a directed policy: it keeps a word.
-        items[2].0 = format!("{} 1-way", cx.g("⠒→", "->"));
-    }
     let sep = if cx.size() >= Size::M { 3 } else { 2 };
-    // Meshes first: a swatch on the map must always find its name here, so stroke
-    // entries give way (from the last) before a mesh does.
-    let meshes: Vec<(String, Tok, &crate::ui::lab::LabMesh)> = cx
+    let mut items: Vec<(String, Tok, Option<&crate::ui::lab::LabMesh>)> = cx
         .s
         .meshes
         .iter()
@@ -170,48 +153,35 @@ fn legend(cx: &Cx, buf: &mut Buffer, mut x: u16, y: u16, right: u16) -> u16 {
                 .iter()
                 .filter(|id| cx.s.device(id).is_some_and(|d| cx.up(d)))
                 .count();
-            let g = tiles::mesh_glyph(cx, &m.id);
             let text = if cx.size() >= Size::M {
-                format!("{g} {} {up}/{}", m.name, m.members.len())
+                format!("{} {up}/{}", m.name, m.members.len())
             } else {
-                format!("{g} {}", m.name)
+                m.name.clone()
             };
-            (text, orbit::mesh_tok(cx, &m.id), m)
+            (text, orbit::mesh_tok(cx, &m.id), Some(m))
         })
         .collect();
-    let mesh_w: u16 = meshes
-        .iter()
-        .map(|(t, _, m)| super::width(t, cx.uni()) + if m.healthy { 0 } else { 2 } + sep)
-        .sum();
-    // (Phones draw keycaps without swatches: strokes come first there.)
-    let stroke_right = if x + mesh_w <= right && !cx.touch() {
-        right - mesh_w
-    } else {
-        right
-    };
-    for (t, tok) in &items {
-        let w = super::width(t, cx.uni());
-        if x + w + 2 > stroke_right {
-            break;
-        }
-        let (g, word) = t.split_once(' ').unwrap_or((t, ""));
-        let gw = cx.put(buf, x, y, w, g, cx.ink(*tok, 0.95));
-        cx.put(buf, x + gw + 1, y, w, word, cx.ink(Tok::Muted, 0.95));
-        x += w + sep;
+    // Lan is a hue; without colour its tree rows say nothing more (the device view's
+    // link rows name the network).
+    if cx.c.has_color() {
+        items.push(("lan".into(), Tok::Lan, None));
     }
-    // Meshes: their hue on the links, with how many members are up.
-    for (text, tok, m) in &meshes {
-        let w = super::width(text, cx.uni()) + if m.healthy { 0 } else { 2 };
+    items.push((format!("{} password", cx.g("┄┄", "- -")), Tok::Muted, None));
+    items.push((format!("{} one way", cx.g("→", "->")), Tok::Muted, None));
+    for (t, tok, mesh) in &items {
+        let alert = mesh.is_some_and(|m| !m.healthy);
+        let w = super::width(t, cx.uni()) + if alert { 2 } else { 0 };
         if x + w + 1 > right {
             break;
         }
-        let x0 = x;
-        x += cx.put(buf, x, y, w, text, cx.ink(*tok, 0.95));
-        if !m.healthy {
-            x += cx.put(buf, x, y, 2, cx.g(" ▲", " ^"), cx.st(Tok::Warn));
+        let tw = cx.put(buf, x, y, w, t, cx.ink(*tok, 0.85));
+        if alert {
+            cx.put(buf, x + tw, y, 2, cx.g(" ▲", " ^"), cx.st(Tok::Warn));
         }
-        cx.hit(Rect::new(x0, y, x - x0, 1), format!("mesh:{}", m.id));
-        x += sep;
+        if let Some(m) = mesh {
+            cx.hit(Rect::new(x, y, w, 1), format!("mesh:{}", m.id));
+        }
+        x += w + sep;
     }
     x
 }
@@ -486,8 +456,8 @@ fn ticker(cx: &Cx, buf: &mut Buffer, r: Rect) {
     }
 }
 
-/// Phone hub: a mini orbit of keycaps, then every device as an indented tree row
-/// (devices reached through a relay sit under it), then the ticker.
+/// Phone hub: every device as an indented tree row (devices reached through a relay
+/// sit under it; a graph of keycaps at this size only crowded), then the ticker.
 fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let focus = cx.c.focus.unwrap_or(Pane::Graph);
     let right = r.right().saturating_sub(1);
@@ -495,29 +465,16 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let n = rows.len() as u16;
     let al = alerts(cx);
     let tick_h = (al.len() as u16).min(2).min(r.height / 8);
-    let avail = r.height.saturating_sub(1 + tick_h + 1);
+    // The label, a breathing row, the tree, a breathing row, the ticker.
+    let avail = r.height.saturating_sub(2 + tick_h + 1);
     // Two-row device rows when the height allows (a thumb-sized target with vitals).
-    let map_min = 5u16;
-    let row_h = if avail >= map_min + 2 * n + 2 { 2 } else { 1 };
-    let shown = (avail.saturating_sub(map_min) / row_h).min(n);
-    let map_h = avail
-        .saturating_sub(shown * row_h)
-        .clamp(3, if r.height >= 26 { 10 } else { 7 });
+    let row_h = if avail >= 2 * n { 2 } else { 1 };
+    let shown = (avail / row_h).min(n);
     let lw = cx.label(buf, r.x + 1, r.y, 16, "NETWORK", focus != Pane::Sessions);
     legend(cx, buf, r.x + 2 + lw + 1, r.y, right);
-    let band = Rect::new(r.x, r.y + 1, r.width, map_h);
     let ids: Vec<&str> = rows.iter().map(|t| t.d.id.as_str()).collect();
     let sel_id = ids[cx.c.selected % ids.len().max(1)];
-    orbit::draw(
-        cx,
-        buf,
-        band,
-        &cx.s.viewer,
-        3,
-        orbit::Sel::Node(sel_id, true),
-    );
-    // The tree follows the drawing (one blank row), not the band's foot.
-    let mut y = super::last_row(buf, band).map_or(band.bottom(), |l| (l + 2).min(band.bottom()));
+    let mut y = r.y + 2;
     for t in rows.iter().take(usize::from(shown)) {
         tree_row(
             cx,

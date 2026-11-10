@@ -135,7 +135,7 @@ pub(super) fn spark(
 }
 
 /// The sparkline text, scaled between the window's min and max so variation shows.
-pub(super) fn spark_str(cx: &Cx, vals: &[Option<f32>], w: u16) -> String {
+fn spark_str(cx: &Cx, vals: &[Option<f32>], w: u16) -> String {
     if w == 0 || vals.is_empty() {
         return String::new();
     }

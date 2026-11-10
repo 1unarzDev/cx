@@ -820,13 +820,3 @@ pub(super) fn inset(r: Rect, dx: u16, dy: u16) -> Rect {
         r.height.saturating_sub(2 * dy),
     )
 }
-pub(super) fn centered(outer: Rect, w: u16, h: u16) -> Rect {
-    let w = w.min(outer.width);
-    let h = h.min(outer.height);
-    Rect::new(
-        outer.x + (outer.width - w) / 2,
-        outer.y + (outer.height - h) / 2,
-        w,
-        h,
-    )
-}

@@ -1,6 +1,6 @@
 //! Screens: hub, device, session peek, files, preview, palette, keys, onboarding, join,
 //! link policy and help. Each is a plain function over the shared `Cx`.
-use super::{centered, fit, fmt, inset, orbit, tiles, Cx, Size, SLOTS};
+use super::{fit, fmt, inset, orbit, tiles, Cx, Size, SLOTS};
 use crate::ui::lab::{
     caps::Pane, Access, DeviceStatus, EdgeKind, FileKind, LabDevice, LabEdge, LabSession, LabView,
     PreviewKind, Tok,
@@ -3025,7 +3025,10 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) -> (String, String)
     // takes the rest down to a row above the footer (extra rows go to the rtt chart).
     let bottom = r.bottom().saturating_sub(1);
     let room = bottom.saturating_sub(r.y + sheet_min);
-    let band_h = if cx.size() == Size::Xs {
+    // Phones draw no map (it only crowded at that size): the link alone, on its row.
+    let band_h = if cx.touch() {
+        room.min(3)
+    } else if cx.size() == Size::Xs {
         room.min(7)
     } else {
         room.min(orbit::want_h(cx))
@@ -3040,10 +3043,10 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) -> (String, String)
             sheet_h += band.bottom().saturating_sub(last + 2);
         }
     } else if let (Some(a), Some(b)) = (cx.s.device(&e.from), cx.s.device(&e.to)) {
-        // No room for the map: the link itself, drawn heavy between its two keycaps.
+        // No map: the link itself, between its two keycaps.
         let tok = edge_kind(cx, e).1;
         let mid = format!(" {} ", orbit::policy(cx, e, true, false));
-        let line = cx.g("━━━", "===");
+        let line = cx.g("───", "---");
         let w = 6 + 2 * super::width(line, cx.uni()) + super::width(&mid, cx.uni());
         let mut x = r.x + r.width.saturating_sub(w) / 2;
         let y = r.y + band.height.max(1) / 2;
@@ -3359,316 +3362,176 @@ fn wrap(s: &str, w: usize) -> Vec<String> {
 
 // ----------------------------------------------------------------------------- help
 
-/// Keyboard map: each key shows its role, per layer; device names sit in a legend so no
-/// keycap is cut mid-word.
+/// Help for the view it was opened from (the hub here): the keys that matter there,
+/// grouped by intent, the device-letter grammar said once, the line grammar, and one
+/// row of keys that work everywhere. A calm list, centred, at every size.
 fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
-    let letters = ["qwertyuiop", "asdfghjkl;", "zxcvbnm,./"];
-    // The widest keycaps whose staggered rows still fit (rows shift by a third of a key).
-    let kw: u16 = (6..=9u16)
-        .rev()
-        .find(|k| k * 10 + 9 + 2 * (k / 3) + 4 <= r.width)
-        .unwrap_or(0);
-    let devs: Vec<&LabDevice> = cx.s.devices.iter().collect();
-    let globals: [(&str, &str); 12] = [
-        ("⏎", "open / attach"),
-        ("spc", "peek"),
-        ("-", "last session"),
-        ("tab", "zone"),
-        ("/", "find"),
-        ("+", "invite"),
-        ("K", "keys"),
-        ("?", "help"),
-        ("⌫", "stop"),
-        ("`", "hub"),
-        ("esc", "back"),
-        ("ctrl+\\", "detach"),
-    ];
+    // Words where the symbol may be missing (ASCII, and phone fonts).
     let key = |k: &'static str| -> &'static str {
-        if cx.uni() && !cx.touch() {
-            k
-        } else {
-            match k {
-                "⏎" => "ret",
-                "␣" => "spc",
-                "⌫" => "bksp",
-                o => o,
-            }
+        match k {
+            "⏎" if !cx.uni() || cx.touch() => "ret",
+            "⌫" if cx.touch() => "del",
+            "⌫" if !cx.uni() => "bksp",
+            o => o,
         }
     };
-    if kw == 0 {
-        // Phone: a compact list in the order you use it, centred. Keycaps hold only
-        // real keys; `then` is plain text in its own column, so the keys and the
-        // descriptions sit on fixed columns.
-        let dk: Vec<String> = devs.iter().take(3).map(|d| d.hotkey.to_string()).collect();
-        let dk: Vec<&str> = dk.iter().map(String::as_str).collect();
-        let del = if cx.uni() { "del" } else { "bksp" };
-        let items: Vec<(&str, Vec<&str>, &str)> = vec![
-            ("", dk, "open that device"),
-            ("then", vec!["a", "s", "d"], "attach its session"),
-            ("then", vec!["c", "x", "n"], "claude/codex/shell"),
-            ("then", vec!["f", "e"], "files / link"),
-            ("then", vec![del], "stop a session"),
-            ("", vec!["ret", "spc"], "open / peek"),
-            ("", vec!["-"], "last session"),
-            ("", vec!["/"], "find anything"),
-            ("", vec!["+", "K"], "invite / keys"),
-            ("", vec!["esc", "`"], "back / hub"),
-            ("", vec!["ctrl+\\"], "detach"),
-        ];
-        let n = items.len() as u16;
-        let mut y = r.y + r.height.saturating_sub(n) / 2;
-        let kx = r.x + 5;
-        // Each keycap column is as wide as its widest key (rows of one key, such as
-        // `ctrl+\`, only set the description column), so every column lines up.
-        let mut cols = [0u16; 3];
-        for (_, keys, _) in items.iter().filter(|(_, k, _)| k.len() > 1) {
-            for (j, k) in keys.iter().enumerate() {
-                cols[j] = cols[j].max(super::width(k, cx.uni()) + 3);
-            }
+    let groups: [(&str, &[(&str, &str)]); 3] = [
+        ("move", &[("j k", "move"), ("tab", "next zone"), ("⏎", "open the selection")]),
+        ("look", &[("spc", "peek a session"), ("-", "last session")]),
+        ("act", &[("e", "edit a link"), ("⌫", "stop a session")]),
+    ];
+    // (`esc` is on the footer, where it closes this.)
+    let globals: [(&str, &str, &str); 5] = [
+        ("/", "find", "palette"),
+        ("`", "hub", "hub"),
+        ("+", "invite", "invite"),
+        ("K", "keys", "secrets"),
+        ("ctrl+\\", "detach", "detach"),
+    ];
+    let w = r.width.saturating_sub(4).min(68);
+    let x0 = r.x + (r.width - w) / 2;
+    let right = x0 + w;
+    // Column widths: the intent word, then keycaps padded to the widest key.
+    let iw = 6;
+    let kw = groups
+        .iter()
+        .flat_map(|(_, ks)| ks.iter())
+        .map(|(k, _)| super::width(key(k), cx.uni()) + 2)
+        .max()
+        .unwrap_or(3);
+    let kx = x0 + iw;
+    let dx = kx + kw + 2;
+    // The device-letter grammar, keys bold and the rest muted, wrapped to the column.
+    let words: Vec<(&str, bool)> = [
+        ("press a device's letter to jump; then", false),
+        ("a s d g", true),
+        ("attach a slot,", false),
+        ("c x n", true),
+        ("new claude / codex / shell", false),
+    ]
+    .iter()
+    .flat_map(|&(t, b)| t.split(' ').map(move |w| (w, b)))
+    .collect();
+    let devs: Vec<&LabDevice> = cx.s.devices.iter().take(4).collect();
+    let more = cx.s.devices.len() > devs.len();
+    let caps_w = devs.len() as u16 * 4 + if more { 2 } else { 0 };
+    // Beside the keycaps when the column is wide, under them on phones.
+    let (tx, beside) = if w >= 56 {
+        (x0 + caps_w + 2, true)
+    } else {
+        (x0 + 2, false)
+    };
+    let tw = right.saturating_sub(tx);
+    let mut lines: Vec<Vec<(&str, bool)>> = vec![Vec::new()];
+    let mut lw = 0u16;
+    for &(word, b) in &words {
+        let ww = super::width(word, cx.uni());
+        if lw > 0 && lw + 1 + ww > tw {
+            lines.push(Vec::new());
+            lw = 0;
         }
-        let single = items
-            .iter()
-            .map(|(_, k, _)| super::width(k[0], cx.uni()) + 3)
-            .max()
-            .unwrap_or(0);
-        let dx = kx + cols.iter().sum::<u16>().max(single);
-        for (row, (lead, keys, v)) in items.into_iter().enumerate() {
-            if y >= r.bottom() {
-                break;
-            }
-            cx.put(buf, r.x + 1, y, 4, lead, cx.st(Tok::Muted));
-            let mut x = kx;
-            for (j, k) in keys.into_iter().enumerate() {
-                // The first row's letters are devices: their own keycap hue.
-                let st = match devs.get(j).filter(|_| row == 0) {
-                    Some(d) => cx.chip_style(cx.s.hue(&d.id)),
-                    None => cx.key_style(),
-                };
-                cx.put(buf, x, y, 9, &format!(" {k} "), st);
-                x += cols[j];
-            }
-            cx.put(
-                buf,
-                dx,
-                y,
-                r.width.saturating_sub(dx - r.x + 1),
-                v,
-                cx.ink(Tok::Fg, 0.9),
-            );
-            y += 1;
-        }
-        return;
+        lw += ww + u16::from(lw > 0);
+        lines.last_mut().expect("one line").push((word, b));
     }
-    let total_w = kw * 10 + 9;
-    let x0 = r.x + (r.width.saturating_sub(total_w + 3)) / 2;
-    let right = x0 + total_w + 3;
-    let key_rows = |y0: u16, buf: &mut Buffer, f: &dyn Fn(char) -> (String, Style)| {
-        for (ri, row) in letters.iter().enumerate() {
-            let y = y0 + ri as u16 * 3;
-            let off = ri as u16 * (kw / 3).max(1);
-            for (ci, c) in row.chars().enumerate() {
-                let x = x0 + off + ci as u16 * (kw + 1);
-                let (label, st) = f(c);
-                let kr = Rect::new(x, y, kw, 2);
-                let has = !label.is_empty();
-                let bst = if has {
-                    st
-                } else if cx.has_surface() {
-                    cx.surface()
-                } else {
-                    Style::default()
-                };
-                if cx.has_surface() || has {
-                    cx.fill(buf, kr, bst);
-                }
-                let kst = if has {
-                    bst.add_modifier(Modifier::BOLD)
-                } else {
-                    cx.ink(Tok::Muted, 0.6).patch(bst)
-                };
-                cx.put(buf, x + 1, y, 1, &c.to_string(), kst);
-                if has {
-                    cx.put(buf, x + 1, y + 1, kw - 1, &label, bst);
-                }
-            }
+    // Rows the global keys take at this width.
+    let chip_w = |(k, l, _): &(&str, &str, &str)| cx.key_w(k) + 1 + super::width(l, cx.uni()) + 2;
+    let mut grows = 1u16;
+    let mut gx = 0u16;
+    for g in &globals {
+        if gx > 0 && gx + chip_w(g) > w + 2 {
+            grows += 1;
+            gx = 0;
         }
-    };
-    // Centred vertically: the hub keyboard, its legend, the device keyboard (or its
-    // one-line legend when short) and the global keys.
-    let span = right - x0;
-    let colw_d = devs
-        .iter()
-        .map(|d| 6 + super::width(&d.name, cx.uni()))
-        .max()
-        .unwrap_or(10);
-    let leg_rows = (devs.len() as u16).div_ceil((span / colw_d).max(1));
-    let colw_g = globals
-        .iter()
-        .map(|(k, v)| super::width(key(k), cx.uni()) + 5 + super::width(v, cx.uni()))
-        .max()
-        .unwrap_or(12);
-    // Columns that divide the keys evenly, so no row is left with an orphan.
-    let n_g = globals.len() as u16;
-    let per_g = (1..=(span / colw_g).max(1))
-        .rev()
-        .find(|p| n_g % p == 0)
-        .unwrap_or(1);
-    let glob_rows = n_g.div_ceil(per_g);
-    let base0 = 2 + 9 + leg_rows + 1 + glob_rows;
-    // The number-row stub only where it costs no global key (the legend has `-` too).
-    let stub = base0 + 3 + 2 < r.height;
-    let base_h = base0 + if stub { 3 } else { 0 };
-    let full_dev = base_h + 11 <= r.height.saturating_sub(1);
-    let total = base_h + if full_dev { 11 } else { 2 };
-    // Centred, but always one breathing row above the footer.
+        gx += chip_w(g);
+    }
+    let items: u16 = groups.iter().map(|(_, k)| k.len() as u16).sum();
+    let grammar = lines.len() as u16 + u16::from(!beside);
+    // The line grammar on demand: one quiet row, where it costs nothing.
+    let strokes = !cx.touch();
+    // Label, groups, grammar, globals; breathing rows (under the label, between groups,
+    // around the grammar) give way first on short screens, then the label.
+    let body = items + grammar + u16::from(strokes) + grows;
+    let air_n = 1 + groups.len() as u16 - 1 + 2;
+    let air = body + 1 + air_n <= r.height;
+    let label = body + 1 + 2 <= r.height || air;
+    let total = body + if air { air_n } else { 2 } + u16::from(label);
     let spare = r.height.saturating_sub(total);
     let mut y = r.y + spare.div_ceil(2).min(spare.saturating_sub(1));
-    zone(cx, buf, x0, y, right, "HUB", true);
-    y += 2;
-    // A number-row stub with the two keys of the round trip: `` ` `` (hub) and `-`
-    // (the last session, the way back after a detach).
-    let stubs = if stub {
-        vec![(x0, '`', "hub"), (x0 + 9 * (kw + 1), '-', "last")]
-    } else {
-        Vec::new()
-    };
-    for (x, k, label) in stubs {
-        let ks = cx.key_style();
-        if cx.has_surface() {
-            cx.fill(buf, Rect::new(x, y, kw, 2), ks);
+    if label {
+        zone(cx, buf, x0, y, right, "ON THE HUB", true);
+        y += 1 + u16::from(air);
+    }
+    for (gi, (intent, ks)) in groups.iter().enumerate() {
+        if gi > 0 && air {
+            y += 1;
         }
-        cx.put(buf, x + 1, y, 1, &k.to_string(), ks.add_modifier(Modifier::BOLD));
-        cx.put(buf, x + 1, y + 1, kw - 1, label, ks);
-    }
-    if stub {
-        y += 3;
-    }
-    key_rows(
-        y,
-        buf,
-        &|c: char| match devs.iter().find(|d| d.hotkey == c) {
-            Some(d) => {
-                let (g, _) = cx.status(d.status);
-                // Narrow keycaps keep the status alone; the legend names the device.
-                let ev = if kw >= 8 {
-                    format!("{g} {}", cx.meta(d))
-                } else {
-                    g.to_string()
-                };
-                (
-                    fit(&ev, usize::from(kw - 1), cx.uni()),
-                    cx.chip_style(cx.s.hue(&d.id)),
-                )
+        for (i, (k, v)) in ks.iter().enumerate() {
+            if y >= r.bottom() {
+                return;
             }
-            None => match c {
-                '/' => ("find".into(), cx.key_style()),
-                // Never device letters: motion in the sessions row and the phone tree.
-                'j' => ("down".into(), cx.key_style()),
-                'k' => ("up".into(), cx.key_style()),
-                // `e` then a letter: the link from this device to that one.
-                'e' => ("link".into(), cx.key_style()),
-                _ => (String::new(), Style::default()),
-            },
-        },
-    );
-    y += 9;
-    // Legend: the full device names, in keycap colours, on a fixed column grid.
-    let colw = colw_d;
-    let per = (span / colw).max(1);
-    for (i, d) in devs.iter().enumerate() {
-        let (ci, ri) = (i as u16 % per, i as u16 / per);
-        let x = x0 + ci * (span / per);
-        let w = cx.dchip(buf, x, y + ri, d, false) + 1;
-        cx.put(buf, x + w, y + ri, colw - w, &d.name, cx.ink(Tok::Fg, 0.85));
+            if i == 0 {
+                cx.put(buf, x0 + 1, y, iw - 1, intent, cx.ink(Tok::Muted, 0.8));
+            }
+            let k = key(k);
+            cx.put(buf, kx, y, kw, &format!(" {k} "), cx.key_style());
+            let room = right.saturating_sub(dx);
+            cx.put(buf, dx, y, room, &fit(v, usize::from(room), cx.uni()), cx.ink(Tok::Fg, 0.9));
+            y += 1;
+        }
     }
-    y += (devs.len() as u16).div_ceil(per) + 1;
-    if !full_dev {
-        // Short screens: the device layer as one line of chips.
-        let lx = cx.label(buf, x0, y, 14, "IN A DEVICE", false) + x0 + 2;
-        cx.chips(
-            buf,
-            lx,
-            y,
-            right,
-            &[
-                ("a s d", "attach"),
-                ("c x n", "new"),
-                ("f", "files"),
-                ("e", "link"),
-                (key("⌫"), "stop"),
-            ]
-            .map(|(k, l)| (k, l, "help")),
-        );
-        y += 2;
-    } else {
-        zone(cx, buf, x0, y, right, "IN A DEVICE", false);
-        // One word for the four slot keys, not four `attach` caps.
-        cx.put_r(buf, right, y, " a s d g  attach a slot", cx.st(Tok::Muted));
-        y += 2;
-        let ks = cx.key_style();
-        let acc = if cx.has_surface() {
-            cx.wash(Tok::Accent, 0.25).patch(cx.ink(Tok::Fg, 1.0))
-        } else {
-            ks
-        };
-        let tint = |t: Tok| {
-            if cx.has_surface() {
-                cx.wash(t, 0.25).patch(cx.ink(Tok::Fg, 1.0))
+    y += 1;
+    // Devices: their own keycaps, then the grammar.
+    let mut x = x0 + 1;
+    for d in &devs {
+        x += cx.dchip(buf, x, y, d, false) + 1;
+    }
+    if more {
+        cx.put(buf, x, y, 2, cx.g("…", ".."), cx.st(Tok::Muted));
+    }
+    if !beside {
+        y += 1;
+    }
+    for line in &lines {
+        let mut x = tx;
+        for (word, b) in line {
+            let st = if *b {
+                cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD)
             } else {
-                ks
-            }
-        };
-        key_rows(y, buf, &|c: char| {
-            if c == 'a' {
-                return ("attach".into(), acc);
-            }
-            if SLOTS.contains(&c) {
-                // The other slots: the same tint, fainter and unlabelled.
-                let faint = if cx.has_surface() {
-                    cx.wash(Tok::Accent, 0.12).patch(cx.ink(Tok::Fg, 0.8))
-                } else {
-                    ks
-                };
-                return (" ".into(), faint);
-            }
-            match c {
-                'n' => ("+shell".into(), tint(Tok::Shell)),
-                'f' => ("files".into(), ks),
-                'e' => ("link".into(), ks),
-                'r' => ("retry".into(), ks),
-                // Motion, as in files and every list (never a slot).
-                'j' => ("down".into(), ks),
-                'k' => ("up".into(), ks),
-                'c' => ("+claude".into(), tint(Tok::Claude)),
-                'x' => ("+codex".into(), tint(Tok::Codex)),
-                '/' => ("find".into(), ks),
-                _ => (String::new(), Style::default()),
-            }
-        });
-        y += 9;
-    }
-    // Keys that mean the same everywhere, on the same kind of grid.
-    let colw = colw_g;
-    let per = per_g;
-    for (i, (k, v)) in globals.iter().enumerate() {
-        let (ci, ri) = (i as u16 % per, i as u16 / per);
-        let (x, yy) = (x0 + ci * (span / per), y + ri);
-        if yy >= r.bottom() {
-            break;
+                cx.ink(Tok::Muted, 0.9)
+            };
+            x += cx.put(buf, x, y, right.saturating_sub(x), word, st) + 1;
         }
-        // Every keycap in a column is as wide as the column's widest key.
-        let kw_col = globals
-            .iter()
-            .skip(ci as usize)
-            .step_by(per as usize)
-            .map(|(k, _)| super::width(key(k), cx.uni()))
-            .max()
-            .unwrap_or(1);
-        let k = key(k);
-        let pad = " ".repeat(usize::from(kw_col.saturating_sub(super::width(k, cx.uni()))));
-        let w = cx.put(buf, x, yy, 10, &format!(" {k}{pad} "), cx.key_style()) + 1;
-        let room = (span / per).max(colw).saturating_sub(w + 1);
-        cx.put(buf, x + w, yy, room, v, cx.ink(Tok::Fg, 0.85));
+        y += 1;
     }
-    let _ = (DeviceStatus::Online, centered, Access::Key);
+    if strokes {
+        // The map's line grammar (the hub's legend names the meshes).
+        let mut x = tx;
+        for (g, t) in [
+            (cx.g("──", "--"), "key"),
+            (cx.g("┄┄", "- -"), "password"),
+            (cx.g("→", "->"), "one way"),
+            (cx.g("··", ". ."), "closed"),
+        ] {
+            let need = super::width(g, cx.uni()) + 1 + super::width(t, cx.uni());
+            if x + need > right {
+                break;
+            }
+            x += cx.put(buf, x, y, need, g, cx.ink(Tok::Muted, 0.7)) + 1;
+            x += cx.put(buf, x, y, need, t, cx.ink(Tok::Muted, 0.9)) + 3;
+        }
+        y += 1;
+    }
+    y += 1;
+    // Keys that mean the same everywhere, on as few rows as the width allows.
+    let mut x = x0 + 1;
+    for g in &globals {
+        if x > x0 + 1 && x + chip_w(g) > right + 2 {
+            y += 1;
+            x = x0 + 1;
+        }
+        if y >= r.bottom() {
+            return;
+        }
+        x = cx.chips(buf, x, y, right, std::slice::from_ref(g));
+    }
 }

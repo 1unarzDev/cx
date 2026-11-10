@@ -462,8 +462,8 @@ fn place<'a>(
         pw,
         1,
     );
-    // Tiny maps keep only the capsule (a halo would crowd the first ring).
-    let halo = if mode == Mode::Key && band.height < 9 {
+    // Short maps keep only the capsule (a halo would crowd the first ring).
+    let halo = if band.height < 12 {
         Rect::new(pill.x.saturating_sub(1), pill.y, pw + 2, 1)
     } else {
         Rect::new(

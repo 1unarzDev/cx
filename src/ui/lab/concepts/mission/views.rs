@@ -2942,6 +2942,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                 'n' => ("+shell".into(), ks),
                 'f' => ("files".into(), ks),
                 'e' => ("link".into(), ks),
+                'r' => ("retry".into(), ks),
                 // Motion, as in files and every list (never a slot).
                 'j' => ("down".into(), ks),
                 'k' => ("up".into(), ks),

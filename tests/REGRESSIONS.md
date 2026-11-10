@@ -151,6 +151,7 @@ Guard notation:
 | `aa51d80` | Shared-LAN rules broke when the boat changed ports; docker0 was masqueraded | rules named interfaces | rust:host_nat_does_not_claim_internet_without_robot_gateway_dns_and_verification (asserts `oifname != "docker0"`), py:sharing_lan_namespace [local] |
 | `5bb18e3` | Sharing chose its upstream from stale measurements | | rust:upstream_selection_prefers_throughput_then_latency_and_rejects_stale |
 | `f3fecb5` | Mesh teardown used an empty account | the account came only from discovery | py:mesh_util [ci] |
+| revamp transport-master review | A terminal could become the shared SSH master, so closing its pane ended every channel on the route; a stalled master handshake held requests for up to 25 s; cleanup matched a 20-bit tag; a missing managed trust file failed command construction; orphans closed mesh-endpoint masters; a silently dead master kept answering `-O check` | `ControlMaster=auto` on terminals; synchronous master start under the slot lock; tag-prefix matching; `File::open(known_hosts)?`; inventory-only ownership; no liveness probe | py:ssh_multiplex [local] **NEW**, py:peer_managed_ssh [ci] (owner record, mesh master not stray, missing trust file), rust:closing_masters_matches_the_recorded_target_exactly, rust:managed_trust_reads_missing_files_as_empty, rust:masters_are_stray_only_when_idle_and_unreusable |
 
 ## 7. Session identity, labels and runtime inventory
 

@@ -77,6 +77,12 @@ enum Cmd {
     Restart {
         state: String,
     },
+    /// Open (or confirm) the shared SSH connection to an enrolled device now,
+    /// so the next request or attach skips the handshake. Never prompts.
+    #[command(hide = true)]
+    Prewarm {
+        device: String,
+    },
     Add {
         target: String,
         #[arg(
@@ -1774,6 +1780,18 @@ fn run() -> Result<()> {
         }
         Some(Cmd::Devices) => {
             println!("{}", serde_json::to_string_pretty(&store::devices()?)?);
+            Ok(())
+        }
+        Some(Cmd::Prewarm { device: d }) => {
+            let replaced = transport::prewarm_blocking(&device(Some(d))?)?;
+            println!(
+                "{}",
+                if replaced {
+                    "ready (replaced an unresponsive connection)"
+                } else {
+                    "ready"
+                }
+            );
             Ok(())
         }
         Some(Cmd::Sessions { device: d }) => {

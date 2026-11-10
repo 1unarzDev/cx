@@ -22,7 +22,8 @@ account = pwd.getpwuid(os.getuid()).pw_name
 ssh = shutil.which("ssh")
 sshd = shutil.which("sshd") or "/usr/sbin/sshd"
 
-with tempfile.TemporaryDirectory(prefix="cx-native-peer-") as temporary:
+# Short root: the private socket path must fit sun_path (see store::control_socket).
+with tempfile.TemporaryDirectory(prefix="cx-mp-", dir="/tmp") as temporary:
     root = pathlib.Path(temporary)
     root.chmod(0o700)
     home = root / "home"
@@ -63,9 +64,11 @@ assert 'ForwardAgent=no' in args
 assert 'Port=22' in args
 assert '-i' in args and str(root) in args[args.index('-i')+1]
 assert any(a.startswith('UserKnownHostsFile=') and str(root) in a for a in args)
-assert args[-1]=='exec ~/.local/bin/cx helper'
+# Shared-master setup (-N), control (-O) and resolution (-G) carry no remote command.
+mux='-N' in args or '-O' in args or '-G' in args
+assert mux or args[-1]=='exec ~/.local/bin/cx helper'
 args[args.index('Port=22')]='Port='+os.environ['CX_NATIVE_PORT']
-args[-1]=os.environ['CX_NATIVE_COMMAND']
+if not mux:args[-1]=os.environ['CX_NATIVE_COMMAND']
 with (root/'argv.jsonl').open('a') as log:log.write(json.dumps(args)+'\\n')
 os.execv(os.environ['CX_NATIVE_SSH'],[os.environ['CX_NATIVE_SSH'],*args])
 ''')
@@ -73,7 +76,10 @@ os.execv(os.environ['CX_NATIVE_SSH'],[os.environ['CX_NATIVE_SSH'],*args])
     askpass = root / "askpass"
     askpass.write_text("#!/bin/sh\nprintf called >> \"$CX_NATIVE_PEER/asked\"\nexit 1\n")
     askpass.chmod(0o700)
+    runtime = root / "run"
+    runtime.mkdir(mode=0o700)
     env = dict(os.environ, HOME=str(home), XDG_STATE_HOME=str(root / "state"), USER=account,
+               XDG_RUNTIME_DIR=str(runtime),
                PATH=str(tools) + os.pathsep + os.environ["PATH"],
                CX_NATIVE_PEER=str(root), CX_NATIVE_PORT=str(port), CX_NATIVE_SSH=ssh,
                CX_NATIVE_COMMAND=shlex.join([sys.executable, str(helper)]),
@@ -135,12 +141,51 @@ AllowUsers {account}
         return subprocess.run([binary, "sessions", "--device", "synthetic"], env=env,
                               stdin=subprocess.DEVNULL, capture_output=True, timeout=15)
 
+    def masters():
+        return [p for p in (state / "ssh").glob("*") if p.is_socket()]
+
+    def close_masters():
+        # Only this fixture's private sockets; never a user ControlPath.
+        for candidate in masters():
+            subprocess.run([ssh, "-F", "/dev/null", "-S", str(candidate), "-O", "exit", "cx"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+
+    def argv_log():
+        path = root / "argv.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
     try:
         daemon = start("host")
         result = sessions()
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout) == [], result.stdout
         assert not (root / "asked").exists()
+        # The managed endpoint now has one private shared master; the next
+        # request joins it without a new handshake (no second -N).
+        assert len(masters()) == 1, list((state / "ssh").iterdir())
+        assert masters()[0].stat().st_mode & 0o077 == 0
+        before = len([a for a in argv_log() if "-N" in a])
+        result = sessions()
+        assert result.returncode == 0, result.stderr
+        assert len([a for a in argv_log() if "-N" in a]) == before == 1
+        assert all("ControlMaster=no" in a for a in argv_log() if a[-1] != "-N" and "-N" not in a and "-O" not in a and "-G" not in a)
+        # The master records its exact managed target (0600 sidecar).
+        [master] = masters()
+        record = master.with_name(master.name + ".owner")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not record.exists():
+            time.sleep(0.05)
+        assert record.stat().st_mode & 0o777 == 0o600
+        assert json.loads(record.read_text())["target"] == peer["target"]
+        # A managed mesh endpoint that is not an inventory device keeps its
+        # idle master: orphans never marks it stray.
+        (state / "devices.json").write_text("[]")
+        result = subprocess.run([binary, "orphans", "--json"], env=env, stdin=subprocess.DEVNULL,
+                                capture_output=True, timeout=30)
+        assert result.returncode == 0, result.stderr
+        rows = json.loads(result.stdout)["ssh_masters"]
+        assert rows and all(r["owner_recorded"] and r["enrolled"] and not r["stray"] for r in rows), rows
+        (state / "devices.json").write_text(json.dumps([peer]))
 
         known = state / "peer-ssh/known_hosts"
         pinned = known.read_bytes()
@@ -149,8 +194,19 @@ AllowUsers {account}
         assert result.returncode != 0, "untrusted server authenticated"
         assert known.read_text() == "", "unknown host was automatically trusted"
         assert not (root / "asked").exists()
+        # A missing trust file is reported by ssh as a host-identity failure,
+        # not an I/O error while building the command.
+        known.unlink()
+        result = sessions()
+        assert result.returncode != 0, "host without trust file authenticated"
+        assert b"host identity could not be verified" in result.stderr, result.stderr[-500:]
+        assert not known.exists() and not (root / "asked").exists()
         known.write_bytes(pinned)
+        known.chmod(0o600)
 
+        # A live master keeps its authenticated connection to the pinned host;
+        # retire it so the changed key below meets a fresh handshake.
+        close_masters()
         daemon.terminate()
         daemon.wait(timeout=3)
         daemon = start("changed-host")
@@ -159,6 +215,7 @@ AllowUsers {account}
         assert known.read_bytes() == pinned, "changed host replaced pin"
         assert not (root / "asked").exists()
     finally:
+        close_masters()
         if daemon is not None and daemon.poll() is None:
             daemon.terminate()
             daemon.wait(timeout=3)
@@ -166,4 +223,7 @@ AllowUsers {account}
 
 print(json.dumps(dict(result="PASS", native_openssh=True, managed_client_key_authenticated=True,
                       strict_managed_host_pin=True, unknown_host_rejected=True,
-                      changed_host_rejected=True, no_askpass_prompt=True, private_key_mode_600=True)))
+                      changed_host_rejected=True, no_askpass_prompt=True, private_key_mode_600=True,
+                      shared_master_reused=True, repin_selects_new_master=True,
+                      owner_record_exact_target=True, mesh_master_not_stray=True,
+                      missing_trust_file_is_host_key_failure=True)))

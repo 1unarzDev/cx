@@ -118,6 +118,11 @@ fn persistent_idempotent_hostile_directory() {
 mod auth;
 
 mod transport {
+    /// No shared-master warm-up in the fixture: the store command alone.
+    pub fn ssh(target: &str, interactive: bool) -> anyhow::Result<std::process::Command> {
+        crate::store::ssh(target, interactive)
+    }
+
     pub fn owned_helper_request(
         _key: &str,
         _command: impl FnOnce() -> anyhow::Result<std::process::Command>,

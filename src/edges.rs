@@ -847,7 +847,7 @@ pub fn interactive_ssh(device: &Device) -> Result<std::process::Command> {
         .as_deref()
         .context("the local device has no SSH target")?;
     guard(device)?;
-    store::ssh(target, true)
+    crate::transport::ssh(target, true)
 }
 /// Resolve a CLI endpoint: "local", the local name, or an enrolled name/id/target.
 pub fn resolve(name: &str) -> Result<String> {

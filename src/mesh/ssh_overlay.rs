@@ -514,7 +514,8 @@ fn enroll_joined(peer: &Device) -> Result<String> {
 fn pair_new(peer: &Device, host_key: &str, client_key: &str) -> Result<String> {
     ensure_new(&store::devices()?, &peer.id)?;
     store::allow_explicit_enrollment(&peer.id)?;
-    peer_ssh::configure(peer, host_key, client_key)?;
+    // A new core device: no edge records yet, so key access both ways (the edges.rs core default).
+    peer_ssh::configure(peer, host_key, client_key, true)?;
     enroll_joined(peer).inspect_err(|_| {
         if !store::devices().is_ok_and(|d| d.iter().any(|d| d.id == peer.id)) {
             let _ = peer_ssh::unpin(&peer.id);

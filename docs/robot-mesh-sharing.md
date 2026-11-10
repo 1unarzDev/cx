@@ -12,6 +12,17 @@ The directed graph has mesh/downstream roles, approved reachability edges, indep
 
 Future requests discard helper channels when the stored path changes. Separate native SSH sessions remain attached. Routes are viewer-local decisions; these changes do not yet distribute graphs or revocations automatically to other mesh hosts. For now each viewer needs enrollment, destination trust, its own approved route and its own authentication check. A newly discovered endpoint does not silently install trust or credentials. Further downstream nodes can be represented and routed with the same graph, including a robot as a transit host.
 
+## Per-edge access policy
+
+`cx edge set FROM TO POLICY` records a viewer-local decision for one direction in `edges.json` (0600, under the device lock):
+
+- `key`: FROM logs in to TO with its cx-managed peer key.
+- `password`: cx removes FROM's cx-managed line on TO. Other SSH keys the user configured may still authenticate, so cx does not claim that background checks fail.
+- `one-way`: shorthand for FROM -> TO `key` plus TO -> FROM `none`.
+- `none`: core sync skips the device, and CLI device commands, pairing and jump routes over the direction are refused before any SSH. The only exception is the enforcement step that removes the viewer's own key on the receiver.
+
+Pairs without a record keep their migrated posture: core devices are `key` both ways, and directed devices are `key` viewer -> device and refused device -> viewer. `device-policies.json` is read and never rewritten. Enforcement only adds or removes lines CX wrote (`cx-managed-peer`) through the helper's `peer_authorize` operation (capability `peer-authorize-v1`); users' own lines stay byte-for-byte. The receiver keeps its own removed and directed decisions. No firewall or other networking change is applied. A failed install is retried by the next `cx edge set` for that direction. When the viewer's cx key was the only way in, restoring `key` fails in background mode: authorize the viewer from the receiver, or with your own SSH key, then rerun.
+
 ## Gateway selection without changing robot profiles
 
 The intended sharing gateway is tranquility's existing `192.168.0.2`. DD-WRT at `.1` owns its address; CX must never adopt `.1` as an alias. Fresh tranquility DHCP observation advertised routers `.1`, despite the intended `.2` setting. Root cause: DD-WRT's dnsmasq adds an interface-tagged `dhcp-option=br0,3,<lan_ipaddr>` that outranks an untagged option 3, so the router option must be tagged `br0` too. Verify with the lease a client actually receives.

@@ -934,7 +934,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     load_cache(&mut app);
     app.pins = store::session_pins().unwrap_or_default();
     if let Ok(Some(cache)) =
-        store::read_ui_state::<workspaces::NavigationCache>("ui-navigation.json", 2 * 1024 * 1024)
+        store::read_state::<workspaces::NavigationCache>("ui-navigation.json", 2 * 1024 * 1024)
     {
         cache.restore(&mut app);
     }

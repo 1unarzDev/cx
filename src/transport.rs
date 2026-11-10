@@ -231,6 +231,9 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
     if !valid_target(target) {
         bail!("invalid SSH target")
     }
+    // The UI, transfers and helper-relayed requests all pass here: a refused
+    // edge opens no SSH. Edge enforcement uses verified_request instead.
+    crate::edges::guard(d)?;
     let entry = {
         let mut all = CONNECTIONS
             .lock()

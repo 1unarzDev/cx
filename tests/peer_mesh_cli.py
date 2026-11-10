@@ -394,7 +394,29 @@ with tempfile.TemporaryDirectory(prefix="cx-peer-mesh-") as temporary:
     assert fixture.private_keys() == original_keys
     fixture.security_invariants()
 
-print(json.dumps(dict(result="PASS", real_helpers=True, three_core_devices=True,
+with tempfile.TemporaryDirectory(prefix="cx-edge-") as temporary:
+    fixture = Fixture(pathlib.Path(temporary))
+    creation, tranquility = f"{MACHINE}:conception", f"{MACHINE}:peace"
+    # Viewer-local edge policy, one-way as stored: creation -> tranquility key, reverse none.
+    fixture.write("innovation", "edges.json", {"version": 1, "edges": [
+        {"from": creation, "to": tranquility, "policy": "key", "updated_at": 1},
+        {"from": tranquility, "to": creation, "policy": "none", "updated_at": 1}]})
+    result = fixture.sync()
+    assert result.returncode == 0, result.stderr
+    output = json.loads(result.stdout)
+    pair = next(r for r in output["ready"] if {r["from"], r["to"]} == {"creation", "tranquility"})
+    assert pair["bidirectional"] is False and pair["forward"] != pair["reverse"], pair
+    key = lambda endpoint: " ".join((fixture.state(endpoint) / "peer-ssh/id_ed25519.pub").read_text().split()[:2])
+    authorized = lambda endpoint: (fixture.root / endpoint / "home/.ssh/authorized_keys").read_text()
+    assert key("creation") in authorized("tranquility"), "one-way forward key missing"
+    assert key("tranquility") not in authorized("creation"), "one-way reverse key installed"
+    assert any(p["id"] == tranquility for p in fixture.read("creation", "devices.json"))
+    assert not any(p["id"] == creation for p in fixture.read("tranquility", "devices.json"))
+    # Viewer edges keep their migrated core posture.
+    assert key("innovation") in authorized("creation") and key("creation") in authorized("innovation")
+    fixture.security_invariants()
+
+print(json.dumps(dict(result="PASS", real_helpers=True, three_core_devices=True, one_way_core_edge=True,
                       normal_ui_startup_bootstraps=True, stored_gateway_route_not_exported=True,
                       stale_core_alias_adopts_verified_portable_endpoint=True,
                       removal_and_demotion_win_during_reverse_probe=True,

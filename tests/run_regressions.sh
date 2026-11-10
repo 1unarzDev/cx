@@ -102,6 +102,7 @@ SSH=(
     "peer_mesh_cli|sshd|BIN"
     "peer_managed_ssh|sshd|BIN"
     "mesh_ssh_overlay|sshd node|BIN"
+    "edge_policy_ssh|sshd|BIN"
     "enrollment_tooling_cli|sshd|BIN"
     "enrollment_auth_pty|sshd pyte|BIN"
     "enrollment_ssh|sshd|."

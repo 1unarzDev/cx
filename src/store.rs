@@ -12,10 +12,10 @@ pub struct SessionPin {
     pub pinned_at: u64,
 }
 
-pub fn read_ui_state<T: serde::de::DeserializeOwned>(name: &str, limit: u64) -> Result<Option<T>> {
-    read_ui_state_at(&state_dir(), name, limit)
+pub fn read_state<T: serde::de::DeserializeOwned>(name: &str, limit: u64) -> Result<Option<T>> {
+    read_state_at(&state_dir(), name, limit)
 }
-fn read_ui_state_at<T: serde::de::DeserializeOwned>(
+fn read_state_at<T: serde::de::DeserializeOwned>(
     dir: &std::path::Path,
     name: &str,
     limit: u64,
@@ -25,8 +25,11 @@ fn read_ui_state_at<T: serde::de::DeserializeOwned>(
         os::unix::fs::{MetadataExt, OpenOptionsExt},
     };
     anyhow::ensure!(
-        matches!(name, "session-pins.json" | "ui-navigation.json"),
-        "invalid UI state name"
+        matches!(
+            name,
+            "session-pins.json" | "ui-navigation.json" | "edges.json"
+        ),
+        "invalid private state name"
     );
     let file = match fs::OpenOptions::new()
         .read(true)
@@ -43,17 +46,17 @@ fn read_ui_state_at<T: serde::de::DeserializeOwned>(
             && m.uid() == unsafe { libc::geteuid() }
             && m.mode() & 0o077 == 0
             && m.len() <= limit,
-        "unsafe UI state file"
+        "unsafe private state file"
     );
     let mut bytes = Vec::new();
     file.take(limit + 1).read_to_end(&mut bytes)?;
-    anyhow::ensure!(bytes.len() as u64 <= limit, "UI state exceeds limit");
+    anyhow::ensure!(bytes.len() as u64 <= limit, "private state exceeds limit");
     Ok(Some(serde_json::from_slice(&bytes)?))
 }
-pub fn write_ui_state<T: Serialize>(name: &str, value: &T, limit: usize) -> Result<()> {
-    write_ui_state_at(&ensure()?, name, value, limit)
+pub fn write_state<T: Serialize>(name: &str, value: &T, limit: usize) -> Result<()> {
+    write_state_at(&ensure()?, name, value, limit)
 }
-fn write_ui_state_at<T: Serialize>(
+fn write_state_at<T: Serialize>(
     dir: &std::path::Path,
     name: &str,
     value: &T,
@@ -61,11 +64,14 @@ fn write_ui_state_at<T: Serialize>(
 ) -> Result<()> {
     use std::{io::Write, os::unix::fs::OpenOptionsExt};
     anyhow::ensure!(
-        matches!(name, "session-pins.json" | "ui-navigation.json"),
-        "invalid UI state name"
+        matches!(
+            name,
+            "session-pins.json" | "ui-navigation.json" | "edges.json"
+        ),
+        "invalid private state name"
     );
     let bytes = serde_json::to_vec(value)?;
-    anyhow::ensure!(bytes.len() <= limit, "UI state exceeds limit");
+    anyhow::ensure!(bytes.len() <= limit, "private state exceeds limit");
     let temporary = dir.join(format!(
         "{name}.{}.{}.tmp",
         std::process::id(),
@@ -92,7 +98,7 @@ fn write_ui_state_at<T: Serialize>(
 }
 
 pub fn session_pins() -> Result<Vec<SessionPin>> {
-    let pins: Vec<SessionPin> = read_ui_state("session-pins.json", 512 * 1024)?.unwrap_or_default();
+    let pins: Vec<SessionPin> = read_state("session-pins.json", 512 * 1024)?.unwrap_or_default();
     anyhow::ensure!(pins.len() <= 128, "too many pinned sessions");
     Ok(pins)
 }
@@ -135,7 +141,7 @@ pub fn change_session_pin(
         pin.session.activity = None;
         pin.session.agent_tasks.clear();
     }
-    write_ui_state_at(&dir, "session-pins.json", &pins, 512 * 1024)?;
+    write_state_at(&dir, "session-pins.json", &pins, 512 * 1024)?;
     Ok(pins)
 }
 
@@ -147,24 +153,34 @@ mod ui_state_tests {
         use std::os::unix::fs::symlink;
         let dir = tempfile::tempdir().unwrap();
         let value = serde_json::json!({"runtime":"ended","folder":"/project"});
-        write_ui_state_at(dir.path(), "session-pins.json", &value, 1024).unwrap();
+        write_state_at(dir.path(), "session-pins.json", &value, 1024).unwrap();
         assert_eq!(
-            read_ui_state_at::<serde_json::Value>(dir.path(), "session-pins.json", 1024).unwrap(),
+            read_state_at::<serde_json::Value>(dir.path(), "session-pins.json", 1024).unwrap(),
             Some(value.clone())
         );
-        assert!(read_ui_state_at::<serde_json::Value>(dir.path(), "session-pins.json", 2).is_err());
-        assert!(write_ui_state_at(dir.path(), "session-pins.json", &value, 2).is_err());
+        assert!(read_state_at::<serde_json::Value>(dir.path(), "session-pins.json", 2).is_err());
+        assert!(write_state_at(dir.path(), "session-pins.json", &value, 2).is_err());
         let path = dir.path().join("session-pins.json");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(
-            read_ui_state_at::<serde_json::Value>(dir.path(), "session-pins.json", 1024).is_err()
-        );
+        assert!(read_state_at::<serde_json::Value>(dir.path(), "session-pins.json", 1024).is_err());
         fs::remove_file(&path).unwrap();
         symlink("outside", &path).unwrap();
-        assert!(
-            read_ui_state_at::<serde_json::Value>(dir.path(), "session-pins.json", 1024).is_err()
+        assert!(read_state_at::<serde_json::Value>(dir.path(), "session-pins.json", 1024).is_err());
+        assert!(write_state_at(dir.path(), "../elsewhere", &value, 1024).is_err());
+        // Edge policy shares the same hardened private-state path.
+        write_state_at(dir.path(), "edges.json", &value, 1024).unwrap();
+        assert_eq!(
+            fs::metadata(dir.path().join("edges.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
         );
-        assert!(write_ui_state_at(dir.path(), "../elsewhere", &value, 1024).is_err());
+        assert_eq!(
+            read_state_at::<serde_json::Value>(dir.path(), "edges.json", 1024).unwrap(),
+            Some(value)
+        );
     }
 }
 
@@ -508,7 +524,7 @@ fn validate_route(target: &str, hops: &[String]) -> Result<()> {
     }
     Ok(())
 }
-fn routes() -> Result<std::collections::BTreeMap<String, Vec<String>>> {
+pub(crate) fn routes() -> Result<std::collections::BTreeMap<String, Vec<String>>> {
     let path = state_dir().join("routes.json");
     let metadata = match fs::symlink_metadata(&path) {
         Ok(value) => value,

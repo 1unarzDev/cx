@@ -28,9 +28,8 @@ Output: JSON (--out, default local-evidence/perf/files-bench-<label>.json) holdi
 and a flat `metrics` map {name: {unit, better, samples, median, p95}}, plus a markdown table
 on stdout and next to the JSON (.md). Compare two results with tests/files_bench_compare.py.
 """
-import argparse, hashlib, json, os, pathlib, platform, pty, pwd, re, shlex, shutil, signal, socket
+import argparse, hashlib, json, os, pathlib, platform, pwd, re, shlex, shutil, signal, socket
 import statistics, subprocess, sys, tempfile, time, uuid
-import fcntl, struct, termios
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import perf_harness as ph  # noqa: E402  (PTY plumbing, Env cleanup, fixture text)
@@ -45,8 +44,12 @@ FULL_TIMEOUT = 90.0
 END_MARKER = ph.END_MARKER
 WHEEL_DOWN = ph.WHEEL_DOWN
 ROW = re.compile(r'\b([bs])-(\d{6})\.txt')
-COUNT = re.compile(r'╭ ▸ (\d+) items')
-SELECTED = re.compile(r'│\s+(?:/\s+)?▸ (\S(?:.*?\S)?)(?:\s{2,}|\s*│)')
+# Both layouts: v0.1.95 ('╭ ▸ N items' title, '▸ name' row) and the revamp (bar '▌', a
+# type glyph before the name, a trailing '/' on folders, 'N items' or 'loaded/total items'
+# on the bottom border).
+PREVIEW_TITLE = re.compile(r'┏ \S.*? · [\d.]+ (?:B|KiB|MiB|GiB) · ')
+COUNT = re.compile(r'(?:╭ ▸ |[━─] )(?:(\d+)/)?(\d+) items')
+SELECTED = re.compile(r'(?:│\s+(?:/\s+)?▸ |[┃│]▌ \S )(\S(?:.*?\S)?)/?(?:\s{2,}|\s*[│┃])')
 
 
 def pct(values, q):
@@ -448,57 +451,40 @@ class Viewer(ph.Viewer):
     """ph.Viewer with an arbitrary device: the restart handoff opens Files on that device."""
 
     def __init__(self, env, device_index, directory, select):
-        self.env = env
-        name = f'viewer-restart-{os.getpid()}-{uuid.uuid4().int % 10**12}.json'
         browser = dict(device=device_index, path=str(directory), display_path=str(directory),
                        parent=str(directory.parent), entries=[], selected=0, search='', preview_scroll=0,
                        restore_selection=str(select) if select else None)
-        snapshot = dict(schema=1, expires_at=int(time.time()) + 300, device_ids=env.device_ids,
-                        device=device_index + 1, focus='Workspace', view='Files', selected=0, side_selected=0,
-                        search='', browser=browser, other_browser=None, destination_active=False, conflict=2,
-                        launch_provider=None, clipboard=None, submitted={})
-        path = env.state / name
-        path.write_text(json.dumps(snapshot))
-        path.chmod(0o600)
-        self.master, self.slave = pty.openpty()
-        self.termios_before = termios.tcgetattr(self.slave)
-        fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack('HHHH', ph.ROWS, ph.COLS, 0, 0))
-
-        def tty():
-            os.setsid()
-            fcntl.ioctl(self.slave, termios.TIOCSCTTY, 0)
-        self.proc = subprocess.Popen([env.binary, 'restart', name], env=env.env, cwd=str(env.root),
-                                     stdin=self.slave, stdout=self.slave, stderr=self.slave, preexec_fn=tty)
-        self.screen = ph.FixtureScreen(ph.COLS, ph.ROWS)
-        import pyte
-        self.stream = pyte.Stream(self.screen)
-        self.chunks = []
-        self.total = 0
-        self.mouse_modes = set()
+        self.open(env, dict(device_ids=env.device_ids, device=device_index + 1, focus='Workspace',
+                            view='Files', browser=browser))
 
     # Screen readers. The workspace starts at column 21; the device column is excluded.
     def work(self):
         return [line[21:] for line in self.screen.display]
 
     def selected(self):
-        for line in self.screen.display[4:-5]:
+        for line in self.screen.display[1:-1]:
             m = SELECTED.search(line[21:])
-            if m and not line[21:].lstrip().startswith('╭'):
+            if m and not line[21:].lstrip().startswith(('╭', '┏')):
                 return m.group(1)
         return None
 
     def count(self):
         m = COUNT.search(self.text())
-        return int(m.group(1)) if m else None
+        return int(m.group(1) or m.group(2)) if m else None
 
     def loading(self):
         return '· loading' in self.screen.display[3] or 'Loading…' in self.text()
 
     def rows(self, letter=None):
-        return [m for line in self.work() for m in ROW.finditer(line) if letter is None or m.group(1) == letter]
+        # The list only: the revamp's inline peek beside it can show a folder's children.
+        def listed(line):
+            borders = [i for i, c in enumerate(line) if c in '│┃']
+            return line[:borders[1]] if len(borders) > 1 else line
+        return [m for line in self.work() for m in ROW.finditer(listed(line))
+                if letter is None or m.group(1) == letter]
 
     def has_row(self, name):
-        return any(re.search(r'(?:▸ |\s)' + re.escape(name) + r'(?:\s|$)', line) for line in self.work()[4:-5])
+        return any(re.search(r'(?:▸ |\s)' + re.escape(name) + r'/?(?:\s|$)', line) for line in self.work()[1:-1])
 
     def write_at(self, data):
         t0 = time.monotonic()
@@ -527,11 +513,17 @@ class Viewer(ph.Viewer):
     def preview_box(self):
         display = self.screen.display
         for y, line in enumerate(display):
+            # v0.1.95: '╭ ▸ … Escape back'; revamp: '┏ name · size · kind' (the list's
+            # breadcrumb title has no size).
             if '╭ ▸' in line[20:] and 'Escape back' in line:
                 column = line.index('╭ ▸')
-                bottom = next((b for b in range(y + 1, len(display))
-                               if len(display[b]) > column and display[b][column] == '╰'), len(display))
-                return y, bottom, column
+            elif PREVIEW_TITLE.search(line[20:]):
+                column = line.index('┏', 20)
+            else:
+                continue
+            bottom = next((b for b in range(y + 1, len(display))
+                           if len(display[b]) > column and display[b][column] in '╰┗'), len(display))
+            return y, bottom, column
         return None
 
     def preview_content(self):

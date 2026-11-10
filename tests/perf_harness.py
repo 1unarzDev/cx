@@ -25,9 +25,10 @@ QUIET seconds; latency is measured to the last output chunk before that quiet wi
 Cleanup kills only what this harness spawned and verifies no process carrying the private
 HOME survives; `cx orphans --json` (read-only) must report no stray among our pids.
 """
-import argparse, fcntl, json, os, pathlib, platform, pty, re, select, shutil, statistics
-import struct, subprocess, sys, tempfile, termios, time
-import pyte
+import argparse, json, os, pathlib, platform, re, shutil, statistics, subprocess, sys, tempfile, time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import pty_lib  # noqa: E402
 
 # The detach key lives in one place: Ctrl+\ (legacy byte 0x1c).
 DETACH_KEY = b'\x1c'          # Ctrl+\
@@ -44,11 +45,6 @@ END_MARKER = 'perf fixture final line'
 MOTION = 35                   # SGR 1006 motion with no button held
 
 HZ = os.sysconf('SC_CLK_TCK')
-
-
-class FixtureScreen(pyte.Screen):
-    def report_device_status(self, *args, **kwargs):
-        pass
 
 
 def percentile(values, q):
@@ -163,46 +159,34 @@ class Viewer:
     """One cx viewer on a private PTY, opened into a given view via the restart handoff."""
 
     def __init__(self, env, view, browser=None, focus='Workspace'):
+        self.open(env, dict(device_ids=['local'], device=1, focus=focus, view=view, browser=browser))
+
+    def open(self, env, fields):
         self.env = env
-        name = f'viewer-restart-{os.getpid()}-{int(time.time() * 1000) % 10**9}.json'
-        snapshot = dict(schema=1, expires_at=int(time.time()) + 300, device_ids=['local'], device=1,
-                        focus=focus, view=view, selected=0, side_selected=0, search='',
-                        browser=browser, other_browser=None, destination_active=False, conflict=2,
-                        launch_provider=None, clipboard=None, submitted={})
+        name = f'viewer-restart-{os.getpid()}-{time.time_ns() % 10**12}.json'
+        snapshot = dict(schema=1, expires_at=int(time.time()) + 300, selected=0, side_selected=0, search='',
+                        other_browser=None, destination_active=False, conflict=2,
+                        launch_provider=None, clipboard=None, submitted={}, **fields)
         path = env.state / name
         path.write_text(json.dumps(snapshot))
         path.chmod(0o600)
-        self.master, self.slave = pty.openpty()
-        self.termios_before = termios.tcgetattr(self.slave)
-        fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack('HHHH', ROWS, COLS, 0, 0))
-
-        def tty():
-            os.setsid()
-            fcntl.ioctl(self.slave, termios.TIOCSCTTY, 0)
-        self.proc = subprocess.Popen([env.binary, 'restart', name], env=env.env, cwd=str(env.root),
-                                     stdin=self.slave, stdout=self.slave, stderr=self.slave,
-                                     preexec_fn=tty)
-        self.screen = FixtureScreen(COLS, ROWS)
-        self.stream = pyte.Stream(self.screen)
+        self.pty = pty_lib.Pty([env.binary, 'restart', name], env.env, env.root, COLS, ROWS)
+        self.master, self.proc, self.screen = self.pty.master, self.pty.proc, self.pty.screen
         self.chunks = []  # (monotonic time, byte count)
         self.total = 0
         self.mouse_modes = set()  # DEC private mouse modes the viewer last enabled
 
     # ---- output plumbing -------------------------------------------------
     def _read(self, timeout):
-        if select.select([self.master], [], [], max(timeout, 0))[0]:
-            try:
-                data = os.read(self.master, 1 << 16)
-            except OSError:
-                return False
-            now = time.monotonic()
-            self.chunks.append((now, len(data)))
-            self.total += len(data)
-            for mode, action in re.findall(rb'\x1b\[\?(100[0-6]|1015)([hl])', data):
-                (self.mouse_modes.add if action == b'h' else self.mouse_modes.discard)(mode.decode())
-            self.stream.feed(data.decode('utf-8', 'replace'))
-            return True
-        return False
+        data = self.pty.read(timeout)
+        if data is None:
+            return False
+        now = time.monotonic()
+        self.chunks.append((now, len(data)))
+        self.total += len(data)
+        for mode, action in re.findall(rb'\x1b\[\?(100[0-6]|1015)([hl])', data):
+            (self.mouse_modes.add if action == b'h' else self.mouse_modes.discard)(mode.decode())
+        return True
 
     def pump(self, seconds):
         end = time.monotonic() + seconds
@@ -286,24 +270,8 @@ class Viewer:
         return out
 
     def close(self):
-        result = dict(clean_exit=False, termios_restored=False)
         self.env.owned_pids()
-        try:
-            if self.proc.poll() is None:
-                os.write(self.master, QUIT_KEY)
-                try:
-                    self.proc.wait(timeout=5)
-                    result['clean_exit'] = self.proc.returncode == 0
-                    result['termios_restored'] = termios.tcgetattr(self.slave) == self.termios_before
-                except subprocess.TimeoutExpired:
-                    pass
-        finally:
-            if self.proc.poll() is None:
-                self.proc.kill()
-                self.proc.wait()
-            os.close(self.master)
-            os.close(self.slave)
-        return result
+        return self.pty.close(QUIT_KEY)
 
 
 def browser_snapshot(directory, select_path):

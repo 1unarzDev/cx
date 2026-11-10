@@ -10,8 +10,8 @@ Needs pyte and pillow (for example the worktrees .venv-test interpreter,
 or `uv run --with pyte --with pillow python ...`). Writes <view>-<cols>x<rows>.txt
 and .png per capture plus index.json into --out (default
 local-evidence/ui-passes/latest). Every view is captured from a fresh cx process.
---theme picks the emulated terminal: the PNG palette plus COLORFGBG/CX_THEME. cx
-reads neither variable yet, so index.json records it as `terminal_palette`.
+--theme picks the emulated terminal: the PNG palette (tests/lab_png.py, through
+tests/pty_lib.py) plus COLORFGBG/CX_THEME; index.json records it as `terminal_palette`.
 
 Isolation (everything lives under one owned temp root, removed at exit):
   * cx starts from an allowlisted environment, never the parent's: a fixed system
@@ -42,12 +42,15 @@ Isolation (everything lives under one owned temp root, removed at exit):
     removed and re-checked. The result line reports leftovers.
 Never runs ~/.local/bin/cx; never touches the user's state, tmux servers, SSH or network config.
 """
-import argparse, fcntl, getpass, hashlib, ipaddress, json, os, pathlib, pty, re, select, shlex, shutil, signal
-import socket, struct, subprocess, sys, tempfile, termios, time
+import argparse, getpass, hashlib, ipaddress, json, os, pathlib, re, shlex, shutil, signal
+import socket, subprocess, sys, tempfile, time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 try:
-    import pyte
-    from PIL import Image, ImageDraw, ImageFont
+    import pyte  # noqa: F401  (pty_lib's screen model)
+    import PIL  # noqa: F401  (lab_png's PNGs)
+    import pty_lib
 except ImportError as e:
     sys.exit(f'capture_matrix needs pyte and pillow: {e}')
 
@@ -93,84 +96,6 @@ def parse_args(argv):
         extra[k] = v
     a.extra_env = extra
     return a
-
-
-# --------------------------------------------------------------------------- rendering
-DARK = dict(bg='#171a1e', palette={
-    'default': '#cbd0d7', 'black': '#2a2e35', 'red': '#dc817d', 'green': '#91b49b', 'brown': '#c7b887',
-    'yellow': '#c7b887', 'blue': '#8ca7cb', 'magenta': '#b29cc8', 'cyan': '#8cbabd', 'white': '#d6dce4',
-    'brightblack': '#5c6370', 'brightred': '#e6908c', 'brightgreen': '#a3c7ad', 'brightyellow': '#d8ca99',
-    'brightblue': '#9db8dc', 'brightmagenta': '#c3add9', 'brightcyan': '#9dcbce', 'brightwhite': '#eef1f5'})
-LIGHT = dict(bg='#fafafa', palette={
-    'default': '#2b2f36', 'black': '#2b2f36', 'red': '#b4232c', 'green': '#2f7d3b', 'brown': '#8a6a00',
-    'yellow': '#8a6a00', 'blue': '#1c64b8', 'magenta': '#8a3ea8', 'cyan': '#0f7480', 'white': '#d0d4da',
-    'brightblack': '#6b7280', 'brightred': '#c9343c', 'brightgreen': '#3a8f47', 'brightyellow': '#9c7a00',
-    'brightblue': '#2f74c8', 'brightmagenta': '#9b4fb9', 'brightcyan': '#1a8592', 'brightwhite': '#ffffff'})
-
-BOX = {}
-for chars, segs in [('─━═', 'lr'), ('│┃║', 'ud'), ('╭┌┏╔', 'rd'), ('╮┐┓╗', 'ld'), ('╰└┗╚', 'ru'), ('╯┘┛╝', 'lu'),
-                    ('├┣╠', 'udr'), ('┤┫╣', 'udl'), ('┬┳╦', 'lrd'), ('┴┻╩', 'lru'), ('┼╋╬', 'lrud')]:
-    for ch in chars:
-        BOX[ch] = (segs, 3 if ch in '━┃┏┓┗┛┣┫┳┻╋═║╔╗╚╝╠╣╦╩╬' else 1)
-
-
-class Renderer:
-    def __init__(self, theme):
-        self.scheme = LIGHT if theme == 'light' else DARK
-        self.fonts = {}
-
-    def font(self, bold):
-        if bold not in self.fonts:
-            try:
-                path = subprocess.check_output(['fc-match', '-f', '%{file}', f'monospace:{"bold" if bold else "regular"}'],
-                                               text=True, timeout=10)
-                self.fonts[bold] = ImageFont.truetype(path, 16)
-            except Exception:
-                self.fonts[bold] = ImageFont.load_default()
-        return self.fonts[bold]
-
-    def color(self, name, fallback):
-        pal = self.scheme['palette']
-        if name == 'default':
-            return fallback
-        if name in pal:
-            return pal[name]
-        if len(name) == 6 and re.fullmatch(r'[0-9a-fA-F]{6}', name):
-            return '#' + name
-        return fallback
-
-    def png(self, screen, cols, rows, path):
-        bg0, fg0 = self.scheme['bg'], self.scheme['palette']['default']
-        cw, ch, pad = 10, 21, 12
-        im = Image.new('RGB', (cols * cw + 2 * pad, rows * ch + 2 * pad), bg0)
-        d = ImageDraw.Draw(im)
-        for y in range(rows):
-            line = screen.buffer[y]
-            for x in range(cols):
-                c = line[x]
-                fg, bg = self.color(c.fg, fg0), self.color(c.bg, bg0)
-                if c.reverse:
-                    fg, bg = bg, fg
-                x0, y0 = pad + x * cw, pad + y * ch
-                if bg != bg0:
-                    d.rectangle((x0, y0, x0 + cw - 1, y0 + ch - 1), fill=bg)
-                if c.data in BOX:
-                    segs, w = BOX[c.data]
-                    mx, my = x0 + cw // 2, y0 + ch // 2
-                    for s, coords in (('l', (x0, my, mx, my)), ('r', (mx, my, x0 + cw, my)),
-                                      ('u', (mx, y0, mx, my)), ('d', (mx, my, mx, y0 + ch))):
-                        if s in segs:
-                            d.line(coords, fill=fg, width=w)
-                elif c.data.strip():
-                    d.text((x0, y0), c.data, font=self.font(c.bold), fill=fg)
-                if c.underscore:
-                    d.line((x0, y0 + ch - 2, x0 + cw - 1, y0 + ch - 2), fill=fg)
-        if screen.cursor and not screen.cursor.hidden:
-            x, y = screen.cursor.x, screen.cursor.y
-            if x < cols and y < rows:
-                d.rectangle((pad + x * cw, pad + y * ch, pad + (x + 1) * cw - 1, pad + (y + 1) * ch - 1),
-                            outline=fg0)
-        im.save(path)
 
 
 # --------------------------------------------------------------------------- masking
@@ -515,18 +440,6 @@ exit 255
 
 
 # --------------------------------------------------------------------------- driving
-def make_screen(cols, rows):
-    class S(pyte.Screen):
-        def report_device_status(self, *args, **kwargs):
-            pass
-
-        def set_title(self, *args, **kwargs):
-            pass
-
-    screen = S(cols, rows)
-    return screen, pyte.Stream(screen)
-
-
 # Each view: list of (bytes to send, seconds to read afterwards). Every view starts
 # from a fresh cx process, so recipes never depend on another view's leftovers.
 # Keep recipes short and data-only: UI keymap changes should only need edits here.
@@ -547,53 +460,30 @@ RECIPES = {
 }
 
 
-def capture(a, env, owned, renderer, out, view, cols, rows):
-    master, slave = pty.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
-
-    def control():
-        os.setsid()
-        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
-
-    proc = None
+def capture(a, env, owned, out, view, cols, rows):
+    term = pty_lib.Pty([a.bin], env, env['HOME'], cols, rows)
+    owned.procs.append(term.proc)
     try:
-        proc = subprocess.Popen([a.bin], stdin=slave, stdout=slave, stderr=slave, env=env, cwd=env['HOME'],
-                                preexec_fn=control)
-        owned.procs.append(proc)
-        screen, stream = make_screen(cols, rows)
-
         def read(seconds):
             end = time.monotonic() + seconds
             while time.monotonic() < end:
-                if select.select([master], [], [], .03)[0]:
-                    try:
-                        stream.feed(os.read(master, 65536).decode('utf-8', 'replace'))
-                    except OSError:
-                        break
+                term.read(.03)
 
         read(2.5 if view == 'startup' else 5.0)  # device probes (online lab-arm, refused field-rover) settle
         for keys, wait in RECIPES[view]:
-            os.write(master, keys)
+            term.write(keys)
             read(wait)
         read(0.6)
         masker = Masker(owned.root, host_identifiers())  # fresh snapshot: names that appeared mid-run
-        masker.apply(screen, cols, rows)
+        masker.apply(term.screen, cols, rows)
         name = f'{view}-{cols}x{rows}'
-        text = '\n'.join(screen.display) + '\n'
+        text = term.text() + '\n'
         (out / f'{name}.txt').write_text(text)
-        renderer.png(screen, cols, rows, out / f'{name}.png')
+        pty_lib.png(term.screen, out / f'{name}.png', a.theme)
         return dict(view=view, cols=cols, rows=rows, txt=f'{name}.txt', png=f'{name}.png',
                     terminal_palette=a.theme, ascii=a.ascii, nocolor=a.nocolor, unmasked=masker.leaks(text))
     finally:
-        if proc is not None:
-            try:
-                os.write(master, b'\x03')
-                proc.wait(timeout=5)
-            except (OSError, subprocess.TimeoutExpired):
-                proc.kill()
-                proc.wait()
-        os.close(master)
-        os.close(slave)
+        term.close()
 
 
 def self_test():
@@ -607,8 +497,8 @@ def self_test():
               '10.0.0.1', 'host.local', 'eth0', 'fixturehost']
     kept = ['12:30:45', 'ver 1:2:3', 'use std::env;', 'env::args()', '0:0', 'cx 0.1.95', 'a:b:c']
     for text in masked + kept:
-        screen, stream = make_screen(40, 1)
-        stream.feed(text)
+        screen = pty_lib.Screen(40, 1)
+        pyte.Stream(screen).feed(text)
         m.apply(screen, 40, 1)
         out = screen.display[0][:len(text)]
         if text in masked:
@@ -662,7 +552,6 @@ def main(argv):
     a = parse_args(argv)
     out = pathlib.Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    renderer = Renderer(a.theme)
     owned = Owned()
     # SIGTERM/SIGHUP take the same finally path as Ctrl+C.
     def interrupt(*_):
@@ -678,7 +567,7 @@ def main(argv):
                                  timeout=10).stdout.strip()[:80]
         for cols, rows in a.sizes:
             for view in a.views:
-                index.append(capture(a, env, owned, renderer, out, view, cols, rows))
+                index.append(capture(a, env, owned, out, view, cols, rows))
     except BaseException as e:  # still clean up and report
         failure = f'{type(e).__name__}: {e}'
     finally:

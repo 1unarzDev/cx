@@ -7403,8 +7403,8 @@ fn file_row_columns_follow_needed_name_width() {
 }
 
 /// Evidence dump (not a check): renders the dimmed loading peek (spec 12.5) and the
-/// directory item counts at the review sizes, as JSON cell grids for
-/// tests/render_buffer_png.py (pyte drops SGR 2, so PTY captures cannot show dim).
+/// directory item counts at the review sizes, as lab_png cell grids for
+/// `python tests/pty_lib.py png` (pyte drops SGR 2, so PTY captures cannot show dim).
 /// Run: CX_FILES_CAPTURE_DIR=dir cargo test loading_peek_capture_dump -- --ignored
 #[test]
 #[ignore]
@@ -7466,16 +7466,44 @@ fn loading_peek_capture_dump() {
         settle(&mut a);
         terminal.draw(|f| render(f, &a)).unwrap();
         let buffer = terminal.backend().buffer();
-        let cells: Vec<_> = buffer
+        // tests/lab_png.py cell format: [symbol, fg, bg, modifier bits]; colors are
+        // null (default), a palette index or "#rrggbb".
+        let color = |c: Color| match c {
+            Color::Reset => serde_json::Value::Null,
+            Color::Rgb(r, g, b) => serde_json::json!(format!("#{r:02x}{g:02x}{b:02x}")),
+            Color::Indexed(i) => serde_json::json!(i),
+            named => serde_json::json!(
+                [
+                    Color::Black,
+                    Color::Red,
+                    Color::Green,
+                    Color::Yellow,
+                    Color::Blue,
+                    Color::Magenta,
+                    Color::Cyan,
+                    Color::Gray,
+                    Color::DarkGray,
+                    Color::LightRed,
+                    Color::LightGreen,
+                    Color::LightYellow,
+                    Color::LightBlue,
+                    Color::LightMagenta,
+                    Color::LightCyan,
+                    Color::White,
+                ]
+                .iter()
+                .position(|c| *c == named)
+            ),
+        };
+        let cells: Vec<Vec<_>> = buffer
             .content
-            .iter()
-            .map(|c| {
-                serde_json::json!({
-                    "s": c.symbol(),
-                    "fg": format!("{:?}", c.fg),
-                    "bg": format!("{:?}", c.bg),
-                    "m": format!("{:?}", c.modifier),
-                })
+            .chunks(cols as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|c| {
+                        serde_json::json!([c.symbol(), color(c.fg), color(c.bg), c.modifier.bits()])
+                    })
+                    .collect()
             })
             .collect();
         let doc = serde_json::json!({"cols": cols, "rows": rows, "cells": cells});

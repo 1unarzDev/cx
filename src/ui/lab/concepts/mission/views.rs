@@ -1016,8 +1016,13 @@ fn link_rows(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, edges: &[&LabEdg
         let Some(o) = cx.s.device(other) else {
             continue;
         };
+        // The far end's letter as plain text: in a device, letters are slots and verbs.
         let mut x = x0;
-        x += cx.dchip(buf, x, y, o, false) + 1;
+        let ist = cx
+            .ink(Tok::Id(cx.s.hue(&o.id)), 1.0)
+            .add_modifier(Modifier::BOLD);
+        cx.put(buf, x + 1, y, 1, &o.hotkey.to_string(), ist);
+        x += 4;
         cx.put(
             buf,
             x,
@@ -1741,15 +1746,21 @@ fn files(cx: &Cx, buf: &mut Buffer, r: Rect) {
         }
         let sy = dy + 6;
         if sy < list.bottom() {
+            // `s` is the key; the letters after it are what `s` then takes, drawn as
+            // plain coloured text (here they are not keys on their own).
             let mut x = list.x + 1;
-            x += cx.put(buf, x, sy, 10, "s send to ", cx.st(Tok::Muted));
+            x += cx.put(buf, x, sy, 3, " s ", cx.key_style()) + 1;
+            x += cx.put(buf, x, sy, 9, "send to ", cx.st(Tok::Muted));
             for d in cx.s.devices.iter().filter(|d| d.id != f.device && cx.up(d)) {
-                if x + 4 > list.right() {
+                if x + 2 > list.right() {
                     break;
                 }
-                let x0 = x;
-                x += cx.dchip(buf, x, sy, d, false) + 1;
-                cx.hit(Rect::new(x0, sy, 3, 1), format!("send:{}", d.id));
+                let st = cx
+                    .ink(Tok::Id(cx.s.hue(&d.id)), 1.0)
+                    .add_modifier(Modifier::BOLD);
+                cx.put(buf, x, sy, 1, &d.hotkey.to_string(), st);
+                cx.hit(Rect::new(x, sy, 1, 1), format!("send:{}", d.id));
+                x += 2;
             }
         }
     }

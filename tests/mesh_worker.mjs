@@ -255,3 +255,40 @@ test("a mesh-only lend says so to its script; revoke kills a pending code", asyn
   const c = (await lend(call)).json; // a new lend of the name replaces the old
   assert.equal((await call("POST", "/v1/claude/claim", { body: { code: c.code } })).json.token, BUNDLE.token);
 });
+
+test("an ssh-overlay short code: stashed sealed by the owner, redeemed once, never seen in clear", async () => {
+  const { call, env } = setup();
+  const lookup = "ab".repeat(32);
+  const sealed = Buffer.from("sealed-by-cx ".repeat(4)).toString("base64");
+  assert.equal((await call("POST", "/v1/admin/pairs", { body: { lookup, sealed } })).status, 401, "owner only");
+  assert.equal((await call("POST", "/v1/admin/pairs", { token: OWNER, body: { lookup: "nothex", sealed } })).status, 400);
+  assert.equal((await call("POST", "/v1/admin/pairs", { token: OWNER, body: { lookup, sealed: "not base64!" } })).status, 400);
+  const r = await call("POST", "/v1/admin/pairs", { token: OWNER, body: { lookup, sealed, hours: 2 } });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.url, "https://mesh.example.org");
+  assert.equal((await call("POST", "/v1/admin/pairs", { token: OWNER, body: { lookup, sealed } })).status, 409, "a lookup is stashed once");
+  assert.equal((await call("POST", "/v1/pair/redeem", { body: { lookup: "cd".repeat(32) } })).status, 403);
+  const got = await call("POST", "/v1/pair/redeem", { body: { lookup }, ip: "203.0.113.9" });
+  assert.equal(got.status, 200);
+  assert.equal(got.json.sealed, sealed);
+  assert.equal((await call("POST", "/v1/pair/redeem", { body: { lookup }, ip: "203.0.113.9" })).status, 403, "single use");
+  const row = env.DB.raw.prepare("SELECT * FROM pairs").get();
+  assert.equal(row.sealed, null);
+  assert.equal(row.state, "redeemed");
+  assert.equal(row.redeemed_ip, "203.0.113.9");
+  const page = await call("GET", "/p/ABCD-EFGH-JKMN");
+  assert.ok(page.text.includes("cx mesh pair mesh.example.org/ABCD-EFGH-JKMN"));
+  const audit = (await call("GET", "/v1/admin/audit", { token: OWNER })).json.audit.map((a) => a.action);
+  assert.ok(audit.includes("pair") && audit.includes("redeem"));
+});
+
+test("an expired short code cannot be redeemed, and redeems are rate limited", async () => {
+  const { call, env } = setup();
+  const lookup = "ef".repeat(32);
+  await call("POST", "/v1/admin/pairs", { token: OWNER, body: { lookup, sealed: Buffer.from("x".repeat(40)).toString("base64") } });
+  env.DB.raw.prepare("UPDATE pairs SET expires = '2000-01-01T00:00:00.000Z'").run();
+  assert.equal((await call("POST", "/v1/pair/redeem", { body: { lookup } })).status, 403);
+  let last;
+  for (let i = 0; i < 12; i++) last = await call("POST", "/v1/pair/redeem", { body: { lookup: "00".repeat(32) }, ip: "192.0.2.50" });
+  assert.equal(last.status, 429);
+});

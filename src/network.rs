@@ -96,6 +96,9 @@ pub fn observe() -> Result<Value> {
                 }
             }
         }
+        // Overlay classification: backend data (local reads only) against these interfaces.
+        let (overlay, overlays) =
+            crate::mesh::overlay(interfaces.get("data").unwrap_or(&Value::Null));
         let routes = observation("ip", &["-j", "route", "show"]);
         let neighbors = observation("ip", &["-j", "neigh", "show"]);
         let network_manager = match bounded_command("nmcli", &["--version"]) {
@@ -107,7 +110,7 @@ pub fn observe() -> Result<Value> {
             }
         };
         Ok(
-            json!({"backend":"linux-iproute2","observed_at":timestamp(),"interfaces":interfaces,"routes":routes,"neighbors":neighbors,"network_manager":network_manager,"internet":internet_observation(),"overlay":"unknown","sharing":{"state":"unsupported","reason":"Transactional sharing backend not yet implemented"}}),
+            json!({"backend":"linux-iproute2","observed_at":timestamp(),"interfaces":interfaces,"routes":routes,"neighbors":neighbors,"network_manager":network_manager,"internet":internet_observation(),"overlay":overlay,"overlays":overlays,"sharing":{"state":"unsupported","reason":"Transactional sharing backend not yet implemented"}}),
         )
     }
 }

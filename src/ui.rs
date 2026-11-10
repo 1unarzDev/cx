@@ -934,7 +934,7 @@ impl App {
             return;
         };
         let device = self.devices[index].clone();
-        match store::remove_device(&device.id) {
+        match crate::peer_ssh::remove_device(&device.id) {
             Ok(_) => {
                 self.forget_device_index(index);
                 self.set_notice_as(

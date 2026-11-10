@@ -4,6 +4,12 @@ mod files;
 mod model;
 #[path = "../src/network.rs"]
 mod network;
+/// network.rs asks the mesh backends for overlay data; these tests observe without them.
+mod mesh {
+    pub fn overlay(_: &serde_json::Value) -> (String, serde_json::Value) {
+        ("unknown".into(), serde_json::Value::Null)
+    }
+}
 
 #[cfg(unix)]
 mod actions {

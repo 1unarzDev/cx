@@ -6,6 +6,7 @@ mod model;
 mod network;
 /// network.rs asks the mesh backends for overlay data; these tests observe without them.
 mod mesh {
+    #[allow(dead_code)] // only network::observe calls it, and these tests do not
     pub fn overlay(_: &serde_json::Value) -> (String, serde_json::Value) {
         ("unknown".into(), serde_json::Value::Null)
     }

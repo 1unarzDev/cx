@@ -1283,4 +1283,63 @@ mod tests {
         assert_eq!(bounded("x".repeat(300)).chars().count(), DETAIL_LIMIT + 1);
         assert_eq!(age(100_000, 0), "1d ago");
     }
+
+    /// EP-3/EP-4: UI attach/terminal/run paths build their ssh through interactive_ssh, which refuses a refused
+    /// edge before any ssh runs. Runs in a child with its own HOME and state dir; real state is never read.
+    #[test]
+    fn interactive_ssh_honours_refused_edges() {
+        let home = tempfile::tempdir().unwrap();
+        let state = home.path().join("state");
+        if !crate::mesh::in_child(
+            "edges::tests::interactive_ssh_honours_refused_edges",
+            &[("HOME", home.path()), ("XDG_STATE_HOME", &state)],
+        ) {
+            return;
+        }
+        let robot = Device {
+            id: "m9:robot".into(),
+            name: "robot".into(),
+            target: Some("robot@192.0.2.9".into()),
+            account: "robot".into(),
+            host: "robot".into(),
+            status: "unknown".into(),
+            observed_at: 0,
+        };
+        store::save_devices(&[store::local_device(), robot.clone()]).unwrap();
+        let edge = |policy: &str| {
+            let file = serde_json::json!({"version": 1, "edges": [
+                {"from": LOCAL, "to": robot.id, "policy": policy, "updated_at": 1}]});
+            store::write_state("edges.json", &file, 64 * 1024).unwrap();
+        };
+        edge("none");
+        let refused = store::interactive_ssh(&robot).unwrap_err().to_string();
+        assert!(refused.contains("edge policy refuses"), "{refused}");
+        assert!(crate::sessions::login_terminal(&robot)
+            .unwrap_err()
+            .to_string()
+            .contains("edge policy refuses"));
+        // A route through a refused hop is refused as well.
+        let hop = Device {
+            id: "m8:robot".into(),
+            name: "hop".into(),
+            target: Some("robot@192.0.2.8".into()),
+            ..robot.clone()
+        };
+        store::save_devices(&[store::local_device(), robot.clone(), hop.clone()]).unwrap();
+        store::set_route("robot@192.0.2.9", &["robot@192.0.2.8".into()]).unwrap();
+        let file = serde_json::json!({"version": 1, "edges": [
+            {"from": LOCAL, "to": robot.id, "policy": "key", "updated_at": 1},
+            {"from": LOCAL, "to": hop.id, "policy": "none", "updated_at": 1}]});
+        store::write_state("edges.json", &file, 64 * 1024).unwrap();
+        assert!(store::interactive_ssh(&robot).is_err());
+        assert!(store::interactive_ssh(&hop).is_err());
+        store::set_route("robot@192.0.2.9", &[]).unwrap();
+        edge("key");
+        let allowed = store::interactive_ssh(&robot).unwrap();
+        assert_eq!(allowed.get_program(), "ssh");
+        assert!(
+            store::interactive_ssh(&store::local_device()).is_err(),
+            "local has no SSH target"
+        );
+    }
 }

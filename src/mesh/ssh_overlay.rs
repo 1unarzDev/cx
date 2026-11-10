@@ -180,7 +180,7 @@ fn new_invite_key() -> Result<[u8; code::KEY_LEN]> {
     // What ssh-keygen wrote as the public file must be the public half read from the private one.
     let public = peer_ssh::public_key(&fs::read_to_string(path.with_extension("pub"))?)?;
     anyhow::ensure!(
-        public == format!("ssh-ed25519 {}", &code::openssh_public_blob(&key)),
+        public == format!("ssh-ed25519 {}", code::openssh_public_blob(&key)),
         "ssh-keygen's invite key files disagree"
     );
     Ok(key)

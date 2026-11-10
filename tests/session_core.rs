@@ -6,14 +6,23 @@ mod containers;
 mod files;
 #[path = "../src/model.rs"]
 mod model;
+// Borrowed for what sessions.rs calls; the rest (pairing, mesh and edge helpers) is unused here.
+#[allow(dead_code)]
 #[path = "../src/peer_ssh.rs"]
 mod peer_ssh;
 #[path = "../src/session_titles.rs"]
 mod session_titles;
 #[path = "../src/sessions.rs"]
 mod sessions;
+#[allow(dead_code)]
 #[path = "../src/store.rs"]
 mod store;
+/// These sessions are local, which the edge guard always allows.
+mod edges {
+    pub fn guard(_: &crate::model::Device) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
 use model::CreateSession;
 use std::process::Command;
 

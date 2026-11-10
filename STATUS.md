@@ -1,7 +1,7 @@
 # CX status
 
 ## Revamp (in progress, branch `revamp/base`)
-- Integrated so far: UI module split (`src/ui.rs` 9.8k → 1.6k lines), files listed in one cached pass, perf harness, regression ledger (`tests/REGRESSIONS.md`, `tests/run_regressions.sh`: 57 fixtures plus the Rust suite, all green), design spec (`docs/design/ui-revamp.md`), and wave 3a: secrets (OS keyring, plain 0600 fallback file; age dropped), mesh backends with `cx mesh pair` (invite keys from `ssh-keygen`; hand-written Ed25519 removed; `cx device remove` revokes pins and managed keys), per-edge policy (`cx edge`, guard on transport and interactive SSH), graph core.
+- Integrated so far: UI module split (`src/ui.rs` 9.8k → 1.6k lines), files listed in one cached pass, perf harness, regression ledger (`tests/REGRESSIONS.md`, `tests/run_regressions.sh`: 57 fixtures plus the Rust suite, all green), design spec (`docs/design/ui-revamp.md`), and wave 3a: secrets (OS keyring, plain 0600 fallback file; age dropped), mesh backends with `cx mesh pair` (invite keys from `ssh-keygen`; hand-written Ed25519 removed; `cx device remove` revokes pins and managed keys), per-edge policy (`cx edge`, guard on transport and interactive SSH). The graph core was removed in the simplification pass: the final Mission design lays out its own orbital hub.
 - Running: wave 2 (theme/caps/focus, sessions flow with Ctrl+\ detach, files UX/scroll perf, keymap/hitmap/palette/phone layout, SSH multiplexing fix, capture harness fix); wave 3a is integrated.
 - Decided: Network hub start view with per-node letter hotkeys; visual-first layout; Ctrl+\ detach accepted; per-edge, per-direction policy; OS keyring with a plain 0600 file fallback (like an SSH key); no hand-written crypto (mesh uses OpenSSH).
 - Pairing (branch `revamp/pairing`): `cx mesh pair CODE HOST[:PORT]` against a one-shot `cx mesh invite --backend ssh-overlay` listener on mesh/LAN addresses; 11-symbol codes, HMAC-SHA256 both ways (`hmac` crate), single use, rate-limited, no door key; the Worker short codes are gone.
@@ -153,10 +153,6 @@ back to a neutral provider label; Claude preserves terminal transparency.
   `PeerConfigure.authorize` (serde default true, omitted when true, so old wire is
   unchanged), capability `peer-authorize-v1`, `edges.json`, `cx edge`, and the edge
   guard in `transport::request` and `edges::interactive_ssh` (attach, terminal, run).
-- Network graph core (`src/ui/graph`, revamp): layout + routing misses the spec 10.4
-  target of 2 ms in debug builds. Measured best 3.5 ms for 24 nodes at 200x60 (1.4 ms at
-  120x40); larger graphs use the outline. Check with `cargo test --locked graph_layout_perf
-  -- --ignored --test-threads=1`.
 
 Removal/demotion prevents future enrollment but does not revoke existing SSH keys.
 Automatic setup requires supported helpers and direct port-22 connectivity; offline

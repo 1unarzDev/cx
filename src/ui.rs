@@ -13,7 +13,6 @@ mod workspaces;
 use rendering::render;
 use rendering::render_with_native;
 mod caps;
-mod graph;
 mod hitmap;
 mod keymap;
 mod menus;

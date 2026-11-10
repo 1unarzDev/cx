@@ -13,8 +13,8 @@ Scenarios (all times in milliseconds):
                    screen settled (expected preview change visible and PTY quiet), plus a
                    30 Hz key-repeat burst.
   directory_list   Enter on a 20,000-entry local directory: first rows visible, final count.
-  sessions_attach  `cx new` shell session; Enter -> focused pane, pane echo, detach -> list,
-                   expand (native attach) -> prompt visible, detach -> cx UI back.
+  sessions_attach  `cx new` shell session; i -> focused pane, pane echo, Ctrl+\\ -> list,
+                   Enter (native attach) -> prompt visible, Ctrl+\\ -> cx UI back.
   mouse_motion     pure pointer motion (no buttons) over the Sessions and Files lists: bytes
                    and write bursts per motion event, against an idle baseline window.
   idle             5 s idle in Files and Sessions: CPU seconds and bytes/s written.

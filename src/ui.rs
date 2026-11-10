@@ -338,6 +338,7 @@ enum Action {
     Jobs,
     Command,
     Observe,
+    SendCtrlBackslash,
     PinSession,
     FolderSessions,
     Refresh,
@@ -392,6 +393,10 @@ const ACTIONS: &[(Action, &str)] = &[
     (
         Action::Observe,
         "Watch session · read-only terminal, no input",
+    ),
+    (
+        Action::SendCtrlBackslash,
+        "Send Ctrl+\\ to session · then type inline",
     ),
     (Action::Copy, "Copy selected files · c / y"),
     (Action::Cut, "Cut selected files · x"),

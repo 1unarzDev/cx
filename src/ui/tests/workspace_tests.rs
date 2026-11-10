@@ -560,6 +560,91 @@ fn zoom_and_inline_input_keys_and_chips() {
         .all(|t| !matches!(t.op, Operation::SessionPaneInput { .. })));
 }
 
+fn live_preview_app() -> (App, mpsc::Receiver<Task>) {
+    let (mut a, rx) = queued_app();
+    a.work[0].sessions.push(identified_shell());
+    a.work[0].fetched = transport::now();
+    a.providers
+        .get_mut(&0)
+        .unwrap()
+        .0
+        .push("live-session-pane-v1".into());
+    a.focus = Focus::Workspace;
+    assert!(a.refresh_session_preview(160));
+    let task = rx.try_recv().unwrap();
+    a.apply(Reply {
+        device_id: Some("local".into()),
+        execution_target: Some(None),
+        preview: None,
+        device: 0,
+        op: task.op,
+        generation: task.generation,
+        result: Ok(serde_json::json!({"live":true,"pane_id":"%1","styled_lines":["screen"],"cols":80,"rows":24})),
+    });
+    (a, rx)
+}
+
+#[test]
+fn preview_clicks_leave_an_open_text_input_in_charge() {
+    let (mut a, rx) = live_preview_app();
+    press(&mut a, '/');
+    assert!(a.input == Some(Input::Search));
+    let mut terminal = ratatui::Terminal::new(TestBackend::new(160, 30)).unwrap();
+    terminal.draw(|f| render(f, &a)).unwrap();
+    let chip = a.session_preview_chip();
+    assert!(chip.width > 0);
+    let tap = |column, row| MouseEvent {
+        kind: MouseEventKind::Down(event::MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    // The preview screen sits just above its bottom border chip.
+    a.mouse(tap(chip.x, chip.y - 3), Rect::new(0, 0, 160, 30));
+    assert!(!a.pane_focused());
+    a.mouse(tap(chip.x + 1, chip.y), Rect::new(0, 0, 160, 30));
+    assert!(!a.preview_zoomed());
+    press(&mut a, 'l');
+    assert!(a.input == Some(Input::Search));
+    assert!(rx
+        .try_iter()
+        .all(|t| !matches!(t.op, Operation::SessionPaneInput { .. })));
+}
+
+#[test]
+fn palette_sends_a_literal_ctrl_backslash_to_the_session() {
+    let (mut a, rx) = live_preview_app();
+    assert!(a.action_enabled(Action::SendCtrlBackslash));
+    a.execute(Action::SendCtrlBackslash);
+    let sent: Vec<_> = rx
+        .try_iter()
+        .filter_map(|t| match t.op {
+            Operation::SessionPaneInput { hex, pane_id, .. } => Some((hex, pane_id)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sent, [("1c".to_string(), "%1".to_string())]);
+    // Focus stays on the pane for the follow-up key (nvim Ctrl+\ Ctrl+N).
+    assert!(a.pane_focused());
+}
+
+#[test]
+fn preview_border_names_equal_titles_like_the_list() {
+    let (mut a, _) = queued_app();
+    for (id, created) in [("cx-a", "1"), ("cx-b", "2")] {
+        let mut s = identified_shell();
+        s.id = id.into();
+        s.name = "shell".into();
+        s.directory = "/tmp/cx-demo".into();
+        s.terminal.as_mut().unwrap().created = created.into();
+        a.work[0].sessions.push(s);
+    }
+    a.focus = Focus::Workspace;
+    a.selected = 1;
+    let text = capture_app(&a, 140);
+    assert!(text.contains("cx-demo shell 2 · "), "{text}");
+}
+
 #[test]
 fn passive_reports_never_postpone_attachment_but_keys_do() {
     use crossterm::event::{MouseButton, MouseEvent as Mouse};

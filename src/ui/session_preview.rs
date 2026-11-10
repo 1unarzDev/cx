@@ -258,6 +258,31 @@ impl App {
         ));
         true
     }
+    /// Palette "Send Ctrl+\ to session": Ctrl+\ always detaches, so this is
+    /// how the literal 0x1c (SIGQUIT, nvim Ctrl+\ Ctrl+N) reaches the pane.
+    /// It leaves the pane focused so a follow-up key can be typed.
+    pub(super) fn send_ctrl_backslash(&mut self) {
+        if !self.pane_focused() && !self.focus_session_pane() {
+            return self.type_into_preview();
+        }
+        let Some((d, _)) = self.preview_selection() else {
+            return;
+        };
+        let (_, session, pane_id) = self.session_preview.focused.clone().unwrap();
+        if self.send(
+            d,
+            Operation::SessionPaneInput {
+                session,
+                pane_id,
+                hex: "1c".into(),
+            },
+        ) {
+            self.input_sent();
+        } else {
+            self.session_preview.focused = None;
+            self.set_notice("Terminal input was not queued; focus released".into());
+        }
+    }
     pub(super) fn session_pane_key(&mut self, event: KeyEvent) {
         // Ctrl+\ leaves inline input; every other key (Ctrl+] and Ctrl+O too)
         // belongs to the application in the pane.
@@ -354,6 +379,7 @@ impl App {
             || self.dialog.is_some()
             || self.help
             || self.command_panel.is_some()
+            || self.input.is_some()
             || mouse.kind != MouseEventKind::Down(event::MouseButton::Left)
         {
             return false;
@@ -644,11 +670,13 @@ impl App {
     pub(super) fn session_preview_revision(&self) -> u64 {
         self.session_preview.revision
     }
-    /// True when the liveness label must switch between live and stale.
+    /// True once each time the capture age crosses the live/stale threshold,
+    /// whichever label render then draws, so a parked preview never keeps
+    /// the loop redrawing.
     pub(super) fn session_preview_staleness_changed(&self) -> bool {
         let p = &self.session_preview;
-        p.received
-            .is_some_and(|t| (t.elapsed() >= PREVIEW_STALE) != p.stale_shown.get())
+        let stale = p.received.is_some_and(|t| t.elapsed() >= PREVIEW_STALE);
+        p.stale_shown.replace(stale) != stale
     }
 }
 /// Liveness turns into `stale <age>` once captures stop arriving for this long.
@@ -730,16 +758,12 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
         (parts[0], parts[1])
     };
     let device = &app.devices[d];
-    let mut title = label(&s);
+    let mut title = session_rows::display_title(app, d, &s);
     if pane.width >= 40 {
-        title = format!("{title}{}{}", session_rows::sep(), safe_label(&device.name));
+        title = format!("{title}{}{}", sep(), safe_label(&device.name));
     }
     if let Some(idle) = session_rows::idle_now(&app.work[d], &s).filter(|_| pane.width >= 60) {
-        title = format!(
-            "{title}{}idle {}",
-            session_rows::sep(),
-            session_rows::age(idle)
-        );
+        title = format!("{title}{}idle {}", sep(), session_rows::age(idle));
     }
     let border = block(title, focused);
     let inner = border.inner(pane);
@@ -773,35 +797,28 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
         let y = pane.bottom() - 1;
         let chip_x = pane.right().saturating_sub(chip_width + 2);
         let (live_text, live_style) = if app.preview_selection().is_none() {
-            ("no preview".to_string(), session_rows::soft())
+            ("no preview".to_string(), muted())
         } else if p.scroll_top.is_some() {
-            (
-                "scrollback · wheel down returns".to_string(),
-                session_rows::warn(),
-            )
+            ("scrollback · wheel down returns".to_string(), warn())
         } else if !current || (p.lines.is_empty() && p.status.is_empty()) {
-            ("loading".to_string(), session_rows::info())
+            ("loading".to_string(), info())
         } else if !p.status.is_empty() {
-            ("unavailable".to_string(), session_rows::err())
+            ("unavailable".to_string(), err())
         } else if p.carried {
-            ("loading".to_string(), session_rows::info())
+            ("loading".to_string(), info())
         } else if !p.live {
-            ("snapshot".to_string(), session_rows::soft())
+            ("snapshot".to_string(), muted())
         } else {
             let stale = p.received.is_some_and(|t| t.elapsed() >= PREVIEW_STALE);
-            p.stale_shown.set(stale);
             match p.received.map(|t| t.elapsed().as_secs()) {
-                Some(age) if stale => (
-                    format!("stale {}", session_rows::age(age)),
-                    session_rows::warn(),
-                ),
+                Some(age) if stale => (format!("stale {}", session_rows::age(age)), warn()),
                 _ => (
                     if focused {
-                        format!("live{}typing", session_rows::sep())
+                        format!("live{}typing", sep())
                     } else {
                         "live".into()
                     },
-                    session_rows::ok(),
+                    ok(),
                 ),
             }
         };
@@ -820,7 +837,7 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
         let live_text = if Span::raw(live_text.as_str()).width() + 2 > room {
             // Narrow frames keep the first word: `live`, `stale`, `loading`.
             live_text
-                .split(session_rows::sep())
+                .split(sep())
                 .next()
                 .unwrap_or_default()
                 .to_string()
@@ -829,10 +846,7 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
         };
         let mut strip = vec![Span::styled(format!(" {live_text}"), live_style)];
         for fact in facts {
-            strip.push(Span::styled(
-                format!("{}{fact}", session_rows::sep()),
-                session_rows::soft(),
-            ));
+            strip.push(Span::styled(format!("{}{fact}", sep()), muted()));
         }
         strip.push(Span::raw(" "));
         let line = Line::from(strip);
@@ -865,9 +879,9 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
     }
     if !current || p.lines.is_empty() {
         let message = if outside_tmux(&s) {
-            format!("Outside tmux{}Enter moves it into CX", session_rows::sep())
+            format!("Outside tmux{}Enter moves it into CX", sep())
         } else if app.preview_selection().is_none() {
-            format!("No live preview{}Enter attaches", session_rows::sep())
+            format!("No live preview{}Enter attaches", sep())
         } else if !p.status.is_empty() {
             p.status.clone()
         } else {
@@ -875,8 +889,7 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
         };
         if !(current && p.carried) {
             frame.render_widget(
-                Paragraph::new(Span::styled(message, session_rows::soft()))
-                    .wrap(Wrap { trim: true }),
+                Paragraph::new(Span::styled(message, muted())).wrap(Wrap { trim: true }),
                 Rect::new(
                     screen.x + 1,
                     screen.y,
@@ -939,6 +952,23 @@ mod scroll_tests {
         assert_eq!(live_view_top(1200, 0, 20), 1200);
         assert_eq!(live_view_top(1200, 39, 20), 1220);
         assert_eq!(live_view_top(100_000, 0, 20), 100_000);
+    }
+    #[test]
+    fn a_parked_preview_reports_the_stale_switch_once() {
+        let (tx, _rx) = std::sync::mpsc::sync_channel(1);
+        let mut a = App::new(vec![], tx);
+        // Scrollback (or an error) draws no live/stale label; the old capture
+        // ages past the threshold and must cost one redraw, not one per loop.
+        a.session_preview.live = true;
+        a.session_preview.scroll_top = Some(10);
+        a.session_preview.received = Some(Instant::now() - Duration::from_secs(5));
+        let changes = (0..5)
+            .filter(|_| a.session_preview_staleness_changed())
+            .count();
+        assert_eq!(changes, 1);
+        a.session_preview.received = Some(Instant::now());
+        assert!(a.session_preview_staleness_changed());
+        assert!(!a.session_preview_staleness_changed());
     }
     #[test]
     fn narrow_previews_stay_left_anchored_unless_typing_hides_the_cursor() {

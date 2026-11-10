@@ -87,6 +87,7 @@ pub fn preview(
         session: session.clone(),
         observe: true,
         guard: None,
+        ascii: false,
     };
     let request = parse_attach_payload(&attach_payload(&request)?)?;
     let terminal = request.session.terminal.as_ref().unwrap();
@@ -199,6 +200,7 @@ pub fn session_pane_input(
         session: session.clone(),
         observe: false,
         guard: None,
+        ascii: false,
     };
     let mut request = parse_attach_payload(&attach_payload(&request)?)?;
     let terminal = request.session.terminal.clone().unwrap();

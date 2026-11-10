@@ -2046,8 +2046,6 @@ fn render_containers(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
 }
 
-/// Where an outside-CX terminal currently lives, from its master holder.
-/// Floating live view of a command running in a managed pane.
 /// Printable width of a `capture-pane -e` line, ignoring SGR escapes.
 fn visible_width(raw: &str) -> usize {
     let mut width = 0;

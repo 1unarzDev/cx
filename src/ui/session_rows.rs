@@ -2,7 +2,7 @@
 //! provider badge, title, folder, device chip, activity sparkline, idle age and
 //! state. Rendering reads state only; hover never selects or fetches.
 use super::*;
-use std::cell::{Cell as StdCell, RefCell};
+use std::cell::Cell as StdCell;
 
 /// Per-viewer list state. Hover and scroll offset are presentation only.
 #[derive(Default)]
@@ -10,7 +10,7 @@ pub(super) struct State {
     /// Logical row under the pointer, for a faint underline. Never a selection.
     pub(super) hover: Option<usize>,
     offset: StdCell<usize>,
-    history: RefCell<HashMap<(String, String), VecDeque<(u64, bool)>>>,
+    history: HashMap<(String, String), VecDeque<(u64, bool)>>,
 }
 
 const HISTORY_SECONDS: u64 = 60;
@@ -18,22 +18,25 @@ const HISTORY_KEYS: usize = 512;
 
 impl State {
     /// Record one activity sample per observed session from a fresh listing.
-    /// A session is active when it produced output since the previous refresh
-    /// or reports native work; unknown evidence records nothing.
-    pub(super) fn record(&self, device: &Device, sessions: &[Session], now: u64) {
-        let mut history = self.history.borrow_mut();
+    /// A session is active when it produced output since its previous sample
+    /// (refreshes are not evenly spaced: RTT, busy devices and other views
+    /// stretch the gap) or reports native work; unknown evidence records nothing.
+    pub(super) fn record(&mut self, device: &Device, sessions: &[Session], now: u64) {
+        let history = &mut self.history;
         for s in sessions {
-            let active = match (s.idle_seconds, session_busy(s)) {
-                (_, true) => true,
-                (Some(idle), false) => idle <= 3,
-                (None, false) => continue,
-            };
             let samples = history
                 .entry((device.id.clone(), workspaces::runtime_key(s)))
                 .or_default();
             if samples.back().is_some_and(|(t, _)| *t == now) {
                 samples.pop_back();
             }
+            // No earlier sample: one bucket width, the span the bar covers.
+            let gap = samples.back().map_or(15, |(t, _)| now.saturating_sub(*t));
+            let active = match (s.idle_seconds, session_busy(s)) {
+                (_, true) => true,
+                (Some(idle), false) => idle <= gap.max(3),
+                (None, false) => continue,
+            };
             samples.push_back((now, active));
             while samples
                 .front()
@@ -60,8 +63,9 @@ impl State {
     }
     /// Four-cell sparkline of the last 60 s (15 s buckets), or None without evidence.
     pub(super) fn sparkline(&self, device: &Device, s: &Session, now: u64) -> Option<String> {
-        let history = self.history.borrow();
-        let samples = history.get(&(device.id.clone(), workspaces::runtime_key(s)))?;
+        let samples = self
+            .history
+            .get(&(device.id.clone(), workspaces::runtime_key(s)))?;
         if samples.is_empty() {
             return None;
         }
@@ -94,136 +98,9 @@ impl State {
     }
 }
 
-/// Field separator: ` · `, or ` | ` where only ASCII is safe.
-pub(super) fn sep() -> &'static str {
-    if ascii() {
-        " | "
-    } else {
-        " · "
-    }
-}
-/// Stable small hash, so a session keeps its swatch across refreshes and restarts.
-pub(super) fn stable_hash(text: &str) -> u32 {
-    text.bytes().fold(0x811c_9dc5u32, |h, b| {
-        (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
-    })
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Depth {
-    True,
-    Indexed,
-    Basic,
-}
-fn depth() -> Depth {
-    let colorterm = std::env::var("COLORTERM").unwrap_or_default();
-    if colorterm.eq_ignore_ascii_case("truecolor") || colorterm.eq_ignore_ascii_case("24bit") {
-        Depth::True
-    } else if std::env::var("TERM").is_ok_and(|t| t.contains("256")) {
-        Depth::Indexed
-    } else {
-        Depth::Basic
-    }
-}
-fn light() -> bool {
-    std::env::var("CX_THEME").is_ok_and(|t| t.eq_ignore_ascii_case("light"))
-}
-/// One spec token (dark rgb, light rgb, 256 dark, 256 light, 16-color).
-/// Local fallback until the shared theme tokens land; NO_COLOR drops color.
-fn token(dark: u32, lite: u32, idx_dark: u8, idx_light: u8, basic: Color) -> Option<Color> {
-    if no_color() {
-        return None;
-    }
-    let (rgb, idx) = if light() {
-        (lite, idx_light)
-    } else {
-        (dark, idx_dark)
-    };
-    Some(match depth() {
-        Depth::True => Color::Rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8),
-        Depth::Indexed => Color::Indexed(idx),
-        Depth::Basic => basic,
-    })
-}
-fn fg(color: Option<Color>) -> Style {
-    color.map(|c| Style::default().fg(c)).unwrap_or_default()
-}
-pub(super) fn ok() -> Style {
-    fg(token(0x8fcf9d, 0x2b8a3e, 114, 28, Color::Green))
-}
-pub(super) fn warn() -> Style {
-    fg(token(0xe3c275, 0xa66a00, 179, 130, Color::Yellow))
-}
-pub(super) fn err() -> Style {
-    fg(token(0xe8837f, 0xc92a2a, 210, 160, Color::Red))
-}
-pub(super) fn info() -> Style {
-    fg(token(0x8fb0e0, 0x1c64b8, 110, 25, Color::Blue))
-}
-pub(super) fn soft() -> Style {
-    if no_color() {
-        muted()
-    } else {
-        fg(token(0x8b93a1, 0x5c6470, 246, 241, Color::DarkGray))
-    }
-}
-fn accent_bg(focused: bool) -> Style {
-    if no_color() {
-        return if focused {
-            Style::default().add_modifier(Modifier::REVERSED)
-        } else {
-            Style::default()
-        };
-    }
-    let color = if focused {
-        token(0x1d3a42, 0xd3eef3, 23, 195, Color::Reset)
-    } else {
-        token(0x262b33, 0xeceff3, 236, 255, Color::Reset)
-    };
-    match (color, depth()) {
-        (_, Depth::Basic) if focused => Style::default().add_modifier(Modifier::REVERSED),
-        (_, Depth::Basic) => Style::default(),
-        (Some(c), _) => Style::default().bg(c),
-        (None, _) => Style::default(),
-    }
-}
-/// Eight identity hues; a hash of the session or device id picks one.
-pub(super) fn swatch(id: &str) -> Style {
-    const DARK: [u32; 8] = [
-        0x7fc8d8, 0xc9a0e8, 0x93d08f, 0xe2c27a, 0x8fb0f0, 0xec8f8f, 0x6fd3c0, 0xe09bc8,
-    ];
-    const LIGHT: [u32; 8] = [
-        0x0b7285, 0x7048c0, 0x2b8a3e, 0xa66a00, 0x1c64b8, 0xc92a2a, 0x0f7a62, 0xa61e7a,
-    ];
-    const IDX_DARK: [u8; 8] = [116, 183, 114, 186, 111, 210, 79, 175];
-    const IDX_LIGHT: [u8; 8] = [30, 97, 28, 130, 25, 160, 29, 126];
-    const BASIC: [Color; 8] = [
-        Color::Cyan,
-        Color::Magenta,
-        Color::Green,
-        Color::Yellow,
-        Color::Blue,
-        Color::Red,
-        Color::LightCyan,
-        Color::LightMagenta,
-    ];
-    let i = (stable_hash(id) % 8) as usize;
-    fg(token(
-        DARK[i],
-        LIGHT[i],
-        IDX_DARK[i],
-        IDX_LIGHT[i],
-        BASIC[i],
-    ))
-}
 /// Provider badge text and hue: SH / CL / CX, DC / CT for container shells.
 pub(super) fn badge(app: &App, d: usize, s: &Session) -> (String, Style) {
-    let style = match s.provider.as_str() {
-        "claude" => fg(token(0xe0a37a, 0xa4532a, 173, 130, Color::Yellow)),
-        "codex" => fg(token(0x9ec5f8, 0x2659a8, 111, 25, Color::Blue)),
-        _ => fg(token(0xaab2bf, 0x4b5563, 249, 240, Color::Reset)),
-    }
-    .add_modifier(Modifier::BOLD);
+    let style = provider(&s.provider).add_modifier(Modifier::BOLD);
     let text = match s.provider.as_str() {
         "claude" => "CL".to_string(),
         "codex" => "CX".to_string(),
@@ -299,22 +176,15 @@ pub(super) fn idle_now(cache: &Cached, s: &Session) -> Option<u64> {
     let idle = s.idle_seconds?;
     (cache.fetched > 0).then(|| idle.saturating_add(transport::now().saturating_sub(cache.fetched)))
 }
-/// The device's home folder for `~` display: the viewer's HOME for the local
-/// device, the conventional `/home/<account>` (or `/root`) for remotes. Display
-/// only; paths outside it stay absolute.
+/// The device's home folder for `~` display: the viewer's HOME, so only for
+/// the local device. No helper reports a remote HOME, so remote paths stay
+/// absolute rather than guessing `/home/<account>`.
 pub(super) fn device_home(device: &Device) -> Option<String> {
-    if device.target.is_none() {
-        return std::env::var("HOME").ok().filter(|h| h.len() > 1);
-    }
-    let account = device.account.trim();
-    if account.is_empty() || account.contains('/') {
-        return None;
-    }
-    Some(if account == "root" {
-        "/root".into()
-    } else {
-        format!("/home/{account}")
-    })
+    device
+        .target
+        .is_none()
+        .then(|| std::env::var("HOME").ok().filter(|h| h.len() > 1))
+        .flatten()
 }
 /// Folder path, ~-relative to `home`, with a tail-preserving ellipsis (`…/cx-demo`).
 pub(super) fn folder_tail(path: &str, home: Option<&str>, width: usize) -> String {
@@ -440,7 +310,7 @@ fn state_text(app: &App, d: usize, s: &Session, status: &str) -> (String, Style)
         };
     }
     if s.activity.is_some() && !session_activity_current(&app.work[d]) {
-        return ("? state".into(), soft());
+        return ("? state".into(), muted());
     }
     if session_busy(s) {
         let frames = if ascii() {
@@ -475,6 +345,19 @@ fn title(app: &App, d: usize, s: &Session) -> String {
     }
     name
 }
+/// The title the list shows for `(d, s)`, ordinal included, so the preview
+/// border (and zoom, where the list is hidden) names the same session.
+pub(super) fn display_title(app: &App, d: usize, s: &Session) -> String {
+    let rows = app.session_rows();
+    let key = workspaces::runtime_key(s);
+    match rows
+        .iter()
+        .position(|(rd, rs)| *rd == d && workspaces::runtime_key(rs) == key)
+    {
+        Some(i) => numbered(rows.iter().map(|(d, s)| title(app, *d, s)).collect()).swap_remove(i),
+        None => title(app, d, s),
+    }
+}
 /// Equal titles get an ordinal in list order (`robot-logs shell 2`), so two
 /// shells in one folder stay distinguishable without exposing tmux ids.
 fn numbered(titles: Vec<String>) -> Vec<String> {
@@ -496,6 +379,7 @@ fn numbered(titles: Vec<String>) -> Vec<String> {
         })
         .collect()
 }
+/// Where an outside-CX terminal currently lives, from its master holder.
 fn origin_label(kind: &str) -> &'static str {
     match kind {
         "terminal" => "terminal",
@@ -602,14 +486,14 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &App, area: Rect, rows: &[(usiz
         let home = device_home(device);
         let is_selected = index == app.selected;
         let row_style = if is_selected {
-            accent_bg(focused)
+            selection(focused)
         } else {
             Style::default()
         };
         let hover = app.session_list.hover == Some(index) && !is_selected;
         let status = app.session_status(d, s);
         let fresh = status.starts_with('+');
-        let text_style = if fresh { Style::default() } else { soft() };
+        let text_style = if fresh { Style::default() } else { muted() };
         let text_style = if hover {
             text_style.add_modifier(Modifier::UNDERLINED)
         } else {
@@ -617,9 +501,9 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &App, area: Rect, rows: &[(usiz
         };
         let bar = match (is_selected, focused, a) {
             (true, true, false) => Span::styled("▌", accent()),
-            (true, false, false) => Span::styled("▏", soft()),
+            (true, false, false) => Span::styled("▏", muted()),
             (true, true, true) => Span::styled(">", accent().add_modifier(Modifier::BOLD)),
-            (true, false, true) => Span::styled(":", soft()),
+            (true, false, true) => Span::styled(":", muted()),
             _ => Span::raw(" "),
         };
         // Phone rows (spec XS) drop the swatch so the title keeps its room.
@@ -683,7 +567,7 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &App, area: Rect, rows: &[(usiz
                         &folder_tail(&s.directory, home.as_deref(), cols.folder),
                         cols.folder,
                     ),
-                    soft(),
+                    muted(),
                 )
             });
         }
@@ -699,7 +583,7 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &App, area: Rect, rows: &[(usiz
             spans.push(Span::raw(" "));
             spans.push(Span::styled(spark, info()));
         }
-        spans.push(Span::styled(right(&idle, 5), soft()));
+        spans.push(Span::styled(right(&idle, 5), muted()));
         if !cols.two_rows && cols.state > 0 {
             spans.push(Span::raw(" "));
             spans.push(Span::styled(head(&state, cols.state), state_style));
@@ -727,7 +611,7 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &App, area: Rect, rows: &[(usiz
                 lead,
                 Span::styled(
                     head(&folder_tail(&s.directory, home.as_deref(), w), w),
-                    soft(),
+                    muted(),
                 ),
             ];
             if !state.is_empty() {
@@ -747,10 +631,8 @@ mod tests {
     use super::*;
     #[test]
     fn swatches_are_stable_and_spread() {
-        assert_eq!(stable_hash("cx-a"), stable_hash("cx-a"));
-        let hues: BTreeSet<u32> = (0..64)
-            .map(|i| stable_hash(&format!("cx-{i}")) % 8)
-            .collect();
+        assert_eq!(swatch_index("cx-a"), swatch_index("cx-a"));
+        let hues: BTreeSet<u8> = (0..64).map(|i| swatch_index(&format!("cx-{i}"))).collect();
         assert_eq!(hues.len(), 8);
     }
     #[test]
@@ -786,6 +668,67 @@ mod tests {
         );
         assert_eq!(folder_tail("/srv/a/b/cx-demo", None, 8), "cx-demo");
         assert_eq!(folder_tail("/srv/a/b/cx-demo", None, 5), "…demo");
+    }
+    fn device(target: Option<&str>) -> Device {
+        Device {
+            id: "d".into(),
+            name: "robot".into(),
+            target: target.map(Into::into),
+            account: "ana".into(),
+            host: "robot".into(),
+            status: String::new(),
+            observed_at: 0,
+        }
+    }
+    fn shell(id: &str, idle: Option<u64>) -> Session {
+        let mut s: Session = serde_json::from_value(serde_json::json!({"id": id, "name": "shell", "directory": "/", "provider": "shell", "host": "h", "account": "a", "pid": 1, "started": "1", "boot_id": "b", "external": false, "socket": "cx"})).unwrap();
+        s.idle_seconds = idle;
+        s
+    }
+    #[test]
+    fn remote_folders_stay_absolute_without_an_observed_home() {
+        assert_eq!(device_home(&device(Some("ana@robot"))), None);
+    }
+    #[test]
+    fn sparkline_records_output_since_the_previous_sample() {
+        let (low, unknown) = if ascii() { ("_", " ") } else { ("▁", "·") };
+        let d = device(None);
+        let mut state = State::default();
+        assert_eq!(state.sparkline(&d, &shell("cx-a", None), 1000), None);
+        // No idle evidence records nothing.
+        state.record(&d, &[shell("cx-a", None)], 1000);
+        assert_eq!(state.sparkline(&d, &shell("cx-a", None), 1000), None);
+        state.record(&d, &[shell("cx-a", Some(100))], 1000);
+        let idle = state.sparkline(&d, &shell("cx-a", None), 1000).unwrap();
+        assert_eq!(idle, format!("{0}{0}{0}{low}", unknown));
+        // Output 5 s ago, 10 s after the previous sample: active, even though
+        // the refresh gap was longer than the nominal 3 s.
+        state.record(&d, &[shell("cx-a", Some(5))], 1010);
+        let spark = state.sparkline(&d, &shell("cx-a", None), 1010).unwrap();
+        assert!(!spark.ends_with(low), "{spark}");
+        // A repeated timestamp replaces its sample rather than adding one.
+        state.record(&d, &[shell("cx-a", Some(100))], 1010);
+        state.record(&d, &[shell("cx-a", Some(100))], 1010);
+        assert_eq!(state.history.values().next().unwrap().len(), 2);
+        // Samples older than the window drop out; the bar is unknown again.
+        state.record(&d, &[shell("cx-a", Some(100))], 1100);
+        assert_eq!(state.history.values().next().unwrap().len(), 1);
+        // A key unseen for two windows is forgotten.
+        state.record(&d, &[], 1300);
+        assert!(state.history.is_empty());
+    }
+    #[test]
+    fn sparkline_history_evicts_the_oldest_keys_first() {
+        let d = device(None);
+        let mut state = State::default();
+        state.record(&d, &[shell("cx-old", Some(0))], 1000);
+        let newer: Vec<_> = (0..HISTORY_KEYS)
+            .map(|i| shell(&format!("cx-{i}"), Some(0)))
+            .collect();
+        state.record(&d, &newer, 1001);
+        assert_eq!(state.history.len(), HISTORY_KEYS);
+        assert_eq!(state.sparkline(&d, &shell("cx-old", None), 1001), None);
+        assert!(state.sparkline(&d, &newer[0], 1001).is_some());
     }
     #[test]
     fn equal_titles_are_numbered_in_list_order() {

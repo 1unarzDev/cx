@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """`cx secrets` keeps values out of stdout/stderr, argv and files, offline in a temp HOME.
 
-Uses the file backend only (CX_SECRETS_BACKEND=file, no session bus), so the user's keyring is never
-touched. Checks: set from stdin, list/--json carry metadata only, get --fd to a pipe (a terminal is refused),
+Uses the file backend (CX_SECRETS_BACKEND=file, no session bus), and for the keyring only a fake `secret-tool`
+on PATH, so the user's keyring is never touched. Checks: the value reaches secret-tool on stdin, never argv; set from stdin, list/--json carry metadata only, get --fd to a pipe (a terminal is refused),
 get --exec puts the value in the child's env and in no process's /proc/PID/cmdline, migrate imports the
 plaintext `cx mesh` token and deletes it only with --delete-plaintext, `cx mesh` hands the stored token to
 python3 as $CLOUDFLARE_API_TOKEN (an explicit one wins) for API subcommands only, never for join/leave (whose
@@ -298,6 +298,35 @@ with tempfile.TemporaryDirectory(prefix='cx-secrets-') as tmp:
     assert [m['name'] for m in json.loads(cx('secrets', 'list', '--json').stdout)] == ['cloudflare.api_token']
     r = cx('secrets', 'rm', 'robot.wifi', ok=False)
     assert r.returncode != 0
+
+    # The OS keyring through a fake `secret-tool` on PATH (with a fake bus address): the value reaches it on stdin
+    # only, never in its argv, and nothing of it lands in cx's files.
+    tools = root / 'tools'; tools.mkdir(); vault = root / 'vault'; vault.mkdir()
+    (tools / 'secret-tool').write_text("""#!/bin/sh
+PATH=/usr/bin:/bin
+printf '%s\\n' "$*" >> "$CX_FAKE_VAULT/argv"
+op=$1; for a; do name=$a; done
+case $op in
+store) cat > "$CX_FAKE_VAULT/v.$name" ;;
+lookup) [ -f "$CX_FAKE_VAULT/v.$name" ] || exit 1; cat "$CX_FAKE_VAULT/v.$name" ;;
+clear) rm -f "$CX_FAKE_VAULT/v.$name" ;;
+esac
+""")
+    (tools / 'secret-tool').chmod(0o700)
+    keyring = dict(CX_SECRETS_BACKEND='keyring', DBUS_SESSION_BUS_ADDRESS='unix:path=/nonexistent/cx-fake-bus',
+                   PATH=f"{tools}{os.pathsep}{env['PATH']}", CX_FAKE_VAULT=str(vault))
+    cx('secrets', 'set', 'robot.kr', input=(CANARY + '\n').encode(), extra=keyring)
+    assert (vault / 'v.robot.kr').read_text() == CANARY
+    meta = {m['name']: m for m in json.loads(cx('secrets', 'list', '--json', extra=keyring).stdout)}
+    assert meta['robot.kr']['backend'] == 'keyring', meta
+    cx('secrets', 'rm', 'robot.kr', extra=keyring)
+    assert not (vault / 'v.robot.kr').exists()
+    argv = (vault / 'argv').read_text()
+    assert 'store --label=cx: robot.kr service cx name robot.kr' in argv and 'clear service cx name robot.kr' in argv, argv
+    assert CANARY not in argv
+    for p in state.rglob('*'):
+        if p.is_file():
+            assert CANARY.encode() not in p.read_bytes(), p
 
     for blob in seen:
         assert CANARY.encode() not in blob and CANARY2.encode() not in blob, blob[-500:]

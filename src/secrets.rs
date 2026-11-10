@@ -6,9 +6,10 @@
 //! * [`Secrets::set`] stores in the OS keyring when one answers within [`KEYRING_TIMEOUT`], else in the fallback file.
 //! * [`Secrets::inject`] puts values into one child's environment, never into argv.
 //!
-//! Backends: the keyring is the Secret Service over a pure-Rust zbus connection on Linux (no libdbus, so the static
-//! musl release keeps working) and the Keychain on macOS. Every keyring call runs on its own thread with a bounded
-//! wait; a call that hangs marks the keyring unusable for the rest of the process. The fallback is
+//! Backends: the keyring is the Secret Service through libsecret's `secret-tool` on Linux, values on its stdin and
+//! stdout only (no D-Bus stack in this binary, so the static musl release keeps working). macOS uses the file:
+//! `security add-generic-password` takes the password only in argv or at a prompt. Every keyring call runs on its own
+//! thread with a bounded wait; a call that hangs marks the keyring unusable for the rest of the process. The fallback is
 //! `$XDG_STATE_HOME/cx/secrets.values.json`: the values in plain JSON, 0600 in the 0700 state dir. That is how
 //! `~/.ssh/id_ed25519` without a passphrase is stored: other users are kept out by file modes, this user's own
 //! processes and root are not, and a copy of the file is a copy of the values.
@@ -106,45 +107,49 @@ pub trait Vault: Send + Sync + 'static {
     fn delete(&self, name: &str) -> Result<()>;
 }
 
-/// The OS keyring via the `keyring` crate (service "cx", user = secret name).
-pub struct OsKeyring;
+/// The OS keyring through libsecret's `secret-tool` (attributes `service=cx name=<secret>`). Values go only
+/// through its stdin and stdout, never argv. Each call is one bounded process: its whole process group is
+/// killed when it outlives KEYRING_TIMEOUT by a second (TimedVault gives up on it first).
+pub struct SecretTool;
 
-fn keyring_error(e: keyring::Error) -> anyhow::Error {
-    // BadEncoding carries the stored bytes, so variants are mapped instead of displayed.
-    use keyring::Error as E;
-    match e {
-        E::PlatformFailure(inner) => anyhow::anyhow!("OS keyring failed: {inner}"),
-        E::NoStorageAccess(_) => anyhow::anyhow!("OS keyring is locked or not accessible"),
-        E::BadEncoding(_) => anyhow::anyhow!("OS keyring entry is not valid UTF-8"),
-        E::TooLong(..) | E::Invalid(..) => anyhow::anyhow!("OS keyring rejected the entry"),
-        E::Ambiguous(_) => anyhow::anyhow!("OS keyring holds several matching entries"),
-        _ => anyhow::anyhow!("OS keyring error"),
-    }
+fn secret_tool(args: &[&str], input: &[u8]) -> Result<(bool, Zeroizing<Vec<u8>>)> {
+    let mut cmd = std::process::Command::new("secret-tool");
+    cmd.args(args);
+    let (ok, out) = crate::mesh::run_bounded(
+        cmd,
+        input,
+        VALUE_LIMIT,
+        KEYRING_TIMEOUT + Duration::from_secs(1),
+    )
+    .map_err(|e| anyhow::anyhow!("secret-tool failed: {e}"))?;
+    Ok((ok, Zeroizing::new(out)))
 }
 
-impl Vault for OsKeyring {
+impl Vault for SecretTool {
     fn get(&self, name: &str) -> Result<Option<SecretValue>> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, name).map_err(keyring_error)?;
-        match entry.get_password() {
-            Ok(v) => Ok(Some(SecretValue(Zeroizing::new(v)))),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(keyring_error(e)),
+        let (ok, out) = secret_tool(&["lookup", "service", KEYRING_SERVICE, "name", name], b"")?;
+        // A missing entry exits 1 with no output (as does a keyring that cannot be reached).
+        if !ok && out.is_empty() {
+            return Ok(None);
         }
+        ensure!(ok, "OS keyring lookup failed");
+        let value = std::str::from_utf8(&out).context("OS keyring entry is not valid UTF-8")?;
+        Ok(Some(SecretValue(Zeroizing::new(value.to_owned()))))
     }
     fn set(&self, name: &str, value: &str) -> Result<()> {
-        keyring::Entry::new(KEYRING_SERVICE, name)
-            .map_err(keyring_error)?
-            .set_password(value)
-            .map_err(keyring_error)
+        let label = format!("--label=cx: {name}");
+        let args = ["store", &label, "service", KEYRING_SERVICE, "name", name];
+        let (ok, _) = secret_tool(&args, value.as_bytes())?;
+        ensure!(
+            ok,
+            "OS keyring refused the entry (locked or no Secret Service?)"
+        );
+        Ok(())
     }
     fn delete(&self, name: &str) -> Result<()> {
-        match keyring::Entry::new(KEYRING_SERVICE, name)
-            .map_err(keyring_error)?
-            .delete_credential()
-        {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(keyring_error(e)),
-        }
+        let (ok, _) = secret_tool(&["clear", "service", KEYRING_SERVICE, "name", name], b"")?;
+        ensure!(ok, "OS keyring delete failed");
+        Ok(())
     }
 }
 
@@ -212,22 +217,28 @@ impl TimedVault {
     }
 }
 
-/// Whether an OS keyring might be reachable from this session. On Linux that needs a session bus; headless robots
-/// and plain SSH logins usually have none, and then the fallback file is used without trying.
+/// Whether an OS keyring might be reachable from this session: on Linux, a session bus and `secret-tool` on PATH.
+/// Headless robots and plain SSH logins usually have no bus, and then the fallback file is used without trying.
+/// macOS always uses the file: `security add-generic-password` takes the password only in argv or at a prompt.
 pub fn keyring_reachable() -> bool {
-    if cfg!(target_os = "macos") {
-        return true;
+    if !cfg!(target_os = "linux") {
+        return false;
     }
-    if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|v| !v.is_empty()) {
-        return true;
-    }
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(|d| PathBuf::from(d).join("bus"))
-        .and_then(|p| fs::symlink_metadata(p).ok())
-        .is_some_and(|m| {
-            use std::os::unix::fs::FileTypeExt;
-            m.file_type().is_socket()
+    let bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|v| !v.is_empty())
+        || std::env::var_os("XDG_RUNTIME_DIR")
+            .map(|d| PathBuf::from(d).join("bus"))
+            .and_then(|p| fs::symlink_metadata(p).ok())
+            .is_some_and(|m| {
+                use std::os::unix::fs::FileTypeExt;
+                m.file_type().is_socket()
+            });
+    bus && std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|d| {
+            use std::os::unix::fs::PermissionsExt;
+            fs::metadata(d.join("secret-tool"))
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
         })
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -377,8 +388,13 @@ impl Secrets {
             Ok("auto") | Ok("") | Err(_) => Mode::Auto,
             Ok(other) => bail!("CX_SECRETS_BACKEND must be auto, file or keyring, not {other:?}"),
         };
-        let keyring = (mode != Mode::FileOnly && keyring_reachable())
-            .then(|| TimedVault::new(Arc::new(OsKeyring), KEYRING_TIMEOUT, process_keyring_hung()));
+        let keyring = (mode != Mode::FileOnly && keyring_reachable()).then(|| {
+            TimedVault::new(
+                Arc::new(SecretTool),
+                KEYRING_TIMEOUT,
+                process_keyring_hung(),
+            )
+        });
         Ok(Secrets::at(dir, keyring, mode))
     }
 
@@ -1431,5 +1447,152 @@ mod tests {
         assert_eq!(store.matches(CANARY).count(), 1);
         assert_eq!(mode(&dir.join(STORE)), 0o600);
         assert!(seen[0].contains("redacted"));
+    }
+
+    /// A fake `secret-tool` that keeps values in files and records its argv; `CX_FAKE_MODE=hang` makes it hang.
+    const FAKE_SECRET_TOOL: &str = r#"#!/bin/sh
+PATH=/usr/bin:/bin
+d="$CX_FAKE_VAULT"
+printf '%s\n' "$*" >> "$d/argv"
+if [ "$CX_FAKE_MODE" = hang ]; then echo $$ > "$d/pid"; exec sleep 30; fi
+op=$1
+for a; do name=$a; done
+case $op in
+store) cat > "$d/v.$name" ;;
+lookup) [ -f "$d/v.$name" ] || exit 1; cat "$d/v.$name" ;;
+clear) rm -f "$d/v.$name" ;;
+*) exit 2 ;;
+esac
+"#;
+
+    /// Runs `test` in a child with its own state, a fake session bus and `secret-tool` on PATH as `tool`
+    /// (none when `tool` is None). Returns whether this is the child, and the vault dir.
+    fn with_fake_tool(test: &str, tool: Option<&str>, mode: &str) -> (bool, PathBuf) {
+        if std::env::var_os("CX_TEST_CHILD").is_some() {
+            return (true, PathBuf::from(std::env::var("CX_FAKE_VAULT").unwrap()));
+        }
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path();
+        fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
+        let bin = root.join("bin");
+        let vault = root.join("vault");
+        fs::create_dir(&bin).unwrap();
+        fs::create_dir(&vault).unwrap();
+        if let Some(body) = tool {
+            fs::write(bin.join("secret-tool"), body).unwrap();
+            fs::set_permissions(bin.join("secret-tool"), fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let vars = [
+            ("HOME", root.to_path_buf()),
+            ("XDG_STATE_HOME", root.join("state")),
+            ("PATH", bin.clone()),
+            (
+                "DBUS_SESSION_BUS_ADDRESS",
+                PathBuf::from("unix:path=/nonexistent/cx-fake-bus"),
+            ),
+            ("CX_SECRETS_BACKEND", PathBuf::from("auto")),
+            ("CX_FAKE_VAULT", vault.clone()),
+            ("CX_FAKE_MODE", PathBuf::from(mode)),
+        ];
+        let env: Vec<(&str, &Path)> = vars.iter().map(|(k, v)| (*k, v.as_path())).collect();
+        assert!(!crate::mesh::in_child(test, &env));
+        // The parent checks what the child left: the argv the tool saw never holds the value.
+        let argv = fs::read_to_string(vault.join("argv")).unwrap_or_default();
+        assert!(!argv.contains(CANARY), "a value reached argv: {argv}");
+        (false, vault)
+    }
+
+    #[test]
+    fn secret_tool_gets_values_on_stdin_never_in_argv() {
+        let (child, vault) = with_fake_tool(
+            "secrets::tests::secret_tool_gets_values_on_stdin_never_in_argv",
+            Some(FAKE_SECRET_TOOL),
+            "",
+        );
+        if !child {
+            return;
+        }
+        assert!(keyring_reachable());
+        let s = Secrets::open().unwrap();
+        assert_eq!(s.set("robot.x", CANARY).unwrap().backend, Backend::Keyring);
+        assert_eq!(fs::read_to_string(vault.join("v.robot.x")).unwrap(), CANARY);
+        assert_eq!(s.get("robot.x").unwrap().expose(), CANARY);
+        s.delete("robot.x").unwrap();
+        assert!(!vault.join("v.robot.x").exists());
+        assert!(!fs::read_to_string(crate::store::state_dir().join(STORE))
+            .unwrap_or_default()
+            .contains(CANARY));
+        let argv = fs::read_to_string(vault.join("argv")).unwrap();
+        let calls: Vec<&str> = argv.lines().collect();
+        assert_eq!(
+            calls[0],
+            "store --label=cx: robot.x service cx name robot.x"
+        );
+        assert!(calls.contains(&"lookup service cx name robot.x"), "{argv}");
+        assert!(calls.contains(&"clear service cx name robot.x"), "{argv}");
+        assert!(!argv.contains(CANARY));
+    }
+
+    #[test]
+    fn a_missing_secret_tool_means_the_file() {
+        let (child, vault) = with_fake_tool(
+            "secrets::tests::a_missing_secret_tool_means_the_file",
+            None,
+            "",
+        );
+        if !child {
+            return;
+        }
+        assert!(!keyring_reachable());
+        let s = Secrets::open().unwrap();
+        assert_eq!(s.set("robot.x", CANARY).unwrap().backend, Backend::File);
+        assert_eq!(s.get("robot.x").unwrap().expose(), CANARY);
+        assert!(!vault.join("argv").exists());
+    }
+
+    /// A hung `secret-tool` is given up on after KEYRING_TIMEOUT (the value goes to the file), not tried again
+    /// in this process, and its process group is killed a second later.
+    #[test]
+    fn a_hung_secret_tool_falls_back_and_is_killed() {
+        let (child, vault) = with_fake_tool(
+            "secrets::tests::a_hung_secret_tool_falls_back_and_is_killed",
+            Some(FAKE_SECRET_TOOL),
+            "hang",
+        );
+        if !child {
+            return;
+        }
+        let s = Secrets::open().unwrap();
+        let start = std::time::Instant::now();
+        assert_eq!(s.set("robot.x", CANARY).unwrap().backend, Backend::File);
+        let took = start.elapsed();
+        assert!(
+            took >= KEYRING_TIMEOUT && took < KEYRING_TIMEOUT + Duration::from_secs(1),
+            "{took:?}"
+        );
+        assert!(s.keyring.as_ref().unwrap().is_hung());
+        assert_eq!(s.get("robot.x").unwrap().expose(), CANARY);
+        let pid: i32 = fs::read_to_string(vault.join("pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "secret-tool {pid} left running"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(
+            fs::read_to_string(vault.join("argv"))
+                .unwrap()
+                .lines()
+                .count(),
+            1,
+            "not retried"
+        );
     }
 }

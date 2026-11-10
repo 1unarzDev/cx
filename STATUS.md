@@ -5,7 +5,7 @@
 - Running: wave 2 (theme/caps/focus, sessions flow with Ctrl+\ detach, files UX/scroll perf, keymap/hitmap/palette/phone layout, SSH multiplexing fix, capture harness fix); wave 3a is integrated.
 - Decided: Network hub start view with per-node letter hotkeys; visual-first layout; Ctrl+\ detach accepted; per-edge, per-direction policy; OS keyring with a plain 0600 file fallback (like an SSH key); no hand-written crypto (mesh uses OpenSSH).
 - Pairing (branch `revamp/pairing`): `cx mesh pair CODE HOST[:PORT]` against a one-shot `cx mesh invite --backend ssh-overlay` listener on mesh/LAN addresses; 11-symbol codes, HMAC-SHA256 both ways (`hmac` crate), single use, rate-limited, no door key; the Worker short codes are gone.
-- Open questions: (2) the keyring stack adds about 87 crates and about 3 MB to the binary; keep it?
+- Secrets (branch `revamp/pairing`): the keyring crate stack is gone; Linux uses `secret-tool` (values on stdin/stdout), macOS the 0600 file. Cargo.lock 253 → 169 packages.
 
 ## Claude gateway lends (Unreleased)
 - `cx claude lend | revoke | list` (mesh/claude.py, docs/claude.md): a better-ccflare key, an Access service token and policy, and a single-use code; the teammate runs `curl -sL <endpoint>/claude/<code>|sh` or `irm …|iex`. `cx mesh deploy` redeploys only the Worker.

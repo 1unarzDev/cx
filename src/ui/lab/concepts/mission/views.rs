@@ -3093,7 +3093,8 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
     if ry < inner.bottom() && cx.size() >= Size::S {
         // The rtt history (one thin row) and its figures as quiet text after it.
         cx.put(buf, inner.x, ry, 4, "rtt", cx.st(Tok::Muted));
-        let sw = inner.width.saturating_sub(5).min(40);
+        // At most half the row, so the figures after it keep their words.
+        let sw = (inner.width.saturating_sub(5) / 2).min(40);
         tiles::spark(cx, buf, inner.x + 5, ry, sw, &e.rtt_hist, cx.ink(Tok::Muted, 0.6));
         let v: Vec<f32> = e.rtt_hist.iter().flatten().copied().collect();
         let mut t = format!("{} samples", e.rtt_hist.len());

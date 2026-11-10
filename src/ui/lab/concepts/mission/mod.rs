@@ -108,6 +108,11 @@ impl<'a> Cx<'a> {
         }
     }
 
+    /// Touch-first layouts (phones up to about 70 columns): bigger targets, thumb footer.
+    pub fn touch(&self) -> bool {
+        self.area.width < 70
+    }
+
     pub fn uni(&self) -> bool {
         self.c.unicode
     }
@@ -272,11 +277,10 @@ impl<'a> Cx<'a> {
         }
     }
     /// Fade everything under an overlay: a scrim that keeps the picture (colours pulled
-    /// toward the background); below 256 colours, faint text only.
+    /// toward the background); below 256 colours the backdrop is cleared.
     pub fn dim(&self, buf: &mut Buffer, r: Rect) {
         let r = r.intersection(buf.area);
         let bg0 = self.bg0();
-        let faint = self.ink(Tok::Faint, if self.dark() { 0.9 } else { 0.8 });
         for y in r.top()..r.bottom() {
             for x in r.left()..r.right() {
                 let c = &mut buf[(x, y)];
@@ -289,13 +293,9 @@ impl<'a> Cx<'a> {
                     };
                     c.modifier = Modifier::empty();
                 } else {
-                    c.bg = Color::Reset;
-                    c.fg = faint.fg.unwrap_or(Color::Reset);
-                    c.modifier = if self.c.has_color() {
-                        Modifier::empty()
-                    } else {
-                        Modifier::DIM
-                    };
+                    // No blending: clear the backdrop rather than let it bleed around
+                    // the overlay as half-legible fragments.
+                    c.reset();
                 }
             }
         }

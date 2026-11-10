@@ -1,4 +1,4 @@
-//! Tiles: device tiles with micro-charts and session thumbnails that show the live tail
+//! Tiles: micro-charts, phone device rows and session thumbnails that show the live tail
 //! of the real screen in its own colours, so sessions are recognised by their look.
 use super::{fit, fmt, mix, to_rgb, Cx, Rgb};
 use crate::ui::lab::{ansi_lines, DeviceStatus, LabDevice, LabSession, Tok};
@@ -100,10 +100,14 @@ pub(super) fn spark(
     vals: &[Option<f32>],
     st: Style,
 ) {
+    cx.put(buf, x, y, w, &spark_str(cx, vals, w), st);
+}
+
+/// The sparkline text, scaled between the window's min and max so variation shows.
+pub(super) fn spark_str(cx: &Cx, vals: &[Option<f32>], w: u16) -> String {
     if w == 0 || vals.is_empty() {
-        return;
+        return String::new();
     }
-    // Scale between the window's min and max so variation shows, not a solid block.
     let hi = vals.iter().flatten().fold(f32::MIN, |a, b| a.max(*b));
     let lo = vals.iter().flatten().fold(f32::MAX, |a, b| a.min(*b));
     let range = (hi - lo).max(hi.abs() * 0.05).max(1e-3);
@@ -119,8 +123,7 @@ pub(super) fn spark(
         })
         .map(|v| v.map(|v| 0.1 + 0.9 * (v - lo) / range))
         .collect();
-    let s = fmt::spark(&pick, cx.uni());
-    cx.put(buf, x, y, w as u16, &s, st);
+    fmt::spark(&pick, cx.uni())
 }
 
 /// Thin horizontal gauge with a faint track.
@@ -146,16 +149,25 @@ pub(super) fn gauge(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, w: u16, v: f32, s
     }
 }
 
+/// Mesh membership as small squares in the mesh hue. A half block is drawn as geometry
+/// by kitty, foot, ghostty and alacritty, so it keeps its size in any fallback font
+/// (the former `◆` shrank to a dot in DejaVu).
 pub(super) fn mesh_badges(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, d: &LabDevice) -> u16 {
     let mut w = 0;
     for m in &d.meshes {
-        let i = cx.s.meshes.iter().position(|x| &x.id == m).unwrap_or(0);
-        let tok = if i == 0 { Tok::Mesh } else { Tok::Id(6) };
-        w += cx.put(buf, x + w, y, 1, cx.g("◆", "*"), cx.st(tok));
+        w += cx.put(
+            buf,
+            x + w,
+            y,
+            1,
+            cx.g("▄", "*"),
+            cx.st(super::map::mesh_tok(cx, m)),
+        );
     }
     w
 }
 
+/// Session pips (one bar per session in its state colour), right-aligned at `right`.
 pub(super) fn pips(
     cx: &Cx,
     buf: &mut Buffer,
@@ -164,129 +176,34 @@ pub(super) fn pips(
     d: &LabDevice,
     max: usize,
 ) -> u16 {
+    let segs = pip_segs(cx, d, max);
+    let w: u16 = segs.iter().map(|(t, _)| super::width(t, cx.uni())).sum();
+    let mut x = right.saturating_sub(w);
+    for (t, st) in segs {
+        x += cx.put(buf, x, y, 4, &t, st);
+    }
+    w
+}
+
+/// Pips as text segments: a quadrant `▖` per session (a block element, so it never
+/// shrinks in a fallback font, and pips on neighbouring rows never join into a bar).
+pub(super) fn pip_segs(cx: &Cx, d: &LabDevice, max: usize) -> Vec<(String, Style)> {
     let ss: Vec<&LabSession> = cx.s.sessions_on(&d.id).collect();
-    if ss.is_empty() {
-        return 0;
-    }
-    let shown = ss.len().min(max);
-    let mut x = right.saturating_sub(shown as u16 + if ss.len() > max { 2 } else { 0 });
-    let x0 = x;
-    for s in ss.iter().take(shown) {
-        let (_, _, st) = cx.sstate(s);
-        x += cx.put(buf, x, y, 1, cx.g("▮", "#"), st);
-    }
+    let mut v: Vec<(String, Style)> = ss
+        .iter()
+        .take(max)
+        .map(|s| (cx.g("▖", "#").to_string(), cx.sstate(s).2))
+        .collect();
     if ss.len() > max {
-        cx.put(
-            buf,
-            x,
-            y,
-            2,
-            &format!("+{}", ss.len() - max),
-            cx.st(Tok::Muted),
-        );
+        v.push((format!("+{}", ss.len() - max), cx.st(Tok::Muted)));
     }
-    right - x0
+    v
 }
 
-/// Device tile: identity, cpu history, rtt / temperature and session pips.
-pub(super) fn device_tile(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, pick: Pick) {
-    if r.width < 8 || r.height < 2 {
-        return;
-    }
-    cx.fill(buf, r, tile_bg(cx, pick));
-    pick_bar(cx, buf, r, pick);
-    let x = r.x + 1;
-    let right = r.right().saturating_sub(1);
-    let mut cx0 = x;
-    cx0 += cx.dchip(buf, cx0, r.y, d, false);
-    cx0 += 1;
-    let (g, gst) = cx.status(d.status);
-    let up = cx.up(d);
-    let glyph = r.width >= 20 || !up;
-    let name_room = if glyph {
-        right.saturating_sub(cx0 + 2)
-    } else {
-        r.right().saturating_sub(cx0)
-    };
-    let nst = if up {
-        cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD)
-    } else {
-        cx.st(Tok::Muted)
-    };
-    cx.put(
-        buf,
-        cx0,
-        r.y,
-        name_room,
-        &fit(&d.name, name_room as usize, cx.uni()),
-        nst,
-    );
-    if glyph {
-        cx.put(buf, right - 1, r.y, 1, g, gst);
-    }
-    cx.hit(r, format!("device:{}", d.id));
-    let body = r.height.saturating_sub(2);
-    let foot = r.bottom() - 1;
-    if r.height >= 3 {
-        match &d.metrics {
-            Some(m) if up && body > 0 => {
-                let pct = format!("{:.0}%", m.cpu * 100.0);
-                let cw = r.width.saturating_sub(pct.len() as u16 + 3);
-                chart(cx, buf, Rect::new(x, r.y + 1, cw, body), &m.cpu_hist, None);
-                cx.put_r(
-                    buf,
-                    right,
-                    r.y + 1,
-                    &pct,
-                    cx.heat(m.cpu).add_modifier(Modifier::BOLD),
-                );
-                if body >= 2 {
-                    cx.put_r(buf, right, r.y + 2, "cpu", cx.ink(Tok::Muted, 0.8));
-                }
-            }
-            _ if body > 0 => {
-                let why = if d.status == DeviceStatus::Unknown {
-                    "not probed yet"
-                } else {
-                    "unreachable"
-                };
-                cx.put(buf, x, r.y + 1, r.width - 2, why, cx.ink(Tok::Err, 0.9));
-                if body >= 2 {
-                    let ev = fit(&d.evidence, usize::from(r.width - 2), cx.uni());
-                    cx.put(buf, x, r.y + 2, r.width - 2, &ev, cx.st(Tok::Muted));
-                }
-            }
-            _ => {}
-        }
-    }
-    if r.height >= 2 && foot > r.y {
-        let mut fx = x;
-        fx += mesh_badges(cx, buf, fx, foot, d);
-        if fx > x {
-            fx += 1;
-        }
-        let meta = cx.meta(d);
-        let mst = if up {
-            cx.ink(Tok::Fg, 0.85)
-        } else {
-            cx.ink(Tok::Err, 0.8)
-        };
-        fx += cx.put(buf, fx, foot, right.saturating_sub(fx), &meta, mst);
-        if let Some(t) = d.metrics.as_ref().and_then(|m| m.temp_c).filter(|_| up) {
-            let s = format!(" {t:.0}{}", cx.g("°", "C"));
-            let hv = ((t - 35.0) / 50.0).clamp(0.0, 1.0);
-            if fx + s.chars().count() as u16 + 4 < right {
-                fx += cx.put(buf, fx, foot, 6, &s, cx.heat(hv));
-            }
-        }
-        let _ = fx;
-        pips(cx, buf, right, foot, d, 4);
-    }
-}
-
-/// Compact one-row device line for phones and narrow strips.
+/// Compact device line for phones: keycap, name, status and evidence on one row; with
+/// two rows (a thumb-sized target) the cpu trend, temperature and pips go underneath.
 pub(super) fn device_row(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, pick: Pick) {
-    if r.width < 10 {
+    if r.width < 10 || r.height == 0 {
         return;
     }
     let bg = match pick {
@@ -294,21 +211,22 @@ pub(super) fn device_row(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, pick
         None => Style::default(),
     };
     cx.fill(buf, r, bg);
-    pick_bar(cx, buf, Rect::new(r.x, r.y, 1, 1), pick);
+    pick_bar(cx, buf, r, pick);
     let mut x = r.x + 1;
     x += cx.dchip(buf, x, r.y, d, false);
     x += 1;
     let (g, gst) = cx.status(d.status);
     let right = r.right().saturating_sub(1);
-    let tail = 13u16.min(r.width / 2);
+    let two = r.height >= 2;
+    let tail = if two { 8 } else { 13u16.min(r.width / 2) };
     let up = cx.up(d);
     let nst = if up {
-        cx.ink(Tok::Fg, 1.0)
+        cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD)
     } else {
         cx.st(Tok::Muted)
     };
     let room = right.saturating_sub(x + tail + 2);
-    x += cx.put(
+    cx.put(
         buf,
         x,
         r.y,
@@ -316,18 +234,35 @@ pub(super) fn device_row(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, pick
         &fit(&d.name, room as usize, cx.uni()),
         nst,
     );
-    let _ = x;
     let tx = right.saturating_sub(tail);
     cx.put(buf, tx, r.y, 1, g, gst);
     let meta = cx.meta(d);
-    let mw = cx.put(buf, tx + 2, r.y, 6, &meta, cx.st(Tok::Muted));
-    let pw = pips(cx, buf, right, r.y, d, 3);
+    let mst = if up {
+        cx.st(Tok::Muted)
+    } else {
+        cx.ink(Tok::Err, 0.85)
+    };
+    let mw = cx.put(buf, tx + 2, r.y, tail.saturating_sub(2), &meta, mst);
+    let (ey, ex) = if two {
+        (r.y + 1, r.x + 5)
+    } else {
+        (r.y, tx + 2 + mw + 1)
+    };
+    let pw = pips(cx, buf, right, ey, d, 3);
     if let Some(m) = d.metrics.as_ref().filter(|_| up) {
-        let sx = tx + 2 + mw + 1;
-        let sw = right.saturating_sub(sx + pw + 1);
+        let sw = right
+            .saturating_sub(ex + pw + 1)
+            .min(if two { 12 } else { 99 });
         if sw >= 3 {
             let v: Vec<Option<f32>> = m.cpu_hist.iter().map(|v| Some(*v)).collect();
-            spark(cx, buf, sx, r.y, sw, &v, cx.heat(m.cpu));
+            spark(cx, buf, ex, ey, sw, &v, cx.heat(m.cpu));
+            if two {
+                let t = match m.temp_c {
+                    Some(t) => format!("{:.0}% {t:.0}{}", m.cpu * 100.0, cx.g("°", "C")),
+                    None => format!("{:.0}%", m.cpu * 100.0),
+                };
+                cx.put(buf, ex + sw + 1, ey, 10, &t, cx.st(Tok::Muted));
+            }
         }
     }
     cx.hit(r, format!("device:{}", d.id));
@@ -388,6 +323,14 @@ pub(super) fn screen_text(
                 degrade(cx, sp.style)
             } else {
                 plain(sp.style)
+            };
+            // The agent's own reversed key hints (`y Yes`) would look exactly like cx
+            // keycaps on the hub, where those letters mean devices: underline them instead.
+            let st = if sp.style.add_modifier.contains(Modifier::REVERSED) {
+                st.remove_modifier(Modifier::REVERSED)
+                    .add_modifier(Modifier::UNDERLINED | Modifier::BOLD)
+            } else {
+                st
             };
             let n = sp.content.chars().count();
             let content: String = if skip > 0 {

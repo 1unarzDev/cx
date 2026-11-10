@@ -9,14 +9,12 @@ Owner side (a trusted machine: one holding the account's API token):
     mesh.py profile                                         the device profile setup applies, without applying
     mesh.py deploy                                          redeploy only the Worker and its schema (after a cx update)
     mesh.py teardown [--yes] [--dry-run]                    remove everything setup created
-    mesh.py pair-stash --lookup H --hours H                 hold a sealed `cx mesh pair` invite (stdin) for a short code
 Onboarding (no config needed):
     mesh.py token-url [--with-domain]                       the dashboard link that creates the setup token
     mesh.py verify [--token-stdin]                          is the token valid? (GET /user/tokens/verify)
     mesh.py zones [--token-stdin]                           the zones (domains) the token can use
 Device side (no cx needed; the one-liners do the same):
     mesh.py join CODE | mesh.py leave
-    mesh.py pair-redeem --url URL --lookup H                take a short code's sealed invite (cx mesh pair does this)
 Every command takes --json (machine-readable output) and --config PATH (default
 $XDG_CONFIG_HOME/cx/mesh/config.toml). The API token comes from $CLOUDFLARE_API_TOKEN, else the credentials file
 setup writes (mode 600). Stdlib only; usable as a library: `Mesh(load_config()).devices()`.
@@ -454,10 +452,6 @@ class Mesh:
     def revoke(self, name: str) -> dict:
         return self.worker_api("POST", f"/v1/admin/devices/{name}/revoke")
 
-    def pair_stash(self, lookup: str, sealed: str, hours: float) -> dict:
-        """Hold a `cx mesh pair` invite that cx sealed under its short code; the Worker sees only the seal."""
-        return self.worker_api("POST", "/v1/admin/pairs", {"lookup": lookup, "sealed": sealed, "hours": hours})
-
     def teardown(self, dry_run: bool = False) -> dict:
         st, gone = self.state, []
         if dry_run:
@@ -494,16 +488,6 @@ class Mesh:
         elif app:
             self.attach(app, pid, add=False)
         self.cf("DELETE", f"/access/policies/{pid}", ok404=True)
-
-
-def pair_redeem(url: str, lookup: str) -> dict:
-    """Take a short code's sealed invite, once (device side: no config, no token)."""
-    if not url.startswith("https://"):
-        raise MeshError("the mesh URL must be https")
-    d = request("POST", url.rstrip("/") + "/v1/pair/redeem", None, {"lookup": lookup})
-    if d.get("status", 200) >= 400 or d.get("error") or not d.get("sealed"):
-        raise MeshError(d.get("error") or "the mesh endpoint gave no invite")
-    return {"sealed": d["sealed"]}
 
 
 def device_script(url: str, leaving: bool) -> int:
@@ -555,13 +539,6 @@ def main(argv: list[str] | None = None) -> int:
         v = sp.add_parser(n)
         v.add_argument("--token-stdin", action="store_true", help="read the token from stdin instead of $CLOUDFLARE_API_TOKEN")
         v.add_argument("--account", default=None)
-    ps = sp.add_parser("pair-stash")
-    ps.add_argument("--lookup", required=True)
-    ps.add_argument("--hours", type=float, default=1.0)
-    ps.add_argument("--sealed-stdin", action="store_true")
-    pr = sp.add_parser("pair-redeem")
-    pr.add_argument("--url", required=True)
-    pr.add_argument("--lookup", required=True)
     j = sp.add_parser("join")
     j.add_argument("code", help="the invite code, or the whole URL")
     sp.add_parser("leave").add_argument("--url")
@@ -598,9 +575,6 @@ def main(argv: list[str] | None = None) -> int:
                 for z in d["zones"]:
                     print(f"{z['name']:32} {z['status'] or '':10} {z['account']['name'] or ''}")
             out(d)
-            return 0
-        if a.cmd == "pair-redeem":
-            out(pair_redeem(a.url, a.lookup))
             return 0
         if a.cmd in ("join", "leave"):
             if a.cmd == "join":
@@ -641,11 +615,6 @@ def main(argv: list[str] | None = None) -> int:
                     raise MeshError("not confirmed (pass --yes)")
             d = m.revoke(a.name)
             out(d) if a.json else print(f"{a.name}: {', '.join(d['revoked']) or 'nothing to revoke'}")
-        elif a.cmd == "pair-stash":
-            sealed = sys.stdin.read().strip() if a.sealed_stdin else ""
-            if not sealed:
-                raise MeshError("pass the sealed invite on stdin (--sealed-stdin)")
-            out(m.pair_stash(a.lookup, sealed, a.hours))
         elif a.cmd == "teardown" and a.dry_run:
             out(m.teardown(dry_run=True)) if a.json else print("would remove: " + ", ".join(m.teardown(dry_run=True)["would_remove"]))
         elif a.cmd == "teardown":

@@ -503,41 +503,7 @@ class Onboarding(unittest.TestCase):
             r = subprocess.run([sys.executable, str(stub), "verify", "--token-stdin", "--json"], input="bad\n", capture_output=True, text=True, env=env)
             self.assertEqual((r.returncode, json.loads(r.stdout)["status"]), (1, "expired"))
 
-class Pairs(unittest.TestCase):
-    """A `cx mesh pair` short code: the owner stashes the seal on the Worker, a device takes it once."""
-
-    def test_stash_and_redeem_through_the_worker_api(self):
-        calls = []
-
-        class Fake(FakeCloudflare):
-            def __call__(self, method, url, body=None, headers=None, raw=None, ctype=None):
-                if "/v1/admin/pairs" in url:
-                    calls.append((method, url, body))
-                    return {"url": "https://demo-mesh.owner.workers.dev", "expires": "2026-11-04T01:00:00Z"}
-                return super().__call__(method, url, body, headers, raw, ctype)
-
-        fake = Fake()
-        with tempfile.TemporaryDirectory() as d:
-            mesh.write_config(Path(d) / "config.toml", "demo", "", "")
-            m = MeshSetup.run_mesh(None, d, fake)
-            m.setup()
-            r = m.pair_stash("ab" * 32, "c2VhbGVk" * 6, 1.5)
-            self.assertEqual(r["url"], "https://demo-mesh.owner.workers.dev")
-            self.assertEqual(calls[-1][2], {"lookup": "ab" * 32, "sealed": "c2VhbGVk" * 6, "hours": 1.5})
-        seen = []
-        old = mesh.request
-        mesh.request = lambda m, u, t=None, b=None, timeout=30: (seen.append((m, u, t, b)), {"sealed": "SEAL"})[1]
-        try:
-            self.assertEqual(mesh.pair_redeem("https://mesh.example.org/", "ab" * 32), {"sealed": "SEAL"})
-            self.assertEqual(seen, [("POST", "https://mesh.example.org/v1/pair/redeem", None, {"lookup": "ab" * 32})], "no token on the device side")
-            mesh.request = lambda *a, **k: {"success": False, "status": 403, "error": "this join code is unknown, already used or expired"}
-            with self.assertRaises(mesh.MeshError):
-                mesh.pair_redeem("https://mesh.example.org", "ab" * 32)
-            with self.assertRaises(mesh.MeshError):
-                mesh.pair_redeem("http://mesh.example.org", "ab" * 32)
-        finally:
-            mesh.request = old
-
+class Teardown(unittest.TestCase):
     def test_teardown_dry_run_lists_without_calls(self):
         fake = FakeCloudflare()
         with tempfile.TemporaryDirectory() as d:

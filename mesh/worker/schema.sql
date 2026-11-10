@@ -47,12 +47,3 @@ CREATE TABLE IF NOT EXISTS lends (  -- Claude gateway lends (docs/claude.md), on
   claimed TEXT,
   claimed_ip TEXT
 );
-CREATE TABLE IF NOT EXISTS pairs (  -- ssh-overlay short codes (docs/mesh.md, "cx mesh pair"): a sealed direct code
-  lookup TEXT PRIMARY KEY,   -- SHA-256 of a derivation of the short code (the Worker never sees the code)
-  sealed TEXT,               -- sealed by cx under a key from the short code; NULL once redeemed
-  expires TEXT NOT NULL,
-  state TEXT NOT NULL,       -- pending | redeemed
-  created TEXT NOT NULL,
-  redeemed TEXT,
-  redeemed_ip TEXT
-);

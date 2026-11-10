@@ -1,27 +1,22 @@
-//! Join codes for the ssh-overlay backend (docs/mesh.md, "ssh-overlay: cx mesh pair").
+//! Pair codes for the ssh-overlay backend (docs/mesh.md, "ssh-overlay: cx mesh pair").
 //!
-//! Two forms share Crockford base32 (0-9 A-Z without I L O U; input is case-insensitive, `I`/`L`
-//! read as 1 and `O` as 0, dashes and spaces are ignored):
-//! - A **direct code** carries everything the joiner needs: the viewer's SSH account and reachable
-//!   addresses, the one-time invite key (an Ed25519 key `ssh-keygen` made: its 32-byte seed and public
-//!   half), a truncated SHA-256 of the viewer's SSH host key, and the expiry, followed by a CRC-16 that
-//!   catches every single mistyped symbol. It is about 150 symbols, meant to be pasted.
-//! - A **short code** is 12 symbols (50 random bits and a CRC-10), redeemable only through
-//!   a mesh Worker the owner runs: the Worker holds the direct code sealed under a key derived from
-//!   the short code, identified by a separate hash of it, and hands it out once.
+//! A code is 11 Crockford base32 symbols (0-9 A-Z without I L O U), shown as `XXXX-XXXX-XXX`: 10 random
+//! symbols (50 bits) and one check symbol. Input ignores case, dashes and spaces; `I`/`L` read as 1 and `O` as 0.
+//! The check makes the weighted sum of all 11 symbols zero in GF(32), so every single mistyped symbol and every
+//! swap of two neighbours is caught offline. The code carries no address: the joiner names the viewer's host.
+//!
+//! The code is never stored. The viewer keeps only [`key`], a SHA-256 of it, which keys the HMAC-SHA256
+//! confirmations of the pairing ([`mac`], [`verify`]; RustCrypto `hmac`, constant-time comparison).
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
-use std::net::{IpAddr, SocketAddr};
 
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-/// 2: the invite key itself (seed and public half) instead of a token that derived it.
-pub const VERSION: u8 = 2;
-/// An Ed25519 seed followed by its public key, as in OpenSSH's private key section.
-pub const KEY_LEN: usize = 64;
-pub const FINGERPRINT_LEN: usize = 10;
-pub const SHORT_LEN: usize = 12;
-const MAX_ADDRESSES: usize = 4;
+/// Random symbols in a code (5 bits each).
+pub const TOKEN_LEN: usize = 10;
+/// Symbols in a code, the check symbol included.
+pub const LEN: usize = TOKEN_LEN + 1;
 
 pub fn random<const N: usize>() -> Result<[u8; N]> {
     let mut out = [0u8; N];
@@ -40,863 +35,231 @@ pub fn random<const N: usize>() -> Result<[u8; N]> {
     Ok(out)
 }
 
-pub fn encode(bytes: &[u8]) -> String {
-    let mut out = String::new();
-    let (mut acc, mut bits) = (0u32, 0);
-    for &b in bytes {
-        acc = (acc << 8) | b as u32;
-        bits += 8;
-        while bits >= 5 {
-            bits -= 5;
-            out.push(ALPHABET[((acc >> bits) & 31) as usize] as char);
-        }
+/// Multiply by x in GF(32) = GF(2)[x] / (x^5 + x^2 + 1), where x is primitive.
+fn times_x(r: u8) -> u8 {
+    let r = r << 1;
+    if r & 32 != 0 {
+        r ^ 0b100101
+    } else {
+        r
     }
-    if bits > 0 {
-        out.push(ALPHABET[((acc << (5 - bits)) & 31) as usize] as char);
-    }
-    out
 }
 
-/// Symbols (0..32) of a typed code, normalized; rejects anything outside the alphabet.
-fn symbols(text: &str) -> Result<Vec<u8>> {
-    let mut out = Vec::new();
-    for c in text.chars() {
-        let c = c.to_ascii_uppercase();
-        let v = match c {
-            '-' | ' ' | '\t' => continue,
-            'O' => 0,
-            'I' | 'L' => 1,
-            _ => match ALPHABET.iter().position(|&a| a as char == c) {
-                Some(i) => i as u8,
-                None => bail!("a join code has only letters and digits (not {c:?})"),
-            },
-        };
-        out.push(v);
-    }
-    anyhow::ensure!(out.len() <= 256, "join code too long");
-    Ok(out)
+/// Σ s_i · x^(n-1-i) in GF(32), by Horner's rule. A valid code sums to zero.
+fn syndrome(symbols: &[u8]) -> u8 {
+    symbols.iter().fold(0, |r, &s| times_x(r) ^ s)
 }
 
-fn decode_bytes(sym: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    let (mut acc, mut bits) = (0u32, 0);
-    for &s in sym {
-        acc = (acc << 5) | s as u32;
-        bits += 5;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-        }
-    }
-    out
+fn with_check(token: &[u8]) -> String {
+    let check = times_x(syndrome(token));
+    token
+        .iter()
+        .chain([&check])
+        .map(|&s| ALPHABET[s as usize] as char)
+        .collect()
 }
 
-pub fn group(code: &str, size: usize) -> String {
+/// A fresh code, normalized (no dashes).
+pub fn new_code() -> Result<String> {
+    // 256 is a multiple of 32, so the low 5 bits of a random byte are uniform.
+    let token = random::<TOKEN_LEN>()?.map(|b| b & 31);
+    Ok(with_check(&token))
+}
+
+/// `XXXX-XXXX-XXX`: how a code is shown.
+pub fn display(code: &str) -> String {
     code.as_bytes()
-        .chunks(size)
+        .chunks(4)
         .map(|c| std::str::from_utf8(c).unwrap_or_default())
         .collect::<Vec<_>>()
         .join("-")
 }
 
-/// A CRC over a bit stream (MSB first). Appended after the data in the same bit order, a
-/// CRC of width w detects every error burst of at most w bits, so any single mistyped symbol
-/// (5 bits) is always caught: CRC-16/CCITT for direct codes, CRC-10/ATM for short codes.
-fn crc(bits: impl Iterator<Item = bool>, poly: u16, width: u32, init: u16) -> u16 {
-    let top = 1u16 << (width - 1);
-    let mask = if width == 16 {
-        u16::MAX
-    } else {
-        (1 << width) - 1
-    };
-    let mut r = init;
-    for bit in bits {
-        let feedback = ((r & top) != 0) ^ bit;
-        r = (r << 1) & mask;
-        if feedback {
-            r ^= poly;
-        }
+/// The normalized code from what was typed, its check verified.
+pub fn parse(text: &str) -> Result<String> {
+    let mut symbols = Vec::new();
+    for c in text.chars() {
+        let v = match c.to_ascii_uppercase() {
+            '-' | ' ' | '\t' => continue,
+            'O' => 0,
+            'I' | 'L' => 1,
+            c => match ALPHABET.iter().position(|&a| a as char == c) {
+                Some(i) => i as u8,
+                None => bail!("a pair code has only letters and digits (not {c:?})"),
+            },
+        };
+        symbols.push(v);
+        anyhow::ensure!(symbols.len() <= LEN, "a pair code has {LEN} characters");
     }
-    r & mask
+    anyhow::ensure!(symbols.len() == LEN, "a pair code has {LEN} characters");
+    anyhow::ensure!(
+        syndrome(&symbols) == 0,
+        "pair code check failed; check for a mistyped character"
+    );
+    Ok(symbols.iter().map(|&v| ALPHABET[v as usize] as char).collect())
 }
 
-fn crc16(bytes: &[u8]) -> u16 {
-    crc(
-        bytes
-            .iter()
-            .flat_map(|b| (0..8).rev().map(move |i| (b >> i) & 1 == 1)),
-        0x1021,
-        16,
-        0xffff,
-    )
-}
-
-fn sha(parts: &[&[u8]]) -> [u8; 32] {
+/// What the viewer stores of a code, and the HMAC key of its pairing: SHA-256("cx-pair-v1|key|" || code).
+pub fn key(code: &str) -> [u8; 32] {
     let mut h = Sha256::new();
-    for p in parts {
-        h.update(p);
-    }
+    h.update(b"cx-pair-v1|key|");
+    h.update(code.as_bytes());
     h.finalize().into()
 }
 
-fn hmac(key: &[u8; 32], parts: &[&[u8]]) -> [u8; 32] {
-    let mut k = [0u8; 64];
-    k[..32].copy_from_slice(key);
-    let (mut ipad, mut opad) = ([0x36u8; 64], [0x5cu8; 64]);
-    for i in 0..64 {
-        ipad[i] ^= k[i];
-        opad[i] ^= k[i];
+fn hmac(key: &[u8; 32], label: &str, fields: &[&[u8]]) -> Hmac<Sha256> {
+    let mut m = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC takes any key length");
+    m.update(b"cx-pair-v1|");
+    m.update(label.as_bytes());
+    m.update(b"|");
+    // Length-prefixed, so no two field lists give the same input.
+    for f in fields {
+        m.update(&(f.len() as u32).to_be_bytes());
+        m.update(f);
     }
-    let mut inner = Sha256::new();
-    inner.update(ipad);
-    for p in parts {
-        inner.update(p);
-    }
-    let inner: [u8; 32] = inner.finalize().into();
-    sha(&[&opad, &inner])
+    m
 }
 
-fn eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
-/// SHA-256 of an `ssh-ed25519 AAAA...` key's blob: what `ssh-keygen -l -E sha256` prints.
-pub fn host_key_digest(key: &str) -> Result<[u8; 32]> {
-    let blob = key
-        .split_whitespace()
-        .nth(1)
-        .context("invalid SSH public key")?;
-    let blob = STANDARD.decode(blob).context("invalid SSH public key")?;
-    Ok(sha(&[&blob]))
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub struct Direct {
-    /// The invite key: seed, then public key. A bearer secret, kept out of Debug.
-    pub key: [u8; KEY_LEN],
-    pub fingerprint: [u8; FINGERPRINT_LEN],
-    /// Unix seconds, minute precision.
-    pub expires: u64,
-    pub account: String,
-    pub addresses: Vec<SocketAddr>,
-}
-
-impl std::fmt::Debug for Direct {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Direct")
-            .field("invite", &self.invite_id())
-            .field("expires", &self.expires)
-            .field("account", &self.account)
-            .field("addresses", &self.addresses)
-            .finish_non_exhaustive()
-    }
-}
-
-fn valid_account(a: &str) -> bool {
-    !a.is_empty()
-        && a.len() <= 32
-        && !a.starts_with('-')
-        && a.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_-.".contains(&b))
-}
-
-impl Direct {
-    /// `key` is the invite key's seed and public half ([`parse_openssh_private`] of what `ssh-keygen` wrote).
-    pub fn new(
-        account: &str,
-        addresses: Vec<SocketAddr>,
-        host_key: &str,
-        key: [u8; KEY_LEN],
-        ttl_secs: u64,
-        now: u64,
-    ) -> Result<Self> {
-        anyhow::ensure!(
-            valid_account(account),
-            "invalid SSH account for a join code"
-        );
-        anyhow::ensure!(
-            !addresses.is_empty() && addresses.len() <= MAX_ADDRESSES,
-            "a join code carries 1 to {MAX_ADDRESSES} addresses"
-        );
-        let mut fingerprint = [0u8; FINGERPRINT_LEN];
-        fingerprint.copy_from_slice(&host_key_digest(host_key)?[..FINGERPRINT_LEN]);
-        Ok(Self {
-            key,
-            fingerprint,
-            expires: (now + ttl_secs).div_ceil(60) * 60,
-            account: account.into(),
-            addresses,
-        })
-    }
-
-    fn payload(&self) -> Vec<u8> {
-        let mut p = vec![VERSION];
-        p.extend_from_slice(&self.key);
-        p.extend_from_slice(&self.fingerprint);
-        p.extend_from_slice(&((self.expires / 60) as u32).to_be_bytes());
-        p.push(self.account.len() as u8);
-        p.extend_from_slice(self.account.as_bytes());
-        p.push(self.addresses.len() as u8);
-        for a in &self.addresses {
-            let port = a.port() != 22;
-            match a.ip() {
-                IpAddr::V4(ip) => {
-                    p.push(4 | if port { 0x80 } else { 0 });
-                    p.extend_from_slice(&ip.octets());
-                }
-                IpAddr::V6(ip) => {
-                    p.push(6 | if port { 0x80 } else { 0 });
-                    p.extend_from_slice(&ip.octets());
-                }
-            }
-            if port {
-                p.extend_from_slice(&a.port().to_be_bytes());
-            }
-        }
-        let check = crc16(&p);
-        p.extend_from_slice(&check.to_be_bytes());
-        p
-    }
-
-    /// The code as typed or pasted: grouped by 5.
-    pub fn encode(&self) -> String {
-        group(&encode(&self.payload()), 5)
-    }
-
-    pub fn decode(text: &str) -> Result<Self> {
-        let sym = symbols(text)?;
-        anyhow::ensure!(
-            sym.len() > SHORT_LEN,
-            "this is a short code; redeem it through its mesh URL"
-        );
-        let bytes = decode_bytes(&sym);
-        anyhow::ensure!(
-            bytes.len() >= 1 + KEY_LEN + FINGERPRINT_LEN + 4 + 2 + 2,
-            "join code too short"
-        );
-        let (body, check) = bytes.split_at(bytes.len() - 2);
-        // Re-encoding must give the same symbols: this rejects a missing or extra symbol and any
-        // non-zero pad bits in the last one (which would otherwise slip past the checksum).
-        let canonical: Vec<u8> = encode(&bytes)
-            .bytes()
-            .map(|c| ALPHABET.iter().position(|&a| a == c).unwrap_or(0) as u8)
-            .collect();
-        anyhow::ensure!(
-            canonical == sym,
-            "join code has the wrong length; check for a missing, extra or mistyped character"
-        );
-        anyhow::ensure!(
-            eq(check, &crc16(body).to_be_bytes()),
-            "join code checksum does not match; check for a mistyped character"
-        );
-        anyhow::ensure!(
-            body[0] == VERSION,
-            "join code version {} is not supported; update cx",
-            body[0]
-        );
-        let mut r = Reader { b: body, i: 1 };
-        let mut key = [0u8; KEY_LEN];
-        key.copy_from_slice(r.take(KEY_LEN)?);
-        let mut fingerprint = [0u8; FINGERPRINT_LEN];
-        fingerprint.copy_from_slice(r.take(FINGERPRINT_LEN)?);
-        let minutes = u32::from_be_bytes(r.take(4)?.try_into()?);
-        let len = r.take(1)?[0] as usize;
-        let account = std::str::from_utf8(r.take(len)?)?.to_owned();
-        anyhow::ensure!(
-            valid_account(&account),
-            "join code carries an invalid account"
-        );
-        let count = r.take(1)?[0] as usize;
-        anyhow::ensure!(
-            (1..=MAX_ADDRESSES).contains(&count),
-            "join code carries no usable address"
-        );
-        let mut addresses = Vec::new();
-        for _ in 0..count {
-            let tag = r.take(1)?[0];
-            let ip: IpAddr = match tag & 0x7f {
-                4 => <[u8; 4]>::try_from(r.take(4)?)?.into(),
-                6 => <[u8; 16]>::try_from(r.take(16)?)?.into(),
-                _ => bail!("join code carries an unknown address kind"),
-            };
-            let port = if tag & 0x80 != 0 {
-                u16::from_be_bytes(r.take(2)?.try_into()?)
-            } else {
-                22
-            };
-            anyhow::ensure!(
-                port != 0 && !ip.is_unspecified() && !ip.is_multicast(),
-                "join code carries an invalid address"
-            );
-            addresses.push(SocketAddr::new(ip, port));
-        }
-        anyhow::ensure!(r.i == body.len(), "join code has trailing data");
-        Ok(Self {
-            key,
-            fingerprint,
-            expires: minutes as u64 * 60,
-            account,
-            addresses,
-        })
-    }
-
-    pub fn expired(&self, now: u64) -> bool {
-        now >= self.expires
-    }
-
-    pub fn matches_host_key(&self, key: &str) -> bool {
-        host_key_digest(key).is_ok_and(|d| eq(&d[..FINGERPRINT_LEN], &self.fingerprint))
-    }
-
-    /// `ssh-ed25519 AAAA...`: what the viewer authorizes for the forced redeem command.
-    pub fn invite_public(&self) -> String {
-        openssh_public(&self.key[32..])
-    }
-
-    /// The invite key as an unencrypted OpenSSH private key file, for the joiner's `ssh -i`.
-    pub fn invite_private(&self) -> Result<String> {
-        openssh_private(&self.key, "cx-join", u32::from_be_bytes(random()?))
-    }
-
-    /// A stable id of the invite, from its public half (never the secret seed).
-    pub fn invite_id(&self) -> String {
-        sha(&[b"cx-join-id-v2", &self.key[32..]])[..8]
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect()
-    }
-}
-
-// ---- the invite key's OpenSSH files: formatting only; OpenSSH makes the key and signs with it
-
-fn string(out: &mut Vec<u8>, b: &[u8]) {
-    out.extend_from_slice(&(b.len() as u32).to_be_bytes());
-    out.extend_from_slice(b);
-}
-
-fn ed25519_blob(public: &[u8]) -> Vec<u8> {
-    let mut blob = Vec::new();
-    string(&mut blob, b"ssh-ed25519");
-    string(&mut blob, public);
-    blob
-}
-
-fn openssh_public(public: &[u8]) -> String {
-    format!("ssh-ed25519 {}", STANDARD.encode(ed25519_blob(public)))
-}
-
-/// The base64 public key blob of an invite key (the second field of its `ssh-ed25519` line).
-pub fn openssh_public_blob(key: &[u8; KEY_LEN]) -> String {
-    STANDARD.encode(ed25519_blob(&key[32..]))
-}
-
-/// An unencrypted `openssh-key-v1` file for `key` (seed, then public). `check` is the random check word the
-/// format repeats twice.
-fn openssh_private(key: &[u8; KEY_LEN], comment: &str, check: u32) -> Result<String> {
-    let public = &key[32..];
-    let mut private = zeroize::Zeroizing::new(Vec::with_capacity(256));
-    private.extend_from_slice(&check.to_be_bytes());
-    private.extend_from_slice(&check.to_be_bytes());
-    string(&mut private, b"ssh-ed25519");
-    string(&mut private, public);
-    string(&mut private, key);
-    string(&mut private, comment.as_bytes());
-    let mut pad = 1u8;
-    while private.len() % 8 != 0 {
-        private.push(pad);
-        pad += 1;
-    }
-    let mut file = zeroize::Zeroizing::new(Vec::with_capacity(512));
-    file.extend_from_slice(b"openssh-key-v1\0");
-    string(&mut file, b"none");
-    string(&mut file, b"none");
-    string(&mut file, b"");
-    file.extend_from_slice(&1u32.to_be_bytes());
-    string(&mut file, &ed25519_blob(public));
-    string(&mut file, &private);
-    let encoded = zeroize::Zeroizing::new(STANDARD.encode(&*file));
-    let mut out = String::with_capacity(encoded.len() + 80);
-    out.push_str("-----BEGIN OPENSSH PRIVATE KEY-----\n");
-    for chunk in encoded.as_bytes().chunks(70) {
-        out.push_str(std::str::from_utf8(chunk)?);
-        out.push('\n');
-    }
-    out.push_str("-----END OPENSSH PRIVATE KEY-----\n");
-    Ok(out)
-}
-
-/// The seed and public key of an unencrypted Ed25519 `openssh-key-v1` file (what `ssh-keygen -t ed25519 -N ''`
-/// writes). Anything else (another key type, a passphrase, several keys, inconsistent halves) is refused.
-pub fn parse_openssh_private(text: &str) -> Result<[u8; KEY_LEN]> {
-    let body: zeroize::Zeroizing<String> = text
-        .lines()
-        .skip_while(|l| l.trim() != "-----BEGIN OPENSSH PRIVATE KEY-----")
-        .skip(1)
-        .take_while(|l| l.trim() != "-----END OPENSSH PRIVATE KEY-----")
-        .map(str::trim)
-        .collect::<String>()
-        .into();
-    let raw = zeroize::Zeroizing::new(
-        STANDARD
-            .decode(body.as_bytes())
-            .context("invite key file is not an OpenSSH private key")?,
-    );
-    let bad = || anyhow::anyhow!("invite key file is not an unencrypted Ed25519 OpenSSH key");
-    let mut r = Reader { b: &raw, i: 0 };
-    let field = |r: &mut Reader<'_>| -> Result<Vec<u8>> {
-        let n = u32::from_be_bytes(r.take(4)?.try_into()?) as usize;
-        Ok(r.take(n)?.to_vec())
-    };
-    anyhow::ensure!(r.take(15).ok() == Some(&b"openssh-key-v1\0"[..]), bad());
-    anyhow::ensure!(
-        field(&mut r)? == b"none" && field(&mut r)? == b"none",
-        bad()
-    );
-    anyhow::ensure!(
-        field(&mut r)?.is_empty() && r.take(4)? == 1u32.to_be_bytes(),
-        bad()
-    );
-    let public_blob = field(&mut r)?;
-    let private = zeroize::Zeroizing::new(field(&mut r)?);
-    anyhow::ensure!(r.i == raw.len(), bad());
-    let mut p = Reader { b: &private, i: 0 };
-    anyhow::ensure!(p.take(4)? == p.take(4)?, bad());
-    anyhow::ensure!(field(&mut p)? == b"ssh-ed25519", bad());
-    let public = field(&mut p)?;
-    let pair = zeroize::Zeroizing::new(field(&mut p)?);
-    anyhow::ensure!(
-        public.len() == 32
-            && pair.len() == KEY_LEN
-            && pair[32..] == public[..]
-            && public_blob == ed25519_blob(&public),
-        bad()
-    );
-    let mut key = [0u8; KEY_LEN];
-    key.copy_from_slice(&pair);
-    Ok(key)
-}
-
-struct Reader<'a> {
-    b: &'a [u8],
-    i: usize,
-}
-impl<'a> Reader<'a> {
-    fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        anyhow::ensure!(self.i + n <= self.b.len(), "join code is truncated");
-        let s = &self.b[self.i..self.i + n];
-        self.i += n;
-        Ok(s)
-    }
-}
-
-/// A 12-symbol short code: 10 random symbols and their CRC-10.
-pub fn short_code() -> Result<String> {
-    let r: [u8; 10] = random()?;
-    let body: String = r
-        .iter()
-        .map(|b| ALPHABET[(b & 31) as usize] as char)
-        .collect();
-    Ok(with_short_check(&body))
-}
-
-fn with_short_check(body: &str) -> String {
-    let bits = body.bytes().flat_map(|c| {
-        let v = ALPHABET.iter().position(|&a| a == c).unwrap_or(0) as u16;
-        (0..5).rev().map(move |i| (v >> i) & 1 == 1)
-    });
-    let v = crc(bits, 0x233, 10, 0);
-    format!(
-        "{body}{}{}",
-        ALPHABET[(v >> 5) as usize] as char,
-        ALPHABET[(v & 31) as usize] as char
-    )
-}
-
-/// The normalized short code (12 symbols, checksum verified).
-pub fn parse_short(text: &str) -> Result<String> {
-    let sym = symbols(text)?;
-    anyhow::ensure!(
-        sym.len() == SHORT_LEN,
-        "a short join code has {SHORT_LEN} characters"
-    );
-    let s: String = sym.iter().map(|&v| ALPHABET[v as usize] as char).collect();
-    anyhow::ensure!(
-        with_short_check(&s[..SHORT_LEN - 2]) == s,
-        "join code checksum does not match; check for a mistyped character"
-    );
-    Ok(s)
-}
-
-/// What the Worker indexes a short code by (it never sees the code itself).
-pub fn short_lookup(short: &str) -> String {
-    sha(&[b"cx-pair-lookup-v1", short.as_bytes()])
+/// HMAC-SHA256(key, "cx-pair-v1|<label>|" || each field with a 4-byte length prefix), as hex.
+pub fn mac(key: &[u8; 32], label: &str, fields: &[&[u8]]) -> String {
+    hmac(key, label, fields)
+        .finalize()
+        .into_bytes()
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
 }
 
-fn seal_keys(short: &str) -> ([u8; 32], [u8; 32]) {
-    (
-        sha(&[b"cx-pair-seal-v1", short.as_bytes()]),
-        sha(&[b"cx-pair-mac-v1", short.as_bytes()]),
-    )
+/// Whether `tag` (hex) is [`mac`] of these fields; compared in constant time by the `hmac` crate.
+pub fn verify(key: &[u8; 32], label: &str, fields: &[&[u8]], tag: &str) -> bool {
+    let Some(raw) = hex(tag) else { return false };
+    hmac(key, label, fields).verify_slice(&raw).is_ok()
 }
 
-fn keystream(key: &[u8; 32], nonce: &[u8], data: &mut [u8]) {
-    for (i, chunk) in data.chunks_mut(32).enumerate() {
-        let block = sha(&[key, nonce, &(i as u32).to_be_bytes()]);
-        for (d, k) in chunk.iter_mut().zip(block) {
-            *d ^= k;
-        }
+fn hex(s: &str) -> Option<Vec<u8>> {
+    if s.len() != 64 {
+        return None;
     }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect()
 }
 
-/// Encrypt-then-MAC (SHA-256 counter keystream, HMAC-SHA256 tag) under keys from the short code.
-pub fn seal(short: &str, plain: &[u8]) -> Result<String> {
-    let (enc, mac) = seal_keys(short);
-    let nonce: [u8; 16] = random()?;
-    let mut ct = plain.to_vec();
-    keystream(&enc, &nonce, &mut ct);
-    let tag = hmac(&mac, &[&nonce, &ct]);
-    let mut out = nonce.to_vec();
-    out.extend_from_slice(&ct);
-    out.extend_from_slice(&tag[..16]);
-    Ok(STANDARD.encode(out))
-}
-
-pub fn unseal(short: &str, sealed: &str) -> Result<Vec<u8>> {
-    let raw = STANDARD
-        .decode(sealed.trim())
-        .context("sealed invite is not base64")?;
-    anyhow::ensure!(
-        raw.len() >= 32 && raw.len() <= 4096,
-        "sealed invite has the wrong size"
-    );
-    let (enc, mac) = seal_keys(short);
-    let (nonce, rest) = raw.split_at(16);
-    let (ct, tag) = rest.split_at(rest.len() - 16);
-    anyhow::ensure!(
-        eq(tag, &hmac(&mac, &[nonce, ct])[..16]),
-        "sealed invite failed authentication (wrong code, or altered in transit)"
-    );
-    let mut plain = ct.to_vec();
-    keystream(&enc, nonce, &mut plain);
-    Ok(plain)
+/// `SHA256:...` of an `ssh-ed25519 AAAA...` key: what `ssh-keygen -l` prints.
+pub fn fingerprint(key: &str) -> Result<String> {
+    let blob = key
+        .split_whitespace()
+        .nth(1)
+        .context("invalid SSH public key")?;
+    let blob = STANDARD.decode(blob).context("invalid SSH public key")?;
+    let digest: [u8; 32] = Sha256::digest(&blob).into();
+    Ok(format!(
+        "SHA256:{}",
+        base64::engine::general_purpose::STANDARD_NO_PAD.encode(digest)
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    const KEY: &str =
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
-
-    /// Random stand-in key material: code tests need no real key pair.
-    fn invite() -> [u8; KEY_LEN] {
-        random().unwrap()
-    }
-
-    fn sample() -> Direct {
-        Direct::new(
-            "lunar_z",
-            vec![
-                "192.168.1.20:22".parse().unwrap(),
-                "[fd7a:115c:a1e0::5]:2222".parse().unwrap(),
-            ],
-            KEY,
-            invite(),
-            3600,
-            1_800_000_000,
-        )
-        .unwrap()
-    }
 
     #[test]
-    fn base32_round_trip_and_alphabet() {
-        for len in 0..40 {
-            let bytes: Vec<u8> = (0..len).map(|i| (i * 37 + 11) as u8).collect();
-            let text = encode(&bytes);
-            assert!(text.bytes().all(|b| ALPHABET.contains(&b)));
-            assert!(!text.contains(['I', 'L', 'O', 'U']));
-            assert_eq!(decode_bytes(&symbols(&text).unwrap()), bytes);
-        }
-        assert_eq!(symbols("o-Il").unwrap(), vec![0, 1, 1]);
-        assert!(symbols("U").is_err());
-    }
-
-    #[test]
-    fn direct_code_round_trips_with_normalization() {
-        let d = sample();
-        let code = d.encode();
-        assert!(code.replace('-', "").len() < 200, "{code} is pasteable");
-        let one = Direct::new(
-            "lunarz",
-            vec!["192.168.1.20:22".parse().unwrap()],
-            KEY,
-            invite(),
-            3600,
-            0,
-        )
-        .unwrap();
-        assert!(
-            one.encode().replace('-', "").len() <= 160,
-            "one IPv4 address: {}",
-            one.encode()
-        );
-        assert_eq!(Direct::decode(&code).unwrap(), d);
-        let typed = code
+    fn codes_are_short_and_normalize() {
+        let c = new_code().unwrap();
+        assert_eq!(c.len(), LEN);
+        assert!(c.bytes().all(|b| ALPHABET.contains(&b)));
+        assert_eq!(parse(&c).unwrap(), c);
+        let shown = display(&c);
+        assert_eq!(shown.len(), 13, "{shown}");
+        assert_eq!(parse(&shown).unwrap(), c);
+        let typed = shown
             .to_lowercase()
             .replace('-', " ")
             .replace('0', "o")
             .replace('1', "l");
-        assert_eq!(Direct::decode(&typed).unwrap(), d);
-        assert_eq!(d.expires % 60, 0);
-        assert!(d.expires >= 1_800_003_600);
-        assert!(d.matches_host_key(KEY));
-        assert!(!d.matches_host_key(
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
-        ));
-        assert_eq!(d.invite_id().len(), 16);
-        assert_ne!(
-            d.invite_id(),
-            sample().invite_id(),
-            "each invite has its own key"
-        );
-        // The secret half never shows in Debug (logs, panics).
-        let debug = format!("{d:?}");
-        assert!(!debug.contains(&format!("{:?}", &d.key[..8])), "{debug}");
-        assert!(debug.contains(&d.invite_id()));
-    }
-
-    /// OpenSSH makes the invite key; the file the joiner rebuilds from the code is one OpenSSH reads back to the
-    /// same public key and signs with, verified against an allowed_signers entry for the public half the viewer
-    /// authorizes (namespace cx-pair@v1).
-    #[test]
-    fn openssh_key_survives_the_code_and_signs() {
-        let run = |args: &[&str], dir: &std::path::Path| {
-            std::process::Command::new("ssh-keygen")
-                .args(args)
-                .current_dir(dir)
-                .stdin(std::process::Stdio::null())
-                .output()
-                .unwrap()
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let d = dir.path();
-        let made = run(
-            &["-q", "-t", "ed25519", "-N", "", "-C", "c", "-f", "made"],
-            d,
-        );
-        assert!(made.status.success());
-        let made_text = std::fs::read_to_string(d.join("made")).unwrap();
-        let key = parse_openssh_private(&made_text).unwrap();
-        let generated_pub = std::fs::read_to_string(d.join("made.pub")).unwrap();
-        let code =
-            Direct::new("u", vec!["127.0.0.1:22".parse().unwrap()], KEY, key, 60, 0).unwrap();
-        let joined = Direct::decode(&code.encode()).unwrap();
-        assert!(generated_pub.starts_with(&joined.invite_public()));
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(d.join("rebuilt"))
-            .unwrap()
-            .write_all(joined.invite_private().unwrap().as_bytes())
-            .unwrap();
-        let y = run(&["-y", "-f", "rebuilt"], d);
-        assert!(y.status.success());
-        assert!(String::from_utf8(y.stdout)
-            .unwrap()
-            .starts_with(&joined.invite_public()));
-        std::fs::write(d.join("m"), b"cx pair").unwrap();
-        let sign = run(&["-Y", "sign", "-n", "cx-pair@v1", "-f", "rebuilt", "m"], d);
-        assert!(
-            sign.status.success(),
-            "{}",
-            String::from_utf8_lossy(&sign.stderr)
-        );
-        std::fs::write(
-            d.join("allowed_signers"),
-            format!(
-                "viewer namespaces=\"cx-pair@v1\" {}\n",
-                code.invite_public()
-            ),
-        )
-        .unwrap();
-        let verify = |namespace: &str| {
-            std::process::Command::new("ssh-keygen")
-                .args([
-                    "-Y",
-                    "verify",
-                    "-f",
-                    "allowed_signers",
-                    "-I",
-                    "viewer",
-                    "-n",
-                    namespace,
-                    "-s",
-                    "m.sig",
-                ])
-                .current_dir(d)
-                .stdin(std::fs::File::open(d.join("m")).unwrap())
-                .output()
-                .unwrap()
-                .status
-                .success()
-        };
-        assert!(verify("cx-pair@v1"));
-        assert!(!verify("cx-other@v1"), "the namespace is bound");
-        // The parser refuses what ssh-keygen -N '' never writes for an invite.
-        assert!(parse_openssh_private("").is_err());
-        assert!(parse_openssh_private(&made_text.replace("OPENSSH", "RSA")).is_err());
-        let rsa = run(&["-q", "-t", "rsa", "-b", "2048", "-N", "", "-f", "rsa"], d);
-        assert!(rsa.status.success());
-        assert!(parse_openssh_private(&std::fs::read_to_string(d.join("rsa")).unwrap()).is_err());
-        let locked = run(
-            &["-q", "-t", "ed25519", "-N", "pass-phrase", "-f", "locked"],
-            d,
-        );
-        assert!(locked.status.success());
-        assert!(
-            parse_openssh_private(&std::fs::read_to_string(d.join("locked")).unwrap()).is_err()
-        );
-        // A file whose outer public key is not the private section's is refused.
-        let mut other = key;
-        other[40] ^= 1;
-        let mut private = Vec::new();
-        private.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 1]);
-        string(&mut private, b"ssh-ed25519");
-        string(&mut private, &key[32..]);
-        string(&mut private, &key);
-        string(&mut private, b"");
-        let mut file = b"openssh-key-v1\0".to_vec();
-        for f in [&b"none"[..], b"none", b""] {
-            string(&mut file, f);
+        assert_eq!(parse(&typed).unwrap(), c);
+        assert_ne!(new_code().unwrap(), c, "fresh randomness each time");
+        for bad in ["", "ABCD", &format!("{c}0"), &c[..LEN - 1], "U000000000O"] {
+            assert!(parse(bad).is_err(), "{bad}");
         }
-        file.extend_from_slice(&1u32.to_be_bytes());
-        let armored = |file: &[u8]| {
-            format!(
-                "-----BEGIN OPENSSH PRIVATE KEY-----\n{}\n-----END OPENSSH PRIVATE KEY-----\n",
-                STANDARD.encode(file)
-            )
-        };
-        let mut good = file.clone();
-        string(&mut good, &ed25519_blob(&key[32..]));
-        string(&mut good, &private);
-        assert_eq!(parse_openssh_private(&armored(&good)).unwrap(), key);
-        string(&mut file, &ed25519_blob(&other[32..]));
-        string(&mut file, &private);
-        assert!(parse_openssh_private(&armored(&file)).is_err());
+        assert!(parse(&format!("{}U", &c[..LEN - 1])).is_err());
     }
 
+    /// Every single substitution and every swap of neighbours (the check symbol included) fails the check.
     #[test]
-    fn checksum_catches_every_single_symbol_typo() {
-        for _ in 0..10 {
-            single_typos_fail(&sample().encode().replace('-', ""));
-        }
-    }
-
-    fn single_typos_fail(code: &str) {
-        let code = code.to_owned();
-        let mut caught = 0;
-        let mut total = 0;
-        for i in 0..code.len() {
-            for &c in ALPHABET {
-                let mut b = code.clone().into_bytes();
-                if b[i] == c {
-                    continue;
-                }
-                b[i] = c;
-                total += 1;
-                if Direct::decode(std::str::from_utf8(&b).unwrap()).is_err() {
-                    caught += 1;
-                }
-            }
-        }
-        // CRC-16 detects every burst of up to 16 bits; a single symbol is a 5-bit burst.
-        assert_eq!(caught, total);
-        let mut short = code.clone();
-        short.pop();
-        assert!(Direct::decode(&short).is_err());
-        assert!(Direct::decode(&format!("{code}0")).is_err());
-    }
-
-    #[test]
-    fn crc16_ccitt_false_vector() {
-        assert_eq!(crc16(b"123456789"), 0x29b1);
-    }
-
-    #[test]
-    fn short_code_check_catches_every_single_symbol_typo() {
-        for _ in 0..20 {
-            let s = short_code().unwrap();
-            for i in 0..SHORT_LEN {
-                for &c in ALPHABET {
-                    let mut b = s.clone().into_bytes();
-                    if b[i] == c {
-                        continue;
+    fn check_catches_every_typo_and_neighbour_swap() {
+        for _ in 0..50 {
+            let c = new_code().unwrap().into_bytes();
+            for i in 0..LEN {
+                for &a in ALPHABET {
+                    if a != c[i] {
+                        let mut t = c.clone();
+                        t[i] = a;
+                        assert!(parse(std::str::from_utf8(&t).unwrap()).is_err());
                     }
-                    b[i] = c;
-                    assert!(parse_short(std::str::from_utf8(&b).unwrap()).is_err());
+                }
+                if i + 1 < LEN && c[i] != c[i + 1] {
+                    let mut t = c.clone();
+                    t.swap(i, i + 1);
+                    assert!(parse(std::str::from_utf8(&t).unwrap()).is_err());
                 }
             }
         }
     }
 
     #[test]
-    fn expiry_is_checked() {
-        let d = sample();
-        assert!(!d.expired(1_800_000_000));
-        assert!(!d.expired(d.expires - 1));
-        assert!(d.expired(d.expires));
+    fn x_is_primitive_so_weights_never_repeat() {
+        let mut r = 1u8;
+        for n in 1..=31 {
+            r = times_x(r);
+            assert_eq!(r == 1, n == 31, "x^{n}");
+        }
     }
 
     #[test]
-    fn rejects_bad_fields() {
-        let k = invite();
-        assert!(Direct::new("-x", vec!["1.2.3.4:22".parse().unwrap()], KEY, k, 60, 0).is_err());
-        assert!(Direct::new("a", vec![], KEY, k, 60, 0).is_err());
-        assert!(Direct::new("a", vec!["1.2.3.4:22".parse().unwrap(); 5], KEY, k, 60, 0).is_err());
-        assert!(Direct::decode("ABCD").is_err());
-    }
-
-    #[test]
-    fn short_codes_check_and_seal() {
-        let s = short_code().unwrap();
-        assert_eq!(s.len(), SHORT_LEN);
-        assert_eq!(parse_short(&group(&s, 4).to_lowercase()).unwrap(), s);
-        let mut typo = s.clone().into_bytes();
-        typo[3] = if typo[3] == b'A' { b'B' } else { b'A' };
-        assert!(parse_short(std::str::from_utf8(&typo).unwrap()).is_err());
-        assert!(Direct::decode(&s)
-            .unwrap_err()
-            .to_string()
-            .contains("short code"));
-        let lookup = short_lookup(&s);
-        assert_eq!(lookup.len(), 64);
-        assert!(!lookup.contains(&s.to_lowercase()));
-        let code = sample().encode();
-        let sealed = seal(&s, code.as_bytes()).unwrap();
-        assert!(!sealed.contains(&code));
-        assert_eq!(unseal(&s, &sealed).unwrap(), code.as_bytes());
-        let other = short_code().unwrap();
-        assert!(unseal(&other, &sealed).is_err());
-        let mut raw = STANDARD.decode(&sealed).unwrap();
-        raw[20] ^= 1;
-        assert!(
-            unseal(&s, &STANDARD.encode(raw)).is_err(),
-            "tampering fails the MAC"
+    fn macs_bind_key_label_and_every_field() {
+        let k = key("ABCDEFGHJK0");
+        assert_ne!(k, key("ABCDEFGHJK1"));
+        let t = mac(&k, "join", &[b"ssh-ed25519 AAAA", b"fp"]);
+        assert_eq!(t.len(), 64);
+        assert!(verify(&k, "join", &[b"ssh-ed25519 AAAA", b"fp"], &t));
+        assert!(!verify(&k, "accept", &[b"ssh-ed25519 AAAA", b"fp"], &t));
+        assert!(!verify(&k, "join", &[b"ssh-ed25519 AAAB", b"fp"], &t));
+        assert!(!verify(&k, "join", &[b"ssh-ed25519 AAAAf", b"p"], &t));
+        assert!(!verify(&key("X"), "join", &[b"ssh-ed25519 AAAA", b"fp"], &t));
+        assert!(!verify(&k, "join", &[b"ssh-ed25519 AAAA", b"fp"], &t[..62]));
+        assert!(!verify(&k, "join", &[b"ssh-ed25519 AAAA", b"fp"], "zz"));
+        // The HMAC-SHA256 the hmac crate computes is the standard one (RFC 4231 test case 2).
+        let mut m = <Hmac<Sha256> as Mac>::new_from_slice(b"Jefe").unwrap();
+        m.update(b"what do ya want for nothing?");
+        let hex: String = m
+            .finalize()
+            .into_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            hex,
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
         );
     }
 
     #[test]
-    fn hmac_matches_python_hmac() {
-        // python3 -c 'import hmac;print(hmac.new(b"\x0b"*32,b"Hi There","sha256").hexdigest())'
-        let tag = hmac(&[0x0b; 32], &[b"Hi There"]);
-        let hex: String = tag.iter().map(|b| format!("{b:02x}")).collect();
-        assert_eq!(hex, HMAC_0B32_HI_THERE);
+    fn fingerprints_match_ssh_keygen() {
+        let key =
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("k.pub"), format!("{key}\n")).unwrap();
+        let out = std::process::Command::new("ssh-keygen")
+            .args(["-l", "-E", "sha256", "-f"])
+            .arg(dir.path().join("k.pub"))
+            .output()
+            .unwrap();
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert_eq!(
+            text.split_whitespace().nth(1),
+            Some(fingerprint(key).unwrap().as_str())
+        );
     }
-    const HMAC_0B32_HI_THERE: &str =
-        "198a607eb44bfbc69903a0f1cf2bbdc5ba0aa3f3d9ae3c1c7a3b1696a0b68cf7";
 }

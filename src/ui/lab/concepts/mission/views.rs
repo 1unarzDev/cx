@@ -1223,6 +1223,8 @@ fn peek(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession) {
 /// chip is the touch path for `Ctrl+\` (a double `Ctrl+\` sends one through to the pane,
 /// for nvim's terminal escape and emacs). Detaching lands on the hub with this tile
 /// selected, so `⏎` or `-` re-attaches.
+/// An attached session owns the whole terminal under a one-row breadcrumb whose right end
+/// is the tappable detach chip (`Ctrl+\\` does the same from the keyboard).
 fn attached(cx: &Cx, buf: &mut Buffer, x: &LabSession) {
     let a = cx.area;
     let lines = crate::ui::lab::ansi_lines(&x.screen, x.screen_cols);
@@ -1241,48 +1243,68 @@ fn attached(cx: &Cx, buf: &mut Buffer, x: &LabSession) {
             xx += cx.put(
                 buf,
                 xx,
-                a.y + i as u16,
+                a.y + 1 + i as u16,
                 a.right() - xx,
                 &sp.content,
                 tiles::degrade(cx, sp.style),
             );
         }
     }
-    let y = a.bottom() - 1;
+    let y = a.y;
     let bar = if cx.has_surface() {
         cx.st(Tok::Surface2)
     } else {
         Style::default()
     };
     cx.fill(buf, Rect::new(a.x, y, a.width, 1), bar);
-    let mut bx = a.x;
+    let chip = if cx.uni() {
+        " ⏏ ctrl+\\ detach "
+    } else {
+        " ctrl+\\ detach "
+    };
+    let cw = super::width(chip, cx.uni());
+    let dx = a.right().saturating_sub(cw);
+    let mut bx = a.x + 1;
     bx += cx.put(
         buf,
         bx,
         y,
-        4,
-        " cx ",
+        2,
+        "cx",
         cx.st(Tok::Accent).add_modifier(Modifier::BOLD).patch(bar),
     );
-    bx += tiles::addr(cx, buf, bx, y, x) + 1;
-    let label = if cx.uni() {
-        " ⏏ detach  ctrl+\\ "
+    cx.hit(Rect::new(a.x, y, 3, 1), "hub");
+    let sep = cx.g(" › ", " / ");
+    bx += cx.put(buf, bx, y, 3, sep, cx.ink(Tok::Faint, 1.0).patch(bar));
+    if let Some(d) = cx.s.device(&x.device) {
+        let x0 = bx;
+        bx += cx.dchip(buf, bx, y, d, false);
+        if a.width >= 60 {
+            bx += 1;
+            bx += cx.put(buf, bx, y, 20, &d.name, cx.ink(Tok::Fg, 0.9).patch(bar));
+        }
+        cx.hit(Rect::new(x0, y, bx - x0, 1), format!("device:{}", d.id));
+        bx += cx.put(buf, bx, y, 3, sep, cx.ink(Tok::Faint, 1.0).patch(bar));
+    }
+    let (g, word, sst) = cx.sstate(x);
+    let state = if a.width >= 80 {
+        format!("{g} {word}")
     } else {
-        " detach  ctrl+\\ "
+        g.to_string()
     };
-    let w = super::width(label, cx.uni());
-    let dx = a.right().saturating_sub(w + 1);
-    let room = dx.saturating_sub(bx + 1);
-    cx.put(
+    let sw = super::width(&state, cx.uni());
+    let room = dx.saturating_sub(bx + sw + 3);
+    bx += cx.put(
         buf,
         bx,
         y,
         room,
         &fit(&x.title, room as usize, cx.uni()),
-        cx.ink(Tok::Fg, 0.9).patch(bar),
-    );
-    cx.put(buf, dx, y, w, label, cx.key_style());
-    cx.hit(Rect::new(dx, y, w, 1), "detach");
+        cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD).patch(bar),
+    ) + 2;
+    cx.put(buf, bx, y, sw, &state, sst.patch(bar));
+    cx.put(buf, dx, y, cw, chip, cx.key_style());
+    cx.hit(Rect::new(dx, y, cw, 1), "detach");
 }
 
 // ---------------------------------------------------------------------------- files

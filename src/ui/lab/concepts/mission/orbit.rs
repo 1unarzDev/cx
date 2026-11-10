@@ -1205,7 +1205,8 @@ pub(super) fn draw_with(
     }
 
     // Nodes.
-    let keys = !matches!(sel, Sel::Root);
+    // Letters are keys on the hub and in the send-to picker only.
+    let keys = matches!(sel, Sel::Node(..) | Sel::Targets);
     for n in p.nodes.iter().filter(|n| n.shown) {
         let hot = sel_id == Some(n.d.id.as_str());
         let focus = matches!(sel, Sel::Node(_, true));

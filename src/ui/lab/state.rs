@@ -744,7 +744,7 @@ fn secrets(all: bool) -> Vec<LabSecret> {
             Some("sk-gw-••••••••••7c21"),
             "keyring",
             Some(86400 * 3),
-            &["claude lends"],
+            &["cx lend (shared claude access)"],
         ));
         v.push(s(
             "codex.api_key",

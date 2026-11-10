@@ -1,6 +1,7 @@
 //! `mission`: "mission control". A calm, dense-but-airy dashboard. The hub is a live
-//! network schematic (braille flow lines fanning out from this device), a strip of device
-//! tiles with micro-charts, and session thumbnails showing the live tail of each screen.
+//! network schematic (a star around this device whose node cards carry their own
+//! micro-charts and whose line styles are the access policy) over session thumbnails
+//! showing the live tail of each screen.
 //! One grammar everywhere: a device letter, then a verb or a session slot.
 //! See docs/design/concept-mission.md.
 use crate::ui::lab::{
@@ -118,6 +119,15 @@ impl<'a> Cx<'a> {
     }
     pub fn g(&self, u: &'static str, a: &'static str) -> &'static str {
         self.c.glyph(u, a)
+    }
+    /// The Enter key's label: `⏎`, or `ret` in ASCII and on phones (whose default fonts
+    /// lack the symbol).
+    pub fn ret(&self) -> &'static str {
+        if self.uni() && !self.touch() {
+            "⏎"
+        } else {
+            "ret"
+        }
     }
     pub fn st(&self, t: Tok) -> Style {
         self.c.tok(t)
@@ -346,7 +356,7 @@ impl<'a> Cx<'a> {
     pub fn status(&self, s: DeviceStatus) -> (&'static str, Style) {
         match s {
             DeviceStatus::Local => (self.g("◉", "@"), self.st(Tok::Accent)),
-            DeviceStatus::Online => (self.g("●", "*"), self.st(Tok::Ok)),
+            DeviceStatus::Online => (self.g("●", "o"), self.st(Tok::Ok)),
             DeviceStatus::Stale => (self.g("◐", "~"), self.st(Tok::Warn)),
             DeviceStatus::Down => (self.g("✕", "x"), self.st(Tok::Err)),
             DeviceStatus::Unknown => (self.g("◌", "?"), self.st(Tok::Muted)),
@@ -384,8 +394,8 @@ impl<'a> Cx<'a> {
             SessionState::AwaitingInput => (self.g("◆", "!"), "needs you", self.st(Tok::Warn)),
             SessionState::Working => (self.g("●", "*"), "working", self.st(Tok::Accent)),
             SessionState::Running => (self.g("●", "*"), "running", self.st(Tok::Ok)),
-            SessionState::Idle => (self.g("○", "o"), "idle", self.st(Tok::Muted)),
-            SessionState::Exited => (self.g("·", "-"), "exited", self.ink(Tok::Faint, 1.0)),
+            SessionState::Idle => (self.g("○", "-"), "idle", self.st(Tok::Muted)),
+            SessionState::Exited => (self.g("·", "."), "exited", self.ink(Tok::Faint, 1.0)),
         }
     }
     pub fn prov(&self, x: &LabSession) -> (&'static str, Tok) {
@@ -498,7 +508,8 @@ impl<'a> Cx<'a> {
             }
             let top = y.saturating_sub(th - 1);
             self.hit(Rect::new(x0, top, cx - x0, y + 1 - top), *action);
-            cx += 2;
+            // Phones space chips by one column so a fourth verb still fits at 40.
+            cx += if self.area.width < 50 { 1 } else { 2 };
         }
         cx
     }
@@ -570,9 +581,18 @@ pub(super) fn fit(s: &str, w: usize, unicode: bool) -> String {
     if w == 0 {
         return String::new();
     }
-    let head: String = s.chars().take(w - 1).collect();
+    // ASCII marks a cut with `..` (`~` means degraded there).
+    let mark = if unicode || w < 3 { 1 } else { 2 };
+    let head: String = s.chars().take(w - mark).collect();
     let head = head.trim_end_matches(['…', '.', ' ', '·', '(']);
-    format!("{head}{}", if unicode { "…" } else { "~" })
+    format!(
+        "{head}{}",
+        match (unicode, mark) {
+            (true, _) => "…",
+            (false, 1) => ">",
+            _ => "..",
+        }
+    )
 }
 
 /// ASCII stand-ins for the fixture text's few non-ASCII characters.
@@ -580,8 +600,9 @@ pub(super) fn asciify(s: &str) -> String {
     s.chars()
         .map(|c| match c {
             c if c.is_ascii() => c,
-            '·' | '•' | '●' => '*',
-            '…' => '~',
+            '•' | '●' => '*',
+            '·' => '-',
+            '…' => '>',
             '─' | '━' | '╌' => '-',
             '│' | '┃' | '▌' | '▍' | '▎' => '|',
             '╭' | '╮' | '╰' | '╯' | '┌' | '┐' | '└' | '┘' => '+',

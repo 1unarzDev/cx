@@ -4,10 +4,12 @@
 //! The two halves are balanced by height. The left half is laid out as a right half and
 //! mirrored through the pill, so one router serves both. Links are box-drawing lines with
 //! rounded elbows (`─│╭╮╰╯`, ASCII `-|+`) coloured by network, and their style is the
-//! access policy: solid for key, dashed for password, dotted for off or down. Each link
+//! access policy: solid for key, double for password, dotted for off or down. Each link
 //! carries one chip on its last straight run (policy and rtt), which is also its tap
 //! target. No two links cross: they leave the pill from its top and bottom edges, nearest
-//! target last, and children leave their parent on a short trunk. Nothing here dispatches.
+//! target last, and children leave their parent on a short trunk. Peer links among the
+//! outer devices are faint secondary strokes (brackets, or arcs over the pill) where they
+//! cross nothing. Nothing here dispatches.
 use super::{fit, mix, ms_text, tiles, Cx, Rgb, Size};
 use crate::ui::lab::{Access, DeviceStatus, EdgeKind, LabDevice, LabEdge, Tok};
 use ratatui::{
@@ -56,6 +58,10 @@ struct Plan {
     pmode: Mode,
     /// The pill shows the root's own evidence.
     rich: bool,
+    /// Longest pill name (shortened with an ellipsis beyond it).
+    pmax: u16,
+    /// Columns between neighbouring columns of cards.
+    gap: u16,
     /// "+N" markers: (half x, y, hidden count, flip).
     more: Vec<(u16, u16, usize, bool)>,
 }
@@ -79,17 +85,19 @@ impl Plan {
     }
 }
 
-/// Device ids in selection order: column by column, top to bottom, the viewer last.
+/// Device ids in selection order: the viewer first (launch focus, so `⏎` opens this
+/// device), then column by column, top to bottom.
 pub(super) fn order(cx: &Cx, band: Rect) -> Vec<String> {
     let root = cx.s.viewer.as_str();
     let mut nodes = plan(cx, band, root, 3, None).nodes;
     nodes.sort_by_key(|n| (n.col, n.y, !n.flip));
-    let mut v: Vec<String> = nodes.into_iter().map(|n| n.id).collect();
-    v.push(root.to_string());
-    v
+    std::iter::once(root.to_string())
+        .chain(nodes.into_iter().map(|n| n.id))
+        .collect()
 }
 
-/// Rows the hub schematic wants: room for its tallest column with air between nodes.
+/// Rows the hub schematic needs: its tallest column of two-row cards at a calm spacing,
+/// plus one pad row above and below (where peer links arc over and under the pill).
 pub(super) fn want_h(cx: &Cx) -> u16 {
     let cols = columns(cx, &cx.s.viewer, 3);
     let most = halves(cx, &cols, None)
@@ -97,7 +105,12 @@ pub(super) fn want_h(cx: &Cx) -> u16 {
         .flat_map(|h| h.iter().map(|c| c.len()))
         .max()
         .unwrap_or(1) as u16;
-    most * 4 + 1
+    let sp = match cx.size() {
+        Size::L => 6,
+        Size::M => 5,
+        _ => 3,
+    };
+    (most.max(1) - 1) * sp + 2 + 2
 }
 
 pub(super) fn mesh_tok(cx: &Cx, id: &str) -> Tok {
@@ -146,9 +159,12 @@ fn evidence(cx: &Cx, d: &LabDevice) -> Vec<Seg> {
             v.push((format!("{t:.0}{}", cx.g("°", "C")), cx.heat(hv), true));
         }
     }
-    // Pips sit together, a space after the rest.
+    // Slot letters, one space apart (two after the temperature).
     for (i, (t, st)) in tiles::pip_segs(cx, d, 4).into_iter().enumerate() {
-        v.push((t, st, i == 0 && !v.is_empty()));
+        if i == 0 && !v.is_empty() {
+            v.push((String::new(), st, true));
+        }
+        v.push((t, st, !v.is_empty()));
     }
     v
 }
@@ -197,10 +213,10 @@ fn pill_ev(cx: &Cx, root: &str, mode: Mode, rich: bool) -> Vec<Seg> {
     }
 }
 
-fn pill_w(cx: &Cx, root: &str, mode: Mode, rich: bool) -> u16 {
+fn pill_w(cx: &Cx, root: &str, mode: Mode, rich: bool, nmax: u16) -> u16 {
     let name =
         cx.s.device(root)
-            .map_or(4, |d| d.name.chars().count() as u16);
+            .map_or(4, |d| (d.name.chars().count() as u16).min(nmax));
     let ev = ev_w(cx, &pill_ev(cx, root, mode, rich));
     match mode {
         Mode::Chip => 5,
@@ -364,27 +380,31 @@ fn plan(cx: &Cx, band: Rect, root: &str, depth: usize, keep: Option<(&str, &str)
     let mut widths: [Vec<u16>; 2] = [Vec::new(), Vec::new()];
     let mut rich = false;
     let mut pmode = Mode::Chip;
-    // (node labels, longest name, pill evidence, pill labels, least gap)
+    // (node labels, longest name, pill evidence, pill labels, longest pill name, least
+    // gap). The least gap leaves a link room for its policy word (`key`, `pass`).
     let tries = [
-        (Mode::Full, 22, true, Mode::Full, 9),
-        (Mode::Full, 16, true, Mode::Full, 9),
-        (Mode::Full, 22, false, Mode::Full, 9),
-        (Mode::Full, 16, false, Mode::Full, 9),
-        (Mode::Name, 22, false, Mode::Name, 9),
-        (Mode::Name, 16, false, Mode::Name, 9),
-        (Mode::Name, 12, false, Mode::Name, 8),
-        (Mode::Name, 10, false, Mode::Name, 7),
-        // Names before keycaps: the pill gives up its name first (it is "you").
-        (Mode::Name, 10, false, Mode::Chip, 6),
-        (Mode::Name, 8, false, Mode::Chip, 5),
-        (Mode::Chip, 8, false, Mode::Chip, 5),
+        (Mode::Full, 22, true, Mode::Full, 22, 9),
+        (Mode::Full, 16, true, Mode::Full, 22, 9),
+        (Mode::Full, 22, false, Mode::Full, 22, 9),
+        (Mode::Full, 16, false, Mode::Full, 22, 9),
+        (Mode::Name, 22, false, Mode::Name, 22, 9),
+        (Mode::Name, 16, false, Mode::Name, 16, 9),
+        (Mode::Name, 12, false, Mode::Name, 12, 9),
+        (Mode::Name, 10, false, Mode::Name, 10, 9),
+        // The pill is the hero: it keeps a shortened name longer than its peers do.
+        (Mode::Name, 8, false, Mode::Name, 6, 9),
+        (Mode::Name, 8, false, Mode::Name, 6, 6),
+        (Mode::Chip, 8, false, Mode::Name, 6, 5),
+        (Mode::Chip, 8, false, Mode::Chip, 0, 4),
     ];
     let mut gaps = 0u16;
-    for (m, nm, pr, pm, least) in tries {
+    let mut pmax = 0;
+    for (m, nm, pr, pm, px, least) in tries {
         mode = m;
         nmax = nm;
         rich = pr;
         pmode = pm;
+        pmax = px;
         for s in 0..2 {
             widths[s] = hv[s]
                 .iter()
@@ -399,30 +419,69 @@ fn plan(cx: &Cx, band: Rect, root: &str, depth: usize, keep: Option<(&str, &str)
         }
         gaps = widths.iter().flatten().filter(|w| **w > 0).count() as u16;
         let need =
-            2 + pill_w(cx, root, pm, pr) + widths.iter().flatten().sum::<u16>() + least * gaps;
+            2 + pill_w(cx, root, pm, pr, px) + widths.iter().flatten().sum::<u16>() + least * gaps;
         if need <= band.width {
             break;
         }
     }
-    let pw = pill_w(cx, root, pmode, rich).min(band.width);
+    let pw = pill_w(cx, root, pmode, rich, pmax).min(band.width);
     let fixed = pw + widths.iter().flatten().sum::<u16>();
     let free = band.width.saturating_sub(fixed);
     // Gaps grow with the width (capped so wide screens get air, not stretched lines);
-    // what is left centres the drawing.
+    // what is left centres the drawing. Four columns per side stay free for the peer
+    // brackets outside the outermost cards.
     let gap = if gaps == 0 {
         0
     } else {
-        (free.saturating_sub(4) / gaps).clamp(4, 24)
+        (free.saturating_sub(8) / gaps).clamp(4, 24)
     };
     let left_ext: u16 = widths[1].iter().filter(|w| **w > 0).map(|w| w + gap).sum();
     let total = fixed + gap * gaps;
     let margin = band.width.saturating_sub(total) / 2;
-    let cy = band.y + h.saturating_sub(1) / 2;
+    let rows = if tall && mode == Mode::Full { 2 } else { 1 };
+    // Node spacing: the rows left after one pad row above and below, shared out, capped
+    // so a tall band gives air rather than stretched lines.
+    let (min_sp, max_sp) = match (rows == 2, cx.size()) {
+        (false, _) => (2, 3),
+        (true, Size::L) => (3, 7),
+        (true, _) => (3, 5),
+    };
+    let spacing = |n: u16| -> u16 {
+        if n <= 1 {
+            return 0;
+        }
+        let sp = (h.saturating_sub(rows + 2) / (n - 1)).clamp(min_sp, max_sp);
+        // One-row cards in an even column: an even spacing puts the pill row exactly
+        // between them.
+        if rows == 1 && n % 2 == 0 && sp % 2 == 1 {
+            if (n - 1) * (sp + 1) + rows + 2 <= h || sp == min_sp {
+                sp + 1
+            } else {
+                sp - 1
+            }
+        } else {
+            sp
+        }
+    };
+    let span = |n: u16| (n.max(1) - 1) * spacing(n) + rows;
+    // The tallest column decides where the pill row sits; the drawing is centred.
+    let tallest = hv
+        .iter()
+        .flat_map(|c| {
+            c.iter().map(|c| {
+                let k = cap(c.len());
+                (k + usize::from(k < c.len())) as u16
+            })
+        })
+        .map(span)
+        .max()
+        .unwrap_or(1);
+    let top = band.y + (h.saturating_sub(tallest) + 1) / 2;
+    let cy = top + tallest.saturating_sub(1) / 2;
     let pill = Rect::new(band.x + margin + left_ext, cy, pw, 1);
 
     let mut nodes = Vec::new();
     let mut more = Vec::new();
-    let rows = if tall { 2 } else { 1 };
     for (s, half) in hv.iter().enumerate() {
         let mut x = pill.right() + gap;
         for (k, c) in half.iter().enumerate() {
@@ -436,26 +495,11 @@ fn plan(cx: &Cx, band: Rect, root: &str, depth: usize, keep: Option<(&str, &str)
             };
             let slots = shown + usize::from(shown < c.len());
             let n = slots.max(1) as u16;
-            let min_sp = if tall { 3 } else { 2 };
-            let sp = if n == 1 {
-                0
-            } else {
-                (h.saturating_sub(rows + 1) / (n - 1)).clamp(
-                    min_sp,
-                    if !tall {
-                        3
-                    } else if cx.size() == Size::L {
-                        9
-                    } else {
-                        7
-                    },
-                )
-            };
-            let span = (n - 1) * sp + rows;
+            let sp = spacing(n);
             // Centre the column on the pill row (odd counts put a node on it).
             let y0 = cy
-                .saturating_sub((n - 1) * sp / 2)
-                .clamp(band.y, band.bottom().saturating_sub(span).max(band.y));
+                .saturating_sub((span(n) - 1) / 2)
+                .clamp(band.y, band.bottom().saturating_sub(span(n)).max(band.y));
             for (i, id) in c.iter().take(shown).enumerate() {
                 nodes.push(Node {
                     id: id.clone(),
@@ -479,6 +523,8 @@ fn plan(cx: &Cx, band: Rect, root: &str, depth: usize, keep: Option<(&str, &str)
         mode,
         pmode,
         rich,
+        pmax,
+        gap,
         more,
     }
 }
@@ -488,9 +534,11 @@ const E: u8 = 2;
 const S: u8 = 4;
 const W: u8 = 8;
 
-/// Line styles: the access policy, readable without colour.
+/// Line styles: the access policy, readable without colour. Password is a double line
+/// and off a dotted one, so the three never look alike in any font (unlike two dash
+/// counts); the edited link is heavy.
 const SOLID: u8 = 0;
-const DASH: u8 = 1;
+const DOUBLE: u8 = 1;
 const DOT: u8 = 2;
 const HEAVY: u8 = 3;
 
@@ -501,7 +549,8 @@ struct Grid {
     lvl: Vec<u8>,
     tok: Vec<Tok>,
     style: Vec<u8>,
-    pulse: Vec<bool>,
+    /// Transfer packet: 1 body, 2 head heading east, 3 head heading west.
+    pulse: Vec<u8>,
 }
 
 impl Grid {
@@ -513,7 +562,7 @@ impl Grid {
             lvl: vec![0; n],
             tok: vec![Tok::Faint; n],
             style: vec![SOLID; n],
-            pulse: vec![false; n],
+            pulse: vec![0; n],
         }
     }
     fn at(&self, x: u16, y: u16) -> Option<usize> {
@@ -580,59 +629,51 @@ impl Grid {
             let y = self.r.y + (i / usize::from(self.r.width)) as u16;
             let horiz = b & (N | S) == 0;
             let vert = b & (E | W) == 0;
-            let style = if self.pulse[i] { HEAVY } else { self.style[i] };
-            let g = if !cx.uni() {
+            let pulse = self.pulse[i];
+            let style = if pulse > 0 { HEAVY } else { self.style[i] };
+            let g = if pulse >= 2 {
+                match (pulse, cx.uni()) {
+                    (2, true) => "▸",
+                    (2, false) => ">",
+                    (_, true) => "◂",
+                    _ => "<",
+                }
+            } else if !cx.uni() {
                 match (horiz, vert, style) {
-                    (true, _, DASH | DOT) => ".",
-                    (_, true, DASH | DOT) => ":",
-                    (true, _, HEAVY) => "=",
+                    (true, _, DOUBLE) => "=",
+                    (_, true, DOUBLE) => "\"",
+                    (true, _, DOT) => ".",
+                    (_, true, DOT) => ":",
+                    (true, _, HEAVY) => "#",
                     (true, _, _) => "-",
                     (_, true, _) => "|",
                     _ => "+",
                 }
             } else {
-                let heavy = style == HEAVY;
+                // Corners: rounded, heavy or double, by style.
+                let pick =
+                    |round: &'static str, heavy: &'static str, double: &'static str| match style {
+                        HEAVY => heavy,
+                        DOUBLE => double,
+                        _ => round,
+                    };
                 match b {
                     _ if horiz => match style {
-                        DASH => "┄",
+                        DOUBLE => "═",
                         DOT => "┈",
                         HEAVY => "━",
                         _ => "─",
                     },
                     _ if vert => match style {
-                        DASH => "┆",
+                        DOUBLE => "║",
                         DOT => "┊",
                         HEAVY => "┃",
                         _ => "│",
                     },
-                    x if x == E | S => {
-                        if heavy {
-                            "┏"
-                        } else {
-                            "╭"
-                        }
-                    }
-                    x if x == W | S => {
-                        if heavy {
-                            "┓"
-                        } else {
-                            "╮"
-                        }
-                    }
-                    x if x == N | E => {
-                        if heavy {
-                            "┗"
-                        } else {
-                            "╰"
-                        }
-                    }
-                    x if x == N | W => {
-                        if heavy {
-                            "┛"
-                        } else {
-                            "╯"
-                        }
-                    }
+                    x if x == E | S => pick("╭", "┏", "╔"),
+                    x if x == W | S => pick("╮", "┓", "╗"),
+                    x if x == N | E => pick("╰", "┗", "╚"),
+                    x if x == N | W => pick("╯", "┛", "╝"),
                     x if x == N | E | S => "├",
                     x if x == N | W | S => "┤",
                     x if x == E | W | S => "┬",
@@ -640,29 +681,29 @@ impl Grid {
                     _ => "┼",
                 }
             };
+            // Resting lines stay at >= 3:1 on a light background.
             let a = match self.lvl[i] {
                 0 => {
                     if cx.dark() {
                         0.32
                     } else {
-                        0.45
+                        0.5
                     }
                 }
-                1 => {
-                    if cx.dark() {
-                        0.85
-                    } else {
-                        0.95
-                    }
-                }
+                1 => 0.85,
                 _ => 1.0,
             };
-            let mut st = if self.pulse[i] {
-                cx.ink(Tok::Fg, 1.0)
+            let mut st = if pulse > 0 {
+                // The packet: the link's own hue, pushed toward full ink.
+                let c = mix(cx.rgb(self.tok[i]), cx.fg0(), 0.35);
+                cx.rgb_fg(c)
+            } else if !cx.dark() && cx.tc() {
+                // On cream, the hue is deepened so resting strokes keep their contrast.
+                cx.rgb_fg(mix(mix(cx.bg0(), cx.rgb(self.tok[i]), a), (0, 0, 0), 0.18))
             } else {
                 cx.ink(self.tok[i], a)
             };
-            if self.lvl[i] >= 2 || self.pulse[i] {
+            if self.lvl[i] >= 2 || pulse > 0 {
                 st = st.add_modifier(Modifier::BOLD);
             }
             let c = &mut buf[(x, y)];
@@ -683,7 +724,7 @@ fn edge_tok(cx: &Cx, e: &LabEdge) -> Tok {
     }
 }
 
-/// Line style of a link: key access anywhere is solid, password only is dashed, nothing
+/// Line style of a link: key access anywhere is solid, password only is double, nothing
 /// allowed (or the link is down) is dotted.
 fn line_style(e: &LabEdge) -> u8 {
     let any = |a: Access| e.forward == a || e.reverse == a;
@@ -692,7 +733,7 @@ fn line_style(e: &LabEdge) -> u8 {
     } else if any(Access::Key) {
         SOLID
     } else {
-        DASH
+        DOUBLE
     }
 }
 
@@ -727,24 +768,32 @@ pub(super) fn policy(cx: &Cx, e: &LabEdge, from_left: bool, short: bool) -> Stri
     }
 }
 
-/// Chip text for a link run of `len` cells: policy and rtt, then policy, then the glyph.
+/// Chip text for a link run of `len` cells: policy and rtt, then policy, then the word.
+/// Phones get no chips: the line style and the header legend carry the policy there, and
+/// every chip that remains always says its word (never a bare arrow).
 fn chip_text(cx: &Cx, e: &LabEdge, from_left: bool, len: u16) -> Option<String> {
+    if cx.size() == Size::Xs {
+        return None;
+    }
     let long = policy(cx, e, from_left, false);
+    let word = long.split(' ').nth(1).unwrap_or("").to_string();
     let mut tries = Vec::new();
-    if let Some(ms) = e.rtt_ms.filter(|_| e.up && cx.size() >= Size::S) {
+    if let Some(ms) = e.rtt_ms.filter(|_| e.up) {
         let ms = ms_text(ms);
         tries.push(format!("{long} {ms}"));
         // Two-way and equal: the word alone says it (the line style repeats it).
         if e.forward == e.reverse {
-            let word = long.split(' ').nth(1).unwrap_or("");
             tries.push(format!("{word} {ms}"));
         }
     }
     tries.push(long);
-    tries.push(policy(cx, e, from_left, true));
+    tries.push(word.clone());
     tries
         .into_iter()
         .find(|t| super::width(t, cx.uni()) + 4 <= len)
+        // A tight run keeps the word, one line cell either side of it.
+        .or_else(|| (super::width(&word, cx.uni()) + 4 <= len + 2).then(|| word.trim().to_string()))
+        .map(|t| t.to_string())
 }
 
 /// Draw the network seen from `root` (columns up to `depth` hops) into `band`.
@@ -802,42 +851,6 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, root: &str, depth: usi
     };
     let edge_mode = matches!(sel, Sel::Edge(_));
 
-    // Mesh hulls: a faint tint behind neighbours in one column that share a mesh.
-    if cx.has_surface() && p.mode > Mode::Chip {
-        for col in 1..=3 {
-            for flip in [false, true] {
-                let ns: Vec<&Node> = p
-                    .nodes
-                    .iter()
-                    .filter(|n| n.col == col && n.flip == flip)
-                    .collect();
-                let mut i = 0;
-                while i < ns.len() {
-                    let m = s.device(&ns[i].id).and_then(|d| d.meshes.first().cloned());
-                    let mut j = i + 1;
-                    while j < ns.len()
-                        && m.is_some()
-                        && s.device(&ns[j].id).and_then(|d| d.meshes.first()) == m.as_ref()
-                    {
-                        j += 1;
-                    }
-                    if let (Some(m), true) = (m, j - i >= 2) {
-                        let x0 = ns[i..j].iter().map(|n| p.left(n)).min().unwrap_or(1) - 1;
-                        let x1 = ns[i..j].iter().map(|n| p.left(n) + n.w).max().unwrap_or(0) + 1;
-                        let (y0, y1) = (ns[i].y, ns[j - 1].y + rows);
-                        let a = if cx.dark() { 0.06 } else { 0.07 };
-                        cx.fill(
-                            buf,
-                            Rect::new(x0, y0, x1 - x0, y1 - y0),
-                            cx.wash(mesh_tok(cx, &m), a),
-                        );
-                    }
-                    i = j;
-                }
-            }
-        }
-    }
-
     let mut grid = Grid::new(band);
     let busy = |e: &LabEdge| {
         s.transfers
@@ -879,6 +892,113 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, root: &str, depth: usi
             .max()
             .unwrap_or(p.pill.right())
     };
+    // Peer links (both ends one hop or more out, in one column) are the rest of the mesh:
+    // faint secondary strokes, lit with a chip when one end is selected. On one side they
+    // are a bracket just outside the column (the trunks to the next column move out to
+    // make room); across the pill they arc over it (or under it) when both ends are the
+    // outermost cards of their sides. Anything else would cross a line and is left to
+    // the device view.
+    let rows_n = rows;
+    #[allow(clippy::type_complexity)]
+    let mut peers: Vec<(&LabEdge, Vec<(u16, u16)>, (u16, u16, u16), bool, Option<u8>)> = Vec::new();
+    let mut bracketed: Vec<(usize, bool)> = Vec::new();
+    let on_band = |x: i32| x >= i32::from(band.x) && x < i32::from(band.right());
+    for e in s
+        .edges
+        .iter()
+        .filter(|e| routed(e) && e.from != root && e.to != root)
+    {
+        if edge_mode {
+            break;
+        }
+        let (Some(a), Some(b)) = (find(&e.from), find(&e.to)) else {
+            continue;
+        };
+        if a.col != b.col {
+            continue;
+        }
+        let dot = |n: &Node| {
+            if n.flip {
+                p.left(n) + n.w - 1
+            } else {
+                n.x
+            }
+        };
+        if a.flip == b.flip {
+            let (t, u) = if a.y <= b.y { (a, b) } else { (b, a) };
+            let blocked = links.iter().any(|(_, l2, _, f2)| {
+                *f2 == a.flip && find(l2).is_some_and(|n| n.col == a.col && n.y > t.y && n.y < u.y)
+            });
+            let xb = col_right(a.col, a.flip) + 2;
+            let sx = |x: u16| {
+                if a.flip {
+                    i32::from(p.pill.x) + i32::from(p.pill.right()) - 1 - i32::from(x)
+                } else {
+                    i32::from(x)
+                }
+            };
+            // A bracket needs a wide gap: the next column's trunks move out past it.
+            if blocked || p.gap < 12 || !on_band(sx(xb)) {
+                continue;
+            }
+            let pts: Vec<(u16, u16)> = [
+                (t.x + t.w + 1, t.y),
+                (xb, t.y),
+                (xb, u.y),
+                (u.x + u.w + 1, u.y),
+            ]
+            .iter()
+            .map(|&(x, y)| (p.sx(a.flip, x), y))
+            .collect();
+            let (r0, r1) = (p.sx(a.flip, u.x + u.w + 1), p.sx(a.flip, xb));
+            peers.push((
+                e,
+                pts,
+                (r0.min(r1), r0.max(r1), u.y),
+                (u.id == e.from) != a.flip,
+                None,
+            ));
+            bracketed.push((a.col, a.flip));
+        } else {
+            let edge_of = |n: &Node, top: bool| {
+                p.nodes
+                    .iter()
+                    .filter(|m| m.flip == n.flip && m.col == n.col)
+                    .all(|m| if top { m.y >= n.y } else { m.y <= n.y })
+            };
+            let over = if edge_of(a, true) && edge_of(b, true) {
+                true
+            } else if edge_of(a, false) && edge_of(b, false) {
+                false
+            } else {
+                continue;
+            };
+            let y = if over {
+                match a.y.min(b.y).checked_sub(1) {
+                    Some(y) if y >= band.y => y,
+                    _ => continue,
+                }
+            } else {
+                let y = a.y.max(b.y) + rows_n;
+                if y >= band.bottom() {
+                    continue;
+                }
+                y
+            };
+            let (l, r) = if dot(a) < dot(b) { (a, b) } else { (b, a) };
+            let leg = |n: &Node| if over { n.y - 1 } else { n.y + 1 };
+            let pts = vec![(dot(l), leg(l)), (dot(l), y), (dot(r), y), (dot(r), leg(r))];
+            let from_left = l.id == e.from;
+            let stub = if over { S } else { N };
+            peers.push((
+                e,
+                pts,
+                (dot(l) + 1, dot(r).saturating_sub(1), y),
+                from_left,
+                Some(stub),
+            ));
+        }
+    }
     #[allow(clippy::type_complexity)]
     let mut chips: Vec<(
         u16,
@@ -961,17 +1081,19 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, root: &str, depth: usi
             }
         } else {
             let lc = col_of(l).unwrap_or(0);
-            let base = col_right(lc, flip) + 3;
+            let base = col_right(lc, flip) + 3 + 2 * u16::from(bracketed.contains(&(lc, flip)));
             let k = rank(&|_| true);
             let lane = links
                 .iter()
                 .filter(|(_, l2, _, f2)| *f2 == flip && col_of(l2) == Some(lc) && row_of(l2) < ly)
                 .count() as u16
                 + k;
-            let xb = (base + 2 * lane).min(end.saturating_sub(5));
+            // Never into the names: at worst one blank cell after the widest label.
+            let xb = (base + 2 * lane).min(end.saturating_sub(5)).max(base - 1);
             let sx = right_of(l);
             if ry == ly {
-                (vec![(sx, ly), (end, ry)], (xb, end, ry))
+                // The chip stays clear of sibling trunks leaving this run.
+                (vec![(sx, ly), (end, ry)], (xb.max(sx), end, ry))
             } else {
                 (vec![(sx, ly), (xb, ly), (xb, ry), (end, ry)], (xb, end, ry))
             }
@@ -989,12 +1111,35 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, root: &str, depth: usi
         chips.push((a.min(b), a.max(b), y, e, tok, lvl, from_left, packet));
     }
 
+    for (e, pts, (x0, x1, y), from_left, stub) in peers {
+        let on = lit(e) && matches!(sel, Sel::Node(..));
+        let lvl = if on { 2 } else { 0 };
+        let tok = edge_tok(cx, e);
+        let style = line_style(e);
+        let cells = grid.path(&pts, lvl, tok, style);
+        // An arc's legs end on the cards' status dots.
+        if let (Some(b), Some(&f), Some(&l)) = (stub, cells.first(), cells.last()) {
+            for (x, y) in [f, l] {
+                grid.mark(x, y, b, lvl, tok, style);
+            }
+        }
+        if on {
+            chips.push((x0, x1, y, e, tok, lvl, from_left, None));
+        }
+    }
+
     // One chip per link, centred on its last straight run.
     let mut placed: Vec<(u16, u16, String, Style, &str)> = Vec::new();
     for (x0, x1, y, e, tok, lvl, from_left, packet) in chips {
         let len = x1.saturating_sub(x0);
         let text = chip_text(cx, e, from_left, len);
-        let w = text.as_ref().map_or(0, |t| super::width(t, cx.uni()) + 2);
+        // Padded with a space each side unless the run is tight.
+        let pad = text
+            .as_ref()
+            .is_some_and(|t| super::width(t, cx.uni()) + 4 <= len);
+        let w = text
+            .as_ref()
+            .map_or(0, |t| super::width(t, cx.uni()) + 2 * u16::from(pad));
         let x = x0 + (len.saturating_sub(w) + 1) / 2;
         if let Some((cells, toward_root)) = packet {
             // An active transfer: one bright packet on the unbroken line, clear of the
@@ -1004,20 +1149,46 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, root: &str, depth: usi
                 let straight = grid.at(c.0, c.1).is_some_and(|i| grid.bits[i] == E | W);
                 straight && (c.1 != y || c.0 < x || c.0 >= x + w)
             };
-            let starts: Vec<usize> = (0..cells.len().saturating_sub(2))
-                .filter(|&j| cells[j..j + 3].iter().all(free))
-                .collect();
-            if !starts.is_empty() {
+            // `━━▸` where three straight cells are free, else `━▸`.
+            for k in [3usize, 2] {
+                let starts: Vec<usize> = (0..(cells.len() + 1).saturating_sub(k))
+                    .filter(|&j| cells[j..j + k].iter().all(free))
+                    .collect();
+                if starts.is_empty() {
+                    continue;
+                }
                 let t = (cx.c.frame as usize * 3) % starts.len();
                 let j = starts[if toward_root { starts.len() - 1 - t } else { t }];
-                for &(cx_, cy_) in &cells[j..j + 3] {
-                    if let Some(ix) = grid.at(cx_, cy_) {
-                        grid.pulse[ix] = true;
+                let win = &cells[j..j + k];
+                let (head, next) = if toward_root {
+                    (win[0], win[1])
+                } else {
+                    (win[k - 1], win[k - 2])
+                };
+                for &(px, py) in win {
+                    if let Some(ix) = grid.at(px, py) {
+                        grid.pulse[ix] = if (px, py) == head {
+                            if head.0 > next.0 {
+                                2
+                            } else {
+                                3
+                            }
+                        } else {
+                            1
+                        };
                     }
                 }
+                break;
             }
         }
-        let Some(text) = text else { continue };
+        let Some(text) = text else {
+            // No chip (phones): the run itself is the tap target, three rows tall.
+            if len >= 2 {
+                let r = Rect::new(x0 + 1, y.saturating_sub(1), len - 1, 3);
+                cx.hit(r.intersection(band), format!("edge:{}", e.id));
+            }
+            continue;
+        };
         let a = match lvl {
             0 => 0.4,
             1 => 0.9,
@@ -1043,21 +1214,21 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, root: &str, depth: usi
         } else {
             st
         };
+        let text = if pad { format!(" {text} ") } else { text };
         placed.push((x, y, text, st, e.id.as_str()));
     }
     grid.flush(cx, buf);
     for (x, y, text, st, id) in placed {
-        let w = super::width(&text, cx.uni()) + 2;
-        let n = cx.put(buf, x, y, w, &format!(" {text} "), st);
+        let w = super::width(&text, cx.uni());
+        let n = cx.put(buf, x, y, w, &text, st);
         cx.hit(Rect::new(x, y, n, 1), format!("edge:{id}"));
     }
-
-    draw_pill(cx, buf, &p, root);
 
     let (sel_id, focused) = match sel {
         Sel::Node(id, f) => (Some(id), f),
         _ => (None, false),
     };
+    draw_pill(cx, buf, &p, root, (sel_id == Some(root)).then_some(focused));
     let touch = cx.touch();
     for n in &p.nodes {
         let Some(d) = s.device(&n.id) else { continue };
@@ -1193,16 +1364,29 @@ fn draw_node(
 
 /// The root device: a one-row tinted capsule with its own evidence inline. Without tints
 /// it is a solid accent row (reversed without colour), the same shape as a keycap.
-fn draw_pill(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str) {
+fn draw_pill(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str, pick: Option<bool>) {
     let (pill, mode) = (p.pill, p.pmode);
     let Some(d) = cx.s.device(root) else {
         return;
     };
-    let tint: Rgb = mix(
-        cx.bg0(),
-        cx.rgb(Tok::Accent),
-        if cx.dark() { 0.24 } else { 0.18 },
-    );
+    let strength = match (pick, cx.dark()) {
+        (Some(true), true) => 0.38,
+        (Some(true), false) => 0.3,
+        (_, true) => 0.24,
+        (_, false) => 0.18,
+    };
+    let tint: Rgb = mix(cx.bg0(), cx.rgb(Tok::Accent), strength);
+    // Selected: the same accent bar every other selection uses, left of the capsule.
+    if let Some(f) = pick {
+        let bar = if f {
+            cx.st(Tok::Accent)
+        } else {
+            cx.ink(Tok::Muted, 0.9)
+        };
+        if pill.x > cx.area.x {
+            cx.put(buf, pill.x - 1, pill.y, 1, cx.g("▍", ">"), bar);
+        }
+    }
     let (y, x0, x1) = (pill.y, pill.x, pill.right().saturating_sub(1));
     let inner = Rect::new(x0 + 1, y, pill.width.saturating_sub(2), 1);
     let body = if cx.has_surface() {
@@ -1238,7 +1422,8 @@ fn draw_pill(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str) {
         } else {
             body
         };
-        x += cx.put(buf, x, y, room, &d.name, st.add_modifier(Modifier::BOLD));
+        let name = fit(&d.name, usize::from(p.pmax.min(room)), cx.uni());
+        x += cx.put(buf, x, y, room, &name, st.add_modifier(Modifier::BOLD));
         if !ev.is_empty() {
             let ev: Vec<Seg> = ev
                 .into_iter()

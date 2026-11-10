@@ -13,6 +13,10 @@ use ratatui::{
 pub(super) type Pick = Option<bool>;
 
 pub(super) fn tile_bg(cx: &Cx, pick: Pick) -> Style {
+    // Without tints the bar alone marks the selection (never a reversed block).
+    if !cx.has_surface() {
+        return Style::default();
+    }
     match pick {
         Some(true) => cx.st(Tok::AccentBg),
         Some(false) => cx.st(Tok::SelectDimBg),
@@ -28,8 +32,15 @@ fn pick_bar(cx: &Cx, buf: &mut Buffer, r: Rect, pick: Pick) {
         } else {
             cx.ink(Tok::Muted, 0.8)
         };
+        // ASCII: `>` on the first row only, `|` below it (a column of `>` reads as
+        // shell prompts).
         for y in r.y..r.bottom() {
-            cx.put(buf, r.x, y, 1, cx.g("▌", if f { ">" } else { " " }), st);
+            let a = match (f, y == r.y) {
+                (false, _) => " ",
+                (true, true) => ">",
+                (true, false) => "|",
+            };
+            cx.put(buf, r.x, y, 1, cx.g("▌", a), st);
         }
     }
 }
@@ -88,6 +99,19 @@ pub(super) fn chart(cx: &Cx, buf: &mut Buffer, r: Rect, vals: &[f32], tok: Optio
             }
         }
     }
+}
+
+/// An rtt history as an area chart, scaled between its min and max so jitter shows; a
+/// lost sample is a gap.
+pub(super) fn rtt_chart(cx: &Cx, buf: &mut Buffer, r: Rect, hist: &[Option<f32>], tok: Tok) {
+    let hi = hist.iter().flatten().fold(f32::MIN, |a, b| a.max(*b));
+    let lo = hist.iter().flatten().fold(f32::MAX, |a, b| a.min(*b));
+    let range = (hi - lo).max(1e-3);
+    let vals: Vec<f32> = hist
+        .iter()
+        .map(|v| v.map_or(0.0, |v| 0.12 + 0.88 * (v - lo) / range))
+        .collect();
+    chart(cx, buf, r, &vals, Some(tok));
 }
 
 /// One-row sparkline with gaps for lost samples.
@@ -160,14 +184,15 @@ pub(super) fn mesh_badges(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, d: &LabDevi
             x + w,
             y,
             1,
-            cx.g("▄", "*"),
+            cx.g("▄", "#"),
             cx.st(super::map::mesh_tok(cx, m)),
         );
     }
     w
 }
 
-/// Session pips (one bar per session in its state colour), right-aligned at `right`.
+/// Session pips (one slot letter per session in its state colour, space separated),
+/// right-aligned at `right`.
 pub(super) fn pips(
     cx: &Cx,
     buf: &mut Buffer,
@@ -177,22 +202,29 @@ pub(super) fn pips(
     max: usize,
 ) -> u16 {
     let segs = pip_segs(cx, d, max);
-    let w: u16 = segs.iter().map(|(t, _)| super::width(t, cx.uni())).sum();
+    let w: u16 = segs
+        .iter()
+        .map(|(t, _)| super::width(t, cx.uni()) + 1)
+        .sum::<u16>()
+        .saturating_sub(1);
     let mut x = right.saturating_sub(w);
     for (t, st) in segs {
-        x += cx.put(buf, x, y, 4, &t, st);
+        x += cx.put(buf, x, y, 4, &t, st) + 1;
     }
     w
 }
 
-/// Pips as text segments: a quadrant `▖` per session (a block element, so it never
-/// shrinks in a fallback font, and pips on neighbouring rows never join into a bar).
+/// Pips as text segments: each session's slot letter in its state colour (`a s`), so a
+/// node says both how many sessions run there and the key that attaches each one.
 pub(super) fn pip_segs(cx: &Cx, d: &LabDevice, max: usize) -> Vec<(String, Style)> {
     let ss: Vec<&LabSession> = cx.s.sessions_on(&d.id).collect();
     let mut v: Vec<(String, Style)> = ss
         .iter()
         .take(max)
-        .map(|s| (cx.g("▖", "#").to_string(), cx.sstate(s).2))
+        .map(|s| {
+            let k = cx.slot(s).unwrap_or(' ').to_string();
+            (k, cx.sstate(s).2.add_modifier(Modifier::BOLD))
+        })
         .collect();
     if ss.len() > max {
         v.push((format!("+{}", ss.len() - max), cx.st(Tok::Muted)));
@@ -220,7 +252,10 @@ pub(super) fn device_row(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, pick
     let two = r.height >= 2;
     let tail = if two { 8 } else { 13u16.min(r.width / 2) };
     let up = cx.up(d);
-    let nst = if up {
+    let nst = if pick == Some(true) {
+        // Focused: the bold accent name that goes with the bar, in every tier.
+        cx.st(Tok::Accent).add_modifier(Modifier::BOLD)
+    } else if up {
         cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD)
     } else {
         cx.st(Tok::Muted)
@@ -268,6 +303,28 @@ pub(super) fn device_row(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, pick
     cx.hit(r, format!("device:{}", d.id));
 }
 
+fn text(l: &ratatui::text::Line) -> String {
+    l.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+/// Screen lines up to the last informative one (trailing chrome dropped).
+fn used_lines(x: &LabSession) -> usize {
+    ansi_lines(&x.screen, x.screen_cols)
+        .iter()
+        .rposition(|l| !boring(text(l).trim()))
+        .map_or(0, |i| i + 1)
+}
+
+/// Rows a thumbnail needs to show its whole screen tail: the non-blank lines up to the
+/// last informative one (a taller tile would only add blank rows).
+pub(super) fn tail_rows(x: &LabSession) -> usize {
+    let lines = ansi_lines(&x.screen, x.screen_cols);
+    lines[..used_lines(x)]
+        .iter()
+        .filter(|l| !text(l).trim().is_empty())
+        .count()
+}
+
 /// The screen's last informative lines, cropped, ending above trailing chrome (input
 /// boxes, key hints). Returns the source line range shown.
 pub(super) fn screen_text(
@@ -278,16 +335,7 @@ pub(super) fn screen_text(
     color: bool,
 ) -> (usize, usize) {
     let lines = ansi_lines(&x.screen, x.screen_cols);
-    let text = |l: &ratatui::text::Line| {
-        l.spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect::<String>()
-    };
-    let used = lines
-        .iter()
-        .rposition(|l| !boring(text(l).trim()))
-        .map_or(0, |i| i + 1);
+    let used = used_lines(x);
     // The last lines that carry something; when the tile is short, blank lines go first.
     let h = usize::from(r.height);
     let start = used.saturating_sub(h);
@@ -325,10 +373,10 @@ pub(super) fn screen_text(
                 plain(sp.style)
             };
             // The agent's own reversed key hints (`y Yes`) would look exactly like cx
-            // keycaps on the hub, where those letters mean devices: underline them instead.
+            // keycaps on the hub, where those letters mean devices: thumbnails draw them
+            // in flat ink, no reverse, underline or bold.
             let st = if sp.style.add_modifier.contains(Modifier::REVERSED) {
-                st.remove_modifier(Modifier::REVERSED)
-                    .add_modifier(Modifier::UNDERLINED | Modifier::BOLD)
+                st.remove_modifier(Modifier::REVERSED | Modifier::BOLD | Modifier::UNDERLINED)
             } else {
                 st
             };
@@ -498,6 +546,73 @@ pub(super) fn addr(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, s: &LabSession) ->
     w + cx.put(buf, x + w, y, 3, &format!(" {k} "), cx.key_style())
 }
 
+/// A session as a two-row thumb target (phones): its address, title and state, then the
+/// provider and the screen's most informative line. What needs you is tinted warn.
+pub(super) fn session_row(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pick: Pick) {
+    if r.width < 12 || r.height == 0 {
+        return;
+    }
+    let ask = x.state == crate::ui::lab::SessionState::AwaitingInput;
+    let bg = match pick {
+        Some(_) => tile_bg(cx, pick),
+        None if ask => cx.wash(Tok::Warn, 0.12),
+        None => cx.surface(),
+    };
+    cx.fill(buf, r, bg);
+    if pick.is_some() {
+        pick_bar(cx, buf, r, pick);
+    } else if ask {
+        for y in r.y..r.bottom() {
+            cx.put(buf, r.x, y, 1, cx.g("▌", "!"), cx.st(Tok::Warn));
+        }
+    }
+    let right = r.right().saturating_sub(1);
+    let (g, word, st) = cx.sstate(x);
+    let mut xx = r.x + 2;
+    xx += addr(cx, buf, xx, r.y, x) + 1;
+    let show_word = r.width >= 50 || ask;
+    let tail = if show_word {
+        format!("{g} {word}")
+    } else {
+        g.to_string()
+    };
+    let tw = super::width(&tail, cx.uni());
+    let room = right.saturating_sub(xx + tw + 1);
+    cx.put(
+        buf,
+        xx,
+        r.y,
+        room,
+        &fit(&x.title, room as usize, cx.uni()),
+        if pick == Some(true) {
+            cx.st(Tok::Accent).add_modifier(Modifier::BOLD)
+        } else {
+            cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD)
+        },
+    );
+    cx.put_r(buf, right, r.y, &tail, st);
+    if r.height >= 2 {
+        let (p, ptok) = cx.prov(x);
+        let mut x2 = r.x + 2;
+        x2 += cx.put(buf, x2, r.y + 1, 7, p, cx.st(ptok)) + 1;
+        let cap = if ask {
+            format!("is asking {} tap to answer", cx.g("·", "-"))
+        } else {
+            caption(x)
+        };
+        let room = right.saturating_sub(x2);
+        cx.put(
+            buf,
+            x2,
+            r.y + 1,
+            room,
+            &fit(&cap, room as usize, cx.uni()),
+            cx.st(Tok::Muted),
+        );
+    }
+    cx.hit(r, format!("session:{}:{}", x.device, x.id));
+}
+
 /// Session thumbnail: header (keys, title, state), the screen's live tail and a caption
 /// (provider, folder, activity, age).
 pub(super) fn thumb(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pick: Pick) {
@@ -522,7 +637,11 @@ pub(super) fn thumb(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pick: Pi
     let show_state = r.width >= 30;
     let sw = super::width(&state, cx.uni()) + 2;
     let room = right.saturating_sub(hx + if show_state { sw + 1 } else { 2 });
-    let tst = cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD);
+    let tst = if pick == Some(true) {
+        cx.st(Tok::Accent).add_modifier(Modifier::BOLD)
+    } else {
+        cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD)
+    };
     cx.put(
         buf,
         hx,

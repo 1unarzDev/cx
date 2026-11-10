@@ -97,11 +97,13 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // Sessions: one row, ranked by attention; the full grid lives in each device.
     let n = list.len();
     // `›` (a crumb, "goes on") in Unicode; ASCII keeps the words (`>` is selection).
-    let hint = format!(
-        "{n} {}{}",
-        if n == 1 { "session" } else { "sessions" },
-        cx.g(" ›", "")
-    );
+    // Only when tiles are hidden: `+2 more ›` (when every session shows, no chip).
+    let hidden = n.saturating_sub(usize::from(rows * cols));
+    let hint = if hidden > 0 {
+        format!("+{hidden} more{}", cx.g(" ›", ""))
+    } else {
+        String::new()
+    };
     let hw = super::width(&hint, cx.uni());
     let lx = views::zone(
         cx,
@@ -116,8 +118,10 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         let t = " needs you first ";
         cx.put(buf, lx + 1, y, 17, t, cx.ink(Tok::Muted, 0.8));
     }
-    cx.put_r(buf, right, y, &hint, cx.st(Tok::Muted));
-    cx.hit(Rect::new(right - hw, y, hw, 1), "palette:sessions");
+    if hidden > 0 {
+        cx.put_r(buf, right, y, &hint, cx.st(Tok::Muted));
+        cx.hit(Rect::new(right - hw, y, hw, 1), "palette:sessions");
+    }
     y += 1;
     let grid = Rect::new(r.x + 1, y, r.width.saturating_sub(2), grid_h);
     let pick = if on_sess {

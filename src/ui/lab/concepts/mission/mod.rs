@@ -66,8 +66,9 @@ pub(super) enum Size {
 }
 
 /// Session slot keys inside a device (home row; `f` stays "files", `j k` stay motion as
-/// in files and every list). More sessions than slots are reached through `/`.
-pub(super) const SLOTS: [char; 6] = ['a', 's', 'd', 'g', 'h', 'l'];
+/// in files and every list; `h l` stay fold keys as in files). Sessions past the fourth
+/// are reached by the arrows, `Tab` or `/`.
+pub(super) const SLOTS: [char; 4] = ['a', 's', 'd', 'g'];
 
 /// Render context: fixture, capabilities and the tap targets recorded while drawing.
 pub(super) struct Cx<'a> {
@@ -438,9 +439,10 @@ impl<'a> Cx<'a> {
                 let c = &mut buf[(x, y)];
                 if self.tc() {
                     let fg = to_rgb(c.fg).unwrap_or(self.fg0());
-                    c.fg = self.col(mix(bg0, fg, 0.22)).unwrap_or(Color::Reset);
+                    // One level for every ink (names, strokes, tile text, bold or screen-authored).
+                    c.fg = self.col(mix(bg0, fg, 0.17)).unwrap_or(Color::Reset);
                     c.bg = match to_rgb(c.bg) {
-                        Some(b) => self.col(mix(bg0, b, 0.3)).unwrap_or(Color::Reset),
+                        Some(b) => self.col(mix(bg0, b, 0.2)).unwrap_or(Color::Reset),
                         None => Color::Reset,
                     };
                     c.modifier = Modifier::empty();
@@ -790,7 +792,8 @@ pub(super) fn asciify(s: &str) -> String {
             '·' => out.push('-'),
             '…' => out.push_str(".."),
             '─' | '━' | '╌' => out.push('-'),
-            '│' | '┃' => out.push('|'),
+            // Box sides are blank: `|` is the focused selection bar only.
+            '│' | '┃' => out.push(' '),
             // An agent's own prompt bar is blank: `|` and `:` are cx's selection bars.
             '▌' | '▍' | '▎' => out.push(' '),
             '╭' | '╮' | '╰' | '╯' | '┌' | '┐' | '└' | '┘' => out.push('+'),

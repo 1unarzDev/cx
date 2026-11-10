@@ -355,18 +355,12 @@ fn evidence(cx: &Cx, d: &LabDevice, pips: bool) -> Vec<(String, Style)> {
 
 /// Mesh membership: one swatch per mesh in its hue (ASCII its number), on the label's
 /// outer side, so a mesh reads as the members sharing a colour with their links.
-fn marks_w(cx: &Cx, d: &LabDevice) -> u16 {
-    let n = d.meshes.len() as u16;
-    match (n, cx.uni()) {
-        (0, _) => 0,
-        (_, true) => n + 1,
-        // ASCII numbers keep a space between them (`1 2`, never `12`).
-        (_, false) => 2 * n,
-    }
+fn marks_w(d: &LabDevice) -> u16 {
+    // One blank cell between swatches (`▄ ▄`, `1 2`), so two memberships never fuse.
+    2 * d.meshes.len() as u16
 }
 
 fn marks(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, d: &LabDevice, fade: bool, bg: Style) {
-    let step = if cx.uni() { 1 } else { 2 };
     for (i, m) in d.meshes.iter().enumerate() {
         let st = if fade {
             cx.ink(Tok::Faint, 1.0)
@@ -374,7 +368,7 @@ fn marks(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, d: &LabDevice, fade: bool, b
             cx.ink(mesh_tok(cx, m), 0.9)
         };
         let g = tiles::mesh_glyph(cx, m);
-        cx.put(buf, x + step * i as u16, y, 1, &g, st.patch(bg));
+        cx.put(buf, x + 2 * i as u16, y, 1, &g, st.patch(bg));
     }
 }
 
@@ -402,7 +396,7 @@ fn label_w(cx: &Cx, d: &LabDevice, mode: Mode, nmax: usize, pips: bool) -> u16 {
             } else {
                 4
             };
-            let row0 = 2 + cap + n + marks_w(cx, d);
+            let row0 = 2 + cap + n + marks_w(d);
             if mode == Mode::Full {
                 row0.max(2 + ev_w(cx, &evidence(cx, d, pips)))
             } else {
@@ -1615,7 +1609,7 @@ fn node(cx: &Cx, buf: &mut Buffer, p: &Plan, n: &Node, pick: Option<bool>, keys:
         let w = name_w(cx, d, p.nmax, keys);
         let x = r.right() - 2 - w;
         name(cx, buf, x, r.y, d, p.nmax, nst.patch(bg), keys);
-        marks(cx, buf, x.saturating_sub(marks_w(cx, d)), r.y, d, fade, bg);
+        marks(cx, buf, x.saturating_sub(marks_w(d)), r.y, d, fade, bg);
     } else {
         cx.put(buf, r.x, r.y, 1, g, gst.patch(bg));
         let w = name(cx, buf, r.x + 2, r.y, d, p.nmax, nst.patch(bg), keys);

@@ -242,8 +242,8 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                 foot,
                 vec![
                     ("⏎", "connect", "connect"),
-                    ("j", "join code", "join"),
-                    ("esc", "plain SSH", "skip"),
+                    ("+", "join code", "join"),
+                    ("esc", "plain ssh", "skip"),
                 ],
             );
         }
@@ -463,11 +463,8 @@ fn footer(cx: &Cx, buf: &mut Buffer, r: Rect, items: Keys) {
                 "↑↓" if !cx.uni() => "up/dn",
                 other => other,
             };
-            let l = if cx.size() == Size::Xs && l.len() > 7 {
-                l.split(' ').next().unwrap_or(l)
-            } else {
-                l
-            };
+            // Labels stay whole (a phone footer wraps to a second row instead), so a
+            // chip never loses the word that gives it meaning (`esc plain ssh`).
             (k, l, a)
         })
         .collect();
@@ -658,7 +655,9 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     // tiles, so a live session keeps the full width instead of half of it.
     let ghost_row = main.width < 90;
     let used = if sz == Size::Xs {
-        device_sessions_rows(cx, buf, main, &list, d)
+        // The links keep a row each plus their zone rule; the rest goes to the tiles.
+        let reserve = if links_n > 0 { links_n + 2 } else { 0 };
+        device_sessions_rows(cx, buf, main, &list, reserve)
     } else {
         let tiles_n = list.len() as u16 + u16::from(!ghost_row);
         let cols = if sz == Size::S { 2 } else { 3 }.min(tiles_n).max(1);
@@ -861,9 +860,14 @@ fn link_tail(cx: &Cx, e: &LabEdge, loss: bool) -> String {
 /// rtt and loss at the right. A link closed both ways has no live rtt to chart: it says
 /// so, with the last value seen, in muted text.
 fn link_rows(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, edges: &[&LabEdge]) {
-    let n = edges.len().max(1) as u16;
-    // Up to three rows each, on one scale from 0 (see `link_scale`).
-    let ch = ((r.height + 1) / n).saturating_sub(1).clamp(1, 3);
+    // Charts share the rows a big screen leaves (a closed link takes one row and a gap),
+    // up to six rows each, on one scale from 0.
+    let shut = |e: &LabEdge| e.forward == Access::Denied && e.reverse == Access::Denied;
+    let closed = edges.iter().filter(|e| shut(e)).count() as u16;
+    let open = (edges.len() as u16 - closed).max(1);
+    let ch = ((r.height + 1).saturating_sub(2 * closed) / open)
+        .saturating_sub(1)
+        .clamp(1, 6);
     let hi = link_scale(edges);
     // The stats column is as wide as its widest entry; charts run to it, less a gutter.
     let tail_w = edges
@@ -872,8 +876,8 @@ fn link_rows(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, edges: &[&LabEdg
         .map(|e| super::width(&link_tail(cx, e, true), cx.uni()))
         .max()
         .unwrap_or(0);
-    for (i, e) in edges.iter().enumerate() {
-        let top = r.y + i as u16 * (ch + 1);
+    let mut top = r.y;
+    for e in edges {
         if top + 1 > r.bottom() {
             break;
         }
@@ -917,7 +921,9 @@ fn link_rows(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, edges: &[&LabEdg
             tiles::rtt_chart(cx, buf, Rect::new(x, top, sw, h), &e.rtt_hist, tok, hi);
             cx.put_r(buf, r.right(), top, &tail, cx.st(Tok::Muted));
         }
-        cx.hit(Rect::new(r.x, top, r.width, ch), format!("edge:{}", e.id));
+        let h = if shut(e) { 1 } else { ch };
+        cx.hit(Rect::new(r.x, top, r.width, h), format!("edge:{}", e.id));
+        top += h + 1;
     }
 }
 
@@ -1244,24 +1250,35 @@ fn device_sessions_rows(
     buf: &mut Buffer,
     r: Rect,
     list: &[&LabSession],
-    d: &LabDevice,
+    reserve: u16,
 ) -> u16 {
     let mut y = r.y;
     let sel = cx.c.selected % (list.len() + 1);
+    // Rows the two-row entries, the ghost row and the links leave go to the selected
+    // session as a thumbnail (up to its screen tail), so a prompt is recognisable.
+    let spare = r.height.saturating_sub(list.len() as u16 * 3 + 1 + reserve);
     for (i, x) in list.iter().enumerate() {
         if y + 1 >= r.bottom() {
             break;
         }
-        let row = Rect::new(r.x, y, r.width, 2);
-        tiles::session_row(cx, buf, row, x, (i == sel).then_some(true));
+        let h = if i == sel && spare >= 2 {
+            (2 + spare).min(tiles::tail_rows(x) as u16 + 2)
+        } else {
+            2
+        };
+        let row = Rect::new(r.x, y, r.width, h);
+        if h > 2 {
+            tiles::thumb(cx, buf, row, x, Some(true));
+        } else {
+            tiles::session_row(cx, buf, row, x, (i == sel).then_some(true));
+        }
         if i == sel && cx.c.focus == Some(Pane::Custom("stop")) {
             stop_confirm(cx, buf, row, x);
         }
-        y += 3;
+        y += h + 1;
     }
     if y < r.bottom() {
         new_row(cx, buf, r.x, y, r.right());
-        let _ = d;
         y += 1;
     }
     y - r.y
@@ -1482,12 +1499,7 @@ fn attached(cx: &Cx, buf: &mut Buffer, x: &LabSession) {
         let mut cells: Vec<(char, Style)> = Vec::new();
         for sp in &l.spans {
             let st = tiles::degrade(cx, sp.style);
-            let text = if cx.uni() {
-                sp.content.to_string()
-            } else {
-                super::asciify(&sp.content)
-            };
-            cells.extend(text.chars().map(|c| (c, st)));
+            cells.extend(sp.content.chars().map(|c| (c, st)));
         }
         // Trailing padding wraps into blank rows; a tinted run (a diff row) keeps it
         // while it fits.
@@ -1506,16 +1518,41 @@ fn attached(cx: &Cx, buf: &mut Buffer, x: &LabSession) {
             cells.truncate(w - 1);
             cells.push(last);
         }
+        // Continuation rows hang at the line's content column (after its indent and a
+        // `⎿` / `+` / `●` marker), as the agent wraps them, the indent keeping the
+        // first row's tint so a diff gutter stays put.
+        let indent = cells
+            .iter()
+            .position(|(c, _)| !(c.is_whitespace() || "⎿●+-*>✻•".contains(*c)))
+            .unwrap_or(0)
+            .min(w / 2);
+        // ASCII after the box is redrawn, so the box keeps the pane's width.
+        if !cx.uni() {
+            cells = cells
+                .into_iter()
+                .flat_map(|(c, st)| {
+                    let a = super::asciify(&c.to_string());
+                    a.chars().map(move |c| (c, st)).collect::<Vec<_>>()
+                })
+                .collect();
+            if boxed {
+                cells.truncate(w);
+            }
+        }
+        let pad: Vec<(char, Style)> = cells[..indent.min(cells.len())]
+            .iter()
+            .map(|&(_, st)| (' ', st))
+            .collect();
         while cells.len() > w {
             // Break at the last space in the row (a word longer than the row is cut).
             let at = cells[..=w]
                 .iter()
                 .rposition(|c| c.0 == ' ')
-                .filter(|&i| i > w / 3)
+                .filter(|&i| i > indent + (w - indent) / 3)
                 .unwrap_or(w);
             let rest = cells.split_off(at);
             rows.push(cells);
-            cells = rest.into_iter().skip_while(|c| c.0 == ' ').collect();
+            cells = pad.iter().copied().chain(rest.into_iter().skip_while(|c| c.0 == ' ')).collect();
         }
         rows.push(cells);
     }
@@ -2146,7 +2183,9 @@ fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
             Rect::new(a.x, a.y + 1, a.width, a.height - 1),
             Style::default(),
         );
-        Rect::new(a.x, a.y + 1, a.width, a.height - 1)
+        // The sheet ends a row above the screen's last, where its chips sit as on
+        // every phone footer (never inside the sheet's border).
+        Rect::new(a.x, a.y + 1, a.width, a.height.saturating_sub(2))
     } else {
         Rect::new(
             a.x + (a.width - w) / 2,
@@ -2157,14 +2196,14 @@ fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
     };
     // Only the sheet is live; a tap beside it closes the palette.
     cx.clear_hits();
+    let below = if cx.touch() {
+        0
+    } else {
+        a.bottom().saturating_sub(r.bottom())
+    };
     for band in [
         Rect::new(a.x, a.y, a.width, r.y.saturating_sub(a.y)),
-        Rect::new(
-            a.x,
-            r.bottom(),
-            a.width,
-            a.bottom().saturating_sub(r.bottom()),
-        ),
+        Rect::new(a.x, r.bottom(), a.width, below),
     ] {
         cx.hit(band, "back");
     }
@@ -2192,7 +2231,7 @@ fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
     // The last row teaches the palette's own keys.
     // (Phones pin it to the screen's last row, like every phone footer.)
     let hint_y = if cx.touch() {
-        r.bottom().saturating_sub(1)
+        a.bottom().saturating_sub(1)
     } else {
         inner.bottom().saturating_sub(1)
     };
@@ -2594,15 +2633,15 @@ fn onboarding(cx: &Cx, buf: &mut Buffer, r: Rect) {
     };
     cx.put(buf, x0, y, bw, &btn, bst);
     cx.hit(Rect::new(x0, y, bw, 1), "connect-cloudflare");
-    if !small || cx.size() > Size::Xs {
-        cx.put(
-            buf,
-            x0 + bw + 2,
-            y,
-            w.saturating_sub(bw + 2),
-            "opens dash.cloudflare.com with a ready token",
-            cx.st(Tok::Muted),
-        );
+    // The button's note sits beside it when it fits whole, else on a muted row under
+    // it (never cut).
+    let note = "opens dash.cloudflare.com with a ready token";
+    let nw = super::width(note, cx.uni());
+    if bw + 2 + nw <= w {
+        cx.put(buf, x0 + bw + 2, y, nw, note, cx.st(Tok::Muted));
+    } else if !small && nw <= w {
+        y += 1;
+        cx.put(buf, x0, y, nw, note, cx.st(Tok::Muted));
     }
     y += 2;
     let steps = [
@@ -2638,15 +2677,23 @@ fn onboarding(cx: &Cx, buf: &mut Buffer, r: Rect) {
             t,
             cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD),
         );
-        if cx.size() >= Size::S {
-            cx.put(buf, x0 + 24, y, w.saturating_sub(24), d, cx.st(Tok::Muted));
+        // The note in a side column when it fits whole there; otherwise (below about
+        // 90 columns) wrapped on muted rows under its step. Never cut.
+        let dw = super::width(d, cx.uni());
+        if dw + 24 <= w {
+            cx.put(buf, x0 + 24, y, dw, d, cx.st(Tok::Muted));
+        } else if !small {
+            for line in wrap(d, usize::from(w.saturating_sub(x - x0))) {
+                y += 1;
+                cx.put(buf, x, y, w, &line, cx.st(Tok::Muted));
+            }
         }
         y += if small { 1 } else { 2 };
     }
     // Secondary ways in, one per row, after a breathing row.
     y += 1;
     for (k, t, act) in [
-        ("j", "I have a join code", "join"),
+        ("+", "I have a join code", "join"),
         ("esc", "plain SSH for now", "skip"),
     ] {
         if y >= r.bottom() {
@@ -2685,7 +2732,7 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
     };
     let qw = n + 2 * q;
     let qh = (n + 2 * q).div_ceil(2);
-    let side_by_side = r.width >= qw + 44 && r.height >= qh;
+    let side_by_side = cx.uni() && r.width >= qw + 44 && r.height >= qh;
     let (qx, qy, tx, ty, tw) = if side_by_side {
         // The QR and the text column centre as one group, the column as wide as its
         // longest line (the one-liner).
@@ -2695,8 +2742,14 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
         let qy = r.y + (r.height.saturating_sub(qh)) / 2;
         (x0, qy, x0 + qw + 4, qy + 1, total - qw - 4)
     } else {
+        // Stacked, or no QR: the text column centres on its own, as wide as the
+        // one-liner so the command stays unbroken where it can.
         let x0 = r.x + (r.width.saturating_sub(qw)) / 2;
-        (x0, r.y, r.x + 2, r.y + qh + 1, r.width.saturating_sub(4))
+        let col = (inv.oneliner.chars().count() as u16 + 2)
+            .max(40)
+            .min(r.width.saturating_sub(4));
+        let tx = r.x + (r.width - col) / 2;
+        (x0, r.y, tx, r.y + qh + 1, col)
     };
     // QR in half blocks with a light quiet zone, always dark-on-light.
     let room_h = r.bottom().saturating_sub(qy);
@@ -2752,10 +2805,8 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
             }
         }
         cx.hit(Rect::new(qx, qy, qw, qh), "qr");
-    } else if !side_by_side {
-        // No QR in ASCII; text carries everything.
     }
-    let ty = if show_qr || side_by_side { ty } else { r.y + 1 };
+    let ty = if show_qr { ty } else { r.y + 1 };
     let mut y = ty;
     cx.put(
         buf,
@@ -2774,9 +2825,33 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
         &format!("joins {} as a guest", inv.mesh),
         cx.st(Tok::Muted),
     );
+    if !show_qr && cx.uni() && y + 1 < r.bottom() {
+        y += 1;
+        cx.put(buf, tx, y, tw, "QR on a wider screen", cx.st(Tok::Faint));
+    }
     y += 2;
-    // The code as large mono text on one tinted surface (not keycaps: its letters are
-    // not cx keys), letters spaced so it reads aloud in pairs and triples.
+    // At M and up with room, the code is drawn in three-row half-block letters on a
+    // five-row tint: the page's hero, readable across a room.
+    // A half-block pixel is square (half a cell tall, one cell wide).
+    let gw: u16 = inv.code.chars().map(|c| if c == '-' { 2 } else { 4 }).sum();
+    let big = cx.size() >= Size::M && cx.uni() && gw + 3 <= tw && r.bottom().saturating_sub(y) >= 16;
+    if big {
+        let st = cx.ink(Tok::Accent, 1.0);
+        let st = if cx.has_surface() {
+            cx.st(Tok::Surface2).patch(st)
+        } else {
+            st
+        };
+        let tint = Rect::new(tx, y, gw + 3, 5);
+        if cx.has_surface() {
+            cx.fill(buf, tint, st);
+        }
+        big_text(cx, buf, tx + 2, y + 1, &inv.code, st);
+        cx.hit(tint, "copy-code");
+        y += 6;
+    }
+    // Otherwise the code as mono text on one tinted surface (not keycaps: its letters
+    // are not cx keys), letters spaced so it reads aloud in pairs and triples.
     let spaced: String = inv
         .code
         .chars()
@@ -2799,16 +2874,18 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
     };
     // With room, the surface is three rows tall, so the code is the page's largest mark.
     let tall = cx.has_surface() && r.height >= 24;
-    if tall {
-        cx.fill(buf, Rect::new(tx, y, cw, 3), st);
-        y += 1;
+    if !big {
+        if tall {
+            cx.fill(buf, Rect::new(tx, y, cw, 3), st);
+            y += 1;
+        }
+        let x = tx + cx.put(buf, tx, y, cw, &text, st);
+        cx.hit(
+            Rect::new(tx, y - u16::from(tall), x - tx, 1 + 2 * u16::from(tall)),
+            "copy-code",
+        );
+        y += if tall { 3 } else { 2 };
     }
-    let x = tx + cx.put(buf, tx, y, cw, &text, st);
-    cx.hit(
-        Rect::new(tx, y - u16::from(tall), x - tx, 1 + 2 * u16::from(tall)),
-        "copy-code",
-    );
-    y += if tall { 3 } else { 2 };
     if y < r.bottom() {
         cx.put(
             buf,
@@ -2825,8 +2902,7 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
         // clipboard escapes do not reach (Termux without permission, tmux without
         // `set-clipboard on`); copying says so when it cannot confirm.
         let cw = tw.saturating_sub(2).max(1) as usize;
-        let chars: Vec<char> = inv.oneliner.chars().collect();
-        let mut parts: Vec<String> = chars.chunks(cw).map(|c| c.iter().collect()).collect();
+        let mut parts = break_cmd(&inv.oneliner, cw);
         if parts.len() > 3 {
             parts.truncate(3);
             parts[2] = fit(&format!("{}{}", parts[2], "…"), cw, cx.uni());
@@ -2854,6 +2930,72 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
             left,
             cx.st(Tok::Accent),
         );
+    }
+}
+
+/// Cut a command into rows of at most `w`, breaking after a space or `/` where one
+/// falls in the row (never inside the code), else hard.
+fn break_cmd(s: &str, w: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest: Vec<char> = s.chars().collect();
+    while rest.len() > w {
+        let cut = (w / 2..w)
+            .rev()
+            .find(|&i| rest[i - 1] == ' ' || rest[i - 1] == '/')
+            .unwrap_or(w);
+        out.push(rest.drain(..cut).collect());
+    }
+    out.push(rest.into_iter().collect());
+    out
+}
+
+/// A 3x5 pixel font for join codes (digits and capitals), one `u16` per glyph, rows top
+/// to bottom, three bits per row (left bit first).
+fn glyph_bits(c: char) -> u16 {
+    const G: [&str; 36] = [
+        "111101101101111", "010110010010111", "111001111100111", "111001011001111",
+        "101101111001001", "111100111001111", "111100111101111", "111001001010010",
+        "111101111101111", "111101111001111", "010101111101101", "110101110101110",
+        "011100100100011", "110101101101110", "111100110100111", "111100110100100",
+        "011100101101011", "101101111101101", "111010010010111", "001001001101010",
+        "101110100110101", "100100100100111", "101111111101101", "110101101101101",
+        "010101101101010", "110101110100100", "111101101111011", "110101110101101",
+        "011100010001110", "111010010010010", "101101101101111", "101101101101010",
+        "101101111111101", "101101010101101", "101101010010010", "111001010100111",
+    ];
+    let i = match c.to_ascii_uppercase() {
+        d @ '0'..='9' => d as usize - '0' as usize,
+        l @ 'A'..='Z' => 10 + l as usize - 'A' as usize,
+        _ => return 0,
+    };
+    u16::from_str_radix(G[i], 2).unwrap_or(0)
+}
+
+/// Draw `code` three rows tall in half blocks: 3 columns per letter, one blank between
+/// letters, two at a `-`.
+fn big_text(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, code: &str, st: Style) {
+    let mut x = x;
+    for c in code.chars() {
+        if c == '-' {
+            x += 2;
+            continue;
+        }
+        let bits = glyph_bits(c);
+        // Pixel rows -1..5 (a blank row on top centres five rows in three cells).
+        let px = |row: i32, col: u16| row >= 0 && bits >> (14 - row * 3 - i32::from(col)) & 1 == 1;
+        for row in 0..3u16 {
+            for col in 0..3u16 {
+                let (t, b) = (px(row as i32 * 2 - 1, col), px(row as i32 * 2, col));
+                let g = match (t, b) {
+                    (true, true) => "█",
+                    (true, false) => "▀",
+                    (false, true) => "▄",
+                    (false, false) => " ",
+                };
+                cx.put(buf, x + col, y + row, 1, g, st);
+            }
+        }
+        x += 4;
     }
 }
 
@@ -2961,12 +3103,13 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) -> (String, String)
         if ly >= inner.bottom() {
             break;
         }
-        let mut lx = inner.x;
+        // ASCII keeps a blank cell after the `>` bar (`> t->i`, never `>t->i`).
+        let mut lx = inner.x + u16::from(!cx.uni());
         let picked = i == sel_lane;
         if picked {
             cx.put(
                 buf,
-                lx.saturating_sub(1),
+                inner.x.saturating_sub(1),
                 ly,
                 1,
                 cx.g("▌", ">"),
@@ -2980,9 +3123,10 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) -> (String, String)
         };
         lx += cx.put(buf, lx, ly, 5, if i == 0 { &dirs.0 } else { &dirs.1 }, dst);
         lx += 2;
+        // Phones say `pass`, so all three segments keep their shape on one row.
         let opts = [
             (Access::Key, "a", "key"),
-            (Access::Password, "p", "password"),
+            (Access::Password, "p", if inner.width < 44 { "pass" } else { "password" }),
             (Access::Denied, "o", "off"),
         ];
         for (val, k, label) in opts {
@@ -2992,7 +3136,8 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) -> (String, String)
             } else {
                 k.to_string()
             };
-            let text = format!(" {k} {label} ");
+            // Every segment has one shape: keycap, a blank cell, the word.
+            let text = format!(" {k}  {label} ");
             let st = if on {
                 if cx.c.has_color() {
                     let tok = match val {
@@ -3021,7 +3166,7 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) -> (String, String)
             }
             cx.hit(
                 Rect::new(lx, ly, n, 1),
-                format!("policy:{}:{}:{label}", f.id, t.id),
+                format!("policy:{}:{}:{}", f.id, t.id, if k.eq_ignore_ascii_case("p") { "password" } else { label }),
             );
             lx += n + 1;
         }
@@ -3266,8 +3411,21 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         ];
         let n = items.len() as u16;
         let mut y = r.y + r.height.saturating_sub(n) / 2;
-        let kx = r.x + 6;
-        let dx = kx + 13;
+        let kx = r.x + 5;
+        // Each keycap column is as wide as its widest key (rows of one key, such as
+        // `ctrl+\`, only set the description column), so every column lines up.
+        let mut cols = [0u16; 3];
+        for (_, keys, _) in items.iter().filter(|(_, k, _)| k.len() > 1) {
+            for (j, k) in keys.iter().enumerate() {
+                cols[j] = cols[j].max(super::width(k, cx.uni()) + 3);
+            }
+        }
+        let single = items
+            .iter()
+            .map(|(_, k, _)| super::width(k[0], cx.uni()) + 3)
+            .max()
+            .unwrap_or(0);
+        let dx = kx + cols.iter().sum::<u16>().max(single);
         for (row, (lead, keys, v)) in items.into_iter().enumerate() {
             if y >= r.bottom() {
                 break;
@@ -3280,7 +3438,8 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                     Some(d) => cx.chip_style(cx.s.hue(&d.id)),
                     None => cx.key_style(),
                 };
-                x += cx.put(buf, x, y, 9, &format!(" {k} "), st) + 1;
+                cx.put(buf, x, y, 9, &format!(" {k} "), st);
+                x += cols[j];
             }
             cx.put(
                 buf,
@@ -3437,8 +3596,8 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         y += 2;
     } else {
         zone(cx, buf, x0, y, right, "IN A DEVICE", false);
-        // One word for the six slot keys, not six `attach` caps.
-        cx.put_r(buf, right, y, " a s d g h l  attach a slot", cx.st(Tok::Muted));
+        // One word for the four slot keys, not four `attach` caps.
+        cx.put_r(buf, right, y, " a s d g  attach a slot", cx.st(Tok::Muted));
         y += 2;
         let ks = cx.key_style();
         let acc = if cx.has_surface() {

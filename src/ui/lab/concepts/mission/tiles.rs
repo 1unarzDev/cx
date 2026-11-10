@@ -73,12 +73,16 @@ pub(super) fn chart(cx: &Cx, buf: &mut Buffer, r: Rect, vals: &[f32], tok: Optio
             } else {
                 " "
             };
-            // A hued chart is a faint body under a full-hue top cell, so a tall chart
-            // never outweighs the names beside it.
+            // A hued chart is a faint body under a full-hue top edge, so a tall chart
+            // never outweighs the names beside it (lighter still on a light theme). A
+            // column whose top lands on a cell boundary gets a thin `▔` cap over a body
+            // cell, never a full-hue block, so a dip reads as a lower value, not a notch.
             let top_cell = total - (i32::from(row) + 1) * 8 <= 0;
-            let shade = match tok {
-                Some(t) if cx.tc() && fill > 0 && !top_cell => cx.ink(t, 0.32),
-                _ => st,
+            let body_a = if cx.dark() { 0.32 } else { 0.18 };
+            let (s, shade) = match tok {
+                Some(t) if cx.tc() && fill > 0 && !top_cell => (s, cx.ink(t, body_a)),
+                Some(t) if cx.tc() && fill == 8 && cx.uni() => ("▔", st.patch(cx.wash(t, body_a))),
+                _ => (s, st),
             };
             if fill == 0 && row == 0 && cx.uni() {
                 cx.put(buf, r.x + i as u16, y, 1, "▁", cx.ink(Tok::Faint, 0.8));
@@ -180,18 +184,6 @@ pub(super) fn gauge(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, w: u16, v: f32, s
         };
         cx.put(buf, x + i, y, 1, g, s);
     }
-}
-
-/// Mesh membership as small squares in the mesh hue. A half block is drawn as geometry
-/// by kitty, foot, ghostty and alacritty, so it keeps its size in any fallback font
-/// (the former `◆` shrank to a dot in DejaVu).
-pub(super) fn mesh_badges(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, d: &LabDevice) -> u16 {
-    let mut w = 0;
-    for m in &d.meshes {
-        let g = mesh_glyph(cx, m);
-        w += cx.put(buf, x + w, y, 1, &g, cx.st(super::orbit::mesh_tok(cx, m)));
-    }
-    w
 }
 
 /// A mesh's swatch: a square in its hue, or in ASCII its number (`1`, `2`), which the

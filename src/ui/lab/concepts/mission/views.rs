@@ -3473,7 +3473,9 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                 cx.put(buf, x0 + 1, y, iw - 1, intent, cx.ink(Tok::Muted, 0.8));
             }
             let k = key(k);
-            cx.put(buf, kx, y, kw, &format!(" {k} "), cx.key_style());
+            // One keycap width for the column, so the caps line up as a block.
+            let pad = usize::from(kw.saturating_sub(2));
+            cx.put(buf, kx, y, kw, &format!(" {k:<pad$} "), cx.key_style());
             let room = right.saturating_sub(dx);
             cx.put(buf, dx, y, room, &fit(v, usize::from(room), cx.uni()), cx.ink(Tok::Fg, 0.9));
             y += 1;

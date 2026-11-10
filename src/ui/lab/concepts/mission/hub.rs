@@ -94,6 +94,7 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
             buf,
             Rect::new(r.x + 1, y, r.width.saturating_sub(2), vit_h),
             d,
+            list.len() < usize::from(rows * cols),
         );
     }
     y += vit_h + 1;
@@ -186,7 +187,8 @@ fn legend(cx: &Cx, buf: &mut Buffer, mut x: u16, y: u16, right: u16) -> u16 {
 
 /// The selected device: identity, route with the rtt of every hop, live vitals and the
 /// keys that act on it from the hub (a letter, then a verb).
-fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
+/// `ghost`: the session grid shows the `new on` tile, so the strip leaves new out.
+fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
     let bg = if cx.has_surface() {
         cx.surface()
     } else {
@@ -250,8 +252,10 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     if n > 0 {
         items.push((&attach, "attach", "attach"));
     }
-    if up {
+    if up && !ghost {
         items.push((&new, "claude", "new"));
+    }
+    if up {
         items.push((&files, "files", "files"));
     }
     if d.id != cx.s.viewer {
@@ -338,7 +342,7 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         let Some(mesh) = cx.s.meshes.iter().find(|q| &q.id == m) else {
             continue;
         };
-        let t = format!("{} {}", tiles::mesh_glyph(cx, m), mesh.name);
+        let t = format!("{} {}", tiles::mesh_glyph(cx), mesh.name);
         let w = super::width(&t, cx.uni());
         if x + w + 2 > stop {
             break;
@@ -631,7 +635,8 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
         if let Some(m) = d.metrics.as_ref().filter(|_| up) {
             let v: Vec<Option<f32>> = m.cpu_hist.iter().map(|v| Some(*v)).collect();
             let sw = right.saturating_sub(ex + 12).min(12);
-            tiles::spark(cx, buf, ex, r.y + 1, sw, &v, cx.spark_heat(m.cpu).patch(bg));
+            // One neutral tone: only a hot device's figure takes a colour.
+            tiles::spark(cx, buf, ex, r.y + 1, sw, &v, cx.ink(Tok::Muted, 0.6).patch(bg));
             let t = match m.temp_c {
                 Some(t) => format!("{:.0}% {t:.0}{}", m.cpu * 100.0, cx.g("°", "C")),
                 None => format!("{:.0}%", m.cpu * 100.0),
@@ -642,7 +647,7 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
                 r.y + 1,
                 10,
                 &t,
-                cx.st(Tok::Muted).patch(bg),
+                cx.st(if m.cpu >= 0.85 { Tok::Warn } else { Tok::Muted }).patch(bg),
             );
         } else {
             cx.put(

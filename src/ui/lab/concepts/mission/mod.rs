@@ -512,7 +512,7 @@ impl<'a> Cx<'a> {
         match s {
             DeviceStatus::Local => (self.g("◉", "@"), self.st(Tok::Accent)),
             DeviceStatus::Online => (self.g("●", "o"), self.st(Tok::Ok)),
-            DeviceStatus::Stale => (self.g("◐", "~"), self.st(Tok::Warn)),
+            DeviceStatus::Stale => (self.g("○", "%"), self.st(Tok::Warn)),
             DeviceStatus::Down => (self.g("✕", "x"), self.st(Tok::Err)),
             DeviceStatus::Unknown => (self.g("◌", "?"), self.st(Tok::Muted)),
         }

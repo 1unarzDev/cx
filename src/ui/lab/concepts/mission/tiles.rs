@@ -144,15 +144,9 @@ pub(super) fn gauge(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, w: u16, v: f32, s
     }
 }
 
-/// A mesh's swatch: a square in its hue, or in ASCII its number (`1`, `2`), which the
-/// header legend repeats, so membership reads without colour.
-pub(super) fn mesh_glyph(cx: &Cx, id: &str) -> String {
-    if cx.uni() {
-        "■".into()
-    } else {
-        let i = cx.s.meshes.iter().position(|m| m.id == id).unwrap_or(0);
-        (i + 1).to_string()
-    }
+/// A mesh's swatch: a square in its hue (`#` in ASCII); the mesh's name follows it.
+pub(super) fn mesh_glyph(cx: &Cx) -> String {
+    cx.g("■", "#").into()
 }
 
 /// Session pips (one slot letter per session in its state colour, space separated),

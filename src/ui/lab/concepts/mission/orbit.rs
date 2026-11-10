@@ -1,5 +1,5 @@
 //! The network as a quiet diagram: the root device (this one on the hub) sits in the
-//! middle in its capsule, the devices it reaches sit in a column either side of it and
+//! middle as `◉` and its name, the devices it reaches sit in a column either side of it and
 //! devices reached through them in the next column out, each subtree beside its relay.
 //! Links are thin box-drawing lines of one weight with rounded corners: a short stub
 //! leaves the root, a trunk runs along the column, and a branch enters each label with a
@@ -7,7 +7,7 @@
 //! ssh; a line shared by several links is neutral); the selection's route is brighter.
 //! The stroke is the access policy, used sparingly: solid where a key is allowed, dashed
 //! where only a password is, an arrowhead at the end access reaches where it goes one
-//! way, a faint line where nothing crosses (`⊘` at its inner end when closed, the device's
+//! way, a faint line where nothing crosses (`⊘` mid-run when closed, the device's
 //! `✕` when down). Nothing here dispatches.
 use super::{fit, tiles, Cx, Size};
 use crate::ui::lab::{Access, DeviceStatus, EdgeKind, LabDevice, LabEdge, Tok};
@@ -267,11 +267,11 @@ fn label_w(cx: &Cx, d: &LabDevice, mode: Mode, nmax: usize, keys: bool) -> u16 {
     }
 }
 
-/// One cell each side, the status glyph, a space and the name.
+/// The status glyph, a space and the name (a keycap with a cell each side).
 fn pill_w(cx: &Cx, d: &LabDevice, mode: Mode, keys: bool) -> u16 {
     match mode {
         Mode::Key => 5,
-        Mode::Name => 4 + name_w(cx, d, 16, keys),
+        Mode::Name => 2 + name_w(cx, d, 16, keys),
     }
 }
 
@@ -285,11 +285,11 @@ fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, depth: usize, keys_only: bool, 
     // Every named mode with a clear row between labels first, then packed: names
     // packed closer beat bare keycaps. (An even spacing keeps two peers symmetric
     // about their relay.)
-    // Big screens try a wider spacing first (still even); columns draw closer (down
-    // to the shortest stub that keeps a corner) before a name is cut.
-    let spacings: &[i32] = if cx.size() == Size::L { &[4, 2, 1] } else { &[2, 1] };
+    // Columns draw closer (down to the shortest stub that keeps a corner) before a
+    // name is cut; big screens keep the same compact drawing, centred.
+    let spacings: &[i32] = &[2, 1];
     let full: u16 = match cx.size() {
-        Size::L => 12,
+        Size::L => 10,
         Size::M => 10,
         Size::S => 8,
         Size::Xs => 6,
@@ -619,7 +619,7 @@ impl Grid {
 }
 
 /// The line glyph for a cell's joins. ASCII: `-` `|` and `+` at every corner; a
-/// password run is `=` (unbroken); quiet lines are `.` and `:`.
+/// password run is `.` and `:`; a quiet line is drawn plain (its ends say why).
 fn line_ch(b: u8, pat: Pat, uni: bool) -> char {
     let flat = b & (UP | DN) == 0;
     let tall = b & (LT | RT) == 0;
@@ -627,14 +627,14 @@ fn line_ch(b: u8, pat: Pat, uni: bool) -> char {
         match b {
             _ if flat => {
                 if pat == Pat::Dash {
-                    '┄'
+                    '╌'
                 } else {
                     '─'
                 }
             }
             _ if tall => {
                 if pat == Pat::Dash {
-                    '┆'
+                    '╎'
                 } else {
                     '│'
                 }
@@ -651,9 +651,8 @@ fn line_ch(b: u8, pat: Pat, uni: bool) -> char {
         }
     } else {
         match (pat, flat, tall) {
-            (Pat::Quiet, true, _) => '.',
-            (Pat::Quiet, _, true) => ':',
-            (Pat::Dash, true, _) => '=',
+            (Pat::Dash, true, _) => '.',
+            (Pat::Dash, _, true) => ':',
             (_, true, _) => '-',
             (_, _, true) => '|',
             _ => '+',
@@ -739,9 +738,7 @@ pub(super) fn draw_with(
         } else {
             e.reverse != Access::Denied
         };
-        // An arrowhead into the label keeps one more clear cell before it, where the
-        // columns are far enough apart.
-        let clear = 3 + i32::from(e.up && e.one_way() && toward_kid && half >= 4);
+        let clear = 3;
         let (start, end, trunk) = if n.side > 0 {
             let end = i32::from(n.label.x) - clear;
             (i32::from(pa.right()) + 2, end, end - half + clear - 1)
@@ -797,8 +794,8 @@ pub(super) fn draw_with(
     let style = |tok: Tok, lit: bool, pat: Pat| {
         // A quiet line (closed or down) stays faint even when lit: it is no route.
         let alpha: f32 = match (lit, fade_all) {
-            (false, true) => 0.2,
-            (true, true) => 0.95,
+            (false, true) => 0.14,
+            (true, true) => 1.0,
             _ if pat == Pat::Quiet => 0.3,
             (true, false) => 0.95,
             _ => 0.55,
@@ -855,7 +852,7 @@ pub(super) fn draw_with(
         }
     }
     // Ends: an arrowhead where access goes one way, at the end it reaches; `⊘` at the
-    // inner end of a link closed both ways (`/` in ASCII).
+    // middle of a link closed both ways (`x` in ASCII).
     for l in &links {
         let st = ink(l);
         let mut put = |at: (i32, i32), g: &str| {
@@ -865,16 +862,17 @@ pub(super) fn draw_with(
         };
         if l.e.up && l.e.one_way() {
             let right = (l.side > 0) == l.toward_kid;
+            // A solid triangle meets its stroke; a font arrow floats in its cell.
             let g = match (right, cx.uni()) {
-                (true, true) => "→",
-                (false, true) => "←",
+                (true, true) => "▶",
+                (false, true) => "◀",
                 (true, false) => ">",
                 (false, false) => "<",
             };
             put(if l.toward_kid { l.kid_end } else { l.par_end }, g);
         } else if l.e.up && closed(l.e) {
-            // At the inner end, away from the device's own status dot.
-            put(l.par_end, cx.g("⊘", "/"));
+            // Mid-run, clear of both labels.
+            put(((l.par_end.0 + l.kid_end.0) / 2, l.kid_end.1), cx.g("⊘", "x"));
         }
     }
     // Nodes. Letters are keys on the hub and in the send-to picker only.
@@ -937,13 +935,7 @@ pub(super) fn name(
     if at.is_none() {
         w += cx.dchip(buf, x, y, d, false) + 1;
     }
-    // On a solid capsule (no tints) the letter keeps the capsule's ink.
-    let key = if st.bg.is_some() && !cx.has_surface() {
-        st.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-    } else {
-        cx.st(Tok::Accent)
-            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-    };
+    let key = cx.st(Tok::Accent).add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
     for (i, ch) in nm.chars().enumerate() {
         let s = ch.to_string();
         let cst = if at == Some(i) { st.patch(key) } else { st };
@@ -991,19 +983,9 @@ fn node(cx: &Cx, buf: &mut Buffer, p: &Plan, n: &Node, pick: Option<bool>, keys:
         }
         return;
     }
-    let bg = match pick {
-        Some(true) if cx.has_surface() => cx.st(Tok::AccentBg),
-        Some(false) if cx.has_surface() => cx.st(Tok::SelectDimBg),
-        _ => Style::default(),
-    };
     let outer = Rect::new(r.x.saturating_sub(1), r.y, r.width + 2, 1);
     if let Some(f) = pick {
-        if cx.has_surface() {
-            cx.fill(buf, outer, bg);
-        } else {
-            cx.put(buf, outer.x, r.y, 1, "[", bar(f));
-            cx.put(buf, r.right(), r.y, 1, "]", bar(f));
-        }
+        brackets(cx, buf, outer, bar(f));
     }
     // The viewer seen from another device is a peer here: its plain dot (`◉` marks
     // the map's root only).
@@ -1014,8 +996,8 @@ fn node(cx: &Cx, buf: &mut Buffer, p: &Plan, n: &Node, pick: Option<bool>, keys:
     };
     let (g, gst) = cx.status(status);
     let gst = if fade { cx.ink(Tok::Faint, 1.0) } else { gst };
-    let nst = if pick == Some(true) {
-        cx.st(Tok::Accent).add_modifier(Modifier::BOLD)
+    let nst = if let Some(f) = pick {
+        cx.ink(Tok::Accent, if f { 1.0 } else { 0.7 }).add_modifier(Modifier::BOLD)
     } else if fade {
         // Muted, not faint: a faded name stays readable (faint is for lines).
         cx.ink(Tok::Muted, 0.85)
@@ -1029,8 +1011,8 @@ fn node(cx: &Cx, buf: &mut Buffer, p: &Plan, n: &Node, pick: Option<bool>, keys:
     } else {
         (r.x, r.x + 2)
     };
-    cx.put(buf, gx, r.y, 1, g, gst.patch(bg));
-    name(cx, buf, nx, r.y, d, p.nmax, nst.patch(bg), keys);
+    cx.put(buf, gx, r.y, 1, g, gst);
+    name(cx, buf, nx, r.y, d, p.nmax, nst, keys);
     if !fade {
         hit_node(cx, outer, d);
     }
@@ -1058,49 +1040,26 @@ fn hit_node(cx: &Cx, r: Rect, d: &LabDevice) {
     cx.hit(r, format!("device:{}", d.id));
 }
 
-/// The capsule that marks the root (hub, device star, onboarding): an accent tint, a
-/// solid accent row in 16 colours, reversed without colour; in ASCII its padding cells
-/// are `(` `)`. Returns the body style.
-pub(super) fn capsule(cx: &Cx, buf: &mut Buffer, r: Rect, strength: f32) -> Style {
-    let body = if cx.has_surface() {
-        cx.rgb_bg(super::mix(cx.bg0(), cx.rgb(Tok::Accent), strength))
-    } else if cx.c.has_color() {
-        Style::default()
-            .bg(cx.st(Tok::Accent).fg.unwrap_or_default())
-            .fg(ratatui::style::Color::Black)
-    } else {
-        Style::default().add_modifier(Modifier::REVERSED)
-    };
-    cx.fill(buf, r, body);
-    if !cx.uni() {
-        cx.put(buf, r.x, r.y, 1, "(", body);
-        cx.put(buf, r.right() - 1, r.y, 1, ")", body);
+/// A selection where colour cannot show it: brackets in the cells either side of `r`.
+fn brackets(cx: &Cx, buf: &mut Buffer, r: Rect, st: Style) {
+    if !cx.uni() || !cx.c.has_color() {
+        cx.put(buf, r.x, r.y, 1, "[", st);
+        cx.put(buf, r.right() - 1, r.y, 1, "]", st);
     }
-    body
 }
 
-/// The root: a tinted capsule with `◉` and its name (hotkey underlined). Selected, the
-/// tint deepens (brackets where there are no tints: in ASCII they replace the capsule's
-/// parentheses).
+/// The root: `◉` and its name in bold (hotkey underlined), no background. Selected, it
+/// takes the brackets every selected label has.
 fn pill(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str, pick: Option<bool>, keys: bool, fade: bool) {
     let Some(d) = cx.s.device(root) else { return };
     let r = p.pill;
-    let strength = match (pick, cx.dark()) {
-        _ if fade => 0.1,
-        (Some(true), true) => 0.42,
-        (Some(true), false) => 0.32,
-        (_, true) => 0.26,
-        (_, false) => 0.18,
+    let bar = |f: bool| {
+        if f {
+            cx.st(Tok::Accent)
+        } else {
+            cx.ink(Tok::Muted, 0.9)
+        }
     };
-    // Keycap maps draw the root as its keycap between brackets: tinted shoulders
-    // beside a keycap read as a render artefact at that size.
-    let key_root = p.mode == Mode::Key && cx.has_surface();
-    let body = if key_root {
-        Style::default()
-    } else {
-        capsule(cx, buf, r, strength)
-    };
-    let pick = if key_root { pick.or(Some(false)) } else { pick };
     if p.mode == Mode::Key {
         cx.put(
             buf,
@@ -1110,6 +1069,9 @@ fn pill(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str, pick: Option<bool>, key
             &format!(" {} ", d.hotkey),
             cx.chip_style(cx.s.hue(&d.id)),
         );
+        // A keycap root keeps its bars: beside keycaps, colour alone does not read.
+        cx.put(buf, r.x, r.y, 1, cx.g("▕", "["), bar(pick.unwrap_or(false)));
+        cx.put(buf, r.right() - 1, r.y, 1, cx.g("▏", "]"), bar(pick.unwrap_or(false)));
     } else {
         // `◉` marks the root on every map unless its status has something to say.
         let (g, gst) = cx.status(d.status);
@@ -1118,27 +1080,15 @@ fn pill(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str, pick: Option<bool>, key
         } else {
             g
         };
-        let gst = if cx.has_surface() { gst.patch(body) } else { body };
-        cx.put(buf, r.x + 1, r.y, 1, g, gst);
-        let st = if cx.has_surface() {
-            cx.ink(Tok::Fg, 1.0).patch(body).add_modifier(Modifier::BOLD)
+        cx.put(buf, r.x, r.y, 1, g, gst);
+        let st = if let Some(f) = pick {
+            cx.ink(Tok::Accent, if f { 1.0 } else { 0.7 })
         } else {
-            body.add_modifier(Modifier::BOLD)
+            cx.ink(Tok::Fg, if fade { 0.85 } else { 1.0 })
         };
-        name(cx, buf, r.x + 3, r.y, d, 16, st, keys);
-    }
-    if let Some(f) = pick.filter(|_| key_root || !cx.has_surface()) {
-        let bar = if f {
-            cx.st(Tok::Accent)
-        } else {
-            cx.ink(Tok::Muted, 0.9)
-        };
-        if cx.uni() {
-            cx.put(buf, r.x.saturating_sub(1), r.y, 1, "▕", bar);
-            cx.put(buf, r.right(), r.y, 1, "▏", bar);
-        } else {
-            cx.put(buf, r.x, r.y, 1, "[", body);
-            cx.put(buf, r.right() - 1, r.y, 1, "]", body);
+        name(cx, buf, r.x + 2, r.y, d, 16, st.add_modifier(Modifier::BOLD), keys);
+        if let Some(f) = pick {
+            brackets(cx, buf, Rect::new(r.x.saturating_sub(1), r.y, r.width + 2, 1), bar(f));
         }
     }
     let hit = if cx.touch() {

@@ -3512,7 +3512,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         let mut x = kx + 1;
         for (g, t) in [
             (cx.g("──", "--"), "key"),
-            (cx.g("┄┄", "- -"), "password"),
+            (cx.g("┄┄", "=="), "password"),
             (cx.g("→", ">"), "one way"),
             (cx.g("⊘", ".."), "closed"),
         ] {

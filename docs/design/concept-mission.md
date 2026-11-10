@@ -102,7 +102,7 @@ nothing on the lines but the lines.
   back to the root (and its own children) at 95 %. **Hue is network**: the mesh hue
   (violet, blue), teal for lan, neutral for direct ssh; a cell shared by links of
   different networks is neutral. **Stroke is policy, used sparingly**: solid where a key
-  is allowed, dashed (`┄ ┆`, ASCII `-` every other column) where only a password is, a
+  is allowed, dashed (`┄ ┆`; ASCII an unbroken `=`) where only a password is, a
   faint neutral line where nothing crosses (30 %; ASCII `.` and `:`), with `⊘` at the
   device's end when it is closed both ways (a down device's `✕` says the rest). A one-way
   link has one small arrowhead (`→ ←`, ASCII `>` `<`) at the end access reaches: beside

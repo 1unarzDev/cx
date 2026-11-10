@@ -604,9 +604,9 @@ impl Grid {
     }
 }
 
-/// The line glyph for a cell's joins. ASCII: `-` `|` and `+` at every corner; a dashed
-/// run is `-` every other column; quiet lines are `.` and `:`.
-fn line_ch(b: u8, pat: Pat, uni: bool, x: u16) -> char {
+/// The line glyph for a cell's joins. ASCII: `-` `|` and `+` at every corner; a
+/// password run is `=` (unbroken); quiet lines are `.` and `:`.
+fn line_ch(b: u8, pat: Pat, uni: bool) -> char {
     let flat = b & (UP | DN) == 0;
     let tall = b & (LT | RT) == 0;
     if uni {
@@ -639,7 +639,7 @@ fn line_ch(b: u8, pat: Pat, uni: bool, x: u16) -> char {
         match (pat, flat, tall) {
             (Pat::Quiet, true, _) => '.',
             (Pat::Quiet, _, true) => ':',
-            (Pat::Dash, true, _) if x % 2 == 1 => ' ',
+            (Pat::Dash, true, _) => '=',
             (_, true, _) => '-',
             (_, _, true) => '|',
             _ => '+',
@@ -817,10 +817,7 @@ pub(super) fn draw_with(
                 style(tok, lit, pat)
             };
             let (bx, by) = (band.x + x, band.y + y);
-            let ch = line_ch(b, pat, cx.uni(), bx);
-            if ch != ' ' {
-                buf[(bx, by)].set_char(ch).set_style(st);
-            }
+            buf[(bx, by)].set_char(line_ch(b, pat, cx.uni())).set_style(st);
         }
     }
     // Ends: an arrowhead where access goes one way, at the end it reaches; `⊘` at the

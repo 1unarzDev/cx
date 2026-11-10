@@ -21,6 +21,10 @@ libc = "0.2"
 signal-hook = "0.3"
 tar = "0.4"
 flate2 = "1"
+zeroize = { version = "1.8", features = ["serde"] }
+age = { version = "0.11", default-features = false }
+# Pure-Rust Secret Service over zbus (no libdbus, so static musl builds keep working); macOS Keychain.
+keyring = { version = "3.6", default-features = false, features = ["apple-native", "async-secret-service", "async-io", "crypto-rust"] }
 image = { version = "=0.25.9", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
 
 [dev-dependencies]

@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +50,21 @@ class MeshUtil(unittest.TestCase):
             t = (W / f).read_text()
             self.assertNotIn("lunarz", t.lower(), f)
             self.assertNotRegex(t, r"\b100\.96\.\d+\.\d+\b", f)
+
+    def test_device_script_never_sees_the_api_token(self):
+        calls = []
+
+        def run(argv, **kw):
+            calls.append((argv, kw.get("env")))
+            return subprocess.CompletedProcess(argv, 0, b"true\n", b"")
+        with unittest.mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "cf-admin-canary"}), \
+                unittest.mock.patch.object(mesh.subprocess, "run", run):
+            self.assertEqual(mesh.device_script("https://mesh.example.org/abc", False), 0)
+        self.assertEqual([argv[0] for argv, _ in calls], ["curl", "sh"])
+        for _, env in calls:
+            self.assertIsNotNone(env)
+            self.assertNotIn("CLOUDFLARE_API_TOKEN", env)
+            self.assertNotIn("cf-admin-canary", repr(env))
 
     def test_dry_run_join_changes_nothing(self):
         body = (W / "join.sh").read_text().replace("__MESH_URL__", "https://mesh.example.org").replace("__MESH_CODE__", "abcd2345")
@@ -275,6 +291,16 @@ class ClaudeLend(unittest.TestCase):
             self.assertEqual(L.revoke("evan")["revoked"], ["policy", "service token", "gateway key", "code"])
             self.assertEqual((w.tokens, [p["id"] for p in w.app_pols], w.keys), ([], ["keep"], {"cc-lend-evan": "Disabled"}))
             self.assertEqual(L.revoke("evan")["revoked"], [], "a second revoke finds nothing")
+
+    def test_gateway_command_never_sees_the_api_token(self):
+        w = FakeLendWorld()
+        envs = []
+        real = w.gateway
+        w.gateway = lambda argv, **kw: (envs.append(kw.get("env")), real(argv, **kw))[1]
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "cf-admin-canary"}):
+            self.lends(d, w).lend("evan", hours=1)
+        self.assertTrue(envs and all(e is not None and "CLOUDFLARE_API_TOKEN" not in e for e in envs))
+        self.assertEqual(envs[0].get("PATH"), os.environ.get("PATH"))
 
     def test_mesh_only_lend_makes_no_access_token(self):
         w = FakeLendWorld()

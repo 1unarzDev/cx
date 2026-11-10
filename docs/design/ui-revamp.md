@@ -313,7 +313,7 @@ See section 10 for rendering. **L (200x60)**:
 ```
 ┏━ Secrets ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃   NAME                     VALUE             SOURCE          AGE   USED BY    ┃
-┃ ▌ Cloudflare API token     •••••••• (40)     file 0600       3d    mesh setup ┃
+┃ ▌ Cloudflare API token     •••••••• (40)     keyring         3d    mesh setup ┃
 ┃   Mesh worker token        managed remotely  cloudflare      3d    mesh       ┃
 ┃   Claude gateway lend      2 active          mesh endpoint   1h    claude lend┃
 ┃   SSH identity             ~/.ssh/id_ed25519 agent: no       ·     ssh routes ┃
@@ -325,7 +325,7 @@ See section 10 for rendering. **L (200x60)**:
 
 - Values are always masked as dots with the length in parentheses. No partial characters, not even the last 4. `v` reveals for 10 s and only while the Secrets panel stays focused. The value is drawn in the alternate screen only, so it never reaches scrollback. Capture tests never invoke reveal.
 - SSH identities show path and fingerprint only, never key material. Provider credentials (Claude/Codex) are listed as "present / absent" only and are never read (AGENTS.md: never alter provider credentials).
-- **Cloudflare onboarding**: `[ Create token ↗ ]` opens `https://dash.cloudflare.com/profile/api-tokens` with a prefilled template (`?permissionGroupKeys=[…]&name=cx-mesh`), built from the permission list in `docs/mesh.md`. It uses the viewer's existing browser opener. With no `DISPLAY`/`WAYLAND_DISPLAY` (SSH, phones), it shows the URL as an OSC 8 hyperlink plus `[c Copy URL]` (OSC 52). `[ Paste token ]` opens a masked input, and Enter verifies it through the mesh util's existing token check, then saves it with mode 0600 where `cx mesh setup` already looks. The exact permission-group keys must be checked against Cloudflare's current list during implementation; see section 14.
+- **Cloudflare onboarding**: `[ Create token ↗ ]` opens `https://dash.cloudflare.com/profile/api-tokens` with a prefilled template (`?permissionGroupKeys=[…]&name=cx-mesh`), built from the permission list in `docs/mesh.md`. It uses the viewer's existing browser opener. With no `DISPLAY`/`WAYLAND_DISPLAY` (SSH, phones), it shows the URL as an OSC 8 hyperlink plus `[c Copy URL]` (OSC 52). `[ Paste token ]` opens a masked input, and Enter verifies it through the mesh util's existing token check, then stores it with `Secrets::set("cloudflare.api_token")` (src/secrets.rs, docs/secrets.md: OS keyring, else the age file), which `cx mesh` passes to the util. SOURCE shows that secret's backend (`keyring` / `file`). The exact permission-group keys must be checked against Cloudflare's current list during implementation; see section 14.
 
 ### 6.6 Command palette
 
@@ -599,7 +599,7 @@ Pass 0 baseline scores (current UI, mean over sizes): C1 1, C2 0, C3 1, C4 1, C5
 - **Session snapshot fields** for activity sparklines and idle age: the tmux `#{session_activity}` / `#{window_activity}` timestamps. This is additive and optional (`#[serde(default)]`), and old helpers render `·`.
 - **Device rtt**: measured in the viewer from existing request round-trips. No protocol change.
 - **Edge policy store**: a new local file (`edges.json`, mode 0600, under the device lock), separate from `Device`, like `DevicePolicy`. The existing `AccessMode::Core/Directed` maps to `key ⇄` / `key →`. This is a costly-to-reverse contract: it needs the root's sign-off (Q2).
-- **Secrets inventory**: read-only presence checks of known paths/env names. Writes only for the Cloudflare token, through the mesh util's existing save path. Provider credentials are never read.
+- **Secrets inventory**: read-only presence checks of known paths/env names. Writes only for the Cloudflare token, through `Secrets::set` (docs/secrets.md); the panel caches `Secrets::list()` rather than reading the index every frame. Provider credentials are never read.
 - Cloudflare token template URL: verify the `permissionGroupKeys` names against Cloudflare's current permission-group list during implementation. This is a bounded technical check, not a user question.
 
 **Suggested implementation order** (each step is independently shippable): (1) theme tokens + caps + focus treatment + ASCII borders; (2) jank fixes (P16, P17) + fixed row anatomy; (3) Enter-attaches, `i`/`z`, `Ctrl+\` + chip; (4) palette switcher + `g` goto + tab bar + XS layout; (5) Files row/breadcrumb/preview polish; (6) Network graph (layout module with pure unit tests, then render); (7) Secrets.

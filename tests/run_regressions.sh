@@ -66,6 +66,7 @@ CORE=(
     "codex_wheel_threads_pty||BIN"
     "clipboard_pty||BIN"
     "metadata_reconnect_cli||BIN"
+    "secrets_cli||BIN"
     "tmux_discovery_live||BIN"
     "preview_helper_live||BIN"
     "pdf_pages_helper|poppler|BIN"

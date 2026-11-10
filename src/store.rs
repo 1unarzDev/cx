@@ -221,6 +221,65 @@ mod ui_state_tests {
         );
     }
 
+    /// EP-3/EP-4: UI attach/terminal/run paths build their ssh through interactive_ssh, which refuses a refused
+    /// edge before any ssh runs. Runs in a child with its own HOME and state dir; real state is never read.
+    #[test]
+    fn interactive_ssh_honours_refused_edges() {
+        let home = tempfile::tempdir().unwrap();
+        let state = home.path().join("state");
+        if !crate::mesh::in_child(
+            "store::ui_state_tests::interactive_ssh_honours_refused_edges",
+            &[("HOME", home.path()), ("XDG_STATE_HOME", &state)],
+        ) {
+            return;
+        }
+        let robot = Device {
+            id: "m9:robot".into(),
+            name: "robot".into(),
+            target: Some("robot@192.0.2.9".into()),
+            account: "robot".into(),
+            host: "robot".into(),
+            status: "unknown".into(),
+            observed_at: 0,
+        };
+        save_devices(&[local_device(), robot.clone()]).unwrap();
+        let edge = |policy: &str| {
+            let file = serde_json::json!({"version": 1, "edges": [
+                {"from": crate::edges::LOCAL, "to": robot.id, "policy": policy, "updated_at": 1}]});
+            write_state("edges.json", &file, 64 * 1024).unwrap();
+        };
+        edge("none");
+        let refused = interactive_ssh(&robot).unwrap_err().to_string();
+        assert!(refused.contains("edge policy refuses"), "{refused}");
+        assert!(crate::sessions::login_terminal(&robot)
+            .unwrap_err()
+            .to_string()
+            .contains("edge policy refuses"));
+        // A route through a refused hop is refused as well.
+        let hop = Device {
+            id: "m8:robot".into(),
+            name: "hop".into(),
+            target: Some("robot@192.0.2.8".into()),
+            ..robot.clone()
+        };
+        save_devices(&[local_device(), robot.clone(), hop.clone()]).unwrap();
+        set_route("robot@192.0.2.9", &["robot@192.0.2.8".into()]).unwrap();
+        let file = serde_json::json!({"version": 1, "edges": [
+            {"from": crate::edges::LOCAL, "to": robot.id, "policy": "key", "updated_at": 1},
+            {"from": crate::edges::LOCAL, "to": hop.id, "policy": "none", "updated_at": 1}]});
+        write_state("edges.json", &file, 64 * 1024).unwrap();
+        assert!(interactive_ssh(&robot).is_err());
+        assert!(interactive_ssh(&hop).is_err());
+        remove_route("robot@192.0.2.9").unwrap();
+        edge("key");
+        let allowed = interactive_ssh(&robot).unwrap();
+        assert_eq!(allowed.get_program(), "ssh");
+        assert!(
+            interactive_ssh(&local_device()).is_err(),
+            "local has no SSH target"
+        );
+    }
+
     #[test]
     fn private_lock_refuses_links_and_shared_files_and_reports_busy() {
         use std::os::unix::fs::symlink;
@@ -759,6 +818,18 @@ fn background_ssh_config() -> Result<PathBuf> {
         Err(e) => return Err(e.into()),
     }
     Ok(path)
+}
+/// The interactive ssh to an enrolled device (attach, login terminal, run command, ptrace setup). It is
+/// refused when edge policy refuses the viewer's direction or a hop of the device's route, as
+/// transport::request is, so connections the UI starts honour refused edges too. Edge enforcement itself
+/// connects through [`ssh`] and the verified helper channel, never through this.
+pub fn interactive_ssh(device: &Device) -> Result<std::process::Command> {
+    let target = device
+        .target
+        .as_deref()
+        .context("the local device has no SSH target")?;
+    crate::edges::guard(device)?;
+    ssh(target, true)
 }
 pub fn ssh(target: &str, interactive: bool) -> Result<std::process::Command> {
     if !valid_target(target) {

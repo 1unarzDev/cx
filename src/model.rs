@@ -387,3 +387,65 @@ fn default_true() -> bool {
 fn is_true(value: &bool) -> bool {
     *value
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn peer() -> Device {
+        Device {
+            id: "m:a".into(),
+            name: "a".into(),
+            target: Some("a@192.0.2.1".into()),
+            account: "a".into(),
+            host: "a".into(),
+            status: "unknown".into(),
+            observed_at: 0,
+        }
+    }
+
+    /// EP-12: the edge-policy protocol changes are additive. PeerConfigure with the default `authorize`
+    /// is byte-identical to what older helpers send and expect; their requests (no field) decode as
+    /// authorize; PeerAuthorize needs its field, so a truncated request never decodes as a revoke.
+    #[test]
+    fn edge_policy_wire_changes_are_additive() {
+        let configure = |authorize| Operation::PeerConfigure {
+            peer: peer(),
+            host_key: "h".into(),
+            client_key: "c".into(),
+            authorize,
+        };
+        let wire = serde_json::to_value(configure(true)).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({"op": "peer_configure", "args": {
+                "peer": serde_json::to_value(peer()).unwrap(), "host_key": "h", "client_key": "c"}})
+        );
+        let old: Operation = serde_json::from_value(wire).unwrap();
+        assert!(matches!(
+            old,
+            Operation::PeerConfigure {
+                authorize: true,
+                ..
+            }
+        ));
+        let one_way = serde_json::to_value(configure(false)).unwrap();
+        assert_eq!(one_way["args"]["authorize"], false);
+        let decoded: Operation =
+            serde_json::from_value(serde_json::json!({"op": "peer_authorize", "args": {
+                "client_key": "c", "authorize": false}}))
+            .unwrap();
+        assert!(matches!(
+            decoded,
+            Operation::PeerAuthorize {
+                peer_id: None,
+                authorize: false,
+                ..
+            }
+        ));
+        assert!(serde_json::from_value::<Operation>(
+            serde_json::json!({"op": "peer_authorize", "args": {"client_key": "c"}})
+        )
+        .is_err());
+    }
+}

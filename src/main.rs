@@ -680,8 +680,8 @@ pub(crate) fn device_ptrace(
             sessions::quote(script),
             quoted.join(" ")
         );
-        let ok = if let Some(target) = &device.target {
-            let routed = store::ssh(target, true)?;
+        let ok = if device.target.is_some() {
+            let routed = store::interactive_ssh(&device)?;
             let mut c = Command::new("ssh");
             c.arg("-tt").args(routed.get_args()).arg(command);
             c.status()?.success()

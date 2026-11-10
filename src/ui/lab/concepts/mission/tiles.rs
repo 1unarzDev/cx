@@ -33,15 +33,8 @@ fn pick_bar(cx: &Cx, buf: &mut Buffer, r: Rect, pick: Pick) {
             cx.ink(Tok::Muted, 0.8)
         };
         // ASCII: `>` on the first row only, `|` below it (a column of `>` reads as
-        // shell prompts); an unfocused selection keeps a dim `|` column.
-        for y in r.y..r.bottom() {
-            let a = match (f, y == r.y) {
-                (false, _) => "|",
-                (true, true) => ">",
-                (true, false) => "|",
-            };
-            cx.put(buf, r.x, y, 1, cx.g("▌", a), st);
-        }
+        // shell prompts); an unfocused selection is the same bar, dimmer.
+        cx.bar(buf, r.x, r.y, r.height, st);
     }
 }
 
@@ -633,6 +626,12 @@ pub(super) fn session_row(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pi
 /// Session thumbnail: header (keys, title, state), the screen's live tail and a caption
 /// (provider, folder, activity, age).
 pub(super) fn thumb(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pick: Pick) {
+    thumb_with(cx, buf, r, x, pick, true);
+}
+
+/// `keys: false` draws the session's address as plain muted text, for screens where its
+/// letters mean something else (the edge editor's `a p o`).
+pub(super) fn thumb_with(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pick: Pick, keys: bool) {
     if r.width < 12 || r.height < 3 {
         return;
     }
@@ -643,7 +642,12 @@ pub(super) fn thumb(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pick: Pi
     let right = r.right().saturating_sub(1);
     // Header: the key that opens it here, its device, title, state.
     let mut hx = left;
-    hx += addr(cx, buf, hx, r.y, x);
+    if keys {
+        hx += addr(cx, buf, hx, r.y, x);
+    } else {
+        let a = format!(" {} {} ", d.map_or(' ', |d| d.hotkey), cx.slot(x).unwrap_or(' '));
+        hx += cx.put(buf, hx, r.y, 5, &a, cx.st(Tok::Muted));
+    }
     hx += 1;
     let (g, word, sst) = cx.sstate(x);
     let state = if x.state == crate::ui::lab::SessionState::Idle {

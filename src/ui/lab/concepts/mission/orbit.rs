@@ -112,16 +112,21 @@ pub(super) fn edge_tok(cx: &Cx, e: &LabEdge) -> Tok {
 /// The routed path from the viewer to `to` (at most three hops, shortest first), as the
 /// links taken; empty for the viewer itself or no route.
 pub(super) fn route<'a>(cx: &Cx<'a>, to: &str) -> Vec<&'a LabEdge> {
+    route_from(cx, &cx.s.viewer, to)
+}
+
+/// The same from any device: only links that are up and open in the direction taken.
+pub(super) fn route_from<'a>(cx: &Cx<'a>, from: &str, to: &str) -> Vec<&'a LabEdge> {
     let s = cx.s;
-    let mut paths: Vec<(String, Vec<&LabEdge>)> = vec![(s.viewer.clone(), Vec::new())];
-    let mut seen = vec![s.viewer.clone()];
+    let mut paths: Vec<(String, Vec<&LabEdge>)> = vec![(from.to_string(), Vec::new())];
+    let mut seen = vec![from.to_string()];
     for _ in 0..3 {
         let mut next = Vec::new();
         for (at, path) in &paths {
             for e in s.edges.iter().filter(|e| routed(e) && e.up) {
-                let other = if &e.from == at {
+                let other = if &e.from == at && e.forward != Access::Denied {
                     &e.to
-                } else if &e.to == at {
+                } else if &e.to == at && e.reverse != Access::Denied {
                     &e.from
                 } else {
                     continue;
@@ -545,17 +550,6 @@ fn place<'a>(
     } else {
         band.height < 12
     };
-    let halo = if tight {
-        Rect::new(pill.x.saturating_sub(1), pill.y, pw + 2, 1)
-    } else {
-        Rect::new(
-            pill.x.saturating_sub(2),
-            pill.y.saturating_sub(1),
-            pw + 4,
-            if mode == Mode::Full { 4 } else { 3 },
-        )
-    }
-    .intersection(band);
     // The root's own evidence row, centred under the pill.
     let pev = match (mode, rootd) {
         (Mode::Full, Some(d)) => {
@@ -565,6 +559,19 @@ fn place<'a>(
         }
         _ => Rect::default(),
     };
+    // The halo rings the capsule and its evidence row.
+    let hw = pw.max(pev.width) + 4;
+    let halo = if tight {
+        Rect::new(pill.x.saturating_sub(1), pill.y, pw + 2, 1)
+    } else {
+        Rect::new(
+            (c.0 - f32::from(hw) / 2.0).round().max(0.0) as u16,
+            pill.y.saturating_sub(1),
+            hw,
+            if mode == Mode::Full { 4 } else { 3 },
+        )
+    }
+    .intersection(band);
     let mut taken: Vec<Rect> = vec![halo, pev];
     let mut out: Vec<Node> = Vec::new();
     let mut hidden = 0;
@@ -576,7 +583,7 @@ fn place<'a>(
             let (fx, fy) = ring_f(n.hop, rings);
             // The first ring keeps clear of the pill, whatever the band's shape, and
             // where links carry chips, room for one between the halo and the label.
-            let clear = if cx.size() >= Size::M { 15.0 } else { 7.0 };
+            let clear = if cx.size() >= Size::M { 15.0 } else { 11.0 };
             let rx1 = (rx * fx).max(f32::from(pw) / 2.0 + clear);
             let p = (c.0 + rx1 * ang.cos(), c.1 + ry * fy * ang.sin());
             let w = label_w(cx, n.d, mode, nmax, o.pips);
@@ -648,8 +655,8 @@ fn place<'a>(
         ((i32::from(band.x) + i32::from(band.right()) - lo - hi) / 2)
             .clamp(i32::from(band.x) - lo, i32::from(band.right()) - hi)
     };
-    // And vertically: a map whose labels do not reach the band's edges sits in the
-    // middle (the hub gives the rows left at its foot to the thumbnails).
+    // And vertically: the drawing sits one row under the band's top, so the rows it
+    // does not need are all at its foot, where the caller gives them to its content.
     let (top, bot) = out
         .iter()
         .filter(|n| n.shown)
@@ -659,7 +666,8 @@ fn place<'a>(
             (lo.min(i32::from(r.y)), hi.max(i32::from(r.bottom())))
         });
     let dy = ((i32::from(band.y) + i32::from(band.bottom()) - top - bot) / 2)
-        .clamp(i32::from(band.y) - top, i32::from(band.bottom()) - bot);
+        .clamp(i32::from(band.y) - top, i32::from(band.bottom()) - bot)
+        .min(i32::from(band.y) + 1 - top);
     let mv = |r: &mut Rect| {
         r.x = (i32::from(r.x) + dx).max(0) as u16;
         r.y = (i32::from(r.y) + dy).max(0) as u16;
@@ -802,7 +810,7 @@ impl Pat {
             Pat::Dot => i % 3 == 0,
             Pat::DashDot => matches!(i % 9, 0..=3 | 6),
             Pat::Sparse => i % 4 == 0,
-            Pat::Halo => i % 3 == 0,
+            Pat::Halo => i % 2 == 0,
         }
     }
 }
@@ -843,7 +851,7 @@ impl Canvas {
         }
     }
     /// One dot at sub-cell coordinates.
-    fn dot(&mut self, sx: i32, sy: i32, st: Style, pri: u8, asc: char) {
+    fn dot(&mut self, sx: i32, sy: i32, st: Style, pri: u8) {
         let (x, y) = (sx.div_euclid(2), sy.div_euclid(4));
         let Some(i) = self.cell(x, y) else { return };
         if self.mask[i] {
@@ -853,16 +861,13 @@ impl Canvas {
         self.bits[i] |= B[sx.rem_euclid(2) as usize][sy.rem_euclid(4) as usize];
         if pri >= self.st[i].0 {
             self.st[i] = (pri, st);
-            if asc != ' ' {
-                self.asc[i] = asc;
-            }
         }
     }
-    /// A polyline in cell coordinates, stroked with a pattern.
+    /// A polyline in cell coordinates, stroked with a pattern: braille dots, plus one
+    /// ASCII character per cell along a thinned path (see `ascii_path`).
     fn stroke(&mut self, pts: &[P], pat: Pat, st: Style, pri: u8, thick: bool) {
         let mut last = (i32::MIN, i32::MIN);
-        let mut lastc = (i32::MIN, i32::MIN);
-        let (mut i, mut ci) = (0usize, 0usize);
+        let mut i = 0usize;
         for w in pts.windows(2) {
             let (a, b) = (w[0], w[1]);
             let (dx, dy) = ((b.0 - a.0) * 2.0, (b.1 - a.1) * 4.0);
@@ -878,35 +883,57 @@ impl Canvas {
                 }
                 last = (sx, sy);
                 i += 1;
-                let cell = (sx.div_euclid(2), sy.div_euclid(4));
-                let mut asc = ' ';
-                if cell != lastc {
-                    lastc = cell;
-                    ci += 1;
-                    asc = ascii_for(pat, ci, dx, dy / 2.0);
-                }
                 if pat.on(i) {
-                    self.dot(sx, sy, st, pri, asc);
+                    self.dot(sx, sy, st, pri);
                     if thick {
                         // Three dots across the stroke: clearly heavier than any other.
                         if dx.abs() > dy.abs() {
-                            self.dot(sx, sy + 1, st, pri, ' ');
-                            self.dot(sx, sy - 1, st, pri, ' ');
+                            self.dot(sx, sy + 1, st, pri);
+                            self.dot(sx, sy - 1, st, pri);
                         } else {
-                            self.dot(sx + 1, sy, st, pri, ' ');
-                            self.dot(sx - 1, sy, st, pri, ' ');
-                        }
-                    }
-                } else if asc != ' ' && matches!(pat, Pat::Dot | Pat::DashDot) {
-                    // ASCII cells still need their character when the dot falls in a gap.
-                    if let Some(j) = self.cell(cell.0, cell.1) {
-                        if !self.mask[j] && pri >= self.st[j].0 {
-                            self.st[j] = (pri, st);
-                            self.asc[j] = asc;
-                            self.bits[j] |= 0;
+                            self.dot(sx + 1, sy, st, pri);
+                            self.dot(sx - 1, sy, st, pri);
                         }
                     }
                 }
+            }
+        }
+        for (ci, (x, y, slope)) in ascii_path(pts).into_iter().enumerate() {
+            let ch = ascii_for(pat, ci, slope);
+            let Some(j) = self.cell(x, y) else { continue };
+            if ch == ' ' || self.mask[j] || (self.asc[j] != ' ' && pri < self.st[j].0) {
+                continue;
+            }
+            self.asc[j] = ch;
+            if pri >= self.st[j].0 {
+                self.st[j] = (pri, st);
+            }
+        }
+    }
+    /// Copy `o`'s marks into cells that are empty here, with no mark of ours in any
+    /// neighbouring cell.
+    fn merge_clear(&mut self, o: &Canvas) {
+        let w = i32::from(self.r.width);
+        let busy = |c: &Canvas, i: usize| c.bits[i] != 0;
+        for i in 0..self.bits.len() {
+            if !busy(o, i) {
+                continue;
+            }
+            let (x, y) = (i as i32 % w, i as i32 / w);
+            let near = (-1..=1).any(|dy| {
+                (-1..=1).any(|dx| {
+                    let (nx, ny) = (x + dx, y + dy);
+                    nx >= 0
+                        && ny >= 0
+                        && nx < w
+                        && ny < i32::from(self.r.height)
+                        && busy(self, (ny * w + nx) as usize)
+                })
+            });
+            if !near {
+                self.bits[i] = o.bits[i];
+                self.asc[i] = o.asc[i];
+                self.st[i] = o.st[i];
             }
         }
     }
@@ -932,18 +959,60 @@ impl Canvas {
     }
 }
 
-/// ASCII stand-in for a stroke cell: the slope for solid lines, `.` for dotted ones,
-/// `'` beads for mesh arcs and halos.
-fn ascii_for(pat: Pat, i: usize, dx: f32, dy: f32) -> char {
-    let slope = if dx.abs() > dy.abs() * 2.0 {
-        '-'
-    } else if dy.abs() > dx.abs() * 2.0 {
-        '|'
-    } else if (dx > 0.0) == (dy > 0.0) {
-        '\\'
-    } else {
-        '/'
+/// The cells an ASCII line visits, one per column where it runs mostly sideways and one
+/// per row where it runs mostly up or down, each with its slope character: `-` / `|`
+/// where the line stays in its row / column across the cell, `\\` or `/` where it steps.
+/// So a diagonal is one continuous run, never doubled or broken.
+fn ascii_path(pts: &[P]) -> Vec<(i32, i32, char)> {
+    let mut out: Vec<(i32, i32, char)> = Vec::new();
+    let mut push = |x: i32, y: i32, c: char| {
+        if !out.iter().rev().take(3).any(|&(a, b, _)| (a, b) == (x, y)) {
+            out.push((x, y, c));
+        }
     };
+    // One mode for the whole (gently bowed) line, so its cells never double up where
+    // the slope crosses 1.
+    let (Some(&f), Some(&l)) = (pts.first(), pts.last()) else {
+        return out;
+    };
+    let wide = (l.0 - f.0).abs() >= (l.1 - f.1).abs();
+    for w in pts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let at = |t: f32| (a.0 + dx * t, a.1 + dy * t);
+        let step = |q: f32, r: f32| if (q > 0.0) == (r > 0.0) { '\\' } else { '/' };
+        if wide && dx != 0.0 {
+            // Every column centre the segment crosses.
+            let (lo, hi) = (a.0.min(b.0), a.0.max(b.0));
+            let mut cxl = (lo - 0.5).ceil();
+            while cxl + 0.5 <= hi {
+                let xc = cxl + 0.5;
+                let y = at((xc - a.0) / dx).1;
+                let slope = dy / dx;
+                let (y0, y1) = (y - slope * 0.5, y + slope * 0.5);
+                let c = if y0.floor() == y1.floor() { '-' } else { step(dx, dy) };
+                push(cxl as i32, y.floor() as i32, c);
+                cxl += 1.0;
+            }
+        } else if !wide && dy != 0.0 {
+            let (lo, hi) = (a.1.min(b.1), a.1.max(b.1));
+            let mut cyl = (lo - 0.5).ceil();
+            while cyl + 0.5 <= hi {
+                let yc = cyl + 0.5;
+                let x = at((yc - a.1) / dy).0;
+                let slope = dx / dy;
+                let (x0, x1) = (x - slope * 0.5, x + slope * 0.5);
+                let c = if x0.floor() == x1.floor() { '|' } else { step(dx, dy) };
+                push(x.floor() as i32, cyl as i32, c);
+                cyl += 1.0;
+            }
+        }
+    }
+    out
+}
+
+/// ASCII stand-in for a stroke cell: the slope for solid lines, `.` for dotted ones.
+fn ascii_for(pat: Pat, i: usize, slope: char) -> char {
     match pat {
         Pat::Solid => slope,
         Pat::Dot => '.',
@@ -961,13 +1030,7 @@ fn ascii_for(pat: Pat, i: usize, dx: f32, dy: f32) -> char {
                 ' '
             }
         }
-        Pat::Halo => {
-            if i % 2 == 0 {
-                '\''
-            } else {
-                ' '
-            }
-        }
+        Pat::Halo => ' ',
     }
 }
 
@@ -1110,21 +1173,6 @@ pub(super) fn draw_with(
         ));
     }
 
-    // The halo around the root.
-    let pc = centre(p.pill);
-    let hy = if p.mode == Mode::Full { 1.7 } else { 1.25 };
-    let hrx = f32::from(p.pill.width) / 2.0 + 2.2;
-    let halo = ellipse(
-        (pc.0, pc.1 + if p.mode == Mode::Full { 0.5 } else { 0.0 }),
-        hrx,
-        hy,
-        0.0,
-        TAU,
-    );
-    if p.halo.height > 1 && !fade_all {
-        cv.stroke(&halo, Pat::Halo, cx.ink(Tok::Accent, 0.8), 2, false);
-    }
-
     // Links: the tree, plus the selected device's (or edited) peer links.
     let mut chips: Vec<(&LabEdge, [P; 3], bool)> = Vec::new();
     let mut arrows: Vec<(Vec<P>, &'static str, Style)> = Vec::new();
@@ -1199,6 +1247,26 @@ pub(super) fn draw_with(
             arrows.push((spots, arrow(cx, p1.0 - p0.0, p1.1 - p0.1), st));
         }
         chips.push((e, [a, c, b], on));
+    }
+    // The halo around the root (and its evidence row): faint beads, laid after the
+    // links and never within a cell of a stroke, so a sparse link never reads as halo.
+    // ASCII has no halo: `'` beads beside `-` `/` strokes read as noise, and the
+    // `( )` capsule already marks the root.
+    if p.halo.height > 1 && !fade_all && cx.uni() {
+        let pc = centre(p.pill);
+        let hy = if p.mode == Mode::Full { 1.7 } else { 1.25 };
+        let hrx = f32::from(p.halo.width) / 2.0 + 0.2;
+        let ring = ellipse(
+            (pc.0, pc.1 + if p.mode == Mode::Full { 0.5 } else { 0.0 }),
+            hrx,
+            hy,
+            0.0,
+            TAU,
+        );
+        let mut hc = Canvas::new(band);
+        hc.mask.clone_from(&cv.mask);
+        hc.stroke(&ring, Pat::Halo, cx.ink(Tok::Faint, 1.0), 2, false);
+        cv.merge_clear(&hc);
     }
     // Chips on the links' middles (the rtt, with the policy word at L, or what is
     // wrong; below 100 columns only closed and down links carry one) are placed before

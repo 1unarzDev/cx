@@ -5,7 +5,7 @@ use serde_json::json;
 use std::{env, fs, path::PathBuf};
 
 const SIZES: &str = "40x20,60x30,80x24,120x40,200x60";
-const VARIANTS: &str = "dark-truecolor,light-truecolor,dark-16,ascii";
+const VARIANTS: &str = "dark-truecolor,light-truecolor,dark-16,light-16,ascii";
 
 fn var(name: &str, default: &str) -> String {
     env::var(name)

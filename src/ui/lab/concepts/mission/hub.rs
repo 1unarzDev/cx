@@ -46,6 +46,7 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         .saturating_sub(orbit::MAX_H)
         .min(need.saturating_sub(th));
     let (band_h, th) = (band_h - give, th + give);
+    let band_th = th;
     let lx = cx.label(buf, r.x + 1, r.y, 16, "NETWORK", on_graph) + r.x + 1;
     let lend = legend(cx, buf, lx + 2, r.y, right);
     // A short stub of rule after the legend reads as debris: only a real run.
@@ -70,15 +71,22 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         orbit::Sel::Node(&sel_id, on_graph),
     );
     // Rows the drawing left empty at its foot go to the thumbnails (up to what their
-    // screens hold), keeping one blank row under the map.
+    // screens hold), keeping one blank row under the map; with room for two, a second
+    // row of tiles shows the rest of the sessions and the ghost.
     let last = (band.y..band.bottom())
         .rev()
         .find(|&yy| (band.x..band.right()).any(|xx| buf[(xx, yy)].symbol() != " "))
         .unwrap_or(band.y);
-    let slack = band.bottom().saturating_sub(last + 2);
-    let give = slack.min(need.saturating_sub(th));
-    let th = th + give;
-    let mut y = band.bottom() - give;
+    let room = th + band.bottom().saturating_sub(last + 2);
+    // (Only when each row keeps ten rows: a tile must still show enough of its screen
+    // to be told apart.)
+    let (rows, th) = if list.len() >= usize::from(cols) && room > 2 * th_min.max(10) {
+        (2, ((room - 1) / 2).min(need))
+    } else {
+        (1, room.min(need))
+    };
+    let grid_h = rows * th + rows - 1;
+    let mut y = band.bottom() + band_th - grid_h;
     if let Some(d) = cx.s.device(&sel_id) {
         vitals(
             cx,
@@ -114,7 +122,7 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     cx.put_r(buf, right, y, &hint, cx.st(Tok::Muted));
     cx.hit(Rect::new(right - hw, y, hw, 1), "palette:sessions");
     y += 1;
-    let grid = Rect::new(r.x + 1, y, r.width.saturating_sub(2), th);
+    let grid = Rect::new(r.x + 1, y, r.width.saturating_sub(2), grid_h);
     let pick = if on_sess {
         (cx.c.selected, true)
     } else {
@@ -492,25 +500,37 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
         cx.put_r(buf, right, y.saturating_sub(1), &t, cx.st(Tok::Muted));
     }
     let ty = r.bottom().saturating_sub(tick_h);
-    for (i, a) in al.iter().take(usize::from(tick_h)).enumerate() {
-        phone_alert(cx, buf, Rect::new(r.x, ty + i as u16, r.width, 1), a);
+    let shown = &al[..usize::from(tick_h).min(al.len())];
+    // One key column for every row, so the fix keys line up.
+    let kw = shown
+        .iter()
+        .map(|a| super::width(&a.3, cx.uni()) + 3 + super::width(a.4, cx.uni()))
+        .max()
+        .unwrap_or(0);
+    for (i, a) in shown.iter().enumerate() {
+        phone_alert(cx, buf, Rect::new(r.x, ty + i as u16, r.width, 1), a, kw);
     }
 }
 
-fn phone_alert(cx: &Cx, buf: &mut Buffer, r: Rect, a: &Alert) {
+fn phone_alert(cx: &Cx, buf: &mut Buffer, r: Rect, a: &Alert, kw: u16) {
     let (g, text, tok, keys, verb, act) = a;
     let bg = cx.wash(*tok, 0.12);
     cx.fill(buf, r, bg);
     let mut x = r.x + 1;
     x += cx.put(buf, x, r.y, 2, g, cx.st(*tok).patch(bg)) + 1;
-    let kw = super::width(keys, cx.uni()) + 3 + super::width(verb, cx.uni());
     let room = r.right().saturating_sub(x + kw + 2);
+    // `◆` already says "needs you": those words go before the title is cut.
+    let text = if super::width(text, cx.uni()) > room {
+        text.replacen(" needs you", "", 1)
+    } else {
+        text.clone()
+    };
     cx.put(
         buf,
         x,
         r.y,
         room,
-        &fit(text, usize::from(room), cx.uni()),
+        &fit(&text, usize::from(room), cx.uni()),
         cx.ink(Tok::Fg, 0.92).patch(bg),
     );
     let kx = r.right().saturating_sub(kw + 1);
@@ -530,16 +550,7 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
     };
     cx.fill(buf, r, bg);
     if sel {
-        for yy in r.y..r.bottom() {
-            cx.put(
-                buf,
-                r.x,
-                yy,
-                1,
-                cx.g("▌", if yy == r.y { ">" } else { "|" }),
-                cx.st(Tok::Accent),
-            );
-        }
+        cx.bar(buf, r.x, r.y, r.height, cx.st(Tok::Accent));
     }
     let right = r.right().saturating_sub(1);
     let mut x = r.x + 2;
@@ -550,11 +561,11 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
             x,
             r.y,
             1,
-            if more { cx.g("│", "|") } else { " " },
+            if more { cx.g("│", ":") } else { " " },
             gst(Tok::Faint),
         );
         if r.height > 1 && more {
-            cx.put(buf, x, r.y + 1, 1, cx.g("│", "|"), gst(Tok::Faint));
+            cx.put(buf, x, r.y + 1, 1, cx.g("│", ":"), gst(Tok::Faint));
         }
         x += 2;
     }
@@ -569,7 +580,7 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
         };
         cx.put(buf, x, r.y, 2, g, gst(tok));
         if r.height > 1 && !t.last {
-            cx.put(buf, x, r.y + 1, 1, cx.g("│", "|"), gst(Tok::Faint));
+            cx.put(buf, x, r.y + 1, 1, cx.g("│", ":"), gst(Tok::Faint));
         }
         x += 2;
     }

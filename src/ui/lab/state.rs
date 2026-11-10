@@ -452,7 +452,7 @@ fn claude_screen(title: &str, working: bool) -> Vec<String> {
         "\x1b[38;2;143;207;157m●\x1b[0m \x1b[1mUpdate\x1b[0m(src/transport/frame.rs)".into(),
         "  \x1b[2m⎿  Updated with \x1b[0m\x1b[32m38 additions\x1b[0m\x1b[2m and \x1b[0m\x1b[31m12 removals\x1b[0m".into(),
         "     \x1b[48;2;30;60;40m+ pub fn read_frame<R: Read>(r: &mut R) -> Result<Vec<u8>> {\x1b[0m".into(),
-        "     \x1b[48;2;30;60;40m+     let len = header(r)?.min(MAX_FRAME);                \x1b[0m".into(),
+        "     \x1b[48;2;30;60;40m+     let len = header(r)?.min(MAX_FRAME);                  \x1b[0m".into(),
         "     \x1b[48;2;70;30;30m-     let len = parse_len(&line)?;                          \x1b[0m".into(),
         "\x1b[38;2;143;207;157m●\x1b[0m \x1b[1mBash\x1b[0m(cargo test --locked transport)".into(),
         "  \x1b[2m⎿  test result: \x1b[0m\x1b[32mok\x1b[0m\x1b[2m. 41 passed; 0 failed\x1b[0m".into(),
@@ -865,7 +865,7 @@ pub fn typical() -> LabState {
         ),
         dev(
             "laptop-guest",
-            'l',
+            'p',
             Laptop,
             "macos 15",
             Stale,
@@ -1211,9 +1211,9 @@ pub fn large() -> LabState {
         ("old-thinkpad-x220", Laptop, Down),
         ("vps-fra1", Server, Online),
     ];
-    // `e` is never a device (it is the hub's link verb); `j` and `k` are hub motion, so
-    // they are assigned last, only past 23 devices.
-    let keys = "adfghmopqruvwxyzjk";
+    // `e` is never a device (it is the hub's link verb); `h j k l` are vim motion, so
+    // they are assigned last, only past 21 devices.
+    let keys = "adfgmoqruvwxyzhjkl";
     for (i, (name, kind, status)) in extra.iter().enumerate() {
         let seed = 100 + i as u32;
         let up = matches!(status, Online | Stale);

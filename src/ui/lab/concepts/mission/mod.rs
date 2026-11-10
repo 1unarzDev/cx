@@ -551,8 +551,12 @@ impl<'a> Cx<'a> {
             self.put(buf, x, y, 1, self.g("─", "-"), st);
         }
     }
-    /// A faint vertical separator (tiles without tints).
+    /// A faint vertical separator (tiles without tints). ASCII leaves the gutter blank:
+    /// `|` is the selection bar's continuation and means nothing else.
     pub fn vsep(&self, buf: &mut Buffer, x: u16, y: u16, h: u16) {
+        if !self.uni() {
+            return;
+        }
         let st = self.ink(Tok::Faint, 1.0);
         for yy in y..y + h {
             self.put(buf, x, yy, 1, self.g("│", "|"), st);

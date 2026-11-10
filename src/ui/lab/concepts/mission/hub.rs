@@ -17,7 +17,7 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let right = r.right().saturating_sub(1);
 
     // Bottom up: ticker, one row of thumbnails, the vitals strip; the NETWORK label
-    // (with the stroke legend on its rule) on top; the orbit takes the rest, and the
+    // (with the mesh legend on its rule) on top; the orbit takes the rest, and the
     // rows it leaves empty go to the thumbnails.
     let tick_h = u16::from(!alerts(cx).is_empty());
     let vit_h: u16 = if sz >= Size::M { 2 } else { 1 };
@@ -53,7 +53,8 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     if right.saturating_sub(lend) >= 12 {
         cx.rule(buf, lend + 1, right, r.y);
     }
-    let band = Rect::new(r.x, r.y + 1, r.width, band_h);
+    // (Its last row stays blank: the map never touches the vitals strip.)
+    let band = Rect::new(r.x, r.y + 1, r.width, band_h.saturating_sub(1));
     let ids = orbit::order(cx, band);
     let sel_id = if on_sess && !list.is_empty() {
         list[cx.c.selected % list.len()].device.clone()
@@ -74,7 +75,7 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // screens hold), keeping one blank row under the map; with room for two, a second
     // row of tiles shows the rest of the sessions and the ghost.
     let last = super::last_row(buf, band).unwrap_or(band.y);
-    let room = th + band.bottom().saturating_sub(last + 2);
+    let room = th + (band.bottom() + 1).saturating_sub(last + 2);
     // (Only when each row keeps ten rows: a tile must still show enough of its screen
     // to be told apart.)
     let (rows, th) = if list.len() >= usize::from(cols) && room > 2 * th_min.max(10) {
@@ -83,7 +84,7 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         (1, room.min(need))
     };
     let grid_h = rows * th + rows - 1;
-    let mut y = band.bottom() + band_th - grid_h;
+    let mut y = band.bottom() + 1 + band_th - grid_h;
     if let Some(d) = cx.s.device(&sel_id) {
         vitals(
             cx,
@@ -139,8 +140,8 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     }
 }
 
-/// One quiet line beside the NETWORK label: the meshes in their hue (members up), lan's
-/// teal, then the two strokes that carry a policy. Solid needs no entry: it is a link.
+/// One quiet line beside the NETWORK label: the meshes in their hue (members up) and
+/// lan's teal. The line grammar lives in help (`?`).
 fn legend(cx: &Cx, buf: &mut Buffer, mut x: u16, y: u16, right: u16) -> u16 {
     let sep = if cx.size() >= Size::M { 3 } else { 2 };
     let mut items: Vec<(String, Tok, Option<&crate::ui::lab::LabMesh>)> = cx
@@ -166,8 +167,6 @@ fn legend(cx: &Cx, buf: &mut Buffer, mut x: u16, y: u16, right: u16) -> u16 {
     if cx.c.has_color() {
         items.push(("lan".into(), Tok::Lan, None));
     }
-    items.push((format!("{} password", cx.g("┄┄", "- -")), Tok::Muted, None));
-    items.push((format!("{} one way", cx.g("→", "->")), Tok::Muted, None));
     for (t, tok, mesh) in &items {
         let alert = mesh.is_some_and(|m| !m.healthy);
         let w = super::width(t, cx.uni()) + if alert { 2 } else { 0 };
@@ -490,6 +489,21 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
         cx.put_r(buf, right, y.saturating_sub(1), &t, cx.st(Tok::Muted));
     }
     let ty = r.bottom().saturating_sub(tick_h);
+    // Rows the tree leaves go to the sessions that need you first (two-row thumb
+    // targets), keeping a breathing row above the ticker.
+    let mut sy = y + 2;
+    if sy + 2 < ty {
+        views::zone(cx, buf, r.x + 1, y + 1, right, "SESSIONS", focus == Pane::Sessions);
+        let list = cx.by_attention();
+        for (i, x) in list.iter().enumerate() {
+            if sy + 2 >= ty {
+                break;
+            }
+            let pick = (focus == Pane::Sessions && i == cx.c.selected % list.len()).then_some(true);
+            tiles::session_row(cx, buf, Rect::new(r.x, sy, r.width, 2), x, pick);
+            sy += 3;
+        }
+    }
     let shown = &al[..usize::from(tick_h).min(al.len())];
     // One key column for every row, so the fix keys line up.
     let kw = shown
@@ -551,26 +565,27 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
             x,
             r.y,
             1,
-            if more { cx.g("│", " ") } else { " " },
+            if more { cx.g("│", "|") } else { " " },
             gst(Tok::Faint),
         );
         if r.height > 1 && more {
-            cx.put(buf, x, r.y + 1, 1, cx.g("│", " "), gst(Tok::Faint));
+            cx.put(buf, x, r.y + 1, 1, cx.g("│", "|"), gst(Tok::Faint));
         }
         x += 2;
     }
     if let Some(e) = t.edge {
-        let tok = orbit::edge_tok(cx, e);
-        let pass = e.forward != Access::Key && e.reverse != Access::Key;
-        let g = match (t.last, pass || !e.up) {
+        // Down: a faint guide (the device's `✕` is its one red mark).
+        let tok = if e.up { orbit::edge_tok(cx, e) } else { Tok::Faint };
+        let pass = e.up && e.forward != Access::Key && e.reverse != Access::Key;
+        let g = match (t.last, pass) {
             (false, false) => cx.g("├─", "+-"),
             (true, false) => cx.g("└─", "`-"),
-            (false, true) => cx.g("├┄", "+."),
-            (true, true) => cx.g("└┄", "`."),
+            (false, true) => cx.g("├┄", "+-"),
+            (true, true) => cx.g("└┄", "`-"),
         };
         cx.put(buf, x, r.y, 2, g, gst(tok));
         if r.height > 1 && !t.last {
-            cx.put(buf, x, r.y + 1, 1, cx.g("│", " "), gst(Tok::Faint));
+            cx.put(buf, x, r.y + 1, 1, cx.g("│", "|"), gst(Tok::Faint));
         }
         x += 2;
     }

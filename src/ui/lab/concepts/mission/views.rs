@@ -218,7 +218,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
             palette(cx, buf, a, q);
         }
         LabView::Secrets => {
-            top(cx, buf, &[Crumb::Text("keys".into())], true);
+            top(cx, buf, &[Crumb::Text("secrets".into())], true);
             secrets(cx, buf, body);
             footer(
                 cx,
@@ -535,7 +535,7 @@ fn hub_keys(cx: &Cx) -> Keys<'static> {
     v.extend([
         ("/", "find", "palette"),
         ("+", "invite", "invite"),
-        ("K", "keys", "secrets"),
+        ("K", "secrets", "secrets"),
         ("?", "help", "help"),
     ]);
     v
@@ -3376,7 +3376,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         }
     };
     let groups: [(&str, &[(&str, &str)]); 3] = [
-        ("move", &[("j k", "move"), ("tab", "next zone"), ("⏎", "open the selection")]),
+        ("move", &[("j k", "previous / next device"), ("tab", "next zone"), ("⏎", "open the selection")]),
         ("look", &[("spc", "peek a session"), ("-", "last session")]),
         ("act", &[("e", "edit a link"), ("⌫", "stop a session")]),
     ];
@@ -3385,14 +3385,14 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         ("/", "find", "palette"),
         ("`", "hub", "hub"),
         ("+", "invite", "invite"),
-        ("K", "keys", "secrets"),
+        ("K", "secrets", "secrets"),
         ("ctrl+\\", "detach", "detach"),
     ];
     let w = r.width.saturating_sub(4).min(68);
     let x0 = r.x + (r.width - w) / 2;
     let right = x0 + w;
     // Column widths: the intent word, then keycaps padded to the widest key.
-    let iw = 6;
+    let iw = 7;
     let kw = groups
         .iter()
         .flat_map(|(_, ks)| ks.iter())
@@ -3451,7 +3451,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // Label, groups, grammar, globals; breathing rows (under the label, between groups,
     // around the grammar) give way first on short screens, then the label.
     let body = items + grammar + u16::from(strokes) + grows;
-    let air_n = 1 + groups.len() as u16 - 1 + 2;
+    let air_n = 1 + groups.len() as u16 - 1 + 2 + u16::from(strokes);
     let air = body + 1 + air_n <= r.height;
     let label = body + 1 + 2 <= r.height || air;
     let total = body + if air { air_n } else { 2 } + u16::from(label);
@@ -3504,13 +3504,15 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         y += 1;
     }
     if strokes {
-        // The map's line grammar (the hub's legend names the meshes).
-        let mut x = tx;
+        // The map's line grammar, its own quiet row (the hub's legend names the meshes).
+        y += u16::from(air);
+        cx.put(buf, x0 + 1, y, iw - 1, "lines", cx.ink(Tok::Muted, 0.8));
+        let mut x = kx + 1;
         for (g, t) in [
             (cx.g("──", "--"), "key"),
             (cx.g("┄┄", "- -"), "password"),
-            (cx.g("→", "->"), "one way"),
-            (cx.g("··", ". ."), "closed"),
+            (cx.g("→", ">"), "one way"),
+            (cx.g("⊘", ".."), "closed"),
         ] {
             let need = super::width(g, cx.uni()) + 1 + super::width(t, cx.uni());
             if x + need > right {

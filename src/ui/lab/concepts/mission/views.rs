@@ -3073,22 +3073,16 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
         })
         .collect();
     let users = crossing.len();
-    let how = if cx.size() == Size::Xs {
-        ""
-    } else {
-        "Each press applies at once; u undoes. "
-    };
-    let msg = format!(
-        "{how}{users} open session{} cross{} this link.",
+    // One row, so the rtt row keeps its blank row above: where the whole sentence does
+    // not fit, only the count (the footer says `u undo`).
+    let count = format!(
+        "{users} open session{} cross{} this link.",
         if users == 1 { "" } else { "s" },
         if users == 1 { "es" } else { "" },
     );
-    for (i, line) in wrap(&msg, inner.width as usize).iter().take(2).enumerate() {
-        let cy = inner.y + 6 + i as u16;
-        if cy < inner.bottom() {
-            cx.put(buf, inner.x, cy, inner.width, line, cx.st(Tok::Muted));
-        }
-    }
+    let msg = format!("Each press applies at once; u undoes. {count}");
+    let msg = if super::width(&msg, cx.uni()) <= inner.width { msg } else { count };
+    cx.put(buf, inner.x, inner.y + 6, inner.width, &msg, cx.st(Tok::Muted));
     let ry = inner.y + 8;
     if ry < inner.bottom() && cx.size() >= Size::S {
         // The rtt history (one thin row) and its figures as quiet text after it.

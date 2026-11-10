@@ -960,53 +960,55 @@ impl Canvas {
 }
 
 /// The cells an ASCII line visits, one per column where it runs mostly sideways and one
-/// per row where it runs mostly up or down, each with its slope character: `-` / `|`
-/// where the line stays in its row / column across the cell, `\\` or `/` where it steps.
-/// So a diagonal is one continuous run, never doubled or broken.
+/// per row where it runs mostly up or down, each with its slope character from the next
+/// cell: `-` / `|` where the line stays in its row / column, `\\` or `/` where it steps
+/// on. So a diagonal is one continuous run, never doubled or broken.
 fn ascii_path(pts: &[P]) -> Vec<(i32, i32, char)> {
-    let mut out: Vec<(i32, i32, char)> = Vec::new();
-    let mut push = |x: i32, y: i32, c: char| {
-        if !out.iter().rev().take(3).any(|&(a, b, _)| (a, b) == (x, y)) {
-            out.push((x, y, c));
-        }
-    };
-    // One mode for the whole (gently bowed) line, so its cells never double up where
-    // the slope crosses 1.
     let (Some(&f), Some(&l)) = (pts.first(), pts.last()) else {
-        return out;
+        return Vec::new();
     };
+    // One mode for the whole (gently bowed) line.
     let wide = (l.0 - f.0).abs() >= (l.1 - f.1).abs();
+    let mut cells: Vec<(i32, i32)> = Vec::new();
     for w in pts.windows(2) {
         let (a, b) = (w[0], w[1]);
         let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-        let at = |t: f32| (a.0 + dx * t, a.1 + dy * t);
-        let step = |q: f32, r: f32| if (q > 0.0) == (r > 0.0) { '\\' } else { '/' };
-        if wide && dx != 0.0 {
-            // Every column centre the segment crosses.
-            let (lo, hi) = (a.0.min(b.0), a.0.max(b.0));
-            let mut cxl = (lo - 0.5).ceil();
-            while cxl + 0.5 <= hi {
-                let xc = cxl + 0.5;
-                let y = at((xc - a.0) / dx).1;
-                let slope = dy / dx;
-                let (y0, y1) = (y - slope * 0.5, y + slope * 0.5);
-                let c = if y0.floor() == y1.floor() { '-' } else { step(dx, dy) };
-                push(cxl as i32, y.floor() as i32, c);
-                cxl += 1.0;
-            }
-        } else if !wide && dy != 0.0 {
-            let (lo, hi) = (a.1.min(b.1), a.1.max(b.1));
-            let mut cyl = (lo - 0.5).ceil();
-            while cyl + 0.5 <= hi {
-                let yc = cyl + 0.5;
-                let x = at((yc - a.1) / dy).0;
-                let slope = dx / dy;
-                let (x0, x1) = (x - slope * 0.5, x + slope * 0.5);
-                let c = if x0.floor() == x1.floor() { '|' } else { step(dx, dy) };
-                push(x.floor() as i32, cyl as i32, c);
-                cyl += 1.0;
+        // Every column (or row) centre the segment crosses.
+        let (a0, b0, d) = if wide { (a.0, b.0, dx) } else { (a.1, b.1, dy) };
+        if d == 0.0 {
+            continue;
+        }
+        let mut c = (a0.min(b0) - 0.5).ceil();
+        let mut seg = Vec::new();
+        while c + 0.5 <= a0.max(b0) {
+            let t = (c + 0.5 - a0) / d;
+            let cell = if wide {
+                (c as i32, (a.1 + dy * t).floor() as i32)
+            } else {
+                ((a.0 + dx * t).floor() as i32, c as i32)
+            };
+            seg.push(cell);
+            c += 1.0;
+        }
+        if d < 0.0 {
+            seg.reverse();
+        }
+        for cell in seg {
+            if cells.last() != Some(&cell) {
+                cells.push(cell);
             }
         }
+    }
+    let mut out: Vec<(i32, i32, char)> = Vec::new();
+    for (k, &(x, y)) in cells.iter().enumerate() {
+        let c = match cells.get(k + 1) {
+            Some(&(_, ny)) if wide && ny == y => '-',
+            Some(&(nx, _)) if !wide && nx == x => '|',
+            Some(&(nx, ny)) if (nx - x).signum() == (ny - y).signum() => '\\',
+            Some(_) => '/',
+            None => out.last().map_or(if wide { '-' } else { '|' }, |o| o.2),
+        };
+        out.push((x, y, c));
     }
     out
 }

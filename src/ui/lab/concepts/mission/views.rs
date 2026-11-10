@@ -1,6 +1,6 @@
 //! Screens: hub, device, session peek, files, preview, palette, keys, onboarding, join,
 //! link policy and help. Each is a plain function over the shared `Cx`.
-use super::{centered, fit, fmt, inset, mix, orbit, tiles, Cx, Size, SLOTS};
+use super::{centered, fit, fmt, inset, orbit, tiles, Cx, Size, SLOTS};
 use crate::ui::lab::{
     caps::Pane, Access, DeviceStatus, EdgeKind, FileKind, LabDevice, LabEdge, LabSession, LabView,
     PreviewKind, Tok,
@@ -715,30 +715,25 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         zone(cx, buf, main.x, fy, right, "LINKS", false);
         cx.hit(Rect::new(main.x, fy, 12, 1), "links");
         // The star, then (when rows are left) one block per link: its facts on the
-        // first row of an rtt chart at most three rows tall; the star takes the rest.
-        // The star gets the rows it wants, the charts grow into the rest (up to four
-        // rows each).
+        // first row of its rtt chart. The star may take all but the charts' smallest form (one row each); the
+        // charts then grow into whatever rows its drawing leaves.
         let left = r.bottom().saturating_sub(fy + 2);
         let n = edges.len() as u16;
         let table = left >= fan_want + 2 + n && sz >= Size::M;
-        let table_h = if table {
-            let ch = ((left - fan_want - 1) / n).saturating_sub(1).clamp(1, 4);
-            n * (ch + 1) - 1
-        } else {
-            0
-        };
+        // (A star never needs more than ten rows: two-row labels with air.)
         let fan_h = if table {
-            (left - table_h - 1).min(fan_want + 1)
+            (left - (2 * n - 1) - 1).min(fan_want.max(9) + 1)
         } else {
             left
         };
         let band = Rect::new(r.x, fy + 1, r.width, fan_h);
         orbit::draw_with(cx, buf, band, &d.id, 1, orbit::Sel::Root, false);
         if table {
+            let ty = super::last_row(buf, band).map_or(band.y, |y| y + 2);
             link_rows(
                 cx,
                 buf,
-                Rect::new(main.x, band.bottom() + 1, main.width, table_h),
+                Rect::new(main.x, ty, main.width, r.bottom().saturating_sub(ty)),
                 d,
                 &edges,
             );
@@ -817,7 +812,9 @@ fn link_tail(cx: &Cx, e: &LabEdge, loss: bool) -> String {
 /// so, with the last value seen, in muted text.
 fn link_rows(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, edges: &[&LabEdge]) {
     let n = edges.len().max(1) as u16;
-    let ch = ((r.height + 1) / n).saturating_sub(1).clamp(1, 4);
+    // Up to four rows each (six on a big screen, where they are the rows left).
+    let cap = if cx.size() == Size::L { 6 } else { 4 };
+    let ch = ((r.height + 1) / n).saturating_sub(1).clamp(1, cap);
     for (i, e) in edges.iter().enumerate() {
         let top = r.y + i as u16 * (ch + 1);
         if top + 1 > r.bottom() {
@@ -2678,9 +2675,14 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) -> (String, String)
         room.min(orbit::want_h(cx))
     };
     let band = Rect::new(r.x, r.y, r.width, band_h);
-    let sheet_h = bottom.saturating_sub(band.bottom());
+    let mut sheet_h = bottom.saturating_sub(band.bottom());
     if band.height >= 5 {
         orbit::draw(cx, buf, band, &cx.s.viewer, 3, orbit::Sel::Edge(&e.id));
+        // The rows the map leaves at its foot go to the sheet (its chart and the
+        // crossing sessions).
+        if let Some(last) = super::last_row(buf, band) {
+            sheet_h += band.bottom().saturating_sub(last + 2);
+        }
     } else if let (Some(a), Some(b)) = (cx.s.device(&e.from), cx.s.device(&e.to)) {
         // No room for the map: the link itself, drawn heavy between its two keycaps.
         let tok = edge_kind(cx, e).1;

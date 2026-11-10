@@ -6,7 +6,7 @@ strip, ticker, phone tree), `tiles.rs` device rows and session thumbnails, `view
 every other screen). Render: `tests/lab.sh mission`.
 
 The judges' winner, with their agreed grafts (2026-11-10): the hub is an orbit (this
-device in the middle inside a dotted halo, peers on rings by hop distance, curved links
+device in the middle inside a faint dotted halo, peers on rings by hop distance, curved links
 whose hue is the network and whose stroke is the policy, mesh members marked with their
 mesh's swatch), under it
 the selected device's vitals strip, one row of live session thumbnails (what needs you
@@ -37,7 +37,8 @@ session slot**.
    plain small-caps label followed by a faint rule (`▍NETWORK ──────`; no letter
    spacing, so it copies and reads aloud as a word). Boxes are used only for the dashed
    "new session" ghost tile. Without tints (16 colours, NO_COLOR) tiles are separated
-   by a faint `│` gutter.
+   by a faint `│` gutter; ASCII leaves the two-column gutter blank (`|` is the focus
+   bar's continuation and means nothing else).
 5. **Focus is a colour bar, in every tier.** The focused zone's label gets an accent bar
    `▍` (ASCII `> `); its selected item gets a left bar (`▍`/`▌`; ASCII `>` on its first
    row and `|` below) and a bold accent name, plus `accent.bg` where tints exist. 16
@@ -58,16 +59,16 @@ session slot**.
 
 | View | What it shows |
 |---|---|
-| Hub | `▍NETWORK` (accent while focused) with the stroke legend and the mesh swatches (members up) on its rule (the rule only when at least 12 cells remain); the orbit (section 3) under it, as tall as the rows left, and the rows its drawing leaves empty at its foot go to the thumbnails (up to what their screens hold); the selected device's vitals strip (no left bar: column 0 is the focus bar only; M+: two rows, name with route and per-hop rtt `t → c → b  0.6 + 2.4 ms`, os and account; cpu sparkline and %, mem gauge, temperature, uptime, meshes; its keys `b a attach  b c claude  b f files  e b link` on the right; S: one row); SESSIONS `needs you first`: one row of live thumbnails ranked by attention (the ghost "new on <selected>" tile fills a free cell; the full grid is in each device; `5 sessions ›` opens the palette); the ticker (`◆ fix flaky test needs you  t a attach   ▲ squirtle-jetson unreachable via ssh-overlay 3h  s r retry`, a tappable `+N` chip when more wait); the footer follows the focused zone. Phone (< 70 columns): NETWORK with the legend, a keycap mini orbit, the device tree (section 3), up to two ticker rows (tinted, the whole row is the tap target) and a wrapping footer. |
-| Device (`letter`) | Header with identity, evidence, mesh squares, cpu chart and gauges (four rows, one blank row before SESSIONS); session thumbnails keyed `a s d g h l`, only as tall as their screen tails; the ghost tile "new on <device>" (`c` claude, `x` codex, `n` shell), content-sized, in the same row; under them LINKS: the same star from this device with plain names (no letter stands out: in a device, letters are slots and verbs), then (at M+, when rows are left) one block per link: name, network and policy on the first row of an rtt area chart at most three rows tall, rtt and loss at the right; a link closed both ways draws no chart and says `closed both ways` with the last value seen, muted. The star takes the remaining rows. Phones list one plain row per link (name, policy, rtt or `closed · last 41ms`). Footer `⏎ a attach` (Enter and the slot keys on one chip); phones lead with `ret attach  esc back`, `del stop` last. |
-| Session (`⏎`, a slot key) | Full screen: the pane owns every row but the top one, a breadcrumb `cx › innovation › i a refactor transport  ● working` (the session's address, device keycap then slot keycap, before its title exactly as on its tile) whose segments are taps (hub, device) and whose right end is the `⏏ ctrl+\ detach` chip (ASCII `ctrl+\ detach`); at 120+ columns one muted live fact sits before it (`up 1h · 1 client`). Under 60 columns the chip is ` ctrl+\ ` without `⏏` (phone fonts draw it as a wide emoji), so `cx › i a title ●` keeps its room (phones drop the device name). |
+| Hub | `▍NETWORK` (accent while focused) with the stroke legend and the mesh swatches (members up) on its rule (the rule only when at least 12 cells remain); the orbit (section 3) under it, as tall as the rows left, its drawing one row under the band's top, and the rows it leaves at its foot go to the thumbnails (up to what their screens hold; a second row of tiles with the rest of the sessions and the ghost when each row still keeps ten); the selected device's vitals strip (no left bar: column 0 is the focus bar only; M+: two rows, name with route and per-hop rtt `t → c → b  0.6 + 2.4 ms`, os and account; cpu sparkline and %, mem gauge, temperature, uptime, meshes; its keys `b a attach  b c claude  b f files  e b link` on the right; S: one row); SESSIONS `needs you first`: one row of live thumbnails ranked by attention (the ghost "new on <selected>" tile fills a free cell; the full grid is in each device; `5 sessions ›` opens the palette); the ticker (`◆ fix flaky test needs you  t a attach   ▲ squirtle-jetson unreachable via ssh-overlay 3h  s r retry`, a tappable `+N` chip when more wait); the footer follows the focused zone. Phone (< 70 columns): NETWORK with the legend, a keycap mini orbit, the device tree (section 3), up to two ticker rows (tinted, the whole row is the tap target) and a wrapping footer. |
+| Device (`letter`) | Header with identity, evidence, mesh squares, cpu chart and gauges (four rows, one blank row before SESSIONS); session thumbnails keyed `a s d g h l`, only as tall as their screen tails and at most two hub tiles wide (a lone session reads as a tile beside its ghost, not a banner); the ghost tile "new on <device>" (`c` claude, `x` codex, `n` shell), content-sized, right beside them; under them LINKS: the same star from this device with plain names (no letter stands out: in a device, letters are slots and verbs), then (at M+, when rows are left) one block per link: name, network and policy on the first row of an rtt area chart that grows into the rows the star leaves (up to four, six at L), rtt and loss at the right; a link closed both ways draws no chart and says `closed both ways` with the last value seen, muted. The star takes at most ten rows (two-row labels with air) and sits under the zone label. Phones (touch, under 70 columns) draw no star: one plain row per link on fixed columns sized to the longest name (name, policy, rtt or `closed · last 41ms`; the loss goes first when rows are short). Footer `⏎ a attach` (Enter and the slot keys on one chip), `r retry` when the device is down or late, then `f files  e link  ⌫ stop  esc back  ` hub  - last  / find` (peek from 100 columns); phones lead with `ret attach  esc back`, `del stop` last. |
+| Session (`⏎`, a slot key) | Full screen: the pane owns every row but the top one, a breadcrumb `cx › innovation › i a refactor transport  ● working` (the session's address, device keycap then slot keycap, before its title exactly as on its tile) whose segments are taps (hub, device) and whose right end is the `⏏ ctrl+\ detach` chip (ASCII `ctrl+\ detach`); at 120+ columns one muted live fact sits before it (`up 1h · 1 client`). On phones (touch, under 70 columns) the chip is ` ctrl+\ ` without `⏏` (phone fonts draw it as a wide emoji), so `cx › i a title ●` keeps its room (phones drop the device name). |
 | Session peek (`␣`, `CX_LAB_FOCUS=peek`) | A meta line (address, state, provider, folder, uptime, clients, activity trend), the screen 1:1 on a deeper surface, and at M+ the OTHERS filmstrip. Hub letters work in peek (`t a` attaches t's slot a); `Tab` steps through the other peeks; `⏎` attaches, `⌫` stops, Esc back, `` ` `` hub. |
-| Files (`letter f`) | Tree with a size micro-bar and age, git letters; under it, when rows are left, the selected entry's path, size, age and git state and its send targets as device letters (five rows: a SELECTED zone, one fact per row; two to four rows: the path, then size, age and `s send to t c b` on one row; tree guides are `:` in ASCII, since `|` is the focus bar's continuation). Inline syntax preview at ≥100 cols, its surface as tall as the file, where a line cut at the edge ends in an accent `›`. The footer teaches `j k move  l h fold  s send to`; phones `ret open  esc back  s send  spc preview  / find  ` hub` (wrapped). `s` (send to) dims the files and raises a bottom sheet with the orbit seen from this device: press or tap the destination's letter (capture: `CX_LAB_FOCUS=dialog tests/lab.sh mission files`). The transfer then shows on the hub: its link heavy and lit, the rate on its chip, name and percentage in the top bar. |
-| Palette (`/`) | Jump to anything: devices, sessions and actions (new claude / codex / shell, files, link), each with the keys that reach it directly (so the palette teaches the shortcuts; action rows have no bullet, the key column is their mark). The selected row is the bar, a bold accent name and `accent.bg` where tints exist. While it is open only the sheet is live: the backdrop's targets are dropped and a tap beside the sheet closes it. `/` is the one search everywhere; inside files or a preview it opens pre-filtered to that scope as the first section. Sized to its results, at most 60 % of the height, with a row of `⏎ go  ↑↓ move  esc close` chips (`up/dn` on phones and in ASCII); on phones a full sheet on a cleared backdrop, descriptions cut with an ellipsis before the key column. |
-| Keys / secrets | Masked secret cards keyed `a s d g` (a slot key opens that card's editor, so adding the missing Tailscale key is `K g`, paste, `⏎`); missing ones get a solid accent button with a background-coloured label that names the key acting on it: `⏎ add` on the selected card, its slot key on the others (`g add`). Names are cut against the room really left (the button only on its row). The status line under the cards is cut at a `·` boundary, never mid-word. Crumb `cx › keys`. |
+| Files (`letter f`) | Tree with a size micro-bar and age, git letters; under it, when rows are left, the selected entry's path, size, age and git state and its send targets as device letters (five rows: a SELECTED zone, one fact per row; two to four rows: the path, then size, age and `s send to t c b` on one row; only devices a transfer can reach over links open in that direction are listed, those reached through a relay in their hue but not bold; tree guides are `:` in ASCII, since `|` is the focus bar's continuation). Inline syntax preview at ≥100 cols, its surface as tall as the file, where a line cut at the edge ends in an accent `›`. The footer teaches `j k move  l h fold  s send to`; phones `ret open  esc back  s send  spc preview  / find  ` hub` (wrapped). `s` (send to) dims the files and raises a bottom sheet with the orbit seen from this device: press or tap the destination's letter (capture: `CX_LAB_FOCUS=dialog tests/lab.sh mission files`). The transfer then shows on the hub: its link heavy and lit, the rate on its chip, name and percentage in the top bar. |
+| Palette (`/`) | Jump to anything: devices, sessions and actions (new claude / codex / shell, files, link), each with the keys that reach it directly, drawn as keycaps (the row's device letter in its hue), so the palette teaches the shortcuts by sight; action rows have no bullet, the key column is their mark. Rows cut by the height cap end in a muted `+N more ↓`, never silently. The selected row is the bar, a bold accent name and `accent.bg` where tints exist. While it is open only the sheet is live: the backdrop's targets are dropped and a tap beside the sheet closes it. `/` is the one search everywhere; inside files or a preview it opens pre-filtered to that scope as the first section. Sized to its results, at most 60 % of the height, with a breathing row, then a row of `⏎ go  ↑↓ move  esc close` chips (`up/dn` on phones and in ASCII); on phones a full sheet on a cleared backdrop, descriptions cut with an ellipsis before the key column. |
+| Keys / secrets | Masked secret cards keyed `a s d g` (a slot key opens that card's editor, so adding the missing Tailscale key is `K g`, paste, `⏎`); missing ones get a solid accent button with a background-coloured label that names the key acting on it: `⏎ add` on the selected card, its slot key on the others (`g add`). Names are cut against the room really left (the button only on its row). The status line under the cards is cut at a `·` boundary, never mid-word. The zone label and cards sit on the same column as every other screen's zones, with one breathing row under the label so its bar and the selected card's bar stay two marks. Crumb `cx › keys`. |
 | Onboarding | Viewer pill alone on an empty orbit (the same `◉ tranquility` capsule as the hub's root), the wrapped one-sentence explanation, a `⏎ Connect Cloudflare` button, three plain numbered steps (`1.`, not keycaps: they are not keys), a breathing row, then `j` join code and `esc` plain SSH (the footer says the same words). |
-| Join | Half-block QR (dark on light, always, with the standard four-module quiet zone wherever it fits, two only when the alternative is no QR) and the text column centred as one group; the short code as large mono text on one tinted surface, three rows tall where there is room (`K X 7   4 Q M`; not keycaps: its letters are not cx keys), the one-liner wrapped over up to three rows (readable to retype where clipboard escapes fail) and an expiry bar. |
-| Edge editor | Crumb `cx › t ⇄ i link`. The orbit right under the crumb, with the edited link drawn heavy (three dots thick) at full hue and everything else faded to faint: other links, their chips, mesh swatches, the other nodes' dots, the session slot letters on every label (here `a` is a policy key) and the other names (muted, plain, no hotkey hue: here `a p o` are policy keys) and the root's capsule tint; no halo. The sheet below has one segmented control per direction, labelled by its direction (`t→i`): the opener's outbound lane first with `a p o` (key, password, off), the way back with `A P O`, so no arrow keys are needed; `j k` move the lane bar as in every list. Each press applies at once, `u` undoes; one line says so (`Each press applies at once; u undoes.`, never "A key", which reads as the `A` binding) and how many sessions cross the link, then the rtt history (an area chart up to three rows) and, when four or more rows remain, the live thumbnails of the crossing sessions with the LINK figures at the right (now, min / max, mean, jitter, loss, network). |
+| Join | Half-block QR (dark on light, always, with the standard four-module quiet zone wherever it fits, two only when the alternative is no QR) and the text column centred as one group; the short code as large mono text on one tinted surface, three rows tall where there is room (`K X 7   4 Q M`; not keycaps: its letters are not cx keys), the one-liner wrapped over up to three rows (readable to retype where clipboard escapes fail) and an expiry bar. Footer `y code  Y command  esc done  R new code` (shifted: a new code revokes one that may already be shared). |
+| Edge editor | Crumb `cx › t ⇄ i link`. The orbit right under the crumb, with the edited link drawn heavy (three dots thick) at full hue and everything else faded to faint: other links, their chips, mesh swatches, the other nodes' dots, the session slot letters on every label (here `a` is a policy key) and the other names (muted, plain, no hotkey hue: here `a p o` are policy keys) and the root's capsule tint; no halo. The sheet below has one segmented control per direction, labelled by its direction (`t→i`): the opener's outbound lane first with `a p o` (key, password, off), the way back with `A P O`, so no arrow keys are needed; `j k` move the lane bar as in every list. Each press applies at once, `u` undoes; one line says so (`Each press applies at once; u undoes.`, never "A key", which reads as the `A` binding) and how many sessions cross the link, then the rtt history (an area chart up to three rows) and, when four or more rows remain, the live thumbnails of the crossing sessions (their address as plain muted text: here `a` is a policy key) with the LINK figures at the right (now, min / max, mean, jitter, loss, network). The sheet takes the rows the map leaves at its foot. Footer `a p o  t→i key/pass/off   A P O  i→t   j k lane   u undo   esc done` (lane first; phones drop the verbs, which the segmented controls name). |
 | Help | Crumb `cx › help`. Centred vertically. `+claude`, `+codex` and `+shell` all take their provider tint; the global keys sit on a grid whose column count divides them evenly (no orphan row). A drawn keyboard per layer (hub: device keys with status and rtt when the keycaps are wide enough, `e link`, `/ find`; in a device: `attach` on the slot keys, `down` / `up` on `j k`, verbs), a number-row stub with `` ` hub`` and `- last` (the round trip) where it costs no global key, `j k` `down` / `up` on the hub keyboard too, keycap width chosen so the staggered rows fit, a legend of device names and a key legend (including `- last session`), both on fixed column grids. Below 28 rows the device layer is one line of chips (`a s d attach  c x n new  f files  e link  ⌫ stop`). Phone: a list centred vertically, `then` as plain muted text in its own column, keycaps holding only real keys (device letters in their hue), descriptions on a fixed column; `del` (ASCII `bksp`) and `ctrl+\` as everywhere. |
 
 ## 3. The orbit
@@ -81,7 +82,8 @@ letters plain because `a p o` are policy keys there).
   through their relay). First-ring subtrees share the circle by size; children divide
   their parent's sector on the next ring out (at most 50° each). The largest subtree
   faces right, where rows are long; equal ones sit on the diagonals. Ring radii are
-  fractions of the band (first ring wide 0.5 / tall 0.78, keeping clear of the pill and,
+  fractions of the band (first ring wide 0.5 / tall 0.78, keeping clear of the pill (by
+  at least 11 columns at S, so every link keeps a readable run of its stroke) and,
   at M+, leaving a chip's room between the halo and the label), capped past a calm size
   (radius at most 11.5 rows, so the first ring stays within about 30 columns and 9 rows
   of the root): a big screen gives the rows to the thumbnails instead of spreading a few
@@ -94,8 +96,11 @@ letters plain because `a p o` are policy keys there).
   dropped (the rows under the star say `closed both ways`).
 - **The root** is a capsule (`◉ tranquility`: an accent tint; a solid accent row in 16
   colours; reversed in NO_COLOR; in ASCII its padding cells become `(` `)`, so
-  `(@ tranquility)`, and a selection adds `[ ]` outside it) inside a dotted halo in the
-  accent (ASCII `'` beads, used by nothing else), with its own evidence centred beneath
+  `(@ tranquility)`, and a selection adds `[ ]` outside it) inside a dotted halo in
+  faint ink that rings its evidence row too and yields to links (no bead within a cell of
+  a stroke, so a sparse password link never reads as halo; no halo in ASCII, where `'`
+  beads beside `-` `/` strokes read as noise and the `( )` capsule marks the root), with
+  its own evidence centred beneath
   (`you ▅▅█▅ 18% 47° a s`). The same capsule marks the root of a device star and the
   viewer on onboarding. `◉` marks the root whenever it is online.
 - **Nodes**: status dot, name with the hotkey letter underlined in the device hue (a
@@ -108,7 +113,7 @@ letters plain because `a p o` are policy keys there).
   overlap slides along its ring first, and anything still overlapping becomes `+N more`
   (opens the palette). Phones draw keycaps only (the tree carries the names).
 - **Links** are quadratic curves with a gentle bow, drawn with braille dots (2x4 per
-  cell; one slope character `- | / \` per cell in ASCII). **Hue is network**: the mesh
+  cell; in ASCII one cell per column where the line runs sideways (per row where it runs up or down), its character from the next cell: `-` / `|` where it stays, `\` or `/` where it steps, so a link is one continuous run, never doubled). **Hue is network**: the mesh
   hue (violet, blue), teal for lan, neutral for direct ssh, red when down. **Stroke is
   policy**: a continuous chain where a key is allowed, sparse dots where only a password
   is, dash-dot when down, faint beads when closed both ways, plus an arrowhead
@@ -172,7 +177,8 @@ backgrounds become ink of their hue, so `+` rows stay green and `-` rows red wit
 loud block (`tiles::degrade`).
 
 Glyphs, with ASCII fallbacks, each substitute meaning one thing: selection and focus
-`▍ ▌` / `>` (and nothing else is `>` in ASCII); status `◉ ● ◐ ✕ ◌` / `@ o ~ x ?`;
+`▍ ▌` / `>` on the first row and `|` below (and nothing else is `>` or `|` in ASCII: tile
+gutters are blank, tree guides `:`); status `◉ ● ◐ ✕ ◌` / `@ o ~ x ?`;
 session state `◆ ● ○ ·` / `! o - .` (`!` means needs you and nothing else; `*` stays
 the agents' own bullet); alerts `▲` / `^` (and nothing else is `^`); a transfer `⇣` / `dl`; one-way arrowheads `→ ↘ …` / `->` `<-`; policy `⇄ → ← ⊘` / `<> -> <- off`; line
 styles `─ ═ ┈` / `- = .`; mesh squares `▄` / the mesh's number (`1`, `2`, repeated in
@@ -196,7 +202,7 @@ everything under 70 columns (40x20 and 60x30 phones).
 | Top bar | `cx`, crumb (earlier device crumbs as keycaps), `● 6/7 ▲1` | + transfer % and `?` | + transfer name and rate | same (the ticker carries the alert text) |
 | Orbit | keycap mini orbit | names (9-16), chips only on down and closed links | two-row nodes, rtt chips | `key 14ms` chips, more air |
 | Below it | device tree (one or two rows per device), up to two ticker rows | legend, one-row vitals | legend, two-row vitals | same |
-| Sessions | (pips in the tree, needs-you in the ticker) | one row of 3 tiles, 5 tall | one row of 3, up to 9 tall | one row of 4, up to 12 tall |
+| Sessions | (pips in the tree, needs-you in the ticker) | one row of 3 tiles, 5 tall | one row of 3, up to 9 tall | one row of 4, up to what the screens hold; two rows (the rest and the ghost) when the map leaves room for each to keep ten |
 | Device view footer | `ret attach`, `esc back`, `f files`, `e link`, `` ` hub``, `del stop` (two rows, top first) | 7 chips | 7 chips | same |
 | Hub footer | `ret open` / `ret attach` first, then `- last`, `/ find`, `+ invite`, `K keys`, `? help` (two rows, top first) | by zone, up to 8 chips | by zone | same |
 
@@ -216,9 +222,11 @@ the top (the spacer row above the footer takes the first chips) and a destructiv
 ## 6. Interaction model
 
 Hub keys are non-letters plus `e`, `j` and `k`, so every other letter can be a device: a
-real build never assigns `e` (link) and assigns `j` `k` last, only past 23 devices, so on
-the hub they move through the sessions row and the phone tree as in every list (the
-large fixture follows that order). Inside a device, letters are verbs and slots; the home row
+real build never assigns `e` (link) and assigns `h` `j` `k` `l` last, only past 21
+devices, so on the hub `j k` move through the sessions row and the phone tree as in every
+list and a vim hand pressing `h` or `l` never opens a device (a device whose initial is
+reserved takes the next letter of its name that is neither reserved nor a slot:
+laptop-guest is `p`; the large fixture follows that order). Inside a device, letters are verbs and slots; the home row
 holds the slots (`a s d g h l`; `f` stays files, `j k` stay motion as in files and every
 list, so a vim hand never attaches by accident). More sessions than slots are reached
 through `/`. Any list inside a screen uses the
@@ -308,7 +316,7 @@ Decisions where reviewers disagreed (recorded, not asked):
 | Start a new claude session on innovation | `i` `c` | 2 | tap `i c claude` on the ghost tile (1) |
 | Stop a session | `Tab` `⌫` `y` on the hub, `i` `⌫` `y` (selected), `i` `⌫` `s` `y` (another slot) | 3-4 | tap `⌫ stop`, tap `y` |
 | Send a file to creation | `i` `f` `j…` `s` `c` | 4 + moves | `s send to`, tap the node |
-| Edit innovation → tranquility to off | `i` `e` `t` `o` (outbound lane first) | 4 | tap the link chip, tap `o off` (2) |
+| Edit innovation → tranquility to off | `e` `i` `O` (the inbound lane, from the hub) or `i` `e` `t` `o` (the outbound lane first) | 3 | tap the link chip, tap `O off` (2) |
 | Make tranquility → innovation key-only | `e` `i` `a` | 3 | tap the chip, tap `a key` (2) |
 | Edit tranquility ⇄ innovation from the hub | `e` `i` then `a p o` / `A P O` | 3 | tap the chip (1) |
 | Send a join code | `+` `y` | 2 | tap `+ invite`, tap the code |
@@ -346,7 +354,7 @@ Decisions where reviewers disagreed (recorded, not asked):
 ## 7. Degradation
 
 - **256 colours**: identical layout; blends resolve to the nearest xterm index.
-- **16 colours**: no tints; keycaps are a brightblack cell with white bold text (device keycaps keep their hue cell). Tiles separate by a faint `│` gutter and zones by their rule;
+- **16 colours**: no tints; keycaps are a brightblack cell with white bold text on dark backgrounds and a white-gray (`Gray`) cell with black text on light ones, where white on brightblack is too faint (device keycaps keep their hue cell). Tiles separate by a faint `│` gutter and zones by their rule;
   selection is the same left bar plus a bold accent name; the pill is a solid accent row
   shaped like a keycap; charts keep the heat ramp; screen inks keep their hue (section 4).
   Overlays clear the backdrop instead of dimming it; every selection (files, palette,
@@ -374,7 +382,8 @@ detach chip; `CX_LAB_FOCUS=peek` for the peek), `CX_LAB_FOCUS=sessions CX_LAB_SE
 lands: sessions zone, the tile still selected), `CX_LAB_SELECTED=3 tests/lab.sh mission
 hub` (a selected outer node: lit route, peer links with chips, vitals strip).
 
-Captures: `tests/lab.sh mission` (dark/light truecolor, dark-16, ascii), the 16-colour
+Captures: `tests/lab.sh mission` (dark/light truecolor, dark-16, light-16 for yellow
+and cyan on white, ascii), the 16-colour
 proof `CX_LAB_PALETTE=solarized CX_LAB_VARIANTS=dark-16 tests/lab.sh mission hub,help`
 (brightblack is the background there, so only faint strokes may use it), plus
 `CX_LAB_VARIANTS=dark-256,dark-nocolor,light-16` and a fallback-font check with

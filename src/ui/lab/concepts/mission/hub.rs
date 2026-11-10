@@ -73,10 +73,7 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // Rows the drawing left empty at its foot go to the thumbnails (up to what their
     // screens hold), keeping one blank row under the map; with room for two, a second
     // row of tiles shows the rest of the sessions and the ghost.
-    let last = (band.y..band.bottom())
-        .rev()
-        .find(|&yy| (band.x..band.right()).any(|xx| buf[(xx, yy)].symbol() != " "))
-        .unwrap_or(band.y);
+    let last = super::last_row(buf, band).unwrap_or(band.y);
     let room = th + band.bottom().saturating_sub(last + 2);
     // (Only when each row keeps ten rows: a tile must still show enough of its screen
     // to be told apart.)
@@ -484,7 +481,8 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
         3,
         orbit::Sel::Node(sel_id, true),
     );
-    let mut y = band.bottom();
+    // The tree follows the drawing (one blank row), not the band's foot.
+    let mut y = super::last_row(buf, band).map_or(band.bottom(), |l| (l + 2).min(band.bottom()));
     for t in rows.iter().take(usize::from(shown)) {
         tree_row(
             cx,

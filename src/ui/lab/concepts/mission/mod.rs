@@ -436,13 +436,20 @@ impl<'a> Cx<'a> {
     pub fn key_style(&self) -> Style {
         match self.c.color {
             ColorLevel::None => Style::default().add_modifier(Modifier::REVERSED),
-            // A brightblack cell, so keys are coloured cells in every tier.
-            ColorLevel::C16 => Style::default()
+            // A brightblack cell, so keys are coloured cells in every tier (on a light
+            // background a white-gray cell with black text: white on brightblack is
+            // too faint there).
+            ColorLevel::C16 if self.dark() => Style::default()
                 .bg(Color::DarkGray)
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
+            ColorLevel::C16 => Style::default()
+                .bg(Color::Gray)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+            // A step above the sheet surface, so keys stay cells on panels too.
             _ => self
-                .st(Tok::Surface2)
+                .rgb_bg(mix(self.rgb(Tok::Surface2), self.rgb(Tok::Fg), 0.1))
                 .patch(self.ink(Tok::Fg, 1.0))
                 .add_modifier(Modifier::BOLD),
         }
@@ -654,6 +661,14 @@ pub(super) fn width(s: &str, unicode: bool) -> u16 {
     } else {
         s.chars().count() as u16
     }
+}
+
+/// The last row of `r` with anything drawn on it (callers give the rows under a
+/// drawing to their content).
+pub(super) fn last_row(buf: &Buffer, r: Rect) -> Option<u16> {
+    (r.y..r.bottom())
+        .rev()
+        .find(|&y| (r.x..r.right()).any(|x| buf[(x, y)].symbol() != " "))
 }
 
 pub(super) fn ms_text(ms: f32) -> String {

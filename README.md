@@ -1,6 +1,16 @@
 # cx
 
+
 CX is a lightweight terminal workspace for SSH devices, persistent shells, Claude/Codex sessions, files and network discovery. It runs on **Linux x86_64 and ARM64** and works with existing SSH connections, including devices on a mesh network. Coding agents run on the execution device; viewing devices do not need an AI runtime.
+
+## Redesign preview
+
+In-progress concepts for the cx UI redesign. [See all concepts and screens →](docs/design/previews/README.md)
+
+<table>
+<tr><td width="50%" valign="top"><b>Constellation</b><br><img src="docs/design/previews/constellation/hub-120x40.png" alt="Constellation hub" width="100%"></td><td width="50%" valign="top"><b>Stage</b><br><img src="docs/design/previews/stage/hub-120x40.png" alt="Stage hub" width="100%"></td></tr>
+<tr><td width="50%" valign="top"><b>Mission control</b><br><img src="docs/design/previews/mission/hub-120x40.png" alt="Mission control hub" width="100%"></td><td width="50%" valign="top"><b>Focus flow</b><br><img src="docs/design/previews/focus-flow/hub-120x40.png" alt="Focus flow hub" width="100%"></td></tr>
+</table>
 
 ## Get started
 

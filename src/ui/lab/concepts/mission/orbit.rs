@@ -1057,7 +1057,7 @@ pub(super) fn draw_with(
 
     // Links: the tree, plus the selected device's (or edited) peer links.
     let mut chips: Vec<(&LabEdge, P, bool)> = Vec::new();
-    let mut arrows: Vec<(P, &'static str, Style)> = Vec::new();
+    let mut arrows: Vec<(Vec<P>, &'static str, Style)> = Vec::new();
     let mut links: Vec<(&LabEdge, P, P, f32, bool)> = Vec::new();
     for (i, n) in p.nodes.iter().enumerate() {
         let (Some(e), true) = (n.up, n.shown) else {
@@ -1110,16 +1110,24 @@ pub(super) fn draw_with(
             let fwd = (e.forward != Access::Denied) == from_a;
             let (t0, t1) = if fwd { (0.62, 0.68) } else { (0.38, 0.32) };
             let (p0, p1) = (bez(a, c, b, t0), bez(a, c, b, t1));
-            arrows.push((p0, arrow(cx, p1.0 - p0.0, p1.1 - p0.1), st));
+            // Short links fall back toward the middle, so the head is never masked away.
+            let spots = [t0, 0.5, (t0 + 0.5) / 2.0]
+                .map(|t| bez(a, c, b, t))
+                .to_vec();
+            arrows.push((spots, arrow(cx, p1.0 - p0.0, p1.1 - p0.1), st));
         }
         chips.push((e, bez(a, c, b, 0.5), on));
     }
     cv.flush(cx, buf);
-    for (q, g, st) in arrows {
-        let (x, y) = (q.0 as u16, q.1 as u16);
-        if band.contains((x, y).into())
-            && !cv.mask[cv.cell(i32::from(x), i32::from(y)).unwrap_or(0)]
-        {
+    for (spots, g, st) in arrows {
+        let free = spots
+            .iter()
+            .map(|q| (q.0 as u16, q.1 as u16))
+            .find(|&(x, y)| {
+                cv.cell(i32::from(x), i32::from(y))
+                    .is_some_and(|i| !cv.mask[i])
+            });
+        if let Some((x, y)) = free {
             cx.put(buf, x, y, 1, g, st);
         }
     }
@@ -1298,6 +1306,7 @@ fn transfer_rate(cx: &Cx, e: &LabEdge) -> Option<String> {
 
 /// A device's name with its hotkey letter underlined in the device hue (letters are
 /// keys); where letters are not keys the name is plain. Returns columns written.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn name(
     cx: &Cx,
     buf: &mut Buffer,

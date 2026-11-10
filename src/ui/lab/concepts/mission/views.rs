@@ -521,6 +521,7 @@ pub(super) fn grid_shape(cx: &Cx, w: u16, h: u16) -> (u16, u16) {
 
 /// Session thumbnails on one uniform grid (same size, one gutter), ranked by attention;
 /// the next free cell becomes the "new session" ghost tile. Returns how many were shown.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn thumbs_grid(
     cx: &Cx,
     buf: &mut Buffer,

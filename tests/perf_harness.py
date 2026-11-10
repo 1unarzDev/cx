@@ -345,12 +345,14 @@ def source_fixture(lines):
 def preview_region(viewer):
     """Rows inside the preview box (between its titled top border and its bottom border)."""
     display = viewer.screen.display
-    top = next((y for y, line in enumerate(display) if '╭ ▸' in line and 'bytes' in line), None)
+    # Focused panels draw a heavy border with a title chip (spec 5); older builds used '╭ ▸'.
+    marks = ('┏ ', '╭ ▸')
+    top = next((y for y, line in enumerate(display) if any(m in line for m in marks) and 'bytes' in line), None)
     if top is None:
         return None
-    column = display[top].index('╭ ▸')
+    column = next(display[top].index(m) for m in marks if m in display[top])
     bottom = next((y for y in range(top + 1, len(display))
-                   if len(display[y]) > column and display[y][column] == '╰'), len(display))
+                   if len(display[y]) > column and display[y][column] in '╰┗'), len(display))
     return top, bottom, column
 
 
@@ -436,7 +438,7 @@ def scenario_directory(binary, entries=20000):
             viewer.wait(lambda: '▸ many' in viewer.text() or ' many' in viewer.text(), what='directory row')
             viewer.quiesce()
             row = re.compile(r'entry-\d{5}\.txt')
-            count = re.compile(r'▸ (\d+) items')
+            count = re.compile(r'(?:▸ )?(\d+) items')
 
             def shown():
                 match = count.search(viewer.text())
@@ -573,7 +575,7 @@ def motion_phases(viewer, list_rows, selected_row, cols, events=40, spacing=.04)
 def list_rows(viewer, pattern):
     rows = [y + 1 for y, line in enumerate(viewer.screen.display) if re.search(pattern, line[20:66])]
     selected = next((y + 1 for y, line in enumerate(viewer.screen.display)
-                     if re.search(pattern, line[20:66]) and ('›' in line[20:66] or '▸' in line[20:24])), rows[0] if rows else 6)
+                     if re.search(pattern, line[20:66]) and ('›' in line[20:66] or '▌' in line[20:66] or '▸' in line[20:24])), rows[0] if rows else 6)
     return rows, selected
 
 

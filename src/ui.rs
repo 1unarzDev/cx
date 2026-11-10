@@ -11,6 +11,7 @@ mod workspaces;
 #[cfg(test)]
 use rendering::render;
 use rendering::render_with_native;
+mod caps;
 mod graph;
 mod menus;
 mod navigation;
@@ -56,8 +57,8 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, BorderType, Borders, Cell, Clear, List, ListItem, Padding, Paragraph, Row, Table,
-        TableState, Wrap,
+        Block, Borders, Cell, Clear, List, ListItem, Padding, Paragraph, Row, Table, TableState,
+        Wrap,
     },
     Frame, Terminal,
 };

@@ -38,7 +38,8 @@ for name,expected in [('innovation',['Claude','Codex']),('tranquility',['Codex']
     label=device['name']+' · '+device['account']+'@'+device['host']
     for row,line in enumerate(screen.display):
      col=line.find(label)
-     if col>=0 and screen.buffer[row][col].reverse: selected=i
+     # Focused selection: accent.bg background, or reverse in 16-color/NO_COLOR.
+     if col>=0 and (screen.buffer[row][col].reverse or screen.buffer[row][col].bg in ('1d3a42','005f5f')): selected=i
    assert selected is not None, 'device highlight missing: '+text()
    send((b'j'*(index-selected) if index>=selected else b'k'*(selected-index))+b'\r')
    deadline=time.monotonic()+15

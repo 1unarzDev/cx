@@ -1,0 +1,40 @@
+ cx   [Sessions]  Network                                                                         viewing fixture@laptop
+                                                                                                                        
+╭ Devices ──────────╮┏ Sessions · 2 sessions ━━━━━━━━━━━━━━━━━━━━┓╭ build watcher · fixture@laptop ────────────────────╮
+│   All devices     │┃  SESSION                        STATE     ┃│Enter · focus terminal · Wheel · scroll             │
+│ > ●  laptop       │┃                                           ┃│Compiling cx-demo v0.1.0                            │
+│   ●  * lab-arm    │┃  /tmp/tmp-xxxxxx                          ┃│    Finished dev in 2.41s                           │
+│   ○  * field-rov… │┃> build watcher                  idle      ┃│[Running cargo check]                               │
+╰───────────────────╯┃                                           ┃│[xxxxxx@xxxxxxxxxx cx-demo]$                        │
+╭ Actions ──────────╮┃  /tmp/tmp-xxxxxx                          ┃│                                                    │
+│ Files             │┃  New shell                      idle      ┃│                                                    │
+│ Network           │┃                                           ┃│                                                    │
+│ Containers        │┃                                           ┃│                                                    │
+│ Transfers         │┃                                           ┃│                                                    │
+│ Watch · read-only │┃                                           ┃│                                                    │
+╰───────────────────╯┃                                           ┃│                                                    │
+ Selected ───────────┃                                           ┃│                                                    │
+ Host fixture@laptop ┃                                           ┃│                                                    │
+ Folder /tmp/cx-cap… ┃                                           ┃│                                                    │
+ Enter open · n new  ┃                                           ┃│                                                    │
+                     ┃                                           ┃│                                                    │
+                     ┃                                           ┃│                                                    │
+                     ┃                                           ┃│                                                    │
+                     ┃                                           ┃│                                                    │
+                     ┃                                           ┃│                                                    │
+                     ┃                                           ┃│                                                    │
+                     ┃                                           ┃│                                                    │
+                     ┃                                           ┃│                                                    │
+                     ┃                                           ┃│                                                    │
+                     ┃                                           ┃│                                                    │
+                     ┃                                           ┃│                                                    │
+                     ┃                                           ┃│                                                    │
+                     ┃                                           ┃│                                                    │
+                     ┃                                           ┃│                                                    │
+                     ┃                                           ┃│                                                    │
+                     ┃                                           ┃│                                                    │
+                     ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛╰────────────────────────────────────────────────────╯
+ ● 2/3 devices                              Focus: Sessions · 2/2                                                 ↔ idle
+ Enter Open                              n New session                           w Watch · read-only                    
+ p Pin / unpin                           s Agent tasks                           d Stop · confirm                       
+                                                                                                                        

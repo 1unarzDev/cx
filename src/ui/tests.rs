@@ -1781,6 +1781,12 @@ fn rejected_cut_retains_clipboard_and_late_mutation_errors_remain_visible() {
     });
     assert!(a.notice.contains("destination exists"));
 }
+/// Terminal transparency: only selected rows may paint a background (spec 4),
+/// and only with the selection tokens.
+fn transparent_except_selection(buffer: &ratatui::buffer::Buffer) -> bool {
+    let allowed = [Some(Color::Reset), selection(true).bg, selection(false).bg];
+    buffer.content.iter().all(|c| allowed.contains(&Some(c.bg)))
+}
 fn capture_app(a: &App, width: u16) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
     terminal.draw(|f| render(f, a)).unwrap();
@@ -1874,7 +1880,7 @@ fn update_notice_capture_matrix_aligns_and_preserves_default_background() {
                 assert_eq!(popup.right(), width - 1);
                 assert_eq!(popup.bottom(), available.bottom() - 1);
                 assert!(text.lines().last().unwrap().trim().is_empty());
-                assert!(buffer.content.iter().all(|cell| cell.bg == Color::Reset));
+                assert!(transparent_except_selection(buffer));
                 if let Some(directory) = std::env::var_os("CX_UPDATE_CAPTURE_DIR") {
                     let directory = std::path::PathBuf::from(directory);
                     std::fs::create_dir_all(&directory).unwrap();
@@ -2809,11 +2815,7 @@ fn containers_ui_capture_matrix_and_default_background() {
             } else {
                 assert!(text.contains("roboboat_dev"), "{width} {mode}");
             }
-            assert!(buffer
-                .content
-                .iter()
-                .filter(|c| c.symbol() == " ")
-                .all(|c| c.bg == Color::Reset));
+            assert!(transparent_except_selection(buffer));
             if let Some(directory) = std::env::var_os("CX_CONTAINER_CAPTURE_DIR") {
                 let path = std::path::PathBuf::from(directory);
                 std::fs::create_dir_all(&path).unwrap();
@@ -3138,7 +3140,7 @@ fn transfer_sidebar_animation_frames_are_transparent_and_fit() {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|f| render(f, &a)).unwrap();
             let buffer = terminal.backend().buffer();
-            assert!(buffer.content.iter().all(|c| c.bg == Color::Reset));
+            assert!(transparent_except_selection(buffer));
             let text = buffer
                 .content
                 .chunks(width as usize)
@@ -3769,7 +3771,7 @@ fn workspace_polish_capture_matrix() {
                     .collect::<Vec<_>>()
                     .join("\n");
                 assert!(
-                    buffer.content.iter().all(|c| c.bg == Color::Reset),
+                    transparent_except_selection(buffer),
                     "{state} {width}x{height}: opaque background"
                 );
                 if state == "sessions" {
@@ -5228,10 +5230,10 @@ fn notices_expire_and_repeated_messages_restart_the_timeout() {
 fn floating_notifications_are_typed_bounded_and_restore_the_scene() {
     for width in [48, 80, 120] {
         for (kind, label, color) in [
-            (NoticeKind::Info, "Info", Color::Rgb(80, 200, 210)),
-            (NoticeKind::Success, "Success", Color::Rgb(110, 200, 120)),
-            (NoticeKind::Warning, "Warning", Color::Rgb(220, 180, 70)),
-            (NoticeKind::Error, "Error", Color::Rgb(220, 90, 90)),
+            (NoticeKind::Info, "Info", tok(Tok::Info).fg),
+            (NoticeKind::Success, "Success", tok(Tok::Ok).fg),
+            (NoticeKind::Warning, "Warning", tok(Tok::Warn).fg),
+            (NoticeKind::Error, "Error", tok(Tok::Err).fg),
         ] {
             let (mut app, _rx) = file_app();
             let baseline = capture_app(&app, width);
@@ -5242,9 +5244,9 @@ fn floating_notifications_are_typed_bounded_and_restore_the_scene() {
             let text = capture_app(&app, width);
             assert!(text.contains(label));
             assert!(text.contains("notification") && text.contains("type"));
-            assert!(buffer.content.iter().all(|cell| cell.bg == Color::Reset));
+            assert!(transparent_except_selection(buffer));
             if std::env::var_os("NO_COLOR").is_none() {
-                assert!(buffer.content.iter().any(|cell| cell.fg == color));
+                assert!(buffer.content.iter().any(|cell| Some(cell.fg) == color));
             }
             if let Some(dir) = std::env::var_os("CX_NOTIFICATION_CAPTURE_DIR") {
                 let dir = std::path::PathBuf::from(dir);
@@ -6628,7 +6630,7 @@ fn loader_content_has_equal_vertical_padding_inside_panel() {
     let lines: Vec<_> = text.lines().collect();
     let top = lines
         .iter()
-        .position(|l| l.contains("New session") && l.contains('─'))
+        .position(|l| l.contains("New session") && (l.contains('─') || l.contains('━')))
         .unwrap();
     let first = lines
         .iter()
@@ -6639,11 +6641,202 @@ fn loader_content_has_equal_vertical_padding_inside_panel() {
         .position(|l| l.contains("Preparing the first screen"))
         .unwrap();
     let bottom = (last + 1..lines.len())
-        .find(|i| lines[*i].contains(&"─".repeat(40)))
+        .find(|i| lines[*i].contains(&"─".repeat(40)) || lines[*i].contains(&"━".repeat(40)))
         .unwrap();
     assert_eq!(
         first - top - 1,
         bottom - last - 1,
         "loader content is not vertically centered"
     );
+}
+
+#[test]
+fn ascii_capability_renders_no_unicode_and_keeps_focus_cues() {
+    use super::caps::{with_caps, Caps, ColorDepth};
+    let ascii = Caps {
+        unicode: false,
+        color: ColorDepth::None,
+        ..Caps::default()
+    };
+    let (files, _rx) = file_app();
+    let (sessions, _rx2) = queued_app();
+    for (name, app) in [("files", &files), ("sessions", &sessions)] {
+        for (w, h) in [(40, 20), (80, 24), (120, 40)] {
+            with_caps(ascii, || {
+                let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+                t.draw(|f| render(f, app)).unwrap();
+                let buffer = t.backend().buffer();
+                let text = buffer
+                    .content
+                    .chunks(w as usize)
+                    .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(text.is_ascii(), "{name} {w}x{h}:\n{text}");
+                // Focused panel: `#=#` border with a reversed `[ title ]` chip.
+                assert!(text.contains("#[ "), "{name} {w}x{h}:\n{text}");
+                assert!(buffer
+                    .content
+                    .iter()
+                    .any(|c| c.symbol() == "[" && c.modifier.contains(Modifier::REVERSED)));
+                assert!(buffer
+                    .content
+                    .iter()
+                    .all(|c| c.fg == Color::Reset && c.bg == Color::Reset));
+            });
+        }
+    }
+}
+
+/// Spec 5: exactly one focused region. With a modal overlay open, the panels
+/// behind it lose the heavy border, the accent chip and the accent selection.
+#[test]
+fn only_the_overlay_looks_focused_while_it_owns_input() {
+    let accent = theme::token_color(theme::Tok::Accent, caps::caps()).unwrap();
+    let accent_bg = theme::token_color(theme::Tok::AccentBg, caps::caps()).unwrap();
+    let draw = |a: &App| {
+        let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        t.draw(|f| render(f, a)).unwrap();
+        t.backend().buffer().clone()
+    };
+    let heavy = |b: &ratatui::buffer::Buffer| -> Vec<(u16, u16)> {
+        let mut v = Vec::new();
+        for y in 0..b.area.height {
+            for x in 0..b.area.width {
+                if b[(x, y)].symbol() == "┏" {
+                    v.push((x, y));
+                }
+            }
+        }
+        v
+    };
+    let chip_rows = |b: &ratatui::buffer::Buffer| -> std::collections::BTreeSet<u16> {
+        b.content
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                c.modifier.contains(Modifier::REVERSED)
+                    && c.fg == accent
+                    && c.symbol().chars().all(char::is_alphabetic)
+                    && !c.symbol().is_empty()
+            })
+            .map(|(i, _)| (i / usize::from(b.area.width)) as u16)
+            .collect()
+    };
+    let (mut a, _) = queued_app();
+    a.view = View::Work;
+    a.focus = Focus::Workspace;
+    let base = draw(&a);
+    assert_eq!(heavy(&base).len(), 1, "one focused panel without overlays");
+
+    for open in [
+        (|a: &mut App| a.input = Some(Input::Palette)) as fn(&mut App),
+        |a: &mut App| a.help = true,
+    ] {
+        let mut a2 = queued_app().0;
+        a2.view = View::Work;
+        a2.focus = Focus::Workspace;
+        open(&mut a2);
+        let b = draw(&a2);
+        let corners = heavy(&b);
+        assert_eq!(corners.len(), 1, "only the overlay is heavy: {corners:?}");
+        let (ox, oy) = corners[0];
+        let rows = chip_rows(&b);
+        assert_eq!(rows.len(), 1, "one accent chip row: {rows:?}");
+        assert_eq!(rows.iter().next(), Some(&oy), "the chip is the overlay's");
+        // Find the overlay's extent (its right and bottom heavy corners).
+        let right = (ox..b.area.width)
+            .find(|&x| b[(x, oy)].symbol() == "┓")
+            .unwrap();
+        // The overlay may stack frames (the palette's input box over its
+        // list): it extends down while its left column stays a border.
+        let bottom = (oy..b.area.height)
+            .take_while(|&y| "┏┃┗╭│╰├".contains(b[(ox, y)].symbol()))
+            .last()
+            .unwrap();
+        for y in 0..b.area.height {
+            for x in 0..b.area.width {
+                let inside = (ox..=right).contains(&x) && (oy..=bottom).contains(&y);
+                if !inside {
+                    assert_ne!(
+                        b[(x, y)].bg,
+                        accent_bg,
+                        "focused selection behind overlay at {x},{y}: {:?}",
+                        (0..b.area.width)
+                            .map(|x| b[(x, y)].symbol())
+                            .collect::<String>()
+                    );
+                    assert_ne!(
+                        b[(x, y)].symbol(),
+                        "▌",
+                        "focused bar behind overlay at {x},{y}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Titles keep border cells after them and end with the ellipsis when cut.
+#[test]
+fn narrow_titles_are_capped_with_an_ellipsis() {
+    let (a, _) = queued_app();
+    for (caps, run, ell) in [
+        (caps::Caps::default(), "━", "…"),
+        (
+            caps::Caps {
+                unicode: false,
+                color: caps::ColorDepth::None,
+                ..caps::Caps::default()
+            },
+            "=",
+            "~",
+        ),
+    ] {
+        caps::with_caps(caps, || {
+            let mut t = Terminal::new(TestBackend::new(40, 20)).unwrap();
+            t.draw(|f| render(f, &a)).unwrap();
+            let b = t.backend().buffer();
+            let row = |y: u16| (0..40).map(|x| b[(x, y)].symbol()).collect::<String>();
+            let line = (0..20)
+                .map(row)
+                .find(|r| {
+                    r.contains("Session")
+                        && r.split_whitespace()
+                            .next()
+                            .is_some_and(|w| w.starts_with(['┏', '╭', '#', '+']))
+                })
+                .unwrap();
+            let tail: String = line
+                .chars()
+                .rev()
+                .take(3)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            assert!(
+                tail.starts_with(run) || line.contains(&format!("{ell}{run}")),
+                "title leaves border after it: {line:?}"
+            );
+        });
+    }
+}
+
+/// 16 colors: the focused row is one uniform reversed chip with a `>` bar.
+#[test]
+fn ansi16_focused_row_is_uniform_and_keeps_its_bar() {
+    let c = caps::Caps {
+        color: caps::ColorDepth::Ansi16,
+        ..caps::Caps::default()
+    };
+    let style = theme::selection_for(true, c);
+    assert!(style.add_modifier.contains(Modifier::REVERSED));
+    assert_eq!(
+        style.fg,
+        Some(Color::Reset),
+        "token colors do not leak into the bar"
+    );
+    assert_eq!(theme::selection_symbol_for(true, c), "> ");
+    assert_eq!(theme::selection_symbol_for(false, c), "▏ ");
 }

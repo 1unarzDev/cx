@@ -36,8 +36,10 @@ with tempfile.TemporaryDirectory(prefix='cx-update-ui-') as directory:
   y=next(i for i,row in enumerate(rows) if 'Warning' in row)
   x=rows[y].index('Warning')
   assert x>45 and 10<y<20,(x,y,text())
-  assert screen.buffer[y][x].fg =='dcb446',screen.buffer[y][x]
-  assert all(cell.bg=='default' for row in screen.buffer.values() for cell in row.values())
+  # warn token: truecolor #e3c275, xterm-256 index 179, 16-color yellow.
+  assert screen.buffer[y][x].fg in ('e3c275','d7af5f','brown','yellow'),screen.buffer[y][x]
+  # Transparent except selected rows (accent.bg / select.dim.bg tokens).
+  assert all(cell.bg in ('default','1d3a42','262b33','005f5f','303030') for row in screen.buffer.values() for cell in row.values())
   assert rows[-1].strip()=='' and 'Ctrl C Quit' in text(),text()
   pathlib.Path('/tmp/cx-notice-pty-visible.json').write_text(json.dumps([
    [{'text':screen.buffer[y][x].data,'fg':screen.buffer[y][x].fg,'bold':screen.buffer[y][x].bold} for x in range(100)] for y in range(24)]))

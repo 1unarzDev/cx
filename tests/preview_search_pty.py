@@ -61,7 +61,8 @@ for mono in (False, True):
             col = screen.display[row].index('needle first')
             cell = screen.buffer[row][col]
             assert cell.underscore and cell.bold and cell.bg == 'default', cell
-            if not mono: assert cell.fg in ('cyan', '00cdcd'), cell
+            # accent token: 16-color cyan, truecolor #6cc4d6, xterm-256 index 80.
+            if not mono: assert cell.fg in ('cyan', '00cdcd', '6cc4d6', '5fd7d7'), cell
             os.write(master, b'\rn')
             wait(lambda: any('2/3' in line for line in screen.display) and any('n-e-e-d-l-e fuzzy' in line for line in screen.display))
             os.write(master, b'n')

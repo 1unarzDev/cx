@@ -30,7 +30,8 @@ for view in ['Files','Work']:
      data=os.read(master,65536);raw.extend(data);stream.feed(data.decode(errors='replace'))
   def current():
    for row,line in enumerate(screen.display):
-    if ('▸' in line or '›' in line) and re.search(pattern,line):return re.search(pattern,line).group(),row
+    # Focused selection bar (spec 5): '▌'; older cursors kept for reference.
+    if ('▌' in line or '▸' in line or '›' in line) and re.search(pattern,line):return re.search(pattern,line).group(),row
    return None
   def wait(predicate):
    end=time.monotonic()+10
@@ -39,7 +40,7 @@ for view in ['Files','Work']:
   def send(data):os.write(master,data);read(.25)
   try:
    wait(lambda:current() is not None);read(.3)
-   ordered=[re.search(pattern,line[21:]).group() for line in screen.display if re.search(pattern,line[21:]) and '│' in line]
+   ordered=[re.search(pattern,line[21:]).group() for line in screen.display if re.search(pattern,line[21:]) and ('│' in line or '┃' in line)]
    # Table rows include each fixture exactly once; selected-item text lives in sidebar.
    ordered=list(dict.fromkeys(ordered));assert len(ordered)==12,repr(ordered)+'\n'+'\n'.join(screen.display)
    first,row=current();assert first==ordered[0],(first,ordered)

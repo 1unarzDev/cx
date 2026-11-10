@@ -1,7 +1,7 @@
 //! Session menu definitions are shared by dispatch, shortcut lookup and rendering.
 use super::{
-    accent, ascii, block, muted, popup, App, Block, BorderType, Borders, Clear, Dialog, Frame,
-    Modifier, Paragraph, Rect, Wrap,
+    accent, ascii, block, border_set, faint, muted, popup, App, Block, Borders, Clear, Dialog,
+    Frame, Modifier, Paragraph, Rect, Wrap,
 };
 
 pub(super) struct SessionChoice {
@@ -157,12 +157,8 @@ pub(super) fn render_session_chooser(
                         } else {
                             ""
                         })
-                        .border_type(if ascii() {
-                            BorderType::Plain
-                        } else {
-                            BorderType::Rounded
-                        })
-                        .border_style(if active { style } else { muted() }),
+                        .border_set(border_set(active))
+                        .border_style(if active { style } else { faint() }),
                 ),
             cell,
         );

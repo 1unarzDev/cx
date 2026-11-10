@@ -546,6 +546,7 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
             .saturating_sub(app.session_preview.line_start)
             .min(u32::from(u16::MAX)) as u16;
         frame.render_widget(Paragraph::new(lines).scroll((relative_top, left)), screen);
+        protect_content(frame.buffer_mut(), screen);
         if focused
             && app.session_preview.scroll_top.is_none()
             && app.session_preview.cursor_visible

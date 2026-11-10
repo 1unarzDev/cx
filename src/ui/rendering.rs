@@ -2123,7 +2123,6 @@ fn render_secrets(frame: &mut Frame<'_>, app: &App, area: Rect) {
         area,
     );
 }
-/// The command palette: one box, dimmed background, sections, MRU ranking.
 /// Dim everything already drawn so an overlay reads as the only live layer
 /// (P12): DIM plus, with color, the muted fg so terminals that ignore SGR 2
 /// still recede.
@@ -2179,6 +2178,7 @@ fn fit_path(path: &str, width: usize) -> String {
     let keep: String = path.chars().skip(count + 1 - width.max(1)).collect();
     format!("{}{keep}", if ascii() { "~" } else { "…" })
 }
+/// The command palette: one box, dimmed background, sections, MRU ranking.
 fn render_palette(frame: &mut Frame<'_>, app: &App, area: Rect, phone: bool) {
     // Dim everything beneath; nothing bleeds through the box edges (P12).
     dim_backdrop(frame);

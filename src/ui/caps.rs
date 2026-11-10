@@ -158,18 +158,7 @@ impl Caps {
             }
         };
 
-        // LC_ALL > LC_CTYPE > LANG; the first non-empty one decides. With no
-        // locale at all (common under systemd/ssh), assume UTF-8: every terminal
-        // cx targets is UTF-8, and an explicit `C`/`POSIX` still selects ASCII.
-        let locale_utf8 = ["LC_ALL", "LC_CTYPE", "LANG"]
-            .iter()
-            .find_map(|k| nonempty(k))
-            .map(|v| {
-                let v = v.to_ascii_lowercase();
-                v.contains("utf-8") || v.contains("utf8")
-            })
-            .unwrap_or(true);
-        let unicode = !set("CX_ASCII") && !dumb && !console && locale_utf8;
+        let unicode = crate::sessions::unicode_from(env);
 
         let background = match get("CX_THEME").as_deref().map(str::to_ascii_lowercase) {
             Some(v) if v == "light" => Background::Light,

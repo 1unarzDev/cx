@@ -2758,6 +2758,29 @@ fn restore_managed_style(session: &Session) -> Result<()> {
     Ok(())
 }
 
+/// Unicode glyphs are safe: no CX_ASCII, no dumb or console TERM, and a UTF-8
+/// locale. LC_ALL > LC_CTYPE > LANG; the first non-empty one decides. With no
+/// locale at all (common under systemd/ssh), assume UTF-8: every terminal cx
+/// targets is UTF-8, and an explicit `C`/`POSIX` still selects ASCII.
+pub(crate) fn unicode_from(env: &dyn Fn(&str) -> Option<String>) -> bool {
+    let term = env("TERM").unwrap_or_default().to_ascii_lowercase();
+    let locale_utf8 = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .find_map(|k| env(k).filter(|v| !v.is_empty()))
+        .map(|v| {
+            let v = v.to_ascii_lowercase();
+            v.contains("utf-8") || v.contains("utf8")
+        })
+        .unwrap_or(true);
+    env("CX_ASCII").is_none() && term != "dumb" && term != "linux" && locale_utf8
+}
+/// This process's terminal needs ASCII glyphs (the managed tmux status and
+/// the attach payload). Environment only, never a terminal probe; the UI's
+/// capability detection applies the same rule.
+pub(crate) fn viewer_ascii() -> bool {
+    !unicode_from(&|k| std::env::var(k).ok())
+}
+
 fn set_managed_status(session: &Session, ascii: bool) -> Result<()> {
     let safe = |value: &str| {
         value
@@ -2803,11 +2826,6 @@ fn set_managed_status(session: &Session, ascii: bool) -> Result<()> {
     ]);
     output(command)?;
     Ok(())
-}
-/// The viewer asked for ASCII-only output (CX_ASCII or a dumb TERM); the UI's
-/// `theme::ascii()` uses the same switch.
-pub(crate) fn viewer_ascii() -> bool {
-    std::env::var_os("CX_ASCII").is_some() || std::env::var("TERM").is_ok_and(|v| v == "dumb")
 }
 // Codex can spawn an editor in its own foreground process group. A provider
 // ancestor is not enough: another process on this PTY must retain input.

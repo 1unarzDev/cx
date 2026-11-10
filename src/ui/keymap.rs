@@ -1076,7 +1076,6 @@ pub(super) fn help_sections(app: &App) -> Vec<(&'static str, Vec<(&'static str, 
         .collect()
 }
 
-/// Context-menu entries for the focused selection: the same commands as its keys.
 /// The short name of a binding: its footer-chip label, else the help text
 /// up to its first clause (context menu rows must fit a narrow box).
 pub(super) fn short_label(binding: &'static Binding) -> &'static str {
@@ -1092,6 +1091,7 @@ pub(super) fn short_label(binding: &'static Binding) -> &'static str {
     &help[..end]
 }
 
+/// Context-menu entries for the focused selection: the same commands as its keys.
 pub(super) fn context_menu(app: &App) -> Vec<(&'static str, &'static str, Cmd)> {
     let mut out: Vec<(&'static str, &'static str, Cmd)> = Vec::new();
     for ctx in contexts(app) {

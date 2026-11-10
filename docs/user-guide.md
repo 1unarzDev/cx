@@ -114,7 +114,7 @@ CX shares one SSH connection per device and route. The first contact opens a pri
 
 Sessions preserve provider-authored titles. Generic labels include folder, provider,
 and a compact runtime identity; separate conversations are never merged by label.
-Hovering over a session only highlights it. The selected session's styled tmux
+Hovering over a session never selects it. The selected session's styled tmux
 screen shows beside the list on wide terminals, or below it on narrower layouts.
 **Enter attaches** to the running shell or agent; `w` watches it read-only.
 **`i` types into the live preview** inside CX and `z` zooms it to the workspace.

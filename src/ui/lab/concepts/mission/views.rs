@@ -860,14 +860,15 @@ fn link_tail(cx: &Cx, e: &LabEdge, loss: bool) -> String {
 /// rtt and loss at the right. A link closed both ways has no live rtt to chart: it says
 /// so, with the last value seen, in muted text.
 fn link_rows(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, edges: &[&LabEdge]) {
-    // Charts share the rows a big screen leaves (a closed link takes one row and a gap),
-    // up to six rows each, on one scale from 0.
+    // Charts share the rows a big screen leaves, less a breathing row above the footer (a
+    // closed link takes one row and a gap),
+    // up to eight rows each, on one scale from 0.
     let shut = |e: &LabEdge| e.forward == Access::Denied && e.reverse == Access::Denied;
     let closed = edges.iter().filter(|e| shut(e)).count() as u16;
     let open = (edges.len() as u16 - closed).max(1);
-    let ch = ((r.height + 1).saturating_sub(2 * closed) / open)
+    let ch = (r.height.saturating_sub(2 * closed) / open)
         .saturating_sub(1)
-        .clamp(1, 6);
+        .clamp(1, 8);
     let hi = link_scale(edges);
     // The stats column is as wide as its widest entry; charts run to it, less a gutter.
     let tail_w = edges

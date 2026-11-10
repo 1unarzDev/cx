@@ -1,6 +1,6 @@
 //! Screens: hub, device, session peek, files, preview, palette, keys, onboarding, join,
 //! link policy and help. Each is a plain function over the shared `Cx`.
-use super::{centered, fit, fmt, inset, map, mix, tiles, Cx, Size, SLOTS};
+use super::{centered, fit, fmt, inset, mix, orbit, tiles, Cx, Size, SLOTS};
 use crate::ui::lab::{
     caps::Pane, Access, DeviceStatus, EdgeKind, FileKind, LabDevice, LabEdge, LabSession, LabView,
     PreviewKind, Tok,
@@ -22,7 +22,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
     match view {
         LabView::Hub => {
             top(cx, buf, &[], true);
-            hub(cx, buf, body);
+            super::hub::hub(cx, buf, body);
             footer(cx, buf, foot, hub_keys(cx));
         }
         LabView::DeviceFocus(id) => {
@@ -65,7 +65,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
             }
             footer(cx, buf, foot, items);
         }
-        LabView::SessionPeek(id) if cx.c.focus == Some(Pane::Custom("attached")) => {
+        LabView::SessionPeek(id) if cx.c.focus != Some(Pane::Custom("peek")) => {
             if let Some(x) = cx.s.session(id).or(cx.s.sessions.first()) {
                 attached(cx, buf, x);
             }
@@ -171,7 +171,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
         }
         LabView::Palette(q) => {
             top(cx, buf, &[], true);
-            hub(cx, buf, body);
+            super::hub::hub(cx, buf, body);
             footer(cx, buf, foot, hub_keys(cx));
             cx.dim(buf, a);
             palette(cx, buf, a, q);
@@ -323,10 +323,10 @@ fn top(cx: &Cx, buf: &mut Buffer, crumbs: &[Crumb], status: bool) {
     if crumbs.is_empty() && cx.size() >= Size::S {
         cx.put(
             buf,
-            x + 2,
+            x + 1,
             y,
-            limit.saturating_sub(x + 2),
-            "mission control",
+            limit.saturating_sub(x + 1),
+            cx.g("› network", "/ network"),
             cx.ink(Tok::Muted, 0.8),
         );
     }
@@ -347,13 +347,8 @@ fn right_status(cx: &Cx, buf: &mut Buffer, y: u16) -> u16 {
             crate::ui::lab::NoticeKind::Ok => Tok::Ok,
             crate::ui::lab::NoticeKind::Info => Tok::Info,
         };
-        let text = if cx.size() >= Size::L {
-            // The headline only: what happened to which device, not the route detail.
-            let head = n.text.split(" via ").next().unwrap_or(&n.text);
-            format!("{} {}", cx.g("▲", "^"), fit(head, 36, cx.uni()))
-        } else {
-            format!("{} {}", cx.g("▲", "^"), s.notifications.len())
-        };
+        // The ticker above the footer says what and how to fix it; here only the count.
+        let text = format!("{} {}", cx.g("▲", "^"), s.notifications.len());
         parts.push((text, cx.st(tok), "notices"));
     }
     if let Some(t) = s.transfers.first().filter(|_| cx.size() >= Size::S) {
@@ -489,202 +484,22 @@ fn hub_keys(cx: &Cx) -> Keys<'static> {
 
 /// A zone header: the spaced label, then a faint rule up to `right`. Returns the x after
 /// the label so callers can put a legend on the rule.
-fn zone(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, right: u16, text: &str, focused: bool) -> u16 {
+pub(super) fn zone(
+    cx: &Cx,
+    buf: &mut Buffer,
+    x: u16,
+    y: u16,
+    right: u16,
+    text: &str,
+    focused: bool,
+) -> u16 {
     let w = cx.label(buf, x, y, right.saturating_sub(x), text, focused);
     cx.rule(buf, x + w + 1, right, y);
     x + w
 }
 
-fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
-    let focus = cx.c.focus.unwrap_or(Pane::Graph);
-    let sz = cx.size();
-    let h = r.height;
-    if sz == Size::Xs || h < 16 || cx.touch() {
-        return hub_compact(cx, buf, r, focus);
-    }
-    // Two zones: the network, sized to its content plus a pad row above and below, and
-    // the sessions, which get every other row. Fixed rows: the network header, the
-    // sessions header and a spacer above the footer.
-    let list = cx.by_attention();
-    let cells = list.len() as u16 + 1;
-    let (max_cols, th_min) = grid_shape(cx, r.width.saturating_sub(2), h);
-    let fixed = 3;
-    // At M+ the map gets one more row for its lens (the selected device's route and keys).
-    let lens_h = u16::from(sz >= Size::M);
-    let want = map::want_h(cx) + lens_h;
-    // A big network keeps up to 40 % of the height before sessions take the rest.
-    let min_band = want.min((h * 2 / 5).max(6));
-    let fit_rows = ((h.saturating_sub(fixed + min_band) + 1) / (th_min + 1)).max(1);
-    // Tiles grow into the spare rows, but never past their tallest screen.
-    let need = list
-        .iter()
-        .map(|x| tiles::tail_rows(x) as u16 + 2)
-        .max()
-        .unwrap_or(th_min)
-        .max(th_min);
-    let room = h.saturating_sub(fixed + want);
-    let th_for = |rows: u16| ((room + 1) / rows).saturating_sub(1).clamp(th_min, need);
-    // Columns: the fewest empty cells, then the least height left over (in steps of four
-    // rows), then more columns. The last row is full and the zones have no void; on a
-    // wide, tall screen that can mean fewer, wider tiles, nearly 1:1 with their screens.
-    let (cols, rows) = (1..=max_cols)
-        .filter_map(|c| {
-            let rows = cells.div_ceil(c);
-            let left = (room + 1).saturating_sub(rows * (th_for(rows) + 1));
-            (rows <= fit_rows).then_some((c, rows, left))
-        })
-        .min_by_key(|&(c, rows, left)| (rows * c - cells, left / 4, std::cmp::Reverse(c)))
-        .map_or((max_cols, fit_rows), |(c, rows, _)| (c, rows));
-    let th = th_for(rows);
-    let grid_h = rows * (th + 1) - 1;
-    let band_h = h.saturating_sub(fixed + grid_h);
-    let band = Rect::new(r.x, r.y + 1, r.width, band_h);
-    let map_band = Rect::new(
-        band.x,
-        band.y,
-        band.width,
-        band.height.saturating_sub(lens_h),
-    );
-    let ses_y = band.bottom();
-    let grid = Rect::new(r.x + 1, ses_y + 1, r.width.saturating_sub(2), grid_h);
-    let right = r.right().saturating_sub(1);
-
-    // Network.
-    let ids = map::order(cx, map_band);
-    let on_graph = focus == Pane::Graph;
-    let on_sess = focus == Pane::Sessions;
-    // With the sessions focused, the schematic marks the selected session's device.
-    let sel_id = if on_sess && !list.is_empty() {
-        list[cx.c.selected % list.len()].device.clone()
-    } else {
-        ids.get(cx.c.selected % ids.len().max(1))
-            .cloned()
-            .unwrap_or_default()
-    };
-    let lx = cx.label(buf, r.x + 1, r.y, 30, "NETWORK", on_graph);
-    let lx = mesh_legend(cx, buf, r.x + 1 + lx + 3, r.y, right);
-    cx.rule(buf, lx + 1, right, r.y);
-    map::draw(
-        cx,
-        buf,
-        map_band,
-        &cx.s.viewer,
-        3,
-        map::Sel::Node(&sel_id, on_graph),
-    );
-    if lens_h > 0 {
-        if let Some(d) = cx.s.device(&sel_id) {
-            lens(
-                cx,
-                buf,
-                Rect::new(r.x + 1, map_band.bottom(), r.width - 2, 1),
-                d,
-            );
-        }
-    }
-
-    // Sessions.
-    let noun = if list.len() == 1 {
-        "session"
-    } else {
-        "sessions"
-    };
-    let ghost = cx.s.device(&sel_id);
-    // The sessions zone always shows its selection (muted while the network has focus),
-    // so `Tab ⏎` is predictable: the first-ranked tile is the one that needs you.
-    let pick = if on_sess {
-        (cx.c.selected, true)
-    } else {
-        (0, false)
-    };
-    let shown = thumbs_grid(cx, buf, grid, &list, pick, cols, th, ghost);
-    let hint = if shown < list.len() {
-        format!("{shown} of {} {noun} {}", list.len(), cx.g("›", ">"))
-    } else {
-        format!("{} {noun}", list.len())
-    };
-    let hw = super::width(&hint, cx.uni());
-    zone(
-        cx,
-        buf,
-        r.x + 1,
-        ses_y,
-        right.saturating_sub(hw + 1),
-        "SESSIONS",
-        on_sess,
-    );
-    cx.put_r(buf, right, ses_y, &hint, cx.st(Tok::Muted));
-    cx.hit(Rect::new(right - hw, ses_y, hw, 1), "palette:sessions");
-}
-
-/// The lens under the map for the selected device: its route from here with the rtt of
-/// every hop (`t → c → b  0.6 + 2.4 ms`) and the keys that act on it from the hub, so the
-/// whole "go there and work" flow reads off the map. Drawn only in a free pad row.
-fn lens(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
-    let free = (r.x..r.right()).all(|x| buf[(x, r.y)].symbol() == " ");
-    if !free {
-        return;
-    }
-    let mut x = r.x;
-    x += cx.dchip(buf, x, r.y, d, false) + 1;
-    x += cx.put(
-        buf,
-        x,
-        r.y,
-        24,
-        &d.name,
-        cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD),
-    ) + 2;
-    let path = map::route(cx, &d.id);
-    let via = if d.id == cx.s.viewer {
-        "this device".to_string()
-    } else if path.is_empty() {
-        format!("no route {} {}", cx.g("·", "-"), cx.meta(d))
-    } else {
-        let mut at = cx.s.viewer.as_str();
-        let mut hops = vec![cx.s.device(at).map_or('?', |v| v.hotkey).to_string()];
-        let mut ms = Vec::new();
-        for e in &path {
-            at = if e.from == at { &e.to } else { &e.from };
-            hops.push(cx.s.device(at).map_or('?', |v| v.hotkey).to_string());
-            ms.push(e.rtt_ms.map_or("?".into(), |v| {
-                super::ms_text(v).trim_end_matches("ms").to_string()
-            }));
-        }
-        format!("{}  {} ms", hops.join(cx.g(" → ", " -> ")), ms.join(" + "))
-    };
-    x += cx.put(
-        buf,
-        x,
-        r.y,
-        r.right().saturating_sub(x),
-        &via,
-        cx.st(Tok::Muted),
-    ) + 3;
-    let k = d.hotkey;
-    let n = cx.s.sessions_on(&d.id).count();
-    let attach = format!("{k} a");
-    let new = format!("{k} c");
-    let files = format!("{k} f");
-    let link = format!("e {k}");
-    let mut items: Vec<(&str, &str, &str)> = Vec::new();
-    if n > 0 {
-        items.push((&attach, "attach", "attach"));
-    }
-    if cx.up(d) {
-        items.extend([
-            (new.as_str(), "new claude", "new"),
-            (files.as_str(), "files", "files"),
-        ]);
-    }
-    if d.id != cx.s.viewer {
-        items.push((&link, "link", "links"));
-    }
-    cx.chips(buf, x, r.y, r.right(), &items);
-}
-
 /// Session grid shape for a width: (columns, tile height).
-fn grid_shape(cx: &Cx, w: u16, h: u16) -> (u16, u16) {
+pub(super) fn grid_shape(cx: &Cx, w: u16, h: u16) -> (u16, u16) {
     let (min_w, max_cols) = match cx.size() {
         Size::Xs => (w, 1),
         Size::S => (24, 3),
@@ -704,152 +519,9 @@ fn grid_shape(cx: &Cx, w: u16, h: u16) -> (u16, u16) {
     (cols, th)
 }
 
-/// Mesh and link-colour legend; returns the x after the last item.
-fn mesh_legend(cx: &Cx, buf: &mut Buffer, mut x: u16, y: u16, right: u16) -> u16 {
-    let x0 = x;
-    let mut end = x;
-    for (i, m) in cx.s.meshes.iter().enumerate() {
-        let tok = if i == 0 { Tok::Mesh } else { Tok::Id(6) };
-        let up = m
-            .members
-            .iter()
-            .filter(|id| cx.s.device(id).is_some_and(|d| cx.up(d)))
-            .count();
-        // Below 100 columns the counts go, so the policy legend still fits.
-        let g = tiles::mesh_glyph(cx, &m.id);
-        let text = if cx.size() >= Size::M {
-            format!("{g} {} {}/{}", m.name, up, m.members.len())
-        } else {
-            format!("{g} {}", m.name)
-        };
-        let w = super::width(&text, cx.uni());
-        if x + w + 2 > right {
-            break;
-        }
-        let x0 = x;
-        x += cx.put(buf, x, y, w, &text, cx.ink(tok, 0.95));
-        if !m.healthy {
-            x += cx.put(buf, x, y, 2, cx.g(" ▲", " ^"), cx.st(Tok::Warn));
-        }
-        cx.hit(Rect::new(x0, y, x - x0, 1), format!("mesh:{}", m.id));
-        end = x;
-        x += 3;
-    }
-    let x = if end > x0 { end + 3 } else { x0 };
-    end.max(policy_legend(cx, buf, x, y, right))
-}
-
-/// Line style is the access policy (every size and tier); colour is the network, so lan
-/// and direct ssh get the same swatch as the meshes. Returns the x after the last item.
-fn policy_legend(cx: &Cx, buf: &mut Buffer, mut x: u16, y: u16, right: u16) -> u16 {
-    let mut end = x;
-    let wide = cx.size() >= Size::M;
-    let (k, p, o) = if wide {
-        (cx.g("──", "--"), cx.g("══", "=="), cx.g("┈┈", ".."))
-    } else {
-        (cx.g("─", "-"), cx.g("═", "="), cx.g("┈", "."))
-    };
-    let items: Vec<(String, Tok)> = vec![
-        (format!("{k} key"), Tok::Muted),
-        (format!("{p} pass"), Tok::Muted),
-        (format!("{o} off"), Tok::Muted),
-    ];
-    let sep = if wide { 3 } else { 2 };
-    for (t, tok) in items {
-        let w = super::width(&t, cx.uni());
-        if x + w + 2 > right {
-            break;
-        }
-        x += cx.put(buf, x, y, w, &t, cx.ink(tok, 0.95));
-        end = x;
-        x += sep;
-    }
-    end
-}
-
-/// Phone / short hub, a stack: the network header with the policy legend, the keycap
-/// schematic, a lens row naming the selected device with its evidence, then every
-/// session ranked by attention as a two-row thumb target (what needs you first, tinted).
-fn hub_compact(cx: &Cx, buf: &mut Buffer, r: Rect, focus: Pane) {
-    let s = cx.s;
-    let right = r.right().saturating_sub(1);
-    let on_graph = focus != Pane::Sessions;
-    let on_sess = focus == Pane::Sessions;
-    let list = cx.by_attention();
-    let n = list.len() as u16;
-    // Sessions: two rows each, a blank row between them when the height allows.
-    let avail = r.height.saturating_sub(3 + 5);
-    let (gap, shown) = if avail + 1 >= n * 3 {
-        (1, n)
-    } else {
-        (0, (avail / 2).min(n))
-    };
-    let ses_h = (shown * (2 + gap)).saturating_sub(gap);
-    // The map is as tall as its content (pad rows included); rows left over sit under
-    // the list, where a thumb does not need them.
-    let map_h = r
-        .height
-        .saturating_sub(3 + ses_h)
-        .clamp(5, map::want_h(cx).clamp(5, 11));
-
-    let lw = cx.label(buf, r.x + 1, r.y, 16, "NETWORK", on_graph);
-    policy_legend(cx, buf, r.x + 1 + lw + 2, r.y, right);
-    let band = Rect::new(r.x, r.y + 1, r.width, map_h);
-    let ids = map::order(cx, band);
-    let sel_id = if on_sess && !list.is_empty() {
-        list[cx.c.selected % list.len()].device.clone()
-    } else {
-        ids.get(cx.c.selected % ids.len().max(1))
-            .cloned()
-            .unwrap_or_default()
-    };
-    map::draw(
-        cx,
-        buf,
-        band,
-        &s.viewer,
-        3,
-        map::Sel::Node(&sel_id, on_graph),
-    );
-    // The lens: the keycap schematic has no names, so the selected device is named here.
-    let mut y = band.bottom();
-    if let Some(d) = s.device(&sel_id) {
-        tiles::device_row(cx, buf, Rect::new(r.x, y, r.width, 1), d, Some(on_graph));
-    }
-    y += 1;
-    let noun = if n == 1 { "session" } else { "sessions" };
-    let hint = if shown < n {
-        format!("{shown} of {n} {noun}")
-    } else {
-        format!("{n} {noun}")
-    };
-    let hw = super::width(&hint, cx.uni());
-    zone(
-        cx,
-        buf,
-        r.x + 1,
-        y,
-        right.saturating_sub(hw + 1),
-        "SESSIONS",
-        on_sess,
-    );
-    cx.put_r(buf, right, y, &hint, cx.st(Tok::Muted));
-    cx.hit(Rect::new(right - hw, y, hw, 1), "palette:sessions");
-    y += 1;
-    for (i, x) in list.iter().take(usize::from(shown)).enumerate() {
-        let pick = if on_sess {
-            (cx.c.selected % list.len() == i).then_some(true)
-        } else {
-            None
-        };
-        tiles::session_row(cx, buf, Rect::new(r.x, y, r.width, 2), x, pick);
-        y += 2 + gap;
-    }
-}
-
 /// Session thumbnails on one uniform grid (same size, one gutter), ranked by attention;
 /// the next free cell becomes the "new session" ghost tile. Returns how many were shown.
-fn thumbs_grid(
+pub(super) fn thumbs_grid(
     cx: &Cx,
     buf: &mut Buffer,
     r: Rect,
@@ -983,7 +655,7 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         let table = left >= fan_want + 2 + edges.len() as u16 && sz >= Size::M;
         let fan_h = if table { fan_want + 1 } else { left };
         let band = Rect::new(r.x, fy + 1, r.width, fan_h);
-        map::draw(cx, buf, band, &d.id, 1, map::Sel::Root);
+        orbit::draw(cx, buf, band, &d.id, 1, orbit::Sel::Root);
         if table {
             link_rows(
                 cx,
@@ -1035,7 +707,7 @@ fn link_rows(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, edges: &[&LabEdg
         let (kind, tok) = edge_kind(cx, e);
         cx.put(buf, x, y, 20, &fit(&kind, 20, cx.uni()), cx.ink(tok, 0.9));
         x += 21;
-        let pol = map::policy(cx, e, e.from == d.id, false);
+        let pol = orbit::policy(cx, e, e.from == d.id, false);
         cx.put(buf, x, y, 11, &pol, cx.ink(Tok::Muted, 0.95));
         x += 12;
         let tail = match e.rtt_ms.filter(|_| e.up) {
@@ -1928,7 +1600,7 @@ fn rust_line(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, room: u16, l: &str) {
 /// transfer then shows as the packet on that link.
 fn send_to(cx: &Cx, buf: &mut Buffer, a: Rect) {
     cx.dim(buf, a);
-    let h = (map::want_h(cx) + 3).min(a.height);
+    let h = (orbit::want_h(cx) + 3).min(a.height);
     let r = Rect::new(a.x, a.bottom().saturating_sub(h), a.width, h);
     panel(cx, buf, r);
     let f = &cx.s.files;
@@ -1955,7 +1627,7 @@ fn send_to(cx: &Cx, buf: &mut Buffer, a: Rect) {
         );
     }
     let band = Rect::new(r.x, y + 1, r.width, r.bottom().saturating_sub(y + 1));
-    map::draw(cx, buf, band, &f.device, 3, map::Sel::Targets);
+    orbit::draw(cx, buf, band, &f.device, 3, orbit::Sel::Targets);
 }
 
 fn panel(cx: &Cx, buf: &mut Buffer, r: Rect) {
@@ -2732,16 +2404,16 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
     let band_h = if cx.size() == Size::Xs {
         room.min(7)
     } else {
-        room.min(map::want_h(cx))
+        room.min(orbit::want_h(cx))
     };
     let band = Rect::new(r.x, r.y, r.width, band_h);
     let sheet_h = bottom.saturating_sub(band.bottom());
     if band.height >= 5 {
-        map::draw(cx, buf, band, &cx.s.viewer, 3, map::Sel::Edge(&e.id));
+        orbit::draw(cx, buf, band, &cx.s.viewer, 3, orbit::Sel::Edge(&e.id));
     } else if let (Some(a), Some(b)) = (cx.s.device(&e.from), cx.s.device(&e.to)) {
         // No room for the map: the link itself, drawn heavy between its two keycaps.
         let tok = edge_kind(cx, e).1;
-        let mid = format!(" {} ", map::policy(cx, e, true, false));
+        let mid = format!(" {} ", orbit::policy(cx, e, true, false));
         let line = cx.g("━━━", "===");
         let w = 6 + 2 * super::width(line, cx.uni()) + super::width(&mid, cx.uni());
         let mut x = r.x + r.width.saturating_sub(w) / 2;

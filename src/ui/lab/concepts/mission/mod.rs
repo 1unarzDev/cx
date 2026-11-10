@@ -16,7 +16,8 @@ use ratatui::{
 };
 use std::cell::RefCell;
 
-mod map;
+mod hub;
+mod orbit;
 mod tiles;
 mod views;
 

@@ -180,7 +180,7 @@ pub(super) fn mesh_badges(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, d: &LabDevi
     let mut w = 0;
     for m in &d.meshes {
         let g = mesh_glyph(cx, m);
-        w += cx.put(buf, x + w, y, 1, &g, cx.st(super::map::mesh_tok(cx, m)));
+        w += cx.put(buf, x + w, y, 1, &g, cx.st(super::orbit::mesh_tok(cx, m)));
     }
     w
 }

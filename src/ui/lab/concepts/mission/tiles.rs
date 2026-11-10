@@ -1,7 +1,7 @@
 //! Tiles: micro-charts, phone device rows and session thumbnails that show the live tail
 //! of the real screen in its own colours, so sessions are recognised by their look.
 use super::{fit, fmt, mix, to_rgb, Cx, Rgb};
-use crate::ui::lab::{ansi_lines, DeviceStatus, LabDevice, LabSession, Tok};
+use crate::ui::lab::{ansi_lines, LabDevice, LabSession, Tok};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -179,16 +179,21 @@ pub(super) fn gauge(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, w: u16, v: f32, s
 pub(super) fn mesh_badges(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, d: &LabDevice) -> u16 {
     let mut w = 0;
     for m in &d.meshes {
-        w += cx.put(
-            buf,
-            x + w,
-            y,
-            1,
-            cx.g("▄", "#"),
-            cx.st(super::map::mesh_tok(cx, m)),
-        );
+        let g = mesh_glyph(cx, m);
+        w += cx.put(buf, x + w, y, 1, &g, cx.st(super::map::mesh_tok(cx, m)));
     }
     w
+}
+
+/// A mesh's swatch: a square in its hue, or in ASCII its number (`1`, `2`), which the
+/// header legend repeats, so membership reads without colour.
+pub(super) fn mesh_glyph(cx: &Cx, id: &str) -> String {
+    if cx.uni() {
+        "▄".into()
+    } else {
+        let i = cx.s.meshes.iter().position(|m| m.id == id).unwrap_or(0);
+        (i + 1).to_string()
+    }
 }
 
 /// Session pips (one slot letter per session in its state colour, space separated),
@@ -375,7 +380,16 @@ pub(super) fn screen_text(
             // The agent's own reversed key hints (`y Yes`) would look exactly like cx
             // keycaps on the hub, where those letters mean devices: thumbnails draw them
             // in flat ink, no reverse, underline or bold.
-            let st = if sp.style.add_modifier.contains(Modifier::REVERSED) {
+            // An emphasised lone letter (`a Always`) would read as a cx key too: it gets
+            // the muted caption ink, one step below every cx keycap and name.
+            let lone = sp.content.trim().chars().count() == 1
+                && sp
+                    .style
+                    .add_modifier
+                    .intersects(Modifier::BOLD | Modifier::REVERSED);
+            let st = if lone {
+                cx.ink(super::Tok::Muted, 1.0)
+            } else if sp.style.add_modifier.contains(Modifier::REVERSED) {
                 st.remove_modifier(Modifier::REVERSED | Modifier::BOLD | Modifier::UNDERLINED)
             } else {
                 st
@@ -559,12 +573,9 @@ pub(super) fn session_row(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pi
         None => cx.surface(),
     };
     cx.fill(buf, r, bg);
+    // Column 0 is the focus bar only; what needs you says so by its tint and `◆`.
     if pick.is_some() {
         pick_bar(cx, buf, r, pick);
-    } else if ask {
-        for y in r.y..r.bottom() {
-            cx.put(buf, r.x, y, 1, cx.g("▌", "!"), cx.st(Tok::Warn));
-        }
     }
     let right = r.right().saturating_sub(1);
     let (g, word, st) = cx.sstate(x);

@@ -64,8 +64,9 @@ pub(super) enum Size {
     L,
 }
 
-/// Session slot keys inside a device (home row; `f` stays "files").
-pub(super) const SLOTS: [char; 8] = ['a', 's', 'd', 'g', 'h', 'j', 'k', 'l'];
+/// Session slot keys inside a device (home row; `f` stays "files", `j k` stay motion as
+/// in files and every list). More sessions than slots are reached through `/`.
+pub(super) const SLOTS: [char; 6] = ['a', 's', 'd', 'g', 'h', 'l'];
 
 /// Render context: fixture, capabilities and the tap targets recorded while drawing.
 pub(super) struct Cx<'a> {
@@ -243,6 +244,48 @@ impl<'a> Cx<'a> {
         }
     }
 
+    /// Number of targets recorded so far (see `unclash`).
+    pub fn hit_mark(&self) -> usize {
+        self.hits.borrow().len()
+    }
+    /// Make the targets recorded since `from` disjoint: where two overlap, the larger one
+    /// gives up the overlapping rows (or columns, when the overlap spans its full height),
+    /// so a thumb tap between two nodes is never ambiguous.
+    pub fn unclash(&self, from: usize) {
+        let mut v = self.hits.borrow_mut();
+        let n = v.len();
+        for i in from..n {
+            for j in from..n {
+                let (a, b) = (v[i].area, v[j].area);
+                let area = |r: Rect| u32::from(r.width) * u32::from(r.height);
+                if i == j || area(a) < area(b) || (area(a) == area(b) && i > j) {
+                    continue;
+                }
+                let o = a.intersection(b);
+                if o.width == 0 || o.height == 0 {
+                    continue;
+                }
+                // Trim `a` (the larger) on the side where the overlap sits.
+                let mut r = a;
+                if o.height == a.height {
+                    if o.x == a.x {
+                        r.x = o.right().min(a.right());
+                        r.width = a.right() - r.x;
+                    } else {
+                        r.width = o.x - a.x;
+                    }
+                } else if o.y == a.y {
+                    r.y = o.bottom().min(a.bottom());
+                    r.height = a.bottom() - r.y;
+                } else {
+                    r.height = o.y - a.y;
+                }
+                v[i].area = r;
+            }
+        }
+        v.retain(|t| t.area.width > 0 && t.area.height > 0);
+    }
+
     /// Write text clipped to `max` columns and the frame; returns columns written.
     /// ASCII mode transliterates fixture text so nothing non-ASCII leaks.
     pub fn put(&self, buf: &mut Buffer, x: u16, y: u16, max: u16, s: &str, st: Style) -> u16 {
@@ -392,8 +435,9 @@ impl<'a> Cx<'a> {
     pub fn sstate(&self, x: &LabSession) -> (&'static str, &'static str, Style) {
         match x.state {
             SessionState::AwaitingInput => (self.g("◆", "!"), "needs you", self.st(Tok::Warn)),
-            SessionState::Working => (self.g("●", "*"), "working", self.st(Tok::Accent)),
-            SessionState::Running => (self.g("●", "*"), "running", self.st(Tok::Ok)),
+            // `o` as for a live device: `*` stays the agents' own bullet in ASCII.
+            SessionState::Working => (self.g("●", "o"), "working", self.st(Tok::Accent)),
+            SessionState::Running => (self.g("●", "o"), "running", self.st(Tok::Ok)),
             SessionState::Idle => (self.g("○", "-"), "idle", self.st(Tok::Muted)),
             SessionState::Exited => (self.g("·", "."), "exited", self.ink(Tok::Faint, 1.0)),
         }
@@ -424,7 +468,8 @@ impl<'a> Cx<'a> {
         v
     }
 
-    /// Spaced small-caps section label, e.g. `N E T W O R K`; accent bar when focused.
+    /// Small-caps section label (`NETWORK`, plain letters so it copies and reads aloud
+    /// as a word); an accent bar `▍` when focused (ASCII `> `, the selection mark).
     pub fn label(
         &self,
         buf: &mut Buffer,
@@ -434,25 +479,16 @@ impl<'a> Cx<'a> {
         text: &str,
         focused: bool,
     ) -> u16 {
-        let spaced: String = if self.size() >= Size::S {
-            text.chars()
-                .flat_map(|c| [c, ' '])
-                .collect::<String>()
-                .trim_end()
-                .to_string()
-        } else {
-            text.to_string()
-        };
         let (bar, st) = if focused {
             (
-                self.g("▍", ">"),
+                self.g("▍", "> "),
                 self.st(Tok::Accent).add_modifier(Modifier::BOLD),
             )
         } else {
-            (" ", self.ink(Tok::Muted, 0.8))
+            (self.g(" ", "  "), self.ink(Tok::Muted, 0.8))
         };
         let mut w = self.put(buf, x, y, max, bar, self.st(Tok::Accent));
-        w += self.put(buf, x + w, y, max.saturating_sub(w), &spaced, st);
+        w += self.put(buf, x + w, y, max.saturating_sub(w), text, st);
         w
     }
 
@@ -589,33 +625,36 @@ pub(super) fn fit(s: &str, w: usize, unicode: bool) -> String {
         "{head}{}",
         match (unicode, mark) {
             (true, _) => "…",
-            (false, 1) => ">",
+            (false, 1) => ".",
             _ => "..",
         }
     )
 }
 
-/// ASCII stand-ins for the fixture text's few non-ASCII characters.
+/// ASCII stand-ins for the fixture text's few non-ASCII characters. Each keeps one
+/// meaning: `..` is a cut, `->` an arrow, `>` stays the selection mark.
 pub(super) fn asciify(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            c if c.is_ascii() => c,
-            '•' | '●' => '*',
-            '·' => '-',
-            '…' => '>',
-            '─' | '━' | '╌' => '-',
-            '│' | '┃' | '▌' | '▍' | '▎' => '|',
-            '╭' | '╮' | '╰' | '╯' | '┌' | '┐' | '└' | '┘' => '+',
-            '↓' => 'v',
-            '↑' => '^',
-            '→' | '⏎' => '>',
-            '⎿' => 'L',
-            '✻' | '✶' | '✳' | '∗' => '*',
-            '°' => 'C',
-            '←' => '<',
-            _ => '?',
-        })
-        .collect()
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            c if c.is_ascii() => out.push(c),
+            '•' | '●' | '✻' | '✶' | '✳' | '∗' => out.push('*'),
+            '·' => out.push('-'),
+            '…' => out.push_str(".."),
+            '─' | '━' | '╌' => out.push('-'),
+            '│' | '┃' | '▌' | '▍' | '▎' => out.push('|'),
+            '╭' | '╮' | '╰' | '╯' | '┌' | '┐' | '└' | '┘' => out.push('+'),
+            '↓' => out.push('v'),
+            '↑' => out.push('^'),
+            '→' => out.push_str("->"),
+            '←' => out.push_str("<-"),
+            '⏎' => out.push_str("ret"),
+            '⎿' => out.push('L'),
+            '°' => out.push('C'),
+            _ => out.push('?'),
+        }
+    }
+    out
 }
 
 /// Rect helpers.

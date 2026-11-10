@@ -3,7 +3,7 @@
 use super::{centered, fit, fmt, inset, map, mix, tiles, Cx, Size, SLOTS};
 use crate::ui::lab::{
     caps::Pane, Access, DeviceStatus, EdgeKind, FileKind, LabDevice, LabEdge, LabSession, LabView,
-    PreviewKind, SessionState, Tok,
+    PreviewKind, Tok,
 };
 use ratatui::{
     buffer::Buffer,
@@ -44,23 +44,31 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                 .join(" ");
             let mut items: Keys = Vec::new();
             if cx.touch() {
-                // Tiles attach on a tap; the footer keeps the way back and the verbs.
+                // The primary verb first, then the way back; tiles also attach on a tap.
+                if n > 0 {
+                    items.push(("⏎", "attach", "attach"));
+                }
                 items.extend([("esc", "back", "back"), ("f", "files", "files")]);
                 if n > 0 {
                     items.push(("⌫", "stop", "stop"));
                 }
-                items.push(("e", "links", "links"));
+                items.extend([("e", "link", "links"), ("`", "hub", "hub")]);
             } else {
                 if n > 0 {
                     items.extend([(slots.as_str(), "attach", "attach"), ("␣", "peek", "peek")]);
                 }
-                items.extend([("f", "files", "files"), ("e", "links", "links")]);
+                items.extend([("f", "files", "files"), ("e", "link", "links")]);
                 if n > 0 {
                     items.push(("⌫", "stop", "stop"));
                 }
                 items.extend([("/", "find", "palette"), ("esc", "back", "back")]);
             }
             footer(cx, buf, foot, items);
+        }
+        LabView::SessionPeek(id) if cx.c.focus == Some(Pane::Custom("attached")) => {
+            if let Some(x) = cx.s.session(id).or(cx.s.sessions.first()) {
+                attached(cx, buf, x);
+            }
         }
         LabView::SessionPeek(id) => {
             let x = cx.s.session(id).or(cx.s.sessions.first());
@@ -77,13 +85,24 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                 cx,
                 buf,
                 foot,
-                vec![
-                    ("⏎", "attach", "attach"),
-                    ("esc", "back", "back"),
-                    ("tab", "next", "peek-next"),
-                    ("⌫", "stop", "stop"),
-                    ("`", "hub", "hub"),
-                ],
+                if cx.touch() {
+                    // The filmstrip tiles are tap targets, so `tab next` is not needed.
+                    vec![
+                        ("⏎", "attach", "attach"),
+                        ("esc", "back", "back"),
+                        ("⌫", "stop", "stop"),
+                        ("`", "hub", "hub"),
+                    ]
+                } else {
+                    vec![
+                        ("⏎", "attach", "attach"),
+                        ("t a…", "jump", "jump"),
+                        ("tab", "next", "peek-next"),
+                        ("⌫", "stop", "stop"),
+                        ("esc", "back", "back"),
+                        ("`", "hub", "hub"),
+                    ]
+                },
             );
         }
         LabView::Files | LabView::FilePreview => {
@@ -115,19 +134,21 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                         vec![
                             ("⏎", "open", "open"),
                             ("j k", "move", "move"),
-                            ("/", "filter", "filter"),
+                            ("l h", "fold", "fold"),
                             ("s", "send to", "send"),
                             ("y", "copy", "copy"),
+                            ("/", "find", "palette"),
                             ("esc", "back", "back"),
                             ("`", "hub", "hub"),
                         ]
                     } else {
+                        // Tapping a row previews it, so phones keep `s send` instead.
                         vec![
                             ("⏎", "open", "open"),
-                            ("␣", "preview", "preview"),
-                            ("/", "filter", "filter"),
-                            ("s", "send to", "send"),
                             ("esc", "back", "back"),
+                            ("s", "send", "send"),
+                            ("␣", "preview", "preview"),
+                            ("/", "find", "palette"),
                             ("`", "hub", "hub"),
                         ]
                     },
@@ -253,7 +274,7 @@ fn top(cx: &Cx, buf: &mut Buffer, crumbs: &[Crumb], status: bool) {
         if x + 4 >= limit {
             break;
         }
-        x += cx.put(buf, x, y, 3, cx.g(" › ", " > "), cx.ink(Tok::Faint, 1.0));
+        x += cx.put(buf, x, y, 3, cx.g(" › ", " / "), cx.ink(Tok::Faint, 1.0));
         let x0 = x;
         match c {
             // On a phone a device crumb before the last one is its keycap alone.
@@ -329,9 +350,9 @@ fn right_status(cx: &Cx, buf: &mut Buffer, y: u16) -> u16 {
         let text = if cx.size() >= Size::L {
             // The headline only: what happened to which device, not the route detail.
             let head = n.text.split(" via ").next().unwrap_or(&n.text);
-            format!("{} {}", cx.g("▲", "!"), fit(head, 36, cx.uni()))
+            format!("{} {}", cx.g("▲", "^"), fit(head, 36, cx.uni()))
         } else {
-            format!("{} {}", cx.g("▲", "!"), s.notifications.len())
+            format!("{} {}", cx.g("▲", "^"), s.notifications.len())
         };
         parts.push((text, cx.st(tok), "notices"));
     }
@@ -382,31 +403,22 @@ fn right_status(cx: &Cx, buf: &mut Buffer, y: u16) -> u16 {
     used + 1
 }
 
-fn footer(cx: &Cx, buf: &mut Buffer, r: Rect, mut items: Keys) {
-    // On a phone the way out comes first, as a bare `esc`, so it survives a short row.
-    if cx.touch() {
-        if let Some(i) = items.iter().position(|(k, _, _)| *k == "esc") {
-            let (k, _, a) = items.remove(i);
-            items.insert(0, (k, "", a));
-        }
-    }
+/// Footer chips, most important first. Phones keep the row above the footer free, so a
+/// footer that does not fit wraps its tail into it instead of dropping verbs; a single
+/// row keeps two-row thumb targets.
+fn footer(cx: &Cx, buf: &mut Buffer, r: Rect, items: Keys) {
     let items: Keys = items
         .into_iter()
         .map(|(k, l, a)| {
-            // Words where the symbol may be missing: ASCII, and phones, whose default
-            // fonts (Termux, Blink with Menlo) lack ⏎ ␣ ⌫.
-            let k = if cx.uni() && !cx.touch() {
-                k
-            } else {
-                match k {
-                    "⏎" => "ret",
-                    "␣" => "spc",
-                    "⌫" if cx.touch() => "del",
-                    "⌫" => "bksp",
-                    "↑↓" => "up/dn",
-                    "←→" => "l/r",
-                    other => other,
-                }
+            // Words where the symbol may be missing (ASCII, and phones, whose default
+            // fonts lack ⏎ ⌫); `␣` is always `spc` (it renders as a bare underscore).
+            let k = match k {
+                "␣" => "spc",
+                "⏎" if !cx.uni() || cx.touch() => "ret",
+                "⌫" if cx.touch() => "del",
+                "⌫" if !cx.uni() => "bksp",
+                "↑↓" if !cx.uni() => "up/dn",
+                other => other,
             };
             let l = if cx.size() == Size::Xs && l.len() > 7 {
                 l.split(' ').next().unwrap_or(l)
@@ -416,47 +428,61 @@ fn footer(cx: &Cx, buf: &mut Buffer, r: Rect, mut items: Keys) {
             (k, l, a)
         })
         .collect();
-    let th = if cx.touch() { 2 } else { 1 };
-    cx.chips_h(buf, r.x + 1, r.y, r.right().saturating_sub(1), &items, th);
+    let (x0, right) = (r.x + 1, r.right().saturating_sub(1));
+    let sep = if cx.area.width < 50 { 1 } else { 2 };
+    let mut fit_n = 0;
+    let mut x = x0;
+    for (k, l, _) in &items {
+        let lw = super::width(l, cx.uni());
+        let need = super::width(k, cx.uni()) + 2 + if lw > 0 { lw + 1 } else { 0 };
+        if x + need > right {
+            break;
+        }
+        x += need + sep;
+        fit_n += 1;
+    }
+    if cx.touch() && fit_n < items.len() && r.y > cx.area.y + 1 {
+        cx.chips_h(buf, x0, r.y, right, &items[..fit_n], 1);
+        cx.chips_h(buf, x0, r.y - 1, right, &items[fit_n..], 1);
+    } else {
+        let th = if cx.touch() { 2 } else { 1 };
+        cx.chips_h(buf, x0, r.y, right, &items, th);
+    }
 }
 
 /// Hub footer. Device letters are printed on every node, so they get no chip; `⏎` says
 /// what it does to the focused zone (a device opens, a session attaches).
 fn hub_keys(cx: &Cx) -> Keys<'static> {
     let on_sess = cx.c.focus == Some(Pane::Sessions);
-    let enter = if on_sess {
-        ("⏎", "attach", "attach")
-    } else {
-        ("⏎", "open", "open")
-    };
-    match cx.size() {
-        // Phones tap nodes and rows directly; the footer carries what has no other target.
-        _ if cx.touch() => vec![
-            ("/", "find", "palette"),
-            ("+", "invite", "invite"),
-            ("K", "keys", "secrets"),
-            ("?", "", "help"),
-        ],
-        Size::S => vec![
-            enter,
-            ("␣", "peek", "peek"),
-            ("tab", "zone", "zone"),
-            ("/", "find", "palette"),
-            ("+", "invite", "invite"),
-            ("K", "keys", "secrets"),
-            ("?", "help", "help"),
-        ],
-        _ => vec![
-            enter,
+    // The footer follows the focused zone: a device opens and has links; a session
+    // attaches, peeks and stops (`-` re-attaches the last detached one from anywhere).
+    let mut v: Keys = if on_sess {
+        vec![
+            ("⏎", "attach", "attach"),
             ("␣", "peek", "peek"),
             ("⌫", "stop", "stop"),
-            ("tab", "zone", "zone"),
-            ("/", "find", "palette"),
-            ("+", "invite", "invite"),
-            ("K", "keys", "secrets"),
-            ("?", "help", "help"),
-        ],
+            ("-", "last", "last"),
+            ("tab", "network", "zone"),
+        ]
+    } else {
+        vec![
+            ("⏎", "open", "open"),
+            ("e", "link", "links"),
+            ("-", "last", "last"),
+            ("tab", "sessions", "zone"),
+        ]
+    };
+    if cx.touch() {
+        // Phones tap nodes and rows directly; zone keys and `-` stay keyboard-only.
+        v.retain(|(k, _, _)| !matches!(*k, "tab" | "-" | "e"));
     }
+    v.extend([
+        ("/", "find", "palette"),
+        ("+", "invite", "invite"),
+        ("K", "keys", "secrets"),
+        ("?", "help", "help"),
+    ]);
+    v
 }
 
 // ------------------------------------------------------------------------------ hub
@@ -483,7 +509,9 @@ fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let cells = list.len() as u16 + 1;
     let (max_cols, th_min) = grid_shape(cx, r.width.saturating_sub(2), h);
     let fixed = 3;
-    let want = map::want_h(cx);
+    // At M+ the map gets one more row for its lens (the selected device's route and keys).
+    let lens_h = u16::from(sz >= Size::M);
+    let want = map::want_h(cx) + lens_h;
     // A big network keeps up to 40 % of the height before sessions take the rest.
     let min_band = want.min((h * 2 / 5).max(6));
     let fit_rows = ((h.saturating_sub(fixed + min_band) + 1) / (th_min + 1)).max(1);
@@ -511,12 +539,18 @@ fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let grid_h = rows * (th + 1) - 1;
     let band_h = h.saturating_sub(fixed + grid_h);
     let band = Rect::new(r.x, r.y + 1, r.width, band_h);
+    let map_band = Rect::new(
+        band.x,
+        band.y,
+        band.width,
+        band.height.saturating_sub(lens_h),
+    );
     let ses_y = band.bottom();
     let grid = Rect::new(r.x + 1, ses_y + 1, r.width.saturating_sub(2), grid_h);
     let right = r.right().saturating_sub(1);
 
     // Network.
-    let ids = map::order(cx, band);
+    let ids = map::order(cx, map_band);
     let on_graph = focus == Pane::Graph;
     let on_sess = focus == Pane::Sessions;
     // With the sessions focused, the schematic marks the selected session's device.
@@ -533,11 +567,21 @@ fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     map::draw(
         cx,
         buf,
-        band,
+        map_band,
         &cx.s.viewer,
         3,
         map::Sel::Node(&sel_id, on_graph),
     );
+    if lens_h > 0 {
+        if let Some(d) = cx.s.device(&sel_id) {
+            lens(
+                cx,
+                buf,
+                Rect::new(r.x + 1, map_band.bottom(), r.width - 2, 1),
+                d,
+            );
+        }
+    }
 
     // Sessions.
     let noun = if list.len() == 1 {
@@ -573,6 +617,72 @@ fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     cx.hit(Rect::new(right - hw, ses_y, hw, 1), "palette:sessions");
 }
 
+/// The lens under the map for the selected device: its route from here with the rtt of
+/// every hop (`t → c → b  0.6 + 2.4 ms`) and the keys that act on it from the hub, so the
+/// whole "go there and work" flow reads off the map. Drawn only in a free pad row.
+fn lens(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
+    let free = (r.x..r.right()).all(|x| buf[(x, r.y)].symbol() == " ");
+    if !free {
+        return;
+    }
+    let mut x = r.x;
+    x += cx.dchip(buf, x, r.y, d, false) + 1;
+    x += cx.put(
+        buf,
+        x,
+        r.y,
+        24,
+        &d.name,
+        cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD),
+    ) + 2;
+    let path = map::route(cx, &d.id);
+    let via = if d.id == cx.s.viewer {
+        "this device".to_string()
+    } else if path.is_empty() {
+        format!("no route {} {}", cx.g("·", "-"), cx.meta(d))
+    } else {
+        let mut at = cx.s.viewer.as_str();
+        let mut hops = vec![cx.s.device(at).map_or('?', |v| v.hotkey).to_string()];
+        let mut ms = Vec::new();
+        for e in &path {
+            at = if e.from == at { &e.to } else { &e.from };
+            hops.push(cx.s.device(at).map_or('?', |v| v.hotkey).to_string());
+            ms.push(e.rtt_ms.map_or("?".into(), |v| {
+                super::ms_text(v).trim_end_matches("ms").to_string()
+            }));
+        }
+        format!("{}  {} ms", hops.join(cx.g(" → ", " -> ")), ms.join(" + "))
+    };
+    x += cx.put(
+        buf,
+        x,
+        r.y,
+        r.right().saturating_sub(x),
+        &via,
+        cx.st(Tok::Muted),
+    ) + 3;
+    let k = d.hotkey;
+    let n = cx.s.sessions_on(&d.id).count();
+    let attach = format!("{k} a");
+    let new = format!("{k} c");
+    let files = format!("{k} f");
+    let link = format!("e {k}");
+    let mut items: Vec<(&str, &str, &str)> = Vec::new();
+    if n > 0 {
+        items.push((&attach, "attach", "attach"));
+    }
+    if cx.up(d) {
+        items.extend([
+            (new.as_str(), "new claude", "new"),
+            (files.as_str(), "files", "files"),
+        ]);
+    }
+    if d.id != cx.s.viewer {
+        items.push((&link, "link", "links"));
+    }
+    cx.chips(buf, x, r.y, r.right(), &items);
+}
+
 /// Session grid shape for a width: (columns, tile height).
 fn grid_shape(cx: &Cx, w: u16, h: u16) -> (u16, u16) {
     let (min_w, max_cols) = match cx.size() {
@@ -606,10 +716,11 @@ fn mesh_legend(cx: &Cx, buf: &mut Buffer, mut x: u16, y: u16, right: u16) -> u16
             .filter(|id| cx.s.device(id).is_some_and(|d| cx.up(d)))
             .count();
         // Below 100 columns the counts go, so the policy legend still fits.
+        let g = tiles::mesh_glyph(cx, &m.id);
         let text = if cx.size() >= Size::M {
-            format!("{} {} {}/{}", cx.g("▄", "#"), m.name, up, m.members.len())
+            format!("{g} {} {}/{}", m.name, up, m.members.len())
         } else {
-            format!("{} {}", cx.g("▄", "#"), m.name)
+            format!("{g} {}", m.name)
         };
         let w = super::width(&text, cx.uni());
         if x + w + 2 > right {
@@ -618,7 +729,7 @@ fn mesh_legend(cx: &Cx, buf: &mut Buffer, mut x: u16, y: u16, right: u16) -> u16
         let x0 = x;
         x += cx.put(buf, x, y, w, &text, cx.ink(tok, 0.95));
         if !m.healthy {
-            x += cx.put(buf, x, y, 2, cx.g(" ▲", " !"), cx.st(Tok::Warn));
+            x += cx.put(buf, x, y, 2, cx.g(" ▲", " ^"), cx.st(Tok::Warn));
         }
         cx.hit(Rect::new(x0, y, x - x0, 1), format!("mesh:{}", m.id));
         end = x;
@@ -638,16 +749,12 @@ fn policy_legend(cx: &Cx, buf: &mut Buffer, mut x: u16, y: u16, right: u16) -> u
     } else {
         (cx.g("─", "-"), cx.g("═", "="), cx.g("┈", "."))
     };
-    let mut items: Vec<(String, Tok)> = vec![
+    let items: Vec<(String, Tok)> = vec![
         (format!("{k} key"), Tok::Muted),
         (format!("{p} pass"), Tok::Muted),
         (format!("{o} off"), Tok::Muted),
     ];
     let sep = if wide { 3 } else { 2 };
-    if wide {
-        items.push((format!("{} lan", cx.g("▄", "#")), Tok::Lan));
-        items.push((format!("{} ssh", cx.g("▄", "#")), Tok::Info));
-    }
     for (t, tok) in items {
         let w = super::width(&t, cx.uni());
         if x + w + 2 > right {
@@ -678,7 +785,12 @@ fn hub_compact(cx: &Cx, buf: &mut Buffer, r: Rect, focus: Pane) {
         (0, (avail / 2).min(n))
     };
     let ses_h = (shown * (2 + gap)).saturating_sub(gap);
-    let map_h = r.height.saturating_sub(3 + ses_h).clamp(5, 11);
+    // The map is as tall as its content (pad rows included); rows left over sit under
+    // the list, where a thumb does not need them.
+    let map_h = r
+        .height
+        .saturating_sub(3 + ses_h)
+        .clamp(5, map::want_h(cx).clamp(5, 11));
 
     let lw = cx.label(buf, r.x + 1, r.y, 16, "NETWORK", on_graph);
     policy_legend(cx, buf, r.x + 1 + lw + 2, r.y, right);
@@ -778,10 +890,10 @@ fn thumbs_grid(
 fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     let s = cx.s;
     let sz = cx.size();
+    // The header's own rows (identity, then the cpu chart and gauges beside it).
     let head_h: u16 = match sz {
         Size::Xs => 3,
-        Size::S => 4,
-        _ => 5,
+        _ => 4,
     };
     let head = Rect::new(r.x + 1, r.y + 1, r.width.saturating_sub(2), head_h);
     device_header(cx, buf, head, d);
@@ -811,7 +923,7 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         // Tiles are as tall as the tallest screen needs (ghost tile included).
         let need = list
             .iter()
-            .map(|x| x.screen.len() as u16)
+            .map(|x| tiles::tail_rows(x) as u16)
             .max()
             .unwrap_or(5)
             + 2;
@@ -888,10 +1000,11 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
 /// `d`, the rtt history as an area chart as tall as the rows allow (up to 2, a blank row
 /// between blocks), and the latest rtt and loss on its baseline.
 fn link_rows(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, edges: &[&LabEdge]) {
-    let w = r.width.min(130);
-    let x0 = r.x + (r.width - w) / 2;
+    // Left-aligned with the zone label and the tiles above it, full width.
+    let w = r.width;
+    let x0 = r.x;
     let n = edges.len().max(1) as u16;
-    let ch = ((r.height + 1) / n).saturating_sub(1).clamp(1, 2);
+    let ch = ((r.height + 1) / n).saturating_sub(1).clamp(1, 6);
     let step = if r.height >= n * (ch + 1) { ch + 1 } else { ch };
     for (i, e) in edges.iter().enumerate() {
         let top = r.y + i as u16 * step;
@@ -993,7 +1106,7 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
                 mx,
                 y,
                 left_w.saturating_sub(mx - r.x),
-                &format!("{} {}  ", cx.g("▄", "#"), m.name),
+                &format!("{} {}  ", tiles::mesh_glyph(cx, &m.id), m.name),
                 cx.st(tok),
             );
         }
@@ -1132,11 +1245,8 @@ fn new_tile(cx: &Cx, buf: &mut Buffer, r: Rect, d: Option<&LabDevice>, picked: b
         (true, false) => opts.len() as u16,
         _ => 2,
     };
-    let r = if hub {
-        r
-    } else {
-        Rect::new(r.x, r.y, r.width, r.height.min(block_h + 4))
-    };
+    // Content height, top-aligned with its neighbours' headers (never a tall empty box).
+    let r = Rect::new(r.x, r.y, r.width, r.height.min(block_h + 4));
     cx.fill(
         buf,
         r,
@@ -1281,13 +1391,13 @@ fn edge_kind(cx: &Cx, e: &LabEdge) -> (String, Tok) {
         EdgeKind::Mesh(m) => {
             let i = cx.s.meshes.iter().position(|x| &x.id == m).unwrap_or(0);
             (
-                format!("{} {m}", cx.g("▄", "#")),
+                format!("{} {m}", tiles::mesh_glyph(cx, m)),
                 if i == 0 { Tok::Mesh } else { Tok::Id(6) },
             )
         }
-        EdgeKind::Lan => ("lan".into(), Tok::Lan),
-        EdgeKind::Direct => ("direct ssh".into(), Tok::Info),
-        EdgeKind::Jump(v) => (format!("{} via {v}", cx.g("↳", "^")), Tok::Muted),
+        EdgeKind::Lan => ("lan".into(), Tok::Muted),
+        EdgeKind::Direct => ("direct ssh".into(), Tok::Muted),
+        EdgeKind::Jump(v) => (format!("{} via {v}", cx.g("↳", "->")), Tok::Muted),
     }
 }
 
@@ -1295,18 +1405,7 @@ fn edge_kind(cx: &Cx, e: &LabEdge) -> (String, Tok) {
 
 fn peek(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession) {
     let sz = cx.size();
-    let strip_w = if sz >= Size::M {
-        (r.width / 5).clamp(24, 34)
-    } else {
-        0
-    };
-    let main = Rect::new(
-        r.x + 1,
-        r.y,
-        r.width
-            .saturating_sub(2 + strip_w + if strip_w > 0 { 2 } else { 0 }),
-        r.height,
-    );
+    let main = Rect::new(r.x + 1, r.y, r.width.saturating_sub(2), r.height);
     // Meta line: address, state, provider, folder, uptime, clients, activity trend.
     let (g, word, sst) = cx.sstate(x);
     let (p, ptok) = cx.prov(x);
@@ -1342,14 +1441,22 @@ fn peek(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession) {
             cx.ink(Tok::Accent, 0.8),
         );
     }
-    // The screen, 1:1, on a deeper surface as tall as the pane it will attach to, so the
-    // peek reads as the terminal itself rather than a box with a void under it.
-    let scr = Rect::new(
-        main.x,
-        main.y + 2,
-        main.width,
-        main.height.saturating_sub(2),
-    );
+    // The screen, 1:1, on a deeper surface as tall as its content. At M+ the other
+    // sessions fill the rows below it as a filmstrip of live tiles (tap or `t a` to jump,
+    // `tab` to step), so the screen never sits over a void.
+    let lines = crate::ui::lab::ansi_lines(&x.screen, x.screen_cols);
+    let used = lines
+        .iter()
+        .rposition(|l| l.spans.iter().any(|s| !s.content.trim().is_empty()))
+        .map_or(1, |i| i + 1) as u16;
+    let avail = main.height.saturating_sub(2);
+    let strip_min = 9;
+    let scr_h = if sz >= Size::M && avail >= used + 2 + strip_min {
+        used + 2
+    } else {
+        avail
+    };
+    let scr = Rect::new(main.x, main.y + 2, main.width, scr_h);
     if cx.has_surface() {
         let base = if cx.dark() {
             (0x0c, 0x0e, 0x11)
@@ -1359,8 +1466,14 @@ fn peek(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession) {
         cx.fill(buf, scr, cx.rgb_bg(base));
     }
     let inner = inset(scr, 2, 1);
-    let lines = crate::ui::lab::ansi_lines(&x.screen, x.screen_cols);
-    for (i, l) in lines.iter().take(inner.height as usize).enumerate() {
+    // Bottom-anchored like a live terminal: a short pane shows the newest lines.
+    let skip = usize::from(used.saturating_sub(inner.height));
+    for (i, l) in lines
+        .iter()
+        .skip(skip)
+        .take(inner.height as usize)
+        .enumerate()
+    {
         let mut xx = inner.x;
         for sp in &l.spans {
             if xx >= inner.right() {
@@ -1378,33 +1491,121 @@ fn peek(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession) {
         }
     }
     cx.hit(scr, "attach");
-    // Filmstrip of the other sessions, each with its address keys; it starts level with
-    // the screen, its label on the blank row above.
-    if strip_w > 0 {
-        let sx = r.right().saturating_sub(strip_w + 1);
-        // Hub letters work here too (`t a` attaches); tab steps through these peeks.
-        let hint = "tab next";
-        let hw = super::width(hint, cx.uni());
-        zone(cx, buf, sx, r.y + 1, sx + strip_w - hw - 1, "OTHERS", false);
-        cx.put_r(buf, sx + strip_w, r.y + 1, hint, cx.st(Tok::Muted));
-        let others: Vec<_> = cx
-            .by_attention()
-            .into_iter()
-            .filter(|o| o.id != x.id)
-            .collect();
-        // Equal tiles that fill the column (7 to 12 rows each).
-        let avail = r.bottom().saturating_sub(scr.y);
-        let n = (others.len() as u16).min((avail + 1) / 8).max(1);
-        let th = ((avail + 1) / n).saturating_sub(1).clamp(7, 12);
-        let mut y = scr.y;
-        for o in others {
-            if y + th > r.bottom() {
-                break;
-            }
-            tiles::thumb(cx, buf, Rect::new(sx, y, strip_w, th), o, None);
-            y += th + 1;
+    let strip = Rect::new(
+        main.x,
+        scr.bottom() + 1,
+        main.width,
+        main.bottom().saturating_sub(scr.bottom() + 2),
+    );
+    if strip.height < strip_min {
+        return;
+    }
+    let others: Vec<_> = cx
+        .by_attention()
+        .into_iter()
+        .filter(|o| o.id != x.id)
+        .collect();
+    let hint = format!(
+        "{} other{}  tab next",
+        others.len(),
+        if others.len() == 1 { "" } else { "s" }
+    );
+    let hw = super::width(&hint, cx.uni());
+    zone(
+        cx,
+        buf,
+        strip.x,
+        strip.y,
+        strip.right().saturating_sub(hw + 1),
+        "OTHERS",
+        false,
+    );
+    cx.put_r(buf, strip.right(), strip.y, &hint, cx.st(Tok::Muted));
+    let tiles_r = Rect::new(strip.x, strip.y + 1, strip.width, strip.height - 1);
+    let gap = 2;
+    let n = (others.len() as u16)
+        .min((tiles_r.width + gap) / (28 + gap))
+        .max(1);
+    let tw = (tiles_r.width + gap) / n - gap;
+    for (i, o) in others.iter().take(usize::from(n)).enumerate() {
+        let tr = Rect::new(
+            tiles_r.x + i as u16 * (tw + gap),
+            tiles_r.y,
+            tw,
+            tiles_r.height,
+        );
+        tiles::thumb(cx, buf, tr, o, None);
+        if !cx.has_surface() && i + 1 < usize::from(n) {
+            cx.vsep(buf, tr.right(), tr.y, tr.height);
         }
     }
+}
+
+/// Attached (capture: `CX_LAB_FOCUS=attached`): the pane owns the whole terminal; cx
+/// adds only tmux's status row, whose left chip names the session and whose `⏏ detach`
+/// chip is the touch path for `Ctrl+\` (a double `Ctrl+\` sends one through to the pane,
+/// for nvim's terminal escape and emacs). Detaching lands on the hub with this tile
+/// selected, so `⏎` or `-` re-attaches.
+fn attached(cx: &Cx, buf: &mut Buffer, x: &LabSession) {
+    let a = cx.area;
+    let lines = crate::ui::lab::ansi_lines(&x.screen, x.screen_cols);
+    let h = a.height.saturating_sub(1);
+    let used = lines
+        .iter()
+        .rposition(|l| l.spans.iter().any(|s| !s.content.trim().is_empty()))
+        .map_or(1, |i| i + 1) as u16;
+    let skip = usize::from(used.saturating_sub(h));
+    for (i, l) in lines.iter().skip(skip).take(usize::from(h)).enumerate() {
+        let mut xx = a.x;
+        for sp in &l.spans {
+            if xx >= a.right() {
+                break;
+            }
+            xx += cx.put(
+                buf,
+                xx,
+                a.y + i as u16,
+                a.right() - xx,
+                &sp.content,
+                tiles::degrade(cx, sp.style),
+            );
+        }
+    }
+    let y = a.bottom() - 1;
+    let bar = if cx.has_surface() {
+        cx.st(Tok::Surface2)
+    } else {
+        Style::default()
+    };
+    cx.fill(buf, Rect::new(a.x, y, a.width, 1), bar);
+    let mut bx = a.x;
+    bx += cx.put(
+        buf,
+        bx,
+        y,
+        4,
+        " cx ",
+        cx.st(Tok::Accent).add_modifier(Modifier::BOLD).patch(bar),
+    );
+    bx += tiles::addr(cx, buf, bx, y, x) + 1;
+    let label = if cx.uni() {
+        " ⏏ detach  ctrl+\\ "
+    } else {
+        " detach  ctrl+\\ "
+    };
+    let w = super::width(label, cx.uni());
+    let dx = a.right().saturating_sub(w + 1);
+    let room = dx.saturating_sub(bx + 1);
+    cx.put(
+        buf,
+        bx,
+        y,
+        room,
+        &fit(&x.title, room as usize, cx.uni()),
+        cx.ink(Tok::Fg, 0.9).patch(bar),
+    );
+    cx.put(buf, dx, y, w, label, cx.key_style());
+    cx.hit(Rect::new(dx, y, w, 1), "detach");
 }
 
 // ---------------------------------------------------------------------------- files
@@ -1446,9 +1647,9 @@ fn files(cx: &Cx, buf: &mut Buffer, r: Rect) {
         let (icon, nst) = match e.kind {
             FileKind::Dir => (
                 if e.expanded {
-                    cx.g("▾ ", "v ")
+                    cx.g("▾ ", "- ")
                 } else {
-                    cx.g("▸ ", "> ")
+                    cx.g("▸ ", "+ ")
                 },
                 cx.st(Tok::Dir).add_modifier(Modifier::BOLD),
             ),
@@ -1500,6 +1701,58 @@ fn files(cx: &Cx, buf: &mut Buffer, r: Rect) {
         }
         cx.hit(row, format!("file:{}", e.name));
     }
+    // Rows left under the tree: the selected entry's facts and where `s` can send it,
+    // as the same device keycaps the schematic uses.
+    let shown = f.entries.len().saturating_sub(first).min(rows) as u16;
+    let dy = list.y + shown + 1;
+    if let Some(e) = f.entries.get(sel).filter(|_| dy + 5 <= list.bottom()) {
+        zone(cx, buf, list.x, dy, list.right(), "SELECTED", false);
+        let path = format!(
+            "{}/{}",
+            f.cwd.trim_end_matches('/'),
+            cx.s.files.preview_path
+        );
+        let git = match e.git {
+            Some('M') => "modified since the last commit",
+            Some('A') => "new, staged",
+            Some('?') => "untracked",
+            _ => "unchanged",
+        };
+        let facts = [
+            path,
+            format!(
+                "{} {} modified {} ago",
+                fmt::bytes(e.size),
+                cx.g("·", "-"),
+                fmt::age(e.modified_secs)
+            ),
+            format!("git: {git}"),
+        ];
+        for (i, t) in facts.iter().enumerate() {
+            let w = list.width.saturating_sub(1);
+            cx.put(
+                buf,
+                list.x + 1,
+                dy + 2 + i as u16,
+                w,
+                &fit(t, w as usize, cx.uni()),
+                cx.ink(Tok::Fg, 0.85),
+            );
+        }
+        let sy = dy + 6;
+        if sy < list.bottom() {
+            let mut x = list.x + 1;
+            x += cx.put(buf, x, sy, 10, "s send to ", cx.st(Tok::Muted));
+            for d in cx.s.devices.iter().filter(|d| d.id != f.device && cx.up(d)) {
+                if x + 4 > list.right() {
+                    break;
+                }
+                let x0 = x;
+                x += cx.dchip(buf, x, sy, d, false) + 1;
+                cx.hit(Rect::new(x0, sy, 3, 1), format!("send:{}", d.id));
+            }
+        }
+    }
     if sz >= Size::M {
         let pv = Rect::new(
             list.right() + 3,
@@ -1528,7 +1781,13 @@ fn file_preview(cx: &Cx, buf: &mut Buffer, r: Rect, full: bool) {
         &fit(&meta, r.width.saturating_sub(12) as usize, cx.uni()),
         cx.st(Tok::Muted),
     );
-    let body = Rect::new(r.x, r.y + 1, r.width, r.height.saturating_sub(1));
+    // The surface is as tall as the file (a short file leaves no tinted void).
+    let body = Rect::new(
+        r.x,
+        r.y + 1,
+        r.width,
+        r.height.saturating_sub(1).min(lines.len() as u16 + 1),
+    );
     if cx.has_surface() {
         cx.fill(buf, body, cx.surface());
     }
@@ -1565,7 +1824,7 @@ fn file_preview(cx: &Cx, buf: &mut Buffer, r: Rect, full: bool) {
         }
         // A line cut at the edge says so in the last column.
         if super::width(l, cx.uni()) > room {
-            cx.put(buf, x + room, y, 1, cx.g("›", ">"), cx.st(Tok::Accent));
+            cx.put(buf, x + room, y, 1, cx.g("›", "$"), cx.st(Tok::Accent));
         }
     }
 }
@@ -1685,7 +1944,7 @@ fn send_to(cx: &Cx, buf: &mut Buffer, a: Rect) {
         );
     }
     let band = Rect::new(r.x, y + 1, r.width, r.bottom().saturating_sub(y + 1));
-    map::draw(cx, buf, band, &f.device, 3, map::Sel::Root);
+    map::draw(cx, buf, band, &f.device, 3, map::Sel::Targets);
 }
 
 fn panel(cx: &Cx, buf: &mut Buffer, r: Rect) {
@@ -1810,12 +2069,23 @@ fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
         .min(a.height * 3 / 5)
         .max(8)
         .min(a.height.saturating_sub(2));
-    let r = Rect::new(
-        a.x + (a.width - w) / 2,
-        a.y + 1 + (a.height.saturating_sub(h + 2)) / 3,
-        w,
-        h,
-    );
+    let r = if cx.touch() {
+        // Phones: a full sheet under the top bar on a cleared backdrop (a faded hub in
+        // the margins would read as stray glyphs at this size).
+        cx.fill(
+            buf,
+            Rect::new(a.x, a.y + 1, a.width, a.height - 1),
+            Style::default(),
+        );
+        Rect::new(a.x, a.y + 1, a.width, a.height - 1)
+    } else {
+        Rect::new(
+            a.x + (a.width - w) / 2,
+            a.y + 1 + (a.height.saturating_sub(h + 2)) / 3,
+            w,
+            h,
+        )
+    };
     panel(cx, buf, r);
     let inner = inset(r, 2, 1);
     let y = inner.y;
@@ -1875,9 +2145,13 @@ fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
             cx.put(buf, row.x, yy, 1, cx.g("▌", ">"), cx.st(Tok::Accent));
         }
         let mut x = inner.x + 1;
+        // The description is cut (with an ellipsis) before the key column.
         for (t, st) in spans {
-            let room = inner.right().saturating_sub(x + key.len() as u16 + 2);
-            x += cx.put(buf, x, yy, room, t, *st);
+            let room = inner.right().saturating_sub(x + key.len() as u16 + 3);
+            if room == 0 {
+                break;
+            }
+            x += cx.put(buf, x, yy, room, &fit(t, room as usize, cx.uni()), *st);
         }
         // The selected row's tint runs under its keys too.
         let kst = if i == sel {
@@ -2654,7 +2928,7 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
         let ch = inner.bottom().saturating_sub(ry).clamp(1, 4);
         let label = format!("rtt {} samples", e.rtt_hist.len());
         cx.put(buf, inner.x, ry + ch - 1, 15, &label, cx.st(Tok::Muted));
-        let cw = inner.width.saturating_sub(16).min(64);
+        let cw = inner.width.saturating_sub(16);
         tiles::rtt_chart(
             cx,
             buf,
@@ -2674,11 +2948,66 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
             let tw = ((inner.width + 2) / crossing.len().min(3) as u16)
                 .saturating_sub(2)
                 .min(56);
+            let n = crossing.len().min(3) as u16;
             for (i, x) in crossing.iter().take(3).enumerate() {
                 let tr = Rect::new(inner.x + i as u16 * (tw + 2), ty, tw, th.min(need));
                 tiles::thumb(cx, buf, tr, x, None);
             }
+            // Beside the tiles, the link's numbers (what the chart shows, in figures).
+            let rx = inner.x + n * (tw + 2) + 2;
+            if rx + 28 <= inner.right() {
+                link_stats(cx, buf, Rect::new(rx, ty, inner.right() - rx, th), e);
+            }
         }
+    }
+}
+
+/// A link's figures in a two-column table: rtt now / min / max / jitter, loss, network.
+fn link_stats(cx: &Cx, buf: &mut Buffer, r: Rect, e: &LabEdge) {
+    let v: Vec<f32> = e.rtt_hist.iter().flatten().copied().collect();
+    let ms = |x: f32| super::ms_text(x);
+    let mut rows: Vec<(&str, String)> = Vec::new();
+    rows.push(("now", e.rtt_ms.map_or("down".into(), ms)));
+    if !v.is_empty() {
+        let lo = v.iter().copied().fold(f32::MAX, f32::min);
+        let hi = v.iter().copied().fold(f32::MIN, f32::max);
+        let mean = v.iter().sum::<f32>() / v.len() as f32;
+        let jit =
+            v.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f32>() / (v.len().max(2) - 1) as f32;
+        rows.push(("min / max", format!("{} / {}", ms(lo), ms(hi))));
+        rows.push(("mean", ms(mean)));
+        rows.push(("jitter", ms(jit)));
+    }
+    let lost = e.rtt_hist.iter().filter(|x| x.is_none()).count();
+    rows.push((
+        "loss",
+        format!(
+            "{:.0}% ({lost} of {} probes)",
+            e.loss * 100.0,
+            e.rtt_hist.len()
+        ),
+    ));
+    let (kind, tok) = edge_kind(cx, e);
+    rows.push(("network", kind));
+    if let EdgeKind::Mesh(m) = &e.kind {
+        if let Some(m) = cx.s.meshes.iter().find(|x| &x.id == m) {
+            rows.push(("", m.detail.clone()));
+        }
+    }
+    zone(cx, buf, r.x, r.y, r.right(), "LINK", false);
+    for (i, (k, v)) in rows.iter().enumerate() {
+        let y = r.y + 2 + i as u16;
+        if y >= r.bottom() {
+            break;
+        }
+        cx.put(buf, r.x + 1, y, 11, k, cx.st(Tok::Muted));
+        let st = if *k == "network" {
+            cx.ink(tok, 0.95)
+        } else {
+            cx.ink(Tok::Fg, 0.95)
+        };
+        let room = r.right().saturating_sub(r.x + 13);
+        cx.put(buf, r.x + 13, y, room, &fit(v, room as usize, cx.uni()), st);
     }
 }
 
@@ -2713,9 +3042,10 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         .find(|k| k * 10 + 9 + 2 * (k / 3) + 4 <= r.width)
         .unwrap_or(0);
     let devs: Vec<&LabDevice> = cx.s.devices.iter().collect();
-    let globals: [(&str, &str); 10] = [
+    let globals: [(&str, &str); 11] = [
         ("⏎", "open / attach"),
-        ("␣", "peek"),
+        ("spc", "peek"),
+        ("-", "last session"),
         ("tab", "zone"),
         ("/", "find"),
         ("+", "invite"),
@@ -2808,7 +3138,25 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
             }
         }
     };
-    let mut y = r.y + 1;
+    // Centred vertically: the hub keyboard, its legend, the device keyboard (or its
+    // one-line legend when short) and the global keys.
+    let span = right - x0;
+    let colw_d = devs
+        .iter()
+        .map(|d| 6 + super::width(&d.name, cx.uni()))
+        .max()
+        .unwrap_or(10);
+    let leg_rows = (devs.len() as u16).div_ceil((span / colw_d).max(1));
+    let colw_g = globals
+        .iter()
+        .map(|(k, v)| super::width(key(k), cx.uni()) + 5 + super::width(v, cx.uni()))
+        .max()
+        .unwrap_or(12);
+    let glob_rows = (globals.len() as u16).div_ceil((span / colw_g).max(1));
+    let base_h = 2 + 9 + leg_rows + 1 + glob_rows;
+    let full_dev = base_h + 11 <= r.height.saturating_sub(1);
+    let total = base_h + if full_dev { 11 } else { 2 };
+    let mut y = r.y + 1 + r.height.saturating_sub(total + 1) / 2;
     zone(cx, buf, x0, y, right, "HUB", true);
     y += 2;
     key_rows(
@@ -2838,12 +3186,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
     );
     y += 9;
     // Legend: the full device names, in keycap colours, on a fixed column grid.
-    let span = right - x0;
-    let colw = devs
-        .iter()
-        .map(|d| 6 + super::width(&d.name, cx.uni()))
-        .max()
-        .unwrap_or(10);
+    let colw = colw_d;
     let per = (span / colw).max(1);
     for (i, d) in devs.iter().enumerate() {
         let (ci, ri) = (i as u16 % per, i as u16 / per);
@@ -2852,7 +3195,25 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         cx.put(buf, x + w, y + ri, colw - w, &d.name, cx.ink(Tok::Fg, 0.85));
     }
     y += (devs.len() as u16).div_ceil(per) + 1;
-    if y + 10 < r.bottom() {
+    if !full_dev {
+        // Short screens: the device layer as one line of chips.
+        let lx = cx.label(buf, x0, y, 14, "IN A DEVICE", false) + x0 + 2;
+        cx.chips(
+            buf,
+            lx,
+            y,
+            right,
+            &[
+                ("a s d", "attach"),
+                ("c x n", "new"),
+                ("f", "files"),
+                ("e", "link"),
+                (key("⌫"), "stop"),
+            ]
+            .map(|(k, l)| (k, l, "help")),
+        );
+        y += 2;
+    } else {
         zone(cx, buf, x0, y, right, "IN A DEVICE", false);
         y += 2;
         let ks = cx.key_style();
@@ -2869,13 +3230,16 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
             }
         };
         key_rows(y, buf, &|c: char| {
-            if let Some(i) = SLOTS.iter().position(|s| *s == c) {
-                return (format!("ses {}", i + 1), acc);
+            if SLOTS.contains(&c) {
+                return ("attach".into(), acc);
             }
             match c {
                 'n' => ("+shell".into(), ks),
                 'f' => ("files".into(), ks),
-                'e' => ("links".into(), ks),
+                'e' => ("link".into(), ks),
+                // Motion, as in files and every list (never a slot).
+                'j' => ("down".into(), ks),
+                'k' => ("up".into(), ks),
                 'c' => ("+claude".into(), tint(Tok::Claude)),
                 'x' => ("+codex".into(), tint(Tok::Codex)),
                 '/' => ("find".into(), ks),
@@ -2885,11 +3249,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         y += 9;
     }
     // Keys that mean the same everywhere, on the same kind of grid.
-    let colw = globals
-        .iter()
-        .map(|(k, v)| super::width(key(k), cx.uni()) + 5 + super::width(v, cx.uni()))
-        .max()
-        .unwrap_or(12);
+    let colw = colw_g;
     let per = (span / colw).max(1);
     for (i, (k, v)) in globals.iter().enumerate() {
         let (ci, ri) = (i as u16 % per, i as u16 / per);

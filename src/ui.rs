@@ -43,6 +43,8 @@ mod actions;
 mod containers_view;
 mod input;
 mod keys;
+#[cfg(test)]
+mod lab;
 mod launch;
 pub use runtime::{run, run_restored};
 

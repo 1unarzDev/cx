@@ -3160,7 +3160,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                 (k(key("⌫")), "stop (press twice)"),
             ]),
             ("new", vec![(k("c x n"), if wide { "claude / codex / shell, attached" } else { "claude/codex/shell" })]),
-            ("device", vec![(k("f"), "files"), (k("e"), if wide { "then a letter: edit that link" } else { "+ letter: edit link" }), (k("r"), "retry")]),
+            ("device", vec![(k("f"), "files"), (k("e"), if wide { "then a letter: edit that link" } else { "then a letter: link" }), (k("r"), "retry")]),
             ("move", vec![(k("j k"), "step"), (k("esc"), "back"), (k("-"), "last session")]),
         ],
         "ON A LINK" => vec![
@@ -3172,7 +3172,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
             ("move", vec![(k("j k"), "step"), (k("l h"), "unfold / fold"), (k(key("⏎")), "open")]),
             ("file", vec![
                 (k("spc"), "preview"),
-                (k("s"), if wide { "then a letter: send to that device" } else { "+ letter: send there" }),
+                (k("s"), if wide { "then a letter: send to that device" } else { "then a letter: send" }),
                 (k("y"), "copy the path"),
             ]),
             ("back", vec![(k("esc"), "up a level")]),
@@ -3185,7 +3185,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                 (k("f"), "files"),
             ]),
             ("move", vec![(k("j k"), "step"), (k("tab"), "next zone"), (k(key("⏎")), "open"), (k("-"), "last session")]),
-            ("act", vec![(k("spc"), "peek"), (k("e"), if wide { "then a letter: edit that link" } else { "+ letter: edit link" }), (k(key("⌫")), "stop a session")]),
+            ("act", vec![(k("spc"), "peek"), (k("e"), if wide { "then a letter: edit that link" } else { "then a letter: link" }), (k(key("⌫")), "stop a session")]),
         ],
     };
     // (`esc` is on the footer, where it closes this.)
@@ -3228,12 +3228,17 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         .max()
         .unwrap_or(3);
     let dx = kx + kw + 2;
-    // Short blocks (marks, global keys) as a grid of cells, each cell a key in the key
-    // column's width and its word, so the columns line up under the rows above.
+    // Short blocks (marks, global keys) as a grid of cells: the first column's key and
+    // word on the rows' own key and word columns, the next columns as tight as their
+    // own keys, every cell of a block one width so its columns line up.
+    let pkw = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, _)| super::width(k, cx.uni())).max().unwrap_or(0);
     let cell_w = |pairs: &[(&str, &str)]| {
-        kw + 2 + pairs.iter().map(|(_, t)| super::width(t, cx.uni())).max().unwrap_or(0) + 3
+        pkw(pairs) + 1 + pairs.iter().map(|(_, t)| super::width(t, cx.uni())).max().unwrap_or(0) + 3
     };
-    let per_row = |pairs: &[(&str, &str)]| (right.saturating_sub(kx) + 3) / cell_w(pairs).max(1);
+    let per_row = |pairs: &[(&str, &str)]| {
+        let first = cell_w(pairs) + kw + 1 - pkw(pairs);
+        1 + (right + 3).saturating_sub(kx + first) / cell_w(pairs).max(1)
+    };
     let grid_rows = |pairs: &[(&str, &str)]| (pairs.len() as u16).div_ceil(per_row(pairs).max(1));
     let body0 = groups.iter().map(|(_, k)| k.len() as u16).sum::<u16>() + grid_rows(&gpairs);
     // The marks where a map is drawn, when the screen holds them with their air.
@@ -3325,11 +3330,15 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
             if i == 0 {
                 intent(buf, yy, name);
             }
-            let x = kx + col * cw;
-            cx.put(buf, x, yy, kw, k, kst);
-            let tw = cx.put(buf, x + kw + 2, yy, cw - kw - 2, t, cx.ink(Tok::Muted, 0.95));
+            let (x, kcol) = if col == 0 {
+                (kx, kw + 2)
+            } else {
+                (kx + kw + 1 - pkw(pairs) + col * cw, pkw(pairs) + 1)
+            };
+            cx.put(buf, x, yy, kcol, k, kst);
+            let tw = cx.put(buf, x + kcol, yy, cw - pkw(pairs) - 1, t, cx.ink(Tok::Muted, 0.95));
             if let Some(h) = hits {
-                cx.hit(Rect::new(x, yy, kw + 2 + tw, 1), h[i].2);
+                cx.hit(Rect::new(x, yy, kcol + tw, 1), h[i].2);
             }
         }
         *y += grid_rows(pairs);

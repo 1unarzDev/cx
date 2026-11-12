@@ -18,6 +18,11 @@ Scenarios (all times in milliseconds):
   mouse_motion     pure pointer motion (no buttons) over the Sessions and Files lists: bytes
                    and write bursts per motion event, against an idle baseline window.
   idle             5 s idle in Files and Sessions: CPU seconds and bytes/s written.
+  instant_<side>[_polling]
+                   Instant-sessions targets, local or over a loopback sshd (warm master),
+                   on the tmux control path or forced polling (CX_TMUX_CONTROL=0): select ->
+                   remembered frame and -> live frame, keystroke echo, Enter -> first attached
+                   frame, detach -> UI. Two shell sessions print distinct markers.
 
 "Settled" means the expected change is on the pyte screen and no PTY output arrived for
 QUIET seconds; latency is measured to the last output chunk before that quiet window.
@@ -631,7 +636,156 @@ def scenario_idle(binary, seconds=5.0):
     return result
 
 
-SCENARIOS = ('preview_scroll', 'directory_list', 'sessions_attach', 'mouse_motion', 'idle')
+SCENARIOS = ('preview_scroll', 'directory_list', 'sessions_attach', 'mouse_motion', 'idle',
+             'instant_local', 'instant_local_polling', 'instant_remote', 'instant_remote_polling')
+DOWN, UP = b'\x1b[B', b'\x1b[A'
+
+
+def first_times(viewer, data, predicates, timeout=TIMEOUT):
+    """Write data once; ms until each predicate first held (arrival of the chunk), or None."""
+    start_index = len(viewer.chunks)
+    t0 = time.monotonic()
+    os.write(viewer.master, data)
+    seen = [None] * len(predicates)
+    while None in seen and time.monotonic() - t0 < timeout:
+        if viewer._read(.05):
+            at = viewer.chunks[-1][0]
+            for i, predicate in enumerate(predicates):
+                if seen[i] is None and predicate():
+                    seen[i] = round((at - t0) * 1000, 2)
+    del start_index
+    return seen
+
+
+def remote_fixture(binary, tag, polling, rtt_ms):
+    """files_bench's loopback sshd, also allowing the checked native attach and the shared
+    master (-N, -O, -G). The remote side gets its own HOME, state and tmux; any other remote
+    command is refused."""
+    import shlex
+    import files_bench as fb
+    ssh = fb.LoopbackSSH(binary, tag, rtt_ms=rtt_ms)
+    remote = dict(HOME=str(ssh.remote_home), XDG_STATE_HOME=str(ssh.remote_home / 'state'),
+                  TMUX_TMPDIR=str(ssh.remote_home), CX_FILES_BENCH=tag, SHELL='/bin/bash')
+    if polling:
+        remote['CX_TMUX_CONTROL'] = '0'
+    prefix = 'exec env -u TMUX -u TMUX_PANE ' + ' '.join(
+        f'{k}={shlex.quote(v)}' for k, v in remote.items()) + ' ' + shlex.quote(binary)
+    (ssh.tools / 'ssh').write_text(f'''#!{sys.executable} -I
+import os,re,sys
+args=sys.argv[1:]
+while '-F' in args:
+    i=args.index('-F');del args[i:i+2]
+last=args[-1] if args else ''
+if last=={fb.HELPER_COMMAND!r}:
+    args[-1]={prefix!r}+' helper'
+elif re.fullmatch(r"~/[.]local/bin/cx native-attach-checked '[A-Za-z0-9+/=]+'",last):
+    args[-1]={prefix!r}+' native-attach-checked '+last.split(' ',2)[2]
+elif last=='fixture' and ('-N' in args or '-O' in args or '-G' in args):
+    pass  # the shared master and its control commands run no remote command
+else:
+    sys.exit(255)
+os.execv({shutil.which('ssh')!r},[{shutil.which('ssh')!r},'-F',{str(ssh.root / 'client.conf')!r},*args])
+''')
+    return ssh, dict(os.environ, **remote)
+
+
+def scenario_instant(binary, cycles, side='local', polling=False, rtt_ms=0.0):
+    import files_bench as fb
+    tag = f'instant-{os.getpid()}-{time.time_ns() % 10**9}'
+    ssh, remote_env = remote_fixture(binary, tag, polling, rtt_ms) if side == 'remote' else (None, None)
+    env = fb.BenchEnv(binary, tag, ssh)
+    if polling:
+        env.env['CX_TMUX_CONTROL'] = '0'
+    result = dict(side=side, path='polling' if polling else 'control', rtt_ms=rtt_ms)
+    try:
+        home = ssh.remote_home if ssh else env.root
+        run_env = remote_env if ssh else env.env
+        state = home / 'state/cx'
+        names = {}
+        for label in ('a', 'b'):
+            folder = home / f'work-{label}'
+            folder.mkdir(exist_ok=True)
+            made = subprocess.run([binary, 'new', '--directory', str(folder), '--name', f'perf-{label}',
+                                   '--key', f'perf-{label}'], env=run_env, capture_output=True, timeout=30)
+            assert made.returncode == 0, 'cx new failed'
+        listed = json.loads(subprocess.run([binary, 'sessions'], env=run_env, capture_output=True,
+                                           timeout=30).stdout or b'[]')
+        for session in listed:
+            label = session['name'].removeprefix('perf-')
+            names[label] = session['id']
+            subprocess.run(['tmux', '-S', str(state / 'managed.sock'), 'send-keys', '-t', session['id'] + ':',
+                            f'clear; echo INSTANT-{label.upper()}', 'Enter'], env=run_env, capture_output=True)
+        assert sorted(names) == ['a', 'b'], 'fixture sessions missing'
+        index = len(env.device_ids) - 1
+        viewer = Viewer.__new__(Viewer)
+        viewer.open(env, dict(device_ids=env.device_ids, device=index + 1, focus='Workspace',
+                              view='Work', browser=None))
+        try:
+            def marker(label):
+                return lambda: f'INSTANT-{label.upper()}' in viewer.text()
+
+            def live(label):
+                text = viewer.text()
+                return f'INSTANT-{label.upper()}' in text and ' live' in text and 'loading' not in text
+
+            def focused():
+                return '⏏ detach' in viewer.text()
+
+            def listing():
+                return 'Enter Attach' in viewer.text() and not focused()
+
+            def native():
+                return 'detach' in viewer.screen.display[-1] and '╭ Devices' not in viewer.text() and '$' in viewer.text()
+
+            def ui_back():
+                return '╭ Devices' in viewer.text()
+            viewer.wait(lambda: live('a') or live('b'), timeout=30, what='a live preview')
+            current = 'a' if live('a') else 'b'
+            other = 'b' if current == 'a' else 'a'
+            # Learn the other session's frame first (and which key reaches it).
+            key = DOWN
+            viewer.measure(key, lambda: live(other), timeout=TIMEOUT)
+            if not live(other):
+                key = UP
+                viewer.measure(key, lambda: live(other), timeout=TIMEOUT)
+            back = UP if key == DOWN else DOWN
+            viewer.quiesce(.3)
+            cached, live_ms, echo, attach, ret = [], [], Timings(), Timings(), Timings()
+            for _ in range(cycles):
+                # Back to the session seen before: its remembered frame, then live.
+                times = first_times(viewer, back, [marker(current), lambda: live(current)])
+                cached.append(times[0])
+                live_ms.append(times[1])
+                viewer.quiesce(.25)
+                times = first_times(viewer, key, [marker(other), lambda: live(other)])
+                cached.append(times[0])
+                live_ms.append(times[1])
+                viewer.quiesce(.25)
+                viewer.measure(INLINE_KEY, lambda: focused(), timeout=TIMEOUT)
+                viewer.quiesce(.15)
+                for _ in range(3):
+                    before = viewer.text()
+                    echo.add(viewer.measure(b'x', lambda: viewer.text() != before))
+                    before = viewer.text()
+                    viewer.measure(b'\x7f', lambda: viewer.text() != before)
+                viewer.measure(DETACH_KEY, listing, timeout=TIMEOUT)
+                viewer.quiesce(.15)
+                attach.add(viewer.measure(ATTACH_KEY, native, timeout=TIMEOUT))
+                viewer.quiesce(.15)
+                ret.add(viewer.measure(DETACH_KEY, ui_back, timeout=TIMEOUT))
+                viewer.quiesce(.3)
+                env.owned_pids()
+            result.update(select_to_cached_ms=summary(cached), select_to_live_ms=summary(live_ms),
+                          keystroke_echo=echo.report(), enter_to_attached=attach.report(),
+                          detach_to_ui=ret.report(), cycles=cycles)
+        finally:
+            result['viewer'] = viewer.close()
+    finally:
+        result['cleanup'] = env.cleanup()
+        if ssh:
+            result['remote_killed'] = ssh.cleanup()
+            result['remote_refused'] = ssh.refused()
+    return result
 
 
 def run_once(binary, iterations, only):
@@ -651,6 +805,11 @@ def run_once(binary, iterations, only):
                 out[name] = scenario_mouse(binary)
             elif name == 'idle':
                 out[name] = scenario_idle(binary)
+            elif name.startswith('instant_'):
+                side = name.split('_')[1]
+                out[name] = scenario_instant(binary, max(3, iterations // 3), side,
+                                             polling=name.endswith('_polling'),
+                                             rtt_ms=float(os.environ.get('CX_PERF_RTT_MS', '0')))
         except AssertionError as error:
             out[name] = dict(error=str(error))
         out[name]['wall_s'] = round(time.monotonic() - started, 2)

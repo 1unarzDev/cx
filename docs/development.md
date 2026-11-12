@@ -44,7 +44,7 @@ Record changes in [CHANGELOG.md](../CHANGELOG.md). Before tagging a stable versi
 | `menus.rs` | Session choices shared by labels/shortcuts/dispatch; container display labels |
 | `notifications.rs` | Typed floating panels, bounded layout and timed animation |
 | `rendering.rs` | Layout and rendering; no request dispatch |
-| `session_preview.rs`, `workspaces.rs`, `container_agents.rs` | Session pane preview (zoom, inline input, detach chip, helper watch with polling fallback, remembered frames, parsed-screen cache), workspace session identity and attach, container agent profiles |
+| `session_preview.rs`, `workspaces.rs`, `container_agents.rs` | Session pane preview (inline input, helper watch with polling fallback, remembered frames, parsed-screen cache), workspace session identity and attach, container agent profiles |
 | `session_rows.rs` | Session row anatomy, identity swatches, activity history/sparkline, hover state |
 | `tests.rs` | Existing UI and cross-panel regression fixtures |
 

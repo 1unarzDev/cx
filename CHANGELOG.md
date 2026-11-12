@@ -2,6 +2,14 @@
 
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
+## Unreleased
+
+### Fixes
+- An attached session no longer streams its screen to the viewer underneath: the watch ends at every terminal handoff and resumes on return, so detach stays instant after a long attach.
+- Pushed session lists refresh every 3 s again (titles, running commands, agent state), as v0.1.95's polling did; the watched screen recovers after a failed capture instead of staying "unavailable"; an oversized control-mode capture fails whole instead of dropping rows.
+- Typing into a peeked session stops on Esc or a tap outside its screen; Esc no longer reaches the agent there. The palette's "Send Ctrl+\" now works from the hub after a detach: it forwards one to the last session and re-attaches it.
+- `cx orphans` sees cx's tmux control clients; the attach ticket is one file instead of one per session ever watched.
+
 ## v0.2.0
 
 A new interface and a faster core. Everything below is new since v0.1.95. Numbers are medians of interleaved A/B runs against the v0.1.95 release binary on the same host (release builds, local fixtures, 120x40 PTY); see STATUS.md for the full table.

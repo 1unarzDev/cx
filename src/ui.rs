@@ -458,7 +458,7 @@ const ACTIONS: &[(Action, &str)] = &[
     ),
     (
         Action::SendCtrlBackslash,
-        "Send Ctrl+\\ to session · then type inline",
+        "Send Ctrl+\\ to the last session · re-attaches it",
     ),
     (Action::Copy, "Copy selected files · c / y"),
     (Action::Cut, "Cut selected files · x"),

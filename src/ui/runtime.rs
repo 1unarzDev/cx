@@ -1557,7 +1557,6 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 }
             }
         }
-        dirty |= app.session_preview_staleness_changed();
         if let Some(target) = app.pending_add.take() {
             cleanup_native_preview(&mut screen, &mut native_preview)?;
             let via = app.pending_add_via.take();
@@ -1701,6 +1700,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
         if let Some((d, session)) = app.pending_panel_expand.take() {
             cleanup_native_preview(&mut screen, &mut native_preview)?;
+            app.stop_watches();
             screen.suspend(true)?;
             let result = sessions::attach(&app.devices[d], &session, false);
             screen.resume()?;
@@ -1715,6 +1715,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
         if let Some((device, command)) = app.pending_command.take() {
             cleanup_native_preview(&mut screen, &mut native_preview)?;
+            app.stop_watches();
             screen.suspend(true)?;
             let result = sessions::run_command(&device, &command);
             screen.resume()?;
@@ -1748,6 +1749,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         if app.pending_attach.is_some() && carried.is_empty() {
             let (d, session, observe) = app.pending_attach.take().unwrap();
             cleanup_native_preview(&mut screen, &mut native_preview)?;
+            app.stop_watches();
             // The tmux client paints over the frame it shows: the live screen.
             if app.show_attach_frame(&session) {
                 let size = screen.terminal.size()?;
@@ -1834,7 +1836,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         // handing the terminal to SSH/tmux/native commands.
         screen.bracketed_paste(app.pane_focused() || app.secret_entry_open())?;
         screen.mouse_capture(true)?;
-        dirty |= app.refresh_session_preview(screen.terminal.size()?.width);
+        dirty |= app.refresh_session_preview();
         app.sync_watches();
         // Warm the master of the device the selection points at (hover/focus).
         let focus = app

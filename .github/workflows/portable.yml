@@ -30,7 +30,7 @@ jobs:
           mkdir dist
           cp "$binary" dist/cx
       - name: Restore portable tmux source cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .cache/cx-tools
           key: cx-tools-tmux-3.7c-ncurses-6.5-libevent-2.1.12-reptyr-0.10.0-${{ matrix.arch }}

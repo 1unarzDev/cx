@@ -9,7 +9,7 @@ curl -fsSL https://raw.githubusercontent.com/1unarzDev/cx/main/install.sh | sh
 cx
 ```
 
-Running `cx` opens Files in the folder you launched it from on that device. Update restarts restore your previous workspace.
+Running `cx` opens the hub, the network map around this device; `f` on a device's screen opens its files (this device's Files start in the folder you launched from). Update restarts restore your previous workspace.
 
 Install as your ordinary user. The installer verifies signed releases and offers to install missing dependencies. See [installation and requirements](docs/installation.md) for supported platforms, optional tools and minimal robot setup.
 

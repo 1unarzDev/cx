@@ -8,8 +8,8 @@ Guard notation:
 
 - `rust:name` is a Rust test. Run it with `cargo test --locked name`, matching on the name only, so the command still works after
   `src/ui/tests.rs` moves.
-- `py:file` is a Python fixture: `python3 tests/file.py target/debug/cx`. `[ci]` runs in `ci.yml` on every push, `[rel]` only in
-  `release.yml`, and `[local]` in no workflow, so it is run by hand.
+- `py:file` is a Python fixture: `python3 tests/file.py target/debug/cx`. `[ci]` is in the `tests/run_regressions.sh` list, which
+  `ci.yml` (every push) and `release.yml` (every tag) run; `[local]` is in no workflow, so it is run by hand.
 - **NEW** marks a guard added with this ledger. Each one was checked red: it fails when its original bug is put back.
 - **UNGUARDED** means no automated test fails if the bug comes back. **PARTIAL** means a test touches the area but would not catch
   that exact failure.
@@ -21,18 +21,18 @@ Guard notation:
 | Commit | Symptom | Root cause | Guard |
 |---|---|---|---|
 | `16119da` v0.1.6 | Wheel in a managed terminal sent prompt-history arrow keys instead of scrolling the transcript | tmux had no wheel bindings, so the alternate-screen fallback turned the wheel into Up/Down | py:mouse_scrollback_pty [ci] |
-| `5aa3123` v0.1.21 | Fullscreen Codex wheel opened tmux's empty `0/0` copy-mode history | stale Codex mouse policy; the fallback entered copy mode even with empty history | py:codex_wheel_pty [rel], py:mouse_scrollback_pty [ci] ("empty 0/0 copy buffer"), py:codex_wheel_live [local] |
-| `9c01b9b` v0.1.21 | Wheel fallback was injected into an editor forked by a Codex worker thread | ownership walk read only the leader's `/proc/PID/task/PID/children` | py:codex_wheel_threads_pty [rel] |
-| VALIDATION v0.1.21 | Wheel fallback reached read-only observers and same-group child editors | the originating client and read-only state were not checked | py:codex_wheel_pty [rel]; Rust: UNGUARDED |
-| `1b281c8` v0.1.29 | One wheel detent moved several rows in Sessions and Files | the terminal's alternate-scroll arrows were accelerated into bursts; mouse reports were not captured directly | rust:list_mouse_navigation_uses_panel_and_modal_ownership, rust:key_release_does_not_advance_selection_twice, py:list_wheel_pty [rel] |
+| `5aa3123` v0.1.21 | Fullscreen Codex wheel opened tmux's empty `0/0` copy-mode history | stale Codex mouse policy; the fallback entered copy mode even with empty history | py:codex_wheel_pty [ci], py:mouse_scrollback_pty [ci] ("empty 0/0 copy buffer"), py:codex_wheel_live [local] |
+| `9c01b9b` v0.1.21 | Wheel fallback was injected into an editor forked by a Codex worker thread | ownership walk read only the leader's `/proc/PID/task/PID/children` | py:codex_wheel_threads_pty [ci] |
+| VALIDATION v0.1.21 | Wheel fallback reached read-only observers and same-group child editors | the originating client and read-only state were not checked | py:codex_wheel_pty [ci]; Rust: UNGUARDED |
+| `1b281c8` v0.1.29 | One wheel detent moved several rows in Sessions and Files | the terminal's alternate-scroll arrows were accelerated into bursts; mouse reports were not captured directly | rust:list_mouse_navigation_uses_panel_and_modal_ownership, rust:key_release_does_not_advance_selection_twice, py:list_wheel_pty [ci] |
 | `8bea0b8` v0.1.29 | Wheel did nothing over a fullscreen PDF opened from the two-location layout | the transfer layout did not register the preview mouse target | rust:fullscreen_pdf_from_two_locations_has_mouse_target |
 | `b58b71e` v0.1.29 | Wheel over a confirmation could arm Delete or move the file list underneath | wheel events were not owned by the modal | rust:confirmation_wheel_does_not_arm_delete_or_navigate_files, rust:recursive_delete_warning_is_visible_and_detail_scrolling_cannot_confirm |
 | `95a1b7a` v0.1.30 | Clicking a preview did not focus it; the PDF layout jumped while a page loaded | the preview had no click-focus target, and the loading state collapsed the panel | rust:preview_click_focus_and_wheel_keep_file_selection, rust:pending_pdf_keeps_full_workspace_panel |
-| `983a246` v0.1.30 | PgDn on a loading PDF jumped ten pages; the bottom overlay overwrote the frame corners | pending page requests were not coalesced; the overlay Block was unbounded | rust:pending_pdf_page_down_remains_single_page, py:preview_search_pty [rel]; frame corners: UNGUARDED |
+| `983a246` v0.1.30 | PgDn on a loading PDF jumped ten pages; the bottom overlay overwrote the frame corners | pending page requests were not coalesced; the overlay Block was unbounded | rust:pending_pdf_page_down_remains_single_page, py:preview_search_pty [ci]; frame corners: UNGUARDED |
 | revamp nav | Hover fought the keyboard for the selection; moving in Devices refreshed and reset the list (P16/P17) | `MouseEventKind::Moved` selected rows; `Devices::move_by` called `refresh()` | rust:hover_and_motion_never_select_or_redraw, rust:hub_moves_never_refresh_and_keep_the_session_by_identity (the Devices rail became the hub map), rust:device_slots_attach_and_moving_clamps_without_wrapping (session lists became tiles: no scrolloff to keep) |
-| `76be106` v0.1.31 | Wheel during file search jumped between matches and wrapped around | wheel reused the n/N match navigation | rust:file_search_wheel_moves_adjacent_rows_without_jumping_matches, py:list_wheel_pty [rel] |
+| `76be106` v0.1.31 | Wheel during file search jumped between matches and wrapped around | wheel reused the n/N match navigation | rust:file_search_wheel_moves_adjacent_rows_without_jumping_matches, py:list_wheel_pty [ci] |
 | `dfeb9ef` v0.1.31 | One physical detent sometimes moved two rows | the terminal sends duplicate SGR wheel reports 0–0.02 ms apart (physical trace) | rust:wheel_bursts_keep_direction_position_modifiers_and_keyboard_distinct, rust:physical_wheel_trace_selects_one_adjacent_row_per_tick_in_both_lists |
-| `19e7aa9` v0.1.10 | Wheel over a PDF scrolled the browser, not pages; old helpers looped on the page check | the wheel was not scoped to the preview; capability probing was not bounded | rust:pdf_mouse_wheel_is_scoped_to_preview, rust:pdf_scroll_requests_the_next_page, rust:old_helper_page_check_does_not_loop, py:pdf_pages_pty [rel] |
+| `19e7aa9` v0.1.10 | Wheel over a PDF scrolled the browser, not pages; old helpers looped on the page check | the wheel was not scoped to the preview; capability probing was not bounded | rust:pdf_mouse_wheel_is_scoped_to_preview, rust:pdf_scroll_requests_the_next_page, rust:old_helper_page_check_does_not_loop, py:pdf_pages_pty [ci] |
 | `cd3f521` v0.1.87 | Opening a session after scrolling landed in read-only scrollback that swallowed input | tmux copy-mode persists across detach; a focus attach did not cancel it | py:focus_exits_copy_mode_pty [ci], py:mouse_scrollback_pty [ci] (contract updated in `8b124cf`) |
 | `39a49ba`, `f7c90f3` v0.1.95 | Live previews could not scroll; wheel paging skipped recent history | there was no on-demand history window, and a viewport at the cursor's home row dropped the newest rows | rust:cursor_at_home_does_not_skip_recent_history; scrolling: py:session_preview_live, py:live_session_pane_ui [local] |
 | `228b585` v0.1.7 | Very large preview scroll deltas could wrap the offset | `isize` to `i16` cast without clamping | UNGUARDED |
@@ -45,14 +45,14 @@ Guard notation:
 | `50d969a` v0.1.9 | A native image encoded for the old font size was drawn after a resize; ASCII confirmations had Unicode borders | the completion was not tied to cell geometry; the ASCII outer border was not used | rust:old_cell_geometry_completion_is_discarded, rust:boxed_confirmation_variant_captures |
 | v0.1.9 notes | Transparent images drew black panels | alpha was not mapped to the default cell | rust:transparent_sixel_falls_back_without_black_panels, rust:rich_preview_rejects_bad_images_and_keeps_transparent_pixels_default |
 | `228b585` v0.1.7 | Bidi override characters reordered preview and title text | only C0/C1 controls were stripped | rust:terminal_controls_bidi_and_excess_are_removed, rust:hostile_controls_are_not_rendered |
-| `d8a484a` v0.1.20 | `G` scrolled into a blank screen; search matched the "Loading" placeholder | the offset used unwrapped line counts, and the placeholder was searchable | rust:preview_g_keeps_last_lines_visible, rust:preview_g_gg_clamp_wrapping_and_resize, rust:preview_loading_does_not_search_placeholder, py:preview_search_pty [rel] |
+| `d8a484a` v0.1.20 | `G` scrolled into a blank screen; search matched the "Loading" placeholder | the offset used unwrapped line counts, and the placeholder was searchable | rust:preview_g_keeps_last_lines_visible, rust:preview_g_gg_clamp_wrapping_and_resize, rust:preview_loading_does_not_search_placeholder, py:preview_search_pty [ci] |
 | v0.1.20 | The selected search result was lost after a resize or refresh | the selection index was not revalidated | rust:preview_search_survives_refresh_and_reveals_on_resize |
-| v0.1.25 | Table-like text inside a fenced code block was rendered as a table; the wrong fence closed blocks | fence marker and length were not matched | rust:fence_aliases_mismatched_markers_and_unknown_languages, rust:table_body_stops_before_a_pipe_in_a_code_fence, py:markdown_blocks_pty [rel] |
+| v0.1.25 | Table-like text inside a fenced code block was rendered as a table; the wrong fence closed blocks | fence marker and length were not matched | rust:fence_aliases_mismatched_markers_and_unknown_languages, rust:table_body_stops_before_a_pipe_in_a_code_fence, py:markdown_blocks_pty [ci] |
 | v0.1.25 / `072cd46` | Search highlight was misaligned after resizing a table | the cached layout was not keyed by viewport/revision | rust:markdown_table_search_clamps_stored_selection_after_resize |
-| v0.1.26 | Wrapped list continuation lines were not aligned under their text | hanging indent ignored Unicode width | rust:markdown_lists_continuations_unicode_and_code_keep_layout, rust:markdown_bullet_wrap_has_hanging_indent, py:markdown_prose_pty [rel] |
-| `1cf0e2d` v0.1.26 | Clicking an ordinary search match opened a link picker; heading links lost inline styling | link hit regions came from the underline style; headings skipped inline formatting | rust:markdown_links_math_and_click_picker_are_safe, py:markdown_prose_pty [rel] |
-| `d8bdd93` v0.1.27 | A relative link through a symlinked parent opened the wrong file | `..` was normalised lexically instead of on the execution host | rust:parent_traversal_preserves_execution_host_symlink_semantics, py:markdown_relative_pty [rel] |
-| `232caba` v0.1.27 | Back from a followed link used stale history in cached locations | link history survived a return to folder navigation | rust:leaving_linked_preview_discards_history_even_in_cached_locations, py:markdown_relative_pty [rel] |
+| v0.1.26 | Wrapped list continuation lines were not aligned under their text | hanging indent ignored Unicode width | rust:markdown_lists_continuations_unicode_and_code_keep_layout, rust:markdown_bullet_wrap_has_hanging_indent, py:markdown_prose_pty [ci] |
+| `1cf0e2d` v0.1.26 | Clicking an ordinary search match opened a link picker; heading links lost inline styling | link hit regions came from the underline style; headings skipped inline formatting | rust:markdown_links_math_and_click_picker_are_safe, py:markdown_prose_pty [ci] |
+| `d8bdd93` v0.1.27 | A relative link through a symlinked parent opened the wrong file | `..` was normalised lexically instead of on the execution host | rust:parent_traversal_preserves_execution_host_symlink_semantics, py:markdown_relative_pty [ci] |
+| `232caba` v0.1.27 | Back from a followed link used stale history in cached locations | link history survived a return to folder navigation | rust:leaving_linked_preview_discards_history_even_in_cached_locations, py:markdown_relative_pty [ci] |
 | `8aa4320` v0.1.23 | A clipped matching directory looked identical to a plain directory under NO_COLOR | the match style was colour-only | rust:clipped_directory_find_has_a_distinct_noncolor_modifier |
 | v0.1.10 | Rapid PDF paging started overlapping renders; a failed page blanked the preview | no coalescing; failures replaced the last good page | rust:pdf_pages_coalesce_keys_and_preserve_last_page_on_failure |
 | `0b2b928` v0.1.90 | Codex prompt backgrounds were too bright; reverse video persisted after SGR 27; DIM was dropped | attribute end sequences were not applied, and the pane palette was ignored | rust:dim_and_attribute_end_sequences_preserve_native_contrast, rust:pane_palette_is_applied_to_both_prompt_background_and_dim_text, rust:prompt_selection_end_restores_normal_foreground_and_muted_background, py:codex_contrast_live [local] |
@@ -69,9 +69,9 @@ Guard notation:
 | revamp/w2-sessions | Review: clicking the preview while search was open sent the typed search to the shell | preview click guard ignored open inputs | rust:preview_clicks_leave_an_open_text_input_in_charge |
 | `8d978cc` v0.1.72 | Claude lost terminal transparency; old CX left opaque window backgrounds | the managed contrast was set on a solid window style | py:claude_contrast_live [ci] |
 | v0.1.69 | Claude question descriptions had low contrast | default-cell backgrounds | py:claude_contrast_live [ci], py:session_color_live [local] |
-| `10e4a10` v0.1.5 | The viewer palette was reset after native Fish commands | OSC 104 was emitted by the Fish theme | py:native_command_pty [rel], rust:fish_palette_reset_is_after_config_before_command |
+| `10e4a10` v0.1.5 | The viewer palette was reset after native Fish commands | OSC 104 was emitted by the Fish theme | py:native_command_pty [ci], rust:fish_palette_reset_is_after_config_before_command |
 | `26744fc` | Prompt italics were lost in native terminals | tmux terminal overrides | py:shell_return_pty, py:live_pty [local] |
-| `7b8d0cd` v0.1.2 | Colours broke on older tmux | RGB capability flags unsupported | py:manual_agents_live [rel] |
+| `7b8d0cd` v0.1.2 | Colours broke on older tmux | RGB capability flags unsupported | py:manual_agents_live [ci] |
 
 ## 3. tmux compatibility and inherited TMUX environment
 
@@ -83,8 +83,8 @@ Guard notation:
 | `90c9b10` v0.1.19 | Shell activity labels failed on tmux 2.7 | `set-option -p` (pane options) does not exist there; replaced by session options | UNGUARDED (manual Rocky 8 docker run) |
 | `64c41ab` v0.1.22 | Updated wheel bindings did not apply after the last session closed; `exit-empty` is unsupported on tmux 2.7 | an empty persistent server kept the old config | py:mouse_scrollback_pty [ci]; tmux 2.7 part UNGUARDED |
 | `0e1cfc3` v0.1.14 | cx said tmux was missing on hosts with tmux only in `~/.local/bin` | a noninteractive SSH PATH omits `~/.local/bin` | py:install_fixture [ci] (installer), **NEW** rust:inherited_tmux_environment_never_redirects_default_server_discovery (helper uses `~/.local/bin/tmux` with PATH=/usr/bin:/bin) |
-| `343dc07` v0.1.8 | A broken tmux (missing library, failing wrapper) reported sessions as already stopped | any stderr containing "No such file" was treated as "no server running" | py:stop_shell_live [rel], **NEW** rust:absent_tmux_server_is_empty_but_broken_tmux_runtime_is_an_error |
-| `06f0d91`, `84822d5`, `2c0f977` v0.1.28 | Inside a managed pane, external discovery listed managed sessions as external (shared `$0`), with duplicate rows and broken remote attach | inherited `TMUX`/`TMUX_PANE` redirected default-server tmux calls | py:tmux_discovery_live [rel], **NEW** rust:inherited_tmux_environment_never_redirects_default_server_discovery |
+| `343dc07` v0.1.8 | A broken tmux (missing library, failing wrapper) reported sessions as already stopped | any stderr containing "No such file" was treated as "no server running" | py:stop_shell_live [ci], **NEW** rust:absent_tmux_server_is_empty_but_broken_tmux_runtime_is_an_error |
+| `06f0d91`, `84822d5`, `2c0f977` v0.1.28 | Inside a managed pane, external discovery listed managed sessions as external (shared `$0`), with duplicate rows and broken remote attach | inherited `TMUX`/`TMUX_PANE` redirected default-server tmux calls | py:tmux_discovery_live [ci], **NEW** rust:inherited_tmux_environment_never_redirects_default_server_discovery |
 | `496e3f2` v0.1.71 | Startup readiness broke on legacy tmux | it used a format/flag that legacy tmux lacks | py:terminal_startup_readiness_live [ci] (current tmux only): PARTIAL |
 | `11ab3b4`, `e840155` v0.1.79 | The command panel showed "finished" without an exit code; some builds never report it | tmux reports `pane_dead` before `pane_dead_status`, and some builds omit it | py:command_panel_live [ci] |
 | `ee14143` v0.1.93 | "persistent tmux user service did not start" after the server died | a stopped transient `cx-tmux-*` unit stays loaded while a `PartOf` pane scope lives, so `systemd-run --unit` refuses the name | rust:only_a_loaded_stopped_tmux_unit_is_restarted, rust:systemd_run_errors_are_summarized_and_bounded |
@@ -102,9 +102,9 @@ Guard notation:
 | `7cb22fb`, `933dae4`, `ef484b3` | Stray viewers and helpers stayed hidden; an orphaned viewer on a live terminal was wrongly stopped | no inventory; classification ignored a live tty | rust:strays_need_evidence_and_daemons_are_kept, rust:scan_sees_this_test_binary_is_not_cx, py:orphan_exit_pty [ci] |
 | `ee14143` | stale systemd unit (see class 3) | | rust:only_a_loaded_stopped_tmux_unit_is_restarted |
 | `60506e1` v0.1.7 | Shell stop could target an agent or an external terminal | no runtime or provider identity check | rust:stop_shell_confirmation_protects_agents_and_captures_runtime_identity, rust:shell_stop_requires_confirmation_and_rejects_external_and_agent_rows |
-| `b5322e5` v0.1.7 | The pane command changed between confirmation and stop | the tmux command was not rechecked at stop time | py:stop_shell_live [rel] |
-| `4f8cb9b` | Native-command fixtures killed process groups they did not own | cleanup was too broad | py:native_command_pty [rel] (fixture hygiene) |
-| `abb4a39` v0.1.3 | One-shot commands left job groups behind, or broke Fish/Bash/Zsh wrappers | foreground process-group control | py:native_command_pty [rel] |
+| `b5322e5` v0.1.7 | The pane command changed between confirmation and stop | the tmux command was not rechecked at stop time | py:stop_shell_live [ci] |
+| `4f8cb9b` | Native-command fixtures killed process groups they did not own | cleanup was too broad | py:native_command_pty [ci] (fixture hygiene) |
+| `abb4a39` v0.1.3 | One-shot commands left job groups behind, or broke Fish/Bash/Zsh wrappers | foreground process-group control | py:native_command_pty [ci] |
 | `6188285` | The enrollment installer left writer/reader threads blocked | an exited child's inherited pipes were held open | rust:exited_installer_cannot_leave_writer_or_reader_blocked |
 | `9238073` | Helper exit with inherited stderr hung cleanup | a descendant kept stderr open | rust:helper_exit_with_inherited_stderr_is_bounded_and_owned_group_is_reaped |
 | VALIDATION / `f91242a` | A stalled relay-version or capability check froze adoption | wrapper descendants kept pipes open | rust:relay_version_preflight_is_bounded, rust:relay_version_does_not_wait_for_wrapper_descendants, rust:relay_version_bounds_output_and_requires_success |
@@ -140,27 +140,27 @@ Guard notation:
 | Commit | Symptom | Root cause | Guard |
 |---|---|---|---|
 | `2dc00fe` | Jump chains could loop or grow without bound | | rust:jump_routes_are_bounded_validated_and_acyclic |
-| `de1d0a5` | Native attach and helper calls built different SSH routes | duplicated SSH construction | py:jump_routes_cli [rel] (transport-master: keep a single constructor) |
-| `c2e6a79` v0.1.13 | Background jump-host auth prompts; enrollment retargeted a device on an overlapping network | missing BatchMode on routes from personal SSH config; no overlap check | py:jump_routes_cli [rel], py:access_routes_cli [rel] |
+| `de1d0a5` | Native attach and helper calls built different SSH routes | duplicated SSH construction | py:jump_routes_cli [ci] (transport-master: keep a single constructor) |
+| `c2e6a79` v0.1.13 | Background jump-host auth prompts; enrollment retargeted a device on an overlapping network | missing BatchMode on routes from personal SSH config; no overlap check | py:jump_routes_cli [ci], py:access_routes_cli [ci] |
 | `6188285` v0.1.16 | A queued SSH check outlived its network snapshot | stale queue entries | rust:queued_neighbor_check_does_not_outlive_snapshot |
 | `1016401` v0.1.16 | Automatic port checks were unbounded and caused redraws | | rust:network_auto_ssh_is_bounded_cached_and_scoped_without_redraw_work, rust:network_auto_ssh_ignores_stale_unnumeric_and_missing_interface |
 | v0.1.13–15 | Addresses sorted as strings; stale ports stayed "open"; a refused connection showed as unknown | | rust:network_numeric_order_stale_port_and_linklocal_enrollment, rust:network_neighbors_sorted_and_unknown_is_honest |
-| `17aade9` v0.1.32 | Robot neighbour names were missing; manual Add lost the selected gateway | the resolver output was not validated; the observer was not preserved | rust:resolver_output_is_only_a_valid_name_for_the_requested_address, rust:named_neighbors_are_visible_and_manual_add_preserves_selected_observer, rust:network_device_has_direct_terminal_without_creating_a_tmux_session, py:login_terminal_pty [rel] |
+| `17aade9` v0.1.32 | Robot neighbour names were missing; manual Add lost the selected gateway | the resolver output was not validated; the observer was not preserved | rust:resolver_output_is_only_a_valid_name_for_the_requested_address, rust:named_neighbors_are_visible_and_manual_add_preserves_selected_observer, rust:network_device_has_direct_terminal_without_creating_a_tmux_session, py:login_terminal_pty [ci] |
 | `bb33fdd` | Enrollment broke when the robot's DHCP lease changed | a DHCP address was pinned instead of the `.local` name | rust:observer_names_stay_names_but_ambiguous_devices_are_rejected (replaced the `17aade9` numeric-IPv4 test) |
-| `536853a` v0.1.12 | A closed metadata channel failed listing; raw SSH stderr was shown | there was no single reconnect; errors were unclassified | rust:disconnected_observations_retry_once_but_mutations_never_replay, rust:ssh_failures_are_actionable_and_never_expose_stderr, rust:actual_helper_stderr_is_bounded_and_classified, py:metadata_reconnect_cli [rel] |
+| `536853a` v0.1.12 | A closed metadata channel failed listing; raw SSH stderr was shown | there was no single reconnect; errors were unclassified | rust:disconnected_observations_retry_once_but_mutations_never_replay, rust:ssh_failures_are_actionable_and_never_expose_stderr, rust:actual_helper_stderr_is_bounded_and_classified, py:metadata_reconnect_cli [ci] |
 | `9238073` | The cached-session remedy was clipped at small widths | | rust:failed_cached_session_keeps_refresh_visible_at_small_widths |
 | `d381c3e` v0.1.34 | Robot authentication exceeded the helper deadline | GSSAPI was tried before public keys | UNGUARDED: nothing asserts `PreferredAuthentications=publickey,...` first (src/store.rs, transport-master) |
-| `d381c3e` v0.1.34 | Shell attach failed at once on a robot lacking the viewer's terminfo | vendor TERM | py:attach_terminal_pty [rel] |
+| `d381c3e` v0.1.34 | Shell attach failed at once on a robot lacking the viewer's terminfo | vendor TERM | py:attach_terminal_pty [ci] |
 | VALIDATION v0.1.13 | Identity probe failed on Arch | `hostname` missing; now `uname -n` | UNGUARDED |
 | VALIDATION v0.1.7 | Network observation failed on Rocky 8 | `ip` lives in `/usr/sbin`, outside PATH | UNGUARDED (`src/network.rs` candidate list) |
 | `8966b68`, `8b20780` v0.1.72 | Pairing claimed bidirectional connectivity from local posture | | py:peer_pairing_cli [ci] |
 | `6cdf1b5` v0.1.76 | Managed SSH directories were group-writable under umask 0002 | inherited umask | rust:recovers_only_empty_legacy_root_beneath_private_parent, py:peer_mesh_cli [ci] |
 | `260e7da` v0.1.74 | The static build failed on the `renameat2` symbol | libc wrapper missing in musl | build-only (portable.yml musl build) |
-| `5fe00ab` v0.1.75 | A redundant background helper update ran during enrollment | | py:enrollment_tooling_cli [rel] |
+| `5fe00ab` v0.1.75 | A redundant background helper update ran during enrollment | | py:enrollment_tooling_cli [ci] |
 | `aa51d80` | Shared-LAN rules broke when the boat changed ports; docker0 was masqueraded | rules named interfaces | rust:host_nat_does_not_claim_internet_without_robot_gateway_dns_and_verification (asserts `oifname != "docker0"`), py:sharing_lan_namespace [local] |
 | `5bb18e3` | Sharing chose its upstream from stale measurements | | rust:upstream_selection_prefers_throughput_then_latency_and_rejects_stale |
 | `f3fecb5` | Mesh teardown used an empty account | the account came only from discovery | py:mesh_util [ci] |
-| revamp transport-master review | A terminal could become the shared SSH master, so closing its pane ended every channel on the route; a stalled master handshake held requests for up to 25 s; cleanup matched a 20-bit tag; a missing managed trust file failed command construction; orphans closed mesh-endpoint masters; a silently dead master kept answering `-O check` | `ControlMaster=auto` on terminals; synchronous master start under the slot lock; tag-prefix matching; `File::open(known_hosts)?`; inventory-only ownership; no liveness probe | py:ssh_multiplex [local] **NEW**, py:peer_managed_ssh [ci] (owner record, mesh master not stray, missing trust file), rust:closing_masters_matches_the_recorded_target_exactly, rust:managed_trust_reads_missing_files_as_empty, rust:masters_are_stray_only_when_idle_and_unreusable |
+| revamp transport-master review | A terminal could become the shared SSH master, so closing its pane ended every channel on the route; a stalled master handshake held requests for up to 25 s; cleanup matched a 20-bit tag; a missing managed trust file failed command construction; orphans closed mesh-endpoint masters; a silently dead master kept answering `-O check` | `ControlMaster=auto` on terminals; synchronous master start under the slot lock; tag-prefix matching; `File::open(known_hosts)?`; inventory-only ownership; no liveness probe | py:ssh_multiplex [ci] **NEW**, py:peer_managed_ssh [ci] (owner record, mesh master not stray, missing trust file), rust:closing_masters_matches_the_recorded_target_exactly, rust:managed_trust_reads_missing_files_as_empty, rust:masters_are_stray_only_when_idle_and_unreusable |
 
 ## 7. Session identity, labels and runtime inventory
 
@@ -170,8 +170,8 @@ Guard notation:
 | `c9ed1b8` v0.1.7 | Generated titles never refreshed | | rust:generated_session_names_follow_provider_workspace_and_keep_custom_names |
 | v0.1.19 | Renamed sessions reordered the list | | rust:changing_session_labels_preserves_row_order_and_selection |
 | `64c41ab` v0.1.22 | A blank saved name gave an empty label | the blank name skipped native lookup | rust:generated_session_names_follow_provider_workspace_and_keep_custom_names |
-| `7bec0b9` v0.1.27 | Fresh shells showed a hash or directory label | | py:shell_labels_live [rel], rust:shell_labels_never_include_arguments_or_terminal_controls |
-| `12b1069` | Multicall executables were mislabelled | | py:manual_agents_live [rel] |
+| `7bec0b9` v0.1.27 | Fresh shells showed a hash or directory label | | py:shell_labels_live [ci], rust:shell_labels_never_include_arguments_or_terminal_controls |
+| `12b1069` | Multicall executables were mislabelled | | py:manual_agents_live [ci] |
 | `0d5a3c7` v0.1.40 | A host launch offered to resume a container session at the same path | scope was ignored when matching | rust:host_launch_does_not_offer_to_resume_same_path_container_session |
 | `6a1477c` v0.1.72 (dup `dfc46ca` not on main) | "Directory unavailable" appeared in Codex titles | unknown status went into the title | rust:unknown_provider_directory_is_not_a_session_title, py:session_names_live [ci] |
 | `4930a8b`, `bba6800` v0.1.81 | Unpinned agents showed "Directory unavailable"; switching project did not relabel | no launch-directory fallback | py:session_names_live [ci], py:codex_native_switch_live [local] |
@@ -210,9 +210,9 @@ Guard notation:
 | `0e39b73` v0.1.66 | Devcontainer rebuild was reported as failed | build progress exhausted the output budget | rust:workspace_progress_does_not_exhaust_result_budget |
 | `4829ab6` v0.1.86 | Container discovery took seconds (one inspect per container) | serial `docker inspect`; fallback needed | py:container_discovery_fixtures [ci] (fallback path) |
 | `357c9d4` v0.1.4 | `:` asked for a helper upgrade on supported hosts | the viewer filtered Info capabilities down to agent names | rust:real_info_response_retains_native_command_capability |
-| `36cd089`, `7fba202` v0.1.3–4 | Ctrl+C/Ctrl+Z and builtins misbehaved in POSIX shell profiles | | py:native_command_pty [rel] (also CX_TEST_SHELL=/bin/sh) |
+| `36cd089`, `7fba202` v0.1.3–4 | Ctrl+C/Ctrl+Z and builtins misbehaved in POSIX shell profiles | | py:native_command_pty [ci] (also CX_TEST_SHELL=/bin/sh) |
 | `20a3737` v0.1.85 | Stale "Connection closed" text showed on session handoff | LeaveAlternateScreen restored the old primary buffer | py:terminal_startup_loader_pty [ci] (raw `\e[?1049l\e[2J`) |
-| `2acff83` v0.1.11 | OSC 52 copies never reached the viewer | | py:clipboard_pty [rel] |
+| `2acff83` v0.1.11 | OSC 52 copies never reached the viewer | | py:clipboard_pty [ci] |
 
 ## Test-infrastructure regressions (fixture or CI only)
 
@@ -348,7 +348,7 @@ These drive the ratatui viewer (`cx restart <state>` or a bare `cx`) and assert 
 or exact cell positions through pyte. Expect to update them when the UI is redesigned. Keep the behaviour each one asserts and
 change only the locators.
 
-- **Heavy (screen text, labels and positions):** `session_chooser_pty` ("[s] Shell", bold selection), `list_wheel_pty`,
+- **Heavy (screen text, labels and positions):** `session_chooser_pty` ("[n] Shell", bold selection), `list_wheel_pty`,
   `browser_find_pty`, `browser_ecosystem_pty`, `browser_device_loading_pty`, `browser_devices_live_pty`, `preview_search_pty`,
   `pdf_pages_pty`, `markdown_preview_pty`, `markdown_blocks_pty`, `markdown_prose_pty`, `markdown_relative_pty`,
   `source_preview_pty`, `transfer_enter_pty`, `transfer_retry_pty`, `notification_timeout_pty` (bottom-right position),
@@ -374,5 +374,5 @@ CX_PYTHONPATH=/path/with/pyte:/path/with/wcwidth tests/run_regressions.sh   # wh
 ```
 
 The script unsets TMUX/TMUX_PANE and uses a private TMUX_TMPDIR. A fixture can therefore never reach the caller's managed or
-personal tmux server, even when the script runs inside a cx pane. Fixtures with an unmet requirement (pyte, fish, poppler, sshd,
-docker) are reported as SKIP, never as PASS.
+personal tmux server, even when the script runs inside a cx pane. Fixtures with an unmet requirement (pyte, pillow, fish, poppler,
+sshd, docker, node with `node:sqlite`) are reported as SKIP, never as PASS; CI fails on any SKIP. `mesh_worker.mjs` runs with node.

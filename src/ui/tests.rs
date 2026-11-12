@@ -2030,7 +2030,8 @@ fn new_shortcut_chooses_profile_and_preserves_focused_folder() {
     press(&mut a, 'n');
     assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(1,path)) if path == "/projects/robot"));
     assert!(rx.try_recv().is_err());
-    press(&mut a, 's');
+    // `n` is Shell everywhere: the device screen's verb and the chooser's choice (`n` `n` = new shell).
+    press(&mut a, 'n');
     assert!(a.dialog.is_none());
     assert!(rx.try_iter().any(|task| task.device == 1 && matches!(task.op, Operation::Create(ref c) if c.directory == "/projects/robot" && c.provider == "shell")));
 }
@@ -2257,7 +2258,7 @@ fn container_menus_keep_shell_available_until_scoped_agents_are_observed() {
     assert!(rx
         .try_iter()
         .all(|t| matches!(t.op, Operation::ContainerProviders { .. })));
-    press(&mut a, 's');
+    press(&mut a, 'n');
     assert!(
         matches!(rx.try_recv().unwrap().op,Operation::ContainerCreate{request,yolo:false,..} if request.provider=="shell")
     );
@@ -2337,7 +2338,7 @@ fn session_chooser_hides_unavailable_profiles_and_preserves_selection_on_check()
     a.session_shortcut();
     assert!(matches!(rx.try_recv().unwrap().op, Operation::Info));
     let text = capture_app(&a, 100);
-    assert!(text.contains("[s] Shell"));
+    assert!(text.contains("[n] Shell"));
     assert!(!text.contains("[c] Claude") && !text.contains("[x] Codex"));
     a.apply(Reply {
         device_id: None,

@@ -7,7 +7,10 @@ Work from an isolated branch/worktree as described in [AGENTS.md](../AGENTS.md).
 ```sh
 cargo build --release --locked
 cargo test --locked
+tests/run_regressions.sh [--with-ssh] [--with-docker]
 ```
+
+`tests/run_regressions.sh` builds cx and runs the offline fixture set (the one list CI and release run); see [tests/REGRESSIONS.md](../tests/REGRESSIONS.md). `tests/mesh_worker.mjs` needs Node >= 22.13 for `node:sqlite`, and is a SKIP without it.
 
 GitHub workers test builds and installer fixtures across distributions. Rocky Linux supplies the RHEL-compatible CI fixture; RHEL itself requires access to a licensed environment. See [validation](../VALIDATION.md) for actual test results and remaining limits, and [status](../STATUS.md) for outstanding work.
 
@@ -34,7 +37,12 @@ Record changes in [CHANGELOG.md](../CHANGELOG.md). Before tagging a stable versi
 | `file_index.rs` | `Entries` (Arc-shared listing with revisions) and `ViewIndex` (visible rows, lowercase names, search matches), extended incrementally per page |
 | `preview.rs` | File preview state and rendering: text, markdown layout/links, raster fallback, in-preview find; `DocCache` (retained wrapped layout, slice rendering) and chunked streaming of large text previews |
 | `network_view.rs` | Network/neighbor state, probes and the network render |
-| `graph/` | Pure Network hub graph: model/builder from store data, layered layout, routing, hit map, hotkeys; no I/O or environment reads. Neighbor SSH evidence comes from `network_view::neighbor_ssh` |
+| `screens.rs` | The screens as a controller: the hub (start view), a device's sessions, peek, the edge policy editor, keys and the send-to picker; one grammar of a device letter, then a verb or a session slot |
+| `hotkeys.rs` | Device letters for the hub and the session slots `a s d g` ([concept-mission](design/concept-mission.md) section 6) |
+| `viewmodel.rs` | `ViewModel::from(&App)`: App state mapped into the view layer's `LabState`, plus the screen, focus and selection to draw; pure, never dispatches a request |
+| `views/` | The production view layer (`views/mission/`: hub, orbit, tiles) drawn from the view-model into a ratatui buffer; no App, IO, tmux or network |
+| `activity.rs` | Per-viewer session activity history (from listings, in memory), the trend a session's peek shows |
+| `lab/` | Test-only render lab: captures `views` from fixtures for `tests/lab.sh` ([lab](design/lab.md)) |
 | `containers_view.rs` | Container panel state, tree rows and container sessions |
 | `caps.rs` | Terminal capability detection (spec section 9): color depth, UTF-8/ASCII, light/dark (`CX_THEME`, then a 100 ms OSC 11 query with a DA1 sentinel before the TUI starts, then `COLORFGBG`), tmux, Termux/phone, hyperlinks. Pure `Caps::detect(env, probe)`, computed once at `ui::run` start; probes (`infocmp`, `tmux display`) run in their own process group, time-bounded end to end, group-killed. A timed-out OSC 11 arms `swallow_stray_reply` so a late reply never becomes keystrokes. Tests override with `with_caps` |
 | `theme.rs` | Semantic tokens (`Tok`, `tok()`, `accent`/`muted`/`faint`/`ok`/`warn`/`err`/`info`/`dir`/`provider`/`swatch`) downgraded per depth, glyph sets (`glyphs()`), selection styles, `block()` focus treatment (heavy accent + title chip vs rounded faint; ASCII `#=#` vs `+-+`) and the ASCII glyph pass. The pass converts UI glyphs in the whole frame except regions a content renderer registered with `protect_content` (file preview body, live terminal preview), so documents and remote screens keep their own quotes, dashes and box drawing; content renderers emit their own ASCII decorations. Under `NO_COLOR` the selection bar is `>`. Widgets never use raw `Color::` values |
@@ -45,7 +53,6 @@ Record changes in [CHANGELOG.md](../CHANGELOG.md). Before tagging a stable versi
 | `notifications.rs` | Typed floating panels, bounded layout and timed animation |
 | `rendering.rs` | Layout and rendering; no request dispatch |
 | `session_preview.rs`, `workspaces.rs`, `container_agents.rs` | Session pane preview (zoom, inline input, detach chip, helper watch with polling fallback, remembered frames, parsed-screen cache), workspace session identity and attach, container agent profiles |
-| `session_rows.rs` | Session row anatomy, identity swatches, activity history/sparkline, hover state |
 | `tests.rs` | Existing UI and cross-panel regression fixtures |
 
 Reuse a navigation target when adding a panel; keep panel-specific side effects in its adapter. Change session choices in `menus.rs` rather than maintaining parallel label/key/provider arrays. Rendering never changes the session provider: devcontainer identity is a display scope, while shell/agent behavior stays in the session runtime. Preserve typed-input ownership and the existing host/container scope guards. Verify UI changes with the capture matrices and native PTY fixtures in `tests/`.

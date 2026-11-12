@@ -33,6 +33,6 @@ every run. It contains `contact.png` (rows are views, columns are variants, at 8
 `light`, `truecolor`, `256`, `16`, `nocolor`, `ascii` (for example `light-256` or
 `ascii-16`). `cargo test --locked` renders every concept across all views, fixtures and
 some degenerate sizes, so a concept that panics fails the suite. PNGs are rendered by
-`tests/lab_png.py`, which uses JetBrains Mono (`CX_LAB_FONT`, `CX_LAB_FONT_PX`) with
+`tests/lab_png.py` (run by `CX_LAB_PYTHON`, default `python3`, which needs Pillow), which uses JetBrains Mono (`CX_LAB_FONT`, `CX_LAB_FONT_PX`) with
 fontconfig fallback and draws box, block and sextant glyphs as geometry, the way
 kitty, foot and ghostty do.

@@ -8,49 +8,26 @@ permissions:
 jobs:
   rust:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt
       - run: cargo fmt --check && cargo test --locked
-      - run: sudo apt-get update && sudo apt-get install -y shellcheck tmux sqlite3 python3-pyte poppler-utils openssh-server iproute2 iputils-ping ncurses-bin
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck fish zsh tmux sqlite3 python3-pyte python3-pil poppler-utils openssh-server iproute2 iputils-ping ncurses-bin
       - run: shellcheck install.sh tests/distro_smoke.sh scripts/build-portable-tmux.sh scripts/enroll-tmux.sh scripts/build-portable-reptyr.sh scripts/enable-ptrace.sh
-      - name: Container integration fixtures
-        run: |
-          cargo build --locked
-          docker pull ubuntu:24.04
-          python3 tests/session_chooser_pty.py target/debug/cx
-          python3 tests/command_panel_live.py target/debug/cx
-          python3 tests/folder_command_ui_pty.py target/debug/cx
-          python3 tests/startup_directory_pty.py target/debug/cx
-          python3 tests/terminal_startup_loader_pty.py target/debug/cx
-          python3 tests/focus_exits_copy_mode_pty.py target/debug/cx
-          python3 tests/mouse_scrollback_pty.py target/debug/cx
-          python3 tests/orphan_exit_pty.py target/debug/cx
-          python3 tests/secrets_cli.py target/debug/cx
-          python3 tests/terminal_startup_readiness_live.py target/debug/cx
-          python3 tests/session_runtime_live.py target/debug/cx
-          python3 tests/container_discovery_fixtures.py target/debug/cx
-          python3 tests/container_session_reconcile_live.py target/debug/cx
-          python3 tests/session_activity_timestamp_live.py target/debug/cx
-          python3 tests/native_runtime_metadata_live.py target/debug/cx
-          python3 tests/codex_process_mode_live.py target/debug/cx
-          python3 tests/transfer_enter_pty.py target/debug/cx
-          python3 tests/containers_live.py target/debug/cx
-          python3 tests/container_agents_live.py target/debug/cx
-          python3 tests/devcontainer_terminal_recovery_live.py target/debug/cx
-          python3 tests/claude_contrast_live.py target/debug/cx
-          npm install --prefix "$RUNNER_TEMP/cx-devcontainer-cli" @devcontainers/cli@0.89.0 --no-audit --no-fund
-          PATH="$RUNNER_TEMP/cx-devcontainer-cli/node_modules/.bin:$PATH" python3 tests/devcontainer_cli_live.py target/debug/cx
-      - run: python3 tests/install_fixture.py
-      - run: python3 tests/session_names_live.py target/debug/cx
-      - run: python3 tests/peer_pairing_cli.py target/debug/cx
-      - run: python3 tests/peer_mesh_cli.py target/debug/cx
-      - run: python3 tests/peer_managed_ssh.py target/debug/cx
-      - run: python3 tests/device_policy_cli.py target/debug/cx
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22 # node:sqlite, for the mesh Worker's in-memory D1
-      - run: python3 tests/mesh_util.py && node tests/mesh_worker.mjs
+          node-version: 22.20.0 # node:sqlite, for the mesh Worker's in-memory D1
+      - name: Regression fixtures (tests/run_regressions.sh is the one list; any SKIP fails CI)
+        run: |
+          docker pull ubuntu:24.04
+          tests/run_regressions.sh --no-rust --with-ssh --with-docker | tee "$RUNNER_TEMP/regressions.log"
+          ! grep '^SKIP' "$RUNNER_TEMP/regressions.log"
+      - name: Fixture variants outside the list
+        run: |
+          CX_TEST_SHELL=/usr/bin/zsh python3 tests/native_command_pty.py target/debug/cx
+          CX_TEST_SHELL=/usr/bin/fish python3 tests/folder_command_ui_pty.py target/debug/cx /usr/bin/fish
+          npm install --prefix "$RUNNER_TEMP/cx-devcontainer-cli" @devcontainers/cli@0.89.0 --no-audit --no-fund
+          PATH="$RUNNER_TEMP/cx-devcontainer-cli/node_modules/.bin:$PATH" python3 tests/devcontainer_cli_live.py target/debug/cx
   portable:
     uses: ./.github/workflows/portable.yml

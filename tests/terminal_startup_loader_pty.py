@@ -75,8 +75,8 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-loader-') as tmp:
         os.write(master,b'\x1b'); read(.5)
         os.write(master,b'\r'); read(.5)
         os.write(master,b'f'); wait(lambda:'FILES' in text()); read(.4)
-        os.write(master,b'n'); wait(lambda:'[s] Shell' in text())
-        os.write(master,b's'); read(.6)
+        os.write(master,b'n'); wait(lambda:'[n] Shell' in text())
+        os.write(master,b'n'); read(.6)
         assert 'Starting terminal' in text(), 'blank/native handoff before startup finished:\n'+text()
         first=text(); read(.25)
         assert 'Starting terminal' in text() and text()!=first, 'startup loader did not animate'

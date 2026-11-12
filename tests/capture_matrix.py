@@ -56,7 +56,7 @@ except ImportError as e:
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 DEFAULT_VIEWS = ['startup', 'device', 'files', 'files-projects', 'files-inside', 'files-preview', 'sessions', 'sessions-all',
-                 'sessions-next', 'palette', 'help']
+                 'sessions-next', 'palette', 'help', 'edge', 'keys']
 NETWORK_VIEWS = ['network', 'network-expanded']
 ALL_VIEWS = DEFAULT_VIEWS + NETWORK_VIEWS
 SYSTEM_PATH = '/usr/local/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
@@ -458,8 +458,11 @@ RECIPES = {
     'sessions': [(b'\t', 1.0)],
     'sessions-all': [(b'b', 1.5)],
     'sessions-next': [(b'\t', .8), (b'j', 1.0), (b' ', 1.5)],
-    'network': [(b'e', .3), (b'b', 1.5)],
-    'network-expanded': [(b'K', 1.0)],
+    'edge': [(b'e', .3), (b'b', 1.5)],
+    'keys': [(b'K', 1.0)],
+    # Refresh observes the network (and checks LAN neighbours); they show in the palette.
+    'network': [(b'/', .5), (b'Refresh', .5), (b'\r', 3.0)],
+    'network-expanded': [(b'/', .5), (b'Refresh', .5), (b'\r', 3.0), (b'/', .5)],
     'help': [(b'?', .8)],
     'palette': [(b'/', .8)],
 }

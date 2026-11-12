@@ -163,48 +163,6 @@ impl App {
         self.dialog = Some(Dialog::SessionChooser(d, path));
         self.dialog_selected = 0;
     }
-    pub(super) fn start_shell(&mut self) {
-        if self.view == View::Containers {
-            if let Some((d, c)) = self.selected_container() {
-                if (!c.devcontainer && !c.allowed) || c.state != "running" {
-                    self.open_container_actions();
-                    return;
-                }
-                self.open_container_sessions(d, c.scope());
-            }
-            return;
-        }
-        if self.view == View::Files {
-            if let Some(b) = &self.browser {
-                if let Some(scope) = &b.container {
-                    let d = b.device;
-                    let mut scope = scope.clone();
-                    scope.folder = b.path.clone();
-                    self.start_container_session(d, scope, "shell".into(), false);
-                    return;
-                }
-            }
-        }
-        if self.creating {
-            return;
-        }
-        let location = if self.view == View::Files {
-            self.browser.as_ref().map(|b| (b.device, b.path.clone()))
-        } else if self.view == View::Network {
-            self.network_action_device().map(|d| (d, "~".into()))
-        } else if self.device > 0 {
-            self.actual_device().map(|d| (d, "~".into()))
-        } else {
-            None
-        };
-        self.launch_provider = None;
-        if let Some((d, path)) = location {
-            self.create_at(d, path, "shell".into());
-        } else {
-            self.dialog = Some(Dialog::Device(ChooseDevice::Shell));
-            self.dialog_selected = 0;
-        }
-    }
     pub(super) fn choose_device(&mut self, purpose: ChooseDevice) {
         if self.device > 0 && purpose != ChooseDevice::Destination {
             self.chosen_device(self.device - 1, purpose);
@@ -241,12 +199,6 @@ impl App {
                 self.open_containers();
             }
             ChooseDevice::SessionChooser => self.open_session_chooser(d, "~".into()),
-            ChooseDevice::Shell => {
-                self.device = d + 1;
-                self.view = View::Work;
-                self.create_at(d, "~".into(), "shell".into());
-            }
-            ChooseDevice::Terminal => self.pending_terminal = Some(self.devices[d].clone()),
             ChooseDevice::New => {
                 self.check_providers(d);
                 self.work[d].loading = self.send(d, Operation::Sessions);

@@ -9,7 +9,8 @@
 //   enrolment policy) and a device token; the client writes the WARP MDM file and registers.
 // - POST /v1/registered (device token): finds the registration, points "<rule prefix><name>" (a Gateway DNS
 //   override) at its mesh addresses. POST /v1/leave (device token): revokes everything of that device.
-// - Owner (a bearer that Cloudflare verifies as an active token of this account): POST/GET/DELETE
+// - Owner (a bearer that Cloudflare verifies as the active token `mesh setup`/`deploy` ran with, its id in
+//   config.json; any other token of the account, however scoped, is not the owner): POST/GET/DELETE
 //   /v1/admin/invites, GET /v1/admin/devices, POST /v1/admin/devices/<name>/revoke.
 // - Claude lends (docs/claude.md): the owner posts a gateway bundle (POST /v1/admin/claude); GET /claude/<code>
 //   answers with claude.sh / claude.ps1 / a page, and the script claims the bundle once (POST /v1/claude/claim).
@@ -86,7 +87,8 @@ async function limited(env, k, n) {
 }
 
 const verified = new Map(); // bearer sha -> verified until (ms)
-/** The owner: any active API token of this account (user- or account-owned), as Cloudflare verifies it. */
+/** The owner: the active API token this Worker was deployed with (user- or account-owned; its id is
+ * CONFIG.owner_token_id), as Cloudflare verifies it. A narrowly scoped token of the same account is not. */
 async function owner(req) {
   const t = bearer(req);
   if (!t) return null;
@@ -94,7 +96,7 @@ async function owner(req) {
   if ((verified.get(k) ?? 0) > Date.now()) return `owner:${k.slice(0, 8)}`;
   for (const u of [`${API}/accounts/${CONFIG.account}/tokens/verify`, `${API}/user/tokens/verify`]) {
     const d = await fetch(u, { headers: { authorization: `Bearer ${t}` } }).then((r) => r.json()).catch(() => null);
-    if (d?.success && d.result?.status === "active") {
+    if (d?.success && d.result?.status === "active" && CONFIG.owner_token_id && d.result.id === CONFIG.owner_token_id) {
       // a user token must reach this account
       if (u.includes("/user/")) {
         const a = await fetch(`${API}/accounts/${CONFIG.account}`, { headers: { authorization: `Bearer ${t}` } }).then((r) => r.json()).catch(() => null);
@@ -398,7 +400,7 @@ body{background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif;max
 
 async function admin(req, env, p) {
   const actor = await owner(req);
-  if (!actor) return json({ error: "an active API token of this Cloudflare account is required" }, 401);
+  if (!actor) return json({ error: "only the API token this mesh was deployed with (after changing it, run `cx mesh deploy`)" }, 401);
   const ip = clientIp(req);
   const now = new Date();
   if (p === "/v1/admin/invites" && req.method === "POST") {

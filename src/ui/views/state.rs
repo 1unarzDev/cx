@@ -247,7 +247,9 @@ pub struct LabInvite {
     pub oneliner: String,
     pub mesh: String,
     pub expires_secs: u32,
-    /// QR-shaped module matrix (finder patterns are real; the data is not scannable).
+    /// The other addresses the invite listens on, for a device that cannot reach the one-liner's.
+    pub also: Vec<String>,
+    /// The QR code of the one-liner: scannable, so it carries the pairing code like the text does.
     pub qr: Vec<Vec<bool>>,
 }
 
@@ -741,6 +743,7 @@ fn invite() -> LabInvite {
         oneliner: "curl -sL https://mesh.lab.invalid/j/KX7-4QM | sh".into(),
         mesh: "cloudflare-warp".into(),
         expires_secs: 23 * 60 + 41,
+        also: Vec::new(),
         qr: qr_matrix(0x4b58_3734),
     }
 }

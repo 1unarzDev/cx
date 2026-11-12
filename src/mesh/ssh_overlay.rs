@@ -1,30 +1,30 @@
 //! The ssh-overlay backend: the lightweight default mesh, built from what cx already has and able to
 //! coexist with any VPN (it claims no address range). Members are the enrolled devices; core
 //! devices pair automatically (peers.rs, peer_ssh.rs); reachability is the existing routes plus
-//! ProxyJump through a reachable peer. New devices join with `cx mesh pair <code> <host[:port]>`
+//! ProxyJump through a reachable peer. New devices join with `cx join <code> <host[:port]>`
 //! (docs/mesh.md has the protocol and its threat model):
 //!
-//! 1. `cx mesh invite --backend ssh-overlay` on the viewer makes an 11-symbol code (code.rs) and, in its
+//! 1. `cx invite` on the viewer (the hub's `+`) makes an 11-symbol code (code.rs) and, in its
 //!    foreground, listens on this host's mesh/LAN addresses until one device joins, the invite expires,
 //!    or Ctrl-C. The code and its key live only in that process.
-//! 2. `cx mesh pair <code> <host[:port]>` on the joiner connects there and sends its own keys, its
+//! 2. `cx join <code> <host[:port]>` on the joiner connects there and sends its own keys, its
 //!    identity, the address it dialed and a nonce, with HMAC-SHA256(SHA-256(code), "join", those fields).
 //! 3. The viewer checks the HMAC (wrong codes are rate-limited and capped), marks the invite used,
 //!    installs the joiner's key as `cx-managed-peer`, enrolls it as core, and answers with its own keys
 //!    and HMAC(key, "accept", the nonce and those keys). Then the listener closes.
 //! 4. The joiner verifies that answer (only a holder of the code can make it), then pins and authorizes
 //!    the viewer the same way.
-use super::{code, iso, AuditEntry, Invite, IpNet, Member, MeshBackend, Plan, Status};
+use super::{code, iso, AuditEntry, Invite, IpNet, Member, MeshBackend, Status};
 use crate::{model::Device, peer_ssh, store, transport};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     fs,
-    io::{BufReader, Read, Write},
+    io::{BufReader, Read},
     net::{IpAddr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
-    path::{Path, PathBuf},
+    os::unix::fs::DirBuilderExt,
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -35,10 +35,16 @@ use std::{
 pub const ID: &str = "ssh-overlay";
 /// 3: the one-shot invite listener (2 went through a shared door key, 1 carried an invite key in a long code).
 const PROTOCOL: u32 = 3;
-/// Where `cx mesh invite` listens unless `--port` says otherwise.
+/// Where `cx invite` listens unless `--port` says otherwise.
 pub const DEFAULT_PORT: u16 = 7241;
-const MAX_TTL_HOURS: f64 = 24.0 * 7.0;
-const DEFAULT_TTL_HOURS: f64 = 24.0;
+/// How long an invite stays open (the hub's and the CLI's): the 50-bit code must outlast no offline
+/// guessing of an intercepted request (docs/mesh.md, threat model).
+pub const DEFAULT_TTL: Duration = Duration::from_secs(30 * 60);
+const MAX_TTL_HOURS: f64 = 24.0;
+/// The port both sides' sshd must answer on: device targets carry no port.
+const SSH_PORT: u16 = 22;
+/// audit.jsonl holds at most 1000 short lines.
+const AUDIT_LIMIT: u64 = 1024 * 1024;
 /// Wrong codes: at most this many per window are checked, the rest refused unchecked...
 const FAILURES_PER_WINDOW: usize = 3;
 const FAILURE_WINDOW_SECS: u64 = 60;
@@ -77,62 +83,31 @@ fn ensure_dir() -> Result<PathBuf> {
     Ok(d)
 }
 
-struct Lock(#[allow(dead_code)] fs::File); // held for its flock
-fn lock() -> Result<Lock> {
-    use std::os::fd::AsRawFd;
-    let f = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(ensure_dir()?.join("lock"))?;
-    anyhow::ensure!(
-        unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } == 0,
-        "mesh audit lock unavailable"
-    );
-    Ok(Lock(f))
-}
-
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
-    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
-    let _ = fs::remove_file(&tmp);
-    let mut f = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(&tmp)?;
-    let result = (|| -> Result<()> {
-        f.write_all(bytes)?;
-        f.sync_all()?;
-        fs::rename(&tmp, path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    result
-}
-
 /// Append to audit.jsonl (kept to its last 500..1000 entries), under the lock, so concurrent
 /// processes (an invite and a revoke) never lose each other's lines.
 fn audit(action: &str, detail: &str) {
-    let Ok(_l) = lock() else { return };
-    let line =
-        json!({"at": iso(transport::now()), "actor": "local", "action": action, "detail": detail});
-    let path = dir().join("audit.jsonl");
-    let old = fs::read_to_string(&path).unwrap_or_default();
-    let mut lines: Vec<&str> = old.lines().collect();
-    if lines.len() >= 1000 {
-        lines.drain(..lines.len() - 499);
-    }
-    let mut text = lines.join("\n");
-    if !text.is_empty() {
+    let _ = (|| -> Result<()> {
+        let dir = ensure_dir()?;
+        let _lock = store::private_lock(&dir, "lock", true)?;
+        let line = json!({"at": iso(transport::now()), "actor": "local", "action": action, "detail": detail});
+        let old = read_audit()?;
+        let mut lines: Vec<&str> = old.lines().collect();
+        if lines.len() >= 1000 {
+            lines.drain(..lines.len() - 499);
+        }
+        let mut text = lines.join("\n");
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(&line.to_string());
         text.push('\n');
-    }
-    text.push_str(&line.to_string());
-    text.push('\n');
-    let _ = write_private(&path, text.as_bytes());
+        store::atomic_write(&dir, "audit.jsonl", text.as_bytes())
+    })();
+}
+
+fn read_audit() -> Result<String> {
+    let bytes = store::read_private(&dir().join("audit.jsonl"), AUDIT_LIMIT)?;
+    Ok(String::from_utf8_lossy(&bytes.unwrap_or_default()).into_owned())
 }
 
 /// Where an invite may listen: private LAN IPv4, the CGNAT range overlays use (Tailscale, WARP), IPv6 ULA,
@@ -195,9 +170,8 @@ pub struct InviteOptions {
     /// Addresses to listen on (IPs); default: this host's mesh/LAN addresses.
     pub addresses: Vec<String>,
     pub port: Option<u16>,
-    /// The host key sshd presents, when it does not use /etc/ssh/ssh_host_ed25519_key.
-    pub host_key_file: Option<PathBuf>,
-    /// Set from another thread to close the invite (the hub's Esc); checked every CANCEL_POLL.
+    /// Set from another thread to close the invite (the hub's Esc); checked every CANCEL_POLL_MS,
+    /// also while a connection is being read.
     pub cancel: Option<Arc<AtomicBool>>,
 }
 
@@ -326,6 +300,16 @@ fn fixture_machine_id() -> Option<String> {
     None
 }
 
+/// The host key this viewer's sshd presents: /etc/ssh/ssh_host_ed25519_key.pub, as in every other
+/// pairing. Debug builds take the loopback fixture's own (its private sshd) from CX_JOIN_HOST_KEY.
+fn host_key() -> Result<String> {
+    #[cfg(debug_assertions)]
+    if let Some(p) = std::env::var_os("CX_JOIN_HOST_KEY").filter(|p| !p.is_empty()) {
+        return peer_ssh::public_key(&fs::read_to_string(p)?);
+    }
+    peer_ssh::host_public_key().context("this host has no readable SSH Ed25519 host key")
+}
+
 fn machine_id() -> String {
     fixture_machine_id().unwrap_or_else(|| {
         fs::read_to_string("/etc/machine-id")
@@ -399,6 +383,8 @@ fn enroll_joined(peer: &Device) -> Result<String> {
         n += 1;
     }
     anyhow::ensure!(devices.len() < 128, "device enrollment limit reached");
+    // Only a join that is enrolled lifts a removal (a refused one keeps the device out of auto-pairing).
+    store::allow_explicit_enrollment(&peer.id)?;
     let mut peer = peer.clone();
     peer.name = name.clone();
     devices.push(peer.clone());
@@ -411,7 +397,6 @@ fn enroll_joined(peer: &Device) -> Result<String> {
 /// with another enrollment of the same identity or endpoint).
 fn pair_new(peer: &Device, host_key: &str, client_key: &str) -> Result<String> {
     ensure_new(&store::devices()?, &peer.id)?;
-    store::allow_explicit_enrollment(&peer.id)?;
     // A new core device: no edge records yet, so key access both ways (the edges.rs core default).
     peer_ssh::configure(peer, host_key, client_key, true)?;
     enroll_joined(peer).inspect_err(|_| {
@@ -422,26 +407,47 @@ fn pair_new(peer: &Device, host_key: &str, client_key: &str) -> Result<String> {
 }
 
 /// Reads a socket until a deadline, however slowly the peer sends: each read waits only for what is left.
+/// With a cancel flag it looks at the flag every CANCEL_POLL_MS, so a closed invite never waits on a
+/// connection.
 struct Timed<'a> {
     stream: &'a TcpStream,
     until: Instant,
+    cancel: Option<&'a AtomicBool>,
 }
 
 impl Read for Timed<'_> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let left = self.until.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Err(std::io::ErrorKind::TimedOut.into());
+        loop {
+            let left = self.until.saturating_duration_since(Instant::now());
+            if left.is_zero() || self.cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                return Err(std::io::ErrorKind::TimedOut.into());
+            }
+            let slice = match self.cancel {
+                Some(_) => left.min(Duration::from_millis(CANCEL_POLL_MS)),
+                None => left,
+            };
+            self.stream.set_read_timeout(Some(slice))?;
+            match (&mut &*self.stream).read(buf) {
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                r => return r,
+            }
         }
-        self.stream.set_read_timeout(Some(left))?;
-        (&mut &*self.stream).read(buf)
     }
 }
 
-fn read_bounded<T: serde::de::DeserializeOwned>(stream: &TcpStream, wait: Duration) -> Result<T> {
+fn read_bounded<T: serde::de::DeserializeOwned>(
+    stream: &TcpStream,
+    wait: Duration,
+    cancel: Option<&AtomicBool>,
+) -> Result<T> {
     let timed = Timed {
         stream,
         until: Instant::now() + wait,
+        cancel,
     };
     transport::read_frame(&mut BufReader::new(timed.take(MAX_FRAME)))
 }
@@ -450,7 +456,7 @@ fn read_bounded<T: serde::de::DeserializeOwned>(stream: &TcpStream, wait: Durati
 /// invite once the listeners are up (to print it). Returns the join, or an error once the invite is
 /// expired or cancelled (a failed handshake with the right code, or too many wrong ones).
 pub fn invite(opts: &InviteOptions, ready: impl FnOnce(&Invite) -> Result<()>) -> Result<Value> {
-    let ttl = opts.ttl_hours.unwrap_or(DEFAULT_TTL_HOURS);
+    let ttl = opts.ttl_hours.unwrap_or(DEFAULT_TTL.as_secs_f64() / 3600.0);
     anyhow::ensure!(
         ttl > 0.0 && ttl <= MAX_TTL_HOURS,
         "--hours must be within (0, {MAX_TTL_HOURS}]"
@@ -458,11 +464,7 @@ pub fn invite(opts: &InviteOptions, ready: impl FnOnce(&Invite) -> Result<()>) -
     if let Some(n) = &opts.device_name {
         anyhow::ensure!(valid_name(n), "invalid device name");
     }
-    let host_key = match &opts.host_key_file {
-        Some(p) => peer_ssh::public_key(&fs::read_to_string(p).context("cannot read --host-key")?)?,
-        None => peer_ssh::host_public_key()
-            .context("this host has no readable SSH Ed25519 host key; pass --host-key")?,
-    };
+    let host_key = host_key()?;
     let port = opts.port.unwrap_or(DEFAULT_PORT);
     anyhow::ensure!(port != 0, "invalid --port 0");
     let mut listeners = Vec::new();
@@ -503,7 +505,7 @@ pub fn invite(opts: &InviteOptions, ready: impl FnOnce(&Invite) -> Result<()>) -
     };
     let shown = code::display(&code);
     let invite = Invite {
-        one_liner_sh: format!("cx mesh pair {shown} {}", hosts[0]),
+        one_liner_sh: format!("cx join {shown} {}", hosts[0]),
         code: shown,
         url: None,
         one_liner_ps: None,
@@ -590,15 +592,16 @@ fn handle(stream: &TcpStream, p: &mut Pending) -> Result<Option<Value>> {
     let now = transport::now();
     // Read even a request that will be refused unchecked: closing on unread data would reset the
     // connection before the joiner reads why.
-    let outcome = match read_bounded::<JoinRequest>(stream, REQUEST_TIMEOUT) {
+    let cancel = p.cancel.clone();
+    let cancel = cancel.as_deref();
+    // Only a wrong code counts as a failure: a connection that sends nothing readable (a port scan, a
+    // health probe) guessed nothing, and one connection at a time with REQUEST_TIMEOUT bounds a flood.
+    let outcome = match read_bounded::<JoinRequest>(stream, REQUEST_TIMEOUT, cancel) {
         _ if p.rate_limited(now) => Err(anyhow::anyhow!(
             "too many wrong pair codes just now; wait a minute and try again"
         )),
         Ok(req) => accept(p, &req, local, source, now),
-        Err(e) => {
-            p.note_failure(now);
-            Err(e.context("unreadable join request"))
-        }
+        Err(e) => Err(e.context("unreadable join request")),
     };
     let (response, result) = match outcome {
         Ok((response, joined)) => (response, Ok(Some(joined))),
@@ -618,6 +621,7 @@ fn handle(stream: &TcpStream, p: &mut Pending) -> Result<Option<Value>> {
     let rest = Timed {
         stream,
         until: Instant::now() + DRAIN_TIMEOUT,
+        cancel,
     };
     let _ = std::io::copy(&mut rest.take(4 * MAX_FRAME), &mut std::io::sink());
     result
@@ -682,6 +686,7 @@ fn accept(
     now: u64,
 ) -> Result<(JoinResponse, Value)> {
     let device = check_request(p, req, local, source, now)?;
+    ensure_sshd(&source.to_string(), SSH_PORT).context("the joining device")?;
     let name = pair_new(&device, &req.host_key, &req.client_key)?;
     let identity = peer_ssh::identity()?;
     let me = store::local_device();
@@ -780,11 +785,18 @@ fn connect(host: &str, port: u16) -> Result<TcpStream> {
         Some(e) => anyhow::Error::new(e),
         None => anyhow::anyhow!("no address"),
     })
-    .with_context(|| {
-        format!(
-            "no invite is open at {host}:{port} (run cx mesh invite --backend ssh-overlay there)"
-        )
-    })
+    .with_context(|| format!("no invite is open at {host}:{port} (run cx invite there)"))
+}
+
+/// Pairing enrolls `account@host` with no port, so sshd must answer on port 22 there; checked before an
+/// invite is used up (a non-22 sshd needs an ssh_config `Host` alias with `Port`, enrolled with `cx add`).
+fn ensure_sshd(host: &str, port: u16) -> Result<()> {
+    for a in (host, port).to_socket_addrs()? {
+        if TcpStream::connect_timeout(&a, Duration::from_secs(5)).is_ok() {
+            return Ok(());
+        }
+    }
+    bail!("sshd is not reachable at {host} port {port}; pairing needs sshd on port 22 on both devices")
 }
 
 #[derive(Clone, Debug, Default)]
@@ -801,6 +813,7 @@ pub fn join(code_text: &str, host_text: &str, opts: &JoinOptions) -> Result<Valu
     check_identity(&name, &local.host, &local.account, &machine_id())?;
     let identity = peer_ssh::identity()?;
     let key = code::key(&code);
+    ensure_sshd(&host, SSH_PORT).context("the viewer")?;
     let stream = connect(&host, port)?;
     stream.set_write_timeout(Some(ANSWER_TIMEOUT))?;
     let mut request = JoinRequest {
@@ -820,7 +833,9 @@ pub fn join(code_text: &str, host_text: &str, opts: &JoinOptions) -> Result<Valu
     };
     request.mac = code::mac(&key, "join", &request.fields());
     transport::frame(&mut &stream, &request)?;
-    let response = read_bounded(&stream, ANSWER_TIMEOUT).context("the viewer did not answer")?;
+    let response = read_bounded(&stream, ANSWER_TIMEOUT, None).context(
+        "the viewer did not answer; cancel the invite there (Ctrl-C) and make a new one",
+    )?;
     drop(stream);
     let viewer = check_answer(&key, &request, response)?;
     let target = match host.parse::<IpAddr>() {
@@ -858,9 +873,6 @@ impl MeshBackend for SshOverlay {
     fn name(&self) -> &'static str {
         "SSH overlay (built-in)"
     }
-    fn capabilities(&self) -> Vec<&'static str> {
-        vec!["invite", "join", "revoke", "audit", "coexists-with-vpn"]
-    }
     fn status(&self) -> Result<Status> {
         let members = self
             .members()?
@@ -876,29 +888,13 @@ impl MeshBackend for SshOverlay {
             detail: format!("{members} enrolled device(s); nothing to provision"),
         })
     }
-    fn provision(&self, dry_run: bool) -> Result<Plan> {
-        Ok(Plan {
-            dry_run,
-            applied: false,
-            steps: vec![
-                "nothing to provision: ssh-overlay uses the SSH access cx already has".into(),
-            ],
-            result: Value::Null,
-        })
+    fn address_ranges(&self) -> Vec<IpNet> {
+        Vec::new()
     }
-    fn teardown(&self, dry_run: bool) -> Result<Plan> {
-        // An invite lives only while `cx mesh invite` serves it; enrolled devices go one by one with revoke.
-        Ok(Plan {
-            dry_run,
-            applied: false,
-            steps: vec![
-                "nothing to tear down: an invite closes with its `cx mesh invite`; revoke devices one by one"
-                    .into(),
-            ],
-            result: Value::Null,
-        })
-    }
-    fn members(&self) -> Result<Vec<Member>> {
+}
+
+impl SshOverlay {
+    pub fn members(&self) -> Result<Vec<Member>> {
         let mut out = Vec::new();
         for d in store::devices()? {
             let policy = store::policy(&d)?;
@@ -936,22 +932,15 @@ impl MeshBackend for SshOverlay {
         }
         Ok(out)
     }
-    fn revoke(&self, name: &str) -> Result<Value> {
+    pub fn revoke(&self, name: &str) -> Result<Value> {
         let (removed, unpinned) = peer_ssh::remove_device(name)?;
         audit("revoke", &removed.name);
         Ok(
             json!({"name": removed.name, "id": removed.id, "revoked": ["device", "ssh pins"], "ssh": unpinned}),
         )
     }
-    fn address_ranges(&self) -> Vec<IpNet> {
-        Vec::new()
-    }
-    fn audit(&self, limit: usize) -> Result<Vec<AuditEntry>> {
-        let text = match fs::read_to_string(dir().join("audit.jsonl")) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(e) => return Err(e.into()),
-        };
+    pub fn audit(&self, limit: usize) -> Result<Vec<AuditEntry>> {
+        let text = read_audit()?;
         let mut out: Vec<AuditEntry> = text
             .lines()
             .rev()
@@ -966,7 +955,7 @@ impl MeshBackend for SshOverlay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
+    use std::{io::Write, path::Path, process::Command};
 
     const VIEWER_HOST_KEY: &str =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
@@ -1248,20 +1237,6 @@ mod tests {
         assert!(refused(e).contains("refused the join: wrong pair code"));
     }
 
-    #[test]
-    fn a_failed_write_leaves_no_temporary_file() {
-        let d = tempfile::tempdir().unwrap();
-        let target = d.path().join("audit.jsonl");
-        fs::create_dir(&target).unwrap();
-        fs::write(target.join("x"), "").unwrap();
-        assert!(write_private(&target, b"{}").is_err());
-        let left: Vec<_> = fs::read_dir(d.path())
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .collect();
-        assert_eq!(left, vec![std::ffi::OsString::from("audit.jsonl")]);
-    }
-
     fn scratch_state(d: &Path) -> [(&'static str, PathBuf); 2] {
         [("HOME", d.to_owned()), ("XDG_STATE_HOME", d.join("state"))]
     }
@@ -1318,14 +1293,16 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 200);
         let full: String = (0..1000).map(|i| format!("{{\"n\":{i}}}\n")).collect();
         fs::write(&path, full).unwrap();
+        fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
         audit("invite", "x");
         let text = fs::read_to_string(&path).unwrap();
         assert_eq!(text.lines().count(), 500);
         assert!(text.starts_with("{\"n\":501}\n") && text.contains("\"invite\""));
     }
 
-    /// The listener over real sockets: a slow or silent connection is cut off and counted, a wrong code is
-    /// refused with the invite left open, and the listener answers and closes at expiry.
+    /// The listener over real sockets: a wrong code is refused (and counted) with the invite left open, a
+    /// slow or silent connection is cut off (not counted: it guessed nothing), and the listener answers and
+    /// closes at expiry.
     #[test]
     fn the_listener_bounds_connections_and_closes_at_expiry() {
         let d = private_tempdir();
@@ -1347,7 +1324,7 @@ mod tests {
         let wrong = request(&code::new_code().unwrap());
         let s = TcpStream::connect(addr).unwrap();
         transport::frame(&mut &s, &wrong).unwrap();
-        let r: JoinResponse = read_bounded(&s, Duration::from_secs(5)).unwrap();
+        let r: JoinResponse = read_bounded(&s, Duration::from_secs(5), None).unwrap();
         assert_eq!(r.error.as_deref(), Some("wrong pair code"));
         drop(s);
         // An oversized frame is read only up to MAX_FRAME, and its answer still arrives (the rest is
@@ -1356,23 +1333,28 @@ mod tests {
         let mut big = format!("CX1 {}\n", 2 * MAX_FRAME).into_bytes();
         big.resize(big.len() + 2 * MAX_FRAME as usize, b'x');
         let _ = (&s).write_all(&big);
-        let r: JoinResponse = read_bounded(&s, Duration::from_secs(5)).unwrap();
+        let r: JoinResponse = read_bounded(&s, Duration::from_secs(5), None).unwrap();
         assert!(r.error.unwrap().contains("unreadable"));
         drop(s);
         // A silent connection is cut off after REQUEST_TIMEOUT.
         let started = Instant::now();
         let s = TcpStream::connect(addr).unwrap();
-        let r: JoinResponse = read_bounded(&s, REQUEST_TIMEOUT * 2).unwrap();
+        let r: JoinResponse = read_bounded(&s, REQUEST_TIMEOUT * 2, None).unwrap();
         assert!(r.error.unwrap().contains("unreadable"));
         let waited = started.elapsed();
         assert!(waited >= REQUEST_TIMEOUT - Duration::from_secs(1) && waited < REQUEST_TIMEOUT * 2);
+        // Bare connects (a port scan) are not wrong codes either.
+        for _ in 0..FAILURES_PER_WINDOW {
+            drop(TcpStream::connect(addr).unwrap());
+        }
         let (result, failures) = server.join().unwrap();
         assert_eq!(result.unwrap_err(), "the invite expired; nothing joined");
-        assert_eq!(failures, 3);
+        assert_eq!(failures, 1, "only the wrong code counts");
         assert!(TcpStream::connect(addr).is_err(), "the port is closed");
     }
 
-    /// The hub's Esc: a set cancel flag closes the listener within a poll, and its port with it.
+    /// The hub's Esc: a set cancel flag closes the listener within a poll, and its port with it, even
+    /// while a silent connection is being read (else `+` right after Esc finds the port taken).
     #[test]
     fn a_cancelled_invite_closes_its_listener_promptly() {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1381,13 +1363,116 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(false));
         p.cancel = Some(cancel.clone());
         let server = std::thread::spawn(move || serve(&[l], &mut p).map_err(|e| e.to_string()));
-        std::thread::sleep(Duration::from_millis(50));
+        let silent = TcpStream::connect(addr).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
         let started = Instant::now();
         cancel.store(true, Ordering::Relaxed);
         let r = server.join().unwrap();
         assert_eq!(r.unwrap_err(), "the invite was closed; nothing joined");
-        assert!(started.elapsed() < Duration::from_secs(2));
-        assert!(TcpStream::connect(addr).is_err(), "the port is closed");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(TcpListener::bind(addr).is_ok(), "the port is free again");
+        drop(silent);
+    }
+
+    /// An invite lasts DEFAULT_TTL (the hub's and the CLI's), at most a day, and its line is `cx join`.
+    #[test]
+    fn an_invite_is_short_lived_and_names_cx_join() {
+        let d = private_tempdir();
+        let key = d.path().join("host.pub");
+        fs::write(&key, format!("{VIEWER_HOST_KEY}\n")).unwrap();
+        let mut vars = scratch_state(d.path()).to_vec();
+        vars.push(("CX_JOIN_HOST_KEY", key));
+        if !super::super::in_child(
+            "mesh::ssh_overlay::tests::an_invite_is_short_lived_and_names_cx_join",
+            &env(&vars),
+        ) {
+            return;
+        }
+        let long = InviteOptions {
+            ttl_hours: Some(25.0),
+            ..Default::default()
+        };
+        let e = invite(&long, |_| Ok(())).unwrap_err().to_string();
+        assert!(e.contains("--hours must be within (0, 24]"), "{e}");
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let opts = InviteOptions {
+            addresses: vec!["127.0.0.1".into()],
+            port: Some(port),
+            cancel: Some(cancel.clone()),
+            ..Default::default()
+        };
+        let mut shown = None;
+        let r = invite(&opts, |inv| {
+            shown = Some(inv.clone());
+            cancel.store(true, Ordering::Relaxed);
+            Ok(())
+        });
+        assert!(r.is_err());
+        let inv = shown.unwrap();
+        assert_eq!(
+            inv.one_liner_sh,
+            format!("cx join {} 127.0.0.1:{port}", inv.code)
+        );
+        let now = transport::now();
+        assert!(
+            inv.expires <= iso(now + DEFAULT_TTL.as_secs())
+                && inv.expires > iso(now + DEFAULT_TTL.as_secs() - 60)
+        );
+    }
+
+    #[test]
+    fn pairing_checks_that_sshd_answers() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        ensure_sshd("127.0.0.1", port).unwrap();
+        // Port 1 (tcpmux) has no listener; a freed ephemeral port may be taken again by a parallel test.
+        let e = ensure_sshd("127.0.0.1", 1).unwrap_err().to_string();
+        assert!(
+            e.contains("sshd is not reachable at 127.0.0.1 port 1;"),
+            "{e}"
+        );
+    }
+
+    /// A refused join (its address already enrolled for another device) leaves a removed device's
+    /// tombstone, so peers.rs still never re-pairs it on its own.
+    #[test]
+    fn a_refused_join_keeps_a_removal() {
+        let d = private_tempdir();
+        let vars = scratch_state(d.path());
+        if !super::super::in_child(
+            "mesh::ssh_overlay::tests::a_refused_join_keeps_a_removal",
+            &env(&vars),
+        ) {
+            return;
+        }
+        let device = |id: &str, name: &str| Device {
+            id: id.into(),
+            name: name.into(),
+            target: Some("alice@10.0.0.9".into()),
+            account: "alice".into(),
+            host: name.into(),
+            status: String::new(),
+            observed_at: 1,
+        };
+        let x = device("xm:alice", "rover");
+        store::save_devices(std::slice::from_ref(&x)).unwrap();
+        store::remove_device("rover").unwrap();
+        assert!(store::peer_removed(&x.id).unwrap());
+        store::save_devices(&[device("ym:alice", "other")]).unwrap();
+        let e = pair_new(&x, VIEWER_HOST_KEY, &other_key("c"))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("already enrolled for another device"), "{e}");
+        assert!(store::peer_removed(&x.id).unwrap(), "tombstone kept");
     }
 
     /// The joiner refuses an identity the viewer would refuse before it connects, so the invite

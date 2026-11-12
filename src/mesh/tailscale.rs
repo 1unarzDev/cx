@@ -1,8 +1,8 @@
 //! The tailscale backend: read-only adoption of an existing tailnet through
 //! `tailscale status --json` when the binary exists. cx never logs in, changes ACLs or
 //! routes, or revokes nodes; those stay in Tailscale's own tools.
-use super::{ranges, AuditEntry, IpNet, Member, MeshBackend, Plan, Status};
-use anyhow::{bail, Context, Result};
+use super::{ranges, IpNet, Member, MeshBackend, Status};
+use anyhow::{Context, Result};
 use serde_json::Value;
 use std::{
     path::PathBuf,
@@ -30,6 +30,9 @@ pub fn find() -> Option<PathBuf> {
 }
 
 impl Tailscale {
+    pub fn members(&self) -> Result<Vec<Member>> {
+        Ok(members_from(&self.raw_status()?))
+    }
     pub fn new() -> Self {
         Self { binary: find() }
     }
@@ -132,9 +135,6 @@ impl MeshBackend for Tailscale {
     fn name(&self) -> &'static str {
         "Tailscale (read-only)"
     }
-    fn capabilities(&self) -> Vec<&'static str> {
-        vec!["read-only", "magicdns"]
-    }
     fn status(&self) -> Result<Status> {
         if self.binary.is_none() {
             return Ok(Status {
@@ -161,23 +161,8 @@ impl MeshBackend for Tailscale {
             detail: format!("tailscaled reports {state}"),
         })
     }
-    fn provision(&self, _dry_run: bool) -> Result<Plan> {
-        bail!("tailscale is adopted read-only; use `tailscale up` to join a tailnet")
-    }
-    fn teardown(&self, _dry_run: bool) -> Result<Plan> {
-        bail!("tailscale is adopted read-only; cx does not change it")
-    }
-    fn members(&self) -> Result<Vec<Member>> {
-        Ok(members_from(&self.raw_status()?))
-    }
-    fn revoke(&self, _name: &str) -> Result<Value> {
-        bail!("tailscale is adopted read-only; remove devices from the Tailscale admin console")
-    }
     fn address_ranges(&self) -> Vec<IpNet> {
         ranges()
-    }
-    fn audit(&self, _limit: usize) -> Result<Vec<AuditEntry>> {
-        Ok(Vec::new())
     }
 }
 
@@ -225,7 +210,6 @@ mod tests {
         assert_eq!(m[1].dns_name.as_deref(), Some("lab-arm.tail1234.ts.net"));
         assert_eq!(m[1].last_seen.as_deref(), Some("2026-11-01T10:00:00Z"));
         assert_eq!(m[2].last_seen, None);
-        assert!(t.revoke("phone").is_err());
         assert!(t
             .address_ranges()
             .iter()

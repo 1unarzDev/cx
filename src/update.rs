@@ -258,9 +258,6 @@ fn state_dir(home: &Path, state: &Path) -> Result<Dir> {
         absolute_dir(state.parent().context("invalid state path")?)?.child("cx", true)
     }
 }
-pub fn installed_target() -> Result<PathBuf> {
-    Ok(paths()?.0.join(".local/bin/cx"))
-}
 fn numeric(v: &str) -> Result<[u64; 3]> {
     let parts: Vec<_> = v.split('.').collect();
     ensure!(parts.len() == 3 && v.len() <= 62, "invalid stable version");
@@ -288,9 +285,6 @@ struct Asset {
     name: String,
     browser_download_url: String,
     size: u64,
-}
-fn release(bytes: &[u8], current: &str) -> Result<Option<(String, String)>> {
-    release_for_arch(bytes, Some(current), ARCH)
 }
 fn supported_arch(arch: &str) -> Result<()> {
     ensure!(
@@ -859,7 +853,6 @@ fn download_verified_member(
 #[derive(Debug)]
 pub struct EnrollmentBinary {
     pub version: String,
-    pub arch: String,
     binary: File,
     _stage: Stage,
 }
@@ -921,7 +914,6 @@ fn obtain_remote_with(
     binary.sync_all()?;
     Ok(Some(EnrollmentBinary {
         version,
-        arch: arch.into(),
         binary,
         _stage: stage,
     }))
@@ -946,7 +938,6 @@ pub fn obtain_tmux_binary(arch: &str, version: &str) -> Result<EnrollmentBinary>
     binary.sync_all()?;
     Ok(EnrollmentBinary {
         version: version.into(),
-        arch: arch.into(),
         binary,
         _stage: stage,
     })
@@ -974,7 +965,6 @@ pub fn obtain_reptyr_binary(arch: &str, version: &str) -> Result<EnrollmentBinar
     binary.sync_all()?;
     Ok(EnrollmentBinary {
         version: version.into(),
-        arch: arch.into(),
         binary,
         _stage: stage,
     })
@@ -1346,7 +1336,6 @@ mod enrollment_tests {
             let fixture = SignedFixture::new();
             let binary = obtain(home.path(), &fixture, arch).unwrap();
             assert_eq!(binary.version, "0.1.0");
-            assert_eq!(binary.arch, arch);
             let path = binary.path();
             // Keep the artifact inode alive while testing FD closure. Otherwise
             // parallel tests may recycle both the numeric FD and its freed inode.

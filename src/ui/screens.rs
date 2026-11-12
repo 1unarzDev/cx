@@ -26,8 +26,6 @@ pub(super) struct SecretEntry {
     pub value: zeroize::Zeroizing<String>,
 }
 
-/// The hub's invite (`+`): the ssh-overlay one-shot listener on its own thread. Dropping
-/// this closes it (Esc, `R`, quitting), so no listener outlives the screen.
 impl SecretEntry {
     /// The value's buffer is allocated once at its limit, so typing never reallocates
     /// and leaves no unwiped copy behind.
@@ -55,6 +53,8 @@ impl SecretEntry {
     }
 }
 
+/// The hub's invite (`+`): the ssh-overlay one-shot listener on its own thread. Dropping
+/// this closes it (Esc, `R`, quitting) within a poll, so no listener outlives the screen.
 pub(super) struct InviteRun {
     pub rx: mpsc::Receiver<std::result::Result<InviteEvent, String>>,
     pub cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -62,8 +62,6 @@ pub(super) struct InviteRun {
     pub shown: Option<(crate::mesh::Invite, Instant)>,
     /// Seconds left when last drawn (the countdown redraws once a second).
     pub drawn_secs: std::cell::Cell<u64>,
-    /// The listener's thread, joined before a new code takes its port (`R`).
-    pub thread: Option<thread::JoinHandle<()>>,
 }
 pub(super) enum InviteEvent {
     Ready(crate::mesh::Invite),
@@ -76,7 +74,7 @@ impl Drop for InviteRun {
     }
 }
 /// How long a hub invite stays open (its expiry bar's full length).
-pub(super) const INVITE_TTL: Duration = Duration::from_secs(30 * 60);
+pub(super) const INVITE_TTL: Duration = crate::mesh::ssh_overlay::DEFAULT_TTL;
 /// The longest secret the entry takes (the store's own limit is larger).
 const SECRET_INPUT_LIMIT: usize = 16 * 1024;
 
@@ -358,7 +356,7 @@ impl App {
         // Names and metadata only: the index, never a backend or a value.
         let list = crate::store::ensure()
             .map(|dir| {
-                crate::secrets::Secrets::at(dir, None, crate::secrets::Mode::Auto)
+                crate::secrets::Secrets::at(dir, None)
                     .list()
                     .unwrap_or_default()
             })
@@ -460,18 +458,20 @@ impl App {
     /// revokes one that may already be shared).
     fn invite(&mut self) {
         self.close_screens();
-        // The old listener closes within a poll; its port is free once its thread ends.
-        if let Some(thread) = self.invite.take().and_then(|mut run| run.thread.take()) {
-            let _ = thread.join();
-        }
+        // The old listener (also one Esc closed) ends within a poll; the new one waits for it
+        // off the UI thread, so it finds the port free.
+        self.invite = None;
+        let previous = self.invite_thread.take();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let opts = crate::mesh::ssh_overlay::InviteOptions {
-            ttl_hours: Some(INVITE_TTL.as_secs_f64() / 3600.0),
             cancel: Some(cancel.clone()),
             ..Default::default()
         };
         let (tx, rx) = mpsc::channel();
         let thread = thread::spawn(move || {
+            if let Some(previous) = previous {
+                let _ = previous.join();
+            }
             let ready = tx.clone();
             let result = crate::mesh::ssh_overlay::invite(&opts, |inv| {
                 let _ = ready.send(Ok(InviteEvent::Ready(inv.clone())));
@@ -488,8 +488,8 @@ impl App {
             cancel,
             shown: None,
             drawn_secs: Default::default(),
-            thread: Some(thread),
         });
+        self.invite_thread = Some(thread);
     }
     /// The invite's news: up (show it), joined or closed (say so); and its countdown.
     pub(super) fn poll_invite(&mut self) -> bool {
@@ -538,8 +538,26 @@ impl App {
                 self.set_notice("Invite closed".into());
             }
             KeyCode::Char('R') => self.invite(),
+            KeyCode::Char('y') => self.copy_invite(false),
+            KeyCode::Char('Y') => self.copy_invite(true),
             _ => {}
         }
+    }
+    /// `y` (a tap on the code): the code; `Y` (a tap on the command): the whole `cx join` line.
+    /// Sent with OSC 52, which no terminal confirms, so the notice says so.
+    fn copy_invite(&mut self, command: bool) {
+        let Some((inv, _)) = self.invite.as_ref().and_then(|r| r.shown.as_ref()) else {
+            return;
+        };
+        let (text, what) = if command {
+            (inv.one_liner_sh.clone(), "Command")
+        } else {
+            (inv.code.clone(), "Code")
+        };
+        self.copy_out = Some(text);
+        self.set_notice(format!(
+            "{what} copied, if your terminal allows clipboard access"
+        ));
     }
 
     // ---------------------------------------------------------------- edge editor
@@ -726,25 +744,7 @@ impl App {
                 return true;
             }
         }
-        match key.code {
-            KeyCode::Char('`') => {
-                self.go_hub();
-                return true;
-            }
-            KeyCode::Char('-') if self.view != View::Files => {
-                self.attach_last();
-                return true;
-            }
-            KeyCode::Char('+') => {
-                self.invite();
-                return true;
-            }
-            KeyCode::Char('K') => {
-                self.open_secrets();
-                return true;
-            }
-            _ => {}
-        }
+        // `` ` `` `-` `+` `K` are the keymap's Global rows (BINDINGS), resolved after this.
         if self.peek {
             return self.peek_key(key);
         }
@@ -1156,6 +1156,8 @@ impl App {
                 }
             }
             ("copy", None, _) => self.execute(Action::Copy),
+            ("copy-code", None, _) => self.copy_invite(false),
+            ("copy-cmd", None, _) => self.copy_invite(true),
             ("peek-next", None, _) => self.peek_next(1),
             ("undo", None, _) => {
                 self.edge_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE))

@@ -2,8 +2,8 @@
 """ssh-overlay pairing end to end on loopback (docs/mesh.md, "ssh-overlay").
 
 Two cx identities on this machine, each with its own temporary HOME and state. The viewer runs
-`cx mesh invite --backend ssh-overlay` (a one-shot listener on 127.0.0.1) and the joiner runs
-`cx mesh pair CODE 127.0.0.1:PORT`. Then a private sshd (running as this user, authorizing only the
+`cx invite` (a one-shot listener on 127.0.0.1) and the joiner runs `cx mesh pair CODE 127.0.0.1:PORT`.
+Both check that sshd answers on 127.0.0.1:22 (this host's own; only a TCP connect). Then a private sshd (running as this user, authorizing only the
 viewer's temporary authorized_keys) proves the key the viewer installed logs in. Also: an enrolled
 identity refused, wrong codes refused and rate-limited, replay, a typo caught offline, expiry and
 Ctrl-C (the port closed each time), revoke, and `cx mesh backends --json` with a fake tailscale on PATH.
@@ -67,7 +67,8 @@ with tempfile.TemporaryDirectory(prefix="cx-mesh-join-") as temporary:
         home = root / name
         (home / ".ssh").mkdir(parents=True, mode=0o700)
         env = dict(os.environ, HOME=str(home), XDG_STATE_HOME=str(home / "state"), XDG_CONFIG_HOME=str(home / "config"),
-                   XDG_CACHE_HOME=str(home / "cache"), USER=account, CX_JOIN_MACHINE_ID=machine, CLOUDFLARE_API_TOKEN="")
+                   XDG_CACHE_HOME=str(home / "cache"), USER=account, CX_JOIN_MACHINE_ID=machine, CLOUDFLARE_API_TOKEN="",
+                   CX_JOIN_HOST_KEY=str(root / "host.pub"))
         return home, env
 
     viewer, venv = side("viewer", "viewer-machine")
@@ -87,8 +88,7 @@ with tempfile.TemporaryDirectory(prefix="cx-mesh-join-") as temporary:
         def __init__(self, *extra):
             self.port = free_port()
             self.process = subprocess.Popen(
-                [binary, "mesh", "invite", "--backend", "ssh-overlay", "--address", "127.0.0.1", "--port", str(self.port),
-                 "--host-key", str(root / "host.pub"), "--json", *extra],
+                [binary, "invite", "--address", "127.0.0.1", "--port", str(self.port), "--json", *extra],
                 env=venv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             line = self.process.stdout.readline()
             assert line, self.process.stderr.read()
@@ -138,7 +138,7 @@ with tempfile.TemporaryDirectory(prefix="cx-mesh-join-") as temporary:
 
         inv = Invite("--name", "rover")
         invites.append(inv)
-        assert inv.invite["one_liner_sh"] == f"cx mesh pair {inv.code} {inv.host}" and inv.invite["uses"] == 1, inv.invite
+        assert inv.invite["one_liner_sh"] == f"cx join {inv.code} {inv.host}" and inv.invite["uses"] == 1, inv.invite
         assert len(inv.code) == 13 and inv.invite["hosts"] == [inv.host], inv.invite
         # The code lives only in the listener's memory.
         bare = inv.code.replace("-", "")
@@ -245,9 +245,7 @@ AllowUsers {account}
         assert code != 0 and "expired" in err, err
         result["expiry_closes"] = True
 
-        # Teardown has nothing to cancel; revoke removes the member.
-        plan = json.loads(cx(venv, "mesh", "teardown", "--backend", "ssh-overlay", "--yes", "--json").stdout)
-        assert not plan["applied"], plan
+        # Revoke removes the member.
         members = json.loads(cx(venv, "mesh", "members", "--backend", "ssh-overlay", "--json").stdout)
         assert [m["name"] for m in members if m["state"] != "local"] == ["rover"], members
         assert [m["role"] for m in members if m["name"] == "rover"] == ["core"]
@@ -294,10 +292,10 @@ EOF
     env = dict(venv, PATH=f"{tools}{os.pathsep}{os.environ['PATH']}")
     report = json.loads(cx(env, "mesh", "backends", "--json").stdout)
     by = {b["id"]: b for b in report["backends"]}
-    assert report["default"] == "ssh-overlay" and list(by) == ["ssh-overlay", "cloudflare-warp", "tailscale"], report
+    assert list(by) == ["ssh-overlay", "cloudflare-warp", "tailscale"], report
     assert by["tailscale"]["status"]["available"] and by["tailscale"]["status"]["members"] == 2, by["tailscale"]
     assert by["tailscale"]["ranges"] == ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
-    assert by["ssh-overlay"]["ranges"] == [] and "coexists-with-vpn" in by["ssh-overlay"]["capabilities"]
+    assert by["ssh-overlay"]["ranges"] == []
     assert by["cloudflare-warp"]["status"]["provisioned"] is False
     # No WARP config (and no WARP interface here): WARP claims nothing, so no false nested collision.
     assert by["cloudflare-warp"]["status"]["available"] is False, by["cloudflare-warp"]

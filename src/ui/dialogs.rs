@@ -35,7 +35,6 @@ impl App {
             Dialog::AgentTasks(_, session) => session.agent_tasks.len(),
             Dialog::Delete(..) => 2,
             Dialog::PendingExit(_) => 2,
-            Dialog::Neighbor(..) => 1,
             Dialog::Peer(_) => 5,
             Dialog::RemoveDevice(_) => 2,
             Dialog::EditDevice(_) => 4,
@@ -255,8 +254,7 @@ impl App {
             | Dialog::Peer(..)
             | Dialog::RemoveDevice(..)
             | Dialog::EditDevice(..)
-            | Dialog::Reset
-            | Dialog::Neighbor(..)) => self.device_dialog_enter(dialog),
+            | Dialog::Reset) => self.device_dialog_enter(dialog),
             Dialog::Links(links) => {
                 if let Some(link) = links.get(self.dialog_selected) {
                     self.open_markdown_link(link);
@@ -616,10 +614,6 @@ impl App {
                         ),
                     }
                 }
-            }
-            Dialog::Neighbor(d, candidate) => {
-                self.dialog = None;
-                self.connect_neighbor(d, candidate);
             }
             _ => {}
         }

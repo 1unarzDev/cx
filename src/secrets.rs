@@ -8,8 +8,8 @@
 //!
 //! Backends: the keyring is the Secret Service through libsecret's `secret-tool` on Linux, values on its stdin and
 //! stdout only (no D-Bus stack in this binary, so the static musl release keeps working). macOS uses the file:
-//! `security add-generic-password` takes the password only in argv or at a prompt. Every keyring call runs on its own
-//! thread with a bounded wait; a call that hangs marks the keyring unusable for the rest of the process. The fallback is
+//! `security add-generic-password` takes the password only in argv or at a prompt. Every keyring call is one process
+//! killed at a bounded wait; a call that hangs marks the keyring unusable for the rest of the process. The fallback is
 //! `$XDG_STATE_HOME/cx/secrets.values.json`: the values in plain JSON, 0600 in the 0700 state dir. That is how
 //! `~/.ssh/id_ed25519` without a passphrase is stored: other users are kept out by file modes, this user's own
 //! processes and root are not, and a copy of the file is a copy of the values.
@@ -20,7 +20,6 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, OnceLock};
 use std::time::Duration;
 use zeroize::Zeroizing;
 
@@ -99,34 +98,40 @@ impl std::fmt::Debug for SecretValue {
     }
 }
 
-/// A place values live. Implementations must never put a value in an error message.
-pub trait Vault: Send + Sync + 'static {
-    fn get(&self, name: &str) -> Result<Option<SecretValue>>;
-    fn set(&self, name: &str, value: &str) -> Result<()>;
-    /// Removing a missing entry is not an error.
-    fn delete(&self, name: &str) -> Result<()>;
-}
-
 /// The OS keyring through libsecret's `secret-tool` (attributes `service=cx name=<secret>`). Values go only
-/// through its stdin and stdout, never argv. Each call is one bounded process: its whole process group is
-/// killed when it outlives KEYRING_TIMEOUT by a second (TimedVault gives up on it first).
+/// through its stdin and stdout, never argv, and never into an error message. Each call is one bounded
+/// process, killed with its whole process group at KEYRING_TIMEOUT; after one timeout the keyring is not
+/// tried again in this process.
 pub struct SecretTool;
 
+static KEYRING_HUNG: AtomicBool = AtomicBool::new(false);
+
 fn secret_tool(args: &[&str], input: &[u8]) -> Result<(bool, Zeroizing<Vec<u8>>)> {
+    ensure!(
+        !KEYRING_HUNG.load(Ordering::SeqCst),
+        "OS keyring stopped answering earlier in this process"
+    );
     let mut cmd = std::process::Command::new("secret-tool");
     cmd.args(args);
-    let (ok, out) = crate::mesh::run_bounded(
-        cmd,
-        input,
-        VALUE_LIMIT,
-        KEYRING_TIMEOUT + Duration::from_secs(1),
-    )
-    .map_err(|e| anyhow::anyhow!("secret-tool failed: {e}"))?;
+    let (ok, out) =
+        crate::mesh::run_bounded(cmd, input, VALUE_LIMIT, KEYRING_TIMEOUT).map_err(|e| {
+            if e.to_string() == "timed out" {
+                KEYRING_HUNG.store(true, Ordering::SeqCst);
+                return anyhow::anyhow!(
+                    "OS keyring did not answer within {} ms",
+                    KEYRING_TIMEOUT.as_millis()
+                );
+            }
+            anyhow::anyhow!("secret-tool failed: {e}")
+        })?;
     Ok((ok, Zeroizing::new(out)))
 }
 
-impl Vault for SecretTool {
-    fn get(&self, name: &str) -> Result<Option<SecretValue>> {
+impl SecretTool {
+    pub fn is_hung(&self) -> bool {
+        KEYRING_HUNG.load(Ordering::SeqCst)
+    }
+    pub fn get(&self, name: &str) -> Result<Option<SecretValue>> {
         let (ok, out) = secret_tool(&["lookup", "service", KEYRING_SERVICE, "name", name], b"")?;
         // A missing entry exits 1 with no output (as does a keyring that cannot be reached).
         if !ok && out.is_empty() {
@@ -136,7 +141,7 @@ impl Vault for SecretTool {
         let value = std::str::from_utf8(&out).context("OS keyring entry is not valid UTF-8")?;
         Ok(Some(SecretValue(Zeroizing::new(value.to_owned()))))
     }
-    fn set(&self, name: &str, value: &str) -> Result<()> {
+    pub fn set(&self, name: &str, value: &str) -> Result<()> {
         let label = format!("--label=cx: {name}");
         let args = ["store", &label, "service", KEYRING_SERVICE, "name", name];
         let (ok, _) = secret_tool(&args, value.as_bytes())?;
@@ -146,74 +151,11 @@ impl Vault for SecretTool {
         );
         Ok(())
     }
-    fn delete(&self, name: &str) -> Result<()> {
+    /// Removing a missing entry is not an error.
+    pub fn delete(&self, name: &str) -> Result<()> {
         let (ok, _) = secret_tool(&["clear", "service", KEYRING_SERVICE, "name", name], b"")?;
         ensure!(ok, "OS keyring delete failed");
         Ok(())
-    }
-}
-
-/// Wraps a vault so every call returns within `timeout`. After one timeout the vault reports itself unavailable
-/// without trying again (the stuck thread is left to finish on its own).
-#[derive(Clone)]
-pub struct TimedVault {
-    inner: Arc<dyn Vault>,
-    timeout: Duration,
-    hung: Arc<AtomicBool>,
-}
-
-impl TimedVault {
-    /// `hung` is shared by every vault of this process (see `process_keyring_hung`).
-    pub fn new(inner: Arc<dyn Vault>, timeout: Duration, hung: Arc<AtomicBool>) -> TimedVault {
-        TimedVault {
-            inner,
-            timeout,
-            hung,
-        }
-    }
-    pub fn is_hung(&self) -> bool {
-        self.hung.load(Ordering::SeqCst)
-    }
-    fn call<T: Send + 'static>(
-        &self,
-        f: impl FnOnce(&dyn Vault) -> Result<T> + Send + 'static,
-    ) -> Result<T> {
-        ensure!(
-            !self.is_hung(),
-            "OS keyring stopped answering earlier in this process"
-        );
-        let (tx, rx) = mpsc::channel();
-        let inner = self.inner.clone();
-        std::thread::Builder::new()
-            .name("cx-keyring".into())
-            .spawn(move || {
-                let _ = tx.send(f(&*inner));
-            })
-            .context("start keyring thread")?;
-        match rx.recv_timeout(self.timeout) {
-            Ok(result) => result,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                self.hung.store(true, Ordering::SeqCst);
-                bail!(
-                    "OS keyring did not answer within {} ms",
-                    self.timeout.as_millis()
-                )
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => bail!("OS keyring call failed"),
-        }
-    }
-    pub fn get(&self, name: &str) -> Result<Option<SecretValue>> {
-        let name = name.to_string();
-        self.call(move |v| v.get(&name))
-    }
-    pub fn set(&self, name: &str, value: &str) -> Result<()> {
-        let name = name.to_string();
-        let value = Zeroizing::new(value.to_string());
-        self.call(move |v| v.set(&name, &value))
-    }
-    pub fn delete(&self, name: &str) -> Result<()> {
-        let name = name.to_string();
-        self.call(move |v| v.delete(&name))
     }
 }
 
@@ -239,16 +181,6 @@ pub fn keyring_reachable() -> bool {
                 .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
         })
     })
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mode {
-    /// Keyring when it answers, else the fallback file.
-    Auto,
-    /// Never touch the keyring (`CX_SECRETS_BACKEND=file`).
-    FileOnly,
-    /// Store only in the keyring (`CX_SECRETS_BACKEND=keyring`).
-    KeyringOnly,
 }
 
 type Map = BTreeMap<String, Zeroizing<String>>;
@@ -323,9 +255,8 @@ struct Index {
 /// A secrets store rooted at one directory.
 pub struct Secrets {
     dir: PathBuf,
-    keyring: Option<TimedVault>,
+    keyring: Option<SecretTool>,
     file: FileVault,
-    mode: Mode,
 }
 
 impl std::fmt::Debug for Secrets {
@@ -333,15 +264,8 @@ impl std::fmt::Debug for Secrets {
         f.debug_struct("Secrets")
             .field("dir", &self.dir)
             .field("keyring", &self.keyring.is_some())
-            .field("mode", &self.mode)
             .finish()
     }
-}
-
-fn process_keyring_hung() -> Arc<AtomicBool> {
-    static HUNG: OnceLock<Arc<AtomicBool>> = OnceLock::new();
-    HUNG.get_or_init(|| Arc::new(AtomicBool::new(false)))
-        .clone()
 }
 
 pub fn validate_name(name: &str) -> Result<()> {
@@ -379,36 +303,24 @@ fn validate_env_var(var: &str) -> Result<()> {
 }
 
 impl Secrets {
-    /// The store in cx's state dir, with the keyring as `CX_SECRETS_BACKEND` (auto | file | keyring) allows.
+    /// The store in cx's state dir, with the keyring as `CX_SECRETS_BACKEND` (auto | file) allows.
     pub fn open() -> Result<Secrets> {
         let dir = crate::store::ensure()?;
-        let mode = match std::env::var("CX_SECRETS_BACKEND").as_deref() {
-            Ok("file") => Mode::FileOnly,
-            Ok("keyring") => Mode::KeyringOnly,
-            Ok("auto") | Ok("") | Err(_) => Mode::Auto,
-            Ok(other) => bail!("CX_SECRETS_BACKEND must be auto, file or keyring, not {other:?}"),
+        let file_only = match std::env::var("CX_SECRETS_BACKEND").as_deref() {
+            Ok("file") => true,
+            Ok("auto") | Ok("") | Err(_) => false,
+            Ok(other) => bail!("CX_SECRETS_BACKEND must be auto or file, not {other:?}"),
         };
-        let keyring = (mode != Mode::FileOnly && keyring_reachable()).then(|| {
-            TimedVault::new(
-                Arc::new(SecretTool),
-                KEYRING_TIMEOUT,
-                process_keyring_hung(),
-            )
-        });
-        Ok(Secrets::at(dir, keyring, mode))
+        let keyring = (!file_only && keyring_reachable()).then_some(SecretTool);
+        Ok(Secrets::at(dir, keyring))
     }
 
-    /// A store in `dir` (which the caller has made 0700) with an optional keyring; used by tests with fakes.
-    pub fn at(dir: PathBuf, keyring: Option<TimedVault>, mode: Mode) -> Secrets {
+    /// A store in `dir` (which the caller has made 0700) with an optional keyring.
+    pub fn at(dir: PathBuf, keyring: Option<SecretTool>) -> Secrets {
         Secrets {
             file: FileVault { dir: dir.clone() },
             dir,
-            keyring: if mode == Mode::FileOnly {
-                None
-            } else {
-                keyring
-            },
-            mode,
+            keyring,
         }
     }
 
@@ -447,7 +359,7 @@ impl Secrets {
         Ok(self.read_index()?.secrets.remove(name))
     }
 
-    fn keyring(&self) -> Result<&TimedVault> {
+    fn keyring(&self) -> Result<&SecretTool> {
         self.keyring
             .as_ref()
             .context("this secret is in the OS keyring, which is not reachable from this session")
@@ -512,19 +424,15 @@ impl Secrets {
         // Read the file first so a corrupt store is reported before anything changes.
         let mut map = self.file.read()?;
         let mut keyring_error = None;
-        let backend = match (&self.keyring, self.mode) {
-            (Some(k), _) => match k.set(name, value) {
+        let backend = match &self.keyring {
+            Some(k) => match k.set(name, value) {
                 Ok(()) => Backend::Keyring,
-                Err(e) if self.mode == Mode::Auto => {
+                Err(e) => {
                     keyring_error = Some(e);
                     Backend::File
                 }
-                Err(e) => return Err(e),
             },
-            (None, Mode::KeyringOnly) => {
-                bail!("CX_SECRETS_BACKEND=keyring but no OS keyring is reachable from this session")
-            }
-            (None, _) => Backend::File,
+            None => Backend::File,
         };
         match backend {
             Backend::File => {
@@ -538,7 +446,7 @@ impl Secrets {
             }
         }
         // Leaving the keyring strands the old copy there; a keyring call that failed or timed out just now may
-        // still land later (a timed-out thread keeps running). Remember both so a later sweep deletes them.
+        // still have landed (a D-Bus write may go out before the kill). Remember both so a later sweep deletes them.
         if backend == Backend::Keyring {
             index.stale_keyring.remove(name);
         } else if keyring_error.is_some()
@@ -842,18 +750,10 @@ fn write_fd(fd: i32, value: &SecretValue) -> Result<()> {
     Ok(())
 }
 
-/// The plaintext token file `cx mesh setup` writes (mesh/mesh.py `Mesh.creds`).
-pub fn mesh_credentials_path() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .map(|c| c.join("cx/mesh/credentials"))
-}
-
 fn migrate(secrets: &Secrets, delete_plaintext: bool) -> Result<()> {
     let name = CLOUDFLARE_TOKEN;
-    let path = mesh_credentials_path().context("HOME is not set")?;
+    // The plaintext token file `cx mesh setup` writes (mesh/mesh.py `Mesh.creds`).
+    let path = crate::mesh::cloudflare::config_dir().join("credentials");
     let mut text = Zeroizing::new(String::new());
     match fs::File::open(&path) {
         Ok(f) => {
@@ -984,7 +884,6 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
-    use std::sync::Mutex;
 
     const CANARY: &str = "cx-canary-7f3a9d1e-DO-NOT-LOG";
 
@@ -997,54 +896,7 @@ mod tests {
     }
 
     fn file_store(dir: &Path) -> Secrets {
-        Secrets::at(dir.to_path_buf(), None, Mode::Auto)
-    }
-
-    #[derive(Default)]
-    struct FakeKeyring {
-        map: Mutex<BTreeMap<String, String>>,
-        fail: AtomicBool,
-        hang: AtomicBool,
-    }
-
-    impl Vault for FakeKeyring {
-        fn get(&self, name: &str) -> Result<Option<SecretValue>> {
-            if self.hang.load(Ordering::SeqCst) {
-                std::thread::sleep(Duration::from_secs(2));
-            }
-            ensure!(!self.fail.load(Ordering::SeqCst), "fake keyring locked");
-            Ok(self
-                .map
-                .lock()
-                .unwrap()
-                .get(name)
-                .map(|v| SecretValue::new(Zeroizing::new(v.clone()))))
-        }
-        fn set(&self, name: &str, value: &str) -> Result<()> {
-            if self.hang.load(Ordering::SeqCst) {
-                std::thread::sleep(Duration::from_secs(2));
-            }
-            ensure!(!self.fail.load(Ordering::SeqCst), "fake keyring locked");
-            self.map
-                .lock()
-                .unwrap()
-                .insert(name.to_string(), value.to_string());
-            Ok(())
-        }
-        fn delete(&self, name: &str) -> Result<()> {
-            ensure!(!self.fail.load(Ordering::SeqCst), "fake keyring locked");
-            self.map.lock().unwrap().remove(name);
-            Ok(())
-        }
-    }
-
-    fn keyring_store(dir: &Path, fake: &Arc<FakeKeyring>, timeout: Duration) -> Secrets {
-        let vault = TimedVault::new(
-            fake.clone() as Arc<dyn Vault>,
-            timeout,
-            Arc::new(AtomicBool::new(false)),
-        );
-        Secrets::at(dir.to_path_buf(), Some(vault), Mode::Auto)
+        Secrets::at(dir.to_path_buf(), None)
     }
 
     fn mode(path: &Path) -> u32 {
@@ -1292,169 +1144,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn keyring_preferred_with_file_fallback_and_migration_between() {
-        let (_t, dir) = temp();
-        let fake = Arc::new(FakeKeyring::default());
-        let s = keyring_store(&dir, &fake, Duration::from_secs(2));
-        let meta = s.set("a", "in-keyring").unwrap();
-        assert_eq!(meta.backend, Backend::Keyring);
-        assert_eq!(fake.map.lock().unwrap().get("a").unwrap(), "in-keyring");
-        assert!(
-            !dir.join(STORE).exists(),
-            "keyring values never reach the file"
-        );
-        assert_eq!(s.get("a").unwrap().expose(), "in-keyring");
-
-        fake.fail.store(true, Ordering::SeqCst);
-        let meta = s.set("b", "in-file").unwrap();
-        assert_eq!(meta.backend, Backend::File);
-        assert_eq!(s.get("b").unwrap().expose(), "in-file");
-        assert!(
-            s.get("a").is_err(),
-            "keyring entry unreachable while locked"
-        );
-
-        fake.fail.store(false, Ordering::SeqCst);
-        // b moves to the keyring and leaves the file.
-        assert_eq!(s.set("b", "moved").unwrap().backend, Backend::Keyring);
-        assert!(file_store(&dir).file.read().unwrap().is_empty());
-        s.delete("a").unwrap();
-        assert!(!fake.map.lock().unwrap().contains_key("a"));
-
-        let strict = Secrets::at(dir.clone(), None, Mode::KeyringOnly);
-        assert!(strict.set("c", "v").is_err());
-    }
-
-    #[test]
-    fn stranded_keyring_copy_is_deleted_once_the_keyring_answers() {
-        let (_t, dir) = temp();
-        let fake = Arc::new(FakeKeyring::default());
-        let s = keyring_store(&dir, &fake, Duration::from_secs(2));
-        assert_eq!(s.set("a", "old").unwrap().backend, Backend::Keyring);
-
-        // Another session without a keyring replaces the value: it lands in the file, the old copy is noted.
-        let headless = file_store(&dir);
-        assert_eq!(headless.set("a", "new").unwrap().backend, Backend::File);
-        assert_eq!(headless.stale_keyring().unwrap(), ["a"]);
-        assert_eq!(fake.map.lock().unwrap().get("a").unwrap(), "old");
-        assert_eq!(headless.get("a").unwrap().expose(), "new");
-
-        // A keyring that is reachable but failing: the value still goes to the file, the note stays, and b is
-        // noted too in case the failed call landed after all.
-        fake.fail.store(true, Ordering::SeqCst);
-        assert_eq!(s.set("b", "x").unwrap().backend, Backend::File);
-        assert_eq!(s.stale_keyring().unwrap(), ["a", "b"]);
-        assert!(fake.map.lock().unwrap().contains_key("a"));
-
-        // Once the keyring answers, the next write removes the stranded copy; the file value is untouched.
-        fake.fail.store(false, Ordering::SeqCst);
-        s.set("c", "y").unwrap();
-        assert!(!fake.map.lock().unwrap().contains_key("a"));
-        assert!(s.stale_keyring().unwrap().is_empty());
-        assert_eq!(s.get("a").unwrap().expose(), "new");
-        assert_eq!(s.meta("a").unwrap().unwrap().backend, Backend::File);
-
-        // Moving back into the keyring clears the note without deleting the fresh keyring value.
-        headless.set("d", "1").unwrap();
-        s.set("d", "2").unwrap();
-        let headless_again = file_store(&dir);
-        s.set("e", "k").unwrap();
-        headless_again.set("e", "f").unwrap();
-        assert_eq!(headless_again.stale_keyring().unwrap(), ["e"]);
-        s.set("e", "k2").unwrap();
-        assert!(s.stale_keyring().unwrap().is_empty());
-        assert_eq!(fake.map.lock().unwrap().get("e").unwrap(), "k2");
-        s.delete("e").unwrap();
-        assert!(!fake.map.lock().unwrap().contains_key("e"));
-    }
-
-    #[test]
-    fn hung_keyring_is_bounded_and_then_skipped() {
-        let (_t, dir) = temp();
-        let fake = Arc::new(FakeKeyring::default());
-        fake.hang.store(true, Ordering::SeqCst);
-        let s = keyring_store(&dir, &fake, Duration::from_millis(150));
-        let start = std::time::Instant::now();
-        let meta = s.set("a", "v").unwrap();
-        assert_eq!(meta.backend, Backend::File);
-        assert!(
-            start.elapsed() < Duration::from_secs(1),
-            "{:?}",
-            start.elapsed()
-        );
-        let start = std::time::Instant::now();
-        assert_eq!(s.set("b", "w").unwrap().backend, Backend::File);
-        assert!(
-            start.elapsed() < Duration::from_millis(100),
-            "a hung keyring is not retried"
-        );
-        assert!(s.keyring.as_ref().unwrap().is_hung());
-
-        // The timed-out call keeps running and lands in the keyring after the value went to the file. It is noted
-        // as stale, so once a keyring answers, `rm` (or any later write) deletes that late copy too.
-        fake.hang.store(false, Ordering::SeqCst);
-        assert_eq!(s.stale_keyring().unwrap(), ["a", "b"]);
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while !fake.map.lock().unwrap().contains_key("a") {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "late write never landed"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let later = keyring_store(&dir, &fake, Duration::from_secs(2));
-        later.delete("a").unwrap();
-        assert!(
-            fake.map.lock().unwrap().is_empty(),
-            "late keyring copy left behind"
-        );
-        assert!(later.stale_keyring().unwrap().is_empty());
-        assert_eq!(later.get("b").unwrap().expose(), "w");
-    }
-
-    #[test]
-    fn values_never_reach_logs_metadata_or_the_index() {
-        let (_t, dir) = temp();
-        let fake = Arc::new(FakeKeyring::default());
-        let k = keyring_store(&dir, &fake, Duration::from_secs(2));
-        let f = file_store(&dir);
-        let mut seen = Vec::new();
-        k.set("kr", CANARY).unwrap();
-        f.set("fl", CANARY).unwrap();
-        let v = f.get("fl").unwrap();
-        seen.push(format!("{v:?}"));
-        seen.push(format!("{:?}", k.get("kr").unwrap()));
-        seen.push(format!("{k:?} {f:?}"));
-        seen.push(format!("{:?}", f.list().unwrap()));
-        seen.push(serde_json::to_string(&f.list().unwrap()).unwrap());
-        seen.push(format!(
-            "{:#}",
-            f.set("fl", &format!("{CANARY}\0")).unwrap_err()
-        ));
-        seen.push(format!("{:#}", f.set("Bad", CANARY).unwrap_err()));
-        fake.fail.store(true, Ordering::SeqCst);
-        seen.push(format!("{:#}", k.get("kr").unwrap_err()));
-        let index = fs::read(dir.join(INDEX)).unwrap();
-        for text in &seen {
-            assert!(!text.contains(CANARY), "leaked in {text}");
-            assert!(!text.contains(&CANARY[..12]), "partial leak in {text}");
-        }
-        assert!(!index.windows(12).any(|w| w == &CANARY.as_bytes()[..12]));
-        // The fallback file holds the file-backend value in the clear (protected by its 0600 mode, like an
-        // unencrypted SSH key) and never the keyring-backend one.
-        let store = String::from_utf8(fs::read(dir.join(STORE)).unwrap()).unwrap();
-        assert_eq!(store.matches(CANARY).count(), 1);
-        assert_eq!(mode(&dir.join(STORE)), 0o600);
-        assert!(seen[0].contains("redacted"));
-    }
-
-    /// A fake `secret-tool` that keeps values in files and records its argv; `CX_FAKE_MODE=hang` makes it hang.
+    /// A fake `secret-tool` that keeps values in files and records its argv; `CX_FAKE_MODE=hang` makes it hang,
+    /// and a `fail` file in its vault makes it fail (a locked keyring).
     const FAKE_SECRET_TOOL: &str = r#"#!/bin/sh
 PATH=/usr/bin:/bin
 d="$CX_FAKE_VAULT"
 printf '%s\n' "$*" >> "$d/argv"
 if [ "$CX_FAKE_MODE" = hang ]; then echo $$ > "$d/pid"; exec sleep 30; fi
+[ -e "$d/fail" ] && exit 1
 op=$1
 for a; do name=$a; done
 case $op in
@@ -1551,8 +1248,8 @@ esac
         assert!(!vault.join("argv").exists());
     }
 
-    /// A hung `secret-tool` is given up on after KEYRING_TIMEOUT (the value goes to the file), not tried again
-    /// in this process, and its process group is killed a second later.
+    /// A hung `secret-tool` is given up on and killed at KEYRING_TIMEOUT (the value goes to the file), and not
+    /// tried again in this process.
     #[test]
     fn a_hung_secret_tool_falls_back_and_is_killed() {
         let (child, vault) = with_fake_tool(
@@ -1573,18 +1270,23 @@ esac
         );
         assert!(s.keyring.as_ref().unwrap().is_hung());
         assert_eq!(s.get("robot.x").unwrap().expose(), CANARY);
+        // Not tried again: the next value goes to the file at once. Both are noted in case a write landed.
+        let start = std::time::Instant::now();
+        assert_eq!(s.set("robot.y", "w").unwrap().backend, Backend::File);
+        assert!(start.elapsed() < Duration::from_millis(500));
+        assert_eq!(s.stale_keyring().unwrap(), ["robot.x", "robot.y"]);
         let pid: i32 = fs::read_to_string(vault.join("pid"))
             .unwrap()
             .trim()
             .parse()
             .unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
         while unsafe { libc::kill(pid, 0) } == 0 {
             assert!(
                 std::time::Instant::now() < deadline,
                 "secret-tool {pid} left running"
             );
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(
             fs::read_to_string(vault.join("argv"))
@@ -1594,5 +1296,140 @@ esac
             1,
             "not retried"
         );
+    }
+
+    /// Values in the vault of the fake `secret-tool`, by name.
+    fn kept(vault: &Path, name: &str) -> Option<String> {
+        fs::read_to_string(vault.join(format!("v.{name}"))).ok()
+    }
+
+    #[test]
+    fn keyring_preferred_with_file_fallback_and_migration_between() {
+        let (child, vault) = with_fake_tool(
+            "secrets::tests::keyring_preferred_with_file_fallback_and_migration_between",
+            Some(FAKE_SECRET_TOOL),
+            "",
+        );
+        if !child {
+            return;
+        }
+        let dir = crate::store::ensure().unwrap();
+        let s = Secrets::open().unwrap();
+        let meta = s.set("a", "in-keyring").unwrap();
+        assert_eq!(meta.backend, Backend::Keyring);
+        assert_eq!(kept(&vault, "a").as_deref(), Some("in-keyring"));
+        assert!(
+            !dir.join(STORE).exists(),
+            "keyring values never reach the file"
+        );
+        assert_eq!(s.get("a").unwrap().expose(), "in-keyring");
+
+        fs::write(vault.join("fail"), "").unwrap();
+        let meta = s.set("b", "in-file").unwrap();
+        assert_eq!(meta.backend, Backend::File);
+        assert_eq!(s.get("b").unwrap().expose(), "in-file");
+        assert!(
+            s.get("a").is_err(),
+            "keyring entry unreachable while locked"
+        );
+
+        fs::remove_file(vault.join("fail")).unwrap();
+        // b moves to the keyring and leaves the file.
+        assert_eq!(s.set("b", "moved").unwrap().backend, Backend::Keyring);
+        assert!(file_store(&dir).file.read().unwrap().is_empty());
+        s.delete("a").unwrap();
+        assert!(kept(&vault, "a").is_none());
+    }
+
+    #[test]
+    fn stranded_keyring_copy_is_deleted_once_the_keyring_answers() {
+        let (child, vault) = with_fake_tool(
+            "secrets::tests::stranded_keyring_copy_is_deleted_once_the_keyring_answers",
+            Some(FAKE_SECRET_TOOL),
+            "",
+        );
+        if !child {
+            return;
+        }
+        let dir = crate::store::ensure().unwrap();
+        let s = Secrets::open().unwrap();
+        assert_eq!(s.set("a", "old").unwrap().backend, Backend::Keyring);
+
+        // Another session without a keyring replaces the value: it lands in the file, the old copy is noted.
+        let headless = file_store(&dir);
+        assert_eq!(headless.set("a", "new").unwrap().backend, Backend::File);
+        assert_eq!(headless.stale_keyring().unwrap(), ["a"]);
+        assert_eq!(kept(&vault, "a").as_deref(), Some("old"));
+        assert_eq!(headless.get("a").unwrap().expose(), "new");
+
+        // A keyring that is reachable but failing: the value still goes to the file, the note stays, and b is
+        // noted too in case the failed call landed after all.
+        fs::write(vault.join("fail"), "").unwrap();
+        assert_eq!(s.set("b", "x").unwrap().backend, Backend::File);
+        assert_eq!(s.stale_keyring().unwrap(), ["a", "b"]);
+        assert!(kept(&vault, "a").is_some());
+
+        // Once the keyring answers, the next write removes the stranded copy; the file value is untouched.
+        fs::remove_file(vault.join("fail")).unwrap();
+        s.set("c", "y").unwrap();
+        assert!(kept(&vault, "a").is_none());
+        assert!(s.stale_keyring().unwrap().is_empty());
+        assert_eq!(s.get("a").unwrap().expose(), "new");
+        assert_eq!(s.meta("a").unwrap().unwrap().backend, Backend::File);
+
+        // Moving back into the keyring clears the note without deleting the fresh keyring value.
+        headless.set("d", "1").unwrap();
+        s.set("d", "2").unwrap();
+        s.set("e", "k").unwrap();
+        headless.set("e", "f").unwrap();
+        assert_eq!(headless.stale_keyring().unwrap(), ["e"]);
+        s.set("e", "k2").unwrap();
+        assert!(s.stale_keyring().unwrap().is_empty());
+        assert_eq!(kept(&vault, "e").as_deref(), Some("k2"));
+        s.delete("e").unwrap();
+        assert!(kept(&vault, "e").is_none());
+    }
+
+    #[test]
+    fn values_never_reach_logs_metadata_or_the_index() {
+        let (child, vault) = with_fake_tool(
+            "secrets::tests::values_never_reach_logs_metadata_or_the_index",
+            Some(FAKE_SECRET_TOOL),
+            "",
+        );
+        if !child {
+            return;
+        }
+        let dir = crate::store::ensure().unwrap();
+        let k = Secrets::open().unwrap();
+        let f = file_store(&dir);
+        let mut seen = Vec::new();
+        k.set("kr", CANARY).unwrap();
+        f.set("fl", CANARY).unwrap();
+        let v = f.get("fl").unwrap();
+        seen.push(format!("{v:?}"));
+        seen.push(format!("{:?}", k.get("kr").unwrap()));
+        seen.push(format!("{k:?} {f:?}"));
+        seen.push(format!("{:?}", f.list().unwrap()));
+        seen.push(serde_json::to_string(&f.list().unwrap()).unwrap());
+        seen.push(format!(
+            "{:#}",
+            f.set("fl", &format!("{CANARY}\0")).unwrap_err()
+        ));
+        seen.push(format!("{:#}", f.set("Bad", CANARY).unwrap_err()));
+        fs::write(vault.join("fail"), "").unwrap();
+        seen.push(format!("{:#}", k.get("kr").unwrap_err()));
+        let index = fs::read(dir.join(INDEX)).unwrap();
+        for text in &seen {
+            assert!(!text.contains(CANARY), "leaked in {text}");
+            assert!(!text.contains(&CANARY[..12]), "partial leak in {text}");
+        }
+        assert!(!index.windows(12).any(|w| w == &CANARY.as_bytes()[..12]));
+        // The fallback file holds the file-backend value in the clear (protected by its 0600 mode, like an
+        // unencrypted SSH key) and never the keyring-backend one.
+        let store = String::from_utf8(fs::read(dir.join(STORE)).unwrap()).unwrap();
+        assert_eq!(store.matches(CANARY).count(), 1);
+        assert_eq!(mode(&dir.join(STORE)), 0o600);
+        assert!(seen[0].contains("redacted"));
     }
 }

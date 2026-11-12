@@ -309,20 +309,6 @@ impl Broker {
     pub fn nonce(&self) -> &str {
         &self.token
     }
-    /// Environment a child's `sudo -A`/SSH askpass needs to reach this broker.
-    pub fn env(&self) -> Option<Vec<(String, String)>> {
-        let cx = std::env::current_exe().ok()?.to_str()?.to_owned();
-        let socket = self.socket.to_str()?.to_owned();
-        Some(vec![
-            ("SUDO_ASKPASS".into(), cx.clone()),
-            ("SSH_ASKPASS".into(), cx),
-            ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
-            ("DISPLAY".into(), "cx-askpass".into()),
-            (CLIENT_ENV.into(), "1".into()),
-            (SOCKET_ENV.into(), socket),
-            (NONCE_ENV.into(), self.token.clone()),
-        ])
-    }
     /// Non-blocking: return one pending askpass request if a valid same-user
     /// client is waiting. The caller answers through the returned handle.
     pub fn accept(&self) -> Option<(Prompt, Pending)> {

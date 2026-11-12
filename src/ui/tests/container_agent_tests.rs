@@ -207,18 +207,6 @@ fn remote_container_capability_probe_is_explicit_and_requires_new_helper() {
     );
 }
 #[test]
-fn container_explicit_shell_is_independent_of_previous_chooser_cursor() {
-    let (mut a, rx) = queued_app();
-    a.open_container_browser(0, container_fixture('a', true).scope());
-    let _ = rx.try_iter().collect::<Vec<_>>();
-    a.dialog_selected = 99;
-    a.start_shell();
-    assert!(
-        matches!(rx.try_recv().unwrap().op, Operation::ContainerCreate { request, .. } if request.provider == "shell" && !request.resume)
-    );
-}
-
-#[test]
 fn container_missing_observation_time_is_unknown() {
     let (mut a, _) = queued_app();
     let scope = container_fixture('a', true).scope();

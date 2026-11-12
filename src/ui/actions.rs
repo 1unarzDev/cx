@@ -30,8 +30,7 @@ impl App {
             .iter()
             .copied()
             .filter(|(a, label)| {
-                (matches!(a, Action::Files | Action::Terminal | Action::Add)
-                    || self.action_enabled(*a))
+                (matches!(a, Action::Files | Action::Add) || self.action_enabled(*a))
                     && label.to_lowercase().contains(&self.text.to_lowercase())
             })
             .collect()
@@ -54,11 +53,7 @@ impl App {
                         .is_some_and(|b| b.container.is_none() && b.preview.is_none())
             }
             Action::Containers => self.view != View::Containers,
-            Action::Terminal if self.view == View::Network => self
-                .network_rows()
-                .get(self.network_selected)
-                .is_some_and(|r| r["_peer"].is_u64() || r["_known_peer"].is_u64()),
-            Action::New | Action::Shell => !self.creating,
+            Action::New => !self.creating,
             Action::Command => self.command_context().is_some(),
             Action::Destination | Action::Conflict => self.clipboard.is_some(),
             Action::TransferTo => {
@@ -140,20 +135,6 @@ impl App {
                 }
             }
             Action::Containers => self.choose_device(ChooseDevice::Containers),
-            Action::Terminal => {
-                if self.view == View::Network {
-                    if let Some(d) = self
-                        .network_rows()
-                        .get(self.network_selected)
-                        .and_then(|r| r["_peer"].as_u64().or_else(|| r["_known_peer"].as_u64()))
-                    {
-                        self.pending_terminal = Some(self.devices[d as usize].clone());
-                    }
-                } else {
-                    self.choose_device(ChooseDevice::Terminal);
-                }
-            }
-            Action::Shell => self.start_shell(),
             Action::Update => self.force_update = true,
             Action::Reset => {
                 self.dialog = Some(Dialog::Reset);
@@ -398,9 +379,7 @@ impl App {
         let purpose = match action {
             Action::Containers => Some(ChooseDevice::Containers),
             Action::Files => Some(ChooseDevice::Files),
-            Action::Terminal => Some(ChooseDevice::Terminal),
             Action::New => Some(ChooseDevice::New),
-            Action::Shell => Some(ChooseDevice::Shell),
             Action::Add => Some(ChooseDevice::AddGateway),
             _ => None,
         };

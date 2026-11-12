@@ -38,7 +38,7 @@ from pathlib import Path
 API = "https://api.cloudflare.com/client/v4"
 HERE = Path(__file__).resolve().parent
 ASSETS = HERE / "worker"
-CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser() / "cx" / "mesh"
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser() / "cx" / "mesh"  # empty is unset
 COMPAT_DATE = "2026-10-01"
 # What the Worker's own token may do (setup creates it scoped to the account).
 WORKER_SCOPES = ["Zero Trust Write", "Access: Service Tokens Write", "Access: Apps and Policies Write", "Cloudflare One Connector: WARP Write"]
@@ -400,10 +400,19 @@ class Mesh:
         self.save()  # before anything can fail: teardown must find it
         return t["value"]
 
+    def owner_token_id(self) -> str:
+        """The id of the token the owner commands send: the Worker accepts no other (docs/mesh.md)."""
+        for url in (f"{API}/accounts/{self.account}/tokens/verify", f"{API}/user/tokens/verify"):
+            r = self.http("GET", url).get("result") or {}
+            if r.get("status") == "active" and r.get("id"):
+                return r["id"]
+        raise MeshError("the API token does not verify as active")
+
     def worker_config(self) -> dict:
         c = self.cfg
         return {
             "name": c["name"], "account": self.account, "org": self.state["team"], "url": self.state["url"],
+            "owner_token_id": self.owner_token_id(),
             "dns_suffix": c["dns_suffix"], "rule_prefix": c["rule_prefix"], "policy_name": f"{c['name']}-mesh enrolment",
             "token_duration": c.get("token_duration", "8760h"), "invite_ttl_hours": c.get("invite_ttl_hours", 24),
             "devices": c.get("devices", {}), "ssh_keys": c.get("ssh_keys", []), "tailscale_rule_priority": c.get("tailscale_rule_priority", 5200),

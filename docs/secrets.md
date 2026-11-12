@@ -47,7 +47,7 @@ name cx itself reads is `cloudflare.api_token`, which sets `CLOUDFLARE_API_TOKEN
    fsynced and renamed into place, under a lock (`secrets.lock`). A corrupt or truncated file is reported and left
    untouched.
 
-`CX_SECRETS_BACKEND=file` never touches the keyring; `CX_SECRETS_BACKEND=keyring` refuses to fall back.
+`CX_SECRETS_BACKEND=file` never touches the keyring (`auto`, the default, uses it when it answers).
 
 ## Threat model
 

@@ -144,9 +144,10 @@ pub(super) fn gauge(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, w: u16, v: f32, s
     }
 }
 
-/// A mesh's swatch: a square in its hue (`#` in ASCII); the mesh's name follows it.
+/// A mesh's swatch and a space before its name: a square in its hue; none in ASCII
+/// (every printable glyph there already means something; the name says it).
 pub(super) fn mesh_glyph(cx: &Cx) -> String {
-    cx.g("■", "#").into()
+    cx.g("■ ", "").into()
 }
 
 /// Session pips (one slot letter per session in its state colour, space separated),
@@ -560,7 +561,7 @@ pub(super) fn session_row(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pi
         let mut x2 = r.x + 2;
         x2 += cx.put(buf, x2, r.y + 1, 7, p, cx.st(ptok)) + 1;
         let cap = if ask {
-            format!("is asking {} tap to answer", cx.g("·", "-"))
+            format!("is asking {} open to answer", cx.g("·", "-"))
         } else {
             caption(x)
         };

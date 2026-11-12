@@ -124,13 +124,9 @@ impl<'a> Cx<'a> {
         self.c.glyph(u, a)
     }
     /// The Enter key's label, a word in every tier (`⏎` drew as an odd icon in many
-    /// fonts): `enter`, `ret` on phones where chips are short.
+    /// fonts), the same at every size.
     pub fn ret(&self) -> &'static str {
-        if self.touch() {
-            "ret"
-        } else {
-            "enter"
-        }
+        "enter"
     }
     pub fn st(&self, t: Tok) -> Style {
         // 16 colours: brightblack is the background in some palettes (Solarized Dark's
@@ -373,12 +369,12 @@ impl<'a> Cx<'a> {
         self.bar_in(buf, x, y, h, st, true);
     }
     /// The bar of a selection in a focused or unfocused zone: without colour the two
-    /// would differ only by ink, so ASCII marks the unfocused one `:` on every row and
-    /// keeps `>` for the focused zone.
+    /// would differ only by ink, so ASCII marks the unfocused one `|` on every row and
+    /// heads the focused one with `>` (`:` is a password line on the map).
     pub fn bar_in(&self, buf: &mut Buffer, x: u16, y: u16, h: u16, st: Style, focused: bool) {
         for yy in y..y + h {
             let a = match (focused, yy == y) {
-                (false, _) => ":",
+                (false, _) => "|",
                 (true, true) => ">",
                 (true, false) => "|",
             };
@@ -548,8 +544,9 @@ impl<'a> Cx<'a> {
         match x.state {
             SessionState::AwaitingInput => (self.g("◆", "!"), "needs you", self.st(Tok::Warn)),
             // `o` as for a live device: `*` stays the agents' own bullet in ASCII.
-            SessionState::Working => (self.g("●", "o"), "working", self.st(Tok::Accent)),
-            SessionState::Running => (self.g("●", "o"), "running", self.st(Tok::Ok)),
+            // (ASCII `o` is a device online; a live session is `*`.)
+            SessionState::Working => (self.g("●", "*"), "working", self.st(Tok::Accent)),
+            SessionState::Running => (self.g("●", "*"), "running", self.st(Tok::Ok)),
             SessionState::Idle => (self.g("○", "-"), "idle", self.st(Tok::Muted)),
             SessionState::Exited => (self.g("·", "."), "exited", self.ink(Tok::Faint, 1.0)),
         }
@@ -796,9 +793,9 @@ pub(super) fn asciify(s: &str) -> String {
             '│' | '┃' => out.push(' '),
             // An agent's own prompt bar is blank: `|` and `:` are cx's selection bars.
             '▌' | '▍' | '▎' => out.push(' '),
-            '╭' | '╮' | '╰' | '╯' | '┌' | '┐' | '└' | '┘' => out.push('+'),
+            '╭' | '╮' | '╰' | '╯' | '┌' | '┐' | '└' | '┘' => out.push('-'),
             // `v` and `^` are reserved (`^` is an alert), so arrows are words.
-            '↓' => out.push_str("dn"),
+            '↓' => out.push_str("dl"),
             '↑' => out.push_str("up"),
             '→' => out.push_str("->"),
             '←' => out.push_str("<-"),

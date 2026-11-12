@@ -63,17 +63,24 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
             .cloned()
             .unwrap_or_default()
     };
-    // Rows the drawing leaves empty go to the thumbnails (up to what their screens
-    // hold), keeping a blank row either side of the map; with room for two, a second
-    // row of tiles shows the rest of the sessions and the ghost.
+    // Rows the drawing leaves go to the thumbnails (a screen taller than its text is
+    // still a screen), keeping the map's air: two blank rows either side
+    // where the screen is tall, else the blank row the band already keeps. With room
+    // for two, a second row of tiles shows the rest of the sessions and the ghost
+    // (only when each row keeps ten rows, so a tile still shows enough of its screen).
     let gh = orbit::drawn_h(cx, band, orbit::Sel::Node("", false));
-    let room = th + band.height.saturating_sub(gh);
-    // (Only when each row keeps ten rows: a tile must still show enough of its screen
-    // to be told apart.)
+    let air = if sz >= Size::M && r.height >= 30 { 2 } else { 0 };
+    let room = th + band.height.saturating_sub(gh + air);
     let (rows, th) = if list.len() >= usize::from(cols) && room > 2 * th_min.max(10) {
-        (2, ((room - 1) / 2).min(need))
+        (2, (room - 1) / 2)
     } else {
-        (1, room.min(need))
+        (1, room)
+    };
+    // Two rows share the sessions and the ghost evenly, so no row ends half empty.
+    let cols = if rows == 2 {
+        cols.min((list.len() as u16 + 2) / 2)
+    } else {
+        cols
     };
     let grid_h = rows * th + rows - 1;
     let mut y = band.bottom() + 1 + band_th - grid_h;
@@ -342,7 +349,7 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
         let Some(mesh) = cx.s.meshes.iter().find(|q| &q.id == m) else {
             continue;
         };
-        let t = format!("{} {}", tiles::mesh_glyph(cx), mesh.name);
+        let t = format!("{}{}", tiles::mesh_glyph(cx), mesh.name);
         let w = super::width(&t, cx.uni());
         if x + w + 2 > stop {
             break;
@@ -581,10 +588,11 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
         let tok = if e.up { orbit::edge_tok(cx, e) } else { Tok::Faint };
         let pass = e.up && e.forward != Access::Key && e.reverse != Access::Key;
         let g = match (t.last, pass) {
-            (false, false) => cx.g("├─", "+-"),
+            // (ASCII `+` is the invite key; `.` a password line.)
+            (false, false) => cx.g("├─", "|-"),
             (true, false) => cx.g("└─", "`-"),
-            (false, true) => cx.g("├┄", "+-"),
-            (true, true) => cx.g("└┄", "`-"),
+            (false, true) => cx.g("├┄", "|."),
+            (true, true) => cx.g("└┄", "`."),
         };
         cx.put(buf, x, r.y, 2, g, gst(tok));
         if r.height > 1 && !t.last {

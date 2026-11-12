@@ -62,8 +62,8 @@ session slot**.
 
 | View | What it shows |
 |---|---|
-| Hub | `▍NETWORK` (accent while focused) with one quiet legend line on its rule (the meshes named in their hue with members up and `lan` in teal; the line grammar is in help) (the rule only when at least 12 cells remain); the orbit (section 3) under it, as tall as the rows left, its drawing one row under the band's top, and the rows it leaves at its foot go to the thumbnails (up to what their screens hold; a second row of tiles with the rest of the sessions and the ghost when each row still keeps ten); the selected device's vitals strip (no left bar: column 0 is the focus bar only; M+: two rows, name with route and per-hop rtt `t → c → b  0.6 + 2.4 ms`, os and account; cpu sparkline and %, mem gauge, temperature, uptime, meshes; its keys `b a attach  b c claude  b f files  e b link` on the right (`b c claude` only when the session grid shows no `new on` tile, which already offers it), each address drawn as keycaps with the device letter in its hue and the verb neutral; S: one row); SESSIONS `needs you first`: one row of live thumbnails ranked by attention (the ghost "new on <selected>" tile fills a free cell; the full grid is in each device; `+2 more ›` opens the palette, shown only when tiles are hidden); the ticker (`▲ squirtle-jetson unreachable via ssh-overlay 3h  s r retry`, a tappable `+N` chip when more wait; the first-ranked session is the first tile right above it, so its `◆ … needs you  t a attach` item is not repeated there; addresses as on the vitals strip); the footer follows the focused zone. Phone (< 70 columns): NETWORK with the legend, the device tree (section 3; a keycap mini map only crowded at that size), up to two ticker rows (tinted, the whole row is the tap target) and a wrapping footer. |
-| Device (`letter`) | Header with identity, evidence, mesh squares, cpu chart and gauges (four rows, one blank row before SESSIONS); session thumbnails keyed `a s d g`, as tall as the rows the LINKS block leaves (a screen taller than its text is still a screen, so no void opens under the tiles) and at most two hub tiles wide (a lone session reads as a tile beside its ghost, not a banner); the ghost tile "new on <device>" (`c` claude, `x` codex, `n` shell), content-sized, right beside them; below 90 columns the ghost is the one-row `new  c claude  x codex  n shell` under the tiles, so a lone session keeps the full width; under them LINKS: the same star from this device with plain names (no letter stands out: in a device, letters are slots and verbs), and nothing else: each link's figures are one `e` away in the edge editor, so the star is not repeated as a table; the header's cpu chart stops at 72 columns and the metrics block hugs the right edge. LINKS sits on the footer: the label, a blank row, the star centred in its rows, a blank row. Phones give the rows the entries, ghost row and links leave to the selected session as a thumbnail (up to its screen tail), so a prompt is recognisable. Phones (touch, under 70 columns) draw no star: a blank row after the `new` buttons when it costs no link, then one plain row per link on fixed columns sized to the longest name (name, policy, rtt or `last 41ms` when closed, since the policy column already says `off`; the loss goes first when rows are short). `⌫` asks inline on the selected tile's last row (`stop refactor transport?  ⌫ again to stop, any key keeps it`, warn-tinted; footer `⌫ stop it  esc keep`; capture `CX_LAB_FOCUS=stop tests/lab.sh mission device:innovation`): a second `⌫` stops, every other key keeps it. Footer `⏎ a attach` (Enter and the slot keys on one chip), `r retry` when the device is down or late, then `f files  e link  ⌫ stop  esc back  ` hub  - last  / find` (peek from 100 columns); phones lead with `ret attach  esc back`, `bksp stop` last. |
+| Hub | `▍NETWORK` (accent while focused) with one quiet legend line on its rule (the meshes named in their hue with members up and `lan` in teal; the line grammar is in help) (the rule only when at least 12 cells remain); the orbit (section 3) under it with two blank rows either side (from 30 rows), and every row it leaves goes to the thumbnails (a second row of tiles with the rest of the sessions and the ghost when each row still keeps ten; two rows share the tiles evenly, five sessions and the ghost as 3+3, so no row ends half empty; the ghost fills its whole cell, its content centred); the selected device's vitals strip (no left bar: column 0 is the focus bar only; M+: two rows, name with route and per-hop rtt `t → c → b  0.6 + 2.4 ms`, os and account; cpu sparkline and %, mem gauge, temperature, uptime, meshes; its keys `b a attach  b c claude  b f files  e b link` on the right (`b c claude` only when the session grid shows no `new on` tile, which already offers it), each address drawn as keycaps with the device letter in its hue and the verb neutral; S: one row); SESSIONS `needs you first`: one row of live thumbnails ranked by attention (the ghost "new on <selected>" tile fills a free cell; the full grid is in each device; `+2 more ›` opens the palette, shown only when tiles are hidden); the ticker (`▲ squirtle-jetson unreachable via ssh-overlay 3h  s r retry`, a tappable `+N` chip when more wait; the first-ranked session is the first tile right above it, so its `◆ … needs you  t a attach` item is not repeated there; addresses as on the vitals strip); the footer follows the focused zone. Phone (< 70 columns): NETWORK with the legend, the device tree (section 3; a keycap mini map only crowded at that size), up to two ticker rows (tinted, the whole row is the tap target) and a wrapping footer. |
+| Device (`letter`) | Header with identity, evidence, mesh squares, cpu chart and gauges (four rows, one blank row before SESSIONS); session thumbnails keyed `a s d g` across the full width (three columns, two on S), as tall as the rows the LINKS block leaves (a screen taller than its text is still a screen, so no void opens under the tiles); the ghost is always the one-row `new  c claude  x codex  n shell` under the tiles (a device with no session keeps the ghost tile), so no half-empty card floats beside a session; under them LINKS: the same star from this device with plain names (no letter stands out: in a device, letters are slots and verbs), and nothing else: each link's figures are one `e` away in the edge editor, so the star is not repeated as a table; the header's cpu chart stops at 72 columns and the metrics block hugs the right edge. LINKS sits on the footer: the label, a blank row, the star centred in its rows, a blank row. Phones give the rows the entries, ghost row and links leave to the selected session as a thumbnail (up to its screen tail), so a prompt is recognisable. Phones (touch, under 70 columns) draw no star: a blank row after the `new` buttons when it costs no link, then one plain row per link on fixed columns sized to the longest name (name, policy, rtt or `last 41ms` when closed, since the policy column already says `off`; the loss goes first when rows are short). `⌫` asks inline on the selected tile's last row (`stop refactor transport?  ⌫ again to stop, any key keeps it`, warn-tinted; footer `⌫ stop it  esc keep`; capture `CX_LAB_FOCUS=stop tests/lab.sh mission device:innovation`): a second `⌫` stops, every other key keeps it. Footer `⏎ a attach` (Enter and the slot keys on one chip), `r retry` when the device is down or late, then `f files  e link  ⌫ stop  esc back  ` hub  - last  / find` (peek from 100 columns); phones lead with `ret attach  esc back`, `bksp stop` last. |
 | Session (`⏎`, a slot key) | Full screen: the pane owns every row but the top one, a breadcrumb `cx › innovation › i a refactor transport  ● working` (the session's address, device keycap then slot keycap, before its title exactly as on its tile) whose segments are taps (hub, device) and whose right end is the `⏏ ctrl+\ detach` chip (ASCII `ctrl+\ detach`); the pane reflows to the screen's width (words wrap at spaces, an agent's drawn composer box is redrawn at that width with its right edge, before the ASCII substitution so ASCII keeps `+--+` at the pane width with blank sides; continuation rows hang at the line's content column, after its `⎿` / `+` / `●` marker, keeping the first row's tint), as the agent would draw it in a pane that size; at 120+ columns one muted live fact sits before it (`up 1h · 1 client`). On phones (touch, under 70 columns) the chip is ` ctrl+\ ` without `⏏` (phone fonts draw it as a wide emoji), so `cx › i a title ●` keeps its room (phones drop the device name). |
 | Session peek (`␣`, `CX_LAB_FOCUS=peek`) | A meta line (address, state, provider, folder, uptime, clients, activity trend), the screen 1:1 on a deeper surface, and at M+ the OTHERS filmstrip. Hub letters work in peek (`t a` attaches t's slot a); `Tab` steps through the other peeks; `⏎` attaches, `⌫` stops, Esc back, `` ` `` hub. |
 | Files (`letter f`) | Tree with a size micro-bar and age, git letters; under it, when rows are left, the selected entry's path, size, age and git state and its send targets as device letters (five rows: a SELECTED zone, one fact per row, and with room for them its send targets one per row with their route's rtt and relay, `b blastoise-odroid  via creation 17ms`; two to four rows: the path, then size, age and `s send to t c b` on one row; only devices a transfer can reach over links open in that direction are listed, those reached through a relay in their hue but not bold; tree guides are blank indentation in ASCII, since `|` and `:` are the selection bars; untracked is `U`; a tree cut by the height ends in a muted `+N more ↓`, and phones keep the spacer row above their wrapped footer). Inline syntax preview at ≥100 cols, its surface as tall as the file, where a line cut at the edge ends in an accent `›`. The footer teaches `j k move  l h fold  s send to` (80 columns: `⏎ open  j k move  l h fold  s send  spc preview  / find  esc back`); phones `ret open  esc back  s send  spc preview  / find  ` hub` (wrapped). `s` (send to) dims the files and raises a bottom sheet with the orbit seen from this device: press or tap the destination's letter (capture: `CX_LAB_FOCUS=dialog tests/lab.sh mission files`). The transfer then shows on the hub: its link heavy and lit, the rate on its chip, name and percentage in the top bar. |
@@ -71,8 +71,8 @@ session slot**.
 | Keys / secrets | Masked secret cards keyed `a s d g` (a slot key opens that card's editor, so adding the missing Tailscale key is `K g`, paste, `⏎`); missing ones get a solid accent button with a background-coloured label that names the key acting on it: `⏎ add` on the selected card, its slot key on the others (`g add`; in 16 colours a cyan cell with black text like the root capsule, never the gray keycap). Under the cards `h new secret` (the next free slot) adds any other secret by name; the footer says `h new`. Cards run the full content width like every zone. Names are cut against the room really left (the button only on its row). The status line under the cards is cut at a `·` boundary, never mid-word. The zone label and cards sit on the same column as every other screen's zones, with one breathing row under the label so its bar and the selected card's bar stay two marks. Crumb `cx › keys`. |
 | Onboarding | The viewer alone on an empty orbit (`◉ tranquility` in bold, as the hub's root), the wrapped one-sentence explanation, a `⏎ Connect Cloudflare` button, three plain numbered steps (`1.`, not keycaps: they are not keys), a breathing row, then `+` join code (the global invite and join key; `j` stays motion) and `esc` plain SSH (the footer says `esc plain ssh`: chip labels are never cut to a first word, a phone footer wraps instead). Each step's note sits in a side column only when it fits whole; below about 90 columns it wraps on muted rows under its step, and the button's note moves under the button. |
 | Join | Half-block QR (dark on light, always: in 16 colours on a dark theme colour 15 and 0; on a light theme, where bright white is often a gray, the terminal's own background and black ink with the NO_COLOR glyphs; with the standard four-module quiet zone wherever it fits, two only when the alternative is no QR) and the text column centred as one group (with no QR, as in ASCII and on phones, the text column centres on its own, as wide as the one-liner, with a faint `QR on a wider screen` in Unicode); at M+ the code is drawn in three-row half-block letters (a 3x5 pixel font of square half-block pixels) on a five-row tint, below that as spaced mono text on a tinted surface (`K X 7   4 Q M`; not keycaps: its letters are not cx keys), the one-liner broken after a space or `/`, never inside the code, over up to three rows (readable to retype where clipboard escapes fail) and an expiry bar. Footer `y code  Y command  esc done  R new code` (shifted: a new code revokes one that may already be shared). |
-| Edge editor | Crumb `cx › t ⇄ i link`. The network diagram, then the sheet, as one centred column (the sheet at most 110 wide): the map as tall as its rows allow (rows up to three apart from 100 columns), two blank rows, the sheet; the block sits a little above the middle of the rows between the crumb and the footer. The edited link is the one **heavy** stroke on the map, in the accent (`━ ┃ ┏ ┓ ┗ ┛`; ASCII keeps the plain glyphs, the accent carries it, bold without colour), everything else faded to faint: other lines at 14 %, the other nodes' dots and names muted, plain, no underline (here `a p o` are policy keys). Phones draw no map: the link alone between its two keycaps in the accent (`t ── ⇄ key ── i`). The sheet has one segmented control per direction, labelled by its direction (`t→i`): the opener's outbound lane first with `a p o` (key, password, off), the way back with `A P O`; `j k` move the lane bar. Each press applies at once, `u` undoes; one line says so and how many sessions cross the link (only the count where the sentence does not fit), then `rtt`, one thin muted sparkline (at most 40 columns) and its figures as quiet text (`32 samples · min 10ms · mean 14ms · max 17ms · jitter 1.1ms`, cut at a `·`). Every segment has one shape, keycap, a blank cell, the word, the selected one on its policy tint (phones say `pass`). Footer `j k lane   u undo   esc done` (phones drop `j k`). |
-| Help | Crumb `cx › help` (`CX_LAB_FOCUS=device|edge|files` for the other contexts). No drawn keyboards (user feedback, 2026-11-10): a calm table for the view it was opened from (`ON THE HUB`, `IN A DEVICE`, `ON A LINK`, `IN FILES`): intent word muted in a left column, keys as plain bold text (a space between keys), what they do. On the hub the grammar is said as two steps so a device letter and a verb never look like one key (`c` creation vs `c` claude): `device` shows real device names with their letter underlined in the accent exactly as on the map (three from 100 columns, two below; `…`, ASCII `+N`) and `its letter opens it`; the next row, `then`, with no blank row between, lists `a s d g attach a session`, `c x n new claude / codex / shell`, `f files`; then `move  j k  tab  enter  -` and `act  spc  e (then a letter: edit that link)  bksp`. In a device: session `a s d g / enter / spc / bksp`, new `c x n`, device `f / e / r`, move `j k / esc / -`. On a link: `way out a p o`, `way back A P O`, `move j k / u / esc`. In files: `j k / l h / enter`, `spc / s (then a letter) / y`, `esc`. The hub and link help add a quiet `lines` row in the map's own glyphs (`── key  ╌╌ password  ◀ one way  ⊘ closed`; ASCII `-- .. < - -`); every context ends with the `global` row (`/ find  ` hub  + invite  K secrets  ctrl+\ detach`, wrapping; `esc` is on the footer). Keys are words: `enter`, `bksp` (`ret` on phones; the `⏎` glyph drew as an odd icon). A blank row under the crumb bar and between blocks; the block, at most 78 columns (68 below 100), sits a third of the way down. |
+| Edge editor | Crumb `cx › t ⇄ i link`. The network diagram, then the sheet, as one centred column (the sheet at most 110 wide): the map as tall as its rows allow (rows up to eight apart, so it fills them), two blank rows, the sheet; the block sits in the middle of the rows between the crumb and the footer. The edited link is the one **heavy** stroke on the map, in the accent (`━ ┃ ┏ ┓ ┗ ┛`; ASCII `=` along a row and `H` down a column), everything else faded to faint: other lines at 14 %, the other nodes' dots and names muted, plain, no underline (here `a p o` are policy keys). Phones draw no map: the link alone between its two keycaps in the accent (`t ── ⇄ key ── i`). The sheet has one segmented control per direction, labelled by its direction (`t→i`): the opener's outbound lane first with `a p o` (key, password, off), the way back with `A P O`; `j k` move the lane bar. Each press applies at once, `u` undoes; one line says so and how many sessions cross the link (only the count where the sentence does not fit), then `rtt`, one thin muted sparkline (at most 40 columns) and its figures as quiet text (`32 samples · min 10ms · mean 14ms · max 17ms · jitter 1.1ms`, cut at a `·`). Every segment has one shape, keycap, a blank cell, the word, the selected one on its policy tint (phones say `pass`). Footer `j k lane   u undo   esc done` (phones drop `j k`). |
+| Help | Crumb `cx › help` (`CX_LAB_FOCUS=device|edge|files` for the other contexts). No drawn keyboards (user feedback, 2026-11-10): a calm table for the view it was opened from (`ON THE HUB`, `IN A DEVICE`, `ON A LINK`, `IN FILES`): intent word muted in a left column, keys as plain bold text (a space between keys), what they do. On the hub the grammar is said as two steps so a device letter and a verb never look like one key (`c` creation vs `c` claude): `device` shows real device names with their letter underlined in the accent exactly as on the map (three from 100 columns, two below; `…`, ASCII `+N`) and `its letter opens it`; the next row, `then`, with no blank row between, lists `a s d g attach its 1st / 2nd / 3rd / 4th session` (`attach session 1-4` below 60 columns), `c x n new claude / codex / shell`, `f files`; then `move  j k  tab  enter  -` and `act  spc  e (then a letter: edit that link)  bksp`. In a device: session `a s d g / enter / spc / bksp`, new `c x n`, device `f / e / r`, move `j k / esc / -`. On a link: `way out a p o`, `way back A P O`, `move j k / u / esc`. In files: `j k / l h / enter`, `spc / s (then a letter) / y`, `esc`. The hub, device and link help add a quiet `marks` block in the map's own glyphs (`── key  ╌╌ password  ◀─ one way  ─⊘─ closed  ● online  ○ late  ✕ down`; ASCII `-- .. <- -/- o ~ X` and `[ ] selected`) where the screen holds it; every context ends with the `global` block (`/ find  ` hub  + invite  K secrets  ctrl+\ detach`). Both are grids of cells whose keys sit in the same key column as the rows above and whose words line up, so every row keeps the two columns. Keys are words: `enter` at every size, `bksp` (the `⏎` glyph drew as an odd icon). A blank row under the crumb bar and between blocks; the block, at most 78 columns (68 below 100), is centred vertically. |
 
 ## 3. The network diagram
 
@@ -83,45 +83,54 @@ letters plain because `a p o` are policy keys there). It aims for a quiet networ
 diagram: continuous thin lines of one weight, crisp labels, air between everything,
 nothing on the lines but the lines.
 
-- **An orbit around the root.** A spanning tree from the root over routed links (a
-  device reached by jumping through a relay hangs from that relay, its line the jump
-  link's). The root's subtrees split between its right and left so both sides hold
-  about as many rows (the right takes a tie). On each side the root's peers sit
-  **symmetrically about the root's row**: an odd one out on the row itself (a single
-  device when there is one), the rest above and below so both halves hold about as many
-  rows (heaviest subtree first, each to the lighter half, order kept within a half). A
-  relay's devices **fan outward**, away from the root's row: the first continues the
-  relay's row, each next one a step further out, so subtrees grow away from the centre
-  and never interleave. Peers nearer the root's row sit further out, on an ellipse as
-  wide as the side is tall (at most 10 columns), so the labels trace an arc `( ◉ )`;
-  their branches differ in length, the trunk stays one per relay and side. Every device
-  owns its row on its side, so labels and lines never cross. Rows are three apart where
-  the band allows and the network is small (L, and the edge editor from 100 columns),
-  else two, else one; the column gap is 12 / 10 / 8 / 6 by size. The drawing is centred
-  in its band both ways (not the root) with a two-column gutter at each side. Labels
-  that would leave the band, and anything hanging from them, become `+N more` (opens
-  the palette). Devices with no routed or jump link sit on the root's side with no line.
+- **An orbit around the root, mirror-balanced** (elegance round 2, 2026-11-11). A
+  spanning tree from the root over routed links (a device reached by jumping through a
+  relay hangs from that relay, its line the jump link's). In a small network (three to
+  six peers) the heaviest subtree whose link is not one way (an arrowhead reads along a
+  row) sits **straight above the root**, the next straight below it, each joined by one
+  vertical line from the root's middle; the devices reached through them spread on
+  **wings** a row further out, half left, half right (`b ●──╮ ╰── ● creation ──╯ ╭──✕ s`).
+  The other peers sit **left and right of the root** on its row (a lone peer each side
+  is a straight line through the root: `nas ● ◀╌╌ ◉ tranquility ──▶ ○ laptop-guest`); in
+  a dense network every peer goes to these two columns, both holding about as many rows,
+  symmetric about the root's row, those nearer the row further out on an arc, a relay's
+  devices fanning outward. Every device owns its row on its side, so labels and lines
+  never cross. The root sits at the exact centre of the band whenever the drawing fits
+  around it (else the drawing is centred), with a two-column gutter at each side; the
+  drawing is centred vertically. Spacing scales with the area: the column gap is a
+  tenth of the band's width (6 to 20 columns), rows sit up to four apart on L (three on
+  M, two on phones), and the edge editor's map spreads up to eight apart to fill its
+  rows. Labels that would leave the band, and anything hanging from them, become
+  `+N more` (opens the palette). Devices with no routed or jump link sit in a column
+  with no line.
+- **Mesh groups**: a mesh the root is not in (ssh-overlay: creation, blastoise,
+  squirtle) is one quiet wash of its hue (7 % dark, 6 % light) behind its members where
+  they sit together with no other label inside, three columns past the outer labels.
+  The root's own meshes are its lines' hues. 16 colours and ASCII draw no wash (the
+  legend and line hues carry it).
 - **Lines** are box-drawing characters: a stub leaves the root (or relay) on its row, a
   trunk runs down the column gap with rounded corners `╭ ╮ ╰ ╯` and junctions
   `├ ┤ ┬ ┴ ┼`, and a branch enters each label on its row. Every line end keeps one clear
-  cell from a label, one more where a selection's brackets may sit. ASCII: `-`, `|` and
-  `+` at every corner. One weight everywhere; unlit lines at 55 %, the selection's route
+  cell from a label, one more where a selection's brackets may sit (a vertical line meets
+  its labels directly). ASCII: `-` and `|`, corners `,` above and `'` below, a junction
+  its trunk's `|` or `-` (`+` is the invite key). One weight everywhere; unlit lines at 55 %, the selection's route
   back to the root (and its own children) at 95 %. **Hue is network**: the mesh hue
   (violet, blue), teal for lan, neutral for direct ssh; a cell shared by links of
   different networks is neutral. **Stroke is policy, used sparingly**: solid where a key
   is allowed, dashed (`╌ ╎`, long dashes that stay visible; ASCII `.` and `:`) where
   only a password is, a faint neutral line where nothing crosses (30 %, even when lit;
-  ASCII plain `-`, its marks say why), with `⊘` mid-run when it is closed (ASCII has no faint ink: the line is broken, `- - -`, and carries no mark)
+  ASCII plain `-`, its marks say why), with `⊘` mid-run when it is closed (ASCII `/` mid-run: `--/--`)
   both ways, clear of both labels (a down device's `✕` says the rest). A one-way link
   has one solid arrowhead (`◀ ▶`, which meets its stroke where a font arrow floats;
   ASCII `<` `>`) at the end access reaches: the line's last cell beside the device, or
   where its branch leaves the trunk. Nothing else rides on a line. A cell
   shared by several links takes a lit link's ink. The edge editor draws its link in the
   accent.
-- **Fit before cutting**: the arc flattens and the column gap shrinks (down to 6)
-  before any name is shortened; a dense network (more than eight devices) never takes
-  rows three apart, so big screens get a calm drawing, never a stretched wireframe. On
-  the hub the map is centred vertically in the rows above the vitals strip.
+- **Fit before cutting**: rows come closer, the arc flattens and the column gap shrinks
+  (down to 6) before any name is shortened; a dense network (more than eight devices)
+  never takes rows more than two apart. On the hub the map keeps two blank rows either
+  side (from 30 rows) and the session tiles take every other row, so no blank band opens
+  around it.
 - **No figures on the map.** rtt, transfer rates and session slots are said once, for the
   selection, in the vitals strip (and in the device and edge views). Each link keeps a
   3x1 tap target on its branch (desktop; phones tap the tree rows).
@@ -133,13 +142,15 @@ nothing on the lines but the lines.
   root only. Richness is chosen per frame (name 16/12/9, keycap only).
 - **The root** is `◉` and its bold name, no capsule (ASCII `@ tranquility`, selected
   `[@ tranquility]` on every map: brackets mean selection and nothing else, also on a
-  keycap map, where the root is `◉` before its keycap). The same mark is the viewer on onboarding.
+  keycap map, where the root is `◉` before its keycap; help's `marks` row says `[ ]
+  selected` in ASCII). ASCII has no underline, so a live letter sits in parentheses:
+  `(t)ranquility`, `la(p)top-guest` (map, vitals strip and help). The same mark is the viewer on onboarding.
 - **Selection**: a crisp label, not a button: the name in the accent (70 % without
   focus); in ASCII and NO_COLOR, `[ ]` one cell outside it. Its route back to the
   root is lit.
 - **Phone tree** (the phone hub has no map): every device depth first, the root first,
   then each relay followed by the devices reached through it (`├─ c creation`,
-  `│ ├─ b blastoise-odroid`; ASCII `+-`, `` `- `` and `|` guides), the branch in the hue
+  `│ ├─ b blastoise-odroid`; ASCII `|-`, `` `- `` and `|` guides, `|.` where a password is needed), the branch in the hue
   of the link to its parent, dashed (`├┄`) where only a password is allowed, faint where
   the link is down; the letter in its hue (a keycap on the selected row only), name,
   status, rtt or last sighting (no slot letters); with room
@@ -179,16 +190,16 @@ backgrounds become ink of their hue, so `+` rows stay green and `-` rows red wit
 loud block (`tiles::degrade`).
 
 Glyphs, with ASCII fallbacks, each substitute meaning one thing: selection and focus
-`▍ ▌` / `>` on the first row and `|` below in the focused zone, `:` on every row in an
-unfocused one (and nothing else is `>`, `|` or `:` in ASCII: tile gutters, tree guides,
+`▍ ▌` / `>` on the first row and `|` below in the focused zone, `|` on every row in an
+unfocused one (`:` is a password line on the map) (and nothing else is `>`, `|` or `:` in ASCII: tile gutters, tree guides,
 sheet and ghost-tile sides and an agent's own prompt bar are blank); status `◉ ● ○ ✕ ◌` / `@ o ~ X ?` (`x` stays a key: codex, a device letter);
-session state `◆ ● ○ ·` / `! o - .` (`!` means needs you and nothing else; `*` stays
-the agents' own bullet); alerts `▲` / `^` (and nothing else is `^`); a transfer `⇣` / `dl`; one-way arrowheads on the map `◀ ▶` / `<` `>`; policy `⇄ → ← ⊘` / `<> -> <- off`; line
-styles `─ ╌` / `- .`; mesh squares `■` / `#` (the mesh's name always follows it); the separator `·` / `-`; a cut `…` /
-`..` (also inside fixture text); crumbs `›` / `/` (the sessions overflow `+2 more ›` drops it in ASCII); a symlink `→` / `*`; an agent's own prompt bar inside a thumbnail `▌` / blank (so `|` and `:` stay cx's selection bars); folds `▾ ▸` / `- +`; a line cut at
+session state `◆ ● ○ ·` / `! * - .` (`!` means needs you and nothing else; `o` is a
+device online, so a live session is `*`, as the agents' own bullet); alerts `▲` / `^` (and nothing else is `^`); a transfer `⇣` / `dl`; one-way arrowheads on the map `◀ ▶` / `<` `>`; policy `⇄ → ← ⊘` / `<> -> <- off`; line
+styles `─ ╌` / `- .`, closed `⊘` / `/`, the edge editor's edited link `━ ┃` / `= H`; mesh squares `■` / none (the name says it); the separator `·` / `-`; a cut `…` /
+`..` (also inside fixture text); crumbs `›` / `/` (the sessions overflow `+2 more ›` drops it in ASCII); a symlink `→` / `&`; an agent's own prompt bar inside a thumbnail `▌` / blank (so `|` and `:` stay cx's selection bars); folds `▾ ▸` / `- +`; a line cut at
 the preview edge `›` / `$`; keycaps are coloured cells in every tier
-(`REVERSED|BOLD` without colour); link lines become `- | +`; `⎿` is `L` and `✻` is `*`;
-charts and sparklines become `_ = #` (`.` and `-` are link strokes; a lone `#` before a name is a mesh); sheet and palette frames are `+--+` with blank sides; the minimap is omitted in ASCII
+(`REVERSED|BOLD` without colour); link lines become `- | , '`; `⎿` is `L` and `✻` is `*`;
+charts and sparklines become `_ = #` (`.` and `-` are link strokes); sheet, palette and ghost frames are dashes with blank sides (`+` is the invite key); the minimap is omitted in ASCII
 and NO_COLOR; the QR is drawn with `▀▄█` even in NO_COLOR and dropped in ASCII and where it cannot fit above the code (40x20: the code and one-liner carry it);
 Fixture text is transliterated in ASCII (`asciify`), so the lint stays at 0 warnings.
 Inside thumbnails an emphasised lone letter (`a Always` in an agent prompt) takes the
@@ -373,14 +384,14 @@ Decisions where reviewers disagreed (recorded, not asked):
 - **NO_COLOR**: attributes only. Keycaps are reversed bold letters; the pill is a reversed
   row; selection is the bar plus bold; line styles carry the policy; thumbnails keep
   dim/bold.
-- **ASCII**: every glyph has a one-meaning substitute (section 4); lines are `- | +`; the QR
+- **ASCII**: every glyph has a one-meaning substitute (section 4); lines are `- | , '`; the QR
   is dropped (code and one-liner remain). The capture lint reports 0 non-ASCII cells.
 - **Ambiguous-width terminals** (Blink with CJK fonts, `ambiwidth=double`): status and
   policy glyphs, eighth-block charts, `▍ ▄ ▖`, `•` masks, `°` and box drawing are all
   East-Asian-Ambiguous. A real build probes once at startup (print `●` and `─`, read the
   cursor with `CSI 6n`) and, when either is two columns wide, renders with the whole ASCII
   glyph set (`unicode = false`: charts `_ : = #`, masks `*`, `°` as `C`, bars `>`, lines
-  `- | +`) while keeping colour. That is the existing ASCII tier, which the lint keeps at 0
+  `- | , '`) while keeping colour. That is the existing ASCII tier, which the lint keeps at 0
   non-ASCII cells. The lab cannot emulate double-width ambiguous cells, so it is not
   captured; real tmux 3.4 / Termux / Blink captures remain an open integration item
   (the lab never runs a real terminal or tmux).

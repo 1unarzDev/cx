@@ -4,7 +4,7 @@ import json,os,pathlib,shlex,shutil,sqlite3,subprocess,sys,tempfile,time
 binary=str(pathlib.Path(sys.argv[1]).resolve())
 ID='11111111-2222-4333-8444-555555555555'
 CHILD='aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
-with tempfile.TemporaryDirectory(prefix='cx-native-metadata-') as t:
+with tempfile.TemporaryDirectory(prefix='cx-native-metadata-',ignore_cleanup_errors=True) as t:
  root=pathlib.Path(t);first=root/'first';second=root/'second';first.mkdir();second.mkdir()
  env=dict(os.environ,HOME=t,XDG_STATE_HOME=t+'/state',SHELL='/bin/bash',TERM='xterm-256color')
  env.pop('TMUX',None);env.pop('TMUX_PANE',None)
@@ -56,3 +56,10 @@ with tempfile.TemporaryDirectory(prefix='cx-native-metadata-') as t:
   print(json.dumps({'result':'PASS','checks':['Claude project/name/activity switch without process restart','unknown native status clears prior metadata','Codex exact writer project/name switch without process restart','structured Codex child task metadata','provider presence does not invent busy state']}))
  finally:
   subprocess.run(['tmux','-S',socket,'kill-server'],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+  # The server and its panes exit after kill-server returns and may still write here: retry the
+  # removal until they are gone (bounded), instead of failing on a file created mid-rmtree.
+  for _ in range(50):
+   try:shutil.rmtree(t);break
+   except FileNotFoundError:break
+   except OSError:time.sleep(.1)
+  assert not os.path.exists(t),'fixture processes kept writing after kill-server'

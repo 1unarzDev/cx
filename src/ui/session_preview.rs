@@ -741,7 +741,9 @@ impl App {
     /// only changes, so its quiet screen is current.
     fn preview_stale(&self) -> bool {
         let pushed = self.pane_watched()
-            && self.preview_selection().is_some_and(|(d, _)| self.sessions_pushed(d));
+            && self
+                .preview_selection()
+                .is_some_and(|(d, _)| self.sessions_pushed(d));
         !pushed
             && self
                 .session_preview

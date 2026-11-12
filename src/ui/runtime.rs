@@ -1045,10 +1045,14 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
             Operation::CommandPanel { .. }
                 | Operation::SessionPreview { .. }
                 | Operation::SessionPaneInput { .. }
+                | Operation::Watch { .. }
                 | Operation::CapturePane { .. }
                 | Operation::PaneInput { .. }
                 | Operation::PaneClose { .. }
         );
+        // Bulk work (files, containers, transfers) has its own lane, as it
+        // has its own helper channel: a container burst never delays sessions.
+        let bulk = transport::channel_class(&task.op) == transport::Channel::Bulk;
         if matches!(task.op, Operation::Info) {
             return format!(
                 "capabilities:{}",
@@ -1057,6 +1061,7 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
         }
         match &task.execution.target {
             Some(target) if panel => format!("panel:{target}"),
+            Some(target) if bulk => format!("bulk:{target}"),
             Some(target) => target.clone(),
             None if panel => "<local-command>".into(),
             None if matches!(
@@ -1069,6 +1074,7 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
             {
                 "<local-files-read>".into()
             }
+            None if bulk => "<local-bulk>".into(),
             None => "<local>".into(),
         }
     }

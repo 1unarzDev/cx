@@ -863,7 +863,10 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
     if result.is_ok() && slot.as_ref().is_some_and(|c| c.shared) {
         if let Some(mut m) = masters() {
             let until = std::time::Instant::now() + ANSWERED_FOR;
-            if m.confirmed.get(target).is_none_or(|current| *current < until) {
+            if m.confirmed
+                .get(target)
+                .is_none_or(|current| *current < until)
+            {
                 m.confirmed.insert(target.clone(), until);
             }
         }

@@ -6,7 +6,7 @@ Plain `cx` opens the **hub**, the network around this device; this device's File
 
 ## Controls
 
-One grammar on every screen: **a device letter, then a session slot or a verb**. Letters are underlined in device names on the map and printed on every tile and palette row; they stay the same while a device stays enrolled (`e` is never a device, and `h j k l` are used only past 21 devices).
+One grammar on every screen: **a device letter, then a session slot or a verb**. Letters are underlined in device names on the map and printed on every tile and palette row; they stay the same while a device stays enrolled (`e` is never a device, and `g h j k l` are used only past 20 devices, so `gg` is the first row on the hub).
 
 | Keys | Action |
 |---|---|

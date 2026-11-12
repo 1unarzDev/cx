@@ -1009,11 +1009,14 @@ fn a_pending_link_prefix_never_swallows_the_next_key() {
     assert_ne!(a.selected_session().unwrap().1.id, before, "`j` moved");
 }
 
-/// `gg` is the first row on the hub when no device owns `g`.
+/// `gg` is the first row on the hub, also with a device named for `g` (it takes another
+/// letter: `g` is late, like `h j k l`).
 #[test]
 fn gg_is_the_first_row_when_no_device_has_g() {
     let (mut a, _rx) = queued_app();
-    assert!(a.hotkeys().values().all(|c| *c != 'g'));
+    a.devices[1].name = "gateway".into();
+    a.hotkeys.borrow_mut().clear();
+    assert!(a.hotkeys().values().all(|c| *c != 'g'), "{:?}", a.hotkeys());
     sessions(&mut a, 0, 3);
     a.go_hub();
     a.hub_sessions = true;

@@ -1,15 +1,15 @@
 //! Device letters for the hub (docs/design/concept-mission.md section 6).
 //!
-//! Hub keys are non-letters plus `e` (link) and `j k` (motion), so every other letter can
-//! be a device. `h j k l` go last, only past 21 devices, so a vim hand never opens a
-//! device by accident; `e` is never assigned. A device keeps its letter for as long as it
+//! Hub keys are non-letters plus `e` (link) and `j k gg G` (motion), so every other letter
+//! can be a device. `g h j k l` go last, only past 20 devices, so `gg` stays the first row
+//! and a vim hand never opens a device by accident; `e` is never assigned. A device keeps its letter for as long as it
 //! stays in the list, so refreshes and new devices never move an existing letter.
 // (A device whose initial is taken prefers letters that are not session slots.)
 use super::views::mission::SLOTS;
 use std::collections::BTreeMap;
 
 const NEVER: [char; 1] = ['e'];
-const LATE: [char; 4] = ['h', 'j', 'k', 'l'];
+const LATE: [char; 5] = ['g', 'h', 'j', 'k', 'l'];
 
 /// Assign letters to `devices` (id, name), keeping every letter in `previous` whose device
 /// is still listed. Devices past the 25 assignable letters get none.
@@ -114,14 +114,14 @@ mod tests {
     }
 
     #[test]
-    fn hjkl_only_past_21_devices_and_never_e() {
+    fn ghjkl_only_past_20_devices_and_never_e() {
         let names: Vec<String> = (0..26)
             .map(|i| format!("{}x", (b'a' + i) as char))
             .collect();
         let list: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), n.as_str())).collect();
-        let m = assign(&list[..21], &BTreeMap::new());
-        assert!(m.values().all(|c| !"ehjkl".contains(*c)), "{m:?}");
-        assert_eq!(m.len(), 21);
+        let m = assign(&list[..20], &BTreeMap::new());
+        assert!(m.values().all(|c| !"eghjkl".contains(*c)), "{m:?}");
+        assert_eq!(m.len(), 20);
         let m = assign(&list, &BTreeMap::new());
         assert!(m.values().all(|c| *c != 'e'));
         assert_eq!(m.len(), 25, "25 assignable letters");

@@ -243,9 +243,9 @@ the top (the spacer row above the footer takes the first chips) and a destructiv
 
 ## 6. Interaction model
 
-Hub keys are non-letters plus `e`, `j` and `k`, so every other letter can be a device: a
-real build never assigns `e` (link) and assigns `h` `j` `k` `l` last, only past 21
-devices, so on the hub `j k` move through the sessions row and the phone tree as in every
+Hub keys are non-letters plus `e`, `j`, `k` and `gg`, so every other letter can be a device: a
+real build never assigns `e` (link) and assigns `g` `h` `j` `k` `l` last, only past 20
+devices, so on the hub `j k` (and `gg` `G`) move through the sessions row and the phone tree as in every
 list and a vim hand pressing `h` or `l` never opens a device (a device whose initial is
 reserved takes the next letter of its name that is neither reserved nor a slot:
 laptop-guest is `p`; the large fixture follows that order). Inside a device, letters are verbs and slots; the home row

@@ -892,7 +892,7 @@ mod tests {
     }
     #[test]
     fn no_static_binding_takes_a_device_letter_on_the_hub() {
-        // The hub's letters are devices: only `e` (link) and `j k` (motion) are
+        // The hub's letters are devices: only `e` (link) and `j k gg G` (motion) are
         // bound there, and `K` (keys) is uppercase.
         for c in 'a'..='z' {
             let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);

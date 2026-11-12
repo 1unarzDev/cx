@@ -27,7 +27,12 @@ Record changes in [CHANGELOG.md](../CHANGELOG.md). Before tagging a stable versi
 | `runtime.rs` | Event loop, `Screen` terminal ownership, input batching, task workers, auth prompts, self-restart state and update checks |
 | `actions.rs` | `execute()`, the command palette and action availability |
 | `keys.rs` | Workspace key and mouse dispatch: resolves keys through `keymap`, runs `Cmd`s, focus movement, command-panel keys |
-| `keymap.rs` | The single keymap table (`BINDINGS`): key dispatch, help overlay, footer chips, context menu and palette key column all read it |
+| `keymap.rs` | The single keymap table (`BINDINGS`): key dispatch, context menu and palette key column read it. The design's help and footer chips are drawn by `views/` from the spec, and their taps run `screens::view_action` |
+| `screens.rs` | The design's screens as a controller: hub, device, peek, link editor, invite, keys, send-to; their keys (`screen_key`, before the keymap) and taps (`view_action`) end in the same methods |
+| `viewmodel.rs` | `ViewModel::from(&App)`: the App's state as the view layer's `LabState`, plus the screen, focus and selection to draw; pure, no requests |
+| `views/` | The production design layer (Mission, docs/design/concept-mission.md): `mission/` draws a `LabState` into a buffer and returns its tap targets; `state.rs` the view-model types (lab fixtures are test-only); `caps.rs` the design's tokens, whose shared rows come from `theme.rs` |
+| `hotkeys.rs` | Stable device letters for the hub |
+| `lab/` | Test-only render lab: captures of the design from fixtures (`tests/lab.sh`, docs/design/lab.md) |
 | `hitmap.rs` | Pointer targets registered during render (tabs, rows, chips, scrollbars, palette/menu rows); tap / long-press / drag resolution; context menu |
 | `input.rs` | Text-input fields (filter, search, rename, commands); they own every printable key |
 | `dialogs.rs` | Modal dialog keys, Enter handling per dialog family, confirmation button layout |

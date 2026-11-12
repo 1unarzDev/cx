@@ -122,10 +122,6 @@ impl App {
             .iter()
             .position(|d| letters.get(&d.id) == Some(&c))
     }
-    /// The browser the Files screen shows (the destination while choosing one).
-    pub(super) fn active_browser(&self) -> Option<&Browser> {
-        self.browser.as_ref()
-    }
     /// First run: only this device, no links and no sessions yet, not dismissed.
     pub(super) fn onboarding(&self) -> bool {
         !self.onboarding_dismissed
@@ -156,6 +152,12 @@ impl App {
         self.send_pick = false;
         self.edge = None;
         self.edge_pending = false;
+        self.close_invite();
+    }
+    /// Close the invite, if one is open: its listener stops within a poll (its thread,
+    /// in `invite_thread`, is waited on by the next invite's). True when one was open.
+    fn close_invite(&mut self) -> bool {
+        self.invite.take().is_some()
     }
     /// A device's sessions (its letter from the hub, a node tap).
     pub(super) fn open_device(&mut self, d: usize) {
@@ -510,7 +512,7 @@ impl App {
                     dirty = true;
                 }
                 Ok(InviteEvent::Joined(v)) => {
-                    self.invite = None;
+                    self.close_invite();
                     let name = v["name"].as_str().unwrap_or("a device");
                     self.set_notice_as(
                         NoticeKind::Success,
@@ -519,7 +521,7 @@ impl App {
                     return true;
                 }
                 Err(e) => {
-                    self.invite = None;
+                    self.close_invite();
                     self.set_notice_as(NoticeKind::Error, safe_text(&format!("Invite: {e}")));
                     return true;
                 }
@@ -537,32 +539,39 @@ impl App {
                 until.saturating_duration_since(Instant::now()).as_secs()
             })
     }
-    fn invite_key(&mut self, key: KeyEvent) {
+    /// The invite's keys; `?` and `/` are the keymap's (help, find).
+    fn invite_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('`') => {
-                self.invite = None;
+            KeyCode::Esc => {
+                self.close_invite();
                 self.set_notice("Invite closed".into());
             }
             KeyCode::Char('R') => self.invite(),
             KeyCode::Char('y') => self.copy_invite(false),
             KeyCode::Char('Y') => self.copy_invite(true),
+            KeyCode::Char('?' | '/') => return false,
             _ => {}
         }
+        true
     }
     /// `y` (a tap on the code): the code; `Y` (a tap on the command): the whole `cx join` line.
-    /// Sent with OSC 52, which no terminal confirms, so the notice says so.
     fn copy_invite(&mut self, command: bool) {
         let Some((inv, _)) = self.invite.as_ref().and_then(|r| r.shown.as_ref()) else {
             return;
         };
-        let (text, what) = if command {
-            (inv.one_liner_sh.clone(), "Command")
+        let (what, text) = if command {
+            ("the command", inv.one_liner_sh.clone())
         } else {
-            (inv.code.clone(), "Code")
+            ("the code", inv.code.clone())
         };
+        self.copy_text(what, text);
+    }
+    /// `text` to the system clipboard through the terminal (OSC 52, written by the event
+    /// loop). No terminal confirms it, so the notice hedges (spec 6).
+    pub(super) fn copy_text(&mut self, what: &str, text: String) {
         self.copy_out = Some(text);
         self.set_notice(format!(
-            "{what} copied, if your terminal allows clipboard access"
+            "Copied {what}, if your terminal allows clipboard access"
         ));
     }
 
@@ -614,6 +623,11 @@ impl App {
     }
     /// Apply one direction's policy at once (off the UI thread: enforcement uses SSH).
     fn set_policy(&mut self, from: usize, to: usize, policy: crate::edges::Policy, undoable: bool) {
+        // One change at a time: the next one is planned from the graph this one reloads.
+        if self.edge_job.is_some() {
+            self.set_notice("Still saving the last change…".into());
+            return;
+        }
         let before = self.current_policy(from, to);
         if undoable {
             if let Some(e) = self.edge.as_mut() {
@@ -662,11 +676,13 @@ impl App {
         }
         true
     }
-    fn edge_key(&mut self, key: KeyEvent) {
+    /// The link's keys (plain keys only; chords are the keymap's); `?` and `/` are the
+    /// keymap's too (help, find).
+    fn edge_key(&mut self, key: KeyEvent) -> bool {
         use crate::edges::Policy;
         let Some((a, b)) = self.edge_ends() else {
             self.edge = None;
-            return;
+            return true;
         };
         let KeyCode::Char(c) = key.code else {
             match key.code {
@@ -674,7 +690,7 @@ impl App {
                 KeyCode::Down | KeyCode::Up => self.edge_lane(),
                 _ => {}
             }
-            return;
+            return true;
         };
         let pol = match c.to_ascii_lowercase() {
             'a' => Some(Policy::Key),
@@ -687,14 +703,18 @@ impl App {
             (_, Some(p)) => self.set_policy(b, a, p, true),
             ('j' | 'k', _) => self.edge_lane(),
             ('u', _) => {
-                if let Some((f, t, p)) = self.edge.as_mut().and_then(|e| e.undo.pop()) {
+                if self.edge_job.is_some() {
+                    self.set_notice("Still saving the last change…".into());
+                } else if let Some((f, t, p)) = self.edge.as_mut().and_then(|e| e.undo.pop()) {
                     self.set_policy(f, t, p, false);
                 } else {
                     self.set_notice("Nothing to undo".into());
                 }
             }
+            ('?' | '/', _) => return false,
             _ => {}
         }
+        true
     }
     fn edge_lane(&mut self) {
         if let Some(e) = self.edge.as_mut() {
@@ -706,23 +726,43 @@ impl App {
 
     /// The design's keys, before the static keymap. Returns true when consumed.
     pub(super) fn screen_key(&mut self, key: KeyEvent) -> bool {
-        if self.edge.is_some() {
-            self.edge_key(key);
-            return true;
-        }
         if self.secret_entry.is_some() {
             self.secret_entry_key(key);
             return true;
         }
-        if self.invite.is_some() {
-            self.invite_key(key);
-            return true;
-        }
         let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
-        // `⌫` asked; a second `⌫` stops, every other key keeps the session.
+        // A pending `e` takes the next key only when it is a device letter: the link to
+        // it; any other key drops the `e` and does what it always does.
+        if std::mem::take(&mut self.edge_pending) && plain {
+            if let Some(d) = match key.code {
+                KeyCode::Char(c) => self.device_for_letter(c),
+                _ => None,
+            } {
+                let from = match self.view {
+                    View::Work if self.device > 0 => self.device - 1,
+                    _ => self.local_index(),
+                };
+                self.open_edge(from, d);
+                return true;
+            }
+        }
+        // `⌫` asked; a second `⌫` stops, a slot key (in a device) asks for that
+        // session instead (`⌫ s ⌫`), every other key keeps the session.
         if let Some((d, session)) = self.stop_armed.take() {
-            if key.code == KeyCode::Backspace {
-                self.send_stop(d, session);
+            match key.code {
+                KeyCode::Backspace => self.send_stop(d, session),
+                KeyCode::Char(c) if plain && self.view == View::Work && SLOTS.contains(&c) => {
+                    let slot = SLOTS.iter().position(|s| *s == c).unwrap_or(0);
+                    if let Some(k) = self
+                        .slot_sessions(d)
+                        .get(slot)
+                        .map(|s| workspaces::runtime_key(s))
+                    {
+                        self.reconcile_session_selection(Some((d, k)));
+                        self.arm_stop();
+                    }
+                }
+                _ => {}
             }
             return true;
         }
@@ -750,7 +790,19 @@ impl App {
                 return true;
             }
         }
-        // `` ` `` `-` `+` `K` are the keymap's Global rows (BINDINGS), resolved after this.
+        // `` ` `` `-` `+` `K` are the keymap's Global rows (BINDINGS), resolved after this,
+        // also over the link editor and the invite, which own the rest of the plain keys.
+        if matches!(key.code, KeyCode::Char('`' | '-' | 'K'))
+            || (key.code == KeyCode::Char('+') && self.invite.is_none())
+        {
+            return false;
+        }
+        if self.edge.is_some() {
+            return self.edge_key(key);
+        }
+        if self.invite.is_some() {
+            return self.invite_key(key);
+        }
         if self.peek {
             return self.peek_key(key);
         }
@@ -763,25 +815,15 @@ impl App {
             _ => false,
         }
     }
-    /// `e` then a device letter (from `from`), or a device letter alone.
-    fn letter(&mut self, c: char, from: usize) -> bool {
-        if std::mem::take(&mut self.edge_pending) {
-            if let Some(d) = self.device_for_letter(c) {
-                self.open_edge(from, d);
-            }
-            return true;
-        }
-        if c == 'e' {
-            self.edge_pending = true;
-            return true;
-        }
-        false
-    }
     fn hub_key(&mut self, key: KeyEvent) -> bool {
-        let local = self.local_index();
         match key.code {
-            KeyCode::Char(c) if self.letter(c, local) => true,
-            // (`j k` and the vertical arrows are list motion: counts, `gg`, `G`.)
+            // `e` then a device letter: that link (see `screen_key`).
+            KeyCode::Char('e') => {
+                self.edge_pending = true;
+                true
+            }
+            // (`j k` and the vertical arrows are list motion: counts, `gg`, `G`; `g` is
+            // a device's letter when one has it.)
             KeyCode::Right => {
                 self.screen_move(1);
                 true
@@ -791,6 +833,7 @@ impl App {
                 true
             }
             KeyCode::Char('j' | 'k' | 'G') => false,
+            KeyCode::Char('g') if self.device_for_letter('g').is_none() => false,
             KeyCode::Char(c) if c.is_ascii_lowercase() => {
                 if let Some(d) = self.device_for_letter(c) {
                     self.open_device(d);
@@ -818,7 +861,10 @@ impl App {
     }
     fn device_key(&mut self, key: KeyEvent, d: usize) -> bool {
         match key.code {
-            KeyCode::Char(c) if self.letter(c, d) => true,
+            KeyCode::Char('e') => {
+                self.edge_pending = true;
+                true
+            }
             KeyCode::Char(c) if SLOTS.contains(&c) => {
                 let slot = SLOTS.iter().position(|s| *s == c).unwrap_or(0);
                 self.attach_slot(d, slot);
@@ -900,7 +946,7 @@ impl App {
     fn onboarding_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Enter => {
-                self.set_notice("Connect Cloudflare from a shell: cx mesh setup".into());
+                self.connect_cloudflare();
                 true
             }
             KeyCode::Esc => {
@@ -909,6 +955,16 @@ impl App {
                 true
             }
             _ => false,
+        }
+    }
+    /// Onboarding's `⏎ Connect Cloudflare`: the token's masked entry, so the flow is
+    /// `⏎`, paste, `⏎`.
+    fn connect_cloudflare(&mut self) {
+        self.open_secrets();
+        let vm = viewmodel::ViewModel::from(&*self);
+        let token = crate::secrets::CLOUDFLARE_TOKEN;
+        if let Some(i) = vm.state.secrets.iter().position(|s| s.key == token) {
+            self.secret_card(i);
         }
     }
     fn secrets_key(&mut self, key: KeyEvent) -> bool {
@@ -936,6 +992,22 @@ impl App {
                 true
             }
             _ => false,
+        }
+    }
+    /// Files' `y`: the previewed file's path, else the selected entry's.
+    fn copy_path(&mut self) {
+        let Some(b) = self.browser.as_ref() else {
+            return;
+        };
+        let path = match (&b.preview, &b.preview_path) {
+            (Some(_), Some(p)) => Some(p.clone()),
+            _ => browser_entries(b).get(b.selected).map(|e| e.path.clone()),
+        };
+        // (A path that is not UTF-8 travels encoded: its text, as the screen shows it.)
+        if let Some(path) = path {
+            let text =
+                crate::files::decode_path(&path).map_or(path, |p| p.to_string_lossy().into_owned());
+            self.copy_text("the path", text);
         }
     }
     /// A device's files: where its browser already is (the launch folder for this
@@ -988,7 +1060,8 @@ impl App {
     }
     /// `esc` (and its chips): back one level.
     fn back_here(&mut self) {
-        if self.invite.take().is_some() {
+        self.edge_pending = false;
+        if self.close_invite() {
             self.set_notice("Invite closed".into());
         } else if self.secret_entry.take().is_some() {
         } else if self.input == Some(Input::Palette) {
@@ -1035,8 +1108,9 @@ impl App {
             _ => {}
         }
     }
-    /// A tap on a view target: the same method its key runs.
-    pub(super) fn view_action(&mut self, action: &str) {
+    /// A tap on a view target: the same method its key runs. False for an action no
+    /// screen knows (every target a frame registers is known: see the tests).
+    pub(super) fn view_action(&mut self, action: &str) -> bool {
         let mut parts = action.splitn(3, ':');
         let (head, a, b) = (parts.next().unwrap_or(""), parts.next(), parts.next());
         let current = self
@@ -1071,6 +1145,11 @@ impl App {
                     self.new_session(d, provider);
                 }
             }
+            ("files", Some(d), _) => {
+                if let Some(d) = dev_index(d) {
+                    self.open_files(d);
+                }
+            }
             ("edge", Some(id), _) => {
                 if let Some((x, y)) = id.split_once('-') {
                     if let (Ok(x), Ok(y)) = (x.parse(), y.parse()) {
@@ -1103,10 +1182,7 @@ impl App {
                         self.palette_selected = i;
                     }
                 } else {
-                    self.open_palette(match i {
-                        "sessions" | "new" | "devices" => "",
-                        _ => "",
-                    });
+                    self.open_palette("");
                 }
             }
             ("secret" | "secret-add", Some(name), _) => {
@@ -1115,10 +1191,15 @@ impl App {
                     self.secret_card(i);
                 }
             }
-            ("file", _, _) | ("mesh", _, _) | ("cmd", _, _) => {}
             // Footer chips and buttons: the verbs their keys run.
             ("back", None, _) => self.back_here(),
             ("hub", None, _) => self.go_hub(),
+            // The top bar's device count: the map; its transfer readout: `T`.
+            ("devices", None, _) => {
+                self.go_hub();
+                self.hub_sessions = false;
+            }
+            ("transfers", None, _) => self.run_cmd(keymap::Cmd::Jobs),
             ("last", None, _) => self.attach_last(),
             // Files' `/ find` chip finds as its key does (in the folder or the preview).
             ("palette" | "find", None, _) if self.view == View::Files => {
@@ -1129,14 +1210,20 @@ impl App {
                     keymap::Cmd::Search
                 });
             }
-            ("palette" | "find", None, _) => self.open_palette(""),
+            // The ticker's `+N` and the top bar's count: `/` finds the devices they name.
+            ("palette" | "find" | "notices", None, _) => self.open_palette(""),
             ("invite" | "join" | "new-code", None, _) => self.invite(),
             ("secret-new", None, _) => self.new_secret(),
             ("secrets", None, _) => self.open_secrets(),
             ("help", None, _) => self.run_cmd(keymap::Cmd::Help),
-            ("detach", None, _) => {}
             ("zone", None, _) => self.toggle_zone(),
-            ("attach" | "open" | "go" | "connect", None, _) => self.primary_here(),
+            ("connect" | "connect-cloudflare", None, _) => self.connect_cloudflare(),
+            ("copy-code", None, _) => self.copy_invite(false),
+            ("copy-cmd", None, _) => self.copy_invite(true),
+            ("copy-path", None, _) => self.copy_path(),
+            ("select", None, _) => self.execute(Action::Select),
+            ("edit", None, _) => self.secret_card(self.secret_selected),
+            ("attach" | "open" | "go", None, _) => self.primary_here(),
             ("peek" | "preview", None, _) => {
                 if self.view == View::Files {
                     self.primary();
@@ -1162,11 +1249,9 @@ impl App {
                 }
             }
             ("copy", None, _) => self.execute(Action::Copy),
-            ("copy-code", None, _) => self.copy_invite(false),
-            ("copy-cmd", None, _) => self.copy_invite(true),
             ("peek-next", None, _) => self.peek_next(1),
             ("undo", None, _) => {
-                self.edge_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE))
+                self.edge_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
             }
             ("lane", None, _) => self.edge_lane(),
             ("skip", None, _) => self.onboarding_dismissed = true,
@@ -1175,7 +1260,8 @@ impl App {
                     self.new_session(d, verb.trim_start_matches("new-"));
                 }
             }
-            _ => {}
+            _ => return false,
         }
+        true
     }
 }

@@ -3,17 +3,15 @@
 //! lab fixtures in tests) into a ratatui buffer. Nothing here touches App, IO, tmux or
 //! the network; rendering never dispatches requests. The test-only lab harness
 //! (`ui::lab`) captures the same code from fixtures.
-#![allow(dead_code)]
 
 pub mod caps;
 pub mod mission;
 pub mod state;
 
-#[allow(unused_imports)]
 pub use caps::{ColorLevel, LabCaps, Pane, Theme, Tok};
 pub use state::*;
 
-use ratatui::{buffer::Buffer, layout::Rect, text::Line};
+use ratatui::{layout::Rect, text::Line};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LabView {
@@ -25,7 +23,9 @@ pub enum LabView {
     SessionPeek(String),
     Files,
     FilePreview,
-    /// Command palette / jump-to-anything with the typed query.
+    /// Command palette / jump-to-anything with the typed query (lab captures; the app
+    /// draws the palette as an overlay on any view).
+    #[cfg(test)]
     Palette(String),
     Secrets,
     /// First run / "Connect Cloudflare".
@@ -37,124 +37,11 @@ pub enum LabView {
     Help,
 }
 
-impl LabView {
-    /// The default capture set for a fixture.
-    pub fn defaults(state: &LabState) -> Vec<LabView> {
-        let device = state
-            .devices
-            .iter()
-            .find(|d| d.id == "innovation")
-            .or(state.devices.get(1))
-            .map(|d| d.id.clone())
-            .unwrap_or_default();
-        let session = state
-            .sessions
-            .first()
-            .map(|s| s.id.clone())
-            .unwrap_or_default();
-        let edge = state
-            .edges
-            .first()
-            .map(|e| e.id.clone())
-            .unwrap_or_default();
-        vec![
-            LabView::Hub,
-            LabView::DeviceFocus(device),
-            LabView::SessionPeek(session),
-            LabView::Files,
-            LabView::FilePreview,
-            LabView::Palette("inno".into()),
-            LabView::Secrets,
-            LabView::Onboarding,
-            LabView::JoinCode,
-            LabView::EdgeEditor(edge),
-            LabView::Help,
-        ]
-    }
-
-    /// Parse `hub`, `device:<id>`, `session:<id>`, `files`, `file-preview`,
-    /// `palette:<query>`, `secrets`, `onboarding`, `join`, `edge:<from-to>`, `help`.
-    /// `device`, `session` and `edge` without an id take the fixture's default.
-    pub fn parse(spec: &str, state: &LabState) -> Option<LabView> {
-        let (head, arg) = match spec.split_once(':') {
-            Some((h, a)) => (h, Some(a.to_string())),
-            None => (spec, None),
-        };
-        let defaults = Self::defaults(state);
-        let pick = |f: fn(&LabView) -> bool| defaults.iter().find(|v| f(v)).cloned();
-        Some(match head {
-            "hub" => LabView::Hub,
-            "device" => match arg {
-                Some(a) => LabView::DeviceFocus(a),
-                None => pick(|v| matches!(v, LabView::DeviceFocus(_)))?,
-            },
-            "session" => match arg {
-                Some(a) => LabView::SessionPeek(a),
-                None => pick(|v| matches!(v, LabView::SessionPeek(_)))?,
-            },
-            "files" => LabView::Files,
-            "file-preview" | "preview" => LabView::FilePreview,
-            "palette" => LabView::Palette(arg.unwrap_or_default()),
-            "secrets" => LabView::Secrets,
-            "onboarding" => LabView::Onboarding,
-            "join" | "join-code" => LabView::JoinCode,
-            "edge" => match arg {
-                Some(a) => LabView::EdgeEditor(a),
-                None => pick(|v| matches!(v, LabView::EdgeEditor(_)))?,
-            },
-            "help" => LabView::Help,
-            _ => return None,
-        })
-    }
-
-    /// File-name slug.
-    pub fn slug(&self) -> String {
-        let clean = |s: &str| {
-            s.chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-                .collect::<String>()
-        };
-        match self {
-            LabView::Hub => "hub".into(),
-            LabView::DeviceFocus(d) => format!("device-{}", clean(d)),
-            LabView::SessionPeek(s) => format!("session-{}", clean(s)),
-            LabView::Files => "files".into(),
-            LabView::FilePreview => "file-preview".into(),
-            LabView::Palette(q) if q.is_empty() => "palette".into(),
-            LabView::Palette(q) => format!("palette-{}", clean(q)),
-            LabView::Secrets => "secrets".into(),
-            LabView::Onboarding => "onboarding".into(),
-            LabView::JoinCode => "join".into(),
-            LabView::EdgeEditor(e) => format!("edge-{}", clean(e)),
-            LabView::Help => "help".into(),
-        }
-    }
-}
-
 /// A tap/click target a concept exposes (dumped for the touch-target overlay).
 #[derive(Clone, Debug, PartialEq)]
 pub struct LabTarget {
     pub area: Rect,
     pub action: String,
-}
-
-pub trait Concept {
-    fn name(&self) -> &str;
-    /// One line for the contact sheet header.
-    fn summary(&self) -> &str {
-        ""
-    }
-    fn render(&self, view: LabView, state: &LabState, caps: &LabCaps, area: Rect, buf: &mut Buffer);
-    /// Click/tap targets for the same frame. Optional; drives the `.targets.png` overlay.
-    fn targets(
-        &self,
-        _view: &LabView,
-        _state: &LabState,
-        _caps: &LabCaps,
-        _area: Rect,
-    ) -> Vec<LabTarget> {
-        Vec::new()
-    }
 }
 
 /// Parse a SGR-colored screen snapshot (as in `LabSession::screen`) into lines, padding
@@ -213,19 +100,5 @@ pub mod fmt {
                 }
             })
             .collect()
-    }
-    /// Truncate to `w` display columns with an ellipsis.
-    pub fn fit(s: &str, w: usize, unicode: bool) -> String {
-        let n = s.chars().count();
-        if n <= w {
-            return s.to_string();
-        }
-        if w == 0 {
-            return String::new();
-        }
-        let ell = if unicode { "…" } else { "~" };
-        let mut out: String = s.chars().take(w - 1).collect();
-        out.push_str(ell);
-        out
     }
 }

@@ -1,6 +1,6 @@
-//! `lab_capture`: env-driven dump of (view x size x variant x fixture) for one concept.
+//! `lab_capture`: env-driven dump of (view x size x variant x fixture) of the design.
 //! Run through `tests/lab.sh`, which also turns the dumps into PNGs and contact sheets.
-use super::{caps::Pane, concepts, dump, render_frame, LabCaps, LabState, LabView};
+use super::{caps::Pane, dump, render_frame, LabCaps, LabState, LabView};
 use serde_json::json;
 use std::{env, fs, path::PathBuf};
 
@@ -37,12 +37,8 @@ fn parse_size(s: &str) -> (u16, u16) {
 fn parse_pane(s: &str) -> Option<Pane> {
     Some(match s {
         "graph" => Pane::Graph,
-        "rail" => Pane::Rail,
         "sessions" => Pane::Sessions,
-        "preview" => Pane::Preview,
         "files" => Pane::Files,
-        "inspector" => Pane::Inspector,
-        "palette" => Pane::Palette,
         "dialog" => Pane::Dialog,
         "" | "auto" => return None,
         other => Pane::Custom(Box::leak(other.to_string().into_boxed_str())),
@@ -52,13 +48,6 @@ fn parse_pane(s: &str) -> Option<Pane> {
 #[test]
 #[ignore = "render lab capture; run via tests/lab.sh"]
 fn lab_capture() {
-    let all = concepts();
-    let names: Vec<&str> = all.iter().map(|c| c.name()).collect();
-    let wanted = var("CX_LAB_CONCEPT", "");
-    let concept = all
-        .iter()
-        .find(|c| c.name() == wanted)
-        .unwrap_or_else(|| panic!("CX_LAB_CONCEPT `{wanted}` unknown; registered: {names:?}"));
     let out = PathBuf::from(env::var("CX_LAB_OUT").expect("CX_LAB_OUT output directory"));
     fs::create_dir_all(&out).expect("create CX_LAB_OUT");
 
@@ -101,10 +90,9 @@ fn lab_capture() {
             caps.hover = hover;
             for view in &views {
                 for &(w, h) in &sizes {
-                    let buf = render_frame(concept.as_ref(), view, &state, &caps, w, h);
+                    let (buf, targets) = render_frame(view, &state, &caps, w, h);
                     let (rows, lint) = dump::dump(&buf, &caps);
-                    let targets: Vec<_> = concept
-                        .targets(view, &state, &caps, buf.area)
+                    let targets: Vec<_> = targets
                         .into_iter()
                         .map(|t| {
                             json!({"x": t.area.x, "y": t.area.y, "w": t.area.width,
@@ -125,7 +113,7 @@ fn lab_capture() {
                     let lint_json = json!({"non_ascii": lint.non_ascii,
                         "color_leaks": lint.color_leaks, "samples": lint.samples});
                     let doc = json!({
-                        "concept": concept.name(), "view": view.slug(), "cols": w, "rows": h,
+                        "concept": "mission", "view": view.slug(), "cols": w, "rows": h,
                         "variant": variant, "fixture": fx,
                         "theme": if caps.theme == super::Theme::Dark { "dark" } else { "light" },
                         "color": format!("{:?}", caps.color), "unicode": caps.unicode,
@@ -142,15 +130,14 @@ fn lab_capture() {
         }
     }
     let manifest = json!({
-        "concept": concept.name(), "summary": concept.summary(),
+        "concept": "mission",
         "sizes": sizes.iter().map(|(w, h)| format!("{w}x{h}")).collect::<Vec<_>>(),
         "variants": variants, "fixtures": fixtures, "entries": entries,
     });
     fs::write(out.join("manifest.json"), manifest.to_string()).unwrap();
     eprintln!(
-        "lab_capture: {} frames of `{}` -> {} ({warnings} with lint warnings)",
+        "lab_capture: {} frames -> {} ({warnings} with lint warnings)",
         entries.len(),
-        concept.name(),
         out.display()
     );
 }

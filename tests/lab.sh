@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Render lab: capture one concept and turn it into PNGs + contact sheets.
+# Render lab: capture the design and turn it into PNGs + contact sheets (CONCEPT only
+# names the output directory).
 #   tests/lab.sh CONCEPT [VIEWS]
 # VIEWS: comma list (hub,device:innovation,session:refactor,files,file-preview,palette:inno,
 #        secrets,onboarding,join,edge:tranquility-innovation,help) or "all" (default).
@@ -22,7 +23,7 @@ out="$base/round-$n"
 mkdir -p "$out/frames"
 
 cd "$root"
-CX_LAB_CONCEPT="$concept" CX_LAB_OUT="$out/frames" CX_LAB_VIEWS="$views" \
+CX_LAB_OUT="$out/frames" CX_LAB_VIEWS="$views" \
     cargo test --locked --quiet --bin cx ui::lab::capture::lab_capture -- \
     --ignored --exact --nocapture >"$out/capture.log" 2>&1 || {
     tail -n 30 "$out/capture.log" >&2

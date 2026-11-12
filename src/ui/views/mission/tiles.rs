@@ -1,7 +1,7 @@
-//! Tiles: micro-charts, phone device rows and session thumbnails that show the live tail
+//! Tiles: micro-charts and session thumbnails that show the live tail
 //! of the real screen in its own colours, so sessions are recognised by their look.
 use super::{fit, fmt, mix, to_rgb, Cx, Rgb};
-use crate::ui::views::{ansi_lines, LabDevice, LabSession, Tok};
+use crate::ui::views::{ansi_lines, LabSession, Tok};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -152,118 +152,6 @@ pub(super) fn gauge(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, w: u16, v: f32, s
 /// (every printable glyph there already means something; the name says it).
 pub(super) fn mesh_glyph(cx: &Cx) -> String {
     cx.g("■ ", "").into()
-}
-
-/// Session pips (one slot letter per session in its state colour, space separated),
-/// right-aligned at `right`.
-pub(super) fn pips(
-    cx: &Cx,
-    buf: &mut Buffer,
-    right: u16,
-    y: u16,
-    d: &LabDevice,
-    max: usize,
-) -> u16 {
-    let segs = pip_segs(cx, d, max);
-    let w: u16 = segs
-        .iter()
-        .map(|(t, _)| super::width(t, cx.uni()) + 1)
-        .sum::<u16>()
-        .saturating_sub(1);
-    let mut x = right.saturating_sub(w);
-    for (t, st) in segs {
-        x += cx.put(buf, x, y, 4, &t, st) + 1;
-    }
-    w
-}
-
-/// Pips as text segments: each session's slot letter in its state colour (`a s`), so a
-/// node says both how many sessions run there and the key that attaches each one.
-pub(super) fn pip_segs(cx: &Cx, d: &LabDevice, max: usize) -> Vec<(String, Style)> {
-    let ss: Vec<&LabSession> = cx.s.sessions_on(&d.id).collect();
-    let mut v: Vec<(String, Style)> = ss
-        .iter()
-        .take(max)
-        .map(|s| {
-            let k = cx.slot(s).unwrap_or(' ').to_string();
-            (k, cx.sstate(s).2.add_modifier(Modifier::BOLD))
-        })
-        .collect();
-    if ss.len() > max {
-        v.push((format!("+{}", ss.len() - max), cx.st(Tok::Muted)));
-    }
-    v
-}
-
-/// Compact device line for phones: keycap, name, status and evidence on one row; with
-/// two rows (a thumb-sized target) the cpu trend, temperature and pips go underneath.
-pub(super) fn device_row(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, pick: Pick) {
-    if r.width < 10 || r.height == 0 {
-        return;
-    }
-    let bg = match pick {
-        Some(_) => tile_bg(cx, pick),
-        None => Style::default(),
-    };
-    cx.fill(buf, r, bg);
-    pick_bar(cx, buf, r, pick);
-    let mut x = r.x + 1;
-    x += cx.dchip(buf, x, r.y, d, false);
-    x += 1;
-    let (g, gst) = cx.status(d.status);
-    let right = r.right().saturating_sub(1);
-    let two = r.height >= 2;
-    let tail = if two { 8 } else { 13u16.min(r.width / 2) };
-    let up = cx.up(d);
-    let nst = if pick == Some(true) {
-        // Focused: the bold accent name that goes with the bar, in every tier.
-        cx.st(Tok::Accent).add_modifier(Modifier::BOLD)
-    } else if up {
-        cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD)
-    } else {
-        cx.st(Tok::Muted)
-    };
-    let room = right.saturating_sub(x + tail + 2);
-    cx.put(
-        buf,
-        x,
-        r.y,
-        room,
-        &fit(&d.name, room as usize, cx.uni()),
-        nst,
-    );
-    let tx = right.saturating_sub(tail);
-    cx.put(buf, tx, r.y, 1, g, gst);
-    let meta = cx.meta(d);
-    let mst = if up {
-        cx.st(Tok::Muted)
-    } else {
-        cx.ink(Tok::Err, 0.85)
-    };
-    let mw = cx.put(buf, tx + 2, r.y, tail.saturating_sub(2), &meta, mst);
-    let (ey, ex) = if two {
-        (r.y + 1, r.x + 5)
-    } else {
-        (r.y, tx + 2 + mw + 1)
-    };
-    let pw = pips(cx, buf, right, ey, d, 3);
-    if let Some(m) = d.metrics.as_ref().filter(|_| up) {
-        let sw = right
-            .saturating_sub(ex + pw + 1)
-            .min(if two { 12 } else { 99 });
-        if sw >= 3 {
-            let v: Vec<Option<f32>> = m.cpu_hist.iter().map(|v| Some(*v)).collect();
-            spark(cx, buf, ex, ey, sw, &v, cx.spark_heat(m.cpu));
-            if two {
-                let t = match m.temp_c {
-                    Some(t) => format!("{:.0}% {t:.0}{}", m.cpu * 100.0, cx.g("°", "C")),
-                    None => format!("{:.0}%", m.cpu * 100.0),
-                };
-                cx.put(buf, ex + sw + 1, ey, 10, &t, cx.st(Tok::Muted));
-            }
-        }
-    }
-    cx.hit(r, format!("device:{}", d.id));
 }
 
 fn text(l: &ratatui::text::Line) -> String {

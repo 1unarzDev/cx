@@ -4,10 +4,9 @@
 //! (`"0"`, `"1"`, ...), so tap actions resolve without parsing user-controlled ids.
 use super::actions::PaletteTarget;
 use super::views::{
-    Access, ColorLevel, DeviceKind, DeviceStatus, EdgeKind, FileKind, FileNode, LabCaps, LabDevice,
-    LabEdge, LabFiles, LabInvite, LabNotice, LabPreview, LabSecret, LabSecretEntry, LabSession,
-    LabState, LabTransfer, LabView, NoticeKind, PaletteRow, Pane, PreviewKind, Provider,
-    SessionState, Theme,
+    Access, ColorLevel, DeviceStatus, EdgeKind, FileKind, FileNode, LabCaps, LabDevice, LabEdge,
+    LabFiles, LabInvite, LabNotice, LabPreview, LabSecret, LabSecretEntry, LabSession, LabState,
+    LabTransfer, LabView, NoticeKind, PaletteRow, Pane, PreviewKind, Provider, SessionState, Theme,
 };
 use super::*;
 
@@ -84,6 +83,13 @@ pub(super) fn terminal_caps() -> LabCaps {
 /// Which screen to draw, with its focus and selection set on `caps`.
 fn screen(app: &App, state: &LabState, caps: &mut LabCaps) -> LabView {
     if app.help {
+        // The table for the screen it was opened over.
+        caps.focus = match app.view {
+            _ if app.edge.is_some() => Some(Pane::Custom("edge")),
+            View::Work if app.device > 0 => Some(Pane::Custom("device")),
+            View::Files => Some(Pane::Files),
+            _ => None,
+        };
         return LabView::Help;
     }
     if app.invite.is_some() {
@@ -191,6 +197,18 @@ fn status(app: &App, d: usize) -> (DeviceStatus, String, u32) {
 
 fn devices(app: &App) -> Vec<LabDevice> {
     let letters = app.hotkeys();
+    // Identity hues by a stable hash of the device id (spec 4.1); while there are hues
+    // to spare, a collision takes the next free one in listing order.
+    let mut taken = [false; super::theme::SWATCHES as usize];
+    let spare = app.devices.len() <= taken.len();
+    let mut hue = |id: &str| {
+        let mut h = usize::from(super::theme::swatch_index(id));
+        while spare && taken[h] {
+            h = (h + 1) % taken.len();
+        }
+        taken[h] = true;
+        h as u8
+    };
     app.devices
         .iter()
         .enumerate()
@@ -204,11 +222,7 @@ fn devices(app: &App) -> Vec<LabDevice> {
                 id: dev_id(i),
                 name: safe_label(&d.name),
                 hotkey: letters.get(&d.id).copied().unwrap_or(' '),
-                kind: if d.target.is_none() {
-                    DeviceKind::Desktop
-                } else {
-                    DeviceKind::Server
-                },
+                hue: hue(&d.id),
                 os: String::new(),
                 account: safe_label(&d.account),
                 host: safe_label(&d.host),
@@ -232,7 +246,9 @@ fn access(a: crate::edges::Access) -> Access {
     }
 }
 
-/// The stored edge graph (`edges::graph`, loaded by the controller), by device index.
+/// The stored edge graph (`edges::graph`, loaded by the controller), by device index. A
+/// link this device reaches through an enrolled relay (its route's last hop) is a jump
+/// through that relay. Meshes and rtt are not carried yet (STATUS.md).
 fn edges(app: &App) -> Vec<LabEdge> {
     let local = app.local_index();
     let index = |id: &str| {
@@ -242,36 +258,82 @@ fn edges(app: &App) -> Vec<LabEdge> {
             app.devices.iter().position(|d| d.id == id)
         }
     };
-    app.edge_views
+    let up = |a: usize, b: usize| {
+        [a, b]
+            .iter()
+            .all(|&d| app.devices[d].target.is_none() || status(app, d).0 == DeviceStatus::Online)
+    };
+    let mut out: Vec<LabEdge> = app
+        .edge_views
         .iter()
         .filter_map(|e| {
             let (a, b) = (index(&e.from)?, index(&e.to)?);
-            let up = [a, b].iter().all(|&d| {
-                app.devices[d].target.is_none() || status(app, d).0 == DeviceStatus::Online
-            });
+            let far = if a == local { b } else { a };
+            let relay = [a, b]
+                .contains(&local)
+                .then(|| app.network_jump_routes.get(&far)?.as_ref()?.last())
+                .flatten()
+                .and_then(|hop| {
+                    app.devices
+                        .iter()
+                        .position(|d| d.target.as_deref() == Some(hop.as_str()))
+                });
             Some(LabEdge {
                 id: format!("{a}-{b}"),
                 from: dev_id(a),
                 to: dev_id(b),
-                kind: EdgeKind::Direct,
+                kind: relay.map_or(EdgeKind::Direct, |j| EdgeKind::Jump(dev_id(j))),
                 forward: access(e.forward.access),
                 reverse: access(e.reverse.access),
-                up,
+                up: up(a, b),
                 rtt_ms: None,
                 rtt_hist: Vec::new(),
                 loss: 0.0,
             })
         })
-        .collect()
+        .collect();
+    // The link the editor has open, when nothing is recorded for it yet: unmanaged both
+    // ways (a password), as its first change is planned from. The sheet always shows
+    // the link its keys change.
+    let open = app.edge.as_ref().and_then(|e| {
+        let (a, b) = e.id.split_once('-')?;
+        let (a, b): (usize, usize) = (a.parse().ok()?, b.parse().ok()?);
+        (a.max(b) < app.devices.len()).then_some((a, b))
+    });
+    if let Some((a, b)) = open {
+        let (f, t) = (dev_id(a), dev_id(b));
+        if !out
+            .iter()
+            .any(|e| (e.from == f && e.to == t) || (e.from == t && e.to == f))
+        {
+            out.push(LabEdge {
+                id: format!("{a}-{b}"),
+                from: f,
+                to: t,
+                kind: EdgeKind::Direct,
+                forward: Access::Password,
+                reverse: Access::Password,
+                up: up(a, b),
+                rtt_ms: None,
+                rtt_hist: Vec::new(),
+                loss: 0.0,
+            });
+        }
+    }
+    out
 }
 
 fn session_state(app: &App, d: usize, s: &Session) -> SessionState {
-    if !app.session_status(d, s).starts_with('+') {
-        return SessionState::Exited;
+    match app.session_status(d, s) {
+        // A fresh listing without it: ended.
+        "not seen" => return SessionState::Exited,
+        // An unreachable device or an old listing: no evidence either way.
+        status if !status.starts_with('+') => return SessionState::Unknown,
+        _ => {}
     }
     // Activity from an old listing says nothing about now.
     if s.activity.is_some() && !session_activity_current(&app.work[d]) {
-        return SessionState::Idle;
+        return SessionState::Unknown;
     }
     match s.activity.as_deref() {
         Some("waiting") => SessionState::AwaitingInput,
@@ -344,7 +406,7 @@ fn sessions(app: &App) -> Vec<LabSession> {
 const WINDOW: usize = 256;
 
 fn files(app: &App) -> LabFiles {
-    let Some(b) = app.active_browser() else {
+    let Some(b) = app.browser.as_ref() else {
         return LabFiles {
             device: dev_id(app.local_index()),
             cwd: String::new(),
@@ -488,17 +550,19 @@ fn secrets(app: &App) -> Vec<LabSecret> {
     out
 }
 
-/// The ticker: unreachable devices, each with its retry (transient notices are toasts).
+/// The ticker: devices whose listing failed, each with its retry (transient notices are
+/// toasts).
 fn notices(app: &App) -> Vec<LabNotice> {
     let mut out = Vec::new();
     for (i, w) in app.work.iter().enumerate() {
         if let Some(e) = &w.error {
             out.push(LabNotice {
                 kind: NoticeKind::Warn,
+                device: Some(dev_id(i)),
                 text: format!(
-                    "{} unreachable: {}",
+                    "{}: {}",
                     safe_label(&app.devices[i].name),
-                    safe_label(e)
+                    safe_label(reason(e))
                 ),
                 age_secs: 0,
                 action: Some("retry".into()),
@@ -506,6 +570,19 @@ fn notices(app: &App) -> Vec<LabNotice> {
         }
     }
     out
+}
+
+/// A failure's reason for the ticker: without the `account@host: ` prefixes (the
+/// ticker names the device) or the advice after ` · ` (its key chip is the advice).
+fn reason(e: &str) -> &str {
+    let mut r = e.split(" · ").next().unwrap_or(e);
+    while let Some((head, rest)) = r.split_once(": ") {
+        if !head.contains('@') || head.contains(' ') {
+            break;
+        }
+        r = rest;
+    }
+    r
 }
 
 fn transfers(app: &App) -> Vec<LabTransfer> {
@@ -578,7 +655,7 @@ fn palette(app: &App) -> Vec<PaletteRow> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
 
@@ -594,6 +671,7 @@ mod tests {
         }
     }
     pub(in crate::ui) fn hub_app() -> App {
+        crate::store::isolate_test_state();
         let (tx, _) = mpsc::sync_channel(64);
         let mut a = App::new(
             vec![

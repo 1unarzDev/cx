@@ -6,8 +6,8 @@
 //! See docs/design/concept-mission.md.
 use crate::ui::views::{
     caps::{index_rgb, named_index, rgb_to_16, rgb_to_256, XTERM16},
-    fmt, ColorLevel, Concept, DeviceStatus, LabCaps, LabDevice, LabSession, LabState, LabTarget,
-    LabView, SessionState, Theme, Tok,
+    fmt, ColorLevel, DeviceStatus, LabCaps, LabDevice, LabSession, LabState, LabTarget, LabView,
+    SessionState, Theme, Tok,
 };
 use ratatui::{
     buffer::Buffer,
@@ -20,39 +20,6 @@ mod hub;
 mod orbit;
 mod tiles;
 mod views;
-
-pub struct Mission;
-
-impl Concept for Mission {
-    fn name(&self) -> &str {
-        "mission"
-    }
-    fn summary(&self) -> &str {
-        "mission control: orbit hub with policy strokes, vitals strip, live session thumbnails, alert ticker; device letter + slot/verb"
-    }
-    fn render(
-        &self,
-        view: LabView,
-        state: &LabState,
-        caps: &LabCaps,
-        area: Rect,
-        buf: &mut Buffer,
-    ) {
-        Cx::new(state, caps, area).draw(&view, buf);
-    }
-    fn targets(
-        &self,
-        view: &LabView,
-        state: &LabState,
-        caps: &LabCaps,
-        area: Rect,
-    ) -> Vec<LabTarget> {
-        let cx = Cx::new(state, caps, area);
-        let mut scratch = Buffer::empty(area);
-        cx.draw(view, &mut scratch);
-        cx.hits.into_inner()
-    }
-}
 
 /// What one production frame drew: its tap targets and the hub's device order (the
 /// map's or the phone tree's), so keys move through exactly what is on screen.
@@ -601,6 +568,8 @@ impl<'a> Cx<'a> {
             SessionState::Working => (self.g("●", " "), "working", self.st(Tok::Accent)),
             SessionState::Running => (self.g("●", " "), "running", self.st(Tok::Ok)),
             SessionState::Idle => (self.g("○", "-"), "idle", self.st(Tok::Muted)),
+            // No current evidence (the device is unreachable or the listing is old).
+            SessionState::Unknown => (self.g("◌", "?"), "unknown", self.st(Tok::Muted)),
             SessionState::Exited => (self.g("·", "."), "exited", self.ink(Tok::Faint, 1.0)),
         }
     }
@@ -624,7 +593,8 @@ impl<'a> Cx<'a> {
             SessionState::Working => 1,
             SessionState::Running => 2,
             SessionState::Idle => 3,
-            SessionState::Exited => 4,
+            SessionState::Unknown => 4,
+            SessionState::Exited => 5,
         };
         v.sort_by_key(|x| (rank(x), x.last_activity_secs));
         v
@@ -741,8 +711,11 @@ impl<'a> Cx<'a> {
                 cx += 1;
                 cx += self.put(buf, cx, y, lw, label, self.st(Tok::Muted));
             }
-            let top = y.saturating_sub(th - 1);
-            self.hit(Rect::new(x0, top, cx - x0, y + 1 - top), *action);
+            // A chip with no action only teaches its key (`j k move`): no tap target.
+            if !action.is_empty() {
+                let top = y.saturating_sub(th - 1);
+                self.hit(Rect::new(x0, top, cx - x0, y + 1 - top), *action);
+            }
             cx += 2;
         }
         cx
@@ -796,14 +769,6 @@ pub(super) fn width(s: &str, unicode: bool) -> u16 {
     } else {
         s.chars().count() as u16
     }
-}
-
-/// The last row of `r` with anything drawn on it (callers give the rows under a
-/// drawing to their content).
-pub(super) fn last_row(buf: &Buffer, r: Rect) -> Option<u16> {
-    (r.y..r.bottom())
-        .rev()
-        .find(|&y| (r.x..r.right()).any(|x| buf[(x, y)].symbol() != " "))
 }
 
 pub(super) fn ms_text(ms: f32) -> String {

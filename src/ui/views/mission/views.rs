@@ -131,7 +131,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                 } else {
                     vec![
                         ("⏎", "attach", "attach"),
-                        ("t a…", "jump", "jump"),
+                        ("t a…", "jump", ""),
                         ("tab", "next", "peek-next"),
                         ("⌫", "stop", "stop"),
                         ("esc", "back", "back"),
@@ -168,32 +168,32 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                         // The preview is already inline: the footer teaches the motion keys.
                         vec![
                             ("⏎", "open", "open"),
-                            ("j k", "move", "move"),
-                            ("l h", "fold", "fold"),
+                            ("j k", "move", ""),
+                            ("h l", "up / in", ""),
                             ("s", "send to", "send"),
-                            ("y", "copy", "copy"),
+                            ("y", "copy path", "copy-path"),
                             ("/", "find", "palette"),
                             ("esc", "back", "back"),
                             ("`", "hub", "hub"),
                         ]
                     } else if !cx.touch() {
-                        // 80 columns: the motion keys first, as at M; the preview is `spc`.
+                        // 80 columns: the motion keys first, as at M; `⏎` previews.
                         vec![
                             ("⏎", "open", "open"),
-                            ("j k", "move", "move"),
-                            ("l h", "fold", "fold"),
+                            ("j k", "move", ""),
+                            ("h l", "up / in", ""),
                             ("s", "send", "send"),
-                            ("␣", "preview", "preview"),
+                            ("␣", "select", "select"),
                             ("/", "find", "palette"),
                             ("esc", "back", "back"),
                         ]
                     } else {
-                        // Tapping a row previews it, so phones keep `s send` instead.
+                        // Tapping a row opens it, so phones keep `s send` instead.
                         vec![
                             ("⏎", "open", "open"),
                             ("esc", "back", "back"),
                             ("s", "send", "send"),
-                            ("␣", "preview", "preview"),
+                            ("␣", "select", "select"),
                             ("/", "find", "palette"),
                             ("`", "hub", "hub"),
                         ]
@@ -208,13 +208,13 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                     vec![
                         ("esc", "back", "back"),
                         ("/", "find", "find"),
-                        ("s", "send to", "send"),
-                        ("y", "copy", "copy"),
+                        ("y", "copy path", "copy-path"),
                         ("`", "hub", "hub"),
                     ],
                 );
             }
         }
+        #[cfg(test)]
         LabView::Palette(q) => {
             top(cx, buf, &[], true);
             super::hub::hub(cx, buf, body);
@@ -260,16 +260,20 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                 buf,
                 foot,
                 vec![
+                    ("y", "code", "copy-code"),
+                    ("Y", "command", "copy-cmd"),
                     ("esc", "done", "back"),
-                    ("y", "copy", "copy-code"),
                     // Shifted: a new code revokes one that may already be shared.
                     ("R", "new code", "new-code"),
                 ],
             );
         }
         LabView::EdgeEditor(id) => {
-            let e = cx.s.edge(id).or(cx.s.edges.first());
-            let ends = e.and_then(|e| Some((cx.s.device(&e.from)?, cx.s.device(&e.to)?)));
+            // The opener first, as the sheet names them.
+            let ends = edge_of(cx, id).and_then(|(e, flipped)| {
+                let (a, b) = (cx.s.device(&e.from)?, cx.s.device(&e.to)?);
+                Some(if flipped { (b, a) } else { (a, b) })
+            });
             let crumbs: Vec<Crumb> = ends.map(|(a, b)| Crumb::Link(a, b)).into_iter().collect();
             top(cx, buf, &crumbs, true);
             edge_editor(cx, buf, body, id);
@@ -385,8 +389,6 @@ fn right_status(cx: &Cx, buf: &mut Buffer, y: u16) -> u16 {
         let tok = match n.kind {
             crate::ui::views::NoticeKind::Err => Tok::Err,
             crate::ui::views::NoticeKind::Warn => Tok::Warn,
-            crate::ui::views::NoticeKind::Ok => Tok::Ok,
-            crate::ui::views::NoticeKind::Info => Tok::Info,
         };
         // The ticker above the footer says what and how to fix it; here only the count.
         let text = format!("{} {}", cx.g("▲", "^"), s.notifications.len());
@@ -682,18 +684,10 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
             .map(|x| tiles::used_lines(x) as u16 + 2)
             .max()
             .unwrap_or(5);
-        let mut th = ((room + 1) / rows.max(1))
+        let th = ((room + 1) / rows.max(1))
             .saturating_sub(1)
             .min(text_h)
             .max(5);
-        // The rows the star does not draw go back to the tiles (a screen taller than
-        // its text is still a screen), so no blank band opens around LINKS.
-        if fan_want > 0 {
-            let left = main.height.saturating_sub(rows * (th + 1) + 2 + 4);
-            let band = Rect::new(r.x, r.y, r.width, left);
-            let star = orbit::height(cx, band, &d.id, 1, orbit::Sel::Root);
-            th += left.saturating_sub(star) / rows.max(1);
-        }
         let mut bottom = main.y;
         for i in 0..tiles_n as usize {
             let (ci, ri) = (i as u16 % cols, i as u16 / cols);
@@ -833,7 +827,7 @@ fn link_tail(cx: &Cx, e: &LabEdge, loss: bool) -> String {
 fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     let (g, gst) = cx.status(d.status);
     // (No os word when it is not known.)
-    let info = format!("{} · {}@{} · {}", d.os, d.account, d.host, kind_word(d));
+    let info = format!("{} · {}@{}", d.os, d.account, d.host);
     let info = info.trim_start_matches(" · ").to_string();
     // The identity block takes the width it needs; metrics get the rest.
     let left_w = if cx.size() >= Size::M {
@@ -919,8 +913,9 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     }
     // Metrics block.
     let Some(m) = d.metrics.as_ref().filter(|_| cx.up(d)) else {
-        // No live figures: a down device says why; an up one says how it is known.
-        if r.height > 3 && !cx.up(d) {
+        // No live figures: a down device says why; an up one says how it is known (an
+        // unchecked one already says so, muted, in its header).
+        if r.height > 3 && d.status == DeviceStatus::Down {
             cx.put(
                 buf,
                 r.x,
@@ -1004,17 +999,6 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         tiles::spark(cx, buf, mx + 9, my, w, &v, cx.spark_heat(m.cpu));
         let rest = format!("mem {:.0}%", m.mem * 100.0);
         cx.put(buf, mx + 9 + w + 3, my, 10, &rest, cx.st(Tok::Info));
-    }
-}
-
-fn kind_word(d: &LabDevice) -> &'static str {
-    use crate::ui::views::DeviceKind::*;
-    match d.kind {
-        Desktop => "desktop",
-        Laptop => "laptop",
-        Robot => "robot",
-        Server => "server",
-        Phone => "phone",
     }
 }
 
@@ -1242,7 +1226,10 @@ fn edge_kind(cx: &Cx, e: &LabEdge) -> (String, Tok) {
         }
         EdgeKind::Lan => ("lan".into(), Tok::Muted),
         EdgeKind::Direct => ("direct ssh".into(), Tok::Muted),
-        EdgeKind::Jump(v) => (format!("{} via {v}", cx.g("↳", "->")), Tok::Muted),
+        EdgeKind::Jump(v) => {
+            let via = cx.s.device(v).map_or(v.as_str(), |d| d.name.as_str());
+            (format!("{} via {via}", cx.g("↳", "->")), Tok::Muted)
+        }
     }
 }
 
@@ -2272,7 +2259,7 @@ pub(super) fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
     } else {
         &[
             (cx.ret(), "go", "go"),
-            (mv, "move", "move"),
+            (mv, "move", ""),
             ("esc", "close", "back"),
         ]
     };
@@ -2617,62 +2604,10 @@ fn onboarding(cx: &Cx, buf: &mut Buffer, r: Rect) {
         y += 1;
     }
     y += 1;
-    // Illustration: this device with three ghost orbits.
+    // Illustration: this device alone, as the hub's root (no ring: an empty orbit
+    // is the room around it).
     let ill_h: u16 = if small { 5 } else { 9 };
     let ill = Rect::new(x0, y, w, ill_h);
-    if cx.uni() && cx.c.has_color() {
-        let (pcx, pcy) = (
-            (ill.x + ill.width / 2) as f32 * 2.0,
-            (ill.y + ill.height / 2) as f32 * 4.0 + 2.0,
-        );
-        for ring in 1..=2 {
-            let rx = ill.width as f32 * 0.42 * ring as f32 / 2.0 * 2.0;
-            let ry = ill.height as f32 * 0.5 * ring as f32 / 2.0 * 4.0 - 2.0;
-            let st = cx.ink(Tok::Muted, 0.35);
-            let mut cells: std::collections::HashMap<(u16, u16), u8> = Default::default();
-            for k in 0..360 {
-                if k % 4 != 0 {
-                    continue;
-                }
-                let a = k as f32 / 360.0 * std::f32::consts::TAU;
-                let (px, py) = (
-                    (pcx + rx * a.cos()).round() as i32,
-                    (pcy + ry * a.sin()).round() as i32,
-                );
-                if px < 0 || py < 0 {
-                    continue;
-                }
-                let (cxx, cyy) = ((px / 2) as u16, (py / 4) as u16);
-                if cyy < ill.y || cyy >= ill.bottom() || cxx < ill.x || cxx >= ill.right() {
-                    continue;
-                }
-                const BITS: [[u8; 4]; 2] = [[0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20, 0x80]];
-                *cells.entry((cxx, cyy)).or_default() |= BITS[(px % 2) as usize][(py % 4) as usize];
-            }
-            for ((xx, yy), m) in cells {
-                cx.put(
-                    buf,
-                    xx,
-                    yy,
-                    1,
-                    &char::from_u32(0x2800 + u32::from(m))
-                        .unwrap_or(' ')
-                        .to_string(),
-                    st,
-                );
-            }
-        }
-        for (dx, dy) in [
-            (-0.3f32, -0.3f32),
-            (0.32, 0.25),
-            (0.18, -0.38),
-            (-0.22, 0.35),
-        ] {
-            let x = (ill.x as f32 + ill.width as f32 * (0.5 + dx)) as u16;
-            let y = (ill.y as f32 + ill.height as f32 * (0.5 + dy)) as u16;
-            cx.put(buf, x, y, 1, "◌", cx.ink(Tok::Muted, 0.6));
-        }
-    }
     if let Some(d) = cx.s.device(&cx.s.viewer) {
         let mid = ill.y + ill.height / 2;
         // The hub's root: `◉ name` in bold, no background.
@@ -2713,7 +2648,7 @@ fn onboarding(cx: &Cx, buf: &mut Buffer, r: Rect) {
     cx.hit(Rect::new(x0, y, bw, 1), "connect-cloudflare");
     // The button's note sits beside it when it fits whole, else on a muted row under
     // it (never cut).
-    let note = "opens dash.cloudflare.com with a ready token";
+    let note = "opens the token's masked entry";
     let nw = super::width(note, cx.uni());
     if bw + 2 + nw <= w {
         cx.put(buf, x0 + bw + 2, y, nw, note, cx.st(Tok::Muted));
@@ -2979,7 +2914,7 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
     if y < r.bottom() {
         // The command wraps (up to three rows) so it can be read and retyped where
         // clipboard escapes do not reach (Termux without permission, tmux without
-        // `set-clipboard on`); `y`/`Y` copying says it cannot confirm.
+        // `set-clipboard on`); `y` / `Y` copy, and say they cannot confirm it.
         let cw = tw.saturating_sub(2).max(1) as usize;
         let mut parts = break_cmd(&inv.oneliner, cw);
         if parts.len() > 3 {
@@ -3114,17 +3049,20 @@ fn big_text(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, code: &str, st: Style) {
 
 // ------------------------------------------------------------------------ edge edit
 
+/// The link `id` names, in either order, and whether it is stored the other way round.
+/// Never another link: the editor's keys change exactly this one.
+fn edge_of<'a>(cx: &Cx<'a>, id: &str) -> Option<(&'a LabEdge, bool)> {
+    let rev = id.split_once('-').map(|(a, b)| format!("{b}-{a}"))?;
+    cx.s.edge(id)
+        .map(|e| (e, false))
+        .or_else(|| cx.s.edge(&rev).map(|e| (e, true)))
+}
+
 fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
     // The id names the opener first (`i e t` opens `innovation-tranquility`), so the
     // opener's outbound direction is the first lane and takes the lowercase keys.
-    let rev = id.split_once('-').map(|(a, b)| format!("{b}-{a}"));
-    let (e, flipped) = match (cx.s.edge(id), rev.as_deref().and_then(|r| cx.s.edge(r))) {
-        (Some(e), _) => (e, false),
-        (None, Some(e)) => (e, true),
-        _ => match cx.s.edges.first() {
-            Some(e) => (e, false),
-            None => return,
-        },
+    let Some((e, flipped)) = edge_of(cx, id) else {
+        return;
     };
     // Map and sheet are one block: the map at the hub's spacing, two blank rows, then
     // the sheet (at most 110 wide, the screen's two-column gutter either side); the block
@@ -3534,6 +3472,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                     (k(key("⏎")), "attach the selection"),
                     (k("spc"), "peek"),
                     (k(key("⌫")), "stop (press twice)"),
+                    (k("w p t"), "watch / pin / its tasks"),
                 ],
             ),
             (
@@ -3560,6 +3499,14 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                         },
                     ),
                     (k("r"), "retry"),
+                    (
+                        k("b E X"),
+                        if wide {
+                            "access / edit address / remove"
+                        } else {
+                            "access/address/remove"
+                        },
+                    ),
                 ],
             ),
             (
@@ -3584,14 +3531,14 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                 "move",
                 vec![
                     (k("j k"), "step"),
-                    (k("l h"), "unfold / fold"),
+                    (k("h l"), "up a folder / into it"),
                     (k(key("⏎")), "open"),
                 ],
             ),
             (
                 "file",
                 vec![
-                    (k("spc"), "preview"),
+                    (k("spc"), "select"),
                     (
                         k("s"),
                         if wide {

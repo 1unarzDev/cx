@@ -21,12 +21,8 @@ pub enum Theme {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pane {
     Graph,
-    Rail,
     Sessions,
-    Preview,
     Files,
-    Inspector,
-    Palette,
     Dialog,
     Custom(&'static str),
 }
@@ -101,159 +97,65 @@ type Rgb = (u8, u8, u8);
 /// (dark rgb, light rgb, 256 dark, 256 light, 16-color)
 type Row = (Rgb, Rgb, u8, u8, Option<Color>);
 
-const ID_HUES: [Row; 8] = [
-    (
-        (0x6c, 0xc4, 0xd6),
-        (0x0b, 0x72, 0x85),
-        80,
-        30,
-        Some(Color::Cyan),
-    ),
-    (
-        (0xc4, 0x9c, 0xf0),
-        (0x70, 0x48, 0xc0),
-        177,
-        97,
-        Some(Color::Magenta),
-    ),
-    (
-        (0x8f, 0xcf, 0x9d),
-        (0x2b, 0x8a, 0x3e),
-        114,
-        28,
-        Some(Color::Green),
-    ),
-    (
-        (0xe3, 0xc2, 0x75),
-        (0xa6, 0x6a, 0x00),
-        179,
-        130,
-        Some(Color::Yellow),
-    ),
-    (
-        (0x8f, 0xb0, 0xe0),
-        (0x1c, 0x64, 0xb8),
-        110,
-        25,
-        Some(Color::Blue),
-    ),
-    (
-        (0xe8, 0x83, 0x7f),
-        (0xc9, 0x2a, 0x2a),
-        210,
-        160,
-        Some(Color::Red),
-    ),
-    (
-        (0x7f, 0xd8, 0xe8),
-        (0x0a, 0x80, 0x90),
-        116,
-        31,
-        Some(Color::LightCyan),
-    ),
-    (
-        (0xe0, 0xa8, 0xe8),
-        (0x9c, 0x36, 0xb5),
-        182,
-        133,
-        Some(Color::LightMagenta),
-    ),
-];
-
 fn row(t: Tok) -> Option<Row> {
-    Some(match t {
-        Tok::Fg => return None,
-        Tok::Muted => (
-            (0x8b, 0x93, 0xa1),
-            (0x5c, 0x64, 0x70),
-            246,
-            241,
-            Some(Color::DarkGray),
-        ),
-        Tok::Faint => (
-            (0x4a, 0x51, 0x5c),
-            (0xc3, 0xc8, 0xd0),
-            239,
-            251,
-            Some(Color::DarkGray),
-        ),
-        Tok::Accent => (
-            (0x6c, 0xc4, 0xd6),
-            (0x0b, 0x72, 0x85),
-            80,
-            30,
-            Some(Color::Cyan),
-        ),
-        Tok::AccentBg => ((0x1d, 0x3a, 0x42), (0xd3, 0xee, 0xf3), 23, 195, None),
-        Tok::SelectDimBg => ((0x26, 0x2b, 0x33), (0xec, 0xef, 0xf3), 236, 255, None),
-        Tok::Surface => ((0x1b, 0x1f, 0x25), (0xf3, 0xf4, 0xf6), 234, 255, None),
-        Tok::Surface2 => ((0x23, 0x28, 0x30), (0xe6, 0xe9, 0xed), 235, 254, None),
-        Tok::Ok => (
-            (0x8f, 0xcf, 0x9d),
-            (0x2b, 0x8a, 0x3e),
-            114,
-            28,
-            Some(Color::Green),
-        ),
-        Tok::Warn => (
-            (0xe3, 0xc2, 0x75),
-            (0xa6, 0x6a, 0x00),
-            179,
-            130,
-            Some(Color::Yellow),
-        ),
-        Tok::Err => (
-            (0xe8, 0x83, 0x7f),
-            (0xc9, 0x2a, 0x2a),
-            210,
-            160,
-            Some(Color::Red),
-        ),
-        Tok::Info => (
-            (0x8f, 0xb0, 0xe0),
-            (0x1c, 0x64, 0xb8),
-            110,
-            25,
-            Some(Color::Blue),
-        ),
-        Tok::Mesh => (
+    use crate::ui::theme::{spec, Tok as T};
+    // The tokens the rest of the UI draws too come from its table (`theme::spec`), so a
+    // state has one colour everywhere.
+    let shared = |t: T| {
+        let r = spec(t);
+        Some((r.dark, r.light, r.x256.0, r.x256.1, r.ansi))
+    };
+    match t {
+        Tok::Fg => None,
+        Tok::Muted => shared(T::Muted),
+        Tok::Faint => shared(T::Faint),
+        Tok::Accent => shared(T::Accent),
+        Tok::AccentBg => shared(T::AccentBg),
+        Tok::SelectDimBg => shared(T::SelectDimBg),
+        Tok::Ok => shared(T::Ok),
+        Tok::Warn => shared(T::Warn),
+        Tok::Err => shared(T::Err),
+        Tok::Info => shared(T::Info),
+        Tok::Id(n) => shared(T::Id(n)),
+        Tok::Surface => Some(((0x1b, 0x1f, 0x25), (0xf3, 0xf4, 0xf6), 234, 255, None)),
+        Tok::Surface2 => Some(((0x23, 0x28, 0x30), (0xe6, 0xe9, 0xed), 235, 254, None)),
+        Tok::Mesh => Some((
             (0xc4, 0x9c, 0xf0),
             (0x70, 0x48, 0xc0),
             177,
             97,
             Some(Color::Magenta),
-        ),
-        Tok::Lan => (
+        )),
+        Tok::Lan => Some((
             (0x7f, 0xc9, 0xb4),
             (0x0f, 0x7a, 0x62),
             79,
             29,
             Some(Color::Cyan),
-        ),
-        Tok::Dir => (
+        )),
+        Tok::Dir => Some((
             (0x8f, 0xb7, 0xf0),
             (0x1d, 0x4f, 0x91),
             111,
             25,
             Some(Color::LightBlue),
-        ),
-        Tok::Claude => (
+        )),
+        Tok::Claude => Some((
             (0xe0, 0xa3, 0x7a),
             (0xa4, 0x53, 0x2a),
             173,
             130,
             Some(Color::Yellow),
-        ),
-        Tok::Codex => (
+        )),
+        Tok::Codex => Some((
             (0x9e, 0xc5, 0xf8),
             (0x26, 0x59, 0xa8),
             111,
             25,
             Some(Color::Blue),
-        ),
-        Tok::Shell => ((0xaa, 0xb2, 0xbf), (0x4b, 0x55, 0x63), 249, 240, None),
-        Tok::Id(n) => ID_HUES[usize::from(n) % ID_HUES.len()],
-    })
+        )),
+        Tok::Shell => Some(((0xaa, 0xb2, 0xbf), (0x4b, 0x55, 0x63), 249, 240, None)),
+    }
 }
 
 impl LabCaps {
@@ -309,31 +211,13 @@ impl LabCaps {
         }
     }
 
-    /// Pick an arbitrary truecolor pair (dark, light) with a 16-color fallback; honors the level.
-    pub fn rgb(&self, dark: Rgb, light: Rgb, c16: Option<Color>) -> Option<Color> {
-        let (r, g, b) = if self.theme == Theme::Dark {
-            dark
-        } else {
-            light
-        };
-        match self.color {
-            ColorLevel::Truecolor => Some(Color::Rgb(r, g, b)),
-            ColorLevel::C256 => Some(Color::Indexed(rgb_to_256(r, g, b))),
-            ColorLevel::C16 => c16,
-            ColorLevel::None => None,
-        }
-    }
-
     pub fn has_color(&self) -> bool {
         self.color != ColorLevel::None
     }
 
-    pub fn is_focused(&self, pane: Pane) -> bool {
-        self.focus == Some(pane)
-    }
-
     /// Parse a variant label such as `dark-truecolor`, `light-256`, `dark-16`, `nocolor`,
     /// `ascii` (dark, no color, no unicode) or `ascii-16`.
+    #[cfg(test)]
     pub fn from_variant(label: &str) -> Option<Self> {
         let mut caps = Self::default();
         let mut color_set = false;
@@ -471,6 +355,7 @@ pub fn indexed_16(i: u8) -> Color {
 }
 
 /// What a terminal at `level` can show of `c`; also counts colors the concept leaked above it.
+#[cfg(test)]
 pub fn degrade(c: Color, level: ColorLevel, leaked: &mut u32) -> Color {
     match (level, c) {
         (_, Color::Reset) => Color::Reset,

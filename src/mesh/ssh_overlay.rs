@@ -44,6 +44,8 @@ const MAX_FAILURES: usize = 20;
 const MAX_FRAME: u64 = 64 * 1024;
 /// How long the viewer waits for one connection's request, however slowly it trickles in.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// After answering, how long the rest of a request is drained before the connection closes.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long the joiner waits for the viewer's answer (the viewer pairs before it answers).
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -590,6 +592,14 @@ fn handle(stream: &TcpStream, p: &mut Pending) -> Result<Option<Value>> {
         }
     };
     let _ = transport::frame(&mut &*stream, &response);
+    // Closing on unread bytes (the rest of an oversized request) resets the connection, and a reset
+    // can discard the answer before the joiner reads it: end our side, then drain the rest, bounded.
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let rest = Timed {
+        stream,
+        until: Instant::now() + DRAIN_TIMEOUT,
+    };
+    let _ = std::io::copy(&mut rest.take(4 * MAX_FRAME), &mut std::io::sink());
     result
 }
 
@@ -1318,13 +1328,16 @@ mod tests {
         transport::frame(&mut &s, &wrong).unwrap();
         let r: JoinResponse = read_bounded(&s, Duration::from_secs(5)).unwrap();
         assert_eq!(r.error.as_deref(), Some("wrong pair code"));
-        // An oversized frame is read only up to MAX_FRAME.
+        drop(s);
+        // An oversized frame is read only up to MAX_FRAME, and its answer still arrives (the rest is
+        // drained, so closing does not reset the connection under it).
         let s = TcpStream::connect(addr).unwrap();
         let mut big = format!("CX1 {}\n", 2 * MAX_FRAME).into_bytes();
         big.resize(big.len() + 2 * MAX_FRAME as usize, b'x');
         let _ = (&s).write_all(&big);
         let r: JoinResponse = read_bounded(&s, Duration::from_secs(5)).unwrap();
         assert!(r.error.unwrap().contains("unreadable"));
+        drop(s);
         // A silent connection is cut off after REQUEST_TIMEOUT.
         let started = Instant::now();
         let s = TcpStream::connect(addr).unwrap();

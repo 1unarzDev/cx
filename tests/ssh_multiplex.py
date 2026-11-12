@@ -14,8 +14,7 @@ reaping a helper channel's process group (including a ProxyJump hop) never
 ends it; helper channels and terminals only join (ControlMaster=no), even on
 terminal-first contact, where cx starts the dedicated master instead; each
 master has a 0600 owner record naming its exact target; no agent
-forwarding; `cx orphans --json` recognises the master (read-only); `cx
-device remove` exits it; `cx prewarm` opens one and replaces a master whose
+forwarding; `cx device remove` exits it; `cx prewarm` opens one and replaces a master whose
 link stopped answering; CX_SSH_MULTIPLEX=0 restores direct connections.
 Prints first-request vs warm-request vs attach latency, with and without.
 """
@@ -248,13 +247,6 @@ os.execv({ssh!r},[{ssh!r},'-F',os.environ['CX_MX_CONFIG'],*args])
             assert "ForwardAgent=no" in a and "-A" not in a
             assert any(o.startswith("ControlPath=") and str(state / "ssh") in o for o in a)
 
-        # Read-only orphan scan recognises both masters as enrolled and in use-able.
-        result, _ = cx("orphans", "--json")
-        found = {m["pid"]: m for m in json.loads(result.stdout)["ssh_masters"]}
-        assert set(pids) <= set(found), found
-        assert all(found[p]["enrolled"] and found[p]["socket_present"] and not found[p]["stray"]
-                   for p in pids)
-
         # Removing a device exits its master now, not after ControlPersist.
         before = set(master_pids())
         cx("device", "remove", "fixture")
@@ -263,13 +255,7 @@ os.execv({ssh!r},[{ssh!r},'-F',os.environ['CX_MX_CONFIG'],*args])
         assert len(remaining) == 1 and remaining < before
         gone = (before - remaining).pop()
         assert not alive(gone), "removed device's master still running"
-
-        # A master for a device that left the inventory without cleanup is stray.
         write_private(state / "devices.json", json.dumps([device("fixture", "fixture")]))
-        result, _ = cx("orphans", "--json")
-        found = {m["pid"]: m for m in json.loads(result.stdout)["ssh_masters"]}
-        routed = remaining.pop()
-        assert found[routed]["stray"] and not found[routed]["enrolled"], found
 
         # Concurrent cold starts from separate viewers converge on one master
         # and leave no stray master attempt behind.
@@ -370,11 +356,6 @@ os.execv({ssh!r},[{ssh!r},'-F',os.environ['CX_MX_CONFIG'],*args])
         assert fresh != stale
         _, timings["fixture_after_replace"] = cx("sessions", "--device", "fixture")
         assert master_pids() == [fresh]
-        result, _ = cx("orphans", "--json")
-        found = {m["pid"]: m for m in json.loads(result.stdout)["ssh_masters"]}
-        if stale in found:
-            # Stopped from listening: never stray, it ends with its sessions.
-            assert not found[stale]["listening"] and not found[stale]["stray"], found[stale]
     finally:
         for pid in frozen:
             try:

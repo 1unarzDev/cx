@@ -1,4 +1,5 @@
 use crate::model::*;
+use crate::store::wait_bounded;
 use anyhow::{anyhow, bail, Context, Result};
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -12,13 +13,7 @@ pub fn now() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
-pub fn valid_target(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() < 256
-        && !s.starts_with('-')
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"@._-:[]".contains(&b))
-}
+pub use crate::store::valid_target;
 pub fn frame<T: serde::Serialize>(w: &mut impl Write, v: &T) -> Result<()> {
     let b = serde_json::to_vec(v)?;
     if b.len() > MAX_MESSAGE {
@@ -90,7 +85,6 @@ const CHANNEL_MASTER_WAIT: std::time::Duration = std::time::Duration::from_milli
 /// After a failed attempt, connections go direct (and report their own typed
 /// failure) instead of starting another master for this long.
 const MASTER_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(20);
-const PREWARM_LIMIT: usize = 4;
 /// A trivial channel through a healthy master answers well within this.
 const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(3);
 /// A master confirmed this recently is not re-checked (a terminal right
@@ -116,30 +110,12 @@ struct Masters {
     recovering: std::collections::HashSet<String>,
     /// Until when each target's master counts as answering.
     confirmed: std::collections::HashMap<String, std::time::Instant>,
-    prewarming: usize,
 }
 static MASTERS: std::sync::LazyLock<std::sync::Mutex<Masters>> =
     std::sync::LazyLock::new(Default::default);
 
 fn masters() -> Option<std::sync::MutexGuard<'static, Masters>> {
     MASTERS.lock().ok()
-}
-
-fn wait_bounded(child: &mut std::process::Child, limit: std::time::Duration) -> Option<bool> {
-    let deadline = std::time::Instant::now() + limit;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Some(status.success()),
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(5))
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
 }
 
 /// Local bounded `ssh -O <op>` against this route's master (check, stop).
@@ -270,6 +246,10 @@ fn establish_master(target: &str) -> MasterState {
             Ok(())
         });
     }
+    // Record the owner before the master exists: a setsid'd master outlives
+    // this process, and cleanup only finds masters with a record. A record
+    // whose socket never binds is removed with it by close_masters.
+    record_owner(target);
     let Ok(mut child) = command.spawn() else {
         return MasterState::Unavailable;
     };
@@ -359,9 +339,6 @@ fn start_master(target: &str) -> Option<std::sync::Arc<Flight>> {
         .name("cx-ssh-master".into())
         .spawn(move || {
             let state = establish_master(&owned);
-            if state == MasterState::Ready {
-                record_owner(&owned);
-            }
             if let Some(mut m) = masters() {
                 m.flights.remove(&owned);
                 if matches!(state, MasterState::Failed(_)) {
@@ -443,19 +420,22 @@ pub(crate) fn warm_master(target: &str, wait: std::time::Duration) -> bool {
 
 /// Establish `device`'s shared SSH master in the background, e.g. on hover or
 /// focus, so the next helper request or attach skips the handshake. Never
-/// blocks or prompts (BatchMode), is idempotent while a master is live or an
-/// attempt is in flight, runs at most four prewarms at once, backs off for
-/// twenty seconds after a failed attempt, and each attempt ends within
-/// twenty-five seconds. Returns whether a background prewarm was started.
+/// blocks or prompts (BatchMode), opens nothing over a refused edge or route
+/// hop, is idempotent while a master is live or an attempt is in flight,
+/// backs off for twenty seconds after a failed attempt, and each attempt ends
+/// within twenty-five seconds. Returns whether a background prewarm was started.
 pub fn prewarm(device: &Device) -> bool {
     let Some(target) = device.target.clone() else {
         return false;
     };
-    if !valid_target(&target) || !crate::store::multiplex_enabled() {
+    if !valid_target(&target)
+        || !crate::store::multiplex_enabled()
+        || crate::edges::guard(device).is_err()
+    {
         return false;
     }
     {
-        let Some(mut m) = masters() else {
+        let Some(m) = masters() else {
             return false;
         };
         let now = std::time::Instant::now();
@@ -463,27 +443,16 @@ pub fn prewarm(device: &Device) -> bool {
             .failed
             .get(&target)
             .is_some_and(|at| now.saturating_duration_since(*at) < MASTER_COOLDOWN);
-        if m.flights.contains_key(&target) || cooling || m.prewarming >= PREWARM_LIMIT {
+        if m.flights.contains_key(&target) || cooling {
             return false;
         }
-        m.prewarming += 1;
     }
-    let finished = || {
-        if let Some(mut m) = masters() {
-            m.prewarming = m.prewarming.saturating_sub(1);
-        }
-    };
-    let started = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("cx-ssh-prewarm".into())
         .spawn(move || {
             ensure_master(&target, std::time::Duration::ZERO);
-            finished();
         })
-        .is_ok();
-    if !started {
-        finished();
-    }
-    started
+        .is_ok()
 }
 
 /// `cx prewarm`: confirm `device`'s shared master really opens channels
@@ -505,8 +474,6 @@ pub fn prewarm_blocking(device: &Device) -> Result<bool> {
         "SSH connection sharing is turned off (CX_SSH_MULTIPLEX)"
     );
     let replaced = stop_stuck_master(target);
-    // The same background start the UI uses on hover; the wait below joins it.
-    prewarm(device);
     match ensure_master(target, MASTER_DEADLINE + std::time::Duration::from_secs(2)) {
         MasterState::Ready => Ok(replaced),
         MasterState::Failed(failure) => Err(failure.into()),
@@ -808,13 +775,7 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
         let mut all = CONNECTIONS
             .lock()
             .map_err(|_| anyhow!("transport lock unavailable"))?;
-        let channel = match channel_class(&op) {
-            Channel::Interactive => format!("session-preview:{target}"),
-            Channel::Capabilities => format!("capabilities:{target}"),
-            Channel::Bulk => format!("bulk:{target}"),
-            Channel::Metadata => target.clone(),
-        };
-        all.entry(channel)
+        all.entry(channel_key(channel_class(&op), target))
             .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(None)))
             .clone()
     };
@@ -883,6 +844,15 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
     }
     Ok(result)
 }
+/// The CONNECTIONS key of `target`'s helper channel of `class`.
+fn channel_key(class: Channel, target: &str) -> String {
+    match class {
+        Channel::Interactive => format!("session-preview:{target}"),
+        Channel::Capabilities => format!("capabilities:{target}"),
+        Channel::Bulk => format!("bulk:{target}"),
+        Channel::Metadata => target.to_owned(),
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Channel {
     /// Screens, keystrokes and the watch: never queued behind anything else.
@@ -899,7 +869,10 @@ pub(crate) fn channel_class(op: &Operation) -> Channel {
     match op {
         Operation::SessionPreview { .. }
         | Operation::SessionPaneInput { .. }
-        | Operation::Watch { .. } => Channel::Interactive,
+        | Operation::Watch { .. }
+        | Operation::CapturePane { .. }
+        | Operation::PaneInput { .. }
+        | Operation::PaneClose { .. } => Channel::Interactive,
         Operation::Info => Channel::Capabilities,
         Operation::Containers
         | Operation::ContainerInspect { .. }
@@ -1300,21 +1273,24 @@ fn mediated_host_update(
     invalidate_metadata(target)?;
     Ok((true, Some(version)))
 }
-/// Replace the target's helper channels (metadata, bulk, interactive) after
-/// its helper changed; each waits for its in-flight request first.
+/// Every helper channel class, so an invalidation reaches all of them.
+const CHANNELS: [Channel; 4] = [
+    Channel::Interactive,
+    Channel::Capabilities,
+    Channel::Bulk,
+    Channel::Metadata,
+];
+/// Replace all of the target's helper channels after its helper changed;
+/// each waits for its in-flight request first.
 fn invalidate_metadata(target: &str) -> Result<()> {
     let entries: Vec<_> = {
         let all = CONNECTIONS
             .lock()
             .map_err(|_| anyhow!("transport lock unavailable"))?;
-        [
-            target.to_owned(),
-            format!("bulk:{target}"),
-            format!("session-preview:{target}"),
-        ]
-        .iter()
-        .filter_map(|key| all.get(key).cloned())
-        .collect()
+        CHANNELS
+            .iter()
+            .filter_map(|class| all.get(&channel_key(*class, target)).cloned())
+            .collect()
     };
     for entry in entries {
         *entry
@@ -1490,6 +1466,46 @@ fn run_bounded_update_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// TR-2: a helper update replaces every channel a request can use.
+    #[test]
+    fn invalidation_covers_every_request_channel() {
+        let keys = CHANNELS.map(|c| channel_key(c, "robot"));
+        for op in [
+            Operation::Info,
+            Operation::Sessions,
+            Operation::TransferJobs,
+            Operation::CapturePane {
+                id: "%1".into(),
+                cols: 80,
+                rows: 24,
+            },
+        ] {
+            assert!(
+                keys.contains(&channel_key(channel_class(&op), "robot")),
+                "{op:?}"
+            );
+        }
+    }
+    /// TR-7: command-panel captures, keystrokes and close ride the interactive
+    /// channel, never queued behind a slow session inventory.
+    #[test]
+    fn panel_traffic_is_interactive() {
+        for op in [
+            Operation::CapturePane {
+                id: "%1".into(),
+                cols: 80,
+                rows: 24,
+            },
+            Operation::PaneInput {
+                id: "%1".into(),
+                hex: "61".into(),
+            },
+            Operation::PaneClose { id: "%1".into() },
+        ] {
+            assert_eq!(channel_class(&op), Channel::Interactive, "{op:?}");
+        }
+        assert_eq!(channel_class(&Operation::Sessions), Channel::Metadata);
+    }
     #[test]
     fn helper_exit_with_inherited_stderr_is_bounded_and_owned_group_is_reaped() {
         let mut command = Command::new("/bin/sh");

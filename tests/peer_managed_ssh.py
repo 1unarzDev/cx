@@ -177,15 +177,6 @@ AllowUsers {account}
             time.sleep(0.05)
         assert record.stat().st_mode & 0o777 == 0o600
         assert json.loads(record.read_text())["target"] == peer["target"]
-        # A managed mesh endpoint that is not an inventory device keeps its
-        # idle master: orphans never marks it stray.
-        (state / "devices.json").write_text("[]")
-        result = subprocess.run([binary, "orphans", "--json"], env=env, stdin=subprocess.DEVNULL,
-                                capture_output=True, timeout=30)
-        assert result.returncode == 0, result.stderr
-        rows = json.loads(result.stdout)["ssh_masters"]
-        assert rows and all(r["owner_recorded"] and r["enrolled"] and not r["stray"] for r in rows), rows
-        (state / "devices.json").write_text(json.dumps([peer]))
 
         known = state / "peer-ssh/known_hosts"
         pinned = known.read_bytes()

@@ -1031,19 +1031,11 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
         closed: bool,
     }
     fn endpoint(task: &Task) -> String {
-        // Command-panel traffic (start, frequent captures, input) runs on its
-        // own lane so it is never serialized behind slow refreshes like a
-        // container inventory, and captures stay responsive.
-        let panel = matches!(
-            task.op,
-            Operation::CommandPanel { .. }
-                | Operation::SessionPreview { .. }
-                | Operation::SessionPaneInput { .. }
-                | Operation::Watch { .. }
-                | Operation::CapturePane { .. }
-                | Operation::PaneInput { .. }
-                | Operation::PaneClose { .. }
-        );
+        // Interactive traffic (screens, keystrokes, the watch) and a command
+        // panel's start run on their own lane, as the former have their own
+        // helper channel: never serialized behind slow refreshes.
+        let panel = matches!(task.op, Operation::CommandPanel { .. })
+            || transport::channel_class(&task.op) == transport::Channel::Interactive;
         // Bulk work (files, containers, transfers) has its own lane, as it
         // has its own helper channel: a container burst never delays sessions.
         let bulk = transport::channel_class(&task.op) == transport::Channel::Bulk;
@@ -1374,12 +1366,6 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     }
     let mut screen = Screen::new().context("open terminal workspace")?;
     start_input(wake_tx)?;
-    // Warm every up device's SSH master now, in parallel (bounded, never prompts).
-    for d in 0..app.devices.len() {
-        if app.background_checks_enabled(d) {
-            transport::prewarm(&app.devices[d]);
-        }
-    }
     let mut prewarmed: Option<usize> = None;
     spawn_exit_watchdog(stopping.clone());
     // Drop ordering cleans owned bitmaps before Screen restores the original terminal.

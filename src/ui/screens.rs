@@ -553,7 +553,7 @@ impl App {
     }
     /// `e` then a letter: the link between `from` (this device or the hub's viewer) and
     /// that device.
-    fn open_edge(&mut self, from: usize, to: usize) {
+    pub(super) fn open_edge(&mut self, from: usize, to: usize) {
         if from == to {
             return;
         }

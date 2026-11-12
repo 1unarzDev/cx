@@ -474,21 +474,26 @@ class Viewer(ph.Viewer):
         self.open(env, dict(device_ids=env.device_ids, device=device_index + 1, focus='Workspace',
                             view='Files', browser=browser))
 
-    def hub_layout(self):
-        """The hub design: a crumb on the first row instead of the v0.1.95 tab header."""
-        top = self.screen.display[0]
+    def hub_layout(self, display=None):
+        """The hub design: a crumb on the first row instead of the v0.1.95 tab header.
+        (pyte builds `display` anew on every access, ~1 ms at 120x40: readers take it
+        once, or a predicate costs tens of ms and shows up in every latency.)"""
+        top = (display or self.screen.display)[0]
         return ' cx › ' in top or ' cx / ' in top
 
     # Screen readers. v0.1.95's workspace starts at column 21 (the device column is
     # excluded); the hub design's list starts at column 1 and is 48 wide at 120 columns.
     def work(self):
-        if self.hub_layout():
-            return list(self.screen.display)
-        return [line[21:] for line in self.screen.display]
+        display = self.screen.display
+        if self.hub_layout(display):
+            return display
+        return [line[21:] for line in display]
 
     def selected(self):
-        for line in self.screen.display[1:-1]:
-            if self.hub_layout():
+        display = self.screen.display
+        hub = self.hub_layout(display)
+        for line in display[1:-1]:
+            if hub:
                 m = NEW_SELECTED.search(line[:50])
                 if m:
                     return m.group(1)
@@ -507,8 +512,10 @@ class Viewer(ph.Viewer):
 
     def rows(self, letter=None):
         # The list only: the revamp's inline peek beside it can show a folder's children.
+        hub = self.hub_layout()
+
         def listed(line):
-            if self.hub_layout():
+            if hub:
                 return line[:50]
             borders = [i for i, c in enumerate(line) if c in '│┃']
             return line[:borders[1]] if len(borders) > 1 else line
@@ -1172,5 +1179,34 @@ def main():
     sys.exit(0 if ok else 1)
 
 
+def self_test():
+    """The screen readers the latency predicates use read pyte's display (rebuilt on
+    every access) a bounded number of times: one per line made `rows` cost ~40 ms per
+    check, which landed in every first-rows number and doubled it when a frame came in
+    two reads (the v0.2.1 review's 100k sibling outlier)."""
+    class Screen:
+        reads = 0
+
+        @property
+        def display(self):
+            Screen.reads += 1
+            lines = [' cx › local › /n100000/sibling'.ljust(120)]
+            lines += [f' ▌  s-{i:06d}.txt'.ljust(120) for i in range(1, 39)]
+            return lines + [' '.ljust(120)]
+    viewer = Viewer.__new__(Viewer)
+    viewer.screen = Screen()
+    for reader, check in ((lambda: viewer.rows('s'), lambda r: len(r) == 38),
+                          (viewer.selected, lambda r: r == 's-000001.txt'),
+                          (viewer.work, lambda r: len(r) == 40)):
+        Screen.reads = 0
+        result = reader()
+        assert check(result), result
+        assert Screen.reads <= 2, f'{reader}: {Screen.reads} display reads'
+    print('files_bench self-test: PASS')
+
+
 if __name__ == '__main__':
-    main()
+    if sys.argv[1:] == ['--self-test']:
+        self_test()
+    else:
+        main()

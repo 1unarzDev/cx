@@ -100,6 +100,7 @@ CORE=(
     "list_wheel_pty|pyte|BIN"
     "pdf_pages_pty|pyte poppler|BIN"
     "capture_matrix|pyte pillow|--self-test"
+    "files_bench|pyte|--self-test"
 )
 SSH=(
     "jump_routes_cli|sshd|BIN"

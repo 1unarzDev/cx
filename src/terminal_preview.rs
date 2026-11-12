@@ -78,9 +78,6 @@ impl NativePreview {
             failed: None,
         }
     }
-    pub fn supported(&self) -> bool {
-        self.capability.is_some()
-    }
     pub fn pending(&self) -> bool {
         self.worker.is_some() && self.requested.is_some()
     }

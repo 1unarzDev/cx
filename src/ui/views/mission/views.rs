@@ -261,6 +261,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                 foot,
                 vec![
                     ("esc", "done", "back"),
+                    ("y", "copy", "copy-code"),
                     // Shifted: a new code revokes one that may already be shared.
                     ("R", "new code", "new-code"),
                 ],
@@ -2877,7 +2878,7 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
                 cx.put(buf, qx + col, qy + row, 1, sym, st);
             }
         }
-        cx.hit(Rect::new(qx, qy, qw, qh), "qr");
+        cx.hit(Rect::new(qx, qy, qw, qh), "copy-cmd");
     }
     let ty = if show_qr { ty } else { r.y + 1 };
     let mut y = ty;
@@ -2974,7 +2975,7 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
     if y < r.bottom() {
         // The command wraps (up to three rows) so it can be read and retyped where
         // clipboard escapes do not reach (Termux without permission, tmux without
-        // `set-clipboard on`); copying says so when it cannot confirm.
+        // `set-clipboard on`); `y`/`Y` copying says it cannot confirm.
         let cw = tw.saturating_sub(2).max(1) as usize;
         let mut parts = break_cmd(&inv.oneliner, cw);
         if parts.len() > 3 {
@@ -2989,10 +2990,17 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
             cx.put(buf, tx + 1, y + i as u16, cw as u16, part, cx.st(Tok::Lan));
         }
         cx.hit(block, "copy-cmd");
-        y += block.height + 1;
+        y += block.height;
+        // A device that cannot reach the one-liner's address (off-site, on the tailnet) may reach these.
+        if !inv.also.is_empty() && y < r.bottom() {
+            let also = format!("also listening on {}", inv.also.join(" "));
+            cx.put(buf, tx, y, tw, &also, cx.st(Tok::Muted));
+            y += 1;
+        }
+        y += 1;
     }
     if y < r.bottom() {
-        let left = inv.expires_secs as f32 / 1800.0;
+        let left = inv.expires_secs as f32 / crate::ui::screens::INVITE_TTL.as_secs_f32();
         let t = format!("expires in {}m", inv.expires_secs / 60);
         cx.put(buf, tx, y, 16, &t, cx.st(Tok::Muted));
         tiles::gauge(

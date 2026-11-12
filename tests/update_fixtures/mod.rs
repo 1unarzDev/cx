@@ -229,16 +229,16 @@ fn malformed_metadata_versions_and_assets() {
         "v9.0.0/evil",
         "v18446744073709551616.0.0",
     ] {
-        assert!(release(&metadata(tag), "0.1.0").is_err());
+        assert!(release_for_arch(&metadata(tag), Some("0.1.0"), ARCH).is_err());
     }
     for field in ["draft", "prerelease"] {
         let mut v: serde_json::Value = serde_json::from_slice(&metadata("v9.0.0")).unwrap();
         v[field] = true.into();
-        assert!(release(&serde_json::to_vec(&v).unwrap(), "0.1.0").is_err());
+        assert!(release_for_arch(&serde_json::to_vec(&v).unwrap(), Some("0.1.0"), ARCH).is_err());
     }
     let mut v: serde_json::Value = serde_json::from_slice(&metadata("v9.0.0")).unwrap();
     v["assets"][0]["browser_download_url"] = "https://evil.example/cx".into();
-    assert!(release(&serde_json::to_vec(&v).unwrap(), "0.1.0").is_err());
+    assert!(release_for_arch(&serde_json::to_vec(&v).unwrap(), Some("0.1.0"), ARCH).is_err());
     let f = Fixture::new();
     let b = Mock::new(vec![out(0, b"not-json\n200")]);
     assert!(matches!(f.check(true, &b), CheckOutcome::Unavailable(_)));

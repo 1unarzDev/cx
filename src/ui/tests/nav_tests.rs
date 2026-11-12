@@ -648,7 +648,8 @@ fn a_pending_reply_never_makes_the_event_loop_poll() {
 }
 
 /// `+`'s screen with a stand-in for the listener thread: the invite shows its code, the
-/// `cx mesh pair` one-liner and a QR code; Esc drops it, which tells the listener to close.
+/// `cx join` one-liner, the other addresses it listens on and a QR code; `y` / `Y` (or a tap)
+/// copy the code / the command; Esc drops it, which tells the listener to close.
 #[test]
 fn the_hub_invite_shows_its_code_and_esc_closes_its_listener() {
     use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
@@ -661,24 +662,22 @@ fn the_hub_invite_shows_its_code_and_esc_closes_its_listener() {
         cancel: cancel.clone(),
         shown: None,
         drawn_secs: Default::default(),
-        thread: None,
     });
     assert!(draw(&a, 120, 40).contains("Opening an invite"));
     tx.send(Ok(screens::InviteEvent::Ready(crate::mesh::Invite {
         backend: "ssh-overlay".into(),
         code: "7K2Q-M9XD-4HT".into(),
-        one_liner_sh: "cx mesh pair 7K2Q-M9XD-4HT 192.168.1.5".into(),
+        one_liner_sh: "cx join 7K2Q-M9XD-4HT 192.168.1.5".into(),
         expires: "2026-11-11T23:30:00Z".into(),
         uses: 1,
+        hosts: vec!["192.168.1.5".into(), "100.101.2.3".into()],
         ..Default::default()
     })))
     .unwrap();
     assert!(a.poll_invite());
     let text = draw(&a, 120, 40);
-    assert!(
-        text.contains("cx mesh pair 7K2Q-M9XD-4HT 192.168.1.5"),
-        "{text}"
-    );
+    assert!(text.contains("cx join 7K2Q-M9XD-4HT 192.168.1.5"), "{text}");
+    assert!(text.contains("also listening on 100.101.2.3"), "{text}");
     assert!(
         text.contains("7 K 2 Q") && text.contains("expires in 29m"),
         "{text}"
@@ -690,6 +689,19 @@ fn the_hub_invite_shows_its_code_and_esc_closes_its_listener() {
         qr.len() >= 21 && qr.iter().all(|r| r.len() == qr.len()),
         "a real QR matrix"
     );
+    press(&mut a, 'y');
+    assert_eq!(a.copy_out.take().as_deref(), Some("7K2Q-M9XD-4HT"));
+    assert!(draw(&a, 120, 40).contains("if your terminal allows clipboard access"));
+    a.key(KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT));
+    assert_eq!(
+        a.copy_out.take().as_deref(),
+        Some("cx join 7K2Q-M9XD-4HT 192.168.1.5")
+    );
+    a.view_action("copy-code");
+    assert_eq!(a.copy_out.take().as_deref(), Some("7K2Q-M9XD-4HT"));
+    a.view_action("copy-cmd");
+    assert!(a.copy_out.take().is_some_and(|c| c.starts_with("cx join ")));
+    assert!(a.invite.is_some(), "copying keeps the invite open");
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(a.invite.is_none());
     assert!(
@@ -703,7 +715,6 @@ fn the_hub_invite_shows_its_code_and_esc_closes_its_listener() {
         cancel: Arc::new(AtomicBool::new(false)),
         shown: None,
         drawn_secs: Default::default(),
-        thread: None,
     });
     tx.send(Ok(screens::InviteEvent::Joined(
         serde_json::json!({"name": "rover"}),
@@ -772,4 +783,21 @@ fn the_selected_session_always_has_a_hub_tile() {
     let text = draw(&a, 120, 40);
     assert!(text.contains("more"), "tiles are hidden: {text}");
     assert!(text.contains(&s.name), "{} has no tile: {text}", s.name);
+}
+
+/// `` ` `` `-` `+` `K` dispatch through the keymap's Global rows, not a parallel match: the
+/// design's screen keys leave them alone, and they still reach their views.
+#[test]
+fn global_view_keys_go_through_the_keymap() {
+    let (mut a, _rx) = queued_app();
+    a.go_hub();
+    for c in ['`', '-', '+', 'K'] {
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        assert!(!a.screen_key(key), "{c} was caught before the keymap");
+        assert!(keymap::resolve(&a, &key).is_some(), "{c} has a binding");
+    }
+    press(&mut a, 'K');
+    assert!(a.view == View::Secrets);
+    press(&mut a, '`');
+    assert!(a.view == View::Network);
 }

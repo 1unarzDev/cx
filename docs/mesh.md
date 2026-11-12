@@ -54,8 +54,7 @@ cx's secrets store (`cx secrets set cloudflare.api_token`, or `cx secrets migrat
 `leave`, whose fetched script also runs with the variable removed, and never with `--config`, whose mesh keeps the
 `credentials` file next to it), so the default mesh's plaintext file can go. If that stored token cannot be read in this
 session (it is in the OS keyring and there is no session bus), `cx mesh` stops instead of letting setup ask again and
-save it in plaintext. First-run `cx mesh setup` still saves the file; `cx secrets migrate` imports it. The
-cloudflare-warp backend (`--backend cloudflare-warp`) gets the stored token the same way. `mesh.py token-url`
+save it in plaintext. First-run `cx mesh setup` still saves the file; `cx secrets migrate` imports it. `mesh.py token-url`
 (`cx mesh token-url`) prints a link that opens the form with most permissions already filled in. It needs these
 permissions:
 
@@ -64,7 +63,9 @@ permissions:
 - Zone, only with a domain: Workers Routes Write and Zone Read.
 
 Setup gives the Worker its own narrower token (Zero Trust, Access and WARP connectors) as a secret binding. The owner
-commands authenticate to the Worker with any active token of the account, which Cloudflare verifies.
+commands authenticate to the Worker with the token setup (or `cx mesh deploy`) ran with: the Worker has its id and
+accepts only that token, as Cloudflare verifies it, so another token of the account (a read-only one for CI, say)
+cannot mint invites or revoke devices. After changing the token, run `cx mesh deploy` again.
 
 Before the first setup, open one.dash.cloudflare.com once and pick the Free plan, so the account has a Zero Trust
 organization.
@@ -148,13 +149,14 @@ uninstalls WARP when the join installed it.
 
 `cx mesh` is one of three mesh backends. `cx mesh backends [--json]` lists them with their status, the address
 ranges each claims, and any collision between those ranges and this host's LANs. `cx mesh ranges` prints only the
-ranges and collisions. Any subcommand takes `--backend ID` (`status`, `members`, `invite`, `revoke`, `audit`,
-`ranges`, `setup`, `teardown`). Without `--backend`, `cx mesh` is the WARP util described above, unchanged.
+ranges and collisions. `--backend ID` picks one: `status` and `ranges` for any of them, `members`, `invite`,
+`revoke` and `audit` for ssh-overlay, `members` for tailscale. Without `--backend`, `cx mesh` is the WARP util
+described above, unchanged; the built-in ssh-overlay invite is `cx invite` (the hub's `+`), and its join `cx join`.
 
 | Backend | What it is | Ranges |
 |---|---|---|
-| `ssh-overlay` (default) | Built in: enrolled devices, automatic core pairing, the existing SSH routes and ProxyJump through a reachable peer. Coexists with any VPN. | none |
-| `cloudflare-warp` | This document's WARP mesh, driven through `mesh.py --json` | `profile.mesh` (default `100.96.0.0/12`) |
+| `ssh-overlay` | Built in (`cx invite`, `cx join`): enrolled devices, automatic core pairing, the existing SSH routes and ProxyJump through a reachable peer. Coexists with any VPN. | none |
+| `cloudflare-warp` | This document's WARP mesh: `cx mesh` without `--backend` | `profile.mesh` (default `100.96.0.0/12`) |
 | `tailscale` | Read-only adoption of `tailscale status --json` when the binary is on PATH: members, MagicDNS names | `100.64.0.0/10`, `fd7a:115c:a1e0::/48` |
 
 A backend claims its ranges only on evidence: `cloudflare-warp` when a mesh config exists here
@@ -168,31 +170,33 @@ in `100.100.0.0/16` stays Tailscale's. The network observation's `overlay` field
 interface list only: it never runs `tailscale status` or takes the ssh-overlay audit lock. `cx mesh backends` is
 where each backend's full status is read.
 
-## ssh-overlay: `cx mesh pair`
+## ssh-overlay: `cx invite` and `cx join`
 
 ```sh
 # the viewer (a device already in your cx mesh); runs in the foreground until one device joins
-cx mesh invite --backend ssh-overlay [--hours 24] [--name rover] [--address IP]... [--port 7241]
+cx invite [--hours 0.5] [--name rover] [--address IP]... [--port 7241]
 # the new device (cx installed; Linux), with the line the viewer printed
-cx mesh pair 7K2Q-M9XD-4HT host[:port] [--name N]
+cx join 7K2Q-M9XD-4HT host[:port] [--name N]
 ```
 
-`cx join <code> <host>` is short for `cx mesh pair`. (`cx mesh join` is the WARP join above; `cx mesh pair` is this
-one.) On the hub, `+` opens the same invite: its code, this one-liner and a QR code, closed on use, expiry or Esc.
+`cx invite` is short for `cx mesh invite --backend ssh-overlay`, and `cx join` for `cx mesh pair`. (`cx mesh join`
+is the WARP join above.) On the hub, `+` opens the same invite: its code, this one-liner, the other addresses it
+listens on and a QR code, closed on use, expiry or Esc; `y` copies the code and `Y` the line (OSC 52).
 
 **The code** is 11 Crockford base32 symbols, shown as `XXXX-XXXX-XXX`: 10 random symbols (50 bits) and a check
 symbol (a weighted sum in GF(32)) that catches every single mistyped symbol and every swap of two neighbours
 offline. Input ignores case, dashes and spaces; `I`/`L` read as `1` and `O` as `0`. The code carries no address:
 the joiner names the viewer's host, which the viewer prints. The code and its key are never written to disk:
-they live only in the memory of the `cx mesh invite` that serves them.
+they live only in the memory of the `cx invite` that serves them.
 
-**The listener.** `cx mesh invite --backend ssh-overlay` opens a plain TCP listener on this host's mesh and LAN
+**The listener.** `cx invite` opens a plain TCP listener on this host's mesh and LAN
 addresses only: private IPv4, the CGNAT range overlays use (`100.64.0.0/10`: Tailscale, WARP), and IPv6 ULA
 (`fc00::/7`). It never binds a public, link-local or unspecified address. `--address IP` (repeatable) picks the
 addresses instead; loopback is allowed there, and anything else outside those ranges is refused. The port is
-7241 unless `--port` says otherwise; the printed line names it when it is not the default. The listener runs in
-the foreground of `cx mesh invite`, so nothing is left running in the background. It closes after one join, at
-expiry (24 hours by default, at most 7 days), on Ctrl-C, or when the invite is cancelled. Connections are served
+7241 unless `--port` says otherwise; the printed line names it when it is not the default, and the other
+addresses it listens on are printed under it. The listener runs in the foreground of `cx invite`, so nothing is
+left running in the background. It closes after one join, at expiry (30 minutes by default, at most 24 hours: see
+the threat model), on Ctrl-C, or when the invite is cancelled. Connections are served
 one at a time. Each request is one CX1 frame (`CX1 <len>` plus JSON, at most 64 KiB), read within 10 seconds
 however slowly it arrives.
 
@@ -206,16 +210,17 @@ compared in constant time) over `cx-pair-v1|<label>|` and then each field with a
    account, machine id, SSH host key), the viewer address it actually dialed, a 16-byte random nonce, and
    `HMAC(K, "join", those fields)`.
 3. **The viewer checks.** If 3 requests failed within the last minute, it refuses without checking. A wrong MAC
-   (or an unreadable request) is refused and counted, and the invite stays open; the 20th failure cancels the
+   is refused and counted, and the invite stays open; the 20th failure cancels the
    invite. A right MAC **uses up the invite before anything else**. Then it checks the dialed address against the
-   address the connection really reached (a mismatch means a relay), and checks the identity. An id that is
-   already enrolled is refused (see the threat model). Any failure after the invite is used up cancels it, and
-   the listener closes.
+   address the connection really reached (a mismatch means a relay), checks the identity and that sshd answers
+   on port 22 at the connection's source. An id that is already enrolled is refused (see the threat model). Any
+   failure after the invite is used up cancels it, and the listener closes. An unreadable request (a port scan,
+   a silent connection) is refused but not counted: it guessed nothing.
 4. **The viewer pairs.** It installs the joiner's key as `no-agent-forwarding,no-port-forwarding,
    no-X11-forwarding,no-user-rc … cx-managed-peer` (the existing peer_ssh line writer). It pins the joiner's host
    key and enrolls the joiner as a **core** device at `account@<connection source>`, with the claimed
    `machine-id:account` as its id.
-5. **The viewer answers** with its SSH host key (`/etc/ssh/ssh_host_ed25519_key.pub`, or `--host-key FILE`), its
+5. **The viewer answers** with its SSH host key (`/etc/ssh/ssh_host_ed25519_key.pub`, on both sides), its
    cx client key, its id, name, host and account, and `HMAC(K, "accept", the request nonce and those fields)`.
    Then the listener closes.
 6. **The joiner verifies** the accept MAC. Only then does it pin the viewer's host key, authorize its client key
@@ -223,11 +228,13 @@ compared in constant time) over `cx-pair-v1|<label>|` and then each field with a
    here, the joiner refuses too. The viewer has then recorded the joiner already, and the error says to revoke it
    there before joining again. `cx device sync` then verifies both directions with the existing pairing.
 
-cx device targets carry no port, so the pairing assumes sshd on port 22 on both sides; the invite port is only
-for the pairing exchange. `cx mesh revoke NAME --backend ssh-overlay --yes` removes the device, its pins and
-exactly its `cx-managed-peer` line. `cx device remove NAME` does the same (its JSON reports `ssh.unpinned` and
-`ssh.authorizations_removed`). `cx mesh teardown --backend ssh-overlay` has nothing to cancel: an invite exists
-only while its `cx mesh invite` runs. Invites, joins and closed invites are in
+cx device targets carry no port, so the pairing needs sshd on port 22 on both sides; the invite port is only for
+the pairing exchange. Both sides check that before pairing: the joiner before it sends its request (so a viewer
+without it uses up no invite), the viewer before it pins anything. A device whose sshd listens elsewhere is
+enrolled by an `~/.ssh/config` alias with its `Port` instead (`cx add ALIAS`). `cx mesh revoke NAME --backend
+ssh-overlay --yes` removes the device, its pins and exactly its `cx-managed-peer` line. `cx device remove NAME` does
+the same (its JSON reports `ssh.unpinned` and `ssh.authorizations_removed`). An invite exists only while its `cx
+invite` runs, so there is nothing to tear down. Invites, joins and closed invites are in
 `~/.local/state/cx/mesh/ssh-overlay/audit.jsonl`.
 
 **Threat model.**
@@ -245,9 +252,11 @@ only while its `cx mesh invite` runs. Invites, joins and closed invites are in
   request. That gives them one HMAC, from which they could brute-force the 50-bit code offline. They cannot
   complete the join meanwhile: changing any field of the request breaks its MAC, and relaying it as is installs
   the joiner's own key, not theirs. They cannot forge the accept without the code, so the joiner pins nothing
-  from them. A joiner that sees a failure says so; **cancel the invite** (Ctrl-C on the viewer) and make a new
-  one. On the viewer, any failed handshake with the right code cancels the invite itself. Online, the rate limit
-  above applies to them like anyone else.
+  from them. A joiner that sees a failure (a refusal, or no answer: the request may have been dropped) says so and
+  says to **cancel the invite** (Ctrl-C on the viewer) and make a new one. The short lifetime bounds the rest: a
+  50-bit search takes hours on rented GPUs, against an invite open for 30 minutes (at most 24 hours with
+  `--hours`). On the viewer, any failed handshake with the right code cancels the invite itself. Online, the rate
+  limit above applies to them like anyone else.
 - **Network exposure.** The listener only binds mesh/LAN addresses and only while the invite is open. Each
   connection is bounded in size and time and served one at a time, so a flood can delay a join but not exhaust the
   host; it can also burn the invite (20 failures), which costs only a new invite.

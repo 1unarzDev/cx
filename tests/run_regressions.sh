@@ -159,6 +159,12 @@ if ! cargo build --locked >"$private/logs/build.log" 2>&1; then
     grep -E '^error' -A5 "$private/logs/build.log" | head -40
     exit 1
 fi
+# Warnings fail the build here, so a new one is never buried under old ones.
+if grep -q '^warning' "$private/logs/build.log"; then
+    echo "FAIL  cargo build --locked has warnings"
+    grep -E '^warning' -A5 "$private/logs/build.log" | head -40
+    exit 1
+fi
 BIN="$ROOT/target/debug/cx"
 
 if [ $rust = 1 ]; then

@@ -1062,9 +1062,6 @@ pub fn local_shell_payload(payload: &str) -> Result<()> {
     };
     local_shell_with_resume(&provider, yolo, &folder, &id, resume)
 }
-pub fn run(scope: &ContainerScope, provider: &str, yolo: bool) -> Result<()> {
-    run_with_resume(scope, provider, yolo, false)
-}
 fn shell_payload(
     provider: &str,
     yolo: bool,
@@ -1448,9 +1445,6 @@ fn local_identity(id: &str) -> Result<crate::model::ProcessIdentity> {
         "container terminal ended or process identity changed"
     );
     Ok(identity)
-}
-pub fn local_shell(provider: &str, yolo: bool, folder: &str, id: &str) -> Result<()> {
-    local_shell_with_resume(provider, yolo, folder, id, false)
 }
 fn local_shell_with_resume(
     provider: &str,

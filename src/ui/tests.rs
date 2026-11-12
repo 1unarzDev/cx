@@ -643,11 +643,6 @@ fn network_numeric_order_stale_port_and_linklocal_enrollment() {
     let stale = serde_json::json!({"address":"fe80::1","interface":"eth0","observed_at":transport::now().saturating_sub(100),"ssh":{"state":"tcp_reachable"}});
     assert_eq!(neighbor_ssh(&stale, transport::now()), "unknown");
     assert!(!neighbor_connectable(&stale));
-    a.dialog = Some(Dialog::Neighbor(0, stale));
-    a.dialog_selected = 1;
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(a.input.is_none());
-    assert!(a.pending_add.is_none());
     a.network.insert(0, serde_json::json!({"candidates":[{"address":"192.0.2.100","interface":"eth0"},{"address":"192.0.2.2","interface":"eth0"}]}));
     assert_eq!(a.network_candidates()[0]["address"], "192.0.2.2");
 }
@@ -2235,11 +2230,6 @@ fn container_menus_keep_shell_available_until_scoped_agents_are_observed() {
     a.open_container_browser(0, c.scope());
     let _ = rx.try_iter().collect::<Vec<_>>();
     a.browser.as_mut().unwrap().path = "/workspace/src".into();
-    a.start_shell();
-    assert!(
-        matches!(rx.try_recv().unwrap().op,Operation::ContainerCreate{scope,request,yolo:false} if scope.folder=="/workspace/src"&&request.provider=="shell")
-    );
-    a.creating = false;
     let mut session = disposable_shell();
     session.container = Some(c.scope());
     a.work[0].sessions.push(session);
@@ -2388,9 +2378,6 @@ fn watch_key_attaches_highlighted_session_read_only_and_is_contextual() {
     a.view = View::Files;
     press(&mut a, 'w');
     assert!(a.pending_attach.is_none());
-    assert!(!ACTIONS
-        .iter()
-        .any(|(action, _)| *action == Action::Terminal));
 }
 #[test]
 fn host_launch_does_not_offer_to_resume_same_path_container_session() {

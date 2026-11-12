@@ -596,6 +596,15 @@ impl FrameControl {
         Ok(true)
     }
 }
+/// OSC 52: put `text` on the system clipboard (tmux passes it on with `set-clipboard on`).
+fn osc52(text: &str) -> Vec<u8> {
+    use base64::Engine;
+    format!(
+        "\x1b]52;c;{}\x07",
+        base64::engine::general_purpose::STANDARD.encode(text)
+    )
+    .into_bytes()
+}
 fn frame_writer() -> (FrameWriter, FrameControl) {
     let state = std::rc::Rc::new(std::cell::RefCell::new(FrameState::default()));
     // Terminals ignore unknown private modes; the Linux console and dumb
@@ -1941,6 +1950,12 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     _ => {}
                 }
             }
+        }
+        if let Some(text) = app.copy_out.take() {
+            use io::Write;
+            let mut out = io::stdout();
+            out.write_all(&osc52(&text))?;
+            out.flush()?;
         }
         if last_jobs.elapsed() >= Duration::from_secs(2) {
             let active = app

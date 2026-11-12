@@ -14,6 +14,7 @@ const CONFIG = {
   name: "demo", account: "acct", org: "demo-team", url: "https://mesh.example.org", dns_suffix: ".mesh.example.org",
   rule_prefix: "Mesh DNS: ", policy_name: "demo-mesh enrolment", token_duration: "8760h", invite_ttl_hours: 24,
   devices: { robot: { ssh_user: "pilot" } }, ssh_keys: ["ssh-ed25519 AAAAexample owner"], tailscale_rule_priority: 5200,
+  owner_token_id: "owner-id",
 };
 
 // The Worker with its text-module imports inlined (Workers bundles them; node cannot import .sh).
@@ -51,7 +52,9 @@ function cloudflare() {
     const body = init.body ? JSON.parse(init.body) : undefined;
     const auth = (init.headers?.authorization ?? "").replace("Bearer ", "");
     s.calls.push(`${m} ${p}`);
-    if (p.endsWith("/tokens/verify")) return auth === OWNER || auth === "worker-token" ? ok({ status: "active" }) : no(401);
+    // Every token of the account verifies as active; only the owner's has the deployed id.
+    const ids = { [OWNER]: "owner-id", "worker-token": "worker-id", "analytics-ro": "analytics-id" };
+    if (p.endsWith("/tokens/verify")) return ids[auth] ? ok({ id: ids[auth], status: "active" }) : no(401);
     if (auth !== "worker-token") return no(403);
     const id = () => `id${++s.n}`;
     if (p === "/accounts/acct/access/service_tokens" && m === "POST") {
@@ -114,10 +117,13 @@ function setup() {
 
 const invite = async (call, b = {}) => (await call("POST", "/v1/admin/invites", { token: OWNER, body: b })).json;
 
-test("the owner endpoints need an active token of the account", async () => {
+test("the owner endpoints need the token the mesh was deployed with", async () => {
   const { call } = setup();
   assert.equal((await call("GET", "/v1/admin/devices")).status, 401);
   assert.equal((await call("GET", "/v1/admin/devices", { token: "stranger" })).status, 401);
+  // Another active token of the same account (a read-only one for CI) mints nothing.
+  assert.equal((await call("POST", "/v1/admin/invites", { token: "analytics-ro", body: {} })).status, 401);
+  assert.equal((await call("GET", "/v1/admin/devices", { token: "worker-token" })).status, 401);
   assert.equal((await call("GET", "/v1/admin/devices", { token: OWNER })).status, 200);
 });
 

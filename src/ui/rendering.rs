@@ -281,9 +281,7 @@ fn render_frame(
                     ChooseDevice::Network => "Network · choose device or All devices",
                     ChooseDevice::AddGateway => "Add by SSH address · choose gateway",
                     ChooseDevice::SessionChooser => "New session · choose device",
-                    ChooseDevice::Shell => "New session · choose device · starts in home",
                     ChooseDevice::New => "New session · execution device",
-                    ChooseDevice::Terminal => "SSH terminal · choose device · exit returns",
                     ChooseDevice::Files => "Files · choose device",
                     ChooseDevice::Destination => "Transfer to · destination device",
                 }
@@ -407,11 +405,6 @@ fn render_frame(
                 "Reset managed sessions?".into(),
                 vec!["Cancel · keep running sessions".into(), "Reset tmux and agents".into()],
                 "This forcefully terminates all CX-managed tmux sessions on this execution device, including Claude and Codex processes running inside them. External tmux sessions are untouched.\nEnter confirms · Escape cancels".into(),
-            ),
-            Dialog::Neighbor(d, candidate) => (
-                format!("Neighbor · {}", safe_label(candidate["address"].as_str().unwrap_or("unknown"))),
-                vec![if neighbor_connectable(candidate) { "Connect via this device".into() } else { "Connect unavailable · link-local scope".into() }],
-                format!("Via {}\n{}\nEnter chooses · Escape cancels", identity(&app.devices[*d]), neighbor_detail(candidate)),
             ),
             Dialog::Jobs => {
                 let jobs = app.job_rows();

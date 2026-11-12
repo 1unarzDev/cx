@@ -16,7 +16,6 @@ mod peers;
 mod secrets;
 mod session_titles;
 mod sessions;
-mod sharing;
 mod sharing_lan;
 mod store;
 mod syntax_preview;
@@ -108,13 +107,21 @@ enum Cmd {
         command: DeviceCommand,
     },
     /// A WARP mesh on your own Cloudflare account, joined by one line (docs/mesh.md): setup, invite,
-    /// devices, revoke, audit, teardown, join, leave; --json for tools.
+    /// devices, revoke, audit, teardown, join, leave; --json for tools. The built-in SSH mesh is
+    /// `cx invite` / `cx join`, and `cx mesh SUB --backend ssh-overlay` (members, revoke, audit).
     #[command(disable_help_flag = true)]
     Mesh {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Join a mesh invite: short for `cx mesh pair <code> <host[:port]> [--name N] [--json]`.
+    /// Invite a device into the built-in SSH mesh: a single-use code, served here until it joins
+    /// (`[--hours H] [--name N] [--address IP] [--port P] [--json]`; the hub's `+`).
+    #[command(disable_help_flag = true)]
+    Invite {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Join a `cx invite`: `cx join <code> <host[:port]> [--name N] [--json]` (also `cx mesh pair`).
     #[command(disable_help_flag = true)]
     Join {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -960,9 +967,6 @@ fn device_policy_report(name: &str) -> Result<serde_json::Value> {
         "availability": policy.availability,
     }))
 }
-fn add(target: &str) -> Result<()> {
-    add_via(target, None)
-}
 fn add_via(target: &str, via: Option<&Device>) -> Result<()> {
     add_via_mode(target, via, true)
 }
@@ -1718,6 +1722,13 @@ fn run() -> Result<()> {
         }
         Some(Cmd::Terminal { device: d }) => sessions::login_terminal(&device(d)?),
         Some(Cmd::Mesh { args }) => mesh::run(&args),
+        Some(Cmd::Invite { args }) => mesh::run(
+            &[
+                vec!["invite".into(), "--backend".into(), "ssh-overlay".into()],
+                args,
+            ]
+            .concat(),
+        ),
         Some(Cmd::Join { args }) => mesh::run(&[vec!["pair".into()], args].concat()),
         Some(Cmd::Claude { args }) => mesh::run_claude(&args),
         Some(Cmd::Secrets { command }) => secrets::run_cli(command),
@@ -1910,11 +1921,17 @@ mod enrollment_tests {
     use super::*;
     #[test]
     fn join_passes_its_arguments_to_mesh_pair() {
-        let cli = Cli::try_parse_from(["cx", "join", "KX74QM-ABCD", "10.0.0.2", "--json"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["cx", "join", "7K2Q-M9XD-4HT", "10.0.0.2", "--json"]).unwrap();
         let Some(Cmd::Join { args }) = cli.command else {
             panic!("not join");
         };
-        assert_eq!(args, ["KX74QM-ABCD", "10.0.0.2", "--json"]);
+        assert_eq!(args, ["7K2Q-M9XD-4HT", "10.0.0.2", "--json"]);
+        let cli = Cli::try_parse_from(["cx", "invite", "--hours", "0.5", "--json"]).unwrap();
+        let Some(Cmd::Invite { args }) = cli.command else {
+            panic!("not invite");
+        };
+        assert_eq!(args, ["--hours", "0.5", "--json"]);
     }
     #[test]
     fn exited_installer_cannot_leave_writer_or_reader_blocked() {

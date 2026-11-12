@@ -2,12 +2,13 @@
 //! so it works wherever cx is installed; the util itself needs only python3 and no cx. `cx claude` runs its
 //! neighbour mesh/claude.py (docs/claude.md), whose codes the same Worker serves.
 //!
-//! The mesh is a pluggable feature: [`MeshBackend`] has three implementations, listed by
-//! [`backends`] (`cx mesh backends`):
-//! - `ssh-overlay` (ssh_overlay.rs): the built-in default over plain SSH, coexisting with any VPN;
-//!   devices join with `cx mesh pair <code> <host>` while `cx mesh invite` listens (code.rs, the protocol
-//!   and threat model in docs/mesh.md).
-//! - `cloudflare-warp` (cloudflare.rs): the WARP mesh of mesh.py, through its `--json` contract.
+//! [`MeshBackend`] is what the backend report (`cx mesh backends`) and the network observation need
+//! of each overlay, listed by [`backends`]:
+//! - `ssh-overlay` (ssh_overlay.rs): the built-in one over plain SSH, coexisting with any VPN; devices
+//!   join with `cx join <code> <host>` while `cx invite` (or the hub's `+`) listens (code.rs, the
+//!   protocol and threat model in docs/mesh.md). `cx mesh SUB --backend ssh-overlay` reaches its
+//!   members, revoke and audit.
+//! - `cloudflare-warp` (cloudflare.rs): the WARP mesh of mesh.py, which is `cx mesh` without `--backend`.
 //! - `tailscale` (tailscale.rs): read-only adoption of `tailscale status --json`.
 //!
 //! [`overlay`] feeds network.rs from local evidence only: which interfaces sit in overlay ranges,
@@ -66,6 +67,7 @@ const FILES: &[(&str, &str)] = &[
 
 fn unpack() -> Result<PathBuf> {
     let base = std::env::var_os("XDG_CACHE_HOME")
+        .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
         .context("HOME is not set")?;
@@ -168,11 +170,6 @@ fn names_config(args: &[String]) -> bool {
         .any(|a| a == "--config" || a.starts_with("--config="))
 }
 
-/// Whether the cloudflare-warp backend's own mesh.py call (always the default config) gets the stored token.
-fn mesh_api(subcommand: &str) -> bool {
-    MESH_API.contains(&subcommand)
-}
-
 /// Hand a stored `cloudflare.api_token` (docs/secrets.md) to the util as $CLOUDFLARE_API_TOKEN, the variable it
 /// already reads first, so mesh.py stays standalone. An explicit $CLOUDFLARE_API_TOKEN wins; with no stored token
 /// the util keeps its own lookup (credentials file, then prompt). A stored token that cannot be read here is an
@@ -213,17 +210,9 @@ pub struct Status {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-pub struct Plan {
-    pub dry_run: bool,
-    pub applied: bool,
-    pub steps: Vec<String>,
-    pub result: Value,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Invite {
     pub backend: String,
-    /// What the new device types (with `cx mesh pair <code> <host>` for ssh-overlay).
+    /// What the new device types (with `cx join <code> <host>`).
     pub code: String,
     pub url: Option<String>,
     pub one_liner_sh: String,
@@ -264,20 +253,12 @@ pub struct AuditEntry {
 pub trait MeshBackend {
     fn id(&self) -> &'static str;
     fn name(&self) -> &'static str;
-    /// Feature flags: "invite", "join", "revoke", "audit", "provision", "teardown", "lend",
-    /// "onboarding", "read-only", "short-code", "coexists-with-vpn", ...
-    fn capabilities(&self) -> Vec<&'static str>;
     fn status(&self) -> Result<Status>;
-    fn provision(&self, dry_run: bool) -> Result<Plan>;
-    fn teardown(&self, dry_run: bool) -> Result<Plan>;
-    fn members(&self) -> Result<Vec<Member>>;
-    fn revoke(&self, name: &str) -> Result<Value>;
     /// The ranges this overlay assigns addresses from (empty: it claims none).
     fn address_ranges(&self) -> Vec<IpNet>;
-    fn audit(&self, limit: usize) -> Result<Vec<AuditEntry>>;
 }
 
-/// Every backend, the default (ssh-overlay) first.
+/// Every backend, the built-in ssh-overlay first.
 pub fn backends() -> Vec<Box<dyn MeshBackend>> {
     vec![
         Box::new(ssh_overlay::SshOverlay),
@@ -342,7 +323,8 @@ pub(crate) fn run_bounded(
         .stderr(Stdio::null())
         .spawn()?;
     let mut stdin = child.stdin.take().context("no stdin")?;
-    let input = input.to_vec();
+    // The input may be a secret (a keyring value): its copy is wiped when the writer is done.
+    let input = zeroize::Zeroizing::new(input.to_vec());
     // Not joined: a group member that holds stdin without reading would block it; the group kill
     // below closes the pipe and ends the thread.
     std::thread::spawn(move || {
@@ -390,7 +372,6 @@ fn backend_value(b: &dyn MeshBackend) -> Value {
     json!({
         "id": b.id(),
         "name": b.name(),
-        "capabilities": b.capabilities(),
         "ranges": b.address_ranges(),
         "status": status.as_ref().ok(),
         "error": status.as_ref().err().map(|e| crate::files::display(&format!("{e:#}"))),
@@ -474,7 +455,6 @@ pub fn report_with(list: &[Box<dyn MeshBackend>], interfaces: &Value) -> Value {
     let (overlays, lans) = claims(&values, interfaces);
     let all: Vec<_> = overlays.iter().chain(lans.iter()).cloned().collect();
     json!({
-        "default": ssh_overlay::ID,
         "backends": values,
         "claims": all,
         "collisions": ranges::collisions(&all),
@@ -558,7 +538,7 @@ fn print_report(r: &Value) {
 #[derive(clap::Parser)]
 #[command(name = "cx mesh", no_binary_name = true)]
 struct BackendArgs {
-    /// status, members, invite, revoke, audit, ranges, setup or teardown
+    /// status, ranges; ssh-overlay: also members, invite, revoke, audit; tailscale: also members
     #[arg(default_value = "status")]
     sub: String,
     /// revoke: the device
@@ -568,8 +548,6 @@ struct BackendArgs {
     #[arg(long)]
     hours: Option<f64>,
     #[arg(long)]
-    uses: Option<u32>,
-    #[arg(long)]
     name: Option<String>,
     /// ssh-overlay invite: an address to listen on (repeatable; default: this host's mesh/LAN addresses).
     #[arg(long)]
@@ -577,13 +555,8 @@ struct BackendArgs {
     /// ssh-overlay invite: the port to listen on.
     #[arg(long)]
     port: Option<u16>,
-    /// ssh-overlay invite: the host key to pin, when sshd does not use the default one.
-    #[arg(long)]
-    host_key: Option<PathBuf>,
     #[arg(long)]
     limit: Option<usize>,
-    #[arg(long)]
-    dry_run: bool,
     #[arg(long)]
     yes: bool,
     #[arg(long)]
@@ -597,40 +570,18 @@ fn run_backend(args: &[String]) -> Result<()> {
         return ssh_overlay_invite(&a);
     }
     let out = backend_command(&a)?;
-    if a.json {
-        println!("{}", serde_json::to_string_pretty(&out)?);
-    } else if a.sub == "invite" {
-        println!(
-            "On the new device:  {}",
-            out["one_liner_sh"].as_str().unwrap_or("")
-        );
-        if let Some(ps) = out["one_liner_ps"].as_str() {
-            println!("Windows:            {ps}");
-        }
-        println!(
-            "expires {} ({} use)",
-            out["expires"].as_str().unwrap_or(""),
-            out["uses"]
-        );
-    } else {
-        println!("{}", serde_json::to_string_pretty(&out)?);
-    }
+    println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }
 
-/// `cx mesh invite --backend ssh-overlay`: print the invite, then serve it in the foreground until one
-/// device joins, it expires, or Ctrl-C.
+/// `cx invite` (`cx mesh invite --backend ssh-overlay`): print the invite, then serve it in the
+/// foreground until one device joins, it expires, or Ctrl-C.
 fn ssh_overlay_invite(a: &BackendArgs) -> Result<()> {
-    anyhow::ensure!(
-        a.uses.is_none_or(|u| u == 1),
-        "ssh-overlay invites are single use"
-    );
     let opts = ssh_overlay::InviteOptions {
         ttl_hours: a.hours,
         device_name: a.name.clone(),
         addresses: a.address.clone(),
         port: a.port,
-        host_key_file: a.host_key.clone(),
         cancel: None,
     };
     let joined = ssh_overlay::invite(&opts, |inv| {
@@ -672,41 +623,40 @@ fn backend_command(a: &BackendArgs) -> Result<Value> {
         a.sub,
         a.device.as_deref().unwrap_or_default()
     );
-    Ok(match a.sub.as_str() {
-        "status" => serde_json::to_value(b.status()?)?,
-        "members" | "devices" => serde_json::to_value(b.members()?)?,
-        "audit" => serde_json::to_value(b.audit(a.limit.unwrap_or(50))?)?,
-        "ranges" => serde_json::to_value(b.address_ranges())?,
-        "setup" | "provision" => serde_json::to_value(b.provision(a.dry_run)?)?,
-        "teardown" => {
-            anyhow::ensure!(
-                a.dry_run || a.yes,
-                "not confirmed (pass --yes, or --dry-run to preview)"
-            );
-            serde_json::to_value(b.teardown(a.dry_run)?)?
+    Ok(match (b.id(), a.sub.as_str()) {
+        (_, "status") => serde_json::to_value(b.status()?)?,
+        (_, "ranges") => serde_json::to_value(b.address_ranges())?,
+        (ssh_overlay::ID, "members" | "devices") => {
+            serde_json::to_value(ssh_overlay::SshOverlay.members()?)?
         }
-        "revoke" => {
+        (ssh_overlay::ID, "audit") => {
+            serde_json::to_value(ssh_overlay::SshOverlay.audit(a.limit.unwrap_or(50))?)?
+        }
+        (ssh_overlay::ID, "revoke") => {
             let name = a.device.as_deref().context("revoke NAME")?;
             anyhow::ensure!(a.yes, "not confirmed (pass --yes)");
-            b.revoke(name)?
+            ssh_overlay::SshOverlay.revoke(name)?
         }
-        "invite" => serde_json::to_value(match b.id() {
-            cloudflare::ID => cloudflare::invite(
-                a.uses.unwrap_or(1),
-                a.hours.unwrap_or(24.0),
-                a.name.as_deref(),
-            )?,
-            _ => bail!("tailscale is adopted read-only; invite devices from the Tailscale admin console"),
-        })?,
-        other => bail!("cx mesh {other} --backend: use status, members, invite, revoke, audit, ranges, setup or teardown"),
+        (tailscale::ID, "members" | "devices") => {
+            serde_json::to_value(tailscale::Tailscale::new().members()?)?
+        }
+        (tailscale::ID, _) => {
+            bail!("tailscale is adopted read-only; manage devices with Tailscale's own tools")
+        }
+        (cloudflare::ID, other) => {
+            bail!("cloudflare-warp is `cx mesh {other}` without --backend (docs/mesh.md)")
+        }
+        (_, other) => {
+            bail!("cx mesh {other} --backend: use status, members, invite, revoke, audit or ranges")
+        }
     })
 }
 
-/// `cx mesh pair <code> <host[:port]> [--name N]`: join an invite `cx mesh invite --backend ssh-overlay` serves.
+/// `cx join <code> <host[:port]> [--name N]` (`cx mesh pair`): join an invite `cx invite` serves.
 #[derive(clap::Parser)]
 #[command(name = "cx mesh pair", no_binary_name = true)]
 struct PairArgs {
-    /// The code `cx mesh invite --backend ssh-overlay` printed.
+    /// The code `cx invite` printed.
     code: String,
     /// Where that invite listens: an IP or DNS name, with `:port` if it printed one.
     host: String,
@@ -784,9 +734,6 @@ mod tests {
         fn name(&self) -> &'static str {
             self.0
         }
-        fn capabilities(&self) -> Vec<&'static str> {
-            vec![]
-        }
         fn status(&self) -> anyhow::Result<super::Status> {
             Ok(super::Status {
                 backend: self.0.into(),
@@ -795,23 +742,8 @@ mod tests {
                 ..Default::default()
             })
         }
-        fn provision(&self, _: bool) -> anyhow::Result<super::Plan> {
-            unimplemented!()
-        }
-        fn teardown(&self, _: bool) -> anyhow::Result<super::Plan> {
-            unimplemented!()
-        }
-        fn members(&self) -> anyhow::Result<Vec<super::Member>> {
-            Ok(vec![])
-        }
-        fn revoke(&self, _: &str) -> anyhow::Result<serde_json::Value> {
-            unimplemented!()
-        }
         fn address_ranges(&self) -> Vec<super::IpNet> {
             vec![super::ranges::net(self.1)]
-        }
-        fn audit(&self, _: usize) -> anyhow::Result<Vec<super::AuditEntry>> {
-            Ok(vec![])
         }
     }
 
@@ -1153,13 +1085,6 @@ mod tests {
         for s in ["join", "leave"] {
             assert!(!super::MESH_API.contains(&s));
             assert!(!super::CLAUDE_API.contains(&s));
-        }
-        // The cloudflare-warp backend's API calls get the token; join and leave do not need it.
-        for s in ["devices", "revoke", "audit"] {
-            assert!(super::mesh_api(s), "{s}");
-        }
-        for s in ["join", "leave"] {
-            assert!(!super::mesh_api(s), "{s}");
         }
         // Every allowlisted name is a real subcommand of the embedded utils.
         for s in super::MESH_API {

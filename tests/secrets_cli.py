@@ -51,10 +51,8 @@ with tempfile.TemporaryDirectory(prefix='cx-secrets-') as tmp:
     assert f'({len(CANARY)})'.encode() in r.stdout
     r = cx('secrets', 'set', 'robot.wifi', '--kind', 'generic', input=b'x', ok=False)
     assert r.returncode != 0, 'there is no --kind'
-    r = cx('secrets', 'set', 'robot.x', input=b'x', ok=False, extra=dict(CX_SECRETS_BACKEND='keyring'))
-    assert r.returncode != 0 and b'no OS keyring' in r.stderr, r.stderr
     r = cx('secrets', 'list', ok=False, extra=dict(CX_SECRETS_BACKEND='bogus'))
-    assert r.returncode != 0 and b'auto, file or keyring' in r.stderr, r.stderr
+    assert r.returncode != 0 and b'auto or file' in r.stderr, r.stderr
 
     # On a terminal, set prompts with echo off: the typed value never comes back on the screen.
     import pty, select, time
@@ -313,7 +311,7 @@ clear) rm -f "$CX_FAKE_VAULT/v.$name" ;;
 esac
 """)
     (tools / 'secret-tool').chmod(0o700)
-    keyring = dict(CX_SECRETS_BACKEND='keyring', DBUS_SESSION_BUS_ADDRESS='unix:path=/nonexistent/cx-fake-bus',
+    keyring = dict(CX_SECRETS_BACKEND='auto', DBUS_SESSION_BUS_ADDRESS='unix:path=/nonexistent/cx-fake-bus',
                    PATH=f"{tools}{os.pathsep}{env['PATH']}", CX_FAKE_VAULT=str(vault))
     cx('secrets', 'set', 'robot.kr', input=(CANARY + '\n').encode(), extra=keyring)
     assert (vault / 'v.robot.kr').read_text() == CANARY

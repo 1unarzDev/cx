@@ -2,6 +2,15 @@
 
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
+## v0.2.1
+
+### Changes
+- **Invites.** `cx invite` is the CLI twin of `cx join` (short for `cx mesh invite --backend ssh-overlay`), and the line it prints is `cx join <code> <host>`. An invite now lasts 30 minutes by default (at most 24 hours), and a joiner whose request goes unanswered is told to cancel the invite. Both sides check that sshd answers on port 22 before anything is paired. `--host-key` is gone: both sides use `/etc/ssh/ssh_host_ed25519_key.pub`.
+- **The hub's invite** copies: `y` the code, `Y` the line (or tap either), and lists the other addresses it listens on. Esc then `+` no longer finds the port taken.
+- Port scans and silent connections no longer count as wrong codes. A refused join keeps a removed device out of automatic pairing.
+- The WARP Worker accepts only the token the mesh was deployed with for its owner endpoints (run `cx mesh deploy` once after updating, and after changing the token). `--backend cloudflare-warp` now covers only `status` and `ranges`; the rest is `cx mesh` without `--backend`, as before. `cx mesh backends --json` no longer lists capabilities.
+- `CX_SECRETS_BACKEND=keyring` is gone (`auto` or `file`).
+
 ## v0.2.0
 
 A new interface and a faster core. Everything below is new since v0.1.95. Numbers are medians of interleaved A/B runs against the v0.1.95 release binary on the same host (release builds, local fixtures, 120x40 PTY); see STATUS.md for the full table.

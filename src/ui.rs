@@ -392,10 +392,8 @@ enum Action {
     DevcontainerUp,
     Containers,
     Add,
-    Terminal,
     Files,
     New,
-    Shell,
     Destination,
     TransferTo,
     Conflict,
@@ -492,8 +490,6 @@ enum ChooseDevice {
     Work,
     Network,
     AddGateway,
-    Shell,
-    Terminal,
     New,
     Files,
     Destination,
@@ -517,7 +513,6 @@ enum Dialog {
     Links(Vec<crate::markdown_links::Link>),
     Delete(usize, Vec<Entry>),
     PendingExit(usize),
-    Neighbor(usize, Value),
     Peer(usize),
     RemoveDevice(usize),
     EditDevice(usize),
@@ -675,6 +670,10 @@ struct App {
     secret_job: Option<mpsc::Receiver<std::result::Result<String, String>>>,
     /// The hub's open invite (`+`), served off the UI thread until use, expiry or Esc.
     invite: Option<screens::InviteRun>,
+    /// The listener thread of the last invite, joined by the next one's thread.
+    invite_thread: Option<std::thread::JoinHandle<()>>,
+    /// Text for the system clipboard (OSC 52), written by the event loop.
+    copy_out: Option<String>,
     /// The last session detached from, for `-`.
     last_session: Option<(usize, String)>,
     last_esc: Option<Instant>,
@@ -839,6 +838,8 @@ impl App {
             secret_entry: None,
             secret_job: None,
             invite: None,
+            invite_thread: None,
+            copy_out: None,
             last_session: None,
             last_esc: None,
             onboarding_dismissed: false,

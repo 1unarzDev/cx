@@ -104,6 +104,8 @@ class FakeCloudflare:
         p = path.removeprefix("/accounts/acct")
         if p == "/access/organizations":
             return ok({"auth_domain": "team.cloudflareaccess.com"})
+        if p == "/tokens/verify":
+            return ok({"id": "owner-token-id", "status": "active"})
         if p == "/devices/settings":
             return ok({"use_zt_virtual_ip": False})
         if p == "/devices/policies":
@@ -170,7 +172,8 @@ class MeshSetup(unittest.TestCase):
             self.assertEqual(prof["match"], 'identity.email == "non_identity@team.cloudflareaccess.com"')
             self.assertEqual([p["id"] for p in fake.res["apps"][0]["policies"]], ["keep", st["policy_id"]])
             script = fake.res["scripts"]["demo-mesh"]
-            for part in (b'name="worker.js"', b'name="join.sh"', b'name="config.json"', b'"CF_API_TOKEN"', b"worker-secret"):
+            for part in (b'name="worker.js"', b'name="join.sh"', b'name="config.json"', b'"CF_API_TOKEN"', b"worker-secret",
+                         b'"owner_token_id": "owner-token-id"'):
                 self.assertIn(part, script)
             self.assertNotIn("worker-secret", (Path(d) / "demo.state.json").read_text())
             first = len(fake.calls)

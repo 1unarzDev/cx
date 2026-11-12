@@ -460,6 +460,7 @@ fn invite(app: &App) -> Option<LabInvite> {
         oneliner: safe_label(&inv.one_liner_sh),
         mesh: inv.backend.clone(),
         expires_secs: app.invite_secs_left().min(u64::from(u32::MAX)) as u32,
+        also: inv.hosts.iter().skip(1).map(|h| safe_label(h)).collect(),
         qr,
     })
 }

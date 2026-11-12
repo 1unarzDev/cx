@@ -756,3 +756,20 @@ fn a_secret_value_is_typed_masked_and_never_drawn() {
         "the name is shown as typed"
     );
 }
+
+/// After a detach the left session is selected on the hub even when it ranks below the
+/// tile row: its tile takes the row's last cell.
+#[test]
+fn the_selected_session_always_has_a_hub_tile() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 12);
+    a.go_hub();
+    a.hub_sessions = true;
+    let last = workspaces::runtime_key(&a.work[0].sessions[11].clone());
+    a.reconcile_session_selection(Some((0, last)));
+    let (_, s) = a.selected_session().unwrap();
+    assert_eq!(s.name, "nav 0 11");
+    let text = draw(&a, 120, 40);
+    assert!(text.contains("more"), "tiles are hidden: {text}");
+    assert!(text.contains(&s.name), "{} has no tile: {text}", s.name);
+}

@@ -153,11 +153,19 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     }
     y += 1;
     let grid = Rect::new(r.x + 1, y, r.width.saturating_sub(2), grid_h);
-    let pick = if on_sess {
+    let mut pick = if on_sess {
         (cx.c.selected, true)
     } else {
         (0, false)
     };
+    // The selected session always has a tile (after a detach it may rank below the
+    // row): it takes the last cell in place of the one there.
+    let shown = usize::from(rows * cols);
+    let mut list = list;
+    if on_sess && n > shown && shown > 0 && cx.c.selected % n >= shown {
+        list.swap(shown - 1, cx.c.selected % n);
+        pick.0 = shown - 1;
+    }
     views::thumbs_grid(cx, buf, grid, &list, pick, cols, th, cx.s.device(&sel_id));
     if tick_h > 0 {
         ticker(

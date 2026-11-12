@@ -481,7 +481,7 @@ def scenario_sessions(binary, cycles):
             hub = hub_layout(viewer)
             if hub:
                 # The hub design types into a session by a tap on its peeked screen.
-                viewer.measure(b' ', lambda: 'OTHERS' in viewer.text() or 'tab' in viewer.screen.display[-1], timeout=TIMEOUT)
+                viewer.measure(b' ', lambda: 'OTHERS' in viewer.text() or ' next' in viewer.screen.display[-1], timeout=TIMEOUT)
             viewer.wait(lambda: '$' in viewer.text(), what='session preview prompt')
             viewer.quiesce(.1)
 
@@ -831,7 +831,7 @@ def instant_hub(viewer, cycles, marker):
     viewer.quiesce(.3)
 
     def peek():
-        return 'OTHERS' in viewer.text() or 'tab' in viewer.screen.display[-1]
+        return 'OTHERS' in viewer.text() or ' next' in viewer.screen.display[-1]
 
     def focused():
         return '⏏ detach' in viewer.text() or 'typing into the session' in viewer.text()

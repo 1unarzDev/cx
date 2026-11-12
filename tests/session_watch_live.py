@@ -79,7 +79,7 @@ class Fixture:
             self.viewer.quiesce(.2)
             return
         # The hub design: peek the session (Space), then a tap on its prompt types into it.
-        self.viewer.measure(b' ', lambda: 'OTHERS' in self.text() or 'tab' in self.viewer.screen.display[-1],
+        self.viewer.measure(b' ', lambda: 'OTHERS' in self.text() or ' next' in self.viewer.screen.display[-1],
                             timeout=10)
         self.viewer.quiesce(.2)
         display = self.viewer.screen.display

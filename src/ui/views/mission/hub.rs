@@ -275,18 +275,23 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
     }
     // Keys: the device's letter, then what it leads to, as two visible steps (the `c`
     // that follows a letter is claude, never the creation device).
-    let n = cx.s.sessions_on(&d.id).count();
+    // Each chip's tap is its keys' (`i a` attaches slot a of this device, not the
+    // hub's selection).
+    let first = cx.s.sessions_on(&d.id).next();
     let dev = format!("@{}", d.hotkey);
     let act = format!("device:{}", d.id);
+    let attach = first.map(|x| format!("session:{}:{}", d.id, x.id));
+    let new = format!("new:{}:claude", d.id);
+    let files = format!("files:{}", d.id);
     let mut items: Vec<(&str, &str, &str)> = vec![(&dev, "then", &act)];
-    if n > 0 {
-        items.push(("a", "attach", "attach"));
+    if let Some(attach) = &attach {
+        items.push(("a", "attach", attach));
     }
     if up && !ghost {
-        items.push(("c", "claude", "new"));
+        items.push(("c", "claude", &new));
     }
     if up {
-        items.push(("f", "files", "files"));
+        items.push(("f", "files", &files));
     }
     if items.len() == 1 {
         items.clear();
@@ -416,12 +421,17 @@ fn alerts(cx: &Cx) -> Vec<Alert> {
         } else {
             format!("{} needs you on {}", x.title, d.name)
         };
+        // A session past the four slots has no letter pair: `/` finds it by name.
+        let (keys, verb) = match cx.slot(x) {
+            Some(s) => (format!("@{} {s}", d.hotkey), "attach"),
+            None => ("/".to_string(), "find"),
+        };
         v.push((
             cx.g("◆", "^"),
             text,
             Tok::Warn,
-            format!("@{} {}", d.hotkey, cx.slot(x).unwrap_or('a')),
-            "attach",
+            keys,
+            verb,
             format!("session:{}:{}", d.id, x.id),
         ));
     }
@@ -432,7 +442,7 @@ fn alerts(cx: &Cx) -> Vec<Alert> {
             .collect();
     notes.sort_by_key(|n| std::cmp::Reverse(n.kind as u8));
     for n in notes {
-        let d = cx.s.devices.iter().find(|d| n.text.starts_with(&d.name));
+        let d = n.device.as_deref().and_then(|id| cx.s.device(id));
         let tok = if n.kind == NoticeKind::Err {
             Tok::Err
         } else {
@@ -444,7 +454,11 @@ fn alerts(cx: &Cx) -> Vec<Alert> {
             (Some(d), _) => (format!("@{}", d.hotkey), "inspect"),
             _ => ("/".to_string(), "find"),
         };
-        let act = d.map_or("notices".to_string(), |d| format!("retry:{}", d.id));
+        let act = match (d, verb) {
+            (Some(d), "retry") => format!("retry:{}", d.id),
+            (Some(d), _) => format!("device:{}", d.id),
+            _ => "notices".to_string(),
+        };
         v.push((cx.g("▲", "^"), head, tok, keys, verb, act));
     }
     v

@@ -38,12 +38,12 @@ pub(super) const SWATCHES: u8 = 8;
 type Rgb = (u8, u8, u8);
 /// One token row: truecolor dark/light, xterm-256 dark/light, 16-color.
 #[derive(Clone, Copy)]
-struct Row {
-    dark: Rgb,
-    light: Rgb,
-    x256: (u8, u8),
+pub(super) struct Row {
+    pub(super) dark: Rgb,
+    pub(super) light: Rgb,
+    pub(super) x256: (u8, u8),
     /// `None` keeps the terminal default (or relies on an attribute).
-    ansi: Option<Color>,
+    pub(super) ansi: Option<Color>,
 }
 
 const fn row(dark: u32, light: u32, x256: (u8, u8), ansi: Option<Color>) -> Row {
@@ -73,7 +73,8 @@ const IDS: [Row; 8] = [
     row(0xd692bf, 0x823f6e, (175, 125), Some(Color::LightMagenta)),
 ];
 
-fn spec(t: Tok) -> Row {
+/// The one table of the shared tokens (the design's views read it too).
+pub(super) fn spec(t: Tok) -> Row {
     match t {
         Tok::Muted => row(0x8b93a1, 0x5c6470, (246, 241), Some(Color::DarkGray)),
         Tok::Faint => row(0x4a515c, 0xc3c8d0, (239, 251), Some(Color::DarkGray)),
@@ -170,10 +171,6 @@ pub(super) fn swatch_index(key: &str) -> u8 {
         (h ^ u64::from(b)).wrapping_mul(0x100000001b3)
     });
     (hash % u64::from(SWATCHES)) as u8
-}
-#[allow(dead_code)]
-pub(super) fn swatch(key: &str) -> Style {
-    tok(Tok::Id(swatch_index(key)))
 }
 
 /// Selected-row style: `accent.bg` in the focused panel, `select.dim.bg` elsewhere.

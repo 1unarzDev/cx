@@ -773,3 +773,474 @@ fn the_selected_session_always_has_a_hub_tile() {
     assert!(text.contains("more"), "tiles are hidden: {text}");
     assert!(text.contains(&s.name), "{} has no tile: {text}", s.name);
 }
+
+// ------------------------------------------------------------------ v0.2.1 review
+
+fn chord(a: &mut App, c: char) {
+    a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+}
+fn esc(a: &mut App) {
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    // (Past the double-Esc window, so the next Esc is a single one.)
+    a.last_esc = None;
+}
+/// The OSC 52 sequence `copy_text` would write for `text`.
+fn osc52(text: &str) -> String {
+    use base64::Engine;
+    format!(
+        "\x1b]52;c;{}\x07",
+        base64::engine::general_purpose::STANDARD.encode(text)
+    )
+}
+fn copied() -> Option<String> {
+    screens::COPIED.with(|c| c.borrow_mut().take())
+}
+/// An invite as its listener reports it, with a stand-in thread that ends on `go`.
+fn open_invite(a: &mut App) -> mpsc::Sender<()> {
+    let (_tx, rx) = mpsc::channel();
+    let (go, wait) = mpsc::channel::<()>();
+    a.invite = Some(screens::InviteRun {
+        rx,
+        cancel: Default::default(),
+        shown: Some((
+            crate::mesh::Invite {
+                backend: "ssh-overlay".into(),
+                code: "7K2Q-M9XD-4HT".into(),
+                one_liner_sh: "cx mesh pair 7K2Q-M9XD-4HT 192.168.1.5".into(),
+                ..Default::default()
+            },
+            Instant::now() + screens::INVITE_TTL,
+        )),
+        drawn_secs: Default::default(),
+        thread: Some(thread::spawn(move || {
+            let _ = wait.recv();
+        })),
+    });
+    go
+}
+
+/// Chords in the link editor are the keymap's: Ctrl+O never refuses a direction, and
+/// Ctrl+P still opens the palette.
+#[test]
+fn the_link_editor_leaves_chords_to_the_keymap() {
+    let (mut a, _rx) = queued_app();
+    a.go_hub();
+    press(&mut a, 'e');
+    let l = letter(&a, 1);
+    press(&mut a, l);
+    assert!(a.edge.is_some());
+    for c in ['o', 'a'] {
+        chord(&mut a, c);
+        assert!(a.edge_job.is_none(), "Ctrl+{c} changed a policy");
+    }
+    assert!(a.edge.as_ref().unwrap().undo.is_empty());
+    chord(&mut a, 'p');
+    assert!(a.input == Some(Input::Palette));
+}
+
+/// `?`, `K` and `` ` `` work in the link editor; `?` shows the link's own keys.
+#[test]
+fn global_keys_reach_past_the_link_editor() {
+    let (mut a, _rx) = queued_app();
+    a.go_hub();
+    let l = letter(&a, 1);
+    for k in ['e', l, '?'] {
+        press(&mut a, k);
+    }
+    assert!(a.help && a.edge.is_some());
+    assert!(draw(&a, 120, 40).contains("ON A LINK"));
+    esc(&mut a);
+    assert!(
+        !a.help && a.edge.is_some(),
+        "help closes back onto the link"
+    );
+    press(&mut a, 'K');
+    assert!(a.view == View::Secrets && a.edge.is_none());
+    a.go_hub();
+    for k in ['e', l, '`'] {
+        press(&mut a, k);
+    }
+    assert!(a.view == View::Network && a.edge.is_none());
+}
+
+/// The link editor draws the link its keys change, also when nothing is recorded for
+/// that pair yet (never the first stored link, never a blank sheet).
+#[test]
+fn the_link_editor_draws_the_pair_it_was_opened_on() {
+    let mut a = viewmodel::tests::hub_app();
+    a.open_device(1);
+    a.view_action("edge:1-2");
+    assert_eq!(a.edge.as_ref().unwrap().id, "1-2");
+    let text = draw(&a, 140, 45);
+    assert!(
+        text.contains("innovation") && text.contains("nas"),
+        "{text}"
+    );
+    assert!(text.contains("password"), "{text}");
+}
+
+/// One policy change at a time: a second key while the first is saving is refused,
+/// so no result is dropped unseen and undo keeps one entry per change.
+#[test]
+fn a_policy_key_waits_for_the_change_being_saved() {
+    let (mut a, _rx) = queued_app();
+    a.go_hub();
+    let l = letter(&a, 1);
+    for k in ['e', l] {
+        press(&mut a, k);
+    }
+    let (_tx, rx) = mpsc::channel();
+    a.edge_job = Some(rx);
+    for k in ['o', 'u'] {
+        press(&mut a, k);
+    }
+    assert!(a.edge.as_ref().unwrap().undo.is_empty());
+    assert!(a.notice.contains("Still saving"), "{}", a.notice);
+}
+
+/// The invite: `y` copies the code, `Y` the one-liner (OSC 52, a hedged toast), `?` is
+/// help, and Esc closes it without waiting for the listener's thread.
+#[test]
+fn the_invite_copies_and_leaves_global_keys_working() {
+    let (mut a, _rx) = queued_app();
+    a.go_hub();
+    let go = open_invite(&mut a);
+    assert!(draw(&a, 120, 40).contains("command"), "footer chip");
+    press(&mut a, 'y');
+    assert_eq!(copied(), Some(osc52("7K2Q-M9XD-4HT")));
+    assert!(a.notice.contains("if your terminal allows"), "{}", a.notice);
+    a.key(KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT));
+    assert_eq!(
+        copied(),
+        Some(osc52("cx mesh pair 7K2Q-M9XD-4HT 192.168.1.5"))
+    );
+    a.view_action("copy-code");
+    assert_eq!(copied(), Some(osc52("7K2Q-M9XD-4HT")));
+    press(&mut a, '?');
+    assert!(a.help && a.invite.is_some());
+    esc(&mut a);
+    esc(&mut a);
+    assert!(a.invite.is_none());
+    let closing = a
+        .invite_closing
+        .as_ref()
+        .expect("the thread is kept, not joined");
+    assert!(!closing.is_finished());
+    drop(go);
+}
+
+/// Help is the table for the screen it was opened over, and a device's lists every
+/// device verb the keymap dispatches there.
+#[test]
+fn help_is_the_table_of_the_screen_below() {
+    let (mut a, _rx) = queued_app();
+    a.go_hub();
+    let l = letter(&a, 1);
+    for k in [l, '?'] {
+        press(&mut a, k);
+    }
+    let text = draw(&a, 120, 40);
+    assert!(text.contains("IN A DEVICE"), "{text}");
+    assert!(text.contains("b E X") && text.contains("w p t"), "{text}");
+    let (mut a, _rx) = file_app();
+    press(&mut a, '?');
+    let text = draw(&a, 120, 40);
+    assert!(
+        text.contains("IN FILES") && text.contains("up a folder"),
+        "{text}"
+    );
+}
+
+/// Files' `y` copies the selected path to the clipboard; `c` stays the transfer copy.
+#[test]
+fn files_y_copies_the_path() {
+    let (mut a, _rx) = file_app();
+    press(&mut a, 'y');
+    assert_eq!(copied(), Some(osc52("/files/alpha.txt")));
+    assert!(a.clipboard.is_none(), "no transfer copy");
+    press(&mut a, 'c');
+    assert!(a.clipboard.is_some());
+}
+
+/// An `e` that is not followed by a device letter is dropped, and that key does what
+/// it always does.
+#[test]
+fn a_pending_link_prefix_never_swallows_the_next_key() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 1, 2);
+    a.go_hub();
+    press(&mut a, 'e');
+    esc(&mut a);
+    let l = letter(&a, 1);
+    press(&mut a, l);
+    assert!(
+        a.edge.is_none() && a.view == View::Work,
+        "the letter opened the device"
+    );
+    sessions(&mut a, 0, 3);
+    a.go_hub();
+    a.hub_sessions = true;
+    a.screen_move(0);
+    let before = a.selected_session().unwrap().1.id;
+    press(&mut a, 'e');
+    press(&mut a, 'j');
+    assert_ne!(a.selected_session().unwrap().1.id, before, "`j` moved");
+}
+
+/// `gg` is the first row on the hub when no device owns `g`.
+#[test]
+fn gg_is_the_first_row_when_no_device_has_g() {
+    let (mut a, _rx) = queued_app();
+    assert!(a.hotkeys().values().all(|c| *c != 'g'));
+    sessions(&mut a, 0, 3);
+    a.go_hub();
+    a.hub_sessions = true;
+    a.key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT));
+    let last = a.selected_session().unwrap().1.id;
+    press(&mut a, 'g');
+    press(&mut a, 'g');
+    assert_ne!(a.selected_session().unwrap().1.id, last);
+}
+
+/// In a device a slot key moves the stop question to that session: `⌫ s ⌫`.
+#[test]
+fn a_slot_key_retargets_an_armed_stop() {
+    let (mut a, rx) = queued_app();
+    sessions(&mut a, 0, 2);
+    a.providers
+        .insert(0, (vec!["stop-session-v1".into()], transport::now()));
+    a.open_device(0);
+    let _ = rx.try_iter().count();
+    bksp(&mut a);
+    press(&mut a, 's');
+    let (_, armed) = a.stop_armed.clone().expect("the question moved");
+    assert_eq!(armed.id, a.slot_sessions(0)[1].id);
+    bksp(&mut a);
+    assert!(rx
+        .try_iter()
+        .any(|t| matches!(t.op, Operation::StopSession { .. })));
+}
+
+/// A device still being checked is not drawn as down (no red `✕`).
+#[test]
+fn an_unchecked_device_is_not_down() {
+    let (mut a, _rx) = queued_app();
+    a.open_device(1);
+    a.work[1].fetched = 0;
+    let text = draw(&a, 120, 40);
+    assert!(
+        text.contains("checking") || text.contains("not checked"),
+        "{text}"
+    );
+    assert!(!text.contains('✕'), "{text}");
+}
+
+/// Onboarding's `⏎ Connect Cloudflare` (key or tap) opens the token's masked entry.
+#[test]
+fn onboarding_enter_opens_the_cloudflare_token_entry() {
+    let mut a = app();
+    assert!(a.onboarding());
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(a.view == View::Secrets);
+    let e = a.secret_entry.as_ref().expect("the masked entry");
+    assert_eq!(e.name, crate::secrets::CLOUDFLARE_TOKEN);
+    let mut a = app();
+    draw(&a, 120, 40);
+    let r = act("connect-cloudflare");
+    click(&mut a, r.x, r.y, Rect::new(0, 0, 120, 40));
+    assert!(a.secret_entry.is_some());
+}
+
+/// The hub's vitals chips run their keys: `f files` opens that device's files.
+#[test]
+fn hub_vitals_chips_run_their_keys() {
+    let (mut a, _rx) = queued_app();
+    a.go_hub();
+    draw(&a, 120, 40);
+    let r = act("files:0");
+    click(&mut a, r.x, r.y, Rect::new(0, 0, 120, 40));
+    assert!(a.view == View::Files);
+}
+
+/// Every target a production frame registers is an action `view_action` knows.
+#[test]
+fn every_drawn_target_is_a_known_action() {
+    type Setup = fn() -> App;
+    let setups: [(&str, Setup); 9] = [
+        ("hub", || {
+            let (mut a, _) = queued_app();
+            sessions(&mut a, 0, 2);
+            a.go_hub();
+            a
+        }),
+        ("hub sessions", || {
+            let (mut a, _) = queued_app();
+            sessions(&mut a, 0, 2);
+            a.work[1].error = Some("peace@laptop: timeout".into());
+            a.go_hub();
+            a.hub_sessions = true;
+            a
+        }),
+        ("device", || {
+            let (mut a, _) = queued_app();
+            sessions(&mut a, 1, 2);
+            a.open_device(1);
+            a
+        }),
+        ("peek", || {
+            let (mut a, _) = queued_app();
+            sessions(&mut a, 1, 2);
+            a.open_device(1);
+            a.peek = true;
+            a
+        }),
+        ("files", || file_app().0),
+        ("secrets", || {
+            let (mut a, _) = queued_app();
+            a.open_secrets();
+            a
+        }),
+        ("onboarding", app),
+        ("link", || {
+            let (mut a, _) = queued_app();
+            a.go_hub();
+            a.view_action("edge:0-1");
+            a
+        }),
+        ("invite", || {
+            let (mut a, _) = queued_app();
+            a.go_hub();
+            drop(open_invite(&mut a));
+            a
+        }),
+    ];
+    // (These start a listener or enforce a policy over SSH: not run here.)
+    let live = |act: &str| {
+        ["invite", "join", "new-code", "policy:"]
+            .iter()
+            .any(|p| act.starts_with(p))
+    };
+    for (name, setup) in setups {
+        for (w, h) in [(120, 40), (60, 30)] {
+            draw(&setup(), w, h);
+            let actions: Vec<String> = hitmap::with(|m| m.all())
+                .into_iter()
+                .filter_map(|(_, hit)| match hit {
+                    Hit::View(i) => hitmap::action(i),
+                    _ => None,
+                })
+                .collect();
+            for act in actions.iter().filter(|a| !live(a)) {
+                assert!(
+                    setup().view_action(act),
+                    "{name} {w}x{h}: `{act}` does nothing"
+                );
+            }
+        }
+    }
+}
+
+/// A session whose device is unreachable, or whose listing is old, is unknown: never
+/// drawn as exited or idle.
+#[test]
+fn sessions_without_current_evidence_are_unknown() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 1, 1);
+    let state = |a: &App| viewmodel::ViewModel::from(a).state.sessions[0].state;
+    assert_ne!(state(&a), views::SessionState::Unknown);
+    a.work[1].error = Some("peace@laptop: timeout".into());
+    assert_eq!(state(&a), views::SessionState::Unknown);
+    a.work[1].error = None;
+    a.work[1].fetched = transport::now() - 120;
+    assert_eq!(state(&a), views::SessionState::Unknown);
+    a.open_device(1);
+    a.work[1].fetched = transport::now() - 120;
+    assert!(draw(&a, 120, 40).contains("unknown"));
+}
+
+/// The ticker says which device and why, once: no transport advice, no "Refresh".
+#[test]
+fn the_ticker_names_the_device_and_a_short_reason() {
+    let (mut a, _rx) = queued_app();
+    a.work[1].error = Some(
+        "tester@workstation: peace@laptop: Device unreachable over SSH · check its connection, then Refresh"
+            .into(),
+    );
+    let vm = viewmodel::ViewModel::from(&a);
+    let n = &vm.state.notifications[0];
+    assert_eq!(n.text, "laptop: Device unreachable over SSH");
+    assert_eq!(n.device.as_deref(), Some("1"));
+}
+
+/// A device keeps its identity hue when another device is removed.
+#[test]
+fn a_device_keeps_its_hue_when_another_leaves() {
+    let mut a = viewmodel::tests::hub_app();
+    let hue = |a: &App, name: &str| {
+        let vm = viewmodel::ViewModel::from(a);
+        vm.state
+            .devices
+            .iter()
+            .find(|d| d.name == name)
+            .unwrap()
+            .hue
+    };
+    let nas = hue(&a, "nas");
+    a.devices.remove(1);
+    a.work.remove(1);
+    assert_eq!(hue(&a, "nas"), nas);
+}
+
+/// The design's tokens are the theme's: one light `ok`/`warn` (4.5:1 on #f0f0f0), and
+/// the first identity hue is not the focus accent.
+#[test]
+fn the_design_and_the_theme_share_one_token_table() {
+    use views::{ColorLevel, LabCaps, Theme, Tok};
+    let light = LabCaps {
+        color: ColorLevel::Truecolor,
+        theme: Theme::Light,
+        ..LabCaps::default()
+    };
+    assert_eq!(light.color(Tok::Ok), Some(Color::Rgb(0x23, 0x7a, 0x35)));
+    assert_eq!(light.color(Tok::Warn), Some(Color::Rgb(0x8f, 0x5b, 0x00)));
+    assert_ne!(light.color(Tok::Id(0)), light.color(Tok::Accent));
+}
+
+/// UI tests keep their state in a temporary directory, never the developer's.
+#[test]
+fn ui_tests_never_write_the_real_state_dir() {
+    let _ = app();
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    assert!(!store::state_dir().starts_with(home.join(".local/state")));
+    if let Some(x) = std::env::var_os("XDG_STATE_HOME") {
+        assert!(!store::state_dir().starts_with(x));
+    }
+}
+
+/// A link this device reaches through an enrolled relay is a jump through it.
+#[test]
+fn a_routed_link_is_a_jump_through_its_relay() {
+    let mut a = viewmodel::tests::hub_app();
+    let dir = |from: &str, to: &str| crate::edges::DirectionView {
+        from: from.into(),
+        to: to.into(),
+        access: crate::edges::Access::Key,
+        source: String::new(),
+        enforced: String::new(),
+        observed: String::new(),
+    };
+    a.edge_views = vec![crate::edges::EdgeView {
+        from: crate::edges::LOCAL.into(),
+        to: "nas".into(),
+        from_name: String::new(),
+        to_name: String::new(),
+        label: String::new(),
+        forward: dir(crate::edges::LOCAL, "nas"),
+        reverse: dir("nas", crate::edges::LOCAL),
+        routes_over: 0,
+    }];
+    a.network_jump_routes
+        .insert(2, Some(vec!["innovation".into()]));
+    let vm = viewmodel::ViewModel::from(&a);
+    assert_eq!(vm.state.edges[0].kind, views::EdgeKind::Jump("1".into()));
+}

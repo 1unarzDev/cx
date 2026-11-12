@@ -4,12 +4,12 @@
 //! be a device. `h j k l` go last, only past 21 devices, so a vim hand never opens a
 //! device by accident; `e` is never assigned. A device keeps its letter for as long as it
 //! stays in the list, so refreshes and new devices never move an existing letter.
+// (A device whose initial is taken prefers letters that are not session slots.)
+use super::views::mission::SLOTS;
 use std::collections::BTreeMap;
 
 const NEVER: [char; 1] = ['e'];
 const LATE: [char; 4] = ['h', 'j', 'k', 'l'];
-/// Session slots inside a device: a device whose initial is taken prefers other letters.
-const SLOTS: [char; 4] = ['a', 's', 'd', 'g'];
 
 /// Assign letters to `devices` (id, name), keeping every letter in `previous` whose device
 /// is still listed. Devices past the 25 assignable letters get none.

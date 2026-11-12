@@ -81,7 +81,7 @@ fn render_frame(
         }
     }
     // The real file preview draws its body where the design put the preview surface.
-    if let (Some(b), Some(r)) = (app.active_browser(), preview) {
+    if let (Some(b), Some(r)) = (app.browser.as_ref(), preview) {
         let r = Rect::new(r.x, r.y, r.width, body.bottom().saturating_sub(r.y));
         let shown = b.preview.as_ref().map(|t| (b, t.as_str())).or_else(|| {
             b.peek
@@ -118,7 +118,7 @@ fn render_frame(
         }
     }
     // The design shows the highlighted file inline from 100 columns (Size M).
-    if let Some(b) = app.active_browser().filter(|_| app.view == View::Files) {
+    if let Some(b) = app.browser.as_ref().filter(|_| app.view == View::Files) {
         b.peek_shown.set(b.preview.is_none() && area.width >= 100);
     }
     if app.view == View::Containers && vm.view == views::LabView::Hub {
@@ -142,13 +142,10 @@ fn render_frame(
             hitmap::register_action(t.area, &t.action, &files);
         }
     }
-    let workspace = body;
-    let phone = area.width < 70;
-    let _ = phone;
     // Overlays from here on: they own the focused treatment.
     set_panels_dimmed(false);
     if app.creating && app.dialog.is_none() && app.input.is_none() {
-        let rect = popup(workspace, 44, 6);
+        let rect = popup(body, 44, 6);
         frame.render_widget(Clear, rect);
         let outer = block("New session".into(), true);
         let inner = outer.inner(rect);
@@ -180,7 +177,7 @@ fn render_frame(
             frame,
             &app.notice,
             app.notice_kind,
-            workspace,
+            body,
             notifications::appearance(app.notice_started, app.notice_deadline, now),
         );
     }
@@ -1099,7 +1096,7 @@ mod contrast_regressions {
 /// Files search: matching characters underlined (a non-colour cue), or the whole
 /// visible name when every match position is cut off.
 fn file_matches(frame: &mut Frame<'_>, app: &App, targets: &[views::LabTarget]) {
-    let Some(b) = app.active_browser().filter(|b| !b.search.is_empty()) else {
+    let Some(b) = app.browser.as_ref().filter(|b| !b.search.is_empty()) else {
         return;
     };
     let matches = browser_matches(b);

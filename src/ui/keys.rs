@@ -147,7 +147,9 @@ impl App {
             Cmd::New => self.session_shortcut(),
             Cmd::Jobs => self.execute(Action::Jobs),
             Cmd::Watch => self.execute(Action::Observe),
-            Cmd::View(verb) => self.view_action(verb),
+            Cmd::View(verb) => {
+                self.view_action(verb);
+            }
             Cmd::Pin => self.toggle_pin(),
             Cmd::AgentTasks => {
                 if let Some((device, session)) = self.selected_session() {

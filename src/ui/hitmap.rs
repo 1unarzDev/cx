@@ -80,7 +80,7 @@ pub(super) fn register_action(rect: Rect, action: &str, files: &HashMap<String, 
 }
 /// The Files rows a frame can show, by the name the view draws (see `register_action`).
 pub(super) fn file_rows(app: &App) -> HashMap<String, usize> {
-    let Some(b) = app.active_browser().filter(|_| app.view == View::Files) else {
+    let Some(b) = app.browser.as_ref().filter(|_| app.view == View::Files) else {
         return HashMap::new();
     };
     let rows = super::browser_entries(b);
@@ -187,7 +187,7 @@ impl App {
                 }) {
                     Some(a) => self.view_action(&a),
                     None => self.view_action("back"),
-                }
+                };
             }
             return Some(true);
         }
@@ -251,7 +251,9 @@ impl App {
                 match press.hit {
                     Hit::Row(..) if press.was_selected => self.run_cmd(Cmd::Primary),
                     Hit::View(i) => match action(i) {
-                        Some(a) => self.view_action(&a),
+                        Some(a) => {
+                            self.view_action(&a);
+                        }
                         None => return Some(false),
                     },
                     _ => return Some(false),

@@ -4,6 +4,7 @@ mod container_agent_tests;
 mod nav_tests;
 mod workspace_tests;
 fn app() -> App {
+    crate::store::isolate_test_state();
     let (tx, _) = mpsc::sync_channel(32);
     App::new(
         vec![Device {

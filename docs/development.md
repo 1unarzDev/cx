@@ -24,7 +24,12 @@ Record changes in [CHANGELOG.md](../CHANGELOG.md). Before tagging a stable versi
 | `runtime.rs` | Event loop, `Screen` terminal ownership, input batching, task workers, auth prompts, self-restart state and update checks |
 | `actions.rs` | `execute()`, the command palette and action availability |
 | `keys.rs` | Workspace key and mouse dispatch: resolves keys through `keymap`, runs `Cmd`s, focus movement, command-panel keys |
-| `keymap.rs` | The single keymap table (`BINDINGS`): key dispatch, help overlay, footer chips, context menu and palette key column all read it |
+| `keymap.rs` | The single keymap table (`BINDINGS`): key dispatch, context menu and palette key column read it. The design's help and footer chips are drawn by `views/` from the spec, and their taps run `screens::view_action` |
+| `screens.rs` | The design's screens as a controller: hub, device, peek, link editor, invite, keys, send-to; their keys (`screen_key`, before the keymap) and taps (`view_action`) end in the same methods |
+| `viewmodel.rs` | `ViewModel::from(&App)`: the App's state as the view layer's `LabState`, plus the screen, focus and selection to draw; pure, no requests |
+| `views/` | The production design layer (Mission, docs/design/concept-mission.md): `mission/` draws a `LabState` into a buffer and returns its tap targets; `state.rs` the view-model types (lab fixtures are test-only); `caps.rs` the design's tokens, whose shared rows come from `theme.rs` |
+| `hotkeys.rs` | Stable device letters for the hub |
+| `lab/` | Test-only render lab: captures of the design from fixtures (`tests/lab.sh`, docs/design/lab.md) |
 | `hitmap.rs` | Pointer targets registered during render (tabs, rows, chips, scrollbars, palette/menu rows); tap / long-press / drag resolution; context menu |
 | `input.rs` | Text-input fields (filter, search, rename, commands); they own every printable key |
 | `dialogs.rs` | Modal dialog keys, Enter handling per dialog family, confirmation button layout |
@@ -34,7 +39,6 @@ Record changes in [CHANGELOG.md](../CHANGELOG.md). Before tagging a stable versi
 | `file_index.rs` | `Entries` (Arc-shared listing with revisions) and `ViewIndex` (visible rows, lowercase names, search matches), extended incrementally per page |
 | `preview.rs` | File preview state and rendering: text, markdown layout/links, raster fallback, in-preview find; `DocCache` (retained wrapped layout, slice rendering) and chunked streaming of large text previews |
 | `network_view.rs` | Network/neighbor state, probes and the network render |
-| `graph/` | Pure Network hub graph: model/builder from store data, layered layout, routing, hit map, hotkeys; no I/O or environment reads. Neighbor SSH evidence comes from `network_view::neighbor_ssh` |
 | `containers_view.rs` | Container panel state, tree rows and container sessions |
 | `caps.rs` | Terminal capability detection (spec section 9): color depth, UTF-8/ASCII, light/dark (`CX_THEME`, then a 100 ms OSC 11 query with a DA1 sentinel before the TUI starts, then `COLORFGBG`), tmux, Termux/phone, hyperlinks. Pure `Caps::detect(env, probe)`, computed once at `ui::run` start; probes (`infocmp`, `tmux display`) run in their own process group, time-bounded end to end, group-killed. A timed-out OSC 11 arms `swallow_stray_reply` so a late reply never becomes keystrokes. Tests override with `with_caps` |
 | `theme.rs` | Semantic tokens (`Tok`, `tok()`, `accent`/`muted`/`faint`/`ok`/`warn`/`err`/`info`/`dir`/`provider`/`swatch`) downgraded per depth, glyph sets (`glyphs()`), selection styles, `block()` focus treatment (heavy accent + title chip vs rounded faint; ASCII `#=#` vs `+-+`) and the ASCII glyph pass. The pass converts UI glyphs in the whole frame except regions a content renderer registered with `protect_content` (file preview body, live terminal preview), so documents and remote screens keep their own quotes, dashes and box drawing; content renderers emit their own ASCII decorations. Under `NO_COLOR` the selection bar is `>`. Widgets never use raw `Color::` values |
@@ -45,7 +49,6 @@ Record changes in [CHANGELOG.md](../CHANGELOG.md). Before tagging a stable versi
 | `notifications.rs` | Typed floating panels, bounded layout and timed animation |
 | `rendering.rs` | Layout and rendering; no request dispatch |
 | `session_preview.rs`, `workspaces.rs`, `container_agents.rs` | Session pane preview (zoom, inline input, detach chip, helper watch with polling fallback, remembered frames, parsed-screen cache), workspace session identity and attach, container agent profiles |
-| `session_rows.rs` | Session row anatomy, identity swatches, activity history/sparkline, hover state |
 | `tests.rs` | Existing UI and cross-panel regression fixtures |
 
 Reuse a navigation target when adding a panel; keep panel-specific side effects in its adapter. Change session choices in `menus.rs` rather than maintaining parallel label/key/provider arrays. Rendering never changes the session provider: devcontainer identity is a display scope, while shell/agent behavior stays in the session runtime. Preserve typed-input ownership and the existing host/container scope guards. Verify UI changes with the capture matrices and native PTY fixtures in `tests/`.

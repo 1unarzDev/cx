@@ -61,8 +61,6 @@ struct Plan<'a> {
     mode: Mode,
     nmax: usize,
     pill: Rect,
-    /// Rows between a device and the next.
-    sp: i32,
     /// Columns between a parent's column and its children's.
     gap: u16,
     hidden: usize,
@@ -622,7 +620,6 @@ fn place<'a>(
         mode,
         nmax,
         pill,
-        sp,
         gap: gap as u16,
         hidden,
     }
@@ -853,7 +850,6 @@ fn radial<'a>(
         mode,
         nmax,
         pill: Rect::new((root_lab.0 + dx) as u16, dy as u16, pill.width, 1),
-        sp: ry,
         gap: rx as u16,
         hidden: 0,
     })
@@ -1483,12 +1479,10 @@ fn wash(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str, band: Rect, faded: bool
         let mut it = p.nodes.iter().filter(inside).map(|n| n.label);
         let Some(first) = it.next() else { continue };
         let (bb, count) = it.fold((first, 1), |(a, k), r| (a.union(r), k + 1));
-        // Two cells of air either side, symmetric about the root's axis (the group's
-        // relay sits on it), on the members' own rows only.
-        let axis = i32::from(p.pill.x) * 2 + i32::from(p.pill.width);
-        let half = (axis - 2 * i32::from(bb.x)).max(2 * i32::from(bb.right()) - axis) / 2 + 2;
-        let x0 = (axis / 2 - half).max(i32::from(band.x));
-        let bb = Rect::new(x0 as u16, bb.y, (2 * half) as u16, bb.height).intersection(band);
+        // Two cells of air either side of the members' labels, on their own rows only
+        // (no slab wider than the group it marks).
+        let x0 = bb.x.saturating_sub(2).max(band.x);
+        let bb = Rect::new(x0, bb.y, bb.right() + 2 - x0, bb.height).intersection(band);
         let other = p
             .nodes
             .iter()

@@ -142,7 +142,7 @@ impl App {
             }
             true
         } else if connection_failure && (passive_connection_check || known_down) {
-            // The sidebar's empty-circle state is the passive reachability signal.
+            // The device's status mark is the passive reachability signal.
             false
         } else if connection_failure {
             (reply.generation == self.generation || file_action)
@@ -153,8 +153,10 @@ impl App {
             true
         };
         // External-terminal discovery is a best-effort UI extra; a failing or
-        // unreachable device must not raise a notice for it.
-        let notify_error = notify_error && !matches!(reply.op, Operation::ExternalSessions);
+        // unreachable device must not raise a notice for it. A failed listing is the
+        // hub ticker's (with its retry key), so it raises no toast either.
+        let notify_error =
+            notify_error && !matches!(reply.op, Operation::ExternalSessions | Operation::Sessions);
         let listing_offset = match &reply.op {
             Operation::ListPage { offset, .. } => *offset,
             _ => 0,

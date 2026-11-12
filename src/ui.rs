@@ -675,6 +675,9 @@ struct App {
     secret_job: Option<mpsc::Receiver<std::result::Result<String, String>>>,
     /// The hub's open invite (`+`), served off the UI thread until use, expiry or Esc.
     invite: Option<screens::InviteRun>,
+    /// A closed invite's listener thread, until the next invite's thread has waited for
+    /// it to free the port (never joined on the UI thread).
+    invite_closing: Option<thread::JoinHandle<()>>,
     /// The last session detached from, for `-`.
     last_session: Option<(usize, String)>,
     last_esc: Option<Instant>,
@@ -839,6 +842,7 @@ impl App {
             secret_entry: None,
             secret_job: None,
             invite: None,
+            invite_closing: None,
             last_session: None,
             last_esc: None,
             onboarding_dismissed: false,

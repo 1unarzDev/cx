@@ -312,7 +312,26 @@ struct PolicyFile {
 
 const POLICY_LIMIT: usize = 128;
 const POLICY_BYTES: u64 = 64 * 1024;
+#[cfg(test)]
+thread_local! {
+    /// A test's own state directory (`isolate_test_state`), removed with its thread.
+    static TEST_STATE: std::cell::RefCell<Option<tempfile::TempDir>> =
+        const { std::cell::RefCell::new(None) };
+}
+/// Tests that drive the UI write pins, policies and secrets through the store: this
+/// thread's state goes to a temporary directory, never the developer's.
+#[cfg(test)]
+pub(crate) fn isolate_test_state() {
+    TEST_STATE.with(|t| {
+        t.borrow_mut()
+            .get_or_insert_with(|| tempfile::tempdir().expect("test state dir"));
+    });
+}
 pub fn state_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(dir) = TEST_STATE.with(|t| t.borrow().as_ref().map(|d| d.path().join("cx"))) {
+        return dir;
+    }
     std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| {

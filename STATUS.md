@@ -17,7 +17,8 @@
   | preview first paint src 5 MB / md 2 MB | 105 / 111 ms | 5.7 / 6.5 ms |
   | preview scroll j, src 5 MB / md 2 MB | 5.3 / 3.5 ms | 4.5 / 3.5 ms |
   | viewer start → Files ready | 47 ms | 147 ms |
-- Open: startup to the first Files frame is ~147 ms (v0.1.95 ~47 ms; present before the port); one 100k sibling run in six still ~80 ms; G to the end of a 2 MB Markdown preview ~106 ms; the invite screen has no clipboard copy yet; capture_matrix flags the keys screen's "Cloudflare…" as a cut interface name (false positive).
+- Open (v0.2.1 views): the hub's view-model carries jump routes but no mesh membership, LAN evidence, link rtt or device metrics yet, so production draws every link as direct ssh (or a jump) with no mesh hue, legend or vitals chart; those render paths are exercised only by the lab fixtures.
+- Open: startup to the first Files frame is ~147 ms (v0.1.95 ~47 ms; present before the port); one 100k sibling run in six still ~80 ms; G to the end of a 2 MB Markdown preview ~106 ms; capture_matrix flags the keys screen's "Cloudflare…" as a cut interface name (false positive).
 
 ## Claude gateway lends (Unreleased)
 - `cx claude lend | revoke | list` (mesh/claude.py, docs/claude.md): a better-ccflare key, an Access service token and policy, and a single-use code; the teammate runs `curl -sL <endpoint>/claude/<code>|sh` or `irm …|iex`. `cx mesh deploy` redeploys only the Worker.

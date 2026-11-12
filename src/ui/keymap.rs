@@ -1,6 +1,8 @@
-//! The single keymap. Key dispatch (`keys.rs`), the help overlay, footer hints,
-//! the context menu and the palette's key column all read `BINDINGS`, so a key
-//! and its description can never drift apart.
+//! The single keymap for dispatch: key dispatch (`keys.rs`), the context menu and the
+//! palette's key column read `BINDINGS`. The design's screens draw their own help and
+//! footer chips (`views::mission::views`, from the spec); their taps run the same
+//! verbs (`screens::view_action`). The screens' own keys (device letters, slots, the
+//! link editor) come first, in `screens::screen_key`.
 use super::{Action, App, Focus, View};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -57,7 +59,6 @@ pub(super) enum Ctx {
     Preview,
     Containers,
 }
-impl Ctx {}
 
 #[derive(Clone, Copy)]
 pub(super) struct K {
@@ -104,14 +105,12 @@ impl K {
     }
 }
 
-/// A footer chip: key text and a short label. Rank orders chips (lower first).
+/// A binding's short name (context-menu rows).
 #[derive(Clone, Copy)]
 pub(super) struct Hint {
     pub label: &'static str,
 }
-/// A binding's short name (context-menu rows); the key text and rank are kept in the
-/// table as documentation of the footer the design draws.
-const fn hint(_key: &'static str, label: &'static str, _rank: u8) -> Option<Hint> {
+const fn hint(label: &'static str) -> Option<Hint> {
     Some(Hint { label })
 }
 
@@ -163,9 +162,6 @@ macro_rules! alias {
 fn files_search(app: &App) -> bool {
     app.browser.as_ref().is_some_and(|b| !b.search.is_empty())
 }
-fn not_files_search(app: &App) -> bool {
-    !(app.view == View::Files && app.focus == Focus::Workspace && files_search(app))
-}
 fn markdown_preview(app: &App) -> bool {
     app.markdown_preview_active()
 }
@@ -212,7 +208,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Enter",
         Cmd::View("open"),
         "Open the selected device / attach the selected session",
-        hint("Enter", "Open", 0)
+        hint("Open")
     ),
     bind!(
         Hub,
@@ -220,7 +216,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Space",
         Cmd::View("peek"),
         "Peek the selected session",
-        hint("Space", "Peek", 1)
+        hint("Peek")
     ),
     bind!(
         Hub,
@@ -228,7 +224,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Backspace",
         Cmd::View("stop"),
         "Stop the selected session · Backspace again",
-        hint("Bksp", "Stop", 2)
+        hint("Stop")
     ),
     bind!(
         Hub,
@@ -244,7 +240,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Enter · a s d g",
         Cmd::View("attach"),
         "Attach the selected session / a slot",
-        hint("Enter", "Attach", 0)
+        hint("Attach")
     ),
     bind!(
         Device,
@@ -252,7 +248,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "c",
         Cmd::View("new-claude"),
         "New claude session here, attached",
-        hint("c", "Claude", 1)
+        hint("Claude")
     ),
     bind!(
         Device,
@@ -260,7 +256,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "x",
         Cmd::View("new-codex"),
         "New codex session here, attached",
-        hint("x", "Codex", 2)
+        hint("Codex")
     ),
     bind!(
         Device,
@@ -268,7 +264,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "n",
         Cmd::View("new-shell"),
         "New shell here, attached",
-        hint("n", "Shell", 3)
+        hint("Shell")
     ),
     bind!(
         Device,
@@ -276,7 +272,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Space",
         Cmd::View("peek"),
         "Peek the selected session",
-        hint("Space", "Peek", 4)
+        hint("Peek")
     ),
     bind!(
         Device,
@@ -284,7 +280,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "f",
         Cmd::View("files"),
         "Files on this device",
-        hint("f", "Files", 4)
+        hint("Files")
     ),
     bind!(
         Device,
@@ -292,7 +288,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "r",
         Cmd::View("retry"),
         "Retry / refresh this device",
-        hint("r", "Retry", 5)
+        hint("Retry")
     ),
     bind!(
         Device,
@@ -300,7 +296,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Backspace",
         Cmd::View("stop"),
         "Stop the selected session · Backspace again",
-        hint("Bksp", "Stop · twice", 6)
+        hint("Stop · twice")
     ),
     bind!(
         Device,
@@ -308,7 +304,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "w",
         Cmd::Watch,
         "Watch selected session · read-only",
-        hint("", "Watch · read-only", 4),
+        hint("Watch · read-only"),
         Some(sessions_selected)
     ),
     bind!(
@@ -317,7 +313,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "p",
         Cmd::Pin,
         "Pin / unpin; keep an ended-work bookmark",
-        hint("", "Pin / unpin", 4),
+        hint("Pin / unpin"),
         Some(sessions_selected)
     ),
     bind!(
@@ -326,12 +322,12 @@ pub(super) const BINDINGS: &[Binding] = &[
         "t",
         Cmd::AgentTasks,
         "Inspect the session's tasks and subagents",
-        hint("", "Agent tasks", 4),
+        hint("Agent tasks"),
         Some(sessions_selected)
     ),
     bind!(
         Device,
-        [ch('b'), ch('B')],
+        [ch('b')],
         "b",
         Cmd::ToggleAccess,
         "Toggle this device's access · * means single-direction",
@@ -362,7 +358,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "j/k · PgUp/PgDn",
         Cmd::Motion,
         "Scroll preview",
-        hint("j/k", "Scroll", 0),
+        hint("Scroll"),
         Some(not_pdf_preview)
     ),
     alias!(
@@ -371,7 +367,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "j/k",
         Cmd::Motion,
         "Change PDF page",
-        hint("j/k", "Pages", 0),
+        hint("Pages"),
         Some(pdf_preview)
     ),
     bind!(
@@ -387,7 +383,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "o / click link",
         Cmd::PreviewLinks,
         "Inspect links; Enter opens viewer browser",
-        hint("o", "Links", 1),
+        hint("Links"),
         Some(markdown_preview)
     ),
     bind!(
@@ -396,7 +392,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "/",
         Cmd::PreviewSearch,
         "Search preview text, live fuzzy matches",
-        hint("/", "Search", 2)
+        hint("Search")
     ),
     bind!(
         Preview,
@@ -404,7 +400,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "n / N",
         Cmd::NextMatch,
         "Next / previous match, wrap around",
-        hint("n / N", "Next / previous", 3)
+        hint("Next / previous")
     ),
     alias!(Preview, [ch('N')], "N", Cmd::PrevMatch, "Previous match"),
     bind!(
@@ -413,7 +409,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Esc",
         Cmd::Back,
         "Finish search / clear highlights / return to files",
-        hint("Esc", "Back", 5)
+        hint("Back")
     ),
     bind!(
         FilesList,
@@ -421,7 +417,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Enter",
         Cmd::Primary,
         "Transfer the clipboard into this folder",
-        hint("Enter", "Transfer here", 0),
+        hint("Transfer here"),
         Some(destination_paste)
     ),
     bind!(
@@ -430,7 +426,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "n / N",
         Cmd::NextMatch,
         "Next / previous matching file",
-        hint("n / N", "Next / previous", 4),
+        hint("Next / previous"),
         Some(files_search)
     ),
     alias!(
@@ -455,7 +451,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Space",
         Cmd::Do(Action::Select),
         "Select and advance",
-        hint("Space", "Select", 1),
+        hint("Select"),
         Some(not_destination_paste)
     ),
     bind!(
@@ -488,11 +484,11 @@ pub(super) const BINDINGS: &[Binding] = &[
     ),
     bind!(
         FilesList,
-        [ch('c'), ch('y')],
-        "c / y",
+        [ch('c')],
+        "c",
         Cmd::Do(Action::Copy),
         "Copy, then choose another folder or device",
-        hint("c / x", "Copy / cut", 2),
+        hint("Copy / cut"),
         Some(not_destination_paste)
     ),
     bind!(
@@ -508,7 +504,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "p",
         Cmd::Do(Action::Paste),
         "Paste here",
-        hint("p / t", "Paste / transfer", 3),
+        hint("Paste / transfer"),
         Some(not_destination_paste)
     ),
     bind!(
@@ -531,7 +527,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "T",
         Cmd::Do(Action::Jobs),
         "Transfer jobs and results",
-        hint("T", "Progress", 4),
+        hint("Progress"),
         Some(destination_paste)
     ),
     bind!(
@@ -540,7 +536,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "r",
         Cmd::Do(Action::Rename),
         "Rename the selected file",
-        hint("r / d", "Rename / delete", 6),
+        hint("Rename / delete"),
         Some(not_destination_paste)
     ),
     bind!(
@@ -563,7 +559,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "o",
         Cmd::Do(Action::Conflict),
         "Cycle copy conflict policy",
-        hint("o", "Conflict policy", 3),
+        hint("Conflict policy"),
         Some(destination_paste)
     ),
     bind!(
@@ -572,6 +568,13 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Enter",
         Cmd::Primary,
         "Open folder / preview file"
+    ),
+    bind!(
+        Files,
+        [ch('y')],
+        "y",
+        Cmd::View("copy-path"),
+        "Copy the path to the clipboard (OSC 52)"
     ),
     bind!(
         Files,
@@ -586,7 +589,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "← / h",
         Cmd::Left,
         "Parent directory",
-        hint("h / l", "Parent / open", 1)
+        hint("Parent / open")
     ),
     alias!(
         Files,
@@ -601,7 +604,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "S",
         Cmd::SessionsHere,
         "Sessions in selected / current folder",
-        hint("s", "Sessions here", 0),
+        hint("Sessions here"),
         Some(not_destination_paste)
     ),
     bind!(
@@ -617,7 +620,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Enter",
         Cmd::Primary,
         "Container actions",
-        hint("Enter", "Actions", 0)
+        hint("Actions")
     ),
     bind!(
         Containers,
@@ -625,7 +628,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "h / l",
         Cmd::Left,
         "Fold / expand",
-        hint("h / l", "Fold / expand", 2)
+        hint("Fold / expand")
     ),
     alias!(
         Containers,
@@ -678,7 +681,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Enter",
         Cmd::Primary,
         "Open",
-        hint("Enter", "Open", 0),
+        hint("Open"),
         Some(not_placeholder)
     ),
     bind!(
@@ -694,17 +697,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         ":",
         Cmd::RunCommand,
         "Run command in current folder",
-        hint("n / :", "Session / command", 5),
-        Some(not_files_search)
-    ),
-    alias!(
-        Global,
-        [ch(':')],
-        ":",
-        Cmd::RunCommand,
-        "Run command in current folder",
-        None,
-        None
+        hint("Session / command")
     ),
     bind!(
         Global,
@@ -719,7 +712,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Ctrl+P",
         Cmd::Palette,
         "Actions, sessions, devices and folders",
-        hint("Ctrl P", "Actions", 8)
+        hint("Actions")
     ),
     bind!(
         Global,
@@ -727,7 +720,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "? / F1",
         Cmd::Help,
         "Keyboard help",
-        hint("?", "Help", 9)
+        hint("Help")
     ),
     bind!(
         Global,
@@ -735,7 +728,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Ctrl+C",
         Cmd::Quit,
         "Quit cx; work keeps running",
-        hint("Ctrl C", "Quit", 10)
+        hint("Quit")
     ),
     bind!(
         Global,

@@ -33,7 +33,20 @@ pub struct Finding {
     pub stray: bool,
 }
 
+/// cx's tmux control-mode client (`tmux -u -S <state>/managed.sock -C
+/// attach-session -f ignore-size`), owned by a viewer or helper thread.
+fn control_client(args: &[String]) -> bool {
+    args.first().is_some_and(|a| a.ends_with("tmux"))
+        && args.iter().any(|a| a == "-C")
+        && args
+            .windows(2)
+            .any(|w| w[0] == "-S" && w[1].ends_with("/cx/managed.sock"))
+}
+
 pub fn role(args: &[String]) -> &'static str {
+    if control_client(args) {
+        return "control";
+    }
     match args.get(1).map(String::as_str) {
         None | Some("restart") => "viewer",
         Some("helper") | Some("container-helper") => "helper",
@@ -70,6 +83,8 @@ pub fn classify(proc: Proc, cpu_percent: f64, own_lineage: &[i32]) -> Finding {
         "viewer" => gone || (orphaned && !live_terminal(proc.stdin.as_deref())),
         // An invite nobody watches any more is an open listener for nothing.
         "helper" | "invite" => gone || orphaned,
+        // Its owner dies with it (PR_SET_PDEATHSIG); reparented means it did not.
+        "control" => orphaned,
         _ => gone || (orphaned && cpu_percent >= SPINNING),
     };
     let stray = evidence && !own_lineage.contains(&proc.pid);
@@ -88,7 +103,8 @@ fn read_proc(pid: i32) -> Option<Proc> {
     let stat = fs::read_to_string(base.join("stat")).ok()?;
     // comm may contain spaces/parens; fields resume after the last ')'.
     let (head, rest) = stat.rsplit_once(')')?;
-    if !head.ends_with("(cx") {
+    let tmux = head.ends_with("(tmux");
+    if !head.ends_with("(cx") && !tmux {
         return None;
     }
     let fields: Vec<&str> = rest.split_whitespace().collect();
@@ -106,7 +122,11 @@ fn read_proc(pid: i32) -> Option<Proc> {
     let exe = fs::read_link(base.join("exe")).ok()?;
     let exe = exe.to_string_lossy();
     let name = exe.trim_end_matches(" (deleted)");
-    if !name.ends_with("/cx") {
+    if if tmux {
+        !control_client(&args)
+    } else {
+        !name.ends_with("/cx")
+    } {
         return None;
     }
     Some(Proc {
@@ -662,6 +682,25 @@ mod tests {
         // An orphaned one-shot command is kept unless it spins.
         assert!(!classify(proc(15, 1, &["cx", "update"], None), 1.0, &[]).stray);
         assert!(classify(proc(16, 1, &["cx", "update"], None), 60.0, &[]).stray);
+        // A control client is stray only once its owner is gone.
+        let control = [
+            "tmux",
+            "-u",
+            "-S",
+            "/home/u/.local/state/cx/managed.sock",
+            "-C",
+            "attach-session",
+            "-f",
+            "ignore-size",
+        ];
+        let f = classify(proc(21, 1, &control, Some("pipe:[1]")), 0.0, &[]);
+        assert!(f.stray && f.role == "control");
+        assert!(!classify(proc(22, 9, &control, Some("pipe:[1]")), 0.0, &[]).stray);
+        // The user's own tmux is never cx's.
+        assert_ne!(
+            role(&["tmux".into(), "-C".into(), "attach".into()]),
+            "control"
+        );
         // Never ourselves or an ancestor.
         assert!(!classify(proc(14, 1, &["cx"], Some(gone)), 0.0, &[14]).stray);
     }

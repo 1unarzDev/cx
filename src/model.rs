@@ -191,6 +191,18 @@ pub enum Operation {
         pane_id: String,
         hex: String,
     },
+    /// Subscribe this channel to pushed events (capability `watch-v1`); replaces
+    /// the channel's previous watch, and neither field set ends it. The reply is
+    /// followed by `Response` frames with id `evt:<n>` whose result is `{kind, ...}`:
+    /// `sessions` (the full list), `pane` (a `SessionPreview` result for the
+    /// watched managed session) or `closed` (poll again). An error means
+    /// unsupported here: poll.
+    Watch {
+        #[serde(default)]
+        sessions: bool,
+        #[serde(default)]
+        pane: Option<Session>,
+    },
     /// Terminals started outside CX, shown for adoption in the UI only.
     ExternalSessions,
     /// Move a terminal started outside CX into the managed tmux server.

@@ -437,6 +437,7 @@ fn info() -> Result<serde_json::Value> {
     caps.push("container-agents-v1");
     caps.push("session-preview-v1");
     caps.push("live-session-pane-v1");
+    caps.push("watch-v1");
     caps.push("container-transfers-v1");
     caps.push("devcontainer-rebuild-v1");
     caps.push("stable-update-v1");
@@ -550,6 +551,15 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
             ref hex,
         } => sessions::session_pane_input(session, pane_id, hex),
         Operation::Sessions => Ok(serde_json::to_value(sessions::list()?)?),
+        // In-process (this host): events go straight to the viewer's sink.
+        Operation::Watch { sessions, pane } => sessions::watch(
+            sessions,
+            pane,
+            std::sync::Arc::new(|event| {
+                transport::deliver_event(None, event);
+                true
+            }),
+        ),
         Operation::ExternalSessions => Ok(serde_json::to_value(sessions::external_list()?)?),
         Operation::AdoptSession {
             ref id,
@@ -609,16 +619,39 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
 fn helper() -> Result<()> {
     use std::io::BufRead;
     let mut input = BufReader::new(std::io::stdin().lock());
-    let mut output = std::io::stdout().lock();
+    // Watch events are written from the watch thread; every frame takes the
+    // stdout lock, so frames never interleave.
+    let next_event = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1));
     loop {
         if input.fill_buf()?.is_empty() {
             return Ok(());
         }
         let req: Request = transport::read_frame(&mut input)?;
+        let mut output = std::io::stdout().lock();
         let result = if req.version != 1 {
             Err(anyhow::anyhow!("unsupported helper protocol"))
+        } else if let Operation::Watch { sessions, pane } = req.op {
+            // Holding the lock until the reply is written keeps it ahead of events.
+            let next_event = next_event.clone();
+            sessions::watch(
+                sessions,
+                pane,
+                std::sync::Arc::new(move |event| {
+                    let id = next_event.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let frame = Response {
+                        version: 1,
+                        id: format!("evt:{id}"),
+                        result: Some(event),
+                        error: None,
+                    };
+                    transport::frame(&mut std::io::stdout().lock(), &frame).is_ok()
+                }),
+            )
         } else {
-            dispatch(req.op)
+            drop(output);
+            let result = dispatch(req.op);
+            output = std::io::stdout().lock();
+            result
         };
         let response = match result {
             Ok(v) => Response {

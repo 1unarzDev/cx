@@ -578,12 +578,32 @@ fn recover_master(target: &str) {
     }
 }
 
+/// Receives helper events: the SSH target (None for this host) and the
+/// event's `{kind, ...}` result. Set once by the viewer.
+pub type EventSink = Box<dyn Fn(Option<String>, serde_json::Value) + Send + Sync>;
+static EVENTS: std::sync::OnceLock<EventSink> = std::sync::OnceLock::new();
+pub fn set_event_sink(sink: EventSink) {
+    let _ = EVENTS.set(sink);
+}
+/// Deliver one event; dropped when no viewer listens.
+pub(crate) fn deliver_event(target: Option<String>, event: serde_json::Value) {
+    if let Some(sink) = EVENTS.get() {
+        sink(target, event);
+    }
+}
+/// Pushed frames carry `evt:<n>` ids; replies carry the request's id.
+fn is_event(response: &Response) -> bool {
+    response.version == 1 && response.id.starts_with("evt:")
+}
 struct Connection {
     child: std::process::Child,
     input: std::process::ChildStdin,
     replies: std::sync::mpsc::Receiver<Result<Response>>,
     failure: std::sync::mpsc::Receiver<ConnectionFailure>,
     route: Vec<String>,
+    /// Set once a watch was requested: the reader reports `closed` when the
+    /// channel ends, so the viewer polls again.
+    watching: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 impl Drop for Connection {
     fn drop(&mut self) {
@@ -609,11 +629,11 @@ impl Connection {
             "SSH route changed during connection setup"
         );
         c.arg("exec ~/.local/bin/cx helper");
-        let mut connection = Self::from_command(c)?;
+        let mut connection = Self::from_command(c, Some(target.to_owned()))?;
         connection.route = route;
         Ok(connection)
     }
-    fn from_command(mut c: Command) -> Result<Self> {
+    fn from_command(mut c: Command, target: Option<String>) -> Result<Self> {
         use std::os::unix::process::CommandExt;
         c.process_group(0)
             .stdin(Stdio::piped())
@@ -639,13 +659,27 @@ impl Connection {
             let _ = failure_tx.send(classify_connection_failure(&sample));
         });
         let (tx, replies) = std::sync::mpsc::sync_channel(4);
+        let watching = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watched = watching.clone();
         std::thread::spawn(move || {
             let mut reader = BufReader::new(out);
             loop {
                 let result = read_frame::<Response>(&mut reader);
+                if let Some(event) = result.as_ref().ok().filter(|r| is_event(r)) {
+                    // Events never answer a request; only a viewer channel gets them.
+                    if let (Some(target), Some(value)) = (&target, event.result.clone()) {
+                        deliver_event(Some(target.clone()), value);
+                    }
+                    continue;
+                }
                 let failed = result.is_err();
                 if tx.send(result).is_err() || failed {
                     break;
+                }
+            }
+            if watched.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Some(target) = target {
+                    deliver_event(Some(target), serde_json::json!({"kind": "closed"}));
                 }
             }
         });
@@ -655,6 +689,7 @@ impl Connection {
             replies,
             failure,
             route: Vec::new(),
+            watching,
         })
     }
 }
@@ -765,16 +800,11 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
         let mut all = CONNECTIONS
             .lock()
             .map_err(|_| anyhow!("transport lock unavailable"))?;
-        // Screen reads must not queue behind inventory on the metadata channel.
-        let channel = if matches!(
-            &op,
-            Operation::SessionPreview { .. } | Operation::SessionPaneInput { .. }
-        ) {
-            format!("session-preview:{target}")
-        } else if matches!(&op, Operation::Info) {
-            format!("capabilities:{target}")
-        } else {
-            target.clone()
+        let channel = match channel_class(&op) {
+            Channel::Interactive => format!("session-preview:{target}"),
+            Channel::Capabilities => format!("capabilities:{target}"),
+            Channel::Bulk => format!("bulk:{target}"),
+            Channel::Metadata => target.clone(),
         };
         all.entry(channel)
             .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(None)))
@@ -798,10 +828,7 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
     if slot.is_none() {
         *slot = Some(Connection::open(target)?);
     }
-    let response_timeout = if matches!(
-        &op,
-        Operation::SessionPreview { .. } | Operation::SessionPaneInput { .. }
-    ) {
+    let response_timeout = if channel_class(&op) == Channel::Interactive {
         3
     } else if matches!(
         &op,
@@ -837,6 +864,44 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
     }
     Ok(result)
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Channel {
+    /// Screens, keystrokes and the watch: never queued behind anything else.
+    Interactive,
+    Capabilities,
+    /// Files, containers and transfers: long bursts that must not delay sessions.
+    Bulk,
+    /// Session inventory and everything else.
+    Metadata,
+}
+/// Which of a device's helper channels (one helper process each, all over
+/// the same SSH master) carries `op`.
+pub(crate) fn channel_class(op: &Operation) -> Channel {
+    match op {
+        Operation::SessionPreview { .. }
+        | Operation::SessionPaneInput { .. }
+        | Operation::Watch { .. } => Channel::Interactive,
+        Operation::Info => Channel::Capabilities,
+        Operation::Containers
+        | Operation::ContainerInspect { .. }
+        | Operation::ContainerFiles { .. }
+        | Operation::ContainerFileAction { .. }
+        | Operation::ContainerProviders { .. }
+        | Operation::List { .. }
+        | Operation::ListPage { .. }
+        | Operation::Preview { .. }
+        | Operation::PreviewPage { .. }
+        | Operation::ReadChunk { .. }
+        | Operation::FileInfo { .. }
+        | Operation::ReceivePrepare { .. }
+        | Operation::ReceiveChunk { .. }
+        | Operation::ReceiveFinalize { .. }
+        | Operation::ReceiveSymlink { .. }
+        | Operation::Jobs
+        | Operation::TransferJobs => Channel::Bulk,
+        _ => Channel::Metadata,
+    }
+}
 /// Reuse a private framed helper channel. Callers validate their execution scope before every request.
 pub(crate) fn owned_helper_request(
     key: &str,
@@ -862,7 +927,7 @@ pub(crate) fn owned_helper_request(
         *slot = None;
     }
     if slot.is_none() {
-        *slot = Some(Connection::from_command(command()?)?);
+        *slot = Some(Connection::from_command(command()?, None)?);
     }
     exchange(slot, op, 20)
 }
@@ -882,6 +947,12 @@ fn exchange(
         op,
     };
     let conn = slot.as_mut().context("helper channel unavailable")?;
+    if let Operation::Watch { sessions, pane } = &req.op {
+        conn.watching.store(
+            *sessions || pane.is_some(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
     if let Err(error) = frame(&mut conn.input, &req) {
         let reason = conn.failure_reason();
         *slot = None;
@@ -1210,13 +1281,23 @@ fn mediated_host_update(
     invalidate_metadata(target)?;
     Ok((true, Some(version)))
 }
+/// Replace the target's helper channels (metadata, bulk, interactive) after
+/// its helper changed; each waits for its in-flight request first.
 fn invalidate_metadata(target: &str) -> Result<()> {
-    let entry = CONNECTIONS
-        .lock()
-        .map_err(|_| anyhow!("transport lock unavailable"))?
-        .get(target)
-        .cloned();
-    if let Some(entry) = entry {
+    let entries: Vec<_> = {
+        let all = CONNECTIONS
+            .lock()
+            .map_err(|_| anyhow!("transport lock unavailable"))?;
+        [
+            target.to_owned(),
+            format!("bulk:{target}"),
+            format!("session-preview:{target}"),
+        ]
+        .iter()
+        .filter_map(|key| all.get(key).cloned())
+        .collect()
+    };
+    for entry in entries {
         *entry
             .lock()
             .map_err(|_| anyhow!("connection lock unavailable"))? = None;
@@ -1248,17 +1329,8 @@ fn update_host_with(
             && before["machine_id"] == after["machine_id"];
         return Ok((current, None));
     };
-    let entry = CONNECTIONS
-        .lock()
-        .map_err(|_| anyhow!("transport lock unavailable"))?
-        .get(target)
-        .cloned();
-    if let Some(entry) = entry {
-        // Wait for pending requests (including mutations), then replace only metadata transport.
-        *entry
-            .lock()
-            .map_err(|_| anyhow!("connection lock unavailable"))? = None;
-    }
+    // Wait for pending requests (including mutations), then replace the helper channels.
+    invalidate_metadata(target)?;
     Ok((true, Some(version)))
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -1403,7 +1475,7 @@ mod tests {
     fn helper_exit_with_inherited_stderr_is_bounded_and_owned_group_is_reaped() {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", "sleep 30 >&2 & exit 0"]);
-        let mut connection = Connection::from_command(command).unwrap();
+        let mut connection = Connection::from_command(command, None).unwrap();
         let start = std::time::Instant::now();
         assert!(connection
             .replies
@@ -1517,7 +1589,7 @@ mod tests {
             "-c",
             "printf 'No route to host\n' >&2; head -c 100000 /dev/zero >&2; exit 255",
         ]);
-        let connection = Connection::from_command(command).unwrap();
+        let connection = Connection::from_command(command, None).unwrap();
         assert!(connection
             .replies
             .recv_timeout(std::time::Duration::from_secs(2))
@@ -1821,11 +1893,79 @@ mod tests {
         assert_eq!(UPDATE_LEGACY, "exec ~/.local/bin/cx update");
     }
     #[test]
+    fn event_frames_route_to_the_sink_and_never_answer_a_request() {
+        static SEEN: std::sync::Mutex<Vec<(Option<String>, serde_json::Value)>> =
+            std::sync::Mutex::new(Vec::new());
+        set_event_sink(Box::new(|target, event| {
+            SEEN.lock().unwrap().push((target, event))
+        }));
+        let event =
+            r#"{"version":1,"id":"evt:1","result":{"kind":"sessions","sessions":[]},"error":null}"#;
+        let reply = r#"{"version":1,"id":"req-1","result":{"ok":true},"error":null}"#;
+        let script = format!(
+            "printf 'CX1 {}\\n%s' '{event}'; printf 'CX1 {}\\n%s' '{reply}'; sleep 1",
+            event.len(),
+            reply.len()
+        );
+        let connection =
+            Connection::from_command(shell(&script), Some("evt-fixture".into())).unwrap();
+        connection
+            .watching
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let first = connection
+            .replies
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.id, "req-1", "the event is not a reply");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mine = |seen: &[(Option<String>, serde_json::Value)]| {
+            seen.iter()
+                .filter(|(t, _)| t.as_deref() == Some("evt-fixture"))
+                .map(|(_, e)| e["kind"].as_str().unwrap_or("").to_owned())
+                .collect::<Vec<_>>()
+        };
+        while mine(&SEEN.lock().unwrap()).len() < 2 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        // The helper exiting ends the watch: the viewer is told to poll again.
+        assert_eq!(mine(&SEEN.lock().unwrap()), ["sessions", "closed"]);
+    }
+    #[test]
+    fn interactive_work_never_shares_a_channel_with_bulk_work() {
+        let session: Session = serde_json::from_value(serde_json::json!({
+            "id":"x","name":"x","directory":"/","provider":"shell","host":"h",
+            "account":"a","pid":1,"started":"0","boot_id":"b","external":false,"socket":null
+        }))
+        .unwrap();
+        let watch = Operation::Watch {
+            sessions: true,
+            pane: Some(session),
+        };
+        assert_eq!(channel_class(&watch), Channel::Interactive);
+        assert_eq!(channel_class(&Operation::Containers), Channel::Bulk);
+        assert_eq!(
+            channel_class(&Operation::List { path: "/".into() }),
+            Channel::Bulk
+        );
+        assert_eq!(channel_class(&Operation::Sessions), Channel::Metadata);
+        assert_eq!(channel_class(&Operation::Info), Channel::Capabilities);
+        // Additive: older viewers' frames still decode, and an empty watch is valid.
+        let decoded: Operation = serde_json::from_str(r#"{"op":"watch","args":{}}"#).unwrap();
+        assert!(matches!(
+            decoded,
+            Operation::Watch {
+                sessions: false,
+                pane: None
+            }
+        ));
+    }
+    #[test]
     fn current_disk_cli_refreshes_stale_helper_and_waits_for_pending_request() {
         let target = "cx-update-fixture-current";
         let before = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"machine_id":"fixture","capabilities":["stable-update-v1"]});
         let newer = serde_json::json!({"version":"99.0.0","machine_id":"fixture"});
-        let old = Connection::from_command(shell("sleep 30")).unwrap();
+        let old = Connection::from_command(shell("sleep 30"), None).unwrap();
         let pid = old.child.id() as i32;
         let entry = std::sync::Arc::new(std::sync::Mutex::new(Some(old)));
         CONNECTIONS

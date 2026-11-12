@@ -3221,7 +3221,8 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         (cx.g("◀", "<"), "one way"),
         (cx.g("⊘", "- -"), "closed"),
     ];
-    let w = r.width.saturating_sub(if wide { 4 } else { 2 }).min(68);
+    // (Wide enough for three device names and what their letter does.)
+    let w = r.width.saturating_sub(if wide { 4 } else { 2 }).min(if cx.size() >= Size::M { 78 } else { 68 });
     let x0 = r.x + (r.width - w) / 2;
     let right = x0 + w;
     let ix = x0 + u16::from(wide);

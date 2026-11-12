@@ -304,7 +304,9 @@ impl App {
             .then(|| p.pane.clone())
             .filter(|pane| !pane.is_empty());
         let Some(pane_id) = pane_id else {
-            self.set_notice("Live preview is still loading · try again in a moment".into());
+            // Its screen (and so its pane) loads once it is the selection again.
+            self.reconcile_session_selection(Some((d, workspaces::runtime_key(&s))));
+            self.set_notice("Loading the last session's screen · send again in a moment".into());
             return;
         };
         let input = Operation::SessionPaneInput {

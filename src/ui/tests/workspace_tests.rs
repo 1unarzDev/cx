@@ -587,6 +587,19 @@ fn palette_sends_a_literal_ctrl_backslash_to_the_last_session_and_reattaches() {
     let s = a.work[0].sessions[0].clone();
     a.returned_from(0, &s);
     assert!(a.action_enabled(Action::SendCtrlBackslash));
+    // Before its screen is live there is no pane to send to: it is selected so it
+    // loads, and nothing is sent yet.
+    a.session_preview = Default::default();
+    a.execute(Action::SendCtrlBackslash);
+    assert!(
+        a.notice.contains("Loading the last session"),
+        "{}",
+        a.notice
+    );
+    assert_eq!(a.selected_session().map(|(_, s)| s.id), Some(s.id.clone()));
+    assert!(rx
+        .try_iter()
+        .all(|t| !matches!(t.op, Operation::SessionPaneInput { .. })));
     a.refresh_session_preview();
     if let Some(task) = rx
         .try_iter()

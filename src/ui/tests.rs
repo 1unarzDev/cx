@@ -5915,8 +5915,12 @@ fn ascii_capability_renders_no_unicode_and_keeps_focus_cues() {
                     .collect::<Vec<_>>()
                     .join("\n");
                 assert!(text.is_ascii(), "{name} {w}x{h}:\n{text}");
-                // The focused zone's bar is `>` (ASCII) and keycaps are reversed cells.
-                assert!(text.contains("> "), "{name} {w}x{h}:\n{text}");
+                // The focused zone is `[LABEL]` or its selection `>` / `[ ]` (ASCII), and
+                // keycaps are reversed cells.
+                assert!(
+                    text.contains("> ") || text.contains('['),
+                    "{name} {w}x{h}:\n{text}"
+                );
                 assert!(buffer
                     .content
                     .iter()

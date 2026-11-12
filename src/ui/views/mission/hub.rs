@@ -66,26 +66,44 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
             .cloned()
             .unwrap_or_default()
     };
-    // Rows the drawing leaves empty go to the thumbnails (up to what their screens
-    // hold), keeping a blank row either side of the map; with room for two, a second
-    // row of tiles shows the rest of the sessions and the ghost.
-    let gh = orbit::drawn_h(cx, band);
-    let room = th + band.height.saturating_sub(gh);
-    // (Only when each row keeps ten rows: a tile must still show enough of its screen
-    // to be told apart.)
-    let (rows, th) = if list.len() >= usize::from(cols) && room > 2 * th_min.max(10) {
-        (2, ((room - 1) / 2).min(need))
+    // Rows the drawing leaves go to the thumbnails (a screen taller than its text is
+    // still a screen), keeping the map's air: two blank rows either side
+    // where the screen is tall, else the blank row the band already keeps. With room
+    // for two, a second row of tiles shows the rest of the sessions and the ghost
+    // (only when each row keeps ten rows, so a tile still shows enough of its screen).
+    let gh = orbit::drawn_h(cx, band, orbit::Sel::Node("", false));
+    let air = if sz >= Size::M && r.height >= 30 {
+        2
     } else {
-        (1, room.min(need))
+        0
+    };
+    let room = th + band.height.saturating_sub(gh + air);
+    let (rows, th) = if list.len() >= usize::from(cols) && room > 2 * th_min.max(10) {
+        (2, (room - 1) / 2)
+    } else {
+        (1, room)
+    };
+    // Two rows share the sessions evenly (the last row's tiles widen to fill it).
+    let cols = if rows == 2 {
+        cols.min((list.len() as u16 + 1) / 2)
+    } else {
+        cols
     };
     let grid_h = rows * th + rows - 1;
     let mut y = band.bottom() + 1 + band_th - grid_h;
     // The map sits centred in the rows above the vitals strip.
-    let above = ((y - r.y - 1).saturating_sub(gh) / 2).max(1);
-    // (The map draws in a band of at least three rows; a one-row drawing sits in its
+    // (Counting the row of mesh wash above the map where rows are airy.)
+    let lift = u16::from(sz >= Size::M);
+    let above = ((y - r.y - 1).saturating_sub(gh + lift) / 2).max(1) + lift;
+    // (A row more either side where there is air, for the mesh wash's margin. The
+    // map draws in a band of at least three rows; a one-row drawing sits in its
     // middle row.)
-    let pad = u16::from(gh == 1);
-    let band = Rect::new(band.x, r.y + 1 + above - pad, band.width, gh.max(3));
+    let band = if above >= 2 {
+        Rect::new(band.x, r.y + above, band.width, gh + 2)
+    } else {
+        let pad = u16::from(gh == 1);
+        Rect::new(band.x, r.y + 1 + above - pad, band.width, gh.max(3))
+    };
     orbit::draw(
         cx,
         buf,
@@ -203,8 +221,9 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
     // No bar: column 0 is the focus bar only, and the strip is neither focused nor a
     // selection (it mirrors the map's).
     let right = r.right().saturating_sub(1);
+    // (Text on the column every zone label and the ticker start on.)
     let y = r.y;
-    let mut x = r.x + 2;
+    let mut x = r.x + 1;
     let nst = cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD).patch(bg);
     x += orbit::name(cx, buf, x, y, d, 20, nst, true) + 2;
     let path = orbit::route(cx, &d.id);
@@ -246,27 +265,23 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
             cx.ink(Tok::Muted, 0.7).patch(bg),
         ) + 2;
     }
-    // Keys: what this device's letter leads to.
-    let k = d.hotkey;
+    // Keys: the device's letter, then what it leads to, as two visible steps (the `c`
+    // that follows a letter is claude, never the creation device).
     let n = cx.s.sessions_on(&d.id).count();
-    let (attach, new, files, link) = (
-        format!("@{k} a"),
-        format!("@{k} c"),
-        format!("@{k} f"),
-        format!("e @{k}"),
-    );
-    let mut items: Vec<(&str, &str, &str)> = Vec::new();
+    let dev = format!("@{}", d.hotkey);
+    let act = format!("device:{}", d.id);
+    let mut items: Vec<(&str, &str, &str)> = vec![(&dev, "then", &act)];
     if n > 0 {
-        items.push((&attach, "attach", "attach"));
+        items.push(("a", "attach", "attach"));
     }
     if up && !ghost {
-        items.push((&new, "claude", "new"));
+        items.push(("c", "claude", "new"));
     }
     if up {
-        items.push((&files, "files", "files"));
+        items.push(("f", "files", "files"));
     }
-    if d.id != cx.s.viewer {
-        items.push((&link, "link", "links"));
+    if items.len() == 1 {
+        items.clear();
     }
     let ky = r.bottom() - 1;
     let kw: u16 = items
@@ -292,7 +307,7 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
     }
     // Second row: live vitals.
     let y = r.y + 1;
-    let mut x = r.x + 2;
+    let mut x = r.x + 1;
     let stop = right.saturating_sub(kw);
     let lab = cx.ink(Tok::Muted, 0.75).patch(bg);
     if let Some(m) = d.metrics.as_ref().filter(|_| up) {
@@ -354,7 +369,7 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
         let Some(mesh) = cx.s.meshes.iter().find(|q| &q.id == m) else {
             continue;
         };
-        let t = format!("{} {}", tiles::mesh_glyph(cx), mesh.name);
+        let t = format!("{}{}", tiles::mesh_glyph(cx), mesh.name);
         let w = super::width(&t, cx.uni());
         if x + w + 2 > stop {
             break;
@@ -394,7 +409,7 @@ fn alerts(cx: &Cx) -> Vec<Alert> {
             format!("{} needs you on {}", x.title, d.name)
         };
         v.push((
-            cx.g("◆", "!"),
+            cx.g("◆", "^"),
             text,
             Tok::Warn,
             format!("@{} {}", d.hotkey, cx.slot(x).unwrap_or('a')),
@@ -606,10 +621,11 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
         };
         let pass = e.up && e.forward != Access::Key && e.reverse != Access::Key;
         let g = match (t.last, pass) {
-            (false, false) => cx.g("├─", "+-"),
+            // (ASCII `+` is the invite key; `.` a password line.)
+            (false, false) => cx.g("├─", "|-"),
             (true, false) => cx.g("└─", "`-"),
-            (false, true) => cx.g("├┄", "+-"),
-            (true, true) => cx.g("└┄", "`-"),
+            (false, true) => cx.g("├┄", "|."),
+            (true, true) => cx.g("└┄", "`."),
         };
         cx.put(buf, x, r.y, 2, g, gst(tok));
         if r.height > 1 && !t.last {

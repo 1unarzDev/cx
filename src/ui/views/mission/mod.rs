@@ -174,14 +174,10 @@ impl<'a> Cx<'a> {
     pub fn g(&self, u: &'static str, a: &'static str) -> &'static str {
         self.c.glyph(u, a)
     }
-    /// The Enter key's label: `⏎`, or `ret` in ASCII and on phones (whose default fonts
-    /// lack the symbol).
+    /// The Enter key's label, a word in every tier (`⏎` drew as an odd icon in many
+    /// fonts), the same at every size.
     pub fn ret(&self) -> &'static str {
-        if self.uni() && !self.touch() {
-            "⏎"
-        } else {
-            "ret"
-        }
+        "enter"
     }
     pub fn st(&self, t: Tok) -> Style {
         // 16 colours: brightblack is the background in some palettes (Solarized Dark's
@@ -424,12 +420,12 @@ impl<'a> Cx<'a> {
         self.bar_in(buf, x, y, h, st, true);
     }
     /// The bar of a selection in a focused or unfocused zone: without colour the two
-    /// would differ only by ink, so ASCII marks the unfocused one `:` on every row and
-    /// keeps `>` for the focused zone.
+    /// would differ only by ink, so ASCII marks the unfocused one `|` on every row and
+    /// heads the focused one with `>` (`:` is a password line on the map).
     pub fn bar_in(&self, buf: &mut Buffer, x: u16, y: u16, h: u16, st: Style, focused: bool) {
         for yy in y..y + h {
             let a = match (focused, yy == y) {
-                (false, _) => ":",
+                (false, _) => "|",
                 (true, true) => ">",
                 (true, false) => "|",
             };
@@ -562,9 +558,11 @@ impl<'a> Cx<'a> {
     pub fn status(&self, s: DeviceStatus) -> (&'static str, Style) {
         match s {
             DeviceStatus::Local => (self.g("◉", "@"), self.st(Tok::Accent)),
-            DeviceStatus::Online => (self.g("●", "o"), self.st(Tok::Ok)),
-            DeviceStatus::Stale => (self.g("○", "%"), self.st(Tok::Warn)),
-            DeviceStatus::Down => (self.g("✕", "x"), self.st(Tok::Err)),
+            // ASCII: online is the normal case and carries no mark (`o` is a key there).
+            DeviceStatus::Online => (self.g("●", " "), self.st(Tok::Ok)),
+            // (`o` a hollow dot, `!` down: `~` starts paths, `x` is the codex key.)
+            DeviceStatus::Stale => (self.g("○", "o"), self.st(Tok::Warn)),
+            DeviceStatus::Down => (self.g("✕", "!"), self.st(Tok::Err)),
             DeviceStatus::Unknown => (self.g("◌", "?"), self.st(Tok::Muted)),
         }
     }
@@ -597,10 +595,11 @@ impl<'a> Cx<'a> {
 
     pub fn sstate(&self, x: &LabSession) -> (&'static str, &'static str, Style) {
         match x.state {
-            SessionState::AwaitingInput => (self.g("◆", "!"), "needs you", self.st(Tok::Warn)),
-            // `o` as for a live device: `*` stays the agents' own bullet in ASCII.
-            SessionState::Working => (self.g("●", "o"), "working", self.st(Tok::Accent)),
-            SessionState::Running => (self.g("●", "o"), "running", self.st(Tok::Ok)),
+            SessionState::AwaitingInput => (self.g("◆", "^"), "needs you", self.st(Tok::Warn)),
+            // ASCII: live work is the normal case and carries no mark, as an online
+            // device (`*` stays the agents' own bullet); what needs you is an alert, `^`.
+            SessionState::Working => (self.g("●", " "), "working", self.st(Tok::Accent)),
+            SessionState::Running => (self.g("●", " "), "running", self.st(Tok::Ok)),
             SessionState::Idle => (self.g("○", "-"), "idle", self.st(Tok::Muted)),
             SessionState::Exited => (self.g("·", "."), "exited", self.ink(Tok::Faint, 1.0)),
         }
@@ -632,7 +631,8 @@ impl<'a> Cx<'a> {
     }
 
     /// Small-caps section label (`NETWORK`, plain letters so it copies and reads aloud
-    /// as a word); an accent bar `▍` when focused (ASCII `> `, the selection mark).
+    /// as a word); an accent bar `▍` when focused (ASCII `[NETWORK]`: `>` is the
+    /// selection mark only).
     pub fn label(
         &self,
         buf: &mut Buffer,
@@ -644,12 +644,16 @@ impl<'a> Cx<'a> {
     ) -> u16 {
         let (bar, st) = if focused {
             (
-                self.g("▍", "> "),
+                self.g("▍", "  "),
                 self.st(Tok::Accent).add_modifier(Modifier::BOLD),
             )
         } else {
             (self.g(" ", "  "), self.ink(Tok::Muted, 0.8))
         };
+        if focused && !self.uni() {
+            let t = format!("[{text}]");
+            return self.put(buf, x, y, max, &t, st);
+        }
         let mut w = self.put(buf, x, y, max, bar, self.st(Tok::Accent));
         w += self.put(buf, x + w, y, max.saturating_sub(w), text, st);
         w
@@ -852,10 +856,9 @@ pub(super) fn asciify(s: &str) -> String {
             '│' | '┃' => out.push(' '),
             // An agent's own prompt bar is blank: `|` and `:` are cx's selection bars.
             '▌' | '▍' | '▎' => out.push(' '),
-            '╭' | '╮' | '╰' | '╯' | '┌' | '┐' | '└' | '┘' => out.push('+'),
-            // `v` and `^` are reserved (`^` is an alert), so arrows are words.
-            '↓' => out.push_str("dn"),
-            '↑' => out.push_str("up"),
+            '╭' | '╮' | '╰' | '╯' | '┌' | '┐' | '└' | '┘' => out.push('-'),
+            // A screen's own text is not rewritten: what has no ASCII stand-in of the
+            // same meaning is a neutral `?` (`v` and `^` are cx marks).
             '→' => out.push_str("->"),
             '←' => out.push_str("<-"),
             '⏎' => out.push_str("ret"),

@@ -40,6 +40,11 @@ fn pick_bar(cx: &Cx, buf: &mut Buffer, r: Rect, pick: Pick) {
 
 /// Eighth-block area chart (newest on the right), shaded by height.
 pub(super) fn chart(cx: &Cx, buf: &mut Buffer, r: Rect, vals: &[f32]) {
+    chart_in(cx, buf, r, vals, None);
+}
+
+/// A chart in one ink (`None`: each bar's heat).
+pub(super) fn chart_in(cx: &Cx, buf: &mut Buffer, r: Rect, vals: &[f32], ink: Option<Style>) {
     if r.width == 0 || r.height == 0 || vals.is_empty() {
         return;
     }
@@ -54,16 +59,14 @@ pub(super) fn chart(cx: &Cx, buf: &mut Buffer, r: Rect, vals: &[f32]) {
         }
         .clamp(0.0, 1.0);
         let total = (v * f32::from(r.height) * 8.0).round() as i32;
-        let st = cx.spark_heat(v);
+        let st = ink.unwrap_or_else(|| cx.spark_heat(v));
         for row in 0..r.height {
             let y = r.bottom() - 1 - row;
             let fill = (total - i32::from(row) * 8).clamp(0, 8) as usize;
             let s = if cx.uni() {
                 E[fill]
-            } else if fill >= 6 {
-                "#"
-            } else if fill >= 2 {
-                // (`:` is the unfocused selection bar.)
+            } else if fill >= 4 {
+                // (`#` is the edited link, `:` a password stroke.)
                 "="
             } else if row == 0 {
                 "_"
@@ -116,8 +119,9 @@ fn spark_str(cx: &Cx, vals: &[Option<f32>], w: u16) -> String {
     if cx.uni() {
         s
     } else {
-        // ASCII sparks use only `_ = #`: `.` and `-` are link strokes on the map.
-        s.replace('.', "_").replace('-', "=")
+        // ASCII sparks use only `_ =`: `.` and `-` are link strokes on the map, `#`
+        // the edited link.
+        s.replace('.', "_").replace('-', "=").replace('#', "=")
     }
 }
 
@@ -144,9 +148,10 @@ pub(super) fn gauge(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, w: u16, v: f32, s
     }
 }
 
-/// A mesh's swatch: a square in its hue (`#` in ASCII); the mesh's name follows it.
+/// A mesh's swatch and a space before its name: a square in its hue; none in ASCII
+/// (every printable glyph there already means something; the name says it).
 pub(super) fn mesh_glyph(cx: &Cx) -> String {
-    cx.g("■", "#").into()
+    cx.g("■ ", "").into()
 }
 
 /// Session pips (one slot letter per session in its state colour, space separated),
@@ -266,7 +271,7 @@ fn text(l: &ratatui::text::Line) -> String {
 }
 
 /// Screen lines up to the last informative one (trailing chrome dropped).
-fn used_lines(x: &LabSession) -> usize {
+pub(super) fn used_lines(x: &LabSession) -> usize {
     ansi_lines(&x.screen, x.screen_cols)
         .iter()
         .rposition(|l| !boring(text(l).trim()))
@@ -560,7 +565,7 @@ pub(super) fn session_row(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pi
         let mut x2 = r.x + 2;
         x2 += cx.put(buf, x2, r.y + 1, 7, p, cx.st(ptok)) + 1;
         let cap = if ask {
-            format!("is asking {} tap to answer", cx.g("·", "-"))
+            format!("is asking {} open to answer", cx.g("·", "-"))
         } else {
             caption(x)
         };

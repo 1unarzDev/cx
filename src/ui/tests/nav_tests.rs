@@ -367,7 +367,14 @@ fn help_and_footer_teach_the_design_keys_and_each_chip_runs_its_key() {
     a.go_hub();
     a.help = true;
     let text = draw(&a, 120, 40);
-    for key in ["ON THE HUB", "a s d g", "c x n", "ctrl+\\", "/ find"] {
+    for key in [
+        "ON THE HUB",
+        "a s d g",
+        "c x n",
+        "ctrl+\\",
+        "find",
+        "secrets",
+    ] {
         assert!(text.contains(key), "help lacks {key}: {text}");
     }
     a.help = false;

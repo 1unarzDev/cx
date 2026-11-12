@@ -137,7 +137,7 @@ pub(super) fn render_session_chooser(
         };
         let label = match dialog {
             Dialog::ContainerProvider(device, scope) if choice.provider == "shell" => {
-                format!("[s] {}", container_label(app, *device, scope))
+                format!("[{}] {}", choice.key, container_label(app, *device, scope))
             }
             _ => choice.label.to_string(),
         };

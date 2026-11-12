@@ -361,11 +361,11 @@ fn qr_matrix(seed: u32) -> Vec<Vec<bool>> {
     let finder = |m: &mut Vec<Vec<bool>>, r0: usize, c0: usize| {
         for r in 0..9 {
             for c in 0..9 {
-                let (rr, cc) = (r0 as i32 + r as i32 - 1, c0 as i32 + c as i32 - 1);
+                let (rr, cc) = (r0 as i32 + r - 1, c0 as i32 + c - 1);
                 if rr < 0 || cc < 0 || rr >= n as i32 || cc >= n as i32 {
                     continue;
                 }
-                let (dr, dc) = (r as i32 - 4, c as i32 - 4);
+                let (dr, dc) = (r - 4, c - 4);
                 let d = dr.abs().max(dc.abs());
                 m[rr as usize][cc as usize] = d != 4 && d != 2;
             }

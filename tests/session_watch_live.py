@@ -67,8 +67,25 @@ class Fixture:
         ms, _ = self.viewer.measure(key, lambda: self.text() != before, timeout=5)
         return ms
 
+    def hub(self):
+        return ph.hub_layout(self.viewer)
+
+    def focused(self):
+        return '⏏ detach' in self.text() or 'typing into the session' in self.text()
+
     def focus(self):
-        self.viewer.measure(ph.INLINE_KEY, lambda: '⏏ detach' in self.text(), timeout=10)
+        if not self.hub():
+            self.viewer.measure(ph.INLINE_KEY, self.focused, timeout=10)
+            self.viewer.quiesce(.2)
+            return
+        # The hub design: peek the session (Space), then a tap on its prompt types into it.
+        self.viewer.measure(b' ', lambda: 'OTHERS' in self.text() or 'tab' in self.viewer.screen.display[-1],
+                            timeout=10)
+        self.viewer.quiesce(.2)
+        display = self.viewer.screen.display
+        y = max(y for y, line in enumerate(display) if '$' in line and y > 1)
+        x = display[y].index('$')
+        self.viewer.measure(f'\x1b[<0;{x + 1};{y + 1}M\x1b[<0;{x + 1};{y + 1}m'.encode(), self.focused, timeout=10)
         self.viewer.quiesce(.2)
 
     def close(self):
@@ -116,10 +133,12 @@ def cycles(binary, count):
     fixture = Fixture(binary)
     try:
         def native():
-            return 'detach' in fixture.viewer.screen.display[-1] and '╭ Devices' not in fixture.text()
+            return ('detach' in fixture.viewer.screen.display[-1] and '╭ Devices' not in fixture.text()
+                    and 'NETWORK' not in fixture.text() and 'SESSIONS' not in fixture.text())
 
         def ui_back():
-            return '╭ Devices' in fixture.text()
+            # Detach lands on the hub (its NETWORK zone), the old layout on its Devices box.
+            return '╭ Devices' in fixture.text() or 'NETWORK' in fixture.text()
         failures = 0
         for _ in range(count):
             attached, _ = fixture.viewer.measure(ph.ATTACH_KEY, native, timeout=10)

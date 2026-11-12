@@ -58,6 +58,8 @@ struct Plan<'a> {
     mode: Mode,
     nmax: usize,
     pill: Rect,
+    /// Rows between a device and the next.
+    sp: i32,
     /// Columns between a parent's column and its children's.
     gap: u16,
     hidden: usize,
@@ -293,16 +295,16 @@ fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, depth: usize, keys_only: bool, 
     // three apart only with whole names, then two, then one), then shorter names, then
     // bare keycaps. Within each, the orbit's arc before a flat column, and the widest
     // column gap down to the shortest that keeps a corner.
-    // The edge editor's map has the screen to itself: its rows spread to fill it.
+    // One spacing scale at every size and in every view: the drawing is centred in its
+    // area, never stretched to fill it.
+    // The edge editor's map is the screen's subject: one step up the same scale.
     let sp_max = match cx.size() {
-        _ if matches!(sel, Sel::Edge(_)) => 12,
+        Size::L if matches!(sel, Sel::Edge(_)) => 6,
+        Size::M if matches!(sel, Sel::Edge(_)) => 4,
         Size::L => 4,
         Size::M => 3,
         Size::S | Size::Xs => 2,
     };
-    // Columns between a label and the next scale with the band: the drawing spreads to
-    // its area.
-    let full = (band.width / 10).clamp(6, 20);
     // Rows three apart suit a small network only; a dense one at that spacing reads
     // as a stretched wireframe.
     let sp_max = if tree(cx, root, depth).len() > 8 { sp_max.min(2) } else { sp_max };
@@ -318,8 +320,11 @@ fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, depth: usize, keys_only: bool, 
     }
     let mut best = None;
     for (sp, mode, nmax) in ladder {
+        // Columns between a label and the next follow the rows (a cell is about twice
+        // as tall as wide), so arms across and arms down read as one length.
+        let full = (3 * sp as u16 + 4).clamp(8, 22);
         for arc in [true, false] {
-            for gap in (full.min(6)..=full).rev() {
+            for gap in (4..=full).rev() {
                 let p = place(cx, band, tree(cx, root, depth), root, mode, nmax, sp, keys, gap, arc);
                 let ok = p.hidden == 0;
                 best = Some(p);
@@ -380,14 +385,15 @@ fn place<'a>(
     // Above and below the root: an arrowhead reads along a row, so only links that are
     // not one way; only in a small network (a dense one needs the columns' rows).
     let mut vert: Vec<usize> = Vec::new();
-    if (3..=6).contains(&tops.len()) {
+    // (An even count only: three peers as a cross leave one arm empty.)
+    if (4..=6).contains(&tops.len()) {
         let mut c: Vec<usize> = tops
             .iter()
             .copied()
             .filter(|&i| nodes[i].up.is_some_and(|e| !(e.up && e.one_way())))
             .collect();
         c.sort_by_key(|&i| -leaves[i]);
-        c.truncate(if tops.len() >= 4 { 2 } else { 1 });
+        c.truncate(2);
         vert = c;
     }
     let side_tops: Vec<usize> = tops.iter().copied().filter(|i| !vert.contains(i)).collect();
@@ -465,8 +471,8 @@ fn place<'a>(
             }
         }
     }
-    // Straight above (then below) the root, clear of the columns; its devices on wings
-    // a row further out, split left and right.
+    // Straight above (then below) the root, clear of the columns; its devices on its
+    // own row, split left and right, so one straight rule runs through it.
     for (k, &v) in vert.iter().enumerate() {
         let dir = if k == 0 { -1 } else { 1 };
         row[v] = dir * (reach + sp.max(2));
@@ -474,7 +480,7 @@ fn place<'a>(
         let ks = &kids[v];
         let half = ks.len() / 2;
         for (side, part) in [(-1, &ks[..half]), (1, &ks[half..])] {
-            let mut at = row[v] + dir;
+            let mut at = row[v];
             for &c in part {
                 nodes[c].side = side;
                 at = fan(c, at, dir, sp, &kids, &mut row) + dir * sp;
@@ -534,6 +540,7 @@ fn place<'a>(
         mode,
         nmax,
         pill,
+        sp,
         gap: gap as u16,
         hidden,
     }
@@ -758,15 +765,11 @@ fn line_ch(b: u8, pat: Pat, uni: bool) -> char {
     }
 }
 
-/// A heavy line glyph (the edge editor's edited link). ASCII: `=` along a row, `H`
-/// down a column, corners as any line's.
+/// A heavy line glyph (the edge editor's edited link). ASCII: `#` in every cell, a
+/// mark no other line uses.
 fn heavy(b: u8, uni: bool) -> char {
     if !uni {
-        return match line_ch(b, Pat::Solid, false) {
-            '-' => '=',
-            '|' => 'H',
-            c => c,
-        };
+        return '#';
     }
     match b {
         _ if b & (UP | DN) == 0 => '━',
@@ -1026,8 +1029,8 @@ pub(super) fn draw_with(
             buf[(bx, by)].set_char(ch).set_style(st);
         }
     }
-    // Ends: an arrowhead where access goes one way, at the end it reaches; `⊘` at the
-    // middle of a link closed both ways (`/` in ASCII).
+    // Ends: an arrowhead where access goes one way, at the end it reaches; a link closed
+    // both ways stops short of its device (no glyph on the stroke).
     for l in &links {
         let st = ink(l);
         let mut put = |at: (i32, i32), g: &str| {
@@ -1046,8 +1049,14 @@ pub(super) fn draw_with(
             };
             put(if l.toward_kid { l.kid_end } else { l.par_end }, g);
         } else if l.e.up && closed(l.e) {
-            // Mid-run, clear of both labels.
-            put(((l.par_end.0 + l.kid_end.0) / 2, (l.par_end.1 + l.kid_end.1) / 2), cx.g("⊘", "/"));
+            // Two cells of air before the device: the line does not reach it.
+            let (x, y) = l.kid_end;
+            let (dx, dy) = match l.side {
+                0 => (0, if l.kid_end.1 > l.par_end.1 { -1 } else { 1 }),
+                s => (s, 0),
+            };
+            put((x, y), " ");
+            put((x - dx, y - dy), " ");
         }
     }
     // Nodes. Letters are keys on the hub and in the send-to picker only.
@@ -1099,7 +1108,19 @@ fn wash(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str, band: Rect, faded: bool
         let mut it = p.nodes.iter().filter(inside).map(|n| n.label);
         let Some(first) = it.next() else { continue };
         let (bb, count) = it.fold((first, 1), |(a, k), r| (a.union(r), k + 1));
-        let bb = Rect::new(bb.x.saturating_sub(3), bb.y, bb.width + 6, bb.height).intersection(band);
+        // Two cells of air either side, the band symmetric about the root's axis (the
+        // group's relay sits on it), and a row above and below where rows are airy.
+        let axis = i32::from(p.pill.x) * 2 + i32::from(p.pill.width);
+        let half = (axis - 2 * i32::from(bb.x)).max(2 * i32::from(bb.right()) - axis) / 2 + 2;
+        let x0 = (axis / 2 - half).max(i32::from(band.x));
+        let pad = u16::from(p.sp >= 3);
+        let bb = Rect::new(
+            x0 as u16,
+            bb.y.saturating_sub(pad),
+            (2 * half) as u16,
+            bb.height + 2 * pad,
+        )
+        .intersection(band);
         let other = p.nodes.iter().any(|n| n.shown && !inside(&n) && n.label.intersects(bb));
         if count < 2 || other || p.pill.intersects(bb) {
             continue;
@@ -1249,7 +1270,8 @@ fn hit_node(cx: &Cx, r: Rect, d: &LabDevice) {
     cx.hit(r, format!("device:{}", d.id));
 }
 
-/// A selection where colour cannot show it: brackets in the cells either side of `r`.
+/// A selection where colour cannot show it: brackets in the cells either side of `r`
+/// (only a selection; the viewer is `@` and bare everywhere else).
 fn brackets(cx: &Cx, buf: &mut Buffer, r: Rect, st: Style) {
     if !cx.uni() || !cx.c.has_color() {
         cx.put(buf, r.x, r.y, 1, "[", st);

@@ -507,7 +507,8 @@ impl<'a> Cx<'a> {
     pub fn status(&self, s: DeviceStatus) -> (&'static str, Style) {
         match s {
             DeviceStatus::Local => (self.g("◉", "@"), self.st(Tok::Accent)),
-            DeviceStatus::Online => (self.g("●", "o"), self.st(Tok::Ok)),
+            // ASCII: online is the normal case and carries no mark (`o` is a key there).
+            DeviceStatus::Online => (self.g("●", " "), self.st(Tok::Ok)),
             DeviceStatus::Stale => (self.g("○", "~"), self.st(Tok::Warn)),
             DeviceStatus::Down => (self.g("✕", "X"), self.st(Tok::Err)),
             DeviceStatus::Unknown => (self.g("◌", "?"), self.st(Tok::Muted)),
@@ -578,7 +579,8 @@ impl<'a> Cx<'a> {
     }
 
     /// Small-caps section label (`NETWORK`, plain letters so it copies and reads aloud
-    /// as a word); an accent bar `▍` when focused (ASCII `> `, the selection mark).
+    /// as a word); an accent bar `▍` when focused (ASCII `[NETWORK]`: `>` is the
+    /// selection mark only).
     pub fn label(
         &self,
         buf: &mut Buffer,
@@ -590,12 +592,16 @@ impl<'a> Cx<'a> {
     ) -> u16 {
         let (bar, st) = if focused {
             (
-                self.g("▍", "> "),
+                self.g("▍", "  "),
                 self.st(Tok::Accent).add_modifier(Modifier::BOLD),
             )
         } else {
             (self.g(" ", "  "), self.ink(Tok::Muted, 0.8))
         };
+        if focused && !self.uni() {
+            let t = format!("[{text}]");
+            return self.put(buf, x, y, max, &t, st);
+        }
         let mut w = self.put(buf, x, y, max, bar, self.st(Tok::Accent));
         w += self.put(buf, x + w, y, max.saturating_sub(w), text, st);
         w

@@ -304,14 +304,28 @@ fn version(path: &Path) -> Option<String> {
     use std::{io::Read, os::fd::AsRawFd, os::unix::process::CommandExt, process::Stdio};
     // Availability checks must not wait indefinitely for an obsolete/broken
     // relay, nor for a wrapper's descendants retaining its output pipe.
-    let mut child = std::process::Command::new(path)
-        .arg("-v")
-        .process_group(0)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+    let spawn = || {
+        std::process::Command::new(path)
+            .arg("-v")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+    };
+    // A relay written just now (an install, a test fixture) can be "text file busy" for a moment:
+    // another thread's fork holds a copy of the writer's descriptor until its exec closes it.
+    let mut child = spawn();
+    for _ in 0..20 {
+        match &child {
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) => {
+                std::thread::sleep(Duration::from_millis(5));
+                child = spawn();
+            }
+            _ => break,
+        }
+    }
+    let mut child = child.ok()?;
     let mut stdout = child.stdout.take()?;
     let fd = stdout.as_raw_fd();
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -613,18 +627,24 @@ mod tests {
         fs::write(
             &relay,
             format!(
-                "#!/bin/sh\nsleep 2 &\necho $! > '{}'/child\nprintf '%s\\n' '{}'\n",
+                "#!/bin/sh\nsleep 60 &\necho $! > '{}'/child\nprintf '%s\\n' '{}'\n",
                 fixture.path().display(),
                 REPTYR_VERSION
             ),
         )
         .unwrap();
         fs::set_permissions(&relay, fs::Permissions::from_mode(0o700)).unwrap();
+        // The descendant keeps the output pipe open for a minute: waiting for it (the bug) takes
+        // that long, however idle the host; the probe itself takes at most its 250 ms deadline, so
+        // these bounds hold however loaded the host is.
         let started = Instant::now();
         assert_eq!(version(&relay).as_deref(), Some(REPTYR_VERSION));
-        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the probe waited for its descendant"
+        );
         let pid = fs::read_to_string(fixture.path().join("child")).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             let running = fs::read_to_string(format!("/proc/{}/stat", pid.trim())).is_ok_and(|s| {
                 s.rsplit_once(')')

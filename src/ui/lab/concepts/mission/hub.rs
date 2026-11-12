@@ -66,7 +66,7 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // Rows the drawing leaves empty go to the thumbnails (up to what their screens
     // hold), keeping a blank row either side of the map; with room for two, a second
     // row of tiles shows the rest of the sessions and the ghost.
-    let gh = orbit::drawn_h(cx, band);
+    let gh = orbit::drawn_h(cx, band, orbit::Sel::Node("", false));
     let room = th + band.height.saturating_sub(gh);
     // (Only when each row keeps ten rows: a tile must still show enough of its screen
     // to be told apart.)

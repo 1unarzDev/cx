@@ -651,21 +651,14 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         let cols = if sz == Size::S { 2 } else { 3 }.min(tiles_n).max(1);
         let gap = 2u16;
         let tw = (main.width + gap) / cols - gap;
-        // Tiles are as tall as the tallest screen needs (ghost tile included).
-        let need = list
-            .iter()
-            .map(|x| tiles::tail_rows(x) as u16)
-            .max()
-            .unwrap_or(5)
-            + 2;
         let rows = tiles_n.div_ceil(cols);
         let room = main
             .height
-            .saturating_sub(if fan_want > 0 { fan_want + 3 } else { 0 })
+            .saturating_sub(if fan_want > 0 { fan_want + 4 } else { 0 })
             .saturating_sub(if ghost_row { 2 } else { 0 });
-        let th = ((room + 1) / rows.max(1))
-            .saturating_sub(1)
-            .clamp(5, need.max(7));
+        // The tiles take every row the links leave (a screen taller than its text is
+        // still a screen), so the LINKS star sits on the footer, not in a void.
+        let th = ((room + 1) / rows.max(1)).saturating_sub(1).max(5);
         // When everything fits one row, the ghost tile stays narrow and the sessions
         // share the rest (a single session gets its screen nearly 1:1).
         // A session tile is at most two hub tiles wide, so a lone session reads as a
@@ -734,12 +727,13 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
             r.bottom().saturating_sub(fy + 1),
         );
         link_list(cx, buf, rows, d, &edges);
-    } else if links_n > 0 && fy + 6 <= r.bottom() {
+    } else if links_n > 0 && fy + 7 <= r.bottom() {
         // The footer says `e links`; the zone label is the tap target.
         zone(cx, buf, main.x, fy, right, "LINKS", false);
         cx.hit(Rect::new(main.x, fy, 12, 1), "links");
         // The star alone: each link's numbers are one `e` away (the edge editor).
-        let band = Rect::new(r.x, fy + 1, r.width, r.bottom().saturating_sub(fy + 2));
+        // (A blank row under the label and above the footer.)
+        let band = Rect::new(r.x, fy + 2, r.width, r.bottom().saturating_sub(fy + 3));
         orbit::draw_with(cx, buf, band, &d.id, 1, orbit::Sel::Root, false);
     }
 }
@@ -2890,11 +2884,21 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
             None => return,
         },
     };
-    // The sheet is as tall as its rows and sits on the footer (a blank row between);
-    // the map has the rows above it, centred in them, a blank row under the crumb.
+    // Map and sheet are one centred column (at most 110 wide): the map as tall as its
+    // rows allow, a blank row, then the sheet; the block sits a little above the middle
+    // of the rows between the crumb and the footer (a blank row under each).
     let sheet_h: u16 = if cx.size() == Size::Xs { 9 } else { 11 }.min(r.height);
-    let sheet_y = r.bottom().saturating_sub(sheet_h + 1).max(r.y);
-    let band = Rect::new(r.x, r.y + 1, r.width, sheet_y.saturating_sub(r.y + 2));
+    let col = r.width.min(110);
+    let cx0 = r.x + (r.width - col) / 2;
+    let avail = r.height.saturating_sub(sheet_h + 4);
+    let gh = if cx.touch() || avail < 3 {
+        avail.min(3)
+    } else {
+        orbit::drawn_h(cx, Rect::new(r.x, r.y, r.width, avail), orbit::Sel::Edge(&e.id))
+    };
+    let spare = avail.saturating_sub(gh);
+    let band = Rect::new(r.x, r.y + 1 + spare * 2 / 5, r.width, gh);
+    let sheet_y = band.bottom() + 2;
     if !cx.touch() && band.height >= 3 {
         orbit::draw(cx, buf, band, &cx.s.viewer, 3, orbit::Sel::Edge(&e.id));
     } else if let (Some(a), Some(b)) = (cx.s.device(&e.from), cx.s.device(&e.to)) {
@@ -2912,7 +2916,7 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
         x += cx.put(buf, x, y, 3, line, ink);
         cx.dchip(buf, x, y, b, false);
     }
-    let sheet = Rect::new(r.x, sheet_y, r.width, sheet_h);
+    let sheet = Rect::new(cx0, sheet_y, col, sheet_h);
     panel(cx, buf, sheet);
     let inner = inset(sheet, 2, 1);
     let (Some(a), Some(b)) = (cx.s.device(&e.from), cx.s.device(&e.to)) else {

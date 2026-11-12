@@ -293,11 +293,11 @@ fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, depth: usize, keys_only: bool, 
     // three apart only with whole names, then two, then one), then shorter names, then
     // bare keycaps. Within each, the orbit's arc before a flat column, and the widest
     // column gap down to the shortest that keeps a corner.
-    // The device view's star and the edge editor's map have the screen to themselves:
-    // they spread further apart where the rows allow.
-    let roomy = matches!(sel, Sel::Edge(_) | Sel::Root);
+    // The edge editor's map has the screen to itself: it spreads further apart where
+    // the rows allow.
+    let roomy = matches!(sel, Sel::Edge(_));
     let (sp_max, full): (i32, u16) = match cx.size() {
-        Size::L => (if roomy { 4 } else { 2 }, 12),
+        Size::L => (3, 12),
         Size::M => (if roomy { 3 } else { 2 }, 10),
         Size::S => (2, 8),
         Size::Xs => (2, 6),
@@ -504,8 +504,8 @@ pub(super) fn want_h(cx: &Cx) -> u16 {
 }
 
 /// Rows the hub map's drawing takes in `band` (it sits one row under the band's top).
-pub(super) fn drawn_h(cx: &Cx, band: Rect) -> u16 {
-    let p = plan(cx, band, &cx.s.viewer, 3, cx.touch(), Sel::Node("", false));
+pub(super) fn drawn_h(cx: &Cx, band: Rect, sel: Sel) -> u16 {
+    let p = plan(cx, band, &cx.s.viewer, 3, cx.touch(), sel);
     let ys = p.nodes.iter().filter(|n| n.shown).map(|n| n.label.y).chain([p.pill.y]);
     let (lo, hi) = ys.fold((u16::MAX, 0), |a, y| (a.0.min(y), a.1.max(y)));
     hi + 1 - lo
@@ -926,8 +926,8 @@ pub(super) fn draw_with(
             let (bx, by) = (band.x + x, band.y + y);
             // ASCII has no faint ink: a line nothing crosses is broken (`- - -`).
             let ch = line_ch(b, pat, cx.uni());
-            let gapped = !cx.uni() && pat == Pat::Quiet && (if b & (UP | DN) == 0 { bx } else { by }) % 2 == 1;
-            let ch = if gapped && matches!(ch, '-' | '|') { ' ' } else { ch };
+            let gapped = !cx.uni() && pat == Pat::Quiet && bx % 2 == 1;
+            let ch = if gapped && ch == '-' { ' ' } else { ch };
             // The edge editor's subject is the one heavy stroke, in the accent, so the
             // link being edited reads at a glance (a faded branch from its cell starts
             // a cell later).

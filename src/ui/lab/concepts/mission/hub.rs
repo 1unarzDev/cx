@@ -212,8 +212,9 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
     // No bar: column 0 is the focus bar only, and the strip is neither focused nor a
     // selection (it mirrors the map's).
     let right = r.right().saturating_sub(1);
+    // (Text on the column every zone label and the ticker start on.)
     let y = r.y;
-    let mut x = r.x + 2;
+    let mut x = r.x + 1;
     let nst = cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD).patch(bg);
     x += orbit::name(cx, buf, x, y, d, 20, nst, true) + 2;
     let path = orbit::route(cx, &d.id);
@@ -295,7 +296,7 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
     }
     // Second row: live vitals.
     let y = r.y + 1;
-    let mut x = r.x + 2;
+    let mut x = r.x + 1;
     let stop = right.saturating_sub(kw);
     let lab = cx.ink(Tok::Muted, 0.75).patch(bg);
     if let Some(m) = d.metrics.as_ref().filter(|_| up) {

@@ -333,14 +333,17 @@ fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, depth: usize, keys_only: bool, 
         // of a narrow one); rings stop growing where they would only add air.
         let w = i32::from(band.width);
         let lim = if w >= 100 { w * 7 / 10 } else { w - 8 };
+        let edge = matches!(sel, Sel::Edge(_));
+        // (The edge editor's map is the screen's subject: one step up.)
         let cap = match (depth, cx.size()) {
+            (_, Size::L) if edge => 9,
+            (_, Size::M) if edge => 6,
             (1, Size::L) => 6,
             (1, _) => 4,
             (_, Size::L) => 7,
             (_, Size::M) => 5,
             _ => 4,
         };
-        let edge = matches!(sel, Sel::Edge(_));
         for &(mode, nmax) in modes {
             for ry in (2..=cap).rev() {
                 // About round (a cell is twice as tall as wide), wider where the band is.

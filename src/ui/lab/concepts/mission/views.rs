@@ -2911,11 +2911,11 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
         orbit::drawn_h(cx, Rect::new(r.x, r.y, r.width, avail), orbit::Sel::Edge(&e.id))
     };
     let mut spare = avail.saturating_sub(gh);
-    // Rows the map leaves go to the rtt chart (up to three times its height, a row of
+    // Rows the map leaves go to the rtt chart (up to twice its height, a row of
     // air kept either side) before any air
     // opens around the block.
     if rtt_h > 1 {
-        let more = spare.saturating_sub(2).min(2 * rtt_h);
+        let more = spare.saturating_sub(2).min(rtt_h);
         rtt_h += more;
         sheet_h += more;
         spare -= more;

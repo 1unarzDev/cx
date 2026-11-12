@@ -2258,7 +2258,7 @@ fn container_menus_keep_shell_available_until_scoped_agents_are_observed() {
     assert!(rx
         .try_iter()
         .all(|t| matches!(t.op, Operation::ContainerProviders { .. })));
-    press(&mut a, 's');
+    press(&mut a, 'n');
     assert!(
         matches!(rx.try_recv().unwrap().op,Operation::ContainerCreate{request,yolo:false,..} if request.provider=="shell")
     );

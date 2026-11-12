@@ -302,6 +302,9 @@ fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, depth: usize, keys_only: bool, 
         Size::S => (2, 8),
         Size::Xs => (2, 6),
     };
+    // Rows three apart suit a small network only; a dense one at that spacing reads
+    // as a stretched wireframe.
+    let sp_max = if tree(cx, root, depth).len() > 8 { sp_max.min(2) } else { sp_max };
     let mut ladder: Vec<(i32, Mode, usize)> = Vec::new();
     if keys_only {
         ladder.extend([(2, Mode::Key, 0), (1, Mode::Key, 0)]);
@@ -754,7 +757,7 @@ pub(super) fn draw_with(
     sel: Sel,
     keys_only: bool,
 ) {
-    if band.width < 12 || band.height < 3 {
+    if band.width < 12 || band.height < 1 {
         return;
     }
     let p = plan(cx, band, root, depth, keys_only, sel);

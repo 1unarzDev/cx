@@ -2899,7 +2899,7 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
     let spare = avail.saturating_sub(gh);
     let band = Rect::new(r.x, r.y + 1 + spare * 2 / 5, r.width, gh);
     let sheet_y = band.bottom() + 2;
-    if !cx.touch() && band.height >= 3 {
+    if !cx.touch() && band.height >= 1 && avail >= 3 {
         orbit::draw(cx, buf, band, &cx.s.viewer, 3, orbit::Sel::Edge(&e.id));
     } else if let (Some(a), Some(b)) = (cx.s.device(&e.from), cx.s.device(&e.to)) {
         // Phones draw no map (it only crowded at that size): the link alone, its two

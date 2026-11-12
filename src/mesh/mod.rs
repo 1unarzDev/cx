@@ -631,6 +631,7 @@ fn ssh_overlay_invite(a: &BackendArgs) -> Result<()> {
         addresses: a.address.clone(),
         port: a.port,
         host_key_file: a.host_key.clone(),
+        cancel: None,
     };
     let joined = ssh_overlay::invite(&opts, |inv| {
         let mut out = std::io::stdout().lock();

@@ -670,6 +670,11 @@ struct App {
     edge_views: Vec<crate::edges::EdgeView>,
     secret_list: Vec<crate::secrets::SecretMeta>,
     secret_selected: usize,
+    /// The keys screen's masked entry (set, rotate, a new secret's name first).
+    secret_entry: Option<screens::SecretEntry>,
+    secret_job: Option<mpsc::Receiver<std::result::Result<String, String>>>,
+    /// The hub's open invite (`+`), served off the UI thread until use, expiry or Esc.
+    invite: Option<screens::InviteRun>,
     /// The last session detached from, for `-`.
     last_session: Option<(usize, String)>,
     last_esc: Option<Instant>,
@@ -831,6 +836,9 @@ impl App {
             edge_views: Vec::new(),
             secret_list: Vec::new(),
             secret_selected: 0,
+            secret_entry: None,
+            secret_job: None,
+            invite: None,
             last_session: None,
             last_esc: None,
             onboarding_dismissed: false,

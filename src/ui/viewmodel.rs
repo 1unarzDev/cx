@@ -5,8 +5,9 @@
 use super::actions::PaletteTarget;
 use super::views::{
     Access, ColorLevel, DeviceKind, DeviceStatus, EdgeKind, FileKind, FileNode, LabCaps, LabDevice,
-    LabEdge, LabFiles, LabNotice, LabPreview, LabSecret, LabSession, LabState, LabTransfer,
-    LabView, NoticeKind, PaletteRow, Pane, PreviewKind, Provider, SessionState, Theme,
+    LabEdge, LabFiles, LabInvite, LabNotice, LabPreview, LabSecret, LabSecretEntry, LabSession,
+    LabState, LabTransfer, LabView, NoticeKind, PaletteRow, Pane, PreviewKind, Provider,
+    SessionState, Theme,
 };
 use super::*;
 
@@ -41,7 +42,12 @@ impl From<&App> for ViewModel {
             sessions: sessions(app),
             files: files(app),
             secrets: secrets(app),
-            invite: None,
+            invite: invite(app),
+            secret_entry: app.secret_entry.as_ref().map(|e| LabSecretEntry {
+                name: safe_label(&e.name),
+                naming: e.naming,
+                typed: e.value.chars().count(),
+            }),
             notifications: notices(app),
             transfers: transfers(app),
             palette: (app.input == Some(Input::Palette)).then(|| palette(app)),
@@ -79,6 +85,9 @@ pub(super) fn terminal_caps() -> LabCaps {
 fn screen(app: &App, state: &LabState, caps: &mut LabCaps) -> LabView {
     if app.help {
         return LabView::Help;
+    }
+    if app.invite.is_some() {
+        return LabView::JoinCode;
     }
     if let Some(e) = &app.edge {
         caps.selected = e.lane;
@@ -432,6 +441,28 @@ fn preview_stub(text: &str) -> String {
 }
 
 /// Secret names and metadata only (never values), as `cx secrets list` shows them.
+/// The hub's invite once its listener is up: code, one-liner and a QR code of the one-liner.
+fn invite(app: &App) -> Option<LabInvite> {
+    let (inv, _) = app.invite.as_ref()?.shown.as_ref()?;
+    let qr = qrcode::QrCode::new(inv.one_liner_sh.as_bytes())
+        .map(|q| {
+            let w = q.width();
+            let colors = q.to_colors();
+            colors
+                .chunks(w)
+                .map(|row| row.iter().map(|c| *c == qrcode::Color::Dark).collect())
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(LabInvite {
+        code: safe_label(&inv.code),
+        oneliner: safe_label(&inv.one_liner_sh),
+        mesh: inv.backend.clone(),
+        expires_secs: app.invite_secs_left().min(u64::from(u32::MAX)) as u32,
+        qr,
+    })
+}
+
 fn secrets(app: &App) -> Vec<LabSecret> {
     let now = transport::now();
     let mut out: Vec<LabSecret> = app

@@ -1792,6 +1792,8 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
         dirty |= app.expire_notice(Instant::now());
         dirty |= app.poll_edge_job();
+        dirty |= app.poll_invite();
+        dirty |= app.poll_secret_job();
         let was_encoding = native_preview.pending();
         let size = screen.terminal.size()?;
         prepare_native_preview(
@@ -1830,7 +1832,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         // Capture wheel reports throughout cx so the emulator does not replace
         // them with accelerated arrow-key bursts. suspend() releases this before
         // handing the terminal to SSH/tmux/native commands.
-        screen.bracketed_paste(app.pane_focused())?;
+        screen.bracketed_paste(app.pane_focused() || app.secret_entry_open())?;
         screen.mouse_capture(true)?;
         dirty |= app.refresh_session_preview(screen.terminal.size()?.width);
         app.sync_watches();
@@ -1917,6 +1919,11 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     }
                     Event::Paste(text) if app.pane_focused() => {
                         app.session_pane_paste(&text);
+                        dirty = true;
+                    }
+                    Event::Paste(mut text) if app.secret_entry_open() => {
+                        app.secret_paste(&text);
+                        zeroize::Zeroize::zeroize(&mut text);
                         dirty = true;
                     }
                     Event::Resize(_, _) => {

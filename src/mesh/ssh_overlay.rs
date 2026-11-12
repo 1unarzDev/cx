@@ -25,6 +25,10 @@ use std::{
     net::{IpAddr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -46,6 +50,8 @@ const MAX_FRAME: u64 = 64 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// After answering, how long the rest of a request is drained before the connection closes.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
+/// How often an invite with a cancel flag looks at it.
+const CANCEL_POLL_MS: u64 = 200;
 /// How long the joiner waits for the viewer's answer (the viewer pairs before it answers).
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -191,6 +197,8 @@ pub struct InviteOptions {
     pub port: Option<u16>,
     /// The host key sshd presents, when it does not use /etc/ssh/ssh_host_ed25519_key.
     pub host_key_file: Option<PathBuf>,
+    /// Set from another thread to close the invite (the hub's Esc); checked every CANCEL_POLL.
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 
 pub(super) fn valid_name(n: &str) -> bool {
@@ -215,6 +223,7 @@ struct Pending {
     used: bool,
     /// When recent requests failed the code check (bounded by MAX_FAILURES).
     failures: Vec<u64>,
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Pending {
@@ -490,6 +499,7 @@ pub fn invite(opts: &InviteOptions, ready: impl FnOnce(&Invite) -> Result<()>) -
         host_key,
         used: false,
         failures: Vec::new(),
+        cancel: opts.cancel.clone(),
     };
     let shown = code::display(&code);
     let invite = Invite {
@@ -528,7 +538,17 @@ fn serve(listeners: &[TcpListener], p: &mut Pending) -> Result<Value> {
     loop {
         let now = transport::now();
         anyhow::ensure!(now < p.expires, "the invite expired; nothing joined");
-        let wait = ((p.expires - now) * 1000).min(60_000) as libc::c_int;
+        let cancelled = p.cancel.as_ref().map(|c| c.load(Ordering::Relaxed));
+        anyhow::ensure!(
+            cancelled != Some(true),
+            "the invite was closed; nothing joined"
+        );
+        let most = if cancelled.is_some() {
+            CANCEL_POLL_MS
+        } else {
+            60_000
+        };
+        let wait = ((p.expires - now) * 1000).min(most) as libc::c_int;
         let mut fds: Vec<libc::pollfd> = listeners
             .iter()
             .map(|l| libc::pollfd {
@@ -963,6 +983,7 @@ mod tests {
             host_key: VIEWER_HOST_KEY.into(),
             used: false,
             failures: Vec::new(),
+            cancel: None,
         }
     }
 
@@ -1348,6 +1369,24 @@ mod tests {
         let (result, failures) = server.join().unwrap();
         assert_eq!(result.unwrap_err(), "the invite expired; nothing joined");
         assert_eq!(failures, 3);
+        assert!(TcpStream::connect(addr).is_err(), "the port is closed");
+    }
+
+    /// The hub's Esc: a set cancel flag closes the listener within a poll, and its port with it.
+    #[test]
+    fn a_cancelled_invite_closes_its_listener_promptly() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let mut p = pending(&code::new_code().unwrap(), transport::now() + 600);
+        let cancel = Arc::new(AtomicBool::new(false));
+        p.cancel = Some(cancel.clone());
+        let server = std::thread::spawn(move || serve(&[l], &mut p).map_err(|e| e.to_string()));
+        std::thread::sleep(Duration::from_millis(50));
+        let started = Instant::now();
+        cancel.store(true, Ordering::Relaxed);
+        let r = server.join().unwrap();
+        assert_eq!(r.unwrap_err(), "the invite was closed; nothing joined");
+        assert!(started.elapsed() < Duration::from_secs(2));
         assert!(TcpStream::connect(addr).is_err(), "the port is closed");
     }
 

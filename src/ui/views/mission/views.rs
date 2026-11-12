@@ -225,18 +225,18 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
         LabView::Secrets => {
             top(cx, buf, &[Crumb::Text("secrets".into())], true);
             secrets(cx, buf, body);
-            footer(
-                cx,
-                buf,
-                foot,
-                vec![
-                    ("a s d g", "open", "edit"),
+            let keys = match &cx.s.secret_entry {
+                Some(e) => vec![
+                    (cx.ret(), if e.naming { "next" } else { "save" }, "go"),
+                    ("esc", "cancel", "back"),
+                ],
+                None => vec![
+                    ("a s d g", "set", "edit"),
                     ("h", "new", "secret-new"),
                     ("esc", "back", "back"),
-                    ("y", "copy", "copy"),
-                    ("r", "reveal 10s", "reveal"),
                 ],
-            );
+            };
+            footer(cx, buf, foot, keys);
         }
         LabView::Onboarding => {
             top(cx, buf, &[Crumb::Text("welcome".into())], false);
@@ -260,11 +260,9 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                 buf,
                 foot,
                 vec![
-                    ("y", "code", "copy-code"),
-                    ("Y", "command", "copy-cmd"),
                     ("esc", "done", "back"),
                     // Shifted: a new code revokes one that may already be shared.
-                    ("R", "new code", "renew"),
+                    ("R", "new code", "new-code"),
                 ],
             );
         }
@@ -2506,6 +2504,47 @@ fn secrets(cx: &Cx, buf: &mut Buffer, r: Rect) {
         cx.hit(card_hit, format!("secret:{}", s.key));
         top += card_h + 1;
     }
+    // The open entry, where the `new secret` row goes (the screen's last rows when the
+    // cards fill it): the name as typed, the value only as a count of dots.
+    if let Some(e) = &cx.s.secret_entry {
+        let y = top.min(r.bottom().saturating_sub(2));
+        let rect = Rect::new(x0, y, w, r.bottom().saturating_sub(y).min(2));
+        cx.fill(buf, rect, cx.sel_bg());
+        cx.bar(buf, rect.x, rect.y, rect.height, cx.st(Tok::Accent));
+        let (label, shown) = if e.naming {
+            ("name", e.name.clone())
+        } else {
+            let dot = cx.g("•", "*");
+            (e.name.as_str(), dot.repeat(e.typed.min(24)))
+        };
+        let mut x = x0 + 2;
+        x += cx.put(buf, x, y, w / 2, label, cx.st(Tok::Muted)) + 2;
+        x += cx.put(
+            buf,
+            x,
+            y,
+            w.saturating_sub(x - x0),
+            &shown,
+            cx.ink(Tok::Fg, 1.0),
+        );
+        cx.put(buf, x, y, 1, cx.g("▏", "_"), cx.st(Tok::Accent));
+        if rect.height > 1 {
+            let hint = match (e.naming, e.typed) {
+                (true, _) => "the secret's name, then its value".to_string(),
+                (false, 0) => "type or paste the value; it is never shown".into(),
+                (false, n) => format!("{n} characters · ctrl+u clears"),
+            };
+            cx.put(
+                buf,
+                x0 + 2,
+                y + 1,
+                w.saturating_sub(2),
+                &hint,
+                cx.st(Tok::Muted),
+            );
+        }
+        return;
+    }
     // Any other secret takes the next free slot key.
     let n = cx.s.secrets.len();
     if let (Some(k), true) = (SLOTS.get(n), top < r.bottom()) {
@@ -2751,7 +2790,7 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
             r.x + 2,
             r.y + 1,
             r.width,
-            "No invite pending. r creates one.",
+            "Opening an invite…",
             cx.st(Tok::Muted),
         );
         return;
@@ -2787,7 +2826,7 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
     };
     // QR in half blocks with a light quiet zone, always dark-on-light.
     let room_h = r.bottom().saturating_sub(qy);
-    let show_qr = room_h >= qh && cx.uni() && r.height >= qh + 4 || side_by_side;
+    let show_qr = n > 0 && (room_h >= qh && cx.uni() && r.height >= qh + 4 || side_by_side);
     if show_qr && cx.uni() {
         let (light, dark) = ((0xf4, 0xf4, 0xf2), (0x12, 0x15, 0x19));
         let module = |r_: i32, c: i32| -> bool {
@@ -2856,7 +2895,7 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
         tx,
         y,
         tw,
-        &format!("joins {} as a guest", inv.mesh),
+        &format!("joins over {}, single use", inv.mesh),
         cx.st(Tok::Muted),
     );
     if !show_qr && cx.uni() && y + 1 < r.bottom() {

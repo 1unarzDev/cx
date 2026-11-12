@@ -646,3 +646,111 @@ fn a_pending_reply_never_makes_the_event_loop_poll() {
     assert!(a.send(0, Operation::Sessions));
     assert_eq!(loop_wait(&a, now, None), idle);
 }
+
+/// `+`'s screen with a stand-in for the listener thread: the invite shows its code, the
+/// `cx mesh pair` one-liner and a QR code; Esc drops it, which tells the listener to close.
+#[test]
+fn the_hub_invite_shows_its_code_and_esc_closes_its_listener() {
+    use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
+    let (mut a, _rx) = queued_app();
+    a.go_hub();
+    let (tx, rx) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    a.invite = Some(screens::InviteRun {
+        rx,
+        cancel: cancel.clone(),
+        shown: None,
+        drawn_secs: Default::default(),
+    });
+    assert!(draw(&a, 120, 40).contains("Opening an invite"));
+    tx.send(Ok(screens::InviteEvent::Ready(crate::mesh::Invite {
+        backend: "ssh-overlay".into(),
+        code: "7K2Q-M9XD-4HT".into(),
+        one_liner_sh: "cx mesh pair 7K2Q-M9XD-4HT 192.168.1.5".into(),
+        expires: "2026-11-11T23:30:00Z".into(),
+        uses: 1,
+        ..Default::default()
+    })))
+    .unwrap();
+    assert!(a.poll_invite());
+    let text = draw(&a, 120, 40);
+    assert!(
+        text.contains("cx mesh pair 7K2Q-M9XD-4HT 192.168.1.5"),
+        "{text}"
+    );
+    assert!(
+        text.contains("7 K 2 Q") && text.contains("expires in 29m"),
+        "{text}"
+    );
+    assert!(text.contains('▀'), "a QR code: {text}");
+    let vm = viewmodel::ViewModel::from(&a);
+    let qr = &vm.state.invite.as_ref().unwrap().qr;
+    assert!(
+        qr.len() >= 21 && qr.iter().all(|r| r.len() == qr.len()),
+        "a real QR matrix"
+    );
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(a.invite.is_none());
+    assert!(
+        cancel.load(Ordering::Relaxed),
+        "the listener was told to close"
+    );
+    // A join closes the screen and says who joined.
+    let (tx, rx) = mpsc::channel();
+    a.invite = Some(screens::InviteRun {
+        rx,
+        cancel: Arc::new(AtomicBool::new(false)),
+        shown: None,
+        drawn_secs: Default::default(),
+    });
+    tx.send(Ok(screens::InviteEvent::Joined(
+        serde_json::json!({"name": "rover"}),
+    )))
+    .unwrap();
+    assert!(a.poll_invite() && a.invite.is_none());
+    assert!(draw(&a, 120, 40).contains("rover joined"));
+}
+
+/// The keys screen's entry: the value is never drawn, only counted; Esc wipes it.
+#[test]
+fn a_secret_value_is_typed_masked_and_never_drawn() {
+    let (mut a, _rx) = queued_app();
+    a.view = View::Secrets;
+    // The Cloudflare token's missing card (the first): its slot key opens the entry.
+    press(&mut a, 'a');
+    assert!(a.secret_entry.as_ref().is_some_and(|e| !e.naming));
+    for c in "hunter2-s3cret".chars() {
+        press(&mut a, c);
+    }
+    a.secret_paste("-pasted\n");
+    let text = draw(&a, 100, 30);
+    assert!(
+        !text.contains("hunter2") && !text.contains("pasted"),
+        "{text}"
+    );
+    assert!(
+        text.contains("•••••") && text.contains("21 characters"),
+        "{text}"
+    );
+    a.key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    assert_eq!(a.secret_entry.as_ref().unwrap().value.len(), 20);
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        a.secret_entry.is_none() && a.secret_job.is_none(),
+        "nothing saved"
+    );
+    // `h`: a new secret, its name first (validated), then its value.
+    press(&mut a, 'h');
+    for c in "bad name".chars() {
+        press(&mut a, c);
+    }
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        a.secret_entry.as_ref().unwrap().naming,
+        "an invalid name is refused"
+    );
+    assert!(
+        draw(&a, 100, 30).contains("bad name"),
+        "the name is shown as typed"
+    );
+}

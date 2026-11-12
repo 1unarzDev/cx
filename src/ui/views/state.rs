@@ -232,6 +232,15 @@ pub struct LabSecret {
     pub used_by: Vec<String>,
 }
 
+/// A secret being set: its name, whether the name is still being typed, and how many
+/// characters of the value are typed (the value itself never reaches the view).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LabSecretEntry {
+    pub name: String,
+    pub naming: bool,
+    pub typed: usize,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LabInvite {
     pub code: String,
@@ -282,6 +291,8 @@ pub struct LabState {
     pub files: LabFiles,
     pub secrets: Vec<LabSecret>,
     pub invite: Option<LabInvite>,
+    /// The keys screen's open entry, if any.
+    pub secret_entry: Option<LabSecretEntry>,
     pub notifications: Vec<LabNotice>,
     pub transfers: Vec<LabTransfer>,
     /// Palette rows from the real app (already filtered and ranked); None in fixtures,
@@ -715,10 +726,10 @@ fn qr_matrix(seed: u32) -> Vec<Vec<bool>> {
     finder(&mut m, 0, n - 7);
     finder(&mut m, n - 7, 0);
     // alignment pattern
-    for r in 16..21 {
-        for c in 16..21 {
+    for (r, row) in m.iter_mut().enumerate().take(21).skip(16) {
+        for (c, cell) in row.iter_mut().enumerate().take(21).skip(16) {
             let d = (r as i32 - 18).abs().max((c as i32 - 18).abs());
-            m[r][c] = d != 1;
+            *cell = d != 1;
         }
     }
     m
@@ -1145,6 +1156,7 @@ pub fn typical() -> LabState {
         files: files_fixture("innovation"),
         secrets: secrets(true),
         invite: Some(invite()),
+        secret_entry: None,
         notifications: vec![LabNotice {
             kind: NoticeKind::Warn,
             text: "squirtle-jetson unreachable via ssh-overlay for 3h".into(),
@@ -1199,6 +1211,7 @@ pub fn small() -> LabState {
         files: t.files.clone(),
         secrets: secrets(false),
         invite: None,
+        secret_entry: None,
         notifications: vec![],
         transfers: vec![],
         palette: None,

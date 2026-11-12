@@ -17,6 +17,67 @@ pub(super) struct EdgeEdit {
 /// A second `Esc` within this long goes to the hub (for layouts where `` ` `` is dead).
 const DOUBLE_ESC: Duration = Duration::from_millis(400);
 
+/// The keys screen's masked entry. The value is never drawn, logged or copied out of this
+/// buffer except into the store, and is wiped when the entry is dropped.
+pub(super) struct SecretEntry {
+    pub name: String,
+    /// Typing the new secret's name (plain text) before its value.
+    pub naming: bool,
+    pub value: zeroize::Zeroizing<String>,
+}
+
+/// The hub's invite (`+`): the ssh-overlay one-shot listener on its own thread. Dropping
+/// this closes it (Esc, `R`, quitting), so no listener outlives the screen.
+impl SecretEntry {
+    /// The value's buffer is allocated once at its limit, so typing never reallocates
+    /// and leaves no unwiped copy behind.
+    pub fn new(name: String, naming: bool) -> SecretEntry {
+        SecretEntry {
+            name,
+            naming,
+            value: zeroize::Zeroizing::new(String::with_capacity(SECRET_INPUT_LIMIT)),
+        }
+    }
+    /// Typed or pasted text: the name while naming, else the value (control characters
+    /// dropped, bounded).
+    fn push(&mut self, text: &str) {
+        let field: &mut String = if self.naming {
+            &mut self.name
+        } else {
+            &mut self.value
+        };
+        for c in text.chars().filter(|c| !c.is_control()) {
+            if field.len() + c.len_utf8() > SECRET_INPUT_LIMIT {
+                break;
+            }
+            field.push(c);
+        }
+    }
+}
+
+pub(super) struct InviteRun {
+    pub rx: mpsc::Receiver<std::result::Result<InviteEvent, String>>,
+    pub cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The invite once its listener is up, and when it expires.
+    pub shown: Option<(crate::mesh::Invite, Instant)>,
+    /// Seconds left when last drawn (the countdown redraws once a second).
+    pub drawn_secs: std::cell::Cell<u64>,
+}
+pub(super) enum InviteEvent {
+    Ready(crate::mesh::Invite),
+    Joined(serde_json::Value),
+}
+impl Drop for InviteRun {
+    fn drop(&mut self) {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+/// How long a hub invite stays open (its expiry bar's full length).
+pub(super) const INVITE_TTL: Duration = Duration::from_secs(30 * 60);
+/// The longest secret the entry takes (the store's own limit is larger).
+const SECRET_INPUT_LIMIT: usize = 16 * 1024;
+
 impl App {
     /// The viewer's own device (the local one), else the first.
     pub(super) fn local_index(&self) -> usize {
@@ -302,22 +363,177 @@ impl App {
             .unwrap_or_default();
         self.secret_list = list;
     }
-    /// A card's slot key (or `⏎`): its editor; past the last card, a new secret.
+    /// A card's slot key (or `⏎`): its masked entry (set, or rotate a set one); past the
+    /// last card, a new secret (its name first).
     fn secret_card(&mut self, i: usize) {
-        let vm = viewmodel::ViewModel::from(&*self);
-        match vm.state.secrets.get(i) {
-            Some(s) => {
+        let name = self.secret_list.get(i).map(|m| m.name.clone()).or_else(|| {
+            // The missing cards the view adds after the stored ones.
+            let vm = viewmodel::ViewModel::from(&*self);
+            vm.state.secrets.get(i).map(|s| s.key.clone())
+        });
+        match name {
+            Some(name) => {
                 self.secret_selected = i;
-                self.set_notice(format!(
-                    "Set it from a shell: cx secrets set {} (the value is read from stdin)",
-                    s.key
-                ));
+                self.secret_entry = Some(SecretEntry::new(name, false));
             }
-            None => self.set_notice("Add a secret from a shell: cx secrets set NAME".into()),
+            None => self.new_secret(),
         }
     }
+    fn new_secret(&mut self) {
+        self.secret_entry = Some(SecretEntry::new(String::new(), true));
+    }
+    /// Keys while the masked entry is open: it owns them all (Ctrl+C still quits).
+    fn secret_entry_key(&mut self, key: KeyEvent) {
+        let Some(e) = self.secret_entry.as_mut() else {
+            return;
+        };
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => self.secret_entry = None,
+            KeyCode::Char('u') if ctrl => {
+                e.value.clear();
+                if e.naming {
+                    e.name.clear();
+                }
+            }
+            KeyCode::Char(c) if !ctrl => e.push(&c.to_string()),
+            KeyCode::Backspace if e.naming => {
+                e.name.pop();
+            }
+            KeyCode::Backspace => {
+                e.value.pop();
+            }
+            KeyCode::Enter if e.naming => match crate::secrets::validate_name(&e.name) {
+                Ok(()) => e.naming = false,
+                Err(err) => self.set_notice_as(NoticeKind::Error, safe_text(&format!("{err:#}"))),
+            },
+            KeyCode::Enter if !e.value.is_empty() => self.save_secret(),
+            _ => {}
+        }
+    }
+    /// A paste into the entry (bracketed, so a trailing newline never submits it).
+    pub(super) fn secret_paste(&mut self, text: &str) {
+        if let Some(e) = self.secret_entry.as_mut() {
+            e.push(text.trim_end_matches(['\r', '\n']));
+        }
+    }
+    pub(super) fn secret_entry_open(&self) -> bool {
+        self.secret_entry.is_some()
+    }
+    /// Store the entered value off the UI thread (the keyring is a subprocess).
+    fn save_secret(&mut self) {
+        let Some(SecretEntry { name, value, .. }) = self.secret_entry.take() else {
+            return;
+        };
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = crate::secrets::Secrets::open()
+                .and_then(|s| s.set(&name, &value))
+                .map(|m| format!("Saved {} ({})", m.name, m.backend.as_str()));
+            drop(value);
+            let _ = tx.send(result.map_err(|e| format!("Not saved: {e:#}")));
+        });
+        self.secret_job = Some(rx);
+        self.set_notice("Saving…".into());
+    }
+    pub(super) fn poll_secret_job(&mut self) -> bool {
+        let Some(Ok(result)) = self.secret_job.as_ref().map(|rx| rx.try_recv()) else {
+            return false;
+        };
+        self.secret_job = None;
+        match result {
+            Ok(text) => {
+                if self.view == View::Secrets {
+                    self.open_secrets();
+                }
+                self.set_notice_as(NoticeKind::Success, safe_text(&text));
+            }
+            Err(e) => self.set_notice_as(NoticeKind::Error, safe_text(&e)),
+        }
+        true
+    }
+
+    /// `+`: open a single-use ssh-overlay invite on this host's mesh/LAN addresses; its
+    /// listener runs on its own thread. A running one is closed first (`R`: a new code
+    /// revokes one that may already be shared).
     fn invite(&mut self) {
-        self.set_notice("Invite a device from a shell: cx mesh invite".into());
+        self.close_screens();
+        self.invite = None;
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let opts = crate::mesh::ssh_overlay::InviteOptions {
+            ttl_hours: Some(INVITE_TTL.as_secs_f64() / 3600.0),
+            cancel: Some(cancel.clone()),
+            ..Default::default()
+        };
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let ready = tx.clone();
+            let result = crate::mesh::ssh_overlay::invite(&opts, |inv| {
+                let _ = ready.send(Ok(InviteEvent::Ready(inv.clone())));
+                Ok(())
+            });
+            let _ = tx.send(
+                result
+                    .map(InviteEvent::Joined)
+                    .map_err(|e| format!("{e:#}")),
+            );
+        });
+        self.invite = Some(InviteRun {
+            rx,
+            cancel,
+            shown: None,
+            drawn_secs: Default::default(),
+        });
+    }
+    /// The invite's news: up (show it), joined or closed (say so); and its countdown.
+    pub(super) fn poll_invite(&mut self) -> bool {
+        let Some(run) = self.invite.as_mut() else {
+            return false;
+        };
+        let mut dirty = false;
+        while let Ok(event) = run.rx.try_recv() {
+            match event {
+                Ok(InviteEvent::Ready(inv)) => {
+                    run.shown = Some((inv, Instant::now() + INVITE_TTL));
+                    dirty = true;
+                }
+                Ok(InviteEvent::Joined(v)) => {
+                    self.invite = None;
+                    let name = v["name"].as_str().unwrap_or("a device");
+                    self.set_notice_as(
+                        NoticeKind::Success,
+                        safe_text(&format!("{name} joined the mesh")),
+                    );
+                    return true;
+                }
+                Err(e) => {
+                    self.invite = None;
+                    self.set_notice_as(NoticeKind::Error, safe_text(&format!("Invite: {e}")));
+                    return true;
+                }
+            }
+        }
+        let left = self.invite_secs_left();
+        let run = self.invite.as_ref().unwrap();
+        dirty | (run.drawn_secs.replace(left) != left)
+    }
+    pub(super) fn invite_secs_left(&self) -> u64 {
+        self.invite
+            .as_ref()
+            .and_then(|r| r.shown.as_ref())
+            .map_or(0, |(_, until)| {
+                until.saturating_duration_since(Instant::now()).as_secs()
+            })
+    }
+    fn invite_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('`') => {
+                self.invite = None;
+                self.set_notice("Invite closed".into());
+            }
+            KeyCode::Char('R') => self.invite(),
+            _ => {}
+        }
     }
 
     // ---------------------------------------------------------------- edge editor
@@ -462,6 +678,14 @@ impl App {
     pub(super) fn screen_key(&mut self, key: KeyEvent) -> bool {
         if self.edge.is_some() {
             self.edge_key(key);
+            return true;
+        }
+        if self.secret_entry.is_some() {
+            self.secret_entry_key(key);
+            return true;
+        }
+        if self.invite.is_some() {
+            self.invite_key(key);
             return true;
         }
         let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
@@ -682,9 +906,7 @@ impl App {
                 self.secret_card(i);
             }
             KeyCode::Enter => self.secret_card(self.secret_selected),
-            KeyCode::Char('h') => {
-                self.set_notice("Add a secret from a shell: cx secrets set NAME".into())
-            }
+            KeyCode::Char('h') => self.new_secret(),
             KeyCode::Esc => self.go_hub(),
             _ => return false,
         }
@@ -724,6 +946,9 @@ impl App {
 
     /// `⏎` (and its chips): open or attach what the screen has selected.
     fn primary_here(&mut self) {
+        if self.secret_entry.is_some() {
+            return self.secret_entry_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        }
         if self.input == Some(Input::Palette) {
             return self.run_palette_selected();
         }
@@ -751,7 +976,10 @@ impl App {
     }
     /// `esc` (and its chips): back one level.
     fn back_here(&mut self) {
-        if self.input == Some(Input::Palette) {
+        if self.invite.take().is_some() {
+            self.set_notice("Invite closed".into());
+        } else if self.secret_entry.take().is_some() {
+        } else if self.input == Some(Input::Palette) {
             self.input = None;
             self.text.clear();
         } else if self.edge.is_some() {
@@ -890,7 +1118,8 @@ impl App {
                 });
             }
             ("palette" | "find", None, _) => self.open_palette(""),
-            ("invite" | "join", None, _) => self.invite(),
+            ("invite" | "join" | "new-code", None, _) => self.invite(),
+            ("secret-new", None, _) => self.new_secret(),
             ("secrets", None, _) => self.open_secrets(),
             ("help", None, _) => self.run_cmd(keymap::Cmd::Help),
             ("detach", None, _) => {}

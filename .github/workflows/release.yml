@@ -22,7 +22,7 @@ jobs:
       - run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt
       - run: cargo fmt --check && cargo test --locked && cargo build --locked
       - run: sudo apt-get update && sudo apt-get install -y shellcheck fish zsh tmux sqlite3 python3-pyte python3-pil poppler-utils openssh-server iproute2 iputils-ping ncurses-bin
-      - run: shellcheck install.sh tests/distro_smoke.sh scripts/build-portable-tmux.sh scripts/enroll-tmux.sh scripts/build-portable-reptyr.sh scripts/enable-ptrace.sh
+      - run: shellcheck install.sh tests/run_regressions.sh tests/distro_smoke.sh scripts/build-portable-tmux.sh scripts/enroll-tmux.sh scripts/build-portable-reptyr.sh scripts/enable-ptrace.sh
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.20.0 # node:sqlite, for the mesh Worker's in-memory D1

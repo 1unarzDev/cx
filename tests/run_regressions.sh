@@ -22,7 +22,7 @@
 # `tmux kill-server`) can never reach the caller's managed or personal tmux
 # server, even when this script is started from inside a cx pane.
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 2
 ROOT=$(pwd)
 
 quick=0 rust=1 ssh=0 docker=0 list=0

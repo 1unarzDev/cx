@@ -253,27 +253,23 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
             cx.ink(Tok::Muted, 0.7).patch(bg),
         ) + 2;
     }
-    // Keys: what this device's letter leads to.
-    let k = d.hotkey;
+    // Keys: the device's letter, then what it leads to, as two visible steps (the `c`
+    // that follows a letter is claude, never the creation device).
     let n = cx.s.sessions_on(&d.id).count();
-    let (attach, new, files, link) = (
-        format!("@{k} a"),
-        format!("@{k} c"),
-        format!("@{k} f"),
-        format!("e @{k}"),
-    );
-    let mut items: Vec<(&str, &str, &str)> = Vec::new();
+    let dev = format!("@{}", d.hotkey);
+    let act = format!("device:{}", d.id);
+    let mut items: Vec<(&str, &str, &str)> = vec![(&dev, "then", &act)];
     if n > 0 {
-        items.push((&attach, "attach", "attach"));
+        items.push(("a", "attach", "attach"));
     }
     if up && !ghost {
-        items.push((&new, "claude", "new"));
+        items.push(("c", "claude", "new"));
     }
     if up {
-        items.push((&files, "files", "files"));
+        items.push(("f", "files", "files"));
     }
-    if d.id != cx.s.viewer {
-        items.push((&link, "link", "links"));
+    if items.len() == 1 {
+        items.clear();
     }
     let ky = r.bottom() - 1;
     let kw: u16 = items
@@ -396,7 +392,7 @@ fn alerts(cx: &Cx) -> Vec<Alert> {
             format!("{} needs you on {}", x.title, d.name)
         };
         v.push((
-            cx.g("◆", "!"),
+            cx.g("◆", "^"),
             text,
             Tok::Warn,
             format!("@{} {}", d.hotkey, cx.slot(x).unwrap_or('a')),

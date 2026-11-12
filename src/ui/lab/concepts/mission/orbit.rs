@@ -51,6 +51,9 @@ struct Node<'a> {
     side: i32,
     label: Rect,
     shown: bool,
+    /// The orbit's line from the parent's port to this device (empty: the column
+    /// layout's stub, trunk and branch).
+    pts: Vec<(i32, i32)>,
 }
 
 struct Plan<'a> {
@@ -146,9 +149,9 @@ pub(super) fn route_from<'a>(cx: &Cx<'a>, from: &str, to: &str) -> Vec<&'a LabEd
 pub(super) fn policy(cx: &Cx, e: &LabEdge, from_left: bool, short: bool) -> String {
     if !e.up {
         return if short {
-            cx.g("✕", "X").into()
+            cx.g("✕", "!").into()
         } else {
-            format!("{} down", cx.g("✕", "X"))
+            format!("{} down", cx.g("✕", "!"))
         };
     }
     let (to_right, to_left) = if from_left {
@@ -220,6 +223,7 @@ fn tree<'a>(cx: &Cx<'a>, root: &str, depth: usize) -> Vec<Node<'a>> {
         side: 1,
         label: Rect::default(),
         shown: true,
+        pts: Vec::new(),
     };
     let mut nodes: Vec<Node> = Vec::new();
     let mut seen: Vec<&str> = vec![root];
@@ -317,6 +321,37 @@ fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, depth: usize, keys_only: bool, 
             ladder.extend(names.iter().map(|&n| (sp, Mode::Name, n)));
         }
         ladder.push((1, Mode::Key, 0));
+    }
+    // A small network is an orbit, sized to its area; a dense one falls back to columns.
+    if tree(cx, root, depth).len() <= 8 {
+        let modes: &[(Mode, usize)] = if keys_only {
+            &[(Mode::Key, 0)]
+        } else {
+            &[(Mode::Name, 16), (Mode::Name, 12), (Mode::Name, 9), (Mode::Key, 0)]
+        };
+        // The drawing takes up to about two thirds of a wide band (all but the gutters
+        // of a narrow one); rings stop growing where they would only add air.
+        let w = i32::from(band.width);
+        let lim = if w >= 100 { w * 7 / 10 } else { w - 8 };
+        let cap = match (depth, cx.size()) {
+            (1, Size::L) => 6,
+            (1, _) => 4,
+            (_, Size::L) => 7,
+            (_, Size::M) => 5,
+            _ => 4,
+        };
+        let edge = matches!(sel, Sel::Edge(_));
+        for &(mode, nmax) in modes {
+            for ry in (2..=cap).rev() {
+                // About round (a cell is twice as tall as wide), wider where the band is.
+                for rx in (2 * ry..=4 * ry).rev().step_by(2) {
+                    let nodes = tree(cx, root, depth);
+                    if let Some(p) = radial(cx, band, nodes, root, mode, nmax, keys, ry, rx, lim, edge) {
+                        return p;
+                    }
+                }
+            }
+        }
     }
     let mut best = None;
     for (sp, mode, nmax) in ladder {
@@ -549,6 +584,225 @@ fn place<'a>(
     }
 }
 
+/// The orbit: the root at the centre, each subtree given a share of the circle by its
+/// devices (a radial tree), its device in the middle of its share on ring one, the
+/// devices reached through it further out on ring two. The heaviest relay sits straight
+/// above the root and the rest split between the two sides by weight, so the drawing is
+/// mirror-balanced. A line leaves its parent along the parent's row and turns once,
+/// with a rounded corner, straight into the device's dot. `None` when labels or lines
+/// would collide or leave the band (the caller tries a smaller orbit).
+#[allow(clippy::too_many_arguments)]
+fn radial<'a>(
+    cx: &Cx<'a>,
+    band: Rect,
+    mut nodes: Vec<Node<'a>>,
+    root: &str,
+    mode: Mode,
+    nmax: usize,
+    keys: bool,
+    ry: i32,
+    rx: i32,
+    lim: i32,
+    edge: bool,
+) -> Option<Plan<'a>> {
+    let n = nodes.len();
+    let kids: Vec<Vec<usize>> = (0..n)
+        .map(|i| (0..n).filter(|&k| nodes[k].parent == Some(i)).collect())
+        .collect();
+    let mut leaves = vec![0i32; n];
+    for i in (0..n).rev() {
+        leaves[i] = leaves[i].max(1);
+        if let Some(p) = nodes[i].parent {
+            leaves[p] += leaves[i];
+        }
+    }
+    let mut tops: Vec<usize> = (0..n).filter(|&i| nodes[i].parent.is_none()).collect();
+    if tops.is_empty() {
+        return None;
+    }
+    // On the axis: the heaviest relay (an arrowhead reads along a row, so not a one-way
+    // link), or the first device when the count is odd; the rest by weight to the
+    // lighter side, the right first, each side ordered away from the top.
+    tops.sort_by_key(|&i| (-leaves[i], nodes[i].up.is_some_and(|e| e.one_way())));
+    let relay = leaves[tops[0]] > 1;
+    let anchor = (relay || tops.len() % 2 == 1).then(|| tops.remove(0));
+    // (One-way links pair up first, so the one left over for the bottom of the axis
+    // reads both ways.)
+    tops.sort_by_key(|&i| (-leaves[i], !nodes[i].up.is_some_and(|e| e.one_way())));
+    let (mut rs, mut ls, mut wr, mut wl) = (Vec::new(), Vec::new(), 0, 0);
+    for i in tops {
+        if wr <= wl {
+            wr += leaves[i];
+            rs.push(i);
+        } else {
+            wl += leaves[i];
+            ls.push(i);
+        }
+    }
+    let ring: Vec<usize> = anchor.into_iter().chain(rs).chain(ls.into_iter().rev()).collect();
+    let total: i32 = ring.iter().map(|&i| leaves[i]).sum();
+    let unit = TAU / total as f32;
+    // Clockwise from the top: an axis device's share is centred on it, else the shares
+    // meet there.
+    let mut at = -anchor.map_or(0.0, |a| leaves[a] as f32 * unit / 2.0);
+    let mut theta = vec![0f32; n];
+    fn spread(i: usize, a: f32, unit: f32, kids: &[Vec<usize>], leaves: &[i32], theta: &mut [f32]) {
+        theta[i] = a + leaves[i] as f32 * unit / 2.0;
+        let mut b = a;
+        for &k in &kids[i] {
+            spread(k, b, unit, kids, leaves, theta);
+            b += leaves[k] as f32 * unit;
+        }
+    }
+    for &i in &ring {
+        spread(i, at, unit, &kids, &leaves, &mut theta);
+        at += leaves[i] as f32 * unit;
+    }
+    let wv: Vec<i32> = nodes
+        .iter()
+        .map(|nd| i32::from(label_w(cx, nd.d, mode, nmax, keys)))
+        .collect();
+    let pw = i32::from(cx.s.device(root).map_or(5, |d| pill_w(cx, d, mode, keys)));
+    let pill = Rect::new(0, 0, pw as u16, 1);
+    // Root-relative cells, shifted into the band at the end (labels as signed x, y, w).
+    let mut lab: Vec<(i32, i32, i32)> = vec![(0, 0, 0); n];
+    let root_lab = (-pw / 2, 0, pw);
+    let port = |l: (i32, i32, i32), s: i32| if s > 0 { l.0 + l.2 + 2 } else { l.0 - 3 };
+    let order: Vec<usize> = {
+        let mut v: Vec<usize> = (0..n).collect();
+        v.sort_by_key(|&i| nodes[i].hop);
+        v
+    };
+    for &i in &order {
+        let ring_f = [1.0, 1.75, 2.4][usize::from(nodes[i].hop.clamp(1, 3)) - 1];
+        let (sn, cs) = theta[i].sin_cos();
+        let par = nodes[i].parent;
+        let pl = par.map_or(root_lab, |p| lab[p]);
+        let pside = par.map_or(0, |p| nodes[p].side);
+        let side = if pside == 0 && sn.abs() < 0.15 {
+            0
+        } else if pside != 0 {
+            pside
+        } else if sn > 0.0 {
+            1
+        } else {
+            -1
+        };
+        nodes[i].side = side;
+        // (Rounded the same way either side of the axis, so mirrored devices match.)
+        let snap = |v: f32| v.signum() * (v.abs() + 1e-3).round();
+        // (The ellipse is measured from the root's label ends, not its middle.)
+        let mut px = snap(rx as f32 * ring_f * sn) as i32 + snap(sn) as i32 * (pw / 2);
+        let mut py = snap(-(ry as f32) * ring_f * cs) as i32;
+        // A row apart reads as a kink: level with the parent on a small orbit, else two
+        // rows from it.
+        let dy = py - pl.1;
+        if dy.abs() == 1 {
+            py = if ry <= 3 { pl.1 } else { pl.1 + 2 * dy };
+        }
+        // The edited link keeps two rows of stroke where the orbit has room.
+        if edge && side == 0 && ry >= 3 && (py - pl.1).abs() < 4 {
+            py = pl.1 + 4 * (py - pl.1).signum();
+        }
+        let w = wv[i];
+        let x = match side {
+            0 => {
+                px = pl.0 + pl.2 / 2;
+                px - w / 2
+            }
+            s => {
+                // Clear of the parent: three cells of line at the least (five when the
+                // line runs straight in, as the end keeps two cells of air).
+                let min = port(pl, s) + s * if py == pl.1 { 5 } else { 2 };
+                px = if s > 0 { px.max(min) } else { px.min(min) };
+                if s > 0 {
+                    px
+                } else {
+                    px - w + 1
+                }
+            }
+        };
+        lab[i] = (x, py, w);
+        let start = port(pl, side);
+        nodes[i].pts = match side {
+            0 => {
+                let dir = (py - pl.1).signum();
+                vec![(px, pl.1 + dir), (px, py - dir)]
+            }
+            s if py == pl.1 => vec![(start, py), (if s > 0 { x - 3 } else { x + w + 2 }, py)],
+            _ => vec![(start, pl.1), (px, pl.1), (px, py - (py - pl.1).signum())],
+        };
+    }
+    // Labels keep a cell either side for a selection's brackets, so two never touch.
+    let boxes: Vec<(i32, i32, i32)> = lab.iter().copied().chain([root_lab]).collect();
+    let hit = |b: &(i32, i32, i32), x: i32, y: i32| y == b.1 && x >= b.0 - 1 && x <= b.0 + b.2;
+    for a in 0..boxes.len() {
+        for b in a + 1..boxes.len() {
+            let (p, q) = (boxes[a], boxes[b]);
+            if p.1 == q.1 && p.0 - 2 < q.0 + q.2 && q.0 - 2 < p.0 + p.2 {
+                return None;
+            }
+        }
+    }
+    // Lines cross no label, and links from different parents share no cell.
+    let mut owner: std::collections::HashMap<(i32, i32), Option<usize>> = Default::default();
+    for i in 0..n {
+        let pts = &nodes[i].pts;
+        if pts.is_empty() || nodes[i].up.is_none() {
+            continue;
+        }
+        for w in pts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            if (b.0 - a.0) * (b.1 - a.1) != 0 {
+                return None;
+            }
+            let (sx, sy) = ((b.0 - a.0).signum(), (b.1 - a.1).signum());
+            let mut q = a;
+            loop {
+                if boxes.iter().any(|bx| hit(bx, q.0, q.1)) {
+                    return None;
+                }
+                let o = owner.entry(q).or_insert(nodes[i].parent);
+                if *o != nodes[i].parent {
+                    return None;
+                }
+                if q == b {
+                    break;
+                }
+                q = (q.0 + sx, q.1 + sy);
+            }
+        }
+    }
+    // Centred in the band, a four-column gutter either side.
+    let (lo, hi, top, bot) = boxes
+        .iter()
+        .fold((i32::MAX, i32::MIN, i32::MAX, i32::MIN), |a, b| {
+            (a.0.min(b.0), a.1.max(b.0 + b.2), a.2.min(b.1), a.3.max(b.1 + 1))
+        });
+    let g = 4;
+    if hi - lo > lim.min(i32::from(band.width) - 2 * g) || bot - top > i32::from(band.height) {
+        return None;
+    }
+    let dx = i32::from(band.x) + (i32::from(band.width) - (hi - lo)) / 2 - lo;
+    let dy = i32::from(band.y) + (i32::from(band.height) - (bot - top)) / 2 - top;
+    for i in 0..n {
+        let (x, y, w) = lab[i];
+        nodes[i].label = Rect::new((x + dx) as u16, (y + dy) as u16, w as u16, 1);
+        for q in nodes[i].pts.iter_mut() {
+            *q = (q.0 + dx, q.1 + dy);
+        }
+    }
+    Some(Plan {
+        nodes,
+        mode,
+        nmax,
+        pill: Rect::new((root_lab.0 + dx) as u16, dy as u16, pill.width, 1),
+        sp: ry,
+        gap: rx as u16,
+        hidden: 0,
+    })
+}
+
 /// Rows the map wants: a calm spacing for a typical network (one column each side for a
 /// device's own neighbourhood).
 pub(super) fn want_h(cx: &Cx) -> u16 {
@@ -562,7 +816,12 @@ pub(super) fn want_h(cx: &Cx) -> u16 {
 
 /// Rows the hub map's drawing takes in `band` (it sits one row under the band's top).
 pub(super) fn drawn_h(cx: &Cx, band: Rect, sel: Sel) -> u16 {
-    let p = plan(cx, band, &cx.s.viewer, 3, cx.touch(), sel);
+    height(cx, band, &cx.s.viewer, 3, sel)
+}
+
+/// Rows the map seen from `root` takes in `band`.
+pub(super) fn height(cx: &Cx, band: Rect, root: &str, depth: usize, sel: Sel) -> u16 {
+    let p = plan(cx, band, root, depth, cx.touch(), sel);
     let ys = p.nodes.iter().filter(|n| n.shown).map(|n| n.label.y).chain([p.pill.y]);
     let (lo, hi) = ys.fold((u16::MAX, 0), |a, y| (a.0.min(y), a.1.max(y)));
     hi + 1 - lo
@@ -768,27 +1027,6 @@ fn line_ch(b: u8, pat: Pat, uni: bool) -> char {
     }
 }
 
-/// A heavy line glyph (the edge editor's edited link). ASCII: `#` in every cell, a
-/// mark no other line uses.
-fn heavy(b: u8, uni: bool) -> char {
-    if !uni {
-        return '#';
-    }
-    match b {
-        _ if b & (UP | DN) == 0 => '━',
-        _ if b & (LT | RT) == 0 => '┃',
-        x if x == DN | RT => '┏',
-        x if x == DN | LT => '┓',
-        x if x == UP | RT => '┗',
-        x if x == UP | LT => '┛',
-        x if x == UP | DN | RT => '┣',
-        x if x == UP | DN | LT => '┫',
-        x if x == LT | RT | DN => '┳',
-        x if x == LT | RT | UP => '┻',
-        _ => '╋',
-    }
-}
-
 fn centre(r: Rect) -> (f32, f32) {
     (
         f32::from(r.x) + f32::from(r.width) / 2.0,
@@ -810,6 +1048,10 @@ struct Link<'a> {
     /// Cells: the kid's end, and the first cell of its own branch (the parent's end).
     kid_end: (i32, i32),
     par_end: (i32, i32),
+    /// One cell from the kid's end toward the parent.
+    back: (i32, i32),
+    /// Where an arrowhead pointing at the kid goes.
+    kid_arrow: (i32, i32),
     /// Access flows from the parent toward the kid.
     toward_kid: bool,
     side: i32,
@@ -890,6 +1132,44 @@ pub(super) fn draw_with(
             Sel::Edge(id) => e.id == id,
             Sel::Root | Sel::Targets => n.parent.is_none(),
         };
+        if !n.pts.is_empty() {
+            let li = links.len();
+            let (a, b) = (n.pts[0], n.pts[n.pts.len() - 1]);
+            let this = matches!(sel, Sel::Edge(id) if e.id == id);
+            for g in [Some(&mut grid), this.then_some(&mut edited)].into_iter().flatten() {
+                // (A one-cell run straight up or down is still vertical.)
+                if s == 0 {
+                    g.vline(a.0, a.1, b.1, li);
+                } else {
+                    g.path(&n.pts, li);
+                }
+            }
+            let prev = n.pts[n.pts.len() - 2];
+            let back = ((prev.0 - b.0).signum(), (prev.1 - b.1).signum());
+            // A line that turns takes its arrowhead on its run along the parent's row,
+            // a cell before the corner.
+            let kid_arrow = if n.pts.len() == 3 { (prev.0 - s, prev.1) } else { b };
+            links.push(Link {
+                e,
+                lit,
+                kid_end: b,
+                par_end: a,
+                back,
+                kid_arrow,
+                toward_kid,
+                side: s,
+            });
+            if !cx.touch() {
+                let (mx, my) = if n.pts.len() == 3 {
+                    ((a.0 + prev.0) / 2, a.1)
+                } else {
+                    ((a.0 + b.0) / 2, (a.1 + b.1) / 2)
+                };
+                let r = Rect::new((mx - 1).max(0) as u16, my.max(0) as u16, 3, 1);
+                cx.hit(r, format!("edge:{}", e.id));
+            }
+            continue;
+        }
         if s == 0 {
             // Straight up or down from the root's middle to the label's.
             let cxr = i32::from(pa.x) + i32::from(pa.width) / 2;
@@ -907,6 +1187,8 @@ pub(super) fn draw_with(
                 lit,
                 kid_end: b,
                 par_end: a,
+                back: (0, -dir),
+                kid_arrow: b,
                 toward_kid,
                 side: 0,
             });
@@ -950,6 +1232,8 @@ pub(super) fn draw_with(
             lit,
             kid_end: (end, ky),
             par_end: if py == ky && alone { (start, py) } else { par_end },
+            back: (-n.side, 0),
+            kid_arrow: (end, ky),
             toward_kid,
             side: n.side,
         });
@@ -1026,11 +1310,10 @@ pub(super) fn draw_with(
             };
             let (bx, by) = (band.x + x, band.y + y);
             let ch = line_ch(b, pat, cx.uni());
-            // The edge editor's subject is the one heavy stroke, in the accent, so the
-            // link being edited reads at a glance (a faded branch from its cell starts
-            // a cell later).
+            // The edge editor's subject keeps the one weight, in the accent (ASCII `#`,
+            // a mark no other line uses), so the link being edited reads at a glance.
             let lb = edited.bits[i];
-            let ch = if lb != 0 { heavy(lb, cx.uni()) } else { ch };
+            let ch = if lb != 0 && !cx.uni() { '#' } else { ch };
             buf[(bx, by)].set_char(ch).set_style(st);
         }
     }
@@ -1052,16 +1335,15 @@ pub(super) fn draw_with(
                 (true, false) => ">",
                 (false, false) => "<",
             };
-            put(if l.toward_kid { l.kid_end } else { l.par_end }, g);
+            put(if l.toward_kid { l.kid_arrow } else { l.par_end }, g);
         } else if l.e.up && closed(l.e) {
             // Two cells of air before the device: the line does not reach it.
             let (x, y) = l.kid_end;
-            let (dx, dy) = match l.side {
-                0 => (0, if l.kid_end.1 > l.par_end.1 { -1 } else { 1 }),
-                s => (s, 0),
-            };
+            // (One cell where the line turns into the dot, so its corner stays.)
             put((x, y), " ");
-            put((x - dx, y - dy), " ");
+            if l.back.1 == 0 || l.side == 0 {
+                put((x + l.back.0, y + l.back.1), " ");
+            }
         }
     }
     // Nodes. Letters are keys on the hub and in the send-to picker only.
@@ -1113,19 +1395,12 @@ fn wash(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str, band: Rect, faded: bool
         let mut it = p.nodes.iter().filter(inside).map(|n| n.label);
         let Some(first) = it.next() else { continue };
         let (bb, count) = it.fold((first, 1), |(a, k), r| (a.union(r), k + 1));
-        // Two cells of air either side, the band symmetric about the root's axis (the
-        // group's relay sits on it), and a row above and below where rows are airy.
+        // Two cells of air either side, symmetric about the root's axis (the group's
+        // relay sits on it), on the members' own rows only.
         let axis = i32::from(p.pill.x) * 2 + i32::from(p.pill.width);
         let half = (axis - 2 * i32::from(bb.x)).max(2 * i32::from(bb.right()) - axis) / 2 + 2;
         let x0 = (axis / 2 - half).max(i32::from(band.x));
-        // (Only with a clear row above and below it, so it never meets the zone rule.)
-        let pad = u16::from(p.sp >= 3 && bb.y > band.y && bb.bottom() < band.bottom());
-        let bb = Rect::new(
-            x0 as u16,
-            bb.y.saturating_sub(pad),
-            (2 * half) as u16,
-            bb.height + 2 * pad,
-        )
+        let bb = Rect::new(x0 as u16, bb.y, (2 * half) as u16, bb.height)
         .intersection(band);
         let other = p.nodes.iter().any(|n| n.shown && !inside(&n) && n.label.intersects(bb));
         if count < 2 || other || p.pill.intersects(bb) {

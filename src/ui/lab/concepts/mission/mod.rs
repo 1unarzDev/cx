@@ -509,8 +509,9 @@ impl<'a> Cx<'a> {
             DeviceStatus::Local => (self.g("◉", "@"), self.st(Tok::Accent)),
             // ASCII: online is the normal case and carries no mark (`o` is a key there).
             DeviceStatus::Online => (self.g("●", " "), self.st(Tok::Ok)),
-            DeviceStatus::Stale => (self.g("○", "~"), self.st(Tok::Warn)),
-            DeviceStatus::Down => (self.g("✕", "X"), self.st(Tok::Err)),
+            // (`o` a hollow dot, `!` down: `~` starts paths, `x` is the codex key.)
+            DeviceStatus::Stale => (self.g("○", "o"), self.st(Tok::Warn)),
+            DeviceStatus::Down => (self.g("✕", "!"), self.st(Tok::Err)),
             DeviceStatus::Unknown => (self.g("◌", "?"), self.st(Tok::Muted)),
         }
     }
@@ -543,11 +544,11 @@ impl<'a> Cx<'a> {
 
     pub fn sstate(&self, x: &LabSession) -> (&'static str, &'static str, Style) {
         match x.state {
-            SessionState::AwaitingInput => (self.g("◆", "!"), "needs you", self.st(Tok::Warn)),
-            // `o` as for a live device: `*` stays the agents' own bullet in ASCII.
-            // (ASCII `o` is a device online; a live session is `*`.)
-            SessionState::Working => (self.g("●", "*"), "working", self.st(Tok::Accent)),
-            SessionState::Running => (self.g("●", "*"), "running", self.st(Tok::Ok)),
+            SessionState::AwaitingInput => (self.g("◆", "^"), "needs you", self.st(Tok::Warn)),
+            // ASCII: live work is the normal case and carries no mark, as an online
+            // device (`*` stays the agents' own bullet); what needs you is an alert, `^`.
+            SessionState::Working => (self.g("●", " "), "working", self.st(Tok::Accent)),
+            SessionState::Running => (self.g("●", " "), "running", self.st(Tok::Ok)),
             SessionState::Idle => (self.g("○", "-"), "idle", self.st(Tok::Muted)),
             SessionState::Exited => (self.g("·", "."), "exited", self.ink(Tok::Faint, 1.0)),
         }
@@ -800,9 +801,8 @@ pub(super) fn asciify(s: &str) -> String {
             // An agent's own prompt bar is blank: `|` and `:` are cx's selection bars.
             '▌' | '▍' | '▎' => out.push(' '),
             '╭' | '╮' | '╰' | '╯' | '┌' | '┐' | '└' | '┘' => out.push('-'),
-            // `v` and `^` are reserved (`^` is an alert), so arrows are words.
-            '↓' => out.push_str("dl"),
-            '↑' => out.push_str("up"),
+            // A screen's own text is not rewritten: what has no ASCII stand-in of the
+            // same meaning is a neutral `?` (`v` and `^` are cx marks).
             '→' => out.push_str("->"),
             '←' => out.push_str("<-"),
             '⏎' => out.push_str("ret"),

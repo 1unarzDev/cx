@@ -38,8 +38,10 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
             }
             let n = d.map_or(0, |d| cx.s.sessions_on(&d.id).count());
             // `⏎` and the slot keys both attach, so both are on the one chip.
+            // (The first slot alone on phones, so the chip reads the same at every size.)
+            let k = if cx.touch() { 1 } else { n.clamp(1, 3) };
             let slots: String = std::iter::once(cx.ret().to_string())
-                .chain(SLOTS[..n.clamp(1, 3)].iter().map(|c| c.to_string()))
+                .chain(SLOTS[..k].iter().map(|c| c.to_string()))
                 .collect::<Vec<_>>()
                 .join(" ");
             let mut items: Keys = Vec::new();
@@ -50,7 +52,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
             if cx.touch() {
                 // The primary verb first, then the way back; tiles also attach on a tap.
                 if n > 0 {
-                    items.push(("⏎", "attach", "attach"));
+                    items.push((slots.as_str(), "attach", "attach"));
                 }
                 if retry {
                     items.push(("r", "retry", "retry"));
@@ -666,7 +668,15 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         // The tiles are as tall as their screens' text (a taller tile only adds blank
         // rows); the rows they leave go to the LINKS star below.
         let text_h = list.iter().map(|x| tiles::used_lines(x) as u16 + 2).max().unwrap_or(5);
-        let th = ((room + 1) / rows.max(1)).saturating_sub(1).min(text_h).max(5);
+        let mut th = ((room + 1) / rows.max(1)).saturating_sub(1).min(text_h).max(5);
+        // The rows the star does not draw go back to the tiles (a screen taller than
+        // its text is still a screen), so no blank band opens around LINKS.
+        if fan_want > 0 {
+            let left = main.height.saturating_sub(rows * (th + 1) + 2 + 4);
+            let band = Rect::new(r.x, r.y, r.width, left);
+            let star = orbit::height(cx, band, &d.id, 1, orbit::Sel::Root);
+            th += left.saturating_sub(star) / rows.max(1);
+        }
         let mut bottom = main.y;
         for i in 0..tiles_n as usize {
             let (ci, ri) = (i as u16 % cols, i as u16 / cols);
@@ -895,7 +905,7 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
                 r.x,
                 r.y + 3,
                 r.width,
-                &format!("{} {}", cx.g("✕", "X"), d.evidence),
+                &format!("{} {}", cx.g("✕", "!"), d.evidence),
                 cx.st(Tok::Err),
             );
         }
@@ -1912,16 +1922,12 @@ fn send_to(cx: &Cx, buf: &mut Buffer, a: Rect) {
 fn panel(cx: &Cx, buf: &mut Buffer, r: Rect) {
     if cx.has_surface() {
         cx.fill(buf, r, cx.st(Tok::Surface2));
-        let edge = cx.ink(Tok::Accent, 0.9);
-        for x in r.x..r.right() {
-            cx.put(buf, x, r.y, 1, "▔", edge.patch(cx.st(Tok::Surface2)));
-        }
     } else {
         cx.fill(buf, r, Style::default());
         let st = cx.st(Tok::Accent);
         let w = r.width.saturating_sub(2) as usize;
         let (tl, tr, bl, br, h, v) = if cx.uni() {
-            ("┏", "┓", "┗", "┛", "━", "┃")
+            ("╭", "╮", "╰", "╯", "─", "│")
         } else {
             // ASCII sides are blank: `|` is only the focus bar's continuation.
             ("-", "-", "-", "-", "-", " ")
@@ -2889,13 +2895,13 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
         })
         .collect();
     let users = crossing.len();
-    let rtt_h: u16 = match cx.size() {
+    let mut rtt_h: u16 = match cx.size() {
         Size::L => 5,
         Size::M => 3,
         _ => 1,
     };
     let tile_h: u16 = if cx.size() == Size::L && users > 0 { 9 } else { 0 };
-    let sheet_h: u16 = if cx.size() == Size::Xs { 9 } else { 10 + rtt_h + tile_h }.min(r.height);
+    let mut sheet_h: u16 = if cx.size() == Size::Xs { 9 } else { 10 + rtt_h + tile_h }.min(r.height);
     let col = r.width.saturating_sub(4).min(110);
     let cx0 = r.x + (r.width - col) / 2;
     let avail = r.height.saturating_sub(sheet_h + 4);
@@ -2904,7 +2910,16 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
     } else {
         orbit::drawn_h(cx, Rect::new(r.x, r.y, r.width, avail), orbit::Sel::Edge(&e.id))
     };
-    let spare = avail.saturating_sub(gh);
+    let mut spare = avail.saturating_sub(gh);
+    // Rows the map leaves go to the rtt chart (up to three times its height, a row of
+    // air kept either side) before any air
+    // opens around the block.
+    if rtt_h > 1 {
+        let more = spare.saturating_sub(2).min(2 * rtt_h);
+        rtt_h += more;
+        sheet_h += more;
+        spare -= more;
+    }
     let band = Rect::new(r.x, r.y + 1 + spare / 2, r.width, gh);
     let sheet_y = band.bottom() + 2;
     if !cx.touch() && band.height >= 1 && avail >= 3 {
@@ -3243,12 +3258,12 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         (cx.g("─╴", "- "), "closed"),
     ];
     if ctx == "ON A LINK" {
-        marks.push((cx.g("━━", "##"), "this link"));
+        marks.push((cx.g("──", "##"), "this link"));
     }
     if cx.uni() {
         marks.push(("●", "online"));
     }
-    marks.extend([(cx.g("○", "~"), "late"), (cx.g("✕", "X"), "down")]);
+    marks.extend([(cx.g("○", "o"), "late"), (cx.g("✕", "!"), "down")]);
     if !cx.uni() {
         marks.push(("[ ]", "selected"));
     }

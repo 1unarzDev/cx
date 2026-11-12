@@ -125,9 +125,9 @@ pub(super) fn command_line(args: &[&str]) -> Result<String> {
 
 static CLIENT: Mutex<Option<Arc<Client>>> = Mutex::new(None);
 
-/// Debug-only switch for the forced polling fallback in tests and benches.
+/// `CX_TMUX_CONTROL=0` forces the polling fallback (tests and benches).
 fn disabled() -> bool {
-    cfg!(debug_assertions) && std::env::var_os("CX_TMUX_CONTROL").is_some_and(|v| v == "0")
+    std::env::var_os("CX_TMUX_CONTROL").is_some_and(|v| v == "0")
 }
 fn supported() -> bool {
     static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();

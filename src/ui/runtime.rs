@@ -1856,7 +1856,10 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         let mut frame_wait = None;
         if dirty {
             let since = last_draw.elapsed();
-            if since >= FRAME_INTERVAL {
+            let grace = app.live_frame_grace();
+            if let Some(grace) = grace {
+                frame_wait = Some(grace.max(FRAME_INTERVAL.saturating_sub(since)));
+            } else if since >= FRAME_INTERVAL {
                 // A pass that wrote nothing (a key with no visible effect)
                 // does not delay the next frame, such as its echo.
                 if screen

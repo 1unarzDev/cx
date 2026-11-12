@@ -71,6 +71,8 @@ struct Watched {
     /// After a refusal or a closed watch: poll, and ask again from then.
     retry_at: Option<Instant>,
 }
+/// See `live_frame_grace`.
+const LIVE_GRACE: Duration = Duration::from_millis(8);
 /// Moving the selection settles for this long before a preview is requested.
 pub(super) const SELECT_DEBOUNCE: Duration = Duration::from_millis(60);
 /// True for every encoding of Ctrl+\: the legacy 0x1c byte (which crossterm
@@ -428,6 +430,15 @@ impl App {
         }
         false
     }
+    /// Right after a selection change the remembered frame waits this long
+    /// for the live one, so a fast reply is drawn directly instead of a
+    /// dimmed frame followed by the live one a whole frame interval later.
+    pub(super) fn live_frame_grace(&self) -> Option<Duration> {
+        let p = &self.session_preview;
+        let waiting = p.inflight || self.pane_watched();
+        let left = LIVE_GRACE.saturating_sub(p.changed_at?.elapsed());
+        (p.carried && waiting && !left.is_zero()).then_some(left)
+    }
     /// How soon the event loop must wake for preview work, if sooner than idle.
     pub(super) fn session_preview_wait(&self) -> Option<Duration> {
         if self.view != View::Work && !self.pane_focused() {
@@ -723,9 +734,19 @@ impl App {
     /// whichever label render then draws, so a parked preview never keeps
     /// the loop redrawing.
     pub(super) fn session_preview_staleness_changed(&self) -> bool {
-        let p = &self.session_preview;
-        let stale = p.received.is_some_and(|t| t.elapsed() >= PREVIEW_STALE);
-        p.stale_shown.replace(stale) != stale
+        let stale = self.preview_stale();
+        self.session_preview.stale_shown.replace(stale) != stale
+    }
+    /// No capture for a while, and none would be pushed: a live watch sends
+    /// only changes, so its quiet screen is current.
+    fn preview_stale(&self) -> bool {
+        let pushed = self.pane_watched()
+            && self.preview_selection().is_some_and(|(d, _)| self.sessions_pushed(d));
+        !pushed
+            && self
+                .session_preview
+                .received
+                .is_some_and(|t| t.elapsed() >= PREVIEW_STALE)
     }
 }
 impl Remembered {
@@ -1129,7 +1150,7 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
         } else if !p.live {
             ("snapshot".to_string(), muted())
         } else {
-            let stale = p.received.is_some_and(|t| t.elapsed() >= PREVIEW_STALE);
+            let stale = app.preview_stale();
             match p.received.map(|t| t.elapsed().as_secs()) {
                 Some(age) if stale => (format!("stale {}", session_rows::age(age)), warn()),
                 _ => (

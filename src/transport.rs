@@ -97,6 +97,9 @@ const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(3);
 /// after its session lookup); a master gone since then only means the
 /// joining ssh connects directly.
 const CONFIRMED_FOR: std::time::Duration = std::time::Duration::from_secs(1);
+/// A helper channel that joined the master just answered: the master was
+/// carrying it, so a terminal opened soon after (an attach) skips `-O check`.
+const ANSWERED_FOR: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// One target's in-flight master attempt; waiters see its outcome.
 #[derive(Default)]
@@ -111,7 +114,7 @@ struct Masters {
     /// Targets whose owner record this process has written (or confirmed).
     recorded: std::collections::HashSet<String>,
     recovering: std::collections::HashSet<String>,
-    /// When this process last saw each target's master answer.
+    /// Until when each target's master counts as answering.
     confirmed: std::collections::HashMap<String, std::time::Instant>,
     prewarming: usize,
 }
@@ -404,7 +407,7 @@ fn ensure_master(target: &str, wait: std::time::Duration) -> MasterState {
     if masters().is_some_and(|m| {
         m.confirmed
             .get(target)
-            .is_some_and(|at| at.elapsed() < CONFIRMED_FOR)
+            .is_some_and(|until| std::time::Instant::now() < *until)
     }) {
         return MasterState::Ready;
     }
@@ -422,7 +425,7 @@ fn ensure_master(target: &str, wait: std::time::Duration) -> MasterState {
                 m.confirmed.clear();
             }
             m.confirmed
-                .insert(target.to_owned(), std::time::Instant::now());
+                .insert(target.to_owned(), std::time::Instant::now() + CONFIRMED_FOR);
         } else {
             m.confirmed.remove(target);
         }
@@ -601,6 +604,8 @@ struct Connection {
     replies: std::sync::mpsc::Receiver<Result<Response>>,
     failure: std::sync::mpsc::Receiver<ConnectionFailure>,
     route: Vec<String>,
+    /// Opened while the route's master was ready, so it rides the master.
+    shared: bool,
     /// Set once a watch was requested: the reader reports `closed` when the
     /// channel ends, so the viewer polls again.
     watching: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -619,7 +624,8 @@ impl Connection {
         // Join (or start) the route's shared master, waiting only briefly so
         // the operation's own timeout still covers a direct handshake. A
         // typed failure is the same evidence a direct BatchMode attempt gives.
-        if let MasterState::Failed(failure) = ensure_master(target, CHANNEL_MASTER_WAIT) {
+        let master = ensure_master(target, CHANNEL_MASTER_WAIT);
+        if let MasterState::Failed(failure) = master {
             return Err(failure.into());
         }
         let route = crate::store::route(target)?;
@@ -631,6 +637,7 @@ impl Connection {
         c.arg("exec ~/.local/bin/cx helper");
         let mut connection = Self::from_command(c, Some(target.to_owned()))?;
         connection.route = route;
+        connection.shared = master == MasterState::Ready;
         Ok(connection)
     }
     fn from_command(mut c: Command, target: Option<String>) -> Result<Self> {
@@ -689,6 +696,7 @@ impl Connection {
             replies,
             failure,
             route: Vec::new(),
+            shared: false,
             watching,
         })
     }
@@ -852,6 +860,14 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
     };
     let is_info = matches!(&op, Operation::Info);
     let result = exchange(&mut slot, op, response_timeout);
+    if result.is_ok() && slot.as_ref().is_some_and(|c| c.shared) {
+        if let Some(mut m) = masters() {
+            let until = std::time::Instant::now() + ANSWERED_FOR;
+            if m.confirmed.get(target).is_none_or(|current| *current < until) {
+                m.confirmed.insert(target.clone(), until);
+            }
+        }
+    }
     drop(slot);
     if let Err(error) = &result {
         if error.downcast_ref::<ConnectionFailure>() == Some(&ConnectionFailure::Timeout) {

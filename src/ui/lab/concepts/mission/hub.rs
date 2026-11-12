@@ -76,17 +76,24 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     } else {
         (1, room)
     };
-    // Two rows share the sessions and the ghost evenly, so no row ends half empty.
+    // Two rows share the sessions evenly (the last row's tiles widen to fill it).
     let cols = if rows == 2 {
-        cols.min((list.len() as u16 + 2) / 2)
+        cols.min((list.len() as u16 + 1) / 2)
     } else {
         cols
     };
     let grid_h = rows * th + rows - 1;
     let mut y = band.bottom() + 1 + band_th - grid_h;
     // The map sits centred in the rows above the vitals strip.
-    let above = ((y - r.y - 1).saturating_sub(gh) / 2).max(1);
-    let band = Rect::new(band.x, r.y + 1 + above, band.width, gh);
+    // (Counting the row of mesh wash above the map where rows are airy.)
+    let lift = u16::from(sz >= Size::M);
+    let above = ((y - r.y - 1).saturating_sub(gh + lift) / 2).max(1) + lift;
+    // (A row more either side where there is air, for the mesh wash's margin.)
+    let band = if above >= 2 {
+        Rect::new(band.x, r.y + above, band.width, gh + 2)
+    } else {
+        Rect::new(band.x, r.y + 1 + above, band.width, gh)
+    };
     orbit::draw(
         cx,
         buf,

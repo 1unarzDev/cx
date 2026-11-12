@@ -325,7 +325,9 @@ fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, depth: usize, keys_only: bool, 
         let full = (3 * sp as u16 + 4).clamp(8, 22);
         for arc in [true, false] {
             for gap in (4..=full).rev() {
-                let p = place(cx, band, tree(cx, root, depth), root, mode, nmax, sp, keys, gap, arc);
+                // The edge editor's subject keeps two rows of stroke at the least.
+                let arm = if matches!(sel, Sel::Edge(_)) { 3 } else { 2 };
+                let p = place(cx, band, tree(cx, root, depth), root, mode, nmax, sp, keys, gap, arc, arm);
                 let ok = p.hidden == 0;
                 best = Some(p);
                 if ok {
@@ -369,6 +371,7 @@ fn place<'a>(
     keys: bool,
     gap: u16,
     arc: bool,
+    arm: i32,
 ) -> Plan<'a> {
     let n = nodes.len();
     let kids: Vec<Vec<usize>> = (0..n)
@@ -475,7 +478,7 @@ fn place<'a>(
     // own row, split left and right, so one straight rule runs through it.
     for (k, &v) in vert.iter().enumerate() {
         let dir = if k == 0 { -1 } else { 1 };
-        row[v] = dir * (reach + sp.max(2));
+        row[v] = dir * (reach + sp.max(arm));
         nodes[v].side = 0;
         let ks = &kids[v];
         let half = ks.len() / 2;
@@ -982,9 +985,11 @@ pub(super) fn draw_with(
     };
     // The edge editor's subject is drawn in the accent, so it reads at a glance.
     let ink = |l: &Link| {
-        let tok = match (l.e.up, l.lit && fade_all) {
-            (_, true) => Tok::Accent,
-            (true, _) => hue_tok(cx, l.e),
+        // Everything else recedes to one grey (16 colours cannot fade a hue).
+        let tok = match (l.e.up, l.lit, fade_all) {
+            (_, true, true) => Tok::Accent,
+            (_, false, true) => Tok::Muted,
+            (true, _, _) => hue_tok(cx, l.e),
             _ => Tok::Muted,
         };
         style(tok, l.lit, pattern(l.e))
@@ -1012,7 +1017,7 @@ pub(super) fn draw_with(
                 None => {
                     let h0 = hue_tok(cx, ls[0].e);
                     let same = ls.iter().all(|l| hue_tok(cx, l.e) == h0) && ls[0].e.up;
-                    style(if same { h0 } else { Tok::Muted }, false, pat)
+                    style(if same && !fade_all { h0 } else { Tok::Muted }, false, pat)
                 }
             };
             let pat = match ls.iter().find(|l| l.lit) {
@@ -1113,7 +1118,8 @@ fn wash(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str, band: Rect, faded: bool
         let axis = i32::from(p.pill.x) * 2 + i32::from(p.pill.width);
         let half = (axis - 2 * i32::from(bb.x)).max(2 * i32::from(bb.right()) - axis) / 2 + 2;
         let x0 = (axis / 2 - half).max(i32::from(band.x));
-        let pad = u16::from(p.sp >= 3);
+        // (Only with a clear row above and below it, so it never meets the zone rule.)
+        let pad = u16::from(p.sp >= 3 && bb.y > band.y && bb.bottom() < band.bottom());
         let bb = Rect::new(
             x0 as u16,
             bb.y.saturating_sub(pad),

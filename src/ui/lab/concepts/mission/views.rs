@@ -593,9 +593,13 @@ pub(super) fn thumbs_grid(
     let tw = (r.width + gap) / cols - gap;
     let cells = usize::from(rows * cols);
     let shown = list.len().min(cells);
-    let n = cells.min(list.len() + 1);
+    // One row keeps a ghost cell for a new session; with two, the last row's tiles
+    // widen to fill it instead (the vitals strip above already offers `new`).
+    let n = if rows > 1 { shown } else { cells.min(list.len() + 1) };
     for i in 0..n {
         let (ci, ri) = (i as u16 % cols, i as u16 / cols);
+        let in_row = (n - usize::from(ri * cols)).min(usize::from(cols)) as u16;
+        let tw = if in_row < cols { (r.width + gap) / in_row - gap } else { tw };
         let tr = Rect::new(r.x + ci * (tw + gap), r.y + ri * (th + 1), tw, th);
         match list.get(i) {
             Some(x) => {
@@ -604,7 +608,7 @@ pub(super) fn thumbs_grid(
             }
             None => new_tile(cx, buf, tr, ghost, false, true),
         }
-        if !cx.has_surface() && ci + 1 < cols && i + 1 < n {
+        if !cx.has_surface() && ci + 1 < in_row && i + 1 < n {
             cx.vsep(buf, tr.right(), tr.y, th);
         }
     }
@@ -2904,6 +2908,12 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
     let band = Rect::new(r.x, r.y + 1 + spare / 2, r.width, gh);
     let sheet_y = band.bottom() + 2;
     if !cx.touch() && band.height >= 1 && avail >= 3 {
+        // (A row more either side where there is air, for the mesh wash's margin.)
+        let band = if spare >= 2 {
+            Rect::new(band.x, band.y - 1, band.width, band.height + 2)
+        } else {
+            band
+        };
         orbit::draw(cx, buf, band, &cx.s.viewer, 3, orbit::Sel::Edge(&e.id));
     } else if let (Some(a), Some(b)) = (cx.s.device(&e.from), cx.s.device(&e.to)) {
         // Phones draw no map (it only crowded at that size): the link alone, its two
@@ -3247,7 +3257,14 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let x0 = r.x + (r.width - w) / 2;
     let right = x0 + w;
     let ix = x0 + u16::from(wide);
-    let iw = if wide { 10 } else { 8 };
+    // The intent column as wide as its longest word and a gap.
+    let iw = groups
+        .iter()
+        .map(|(n, _)| super::width(n, cx.uni()))
+        .chain([5])
+        .max()
+        .unwrap_or(6)
+        + if wide { 3 } else { 1 };
     let kx = ix + iw;
     // One key column for every block, marks included, so every row keeps two columns.
     let kw = groups

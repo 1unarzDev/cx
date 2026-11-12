@@ -505,7 +505,7 @@ def scenario_sessions(binary, cycles):
                 if 'NETWORK' in viewer.text():
                     viewer.measure(b' ', lambda: 'NETWORK' not in viewer.text(), timeout=TIMEOUT)
                     viewer.quiesce(.1)
-                y = max(y for y, line in enumerate(viewer.screen.display) if '$' in line and y > 1)
+                y = min(y for y, line in enumerate(viewer.screen.display) if '$' in line and y > 1)
                 x = viewer.screen.display[y].index('$')
                 return f'\x1b[<0;{x + 1};{y + 1}M\x1b[<0;{x + 1};{y + 1}m'.encode()
             enter, echo, back, attach, ret = Timings(), Timings(), Timings(), Timings(), Timings()
@@ -841,7 +841,7 @@ def instant_hub(viewer, cycles, marker):
                 and '$' in viewer.text() and not peek())
 
     def tap_prompt():
-        y = max(y for y, line in enumerate(viewer.screen.display) if '$' in line and y > 1)
+        y = min(y for y, line in enumerate(viewer.screen.display) if '$' in line and y > 1)
         x = viewer.screen.display[y].index('$')
         return f'\x1b[<0;{x + 1};{y + 1}M\x1b[<0;{x + 1};{y + 1}m'.encode()
     shown, echo, attach, ret = Timings(), Timings(), Timings(), Timings()

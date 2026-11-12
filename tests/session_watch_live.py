@@ -83,7 +83,7 @@ class Fixture:
                             timeout=10)
         self.viewer.quiesce(.2)
         display = self.viewer.screen.display
-        y = max(y for y, line in enumerate(display) if '$' in line and y > 1)
+        y = min(y for y, line in enumerate(display) if '$' in line and y > 1)
         x = display[y].index('$')
         self.viewer.measure(f'\x1b[<0;{x + 1};{y + 1}M\x1b[<0;{x + 1};{y + 1}m'.encode(), self.focused, timeout=10)
         self.viewer.quiesce(.2)

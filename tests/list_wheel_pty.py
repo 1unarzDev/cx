@@ -102,10 +102,11 @@ for view in ['Files','Work']:
     back_start=len(raw);send(b'\x1c')
     wait(lambda:clients()==[] and current() is not None and b'\x1b[?1000h' in raw[back_start:])
     assert current()[0]==ordered[5]
-    # Space peeks; a tap on the peeked screen types into it; Ctrl+] is application
+    # Space peeks; a tap on the peeked screen (the top one: the filmstrip below shows
+    # other sessions, whose tiles attach) types into it; Ctrl+] is application
     # input there, Ctrl+\ leaves.
     send(b' ');wait(lambda:'OTHERS' in display() or ' next' in screen.display[-1])
-    y=max(y for y,line in enumerate(screen.display) if '$' in line and y>1);x=screen.display[y].index('$')
+    y=min(y for y,line in enumerate(screen.display) if '$' in line and y>1);x=screen.display[y].index('$')
     send(f'\x1b[<0;{x+1};{y+1}M\x1b[<0;{x+1};{y+1}m'.encode());wait(lambda:'typing into the session' in display())
     send(b'\x1d');read(.3)
     assert 'typing into the session' in display() and clients()==[],'Ctrl+] must reach the pane, not detach'

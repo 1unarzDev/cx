@@ -2,28 +2,41 @@
 
 Detailed controls and behavior for sessions, files, terminals, network discovery and updates. For installation and dependencies, see [installation](installation.md).
 
-Plain `cx` opens the current folder in Files on the invocation device. An update restart restores the existing workspace instead.
+Plain `cx` opens the **hub**, the network around this device; this device's Files open in the folder `cx` was started from. An update restart restores the existing workspace instead. The design is described in [concept-mission](design/concept-mission.md).
 
 ## Controls
 
+One grammar on every screen: **a device letter, then a session slot or a verb**. Letters are underlined in device names on the map and printed on every tile and palette row; they stay the same while a device stays enrolled (`e` is never a device, and `h j k l` are used only past 21 devices).
+
 | Keys | Action |
 |---|---|
-| Arrows / `h j k l`, Enter, Escape | Navigate, open, back |
-| `/`, Ctrl+P, `?` | Search, workspace actions, help |
-| `n`, `:` | New session / run command on current device and folder |
-| Tab / Shift+Tab, Ctrl+arrows | Change panel focus |
+| device letter | Open that device's screen (from the hub, peek or palette) |
+| `a s d g` (device screen) | Attach that session slot at once; further sessions are a move or `/` away |
+| `c` / `x` / `n` (device screen) | New Claude / Codex / shell in the device's home, attached at once |
+| Enter, Space | Attach / open the selection; peek a session's screen (Tab steps through peeks) |
+| Backspace, Backspace | Stop the selected CX-managed session; any other key keeps it, never `y` |
+| `e` + letter | The link to that device: `a p o` (outbound) / `A P O` (the way back) set key, password or off at once, `j k` move the lane bar, `u` undoes |
+| `r` (device screen) | Retry / refresh the device |
+| `f` (device screen) | Its files |
+| `` ` ``, Esc Esc | The hub, from any screen (a second Esc within 400 ms) |
+| Esc | Back one level |
+| `-` | Re-attach the last detached session |
+| `/`, Ctrl+P | Find anything: sessions, devices, actions, folders, LAN neighbours; `run:` runs a command |
+| `:` | Run a command in the current folder |
+| `K`, `+`, `?` | Keys and secrets, invite, help |
+| Tab / Shift+Tab | Hub: network map or session tiles; Files: a transfer's two locations |
+| `j k`, arrows, `5j`, Home / End, PageUp / PageDown | Move (counts work); Left/Right move between tiles and nodes |
 | Ctrl+\ (or the `⏏ detach` chip) inside managed terminals | Detach; session keeps running |
 | Ctrl+C in cx | Exit viewer; work keeps running |
-| Files: `.`, Space, `v`, `f` | Hidden files, select/advance, range, filter |
-| `gg`, `G`, `5j` / `5k`, `5G` | First, last, counted movement, jump to row 5 |
+| Files: `.`, Space, `v`, `f`, `/` | Hidden files, select/advance, range, filter, find |
 | Files: `y`/`c`, `x`, `p` | Copy, cut, paste into focused folder |
-| Files: `t`, `T` | Choose destination device/folder, transfer results |
-| Files: `r`, `d` | Rename, confirm permanent deletion (`y` / `n`) |
-| Files: `M`, `o` | New folder, cycle copy conflict policy |
+| Files: `s` + letter, `t`, `T` | Send to a device, choose a destination device/folder, transfer results |
+| Files: `r`, `d`, `M`, `o`, `S`, `n` | Rename, delete (confirm), new folder, conflict policy, sessions here, new session here |
+| Device screen: `w`, `p`, `t`, `b`, `E`, `X` | Watch, pin, agent tasks, access posture, edit endpoint, remove |
 
-List navigation applies to Devices, Actions, Sessions, Network, Containers, Transfers and their dialogs. Counts work with Up/Down, j/k and PageUp/PageDown; session chooser counts also work with h/l or Left/Right. In transfer details, Tab changes focus so the same keys scroll details rather than select jobs. File search and preview matches support counted n/N. Counts never repeat actions or interpret typed text.
+Every node, tile, chip, file row and palette row is a tap target running its key's command. A right-click or long press on a target selects it and opens a menu of the selection's keys. Hover never selects. On phones (under 70 columns) the hub is an indented device tree and footers wrap; keys read `ret` and `bksp`.
 
-Use `/` to search or `f` to filter the focused device list, device picker or transfer list; Enter finishes filtering without launching or cancelling anything. In Sessions, Network and Containers, `f` filters the workspace list. Clear a filter with `f`, Ctrl+U, Enter. Search, filter, command, password and palette inputs retain ordinary typing; arrows remain available for their existing input navigation. Files retain separate search and filter behavior.
+Counts work with Up/Down, j/k and PageUp/PageDown in lists, dialogs and transfers; in transfer details, Tab changes focus so the same keys scroll details. File search and preview matches support counted n/N. Search, filter, command, password and palette inputs own ordinary typing.
 
 ## Sessions and permissions
 
@@ -31,9 +44,9 @@ Sessions keeps all observed shells and agents visible, with pins first. Press `p
 
 Opening a provider in a folder with existing sessions shows every matching runtime by name, provider, short identity and observed state. Choose the intended session or explicit New. New agents proceed directly to permissions, without an unidentified “latest” prompt. Distinct conversations in the same folder remain separate; CX does not infer conversation identity from a title or folder.
 
-Cached session/folder navigation is saved locally and displayed before refresh. Failed refreshes retain rows. Saved file identities are stripped and refreshed before mutation. Press `s` in Files to see sessions for the highlighted folder, or the current folder when a file is highlighted. Exact-folder Claude/Codex counts show observed presence; `?` marks stale evidence. These are directory badges, not claims about which individual file an agent is editing.
+Cached session/folder navigation is saved locally and displayed before refresh. Failed refreshes retain rows. Saved file identities are stripped and refreshed before mutation. Press `S` in Files to see sessions for the highlighted folder, or the current folder when a file is highlighted. Session tiles show each session's last screen from memory (never written to disk) in its own colours, so two agents look different because their screens do.
 
-`n` opens a compact session chooser on the highlighted device, using home from Devices or the current folder from Files. Use `c` for Claude, `x` for Codex, `s` for Shell or `d` for Devcontainer; h/l and Left/Right move between choices. Missing runtimes stay disabled, and selecting an agent proceeds to Default/YOLO permissions. From All devices it asks which device. Ctrl+P opens the action launcher: Files, Network, Sessions and new sessions always ask for a device; Network and Sessions also offer All devices. New session then offers provider/folder setup. File and command actions show their current device/folder scope. New sessions use the chosen execution host and folder. Agent choices reflect installed launchable runtimes. `w` on a highlighted session opens a read-only terminal; ordinary opening gives input. Starting Claude/Codex manually inside a shell updates its badge while the agent owns the terminal; returning to the shell restores it. The original shell remains attachable after its agent exits. When a standalone agent process exits, its dead single-pane runtime is omitted; a session with other panes remains visible. Closing a viewer detaches without ending work. CX follows process and pane evidence rather than treating Ctrl+C as proof of exit. In managed terminals, the wheel reviews retained scrollback unless the application requests native mouse input. Fullscreen Codex with a stale mouse policy receives genuine wheel events through a verified foreground-process fallback; empty terminal history does not open a `0/0` buffer (the Codex fallback requires tmux 3.4+); Escape returns to the live terminal. Up/Down remain application keys. Hold Shift for terminal-native text selection when your emulator supports it. Existing personal tmux sessions retain their bindings.
+On a device's screen `c`, `x` and `n` start Claude, Codex or a shell in its home and attach at once. The full chooser (`n` in Files, palette **New session**) uses the current folder from Files or the device's home. Use `c` for Claude, `x` for Codex, `s` for Shell or `d` for Devcontainer; h/l and Left/Right move between choices. Missing runtimes stay disabled, and selecting an agent proceeds to Default/YOLO permissions. The palette's Files and New session actions ask for a device; New session then offers provider/folder setup. File and command actions show their current device/folder scope. New sessions use the chosen execution host and folder. Agent choices reflect installed launchable runtimes. `w` on a device's selected session opens a read-only terminal; ordinary opening gives input. Starting Claude/Codex manually inside a shell updates its badge while the agent owns the terminal; returning to the shell restores it. The original shell remains attachable after its agent exits. When a standalone agent process exits, its dead single-pane runtime is omitted; a session with other panes remains visible. Closing a viewer detaches without ending work. CX follows process and pane evidence rather than treating Ctrl+C as proof of exit. In managed terminals, the wheel reviews retained scrollback unless the application requests native mouse input. Fullscreen Codex with a stale mouse policy receives genuine wheel events through a verified foreground-process fallback; empty terminal history does not open a `0/0` buffer (the Codex fallback requires tmux 3.4+); Escape returns to the live terminal. Up/Down remain application keys. Hold Shift for terminal-native text selection when your emulator supports it. Existing personal tmux sessions retain their bindings.
 
 In a container, `n` probes installed agents for its selected user and folder. Choose Claude/Codex to join an existing runtime, start New, or choose a past conversation in the provider’s own picker. Both new and history launches offer Default/YOLO. Sign-in and history stay inside that container; host availability does not enable container agents. See [containers](containers.md).
 
@@ -41,7 +54,7 @@ Press `:` to run a command in the current folder. It opens in a floating panel i
 
 New Codex/Claude sessions offer **Default** (existing host permissions) or **YOLO** before launch. YOLO applies only to that session: Codex bypasses approvals and sandboxing; Claude bypasses permission prompts. CLI: `cx new --provider codex --directory ~/cx --yolo` (also supports `--provider claude`). Existing sessions keep their launch permissions. Update remote helpers before selecting YOLO.
 
-In Sessions, `d` stops the selected CX-managed shell, Claude or Codex session after confirmation; Enter initially keeps it, `y` confirms. External tmux sessions are protected. Expanded sessions must be stopped from their terminal.
+Backspace stops the selected CX-managed shell, Claude or Codex session after an inline question on its tile: a second Backspace stops it, any other key (Enter and `y` included) keeps it. The runtime identity captured when it asked is the one stopped. External tmux sessions are protected. Expanded sessions must be stopped from their terminal.
 
 ### Moving terminals started outside CX
 
@@ -75,13 +88,13 @@ Claude attachments use a solid light or dark background for default terminal cel
 
 ## Files and transfers
 
-The Selected side panel stacks parent folders above the highlighted current folder, with the selected item beneath it. Older ancestors fold when vertical space is limited. The workspace keeps its space for files; switching split panes updates the side-panel hierarchy.
+The crumb names the device and folder; under the list, when rows are left, the selected entry's path, size, age and the devices `s` can send it to (with their route) are listed. Switching a transfer's two locations (Tab) switches the crumb.
 
-Select files → `t` → choose device → browse folder with h/l → Enter confirms transfer into the displayed destination folder. The sidebar animates while submitting or transferring; `T` opens detailed progress. `p` also pastes into the focused folder. Or copy/cut, switch devices, and paste. Incoming name conflicts rename by default; overwrite is explicit. Cross-host cuts support regular files; copy supports directories. Delete has no undo. Transfers are not snapshots of growing files.
+Select files → `s` and the destination's letter (or `t` → choose device) → browse folder with h/l → Enter confirms transfer into the displayed destination folder. A running transfer shows on the hub (its link lit, name and percentage in the top bar); `T` opens detailed progress. `p` also pastes into the focused folder. Or copy/cut, switch devices, and paste. Incoming name conflicts rename by default; overwrite is explicit. Cross-host cuts support regular files; copy supports directories. Delete has no undo. Transfers are not snapshots of growing files.
 
 ## Search and foreground commands
 
-Sessions lists persistent work. New session is the single launch action; file operations live on browser keys. In Files, `/` highlights matching names without hiding or reordering files; Enter finishes typing, `n`/`N` cycle matches, and Escape clears the search. `f` filters names. With no active search, `n` chooses a session profile for that folder; New session remains available through Ctrl+P while searching. `:` opens a command prompt pinned to the execution host/folder and runs it in the native terminal; Ctrl+C interrupts the command; Ctrl+Z offers Resume/Cancel; Enter returns after completion. Fish/Bash/Zsh load interactive wrappers; sh/dash commands use login startup. Shell startup themes should respect `CX_VIEWER_THEME=1` during native commands; cx does not reset the viewing terminal’s palette. Commands are foreground work; cx does not save or retry their text, and do not survive disconnect as managed sessions do.
+Each device's screen lists its persistent work; file operations live on browser keys. In Files, `/` highlights matching names without hiding or reordering files; Enter finishes typing, `n`/`N` cycle matches, and Escape clears the search. `f` filters names. With no active search, `n` chooses a session profile for that folder; New session remains available through the palette while searching. `:` opens a command prompt pinned to the execution host/folder and runs it in the native terminal; Ctrl+C interrupts the command; Ctrl+Z offers Resume/Cancel; Enter returns after completion. Fish/Bash/Zsh load interactive wrappers; sh/dash commands use login startup. Shell startup themes should respect `CX_VIEWER_THEME=1` during native commands; cx does not reset the viewing terminal’s palette. Commands are foreground work; cx does not save or retry their text, and do not survive disconnect as managed sessions do.
 
 ## Previews and Markdown
 
@@ -95,9 +108,9 @@ Clipboard: managed sessions forward application copies and tmux selections to th
 
 ## Devices and network discovery
 
-Network shows enrolled peers even when the LAN cache is empty, then LAN neighbors beneath their observing devices. All devices uses Right/l to expand and Left/h to fold; each address remains distinct. Selecting one device shows only that observer and its neighbors, already expanded, and Refresh checks only that observer. Select its host row for interface addresses, routes and internet evidence. Expansion is remembered while moving between views. J/K scroll selected route details when they exceed the available space. Selection shows its discovery path/interface and saved SSH jumps rather than a separate Evidence column. Peer access labels reflect recent authenticated checks from the viewer; LAN-port checks reflect the observing device. All devices combines those observations; each row identifies its device/interface. Fresh LAN neighbors receive bounded background SSH-port checks, cached for 90 seconds (up to 32 new checks per refresh). Enter begins connection through the observing device. An open port does not prove SSH authentication or internet access. Internet evidence belongs to the selected observing host and uses recent ICMP checks; neighbor internet access stays unknown until enrolled and observed. No subnet scan or interface changes run automatically. `cx add user@host --via enrolled-device` also works directly, without a prior robot session. Routes reuse OpenSSH host-key checks and existing identities, without copying keys or forwarding an agent. For identical private addresses behind different gateways, use distinct SSH aliases; conflicting enrollment is refused. Connecting a LAN neighbor asks for its SSH account, then uses masked OpenSSH password/key/MFA prompts when needed. New host keys require explicit fingerprint approval; mismatches fail closed. Passwords are not stored, logged or passed in arguments/environment. A private cx-owned SSH connection can remain authenticated for ten idle minutes, including after a failed enrollment; later access may require another unlock or your existing keys. Background checks never prompt. This protects against accidental disclosure, not malicious processes sharing your Unix account or root. IPv6 link-local enrollment is currently unavailable.
+The hub map shows enrolled devices with the links between them (edges.json and migrated postures); its colours are the network and its strokes the access policy (solid key, dashed password only, an arrowhead for one way, faint with `⊘` for closed). A device's status is the evidence of its last session listing. LAN neighbours appear in the palette after a Refresh, each with its observing device; the palette row's detail says what is known (SSH port, authentication, internet) and Refresh on a device's screen checks only that device. Fresh LAN neighbors receive bounded background SSH-port checks, cached for 90 seconds (up to 32 new checks per refresh). Enter begins connection through the observing device. An open port does not prove SSH authentication or internet access. Internet evidence belongs to the selected observing host and uses recent ICMP checks; neighbor internet access stays unknown until enrolled and observed. No subnet scan or interface changes run automatically. `cx add user@host --via enrolled-device` also works directly, without a prior robot session. Routes reuse OpenSSH host-key checks and existing identities, without copying keys or forwarding an agent. For identical private addresses behind different gateways, use distinct SSH aliases; conflicting enrollment is refused. Connecting a LAN neighbor asks for its SSH account, then uses masked OpenSSH password/key/MFA prompts when needed. New host keys require explicit fingerprint approval; mismatches fail closed. Passwords are not stored, logged or passed in arguments/environment. A private cx-owned SSH connection can remain authenticated for ten idle minutes, including after a failed enrollment; later access may require another unlock or your existing keys. Background checks never prompt. This protects against accidental disclosure, not malicious processes sharing your Unix account or root. IPv6 link-local enrollment is currently unavailable.
 
-For a robot reachable through another device, select that observer in Network; its neighbors appear immediately. Resolved hostname hints appear beside addresses. Enter on a neighbor connects through its observer and asks for the SSH account; successful enrollment adds its authenticated hostname to the device list. Discovery and Enter on a Network neighbor are the primary connection path. **Add by SSH address** stays available in Ctrl+P actions for aliases, uncached hosts and networks discovery cannot reach. It uses the selected device as its gateway, shown in the prompt, and can match `.local` names against that observer's discovered addresses. After authentication, enrollment checks Linux x86_64/ARM64 compatibility and installs the helper plus signed portable tmux if absent, using only minimal host utilities. Existing system/user tmux is preserved; a broken one reports an error. Password prompts use dots with F2 or a clickable Show/Hide button. Unsupported platforms are reported before installation. `cx terminal --device NAME` remains available as a CLI-only ordinary SSH login without tmux; type `exit` to return. Use New shell in the UI for persistent terminals. Persistent sessions still require tmux.
+Refresh on the hub (palette **Refresh**) observes each device's network and, with a bounded port-22 check, its LAN neighbours; they then appear in the palette under **Neighbors**, by hostname hint or address with the observing device. Enter on a neighbour connects through its observer and asks for the SSH account; successful enrollment adds its authenticated hostname to the device list. **Add by SSH address** stays available in the palette for aliases, uncached hosts and networks discovery cannot reach. It uses the selected device as its gateway, shown in the prompt, and can match `.local` names against that observer's discovered addresses. After authentication, enrollment checks Linux x86_64/ARM64 compatibility and installs the helper plus signed portable tmux if absent, using only minimal host utilities. Existing system/user tmux is preserved; a broken one reports an error. Password prompts use dots with F2 or a clickable Show/Hide button. Unsupported platforms are reported before installation. `cx terminal --device NAME` remains available as a CLI-only ordinary SSH login without tmux; type `exit` to return. Use New shell in the UI for persistent terminals. Persistent sessions still require tmux.
 
 ## Updates and reconnection
 
@@ -114,13 +127,13 @@ CX shares one SSH connection per device and route. The first contact opens a pri
 
 Sessions preserve provider-authored titles. Generic labels include folder, provider,
 and a compact runtime identity; separate conversations are never merged by label.
-Hovering over a session never selects it. The selected session's styled tmux
-screen shows beside the list on wide terminals, or below it on narrower layouts.
-**Enter attaches** to the running shell or agent; `w` watches it read-only.
-**`i` types into the live preview** inside CX and `z` zooms it to the workspace.
+Hovering over a session never selects it. Each tile shows the session's last
+screen in its own colours; Space peeks the selected one 1:1 (Tab steps through
+the others). **Enter attaches** to the running shell or agent; `w` watches it
+read-only. **A tap on the peeked screen types into it** inside CX.
 **Ctrl+\ (or a tap on the `⏏ detach` chip) detaches** from either; Ctrl+], Ctrl+O,
 Escape and Ctrl+C go to the application. To send a literal Ctrl+\ (SIGQUIT,
-nvim Ctrl+\ Ctrl+N), use Ctrl+P → **Send Ctrl+\ to session**.
+nvim Ctrl+\ Ctrl+N), use the palette (`/`) → **Send Ctrl+\ to session**.
 
 The pane preserves colors, blank rows, alternate-screen content and cursor location.
 It refreshes at up to 4 Hz while browsing and 10 Hz while focused. Its viewport
@@ -130,10 +143,10 @@ navigation caches or pins. Remote interactive panes require `live-session-pane-v
 older helpers retain native attachment. Input verifies the exact runtime and pane
 and is never retried automatically.
 
-Use **New session** (`n`) for Shell, Claude or Codex; Shell has no separate creation
-button. Bracketed paste and application cursor modes are honored. Pasted input is
+Use `c`, `x` or `n` on a device (or **New session** in the palette) for Claude, Codex
+or a shell. Bracketed paste and application cursor modes are honored. Pasted input is
 limited to 4096 bytes including bracket markers, with an explicit refusal for larger
-pastes. Wheel over the preview (including while focused) to read the terminal's
+pastes. Wheel over the peeked screen (including while typing) to read the terminal's
 retained history. CX loads bounded pages on demand, so scrolling is no longer
 limited to the most recent 500 lines. Reading holds the current page steady;
 scroll down to return live. Focusing or typing also resumes live output. History

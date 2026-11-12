@@ -237,8 +237,8 @@ AllowUsers {account}
         [edge] = json.loads(cx("edge", "list", "--json").stdout)
         assert edge["forward"]["access"] == "password", edge
         assert edge["forward"]["enforced"].startswith("cx key absent"), edge
-        # The helper channel is not evidence for the cx-key direction.
-        assert edge["forward"]["observed"] == "not checked", edge
+        # No authentication evidence is claimed for any direction.
+        assert "observed" not in edge["forward"], edge
         assert edge["reverse"]["access"] == "refused", edge
 
         # Key again: BatchMode cannot restore the key it needed, so the step

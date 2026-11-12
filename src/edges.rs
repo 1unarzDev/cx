@@ -13,7 +13,7 @@
 //! Pairs without records keep today's posture, migrated read-only from
 //! `device-policies.json`: core devices are `key` both ways, directed devices
 //! are `key` viewer -> device and refused device -> viewer. Status reports
-//! intent, cx enforcement and observed evidence separately; none implies another.
+//! intent and cx enforcement separately; neither implies the other.
 use crate::{
     model::{Device, Operation},
     peers, store, transport,
@@ -108,18 +108,6 @@ pub struct Enforcement {
     pub ok: bool,
     pub at: u64,
 }
-/// Authentication evidence for one direction, written by the UI's checks.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Evidence {
-    pub from: String,
-    pub to: String,
-    #[serde(default)]
-    pub last_ok: Option<u64>,
-    #[serde(default)]
-    pub last_failed: Option<u64>,
-    #[serde(default)]
-    pub detail: Option<String>,
-}
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct EdgeFile {
     #[serde(default)]
@@ -128,15 +116,11 @@ struct EdgeFile {
     edges: Vec<EdgePolicy>,
     #[serde(default)]
     enforcement: Vec<Enforcement>,
-    #[serde(default)]
-    evidence: Vec<Evidence>,
 }
 impl EdgeFile {
     fn validate(&self) -> Result<()> {
         anyhow::ensure!(
-            self.edges.len() <= RECORD_LIMIT
-                && self.enforcement.len() <= 2 * RECORD_LIMIT
-                && self.evidence.len() <= 2 * RECORD_LIMIT,
+            self.edges.len() <= RECORD_LIMIT && self.enforcement.len() <= 2 * RECORD_LIMIT,
             "too many edge policy records"
         );
         let mut seen = BTreeSet::new();
@@ -657,7 +641,6 @@ pub struct DirectionView {
     /// "edges.json", "migrated core", "migrated directed", "unenrolled", "unmanaged".
     pub source: String,
     pub enforced: String,
-    pub observed: String,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct EdgeView {
@@ -700,35 +683,12 @@ fn direction_view(s: &Snapshot, from: &str, to: &str) -> DirectionView {
         }
         None => "not applied".into(),
     };
-    let evidence = s
-        .file
-        .evidence
-        .iter()
-        .find(|e| e.from == from && e.to == to);
-    let observed = match evidence {
-        Some(e) => {
-            let mut parts = Vec::new();
-            if let Some(at) = e.last_ok {
-                parts.push(format!("authenticated {}", age(s.now, at)));
-            }
-            if let Some(at) = e.last_failed {
-                parts.push(format!("auth failed {}", age(s.now, at)));
-            }
-            if parts.is_empty() {
-                "not checked".into()
-            } else {
-                parts.join("; ")
-            }
-        }
-        None => "not checked".into(),
-    };
     DirectionView {
         from: from.into(),
         to: to.into(),
         access,
         source: source.label().into(),
         enforced,
-        observed,
     }
 }
 
@@ -884,11 +844,10 @@ pub fn render_list(edges: &[EdgeView]) -> String {
                 (&e.to_name, &e.from_name)
             };
             out.push_str(&format!(
-                "  {from} → {to}: intended {} [{}]; enforced {}; observed {}\n",
+                "  {from} → {to}: intended {} [{}]; enforced {}\n",
                 d.access.label(),
                 d.source,
-                d.enforced,
-                d.observed
+                d.enforced
             ));
         }
         if e.routes_over > 0 {
@@ -1137,8 +1096,6 @@ mod tests {
         assert_eq!(next.access("m1:robot", LOCAL).0, Access::Key);
         let view = graph_with(&next);
         let arm = view.iter().find(|e| e.to == "m1:robot").unwrap();
-        // Only recorded evidence is reported; intent implies nothing about auth.
-        assert_eq!(arm.forward.observed, "not checked");
         assert_eq!(arm.label, "pwd → · key ←");
         // Password then key on a one-way pair keeps the reverse refusal.
         let ow = next.with_edges(next.changed(&change("m1:robot", LOCAL, Policy::OneWay)));
@@ -1269,6 +1226,17 @@ mod tests {
         assert_eq!(records.last().unwrap().state, "fresh");
         assert!(!records.iter().any(|e| e.from == "d0"));
     }
+    /// TR-8: no evidence store without a writer; an older file that has an
+    /// `evidence` list still loads (the field is ignored).
+    #[test]
+    fn edge_files_carry_no_evidence_and_older_files_still_load() {
+        let file: EdgeFile = serde_json::from_value(serde_json::json!({"version": 1,
+            "evidence": [{"from": LOCAL, "to": "m1:robot", "last_ok": 1}]}))
+        .unwrap();
+        file.validate().unwrap();
+        let view = serde_json::to_value(direction_view(&snapshot(), LOCAL, "m1:robot")).unwrap();
+        assert!(view.get("observed").is_none(), "{view}");
+    }
     #[test]
     fn policy_parsing_and_status_strings() {
         use clap::ValueEnum;
@@ -1280,13 +1248,6 @@ mod tests {
         assert!(Policy::from_str("auto", false).is_err());
         assert!(Policy::from_str("PASSWORD", false).is_err());
         let mut s = snapshot();
-        s.file.evidence.push(Evidence {
-            from: LOCAL.into(),
-            to: "m1:robot".into(),
-            last_ok: Some(997),
-            last_failed: Some(400),
-            detail: None,
-        });
         s.file.enforcement.push(Enforcement {
             from: "m1:robot".into(),
             to: LOCAL.into(),
@@ -1294,12 +1255,98 @@ mod tests {
             ok: true,
             at: 880,
         });
-        let v = direction_view(&s, LOCAL, "m1:robot");
-        assert_eq!(v.observed, "authenticated 3s ago; auth failed 10m ago");
         let v = direction_view(&s, "m1:robot", LOCAL);
         assert_eq!(v.enforced, "cx key absent (2m ago)");
         assert_eq!(bounded("x".repeat(300)).chars().count(), DETAIL_LIMIT + 1);
         assert_eq!(age(100_000, 0), "1d ago");
+    }
+
+    /// T1, T2/TR-3: hover/focus prewarm opens nothing over a refused edge;
+    /// an allowed one writes the master's owner record while the setsid'd
+    /// master is still authenticating, so a cx that exits mid-handshake
+    /// leaves it cleanable. A fake `ssh` (only entry on PATH): `-G` prints
+    /// the ControlPath with `%C` expanded, `-N` stays "authenticating" for
+    /// two seconds, `-O` finds no master.
+    #[test]
+    fn prewarm_honours_refused_edges_and_records_its_owner_first() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let state = home.path().join("state");
+        let bin = home.path().join("bin");
+        let log = home.path().join("ssh.log");
+        std::fs::create_dir_all(&bin).unwrap();
+        let script = format!(
+            r#"#!/bin/sh
+echo "$*" >> '{}'
+for a in "$@"; do
+  case "$a" in
+    ControlPath=*) p="${{a#ControlPath=\"}}"; p="${{p%\"}}"; p="${{p%\%C}}" ;;
+    -G) echo "controlpath ${{p}}{}"; exit 0 ;;
+    -O) exit 255 ;;
+    -N) sleep 2; exit 1 ;;
+  esac
+done
+exit 255
+"#,
+            log.display(),
+            "a".repeat(40)
+        );
+        std::fs::write(bin.join("ssh"), script).unwrap();
+        std::fs::set_permissions(bin.join("ssh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        if !crate::mesh::in_child(
+            "edges::tests::prewarm_honours_refused_edges_and_records_its_owner_first",
+            &[
+                ("HOME", home.path()),
+                ("XDG_STATE_HOME", &state),
+                ("PATH", &bin),
+            ],
+        ) {
+            return;
+        }
+        // The child's own tempdir is unused: the fake ssh logs under the parent's HOME.
+        let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+        let (state, log) = (home.join("state"), home.join("ssh.log"));
+        let robot = Device {
+            id: "m9:robot".into(),
+            name: "robot".into(),
+            target: Some("robot@192.0.2.9".into()),
+            account: "robot".into(),
+            host: "robot".into(),
+            status: "unknown".into(),
+            observed_at: 0,
+        };
+        store::save_devices(&[store::local_device(), robot.clone()]).unwrap();
+        let edge = |policy: &str| {
+            let file = serde_json::json!({"version": 1, "edges": [
+                {"from": LOCAL, "to": robot.id, "policy": policy, "updated_at": 1}]});
+            store::write_state("edges.json", &file, 64 * 1024).unwrap();
+        };
+        edge("none");
+        assert!(!transport::prewarm(&robot));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!log.exists(), "ssh ran over a refused edge");
+        edge("key");
+        assert!(transport::prewarm(&robot));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while !std::fs::read_to_string(&log).is_ok_and(|l| l.contains(" -N ")) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no master attempt: {:?}",
+                std::fs::read_to_string(&log)
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let owners: Vec<String> = std::fs::read_dir(state.join("cx/ssh"))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".owner"))
+            .map(|e| {
+                let v: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(e.path()).unwrap()).unwrap();
+                v["target"].as_str().unwrap().to_owned()
+            })
+            .collect();
+        assert_eq!(owners, ["robot@192.0.2.9"]);
     }
 
     /// EP-3/EP-4: UI attach/terminal/run paths build their ssh through interactive_ssh, which refuses a refused

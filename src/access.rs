@@ -49,13 +49,6 @@ pub struct Connection {
     pub reverse: Direction,
     pub bidirectional: bool,
 }
-fn identity(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 256
-        && !s.starts_with('-')
-        && s.bytes()
-            .all(|c| c.is_ascii_alphanumeric() || b"@._-:[]".contains(&c))
-}
 impl Graph {
     pub fn validate(&self) -> Result<()> {
         ensure!(
@@ -66,8 +59,8 @@ impl Graph {
         let mut targets = BTreeSet::new();
         for n in &self.nodes {
             ensure!(
-                identity(&n.id)
-                    && identity(&n.target)
+                crate::store::valid_target(&n.id)
+                    && crate::store::valid_target(&n.target)
                     && ids.insert(&n.id)
                     && targets.insert(&n.target),
                 "invalid or duplicate access identity"
@@ -226,6 +219,17 @@ mod tests {
             })
             .collect(),
         }
+    }
+    /// T9: graph identities use the store's target rule, so a target the
+    /// store would refuse (256 bytes) is refused here too.
+    #[test]
+    fn graph_targets_follow_the_store_rule() {
+        let mut g = graph();
+        g.nodes[0].target = "a".repeat(256);
+        assert!(!crate::store::valid_target(&g.nodes[0].target));
+        assert!(g.validate().is_err());
+        g.nodes[0].target = "a".repeat(255);
+        assert!(g.validate().is_ok());
     }
     #[test]
     fn recursive_access_does_not_imply_reverse_or_viewer_authentication() {

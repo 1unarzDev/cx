@@ -589,8 +589,9 @@ impl App {
                     self.text = self.devices[d].target.clone().unwrap_or_default();
                 }
                 1 => {
+                    self.dialog = None;
                     self.device = d + 1;
-                    self.toggle_access();
+                    self.edit_access();
                 }
                 2 => {
                     self.dialog = Some(Dialog::RemoveDevice(d));

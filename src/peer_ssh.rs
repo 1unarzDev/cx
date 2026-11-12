@@ -384,10 +384,9 @@ pub fn configure(
     authorized_key: &str,
     authorize: bool,
 ) -> Result<Value> {
-    let home = std::env::var_os("HOME").context("HOME is unavailable")?;
     configure_at(
         root(),
-        &PathBuf::from(home).join(".ssh"),
+        &ssh_dir()?,
         peer,
         host_key,
         authorized_key,
@@ -460,15 +459,7 @@ pub fn authorization(
     authorize: bool,
     consent: impl Fn(&str) -> Result<()>,
 ) -> Result<Value> {
-    let home = std::env::var_os("HOME").context("HOME is unavailable")?;
-    authorization_at(
-        root(),
-        &PathBuf::from(home).join(".ssh"),
-        peer_id,
-        client_key,
-        authorize,
-        consent,
-    )
+    authorization_at(root(), &ssh_dir()?, peer_id, client_key, authorize, consent)
 }
 fn authorization_at(
     root: PathBuf,

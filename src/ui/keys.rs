@@ -158,7 +158,7 @@ impl App {
                     self.dialog_detail_focus = false;
                 }
             }
-            Cmd::ToggleAccess => self.toggle_access(),
+            Cmd::EditAccess => self.edit_access(),
             Cmd::RemoveDevice => {
                 if self.device > 0 {
                     self.dialog_selected = 0;

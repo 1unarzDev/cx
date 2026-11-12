@@ -53,6 +53,12 @@ pub fn enroll(mut peer: Device, replace_stale: bool) -> Result<serde_json::Value
         identity(&crate::info()?)? != peer.id,
         "cannot enroll this device as its own peer"
     );
+    // This receiver's own edge policy may refuse SSH back to the peer, at
+    // its offered endpoint or the one already enrolled for it.
+    let enrolled = store::devices()?.into_iter().find(|d| d.id == peer.id);
+    for device in std::iter::once(&peer).chain(&enrolled) {
+        crate::edges::guard(device)?;
+    }
     // Nothing is persisted until reverse authentication and identity are proven.
     let observed = transport::probe_info(peer.target.as_deref().context("missing endpoint")?).context("reverse SSH unavailable; configure the existing SSH route/trust/authentication outside CX and retry pairing")?;
     anyhow::ensure!(
@@ -561,4 +567,57 @@ pub fn sync() -> Result<serde_json::Value> {
     Ok(
         json!({"state":if pending.is_empty(){"ready"}else{"pending"},"pending":pending,"ready":ready,"refused":refused}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// T7: the receiver's own edge policy refuses SSH back to the viewer
+    /// before any probe runs. A fake `ssh` (only entry on PATH) records any call.
+    #[test]
+    fn enroll_honours_the_receivers_refused_edge() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let state = home.path().join("state");
+        let bin = home.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let marker = home.path().join("ssh-ran");
+        std::fs::write(
+            bin.join("ssh"),
+            format!("#!/bin/sh\n: > '{}'\nexit 255\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(bin.join("ssh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        if !crate::mesh::in_child(
+            "peers::tests::enroll_honours_the_receivers_refused_edge",
+            &[
+                ("HOME", home.path()),
+                ("XDG_STATE_HOME", &state),
+                ("PATH", &bin),
+            ],
+        ) {
+            return;
+        }
+        // The child's own tempdir is unused: the fake ssh marks the parent's HOME.
+        let marker = std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join("ssh-ran");
+        let viewer = Device {
+            id: "m9:viewer".into(),
+            name: "viewer".into(),
+            target: Some("viewer@192.0.2.9".into()),
+            account: "viewer".into(),
+            host: "viewer".into(),
+            status: "unknown".into(),
+            observed_at: 0,
+        };
+        // Enrolled at an older endpoint: the offered one does not resolve by target.
+        let mut enrolled = viewer.clone();
+        enrolled.target = Some("viewer@192.0.2.8".into());
+        store::save_devices(&[store::local_device(), enrolled]).unwrap();
+        let file = serde_json::json!({"version": 1, "edges": [
+            {"from": crate::edges::LOCAL, "to": viewer.id, "policy": "none", "updated_at": 1}]});
+        store::write_state("edges.json", &file, 64 * 1024).unwrap();
+        let refused = enroll(viewer, false).unwrap_err().to_string();
+        assert!(refused.contains("edge policy refuses"), "{refused}");
+        assert!(!marker.exists(), "ssh ran");
+    }
 }

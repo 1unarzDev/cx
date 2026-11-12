@@ -1118,7 +1118,7 @@ fn read_trust(path: &std::path::Path) -> Vec<u8> {
 }
 
 /// Run a bounded local mux control command against one expanded socket.
-pub(crate) fn control_exit(socket: &std::path::Path) -> bool {
+fn control_exit(socket: &std::path::Path) -> bool {
     use std::process::Stdio;
     let Ok(option) = control_path_option(socket, false) else {
         return false;
@@ -1134,17 +1134,26 @@ pub(crate) fn control_exit(socket: &std::path::Path) -> bool {
     let Ok(mut child) = command.spawn() else {
         return false;
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    wait_bounded(&mut child, std::time::Duration::from_secs(3)) == Some(true)
+}
+
+/// Wait at most `limit` for a local control command; a late one is killed
+/// and reaped (None).
+pub(crate) fn wait_bounded(
+    child: &mut std::process::Child,
+    limit: std::time::Duration,
+) -> Option<bool> {
+    let deadline = std::time::Instant::now() + limit;
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
+            Ok(Some(status)) => return Some(status.success()),
             Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(10))
+                std::thread::sleep(std::time::Duration::from_millis(5))
             }
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return false;
+                return None;
             }
         }
     }
@@ -1266,7 +1275,7 @@ fn close_masters_in(dir: &std::path::Path, target: &str) -> usize {
             closed += 1;
         }
         // A refused or hung master is unreachable once its name is gone;
-        // `cx orphans` then reports it and ControlPersist bounds its life.
+        // its ControlPersist idle timer bounds its life.
         let _ = fs::remove_file(&socket);
         let _ = fs::remove_file(entry.path());
     }

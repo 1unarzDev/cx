@@ -75,10 +75,29 @@ fn device_access_marker_and_toggle_guard_are_clear() {
     a.policies[1].access = store::AccessMode::Directed;
     let rendered = capture_app(&a, 80);
     assert!(rendered.contains("single-direction"), "{rendered}");
-    // The hub has no device scope: the toggle says so and changes nothing.
+    // The hub has no device scope: `b` says so and changes nothing.
     a.go_hub();
-    a.run_cmd(keymap::Cmd::ToggleAccess);
+    a.run_cmd(keymap::Cmd::EditAccess);
     assert!(a.notice.contains("Select one remote device"));
+    assert!(a.edge.is_none());
+}
+
+/// T6: `b` on a device screen opens the edge editor for the viewer's link to
+/// it (edges.json is the one access policy); it never flips the posture.
+#[test]
+fn access_key_opens_the_viewer_link_in_the_edge_editor() {
+    let (mut a, _) = queued_app();
+    a.policies[1].access = store::AccessMode::Core;
+    a.open_device(1);
+    press(&mut a, 'b');
+    assert_eq!(a.edge.as_ref().map(|e| e.id.as_str()), Some("0-1"));
+    assert_eq!(a.policies[1].access, store::AccessMode::Core);
+    a.edge = None;
+    press(&mut a, 'E');
+    a.dialog_selected = 1;
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(a.dialog.is_none());
+    assert_eq!(a.edge.as_ref().map(|e| e.id.as_str()), Some("0-1"));
 }
 
 #[test]
@@ -88,9 +107,7 @@ fn device_edit_menu_is_remote_only_and_offers_address_or_remove() {
     app.open_device(1);
     press(&mut app, 'E');
     assert!(matches!(app.dialog, Some(Dialog::EditDevice(1))));
-    assert!(capture_app(&app, 120).contains("Access: core (reverse unverified)"));
-    app.policies[1].access = store::AccessMode::Directed;
-    assert!(capture_app(&app, 120).contains("Access: single-direction"));
+    assert!(capture_app(&app, 120).contains("Access · edit the link policy"));
     press(&mut app, 'G');
     assert_eq!(app.dialog_selected, 3);
     app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));

@@ -856,40 +856,17 @@ impl App {
     fn background_checks_enabled(&self, device: usize) -> bool {
         device < self.devices.len()
     }
-    fn toggle_access(&mut self) {
+    /// `b` (and the edit menu's access entry): the edge editor for the
+    /// viewer's link to this device, the one place access policy is set.
+    fn edit_access(&mut self) {
         let Some(device) = self.device.checked_sub(1) else {
             self.set_notice_as(
                 NoticeKind::Warning,
-                "Select one remote device before changing its access posture".into(),
+                "Select one remote device before changing its access".into(),
             );
             return;
         };
-        let current = self.device_policy(device);
-        let next = match current.access {
-            store::AccessMode::Core => store::AccessMode::Directed,
-            store::AccessMode::Directed => store::AccessMode::Core,
-        };
-        match store::set_access(&self.devices[device], next) {
-            Ok(policy) => {
-                if let Some(slot) = self.policies.get_mut(device) {
-                    *slot = policy;
-                }
-                let message = match next {
-                    store::AccessMode::Core => {
-                        "Core posture saved; connections will be configured automatically"
-                    }
-                    store::AccessMode::Directed => "Viewer-to-device access only",
-                };
-                self.set_notice_as(
-                    NoticeKind::Success,
-                    format!("{message} · {}", identity(&self.devices[device])),
-                );
-            }
-            Err(error) => self.set_notice_as(
-                NoticeKind::Error,
-                safe_text(&format!("Access posture unchanged: {error:#}")),
-            ),
-        }
+        self.open_edge(self.local_index(), device);
     }
     // These collections use device vector indices. Clear them as one unit
     // whenever an endpoint changes or removing a device shifts those indices.

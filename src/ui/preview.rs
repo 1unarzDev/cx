@@ -72,6 +72,27 @@ pub(super) fn hanging_lines(line: &Line<'static>, prefix: usize, width: u16) -> 
     if prefix >= usize::from(width) || prefix == 0 {
         return vec![line.clone()];
     }
+    let (leading, body) = split_prefix(line, prefix);
+    let body_width = width - prefix as u16;
+    // Most list rows fit: the same row without a render pass (the wrap below costs a
+    // buffer per line, most of a 1 MiB document's layout).
+    let fits = body.iter().map(Span::width).sum::<usize>() <= usize::from(body_width);
+    if fits
+        && !body
+            .first()
+            .is_some_and(|s| s.content.starts_with(char::is_whitespace))
+    {
+        let mut spans = leading;
+        spans.extend(body);
+        if let Some(last) = spans.last_mut() {
+            last.content = last.content.trim_end().to_owned().into();
+        }
+        return vec![Line::from(spans)];
+    }
+    wrap_hanging(line, leading, body, prefix, body_width)
+}
+/// The first `prefix` columns' spans and the rest.
+fn split_prefix(line: &Line<'static>, prefix: usize) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
     let mut leading = Vec::new();
     let mut body = Vec::new();
     let mut remaining = prefix;
@@ -91,7 +112,16 @@ pub(super) fn hanging_lines(line: &Line<'static>, prefix: usize, width: u16) -> 
         }
         remaining -= take;
     }
-    let body_width = width - prefix as u16;
+    (leading, body)
+}
+/// `hanging_lines` for a body wider than its column: ratatui's word wrap, read back.
+fn wrap_hanging(
+    line: &Line<'static>,
+    leading: Vec<Span<'static>>,
+    body: Vec<Span<'static>>,
+    prefix: usize,
+    body_width: u16,
+) -> Vec<Line<'static>> {
     let paragraph = Paragraph::new(Line::from(body)).wrap(Wrap { trim: true });
     let height = paragraph.line_count(body_width).max(1);
     if height > 8192 {
@@ -1718,5 +1748,40 @@ impl App {
         self.dialog_scroll = 0;
         self.dialog_detail_focus = false;
         self.dialog = Some(Dialog::Links(links));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fast path for a row that fits draws exactly what the wrap pass draws.
+    #[test]
+    fn a_hanging_row_that_fits_draws_like_the_wrapped_one() {
+        let code = tok(Tok::Code);
+        let rows = [
+            Line::from(vec![
+                Span::raw("- list item 12 with "),
+                Span::styled("code", code),
+            ]),
+            Line::from(vec![Span::raw("  "), Span::raw("continued words  ")]),
+            Line::from(vec![
+                Span::styled("1. ", muted()),
+                Span::raw("漢字 and *emphasis*"),
+            ]),
+        ];
+        let draw = |lines: Vec<Line<'static>>| {
+            let rect = Rect::new(0, 0, 60, lines.len() as u16);
+            let mut buffer = ratatui::buffer::Buffer::empty(rect);
+            ratatui::widgets::Widget::render(Paragraph::new(lines), rect, &mut buffer);
+            buffer
+        };
+        for (line, prefix) in rows.iter().zip([2, 2, 3]) {
+            let fast = hanging_lines(line, prefix, 60);
+            assert_eq!(fast.len(), 1);
+            let (leading, body) = split_prefix(line, prefix);
+            let slow = wrap_hanging(line, leading, body, prefix, 60 - prefix as u16);
+            assert_eq!(draw(fast), draw(slow), "{line:?}");
+        }
     }
 }

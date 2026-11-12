@@ -4,6 +4,19 @@
 - Integrated: the final Mission design (revamp/design-final), instant sessions (revamp/instant: helper Watch, one tmux control client per server, one wake channel, warm masters), hub tiles from in-memory frames and watch events, `+` opening a real ssh-overlay invite (code, `cx mesh pair` line, QR; closed on use, expiry, Esc or `R`), a masked set/rotate entry on the keys screen, `cx join`.
 - Fixed for the release: the invite listener's reset race (drain before close), relay probe ETXTBSY under parallel forks, markdown first paint (one layout, tagged layout on first click), the 100k sibling-folder double read (Enter waits on the prefetch), update fixtures past 0.2.0, Ubuntu 24.04 fixture cleanup race, session_watch_live and perf_harness instant_* on the hub.
 - Gates (2026-11-12): fmt, clippy (no new warning kinds vs b4174c4), `cargo test --locked` twice green, release build, regression ledger with SSH 60/61 then session_watch_live green once ported to the hub, ubuntu:24.04 CI-checks reproduction, static musl x86_64/aarch64, A/B vs v0.1.95 (CHANGELOG v0.2.0), captures dark and ASCII at 4 sizes.
+- A/B vs the v0.1.95 release binary (medians; perf_harness 3 interleaved runs, files_bench 3 x 2 runs; v0.1.95 measured with its own-era harness 01c08b4 for its keys):
+
+  | metric | v0.1.95 | v0.2.0 |
+  |---|---|---|
+  | select → screen (peek), local / over SSH | n/a | 5.8 / 6.5 ms |
+  | keystroke echo, peeked session (SSH) | 101 ms | 1.5 ms (2.1) |
+  | Enter → attached (SSH) | 83 ms | 12 ms (34) |
+  | detach → cx | 270 ms | 17 ms |
+  | first rows 1k / 20k / 100k (cold) | 124 / 124 / 124 ms | 45 / 46 / 46 ms |
+  | 100k sibling folder | 107 ms | 43 ms |
+  | preview first paint src 5 MB / md 2 MB | 105 / 111 ms | 5.7 / 6.5 ms |
+  | preview scroll j, src 5 MB / md 2 MB | 5.3 / 3.5 ms | 4.5 / 3.5 ms |
+  | viewer start → Files ready | 47 ms | 147 ms |
 - Open: startup to the first Files frame is ~147 ms (v0.1.95 ~47 ms; present before the port); one 100k sibling run in six still ~80 ms; G to the end of a 2 MB Markdown preview ~106 ms; the invite screen has no clipboard copy yet; capture_matrix flags the keys screen's "Cloudflare…" as a cut interface name (false positive).
 
 ## Claude gateway lends (Unreleased)

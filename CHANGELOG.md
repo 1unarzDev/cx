@@ -20,6 +20,7 @@ A new interface and a faster core. Everything below is new since v0.1.95. Number
 - Enter on a session attaches directly when its device answered within the last minute; a refused attach refreshes the list and says so.
 - Identical session captures no longer redraw; Markdown previews lay out once at the width they are drawn; a relay version probe retries a just-written binary that is briefly "text file busy".
 - An ssh-overlay invite drains a refused request before closing, so the joiner always reads why it was refused.
+- After a detach, the session you left always has a tile on the hub, even when it ranks below the row.
 
 ### Changes
 - The static release binaries are 16.1 MB (x86_64) and 15.5 MB (ARM64), up from 13.6 MB for v0.1.95 x86_64. The OS keyring is reached through `secret-tool` rather than the keyring crate stack (which added about 5 MB and 84 packages); the QR code adds `qrcode`, which has no dependencies of its own.

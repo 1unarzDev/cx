@@ -85,7 +85,8 @@ for view in ['Files','Work']:
     display=lambda:'\n'.join(screen.display)
     wait(lambda:f'{ordered[5]} · ' in display() and ' live' in display())
     target=next(r['id'] for r in sessions if r['name']==ordered[5])
-    def clients():return subprocess.check_output(['tmux','-S',socket,'list-clients','-F','#{session_name}'],env=env,text=True).splitlines()
+    # Native clients only: the viewer's control-mode client (its live watch) is not one.
+    def clients():return [l[2:] for l in subprocess.check_output(['tmux','-S',socket,'list-clients','-F','#{client_control_mode} #{session_name}'],env=env,text=True).splitlines() if l.startswith('0 ')]
     before_native=len(raw);send(b'\r')
     wait(lambda:clients()==[target] and b'Ctrl+\\' in raw[before_native:] and b'detach' in raw[before_native:])
     assert b'\x1b[?1000l' in raw[before_native:],'cx releases mouse before native terminal'

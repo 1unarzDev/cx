@@ -404,7 +404,9 @@ pub fn watch(sessions: bool, pane: Option<Session>, emit: Emit) -> Result<serde_
             .lock()
             .map_err(|_| anyhow::anyhow!("control lock"))?;
         state.generation += 1;
-        state.pane_dirty = false;
+        // Output between the first capture and now went unnoticed: one more
+        // capture (a frame later, sent only if the screen changed) covers it.
+        state.pane_dirty = watched.is_some();
         state.pane = watched;
         state.list_dirty = None;
         state.generation

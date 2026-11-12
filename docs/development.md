@@ -44,7 +44,7 @@ Record changes in [CHANGELOG.md](../CHANGELOG.md). Before tagging a stable versi
 | `menus.rs` | Session choices shared by labels/shortcuts/dispatch; container display labels |
 | `notifications.rs` | Typed floating panels, bounded layout and timed animation |
 | `rendering.rs` | Layout and rendering; no request dispatch |
-| `session_preview.rs`, `workspaces.rs`, `container_agents.rs` | Session pane preview (zoom, inline input, detach chip, echo polling, parsed-screen cache), workspace session identity and attach, container agent profiles |
+| `session_preview.rs`, `workspaces.rs`, `container_agents.rs` | Session pane preview (zoom, inline input, detach chip, helper watch with polling fallback, remembered frames, parsed-screen cache), workspace session identity and attach, container agent profiles |
 | `session_rows.rs` | Session row anatomy, identity swatches, activity history/sparkline, hover state |
 | `tests.rs` | Existing UI and cross-panel regression fixtures |
 
@@ -57,6 +57,8 @@ Emit notifications through `App::set_notice` (Info) or `App::set_notice_as` with
 Network observation and SSH jump routes work. Internet sharing, full trust/revocation and full uninstall are not release-ready. No public hostnames or mesh provider are required. See [robot mesh sharing](robot-mesh-sharing.md) for access policy, sharing previews and their acceptance requirements, and [robot execution and updates](robot-tools.md) for platform-specific tooling.
 
 For session naming research, see [Codex session identity](../research/codex-session-names.md).
+
+Sessions are pushed, not polled. The event loop blocks on one channel fed by the input thread (parked for every terminal handoff), task replies and helper events. Each capable device (`watch-v1`) holds one `Watch` on its interactive helper channel: the reply carries the selected screen, then `evt:<n>` frames push the session list and that screen. In the helper, `src/sessions/control.rs` runs one `tmux -C` client per managed server (tmux >= 3.2, `ignore-size`, parked in the hidden `cxctl` session). `%output` only wakes a capture, which runs through the client at most 60 times a second, and keystrokes go through it as `send-keys -H`. Captures are never written to disk. tmux < 3.2, a refused watch or `CX_TMUX_CONTROL=0` uses the polling path. Helper channels are interactive, capabilities, metadata and bulk, all over one SSH master, and the task workers use the same lanes. `tests/perf_harness.py` (`instant_*`) measures the latency targets, and `tests/session_watch_live.py` covers control-client loss, attach cycles and old/new protocol mixes.
 
 Session adoption (`src/adoption.rs`) discovers outside-CX terminals by reading `/proc`, pairing each session leader with the process holding its PTY master. `sessions::adopt` moves one by running the guarded `cx-reptyr -T` relay in a managed pane. The relay is built by `scripts/build-portable-reptyr.sh` from pinned reptyr 0.10.0 plus `scripts/reptyr/` (uid/start-time guard, SEIZE-based attach, capability drop). Adopted records keep `origin`, and inspection follows the original leader instead of pane descendants. This supersedes the earlier "never automate migration" note; see [the adoption research](../research/session-adoption.md). Live fixtures run under `unshare -Ur`, or with `CX_ADOPT_CAPABLE=1` and a `setcap` relay in CI. Debug builds accept a fixture relay through `CX_ADOPT_REPTYR`.
 

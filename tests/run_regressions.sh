@@ -63,6 +63,7 @@ CORE=(
     "codex_process_mode_live||BIN"
     "session_names_live||BIN"
     "install_fixture||"
+    "workflow_keys||"
     "device_policy_cli||BIN"
     "codex_wheel_pty||BIN"
     "codex_wheel_threads_pty||BIN"

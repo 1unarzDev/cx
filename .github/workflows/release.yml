@@ -39,8 +39,6 @@ jobs:
           PATH="$RUNNER_TEMP/cx-devcontainer-cli/node_modules/.bin:$PATH" python3 tests/devcontainer_cli_live.py target/debug/cx
   portable:
     uses: ./.github/workflows/portable.yml
-  portable:
-    uses: ./.github/workflows/portable.yml
   publish:
     needs: [checks, portable]
     runs-on: ubuntu-24.04

@@ -322,7 +322,7 @@ def preview_region(viewer, name):
     (the hub design: the open preview's PREVIEW label row, the surface to the footer)."""
     display = viewer.screen.display
     if hub_layout(viewer):
-        top = next((y for y, line in enumerate(display) if line[:6].lstrip(' ▍>').startswith('PREVIEW')), None)
+        top = next((y for y, line in enumerate(display) if line[:12].lstrip(' ▍>').startswith('PREVIEW')), None)
         return None if top is None else (top, len(display) - 1, 1)
     corners = '╭┏+#┌'
     top = next((y for y, line in enumerate(display)
@@ -470,9 +470,10 @@ def scenario_sessions(binary, cycles):
         assert created.returncode == 0, 'cx new failed'
         viewer = Viewer(env, 'Work')
         try:
-            hub = hub_layout(viewer)
             viewer.wait(lambda: 'perf-shell' in viewer.text()
-                        and ('Enter Attach' in viewer.text() or (hub and 'attach' in viewer.text())), what='session row')
+                        and ('Enter Attach' in viewer.text() or (hub_layout(viewer) and 'attach' in viewer.text())),
+                        what='session row')
+            hub = hub_layout(viewer)
             if hub:
                 # The hub design types into a session by a tap on its peeked screen.
                 viewer.measure(b' ', lambda: 'OTHERS' in viewer.text() or 'tab' in viewer.screen.display[-1], timeout=TIMEOUT)

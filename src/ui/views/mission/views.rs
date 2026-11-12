@@ -1583,16 +1583,18 @@ fn files(cx: &Cx, buf: &mut Buffer, r: Rect) {
         buf,
         list.right(),
         r.y,
-        &format!("{} items", f.entries.len()),
+        &format!("{} items", f.total.max(f.offset + f.entries.len())),
         cx.st(Tok::Muted),
     );
     let mut rows = list.height as usize;
     let first = sel.saturating_sub(rows.saturating_sub(3));
     // A cut tree says so on its last row (`+1 more ↓`), never silently.
-    let cut = f.entries.len().saturating_sub(first) > rows;
+    // (A window of a long listing: the rows after it count as more.)
+    let total = f.total.max(f.offset + f.entries.len()) - f.offset;
+    let cut = total.saturating_sub(first) > rows;
     if cut {
         rows -= 1;
-        let more = f.entries.len() - first - rows;
+        let more = total - first - rows;
         let t = format!("+{more} more{}", cx.g(" ↓", ""));
         cx.put(
             buf,

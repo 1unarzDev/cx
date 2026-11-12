@@ -215,6 +215,10 @@ pub struct LabFiles {
     pub previews: Vec<LabPreview>,
     /// Path (relative to cwd) the FilePreview view shows.
     pub preview_path: String,
+    /// `entries` may be a window of a long listing: its first row's index in the
+    /// listing, and the listing's length (fixtures: 0 and entries.len()).
+    pub offset: usize,
+    pub total: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -673,6 +677,8 @@ fn files_fixture(device: &str) -> LabFiles {
             },
         ],
         preview_path: "src/transport.rs".into(),
+        offset: 0,
+        total: 0,
     }
 }
 

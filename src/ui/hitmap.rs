@@ -7,10 +7,11 @@ use super::navigation::Target;
 use super::{
     accent, ascii, muted, navigation, selected_style, App, Block, Borders, Clear, Focus, Frame,
     Input, KeyCode, KeyEvent, Line, Modifier, MouseEvent, MouseEventKind, Paragraph, Rect, Span,
-    Style,
+    Style, View,
 };
 use crossterm::event::MouseButton;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// Holding a press this long (without moving off the target) opens the
@@ -60,30 +61,13 @@ pub(super) fn begin() {
     MAP.with(|m| m.borrow_mut().hits.clear());
     ACTIONS.with(|a| a.borrow_mut().clear());
 }
-/// Register a view-layer target. A file row becomes the Files list row it shows, so a
-/// tap and the keyboard select through the same list.
-pub(super) fn register_action(rect: Rect, action: &str, app: &App) {
+/// Register a view-layer target. A file row becomes the Files list row it shows
+/// (`files`: the rows near the selection by drawn name), so a tap and the keyboard
+/// select through the same list.
+pub(super) fn register_action(rect: Rect, action: &str, files: &HashMap<String, usize>) {
     if let Some(name) = action.strip_prefix("file:") {
-        if let Some(b) = app.active_browser() {
-            let rows = super::browser_entries(b);
-            let sel = b.selected;
-            // Visible rows sit around the selection; look there first.
-            let near = sel.saturating_sub(256)..(sel + 256).min(rows.len());
-            let found = near
-                .clone()
-                .find(|&i| {
-                    rows.get(i)
-                        .is_some_and(|e| super::safe_label(&e.name) == name)
-                })
-                .or_else(|| {
-                    (0..rows.len()).find(|&i| {
-                        rows.get(i)
-                            .is_some_and(|e| super::safe_label(&e.name) == name)
-                    })
-                });
-            if let Some(i) = found {
-                register(rect, Hit::Row(ListId::Files, i));
-            }
+        if let Some(&i) = files.get(name) {
+            register(rect, Hit::Row(ListId::Files, i));
         }
         return;
     }
@@ -93,6 +77,16 @@ pub(super) fn register_action(rect: Rect, action: &str, app: &App) {
         a.len() - 1
     });
     register(rect, Hit::View(index));
+}
+/// The Files rows a frame can show, by the name the view draws (see `register_action`).
+pub(super) fn file_rows(app: &App) -> HashMap<String, usize> {
+    let Some(b) = app.active_browser().filter(|_| app.view == View::Files) else {
+        return HashMap::new();
+    };
+    let rows = super::browser_entries(b);
+    let near = b.selected.saturating_sub(256)..(b.selected + 256).min(rows.len());
+    near.filter_map(|i| rows.get(i).map(|e| (super::safe_label(&e.name), i)))
+        .collect()
 }
 /// The action behind a `Hit::View`.
 pub(super) fn action(index: usize) -> Option<String> {

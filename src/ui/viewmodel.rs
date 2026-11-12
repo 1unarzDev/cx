@@ -332,6 +332,9 @@ fn sessions(app: &App) -> Vec<LabSession> {
     out
 }
 
+/// Rows on either side of the selection the Files view is given.
+const WINDOW: usize = 256;
+
 fn files(app: &App) -> LabFiles {
     let Some(b) = app.active_browser() else {
         return LabFiles {
@@ -341,12 +344,18 @@ fn files(app: &App) -> LabFiles {
             selected: 0,
             previews: Vec::new(),
             preview_path: String::new(),
+            offset: 0,
+            total: 0,
         };
     };
     let now = transport::now() as i64;
     let rows = super::browser_entries(b);
-    let entries = rows
-        .iter()
+    // Only a window around the selection (more than any screen holds), so a
+    // 20,000-entry folder costs the same per frame as a small one.
+    let offset = b.selected.saturating_sub(WINDOW);
+    let end = (b.selected + WINDOW).min(rows.len());
+    let entries = (offset..end)
+        .filter_map(|i| rows.get(i))
         .map(|e| FileNode {
             name: safe_label(&e.name),
             depth: 0,
@@ -371,8 +380,14 @@ fn files(app: &App) -> LabFiles {
             .as_ref()
             .and_then(|p| p.preview.as_ref().map(|t| (p, t))),
     ) {
-        (Some(text), _) => (b.preview_path.clone().unwrap_or_default(), text.clone()),
-        (None, Some((p, text))) => (p.preview_path.clone().unwrap_or_default(), text.clone()),
+        (Some(text), _) => (
+            b.preview_path.clone().unwrap_or_default(),
+            preview_stub(text),
+        ),
+        (None, Some((p, text))) => (
+            p.preview_path.clone().unwrap_or_default(),
+            preview_stub(text),
+        ),
         _ => (String::new(), String::new()),
     };
     let name = path.rsplit('/').next().unwrap_or("").to_string();
@@ -385,7 +400,9 @@ fn files(app: &App) -> LabFiles {
         device: dev_id(b.device),
         cwd: safe_label(&b.display_path),
         entries,
-        selected: b.selected,
+        selected: b.selected - offset,
+        offset,
+        total: rows.len(),
         previews: if path.is_empty() && b.preview.is_none() {
             Vec::new()
         } else {
@@ -405,6 +422,14 @@ fn files(app: &App) -> LabFiles {
             selected
         },
     }
+}
+
+/// The view layer needs a preview's line count and its first screenful (the app
+/// draws the real body over it): not a copy of a multi-megabyte text each frame.
+fn preview_stub(text: &str) -> String {
+    let head: String = text.lines().take(120).collect::<Vec<_>>().join("\n");
+    let rest = text.lines().count().saturating_sub(120);
+    head + &"\n".repeat(rest)
 }
 
 /// Secret names and metadata only (never values), as `cx secrets list` shows them.

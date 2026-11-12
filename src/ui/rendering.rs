@@ -69,6 +69,7 @@ fn render_frame(
     );
     // One workspace panel takes the wheel (and the open preview's clicks).
     *app.panels.borrow_mut() = vec![(Focus::Workspace, false, body)];
+    let files = hitmap::file_rows(app);
     let mut preview = None;
     for t in &drawn.targets {
         // Two surfaces the app draws and routes itself (preview links and wheel,
@@ -76,7 +77,7 @@ fn render_frame(
         match t.action.as_str() {
             "preview-body" => preview = Some(t.area),
             "peek-screen" => app.set_preview_screen(t.area),
-            _ => hitmap::register_action(t.area, &t.action, app),
+            _ => hitmap::register_action(t.area, &t.action, &files),
         }
     }
     // The real file preview draws its body where the design put the preview surface.
@@ -138,7 +139,7 @@ fn render_frame(
         for t in
             views::mission::render_palette(&vm.state, &vm.caps, area, frame.buffer_mut(), query)
         {
-            hitmap::register_action(t.area, &t.action, app);
+            hitmap::register_action(t.area, &t.action, &files);
         }
     }
     let workspace = body;

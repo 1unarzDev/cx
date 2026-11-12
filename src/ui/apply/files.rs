@@ -405,7 +405,11 @@ impl App {
                         Operation::ListPage {
                             path: b.path.clone(),
                             offset,
-                            limit: if ordered { FIRST_PAGE_LIMIT as u32 } else { 1000 },
+                            limit: if ordered {
+                                FIRST_PAGE_LIMIT as u32
+                            } else {
+                                1000
+                            },
                         },
                     );
                     if let Some(b) = &mut self.browser {

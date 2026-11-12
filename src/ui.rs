@@ -140,6 +140,8 @@ struct RichPreview {
     title: String,
     raster: Option<(usize, usize, Vec<u8>)>,
     styled: Option<Vec<Line<'static>>>,
+    /// The helper sent only the start of the file.
+    truncated: bool,
     page: u32,
     pages: Option<u32>,
     /// A streamed text continuation, prepared off the UI thread (`ReadChunk` replies).
@@ -205,6 +207,7 @@ impl RichPreview {
             kind: value["kind"].as_str().unwrap_or("text").to_owned(),
             title: safe_label(value["title"].as_str().unwrap_or("Preview")),
             raster,
+            truncated: value["truncated"] == true,
             page: value["page"]
                 .as_u64()
                 .and_then(|v| u32::try_from(v).ok())

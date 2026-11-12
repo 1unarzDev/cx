@@ -1840,9 +1840,11 @@ fn file_preview(cx: &Cx, buf: &mut Buffer, r: Rect, full: bool) {
         PreviewKind::Markdown => "markdown",
         PreviewKind::Source(l) => l,
     };
-    let lines: Vec<&str> = p.text.lines().collect();
     cx.label(buf, r.x, r.y, r.width, "PREVIEW", false);
-    let meta = format!("{} · {} · {} lines", p.path, lang, lines.len());
+    let mut meta = format!("{} · {} · {} lines", p.path, lang, p.lines);
+    if let Some(note) = &p.note {
+        meta = format!("{meta} · {note}");
+    }
     cx.put_r(
         buf,
         r.right(),
@@ -1855,7 +1857,9 @@ fn file_preview(cx: &Cx, buf: &mut Buffer, r: Rect, full: bool) {
         r.x,
         r.y + 1,
         r.width,
-        r.height.saturating_sub(1).min(lines.len() as u16 + 1),
+        r.height
+            .saturating_sub(1)
+            .min(p.lines.min(u16::MAX as usize - 1) as u16 + 1),
     );
     // The preview surface: a tap target, and where the app draws its real preview.
     cx.hit(body, "preview-body");
@@ -1864,7 +1868,7 @@ fn file_preview(cx: &Cx, buf: &mut Buffer, r: Rect, full: bool) {
     }
     let gw = 5u16;
     let mut in_code = false;
-    for (i, l) in lines.iter().take(body.height as usize).enumerate() {
+    for (i, l) in p.text.lines().take(body.height as usize).enumerate() {
         let y = body.y + i as u16;
         cx.put(
             buf,

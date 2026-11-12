@@ -67,7 +67,7 @@ impl Target for Files<'_> {
                 b.preview_find.reveal.set(false);
                 // End follows a streaming preview to its end; nearer scrolling loads ahead.
                 if let Some(stream) = &mut b.stream {
-                    stream.follow = delta >= 1000 && b.preview_scroll.get() >= max;
+                    stream.follow = delta == super::navigation::END;
                 }
                 self.app.pump_preview_stream();
                 return;

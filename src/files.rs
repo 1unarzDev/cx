@@ -2036,7 +2036,10 @@ mod tests {
         let mut all = names(&first);
         all.extend(names(&rest));
         let want: Vec<_> = (0..1499).map(|i| format!("f{i:04}")).collect();
-        assert_eq!(all, want, "one snapshot; the removed entry is skipped, not an error");
+        assert_eq!(
+            all, want,
+            "one snapshot; the removed entry is skipped, not an error"
+        );
         assert!(rest["next_offset"].is_null());
         // Opening again always rereads.
         assert_eq!(list(d.path()).unwrap()["total"], 1500);
@@ -2050,13 +2053,7 @@ mod tests {
             fs::write(d.path().join(format!("f{i:04}")), b"").unwrap();
         }
         let path = fs::canonicalize(d.path()).unwrap();
-        let cached = || {
-            SNAPSHOTS
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|s| s.key.path == path)
-        };
+        let cached = || SNAPSHOTS.lock().unwrap().iter().any(|s| s.key.path == path);
         let restart = list_page(d.path(), 1000, 1000).unwrap();
         assert_eq!(restart["restart"], true);
         assert_eq!(restart["entries"], json!([]));

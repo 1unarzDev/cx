@@ -202,7 +202,11 @@ pub enum PreviewKind {
 pub struct LabPreview {
     pub path: String,
     pub kind: PreviewKind,
+    /// The first screenful; `lines` counts the whole preview.
     pub text: String,
+    pub lines: usize,
+    /// Why the preview is not the whole file (e.g. "first 4.0 MiB of 5.2 MiB").
+    pub note: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -680,11 +684,15 @@ fn files_fixture(device: &str) -> LabFiles {
                 path: "README.md".into(),
                 kind: PreviewKind::Markdown,
                 text: README.into(),
+                lines: README.lines().count(),
+                note: None,
             },
             LabPreview {
                 path: "src/transport.rs".into(),
                 kind: PreviewKind::Source("rust"),
                 text: RUST_SRC.into(),
+                lines: RUST_SRC.lines().count(),
+                note: None,
             },
         ],
         preview_path: "src/transport.rs".into(),

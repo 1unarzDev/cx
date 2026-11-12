@@ -380,25 +380,13 @@ fn files(app: &App) -> LabFiles {
             git: None,
         })
         .collect();
-    // The preview the screen shows: the open one, else the inline peek. Only its path and
-    // text are given; the real preview renderer draws its body.
-    let (path, text) = match (
-        &b.preview,
-        b.peek
-            .as_ref()
-            .and_then(|p| p.preview.as_ref().map(|t| (p, t))),
-    ) {
-        (Some(text), _) => (
-            b.preview_path.clone().unwrap_or_default(),
-            preview_stub(text),
-        ),
-        (None, Some((p, text))) => (
-            p.preview_path.clone().unwrap_or_default(),
-            preview_stub(text),
-        ),
-        _ => (String::new(), String::new()),
+    // The preview the screen shows: the open one, else the inline peek. Only its path, kind,
+    // line count and first screenful are given; the real preview renderer draws its body.
+    let shown = match (&b.preview, b.peek.as_deref()) {
+        (Some(_), _) => Some(b),
+        (None, Some(p)) if p.preview.is_some() => Some(p),
+        _ => None,
     };
-    let name = path.rsplit('/').next().unwrap_or("").to_string();
     // The selected entry's name (the design's facts and send line say it).
     let selected = rows
         .get(b.selected)
@@ -411,37 +399,39 @@ fn files(app: &App) -> LabFiles {
         selected: b.selected - offset,
         offset,
         total: rows.len(),
-        previews: if path.is_empty() && b.preview.is_none() {
-            Vec::new()
-        } else {
-            vec![LabPreview {
-                path: safe_label(&name),
-                kind: if name.ends_with(".md") {
-                    PreviewKind::Markdown
-                } else {
-                    PreviewKind::Source("text")
-                },
-                text,
-            }]
-        },
+        previews: shown.map(lab_preview).into_iter().collect(),
         preview_path: if b.preview.is_some() {
-            safe_label(&name)
+            let path = b.preview_path.as_deref().unwrap_or("");
+            safe_label(path.rsplit('/').next().unwrap_or(""))
         } else {
             selected
         },
     }
 }
 
-/// The view layer needs a preview's line count and its first screenful (the app
-/// draws the real body over it): not a copy of a multi-megabyte text each frame.
-fn preview_stub(text: &str) -> String {
-    let head: String = text.lines().take(120).collect::<Vec<_>>().join("\n");
-    // (Counting bytes, not `lines()`: a few-megabyte preview is counted every frame.)
-    let count = text.bytes().filter(|&b| b == b'\n').count() + usize::from(!text.ends_with('\n'));
-    let rest = count.saturating_sub(120);
-    head + &"\n".repeat(rest)
+/// The view layer needs a preview's kind, line count and first screenful (the app draws
+/// the real body over it), not a copy of a multi-megabyte text each frame.
+fn lab_preview(b: &Browser) -> LabPreview {
+    let text = b.preview.as_deref().unwrap_or("");
+    let path = b.preview_path.as_deref().unwrap_or("");
+    let kind = match b.preview_rich.as_ref().map(|p| p.kind.as_str()) {
+        Some("markdown") => PreviewKind::Markdown,
+        Some("code") => PreviewKind::Source("code"),
+        Some("binary") => PreviewKind::Source("binary"),
+        Some("image") => PreviewKind::Source("image"),
+        Some("pdf") => PreviewKind::Source("pdf"),
+        Some("archive") => PreviewKind::Source("archive"),
+        Some("media") => PreviewKind::Source("media"),
+        _ => PreviewKind::Source("text"),
+    };
+    LabPreview {
+        path: safe_label(path.rsplit('/').next().unwrap_or("")),
+        kind,
+        text: text.lines().take(120).collect::<Vec<_>>().join("\n"),
+        lines: source_lines(b),
+        note: partial_cue(b),
+    }
 }
-
 /// The hub's invite once its listener is up: code, one-liner and a QR code of the one-liner.
 fn invite(app: &App) -> Option<LabInvite> {
     let (inv, _) = app.invite.as_ref()?.shown.as_ref()?;

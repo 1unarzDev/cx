@@ -103,7 +103,13 @@ impl App {
                 self.run_cmd(cmd);
                 self.navigation.reset();
             }
-            _ => {
+            resolved => {
+                // Space is a motion only where it pages (the preview, like a pager).
+                let key = if resolved.is_some() && key.code == KeyCode::Char(' ') {
+                    KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)
+                } else {
+                    key
+                };
                 if let Some(motion) =
                     self.navigation
                         .read(key, if self.pdf_preview_active() { 1 } else { 10 }, false)

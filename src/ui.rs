@@ -118,12 +118,9 @@ struct Entry {
     hidden: bool,
     #[serde(default)]
     rename_name: Option<String>,
-    /// Modification time (Unix seconds); from the helper's `modified`, else its identity.
+    /// Modification time (Unix seconds), from the identity the helper sends.
     #[serde(default)]
     modified: Option<i64>,
-    /// Child count of a directory (helper's optional `items`, capped at 1000).
-    #[serde(default)]
-    items: Option<u64>,
 }
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Clipboard {
@@ -143,6 +140,8 @@ struct RichPreview {
     title: String,
     raster: Option<(usize, usize, Vec<u8>)>,
     styled: Option<Vec<Line<'static>>>,
+    /// The helper sent only the start of the file.
+    truncated: bool,
     page: u32,
     pages: Option<u32>,
     /// A streamed text continuation, prepared off the UI thread (`ReadChunk` replies).
@@ -208,6 +207,7 @@ impl RichPreview {
             kind: value["kind"].as_str().unwrap_or("text").to_owned(),
             title: safe_label(value["title"].as_str().unwrap_or("Preview")),
             raster,
+            truncated: value["truncated"] == true,
             page: value["page"]
                 .as_u64()
                 .and_then(|v| u32::try_from(v).ok())

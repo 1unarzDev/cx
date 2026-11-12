@@ -735,6 +735,8 @@ pub(super) struct DocCache {
     hit_lines: Option<Vec<Line<'static>>>,
     /// `starts[i]` is the first visual row of line `i`; `starts[lines.len()]` is the total.
     starts: Vec<usize>,
+    /// Lines of the source text (markdown lays out into a different number of lines).
+    source_lines: usize,
     search: Option<(String, SearchHits)>,
     links: bool,
     /// (scroll, area) of the last link hit map, so unchanged frames skip the rebuild.
@@ -754,6 +756,7 @@ impl DocCache {
             lines,
             hit_lines: None,
             starts: Vec::new(),
+            source_lines: text.lines().count(),
             search: None,
             links,
             link_frame: std::cell::Cell::new(None),
@@ -782,6 +785,7 @@ impl DocCache {
             row += wrapped_rows(line, self.width);
         }
         self.starts.push(row);
+        self.source_lines += more.len();
         self.lines.extend(more);
         if let Some((query, matches)) = &mut self.search {
             let added = preview_matches(&self.lines[first..], query);
@@ -905,6 +909,20 @@ pub(super) fn doc_matches(browser: &Browser, query: &str) -> Vec<(usize, Vec<usi
         return Vec::new();
     }
     with_doc(browser, |doc| doc.matches(query).as_ref().clone()).unwrap_or_default()
+}
+/// The preview's source line count: kept by its current layout, else (before the layout
+/// is built) counted from the text.
+pub(super) fn source_lines(browser: &Browser) -> usize {
+    let key = doc_key(browser);
+    if let Some(doc) = browser
+        .doc
+        .borrow()
+        .as_ref()
+        .filter(|d| Some(&d.key) == key.as_ref())
+    {
+        return doc.source_lines;
+    }
+    browser.preview.as_deref().map_or(0, |t| t.lines().count())
 }
 /// Largest scroll offset of the current preview at the last rendered viewport.
 pub(super) fn doc_max_scroll(browser: &Browser) -> u32 {
@@ -1083,15 +1101,39 @@ pub(super) struct PreviewStream {
     limit: u64,
     inflight: bool,
     done: bool,
+    /// Stopped on a read failure or an undecodable reply, not at the end or the limit.
     failed: bool,
+    /// Markdown is laid out whole, so its chunks collect here and replace the helper's
+    /// window once, when the stream ends (one layout instead of one per chunk).
+    pending: String,
     /// Keep the view pinned to the end while chunks arrive (End/G).
     pub(super) follow: bool,
 }
-impl PreviewStream {}
+/// The preview meta's cue when the preview shows only part of its file, so the line
+/// End/G lands on is not mistaken for the file's last.
+pub(super) fn partial_cue(b: &Browser) -> Option<String> {
+    match &b.stream {
+        // Nothing streamed: the helper's window is shown (a first line longer than a chunk).
+        Some(s) if s.done && s.next == 0 => Some("partial".to_owned()),
+        Some(s) if s.done && s.next < s.size => Some(format!(
+            "{} {} of {}",
+            if s.failed { "stopped at" } else { "first" },
+            human_size(s.next),
+            human_size(s.size)
+        )),
+        Some(_) => None,
+        None => b
+            .preview_rich
+            .as_ref()
+            .is_some_and(|p| p.truncated)
+            .then(|| "partial".to_owned()),
+    }
+}
 /// A streamed continuation prepared by the request worker (decode, normalize, highlight).
 #[derive(Clone)]
 pub(super) struct PreviewChunk {
-    /// Raw bytes covered by `text` (whole lines unless `eof`).
+    /// Raw bytes covered by `text`: whole lines unless `eof`. Zero when a line is longer
+    /// than the chunk: the stream ends there rather than break the line (or a character).
     pub(super) consumed: u64,
     eof: bool,
     pub(super) text: String,
@@ -1101,7 +1143,13 @@ pub(super) struct PreviewChunk {
 /// thread. Only whole lines are consumed, so the next request starts on a line.
 pub(super) fn stream_chunk(op: &Operation, value: &Value) -> Option<RichPreview> {
     use base64::Engine;
-    let Operation::ReadChunk { path, limit, .. } = op else {
+    let Operation::ReadChunk {
+        path,
+        limit,
+        offset,
+        ..
+    } = op
+    else {
         return None;
     };
     let bytes = base64::engine::general_purpose::STANDARD
@@ -1114,20 +1162,20 @@ pub(super) fn stream_chunk(op: &Operation, value: &Value) -> Option<RichPreview>
     let cut = if eof {
         bytes.len()
     } else {
-        bytes
-            .iter()
-            .rposition(|b| *b == b'\n')
-            .map_or(bytes.len(), |i| i + 1)
+        bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1)
     };
     let text = safe_text(&crate::files::preview_text(&bytes[..cut]));
     let code =
         crate::files::decode_path(path).is_ok_and(|p| crate::files::preview_kind(&p) == "code");
-    let lines = code.then(|| crate::syntax_preview::highlight(&text, path));
+    let lines = code.then(|| {
+        crate::syntax_preview::highlight_chunk(&text, path, *offset, *offset + cut as u64)
+    });
     Some(RichPreview {
         kind: "chunk".into(),
         title: String::new(),
         raster: None,
         styled: None,
+        truncated: false,
         page: 1,
         pages: None,
         chunk: Some(PreviewChunk {
@@ -1148,6 +1196,7 @@ pub(super) fn highlighted_preview(text: String, path: &str) -> RichPreview {
         title: String::new(),
         raster: None,
         styled: None,
+        truncated: false,
         page: 1,
         pages: None,
         chunk: Some(PreviewChunk {
@@ -1174,6 +1223,52 @@ pub(super) fn apply_highlight(b: &mut Browser, chunk: PreviewChunk) -> bool {
     rich.styled = chunk.lines;
     b.preview_revision = b.preview_revision.wrapping_add(1);
     true
+}
+
+/// Add one streamed text/code chunk to the preview (offset 0 replaces the helper's window).
+fn append_chunk(b: &mut Browser, offset: u64, chunk: PreviewChunk, kind: &str) {
+    let code = kind == "code";
+    if offset == 0 {
+        b.preview = Some(chunk.text);
+        if let Some(rich) = b.preview_rich.as_mut() {
+            rich.styled = if code { chunk.lines } else { None };
+        }
+        b.preview_revision = b.preview_revision.wrapping_add(1);
+        return;
+    }
+    let added: Vec<Line<'static>> = if ascii() || no_color() {
+        chunk
+            .text
+            .lines()
+            .map(|l| Line::raw(l.to_owned()))
+            .collect()
+    } else {
+        match chunk.lines {
+            Some(lines) if code => lines,
+            _ => preview_lines(&chunk.text, kind),
+        }
+    };
+    let old_key = doc_key(b);
+    if let Some(text) = b.preview.as_mut() {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&chunk.text);
+    }
+    b.preview_revision = b.preview_revision.wrapping_add(1);
+    let new_key = doc_key(b);
+    // The retained layout owns streamed lines. Only without one do they extend `styled`,
+    // which the next layout is built from: keeping both would hold the document twice.
+    let mut doc = b.doc.borrow_mut();
+    match (old_key, new_key, doc.as_mut()) {
+        (Some(old), Some(new), Some(doc)) if doc.key == old => doc.append(new, added),
+        _ if code => {
+            if let Some(styled) = b.preview_rich.as_mut().and_then(|p| p.styled.as_mut()) {
+                styled.extend(added);
+            }
+        }
+        _ => {}
+    }
 }
 
 impl App {
@@ -1235,6 +1330,7 @@ impl App {
             inflight: false,
             done: false,
             failed: false,
+            pending: String::new(),
             follow: false,
         });
         self.pump_preview_stream();
@@ -1294,23 +1390,20 @@ impl App {
             return;
         };
         stream.inflight = false;
-        let chunk = match (&result, prepared.and_then(|p| p.chunk)) {
-            (Ok(_), Some(chunk)) => chunk,
+        let (chunk, warning) = match (&result, prepared.and_then(|p| p.chunk)) {
+            (Ok(_), Some(chunk)) => (Some(chunk).filter(|c| c.consumed > 0), None),
             (Ok(_), None) => {
-                stream.done = true;
                 stream.failed = true;
-                return;
+                (None, None)
             }
             (Err(e), _) => {
-                stream.done = true;
                 stream.failed = true;
                 let message = format!(
                     "Preview stopped at {} · {}",
                     human_size(stream.next),
                     safe_text(&format!("{e:#}"))
                 );
-                self.set_notice_as(NoticeKind::Warning, message);
-                return;
+                (None, Some(message))
             }
         };
         let kind = b
@@ -1318,71 +1411,37 @@ impl App {
             .as_ref()
             .map(|p| p.kind.clone())
             .unwrap_or_default();
-        let old_key = doc_key(b);
-        if offset == 0 {
-            // The first chunk covers (at least) the helper's window: replace it.
-            b.preview = Some(chunk.text.clone());
-            if let Some(rich) = b.preview_rich.as_mut() {
-                rich.styled = if kind == "code" {
-                    chunk.lines.clone()
+        match chunk {
+            None => stream.done = true,
+            Some(chunk) => {
+                stream.next += chunk.consumed;
+                stream.done =
+                    chunk.eof || stream.next >= stream.limit || stream.next >= stream.size;
+                if kind == "markdown" {
+                    stream.pending.push_str(&chunk.text);
                 } else {
-                    None
-                };
-            }
-            b.preview_revision = b.preview_revision.wrapping_add(1);
-        } else {
-            let plain = ascii() || no_color();
-            let added: Vec<Line<'static>> = if plain {
-                chunk
-                    .text
-                    .lines()
-                    .map(|l| Line::raw(l.to_owned()))
-                    .collect()
-            } else if kind == "code" {
-                chunk
-                    .lines
-                    .clone()
-                    .unwrap_or_else(|| preview_lines(&chunk.text, "code"))
-            } else {
-                preview_lines(&chunk.text, &kind)
-            };
-            if let Some(text) = b.preview.as_mut() {
-                if !text.is_empty() && !text.ends_with('\n') {
-                    text.push('\n');
-                }
-                text.push_str(&chunk.text);
-            }
-            if kind == "code" {
-                if let Some(styled) = b.preview_rich.as_mut().and_then(|p| p.styled.as_mut()) {
-                    styled.extend(added.iter().cloned());
-                }
-            }
-            b.preview_revision = b.preview_revision.wrapping_add(1);
-            // Non-markdown layouts extend in place; markdown re-lays out on next use.
-            if kind != "markdown" {
-                if let (Some(old), Some(new)) = (old_key, doc_key(b)) {
-                    if let Some(doc) = b.doc.borrow_mut().as_mut().filter(|d| d.key == old) {
-                        doc.append(new, added);
-                    }
+                    append_chunk(b, offset, chunk, &kind);
                 }
             }
         }
         let stream = b.stream.as_mut().unwrap();
-        stream.next += chunk.consumed;
-        if chunk.eof
-            || chunk.consumed == 0
-            || stream.next >= stream.limit
-            || stream.next >= stream.size
-        {
-            stream.done = true;
+        if stream.done && !stream.pending.is_empty() {
+            b.preview = Some(std::mem::take(&mut stream.pending));
+            if let Some(rich) = b.preview_rich.as_mut() {
+                rich.styled = None;
+            }
+            b.preview_revision = b.preview_revision.wrapping_add(1);
         }
-        let follow = stream.follow;
+        let follow = b.stream.as_ref().is_some_and(|s| s.follow);
         if !b.preview_find.query.is_empty() {
             let query = b.preview_find.query.clone();
             b.preview_find.matches = doc_matches(b, &query);
         }
         if follow {
             b.preview_scroll.set(u32::MAX);
+        }
+        if let Some(message) = warning {
+            self.set_notice_as(NoticeKind::Warning, message);
         }
         self.pump_preview_stream();
     }

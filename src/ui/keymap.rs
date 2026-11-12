@@ -358,8 +358,8 @@ pub(super) const BINDINGS: &[Binding] = &[
     ),
     bind!(
         Preview,
-        [ch('j'), ch('k'), code(Down), code(Up)],
-        "j/k · PgUp/PgDn",
+        [ch('j'), ch('k'), code(Down), code(Up), ch(' ')],
+        "j/k · Space/PgUp/PgDn",
         Cmd::Motion,
         "Scroll preview",
         hint("j/k", "Scroll", 0),
@@ -409,8 +409,8 @@ pub(super) const BINDINGS: &[Binding] = &[
     alias!(Preview, [ch('N')], "N", Cmd::PrevMatch, "Previous match"),
     bind!(
         Preview,
-        [code(Esc)],
-        "Esc",
+        [code(Esc), code(Left), ch('h')],
+        "Esc / h",
         Cmd::Back,
         "Finish search / clear highlights / return to files",
         hint("Esc", "Back", 5)

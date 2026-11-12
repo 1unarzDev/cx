@@ -3,8 +3,7 @@
 //! `Entries` is the listing itself: an `Arc`-shared vector with a revision, so the
 //! navigation cache, restart snapshots and browser caches share one copy and every
 //! mutation is visible to derived caches. `ViewIndex` holds what rendering and search
-//! derive from it (lowercase names, the hidden/filter view, search matches, the largest
-//! size). Pages appended in the helper's order extend these caches instead of rebuilding.
+//! derive from it (lowercase names, the hidden/filter view, search matches). Pages appended in the helper's order extend these caches instead of rebuilding.
 use super::Entry;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -87,14 +86,9 @@ pub(super) type RowMatches = Arc<Vec<(usize, Vec<usize>)>>;
 
 #[derive(Clone, Default)]
 pub(super) struct ViewIndex {
-    /// Entries revision that `lower`, `largest` and `rows` describe.
+    /// Entries revision that `lower` and `rows` describe.
     revision: u64,
     lower: Arc<Vec<Box<str>>>,
-    largest: u64,
-    /// Total bytes of the listing's regular files.
-    bytes: u64,
-    /// Longest name in characters (directories count their trailing slash).
-    longest: usize,
     /// (show_hidden, lowercase filter) the rows were built for.
     view: Option<(bool, String)>,
     rows: Arc<Vec<u32>>,
@@ -141,9 +135,6 @@ fn shown(entry: &Entry, lower: &str, show_hidden: bool, filter: &str) -> bool {
     (show_hidden || !(entry.hidden || entry.name.starts_with('.')))
         && (filter.is_empty() || lower.contains(filter))
 }
-fn name_cells(entry: &Entry) -> usize {
-    entry.name.chars().count() + usize::from(entry.kind == "directory")
-}
 fn lowercase(entry: &Entry) -> Box<str> {
     entry.name.to_lowercase().into_boxed_str()
 }
@@ -162,15 +153,7 @@ impl ViewIndex {
                 .map(|(_, length)| length);
             match incremental {
                 Some(from) => {
-                    let lower = Arc::make_mut(&mut self.lower);
-                    for entry in &entries[from..] {
-                        lower.push(lowercase(entry));
-                        self.longest = self.longest.max(name_cells(entry));
-                        if entry.kind == "file" {
-                            self.largest = self.largest.max(entry.size);
-                            self.bytes = self.bytes.saturating_add(entry.size);
-                        }
-                    }
+                    Arc::make_mut(&mut self.lower).extend(entries[from..].iter().map(lowercase));
                     if self.view.as_ref() == Some(&(show_hidden, filter.clone())) {
                         let rows = Arc::make_mut(&mut self.rows);
                         for (i, entry) in entries.iter().enumerate().skip(from) {
@@ -185,10 +168,6 @@ impl ViewIndex {
                 }
                 None => {
                     self.lower = Arc::new(entries.iter().map(lowercase).collect());
-                    let files = || entries.iter().filter(|e| e.kind == "file").map(|e| e.size);
-                    self.largest = files().max().unwrap_or(0);
-                    self.bytes = files().fold(0u64, u64::saturating_add);
-                    self.longest = entries.iter().map(name_cells).max().unwrap_or(0);
                     self.view = None;
                 }
             }

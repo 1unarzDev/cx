@@ -4,13 +4,13 @@ use ratatui::{
     text::{Line, Span},
 };
 use std::{
-    sync::LazyLock,
+    sync::{LazyLock, Mutex},
     time::{Duration, Instant},
 };
 use syntect::{
     easy::HighlightLines,
-    highlighting::{Color as TokenColor, ThemeSet},
-    parsing::SyntaxSet,
+    highlighting::{Color as TokenColor, HighlightState, ThemeSet},
+    parsing::{ParseState, SyntaxSet},
 };
 
 static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
@@ -29,9 +29,42 @@ fn palette(color: TokenColor) -> Color {
     }
 }
 pub fn highlight(text: &str, path: &str) -> Vec<Line<'static>> {
-    highlight_with_budget(text, path, Duration::from_millis(500))
+    highlight_with_budget(text, path, Duration::from_millis(500), None).0
 }
-fn highlight_with_budget(text: &str, path: &str, budget: Duration) -> Vec<Line<'static>> {
+type State = (HighlightState, ParseState);
+/// Parser states where recent streamed chunks ended (path, byte offset, state). Bounded;
+/// one stream at a time is the norm, a few keep concurrent callers (tests) apart.
+static STREAMED: Mutex<Vec<(String, u64, State)>> = Mutex::new(Vec::new());
+/// One streamed chunk covering bytes `start..end` of `path`: it continues the parser
+/// state the previous chunk ended with, so a comment or string spanning the boundary
+/// stays one construct.
+pub fn highlight_chunk(text: &str, path: &str, start: u64, end: u64) -> Vec<Line<'static>> {
+    let streamed = || STREAMED.lock().unwrap_or_else(|e| e.into_inner());
+    let resume = {
+        let mut states = streamed();
+        let at = states
+            .iter()
+            .position(|(p, at, _)| p == path && *at == start);
+        at.filter(|_| start > 0).map(|i| states.swap_remove(i).2)
+    };
+    let (lines, state) = highlight_with_budget(text, path, Duration::from_millis(500), resume);
+    if let Some(state) = state {
+        let mut states = streamed();
+        states.retain(|(p, ..)| p != path);
+        if states.len() == 4 {
+            states.remove(0);
+        }
+        states.push((path.to_owned(), end, state));
+    }
+    lines
+}
+/// The highlighted lines, and the parser state at the end unless highlighting stopped.
+fn highlight_with_budget(
+    text: &str,
+    path: &str,
+    budget: Duration,
+    resume: Option<State>,
+) -> (Vec<Line<'static>>, Option<State>) {
     let syntaxes = &*SYNTAXES;
     let file = std::path::Path::new(path);
     let syntax = file
@@ -50,12 +83,16 @@ fn highlight_with_budget(text: &str, path: &str, budget: Duration) -> Vec<Line<'
         .or_else(|| syntaxes.find_syntax_by_first_line(text.lines().next().unwrap_or("")))
         .unwrap_or_else(|| syntaxes.find_syntax_plain_text());
     let theme = &THEMES.themes["base16-ocean.dark"];
-    let mut parser = HighlightLines::new(syntax, theme);
+    let mut parser = match resume {
+        Some((highlight, parse)) => HighlightLines::from_state(theme, highlight, parse),
+        None => HighlightLines::new(syntax, theme),
+    };
     // The clock starts after the first line, which pays the one-time lazy
     // regex compilation; a zero budget still means no highlighting at all.
     let mut started: Option<Instant> = None;
     let mut stopped = budget.is_zero();
-    text.split_inclusive('\n')
+    let lines = text
+        .split_inclusive('\n')
         .map(|line| {
             // Very long lines and exhausted budgets degrade to literal text for the rest.
             // The UI caches this result; rendering never reparses source.
@@ -83,7 +120,8 @@ fn highlight_with_budget(text: &str, path: &str, budget: Duration) -> Vec<Line<'
                 }
             }
         })
-        .collect()
+        .collect();
+    (lines, (!stopped).then(|| parser.state()))
 }
 
 #[derive(Debug)]
@@ -167,7 +205,8 @@ pub fn fenced_lines(text: &str) -> Vec<Option<Line<'static>>> {
             .saturating_sub(started.elapsed())
             .min(Duration::from_millis(500));
         let path = format!("fence.{}", fence_language(&block.language));
-        for (index, line) in highlight_with_budget(&body, &path, budget)
+        for (index, line) in highlight_with_budget(&body, &path, budget, None)
+            .0
             .into_iter()
             .enumerate()
         {
@@ -242,9 +281,26 @@ mod tests {
         }
     }
     #[test]
+    fn streamed_chunks_continue_a_comment_across_the_boundary() {
+        let first = "int a = 1;\n/* opened here\n";
+        let second = "int still_comment = 2;\nend */\nint after = 3;\n";
+        let path = "chunk-continuation-test.c";
+        let whole = highlight(&format!("{first}{second}"), path);
+        let end = first.len() as u64;
+        assert_eq!(highlight_chunk(first, path, 0, end), whole[..2]);
+        let continued = highlight_chunk(second, path, end, end + second.len() as u64);
+        assert_eq!(
+            continued,
+            whole[2..],
+            "the comment continues into the next chunk"
+        );
+        // A chunk that does not start where the last one ended starts fresh.
+        assert_eq!(highlight_chunk(second, path, 1, 2), highlight(second, path));
+    }
+    #[test]
     fn exhausted_budget_retains_literal_source_without_styles() {
         let source = "let value = \"hello\";\nlet next = 2;\n";
-        let lines = highlight_with_budget(source, "sample.rs", Duration::ZERO);
+        let lines = highlight_with_budget(source, "sample.rs", Duration::ZERO, None).0;
         assert_eq!(lines.len(), 2);
         assert!(lines
             .iter()
@@ -257,7 +313,7 @@ mod tests {
         // The first line pays syntect's one-time lazy regex compilation (slow in
         // debug builds and on loaded hosts); only later lines draw on the budget.
         let source = "let value = \"hello\";\nlet next = 2;\n";
-        let lines = highlight_with_budget(source, "sample.rs", Duration::from_nanos(1));
+        let lines = highlight_with_budget(source, "sample.rs", Duration::from_nanos(1), None).0;
         assert!(lines[0].spans.iter().any(|s| s.style != Style::default()));
     }
     #[test]
@@ -266,7 +322,7 @@ mod tests {
             .map(|i| format!("let item_{i} = \"hello\"; // inert source\n"))
             .collect::<String>();
         // Test parser continuity independently of permitted wall-clock fallback under load.
-        let lines = highlight_with_budget(&source, "sample.rs", Duration::MAX);
+        let lines = highlight_with_budget(&source, "sample.rs", Duration::MAX, None).0;
         assert_eq!(lines.len(), 20);
         assert!(lines
             .last()

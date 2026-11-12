@@ -697,6 +697,9 @@ fn collect(
         bytes: 0,
     });
     if kind == "directory" {
+        // Page the whole directory before descending: listing subdirectories in between
+        // could evict the helper's snapshot of this one.
+        let mut children = Vec::new();
         let mut offset = 0;
         loop {
             check_cancel(&root()?, &spec.key)?;
@@ -709,20 +712,14 @@ fn collect(
                     limit: 1000,
                 },
             )?;
+            if listing["restart"] == true {
+                bail!("source directory listing expired; start the transfer again");
+            }
             for child in listing["entries"]
                 .as_array()
                 .context("invalid directory listing")?
             {
-                let childpath = text(child, "path")?;
-                let childinfo = info(&spec.source, &spec.source_container, childpath)?;
-                let name = text(&childinfo, "name")?;
-                collect(
-                    spec,
-                    childpath,
-                    &join(destination, name)?,
-                    entries,
-                    depth + 1,
-                )?;
+                children.push(text(child, "path")?.to_owned());
             }
             if let Some(next) = listing["next_offset"].as_u64() {
                 if next <= offset {
@@ -739,6 +736,17 @@ fn collect(
             {
                 bail!("source directory changed during listing");
             }
+        }
+        for childpath in &children {
+            let childinfo = info(&spec.source, &spec.source_container, childpath)?;
+            let name = text(&childinfo, "name")?;
+            collect(
+                spec,
+                childpath,
+                &join(destination, name)?,
+                entries,
+                depth + 1,
+            )?;
         }
         if text(
             &info(&spec.source, &spec.source_container, source)?,

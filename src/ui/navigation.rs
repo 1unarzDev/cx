@@ -8,6 +8,10 @@ pub(super) enum Motion {
     Row(usize),
 }
 
+/// The delta of G/End (and, negated, of a jump to a row): past any list or preview end.
+/// Targets clamp it; a streaming preview follows its end only for exactly this move.
+pub(super) const END: isize = isize::MAX / 4;
+
 /// A pending `g` (for `gg` or a `g`+view goto) expires after this long.
 pub(super) const CHORD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -77,12 +81,10 @@ impl State {
         let count = self.count.take();
         let delta = match key.code {
             KeyCode::Char('G') => {
-                return Some(
-                    count.map_or(Motion::Move(100_000), |n| Motion::Row(n.saturating_sub(1))),
-                )
+                return Some(count.map_or(Motion::Move(END), |n| Motion::Row(n.saturating_sub(1))))
             }
             KeyCode::Home => return Some(Motion::Row(0)),
-            KeyCode::End => return Some(Motion::Move(100_000)),
+            KeyCode::End => return Some(Motion::Move(END)),
             KeyCode::Up | KeyCode::Char('k') => -1,
             KeyCode::Down | KeyCode::Char('j') => 1,
             KeyCode::Left | KeyCode::Char('h') if horizontal => -1,
@@ -103,7 +105,7 @@ pub(super) trait Target {
             Motion::Pending => (),
             Motion::Move(delta) => self.move_by(delta),
             Motion::Row(row) => {
-                self.move_by(-100_000);
+                self.move_by(-END);
                 self.move_by(row as isize);
             }
         }

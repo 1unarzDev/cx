@@ -51,7 +51,7 @@ compare p95 only between runs made under similar load (each JSON records `loadav
   is Enter on the sibling (also uncached), and *warm* is a second visit to `big/` served from the
   viewer's browser cache. *Usable* sends `j` the moment the first rows appear and records when
   the selection visibly moves. *Full count* is reached when the title shows
-  `min(N, 10000)` items and loading has finished. Deep tree: 24 nested levels with 10 files
+  `min(N, 100000)` items (v0.1.95: 10000) and loading has finished. Deep tree: 24 nested levels with 10 files
   each, timed per Enter hop and per `h` hop.
 - **Previews.** One fresh viewer per file. Before each cold open, the file's pages are dropped
   with `posix_fadvise(DONTNEED)`, and `fincore` confirmed this for 110 of 110 opens. Then `G`

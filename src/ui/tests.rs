@@ -49,7 +49,6 @@ fn file_app() -> (App, mpsc::Receiver<Task>) {
             hidden: name.starts_with('.'),
             rename_name: Some((*name).into()),
             modified: None,
-            items: None,
         })
         .collect();
     a.browser = Some(b);
@@ -1480,7 +1479,6 @@ fn restart_restores_browser_host_search_focus_and_copy_without_preview_content()
         hidden: false,
         rename_name: None,
         modified: None,
-        items: None,
     });
     a.clipboard = Some(Clipboard {
         container: None,
@@ -1716,7 +1714,6 @@ fn restored_file_identity_survives_page_one_clamping() {
             hidden: false,
             rename_name: None,
             modified: None,
-            items: None,
         })
         .collect();
     browser.selected = 1100;
@@ -2633,7 +2630,6 @@ fn destination_transfer_fixture() -> (App, mpsc::Receiver<Task>) {
         hidden: false,
         rename_name: None,
         modified: None,
-        items: None,
     });
     a.browser = Some(source);
     a.execute(Action::Copy);
@@ -2649,7 +2645,6 @@ fn destination_transfer_fixture() -> (App, mpsc::Receiver<Task>) {
         hidden: false,
         rename_name: None,
         modified: None,
-        items: None,
     });
     a.browser = Some(destination);
     a.destination_active = true;
@@ -2711,7 +2706,6 @@ fn transfer_locations_stay_independent_and_submit_real_spec() {
         hidden: false,
         rename_name: None,
         modified: None,
-        items: None,
     });
     a.browser = Some(source);
     a.execute(Action::Copy);
@@ -2818,7 +2812,6 @@ fn horizontal_folder_keys_enter_and_leave_without_previewing_files() {
             hidden: false,
             rename_name: None,
             modified: None,
-            items: None,
         }]
         .into();
         a.key(KeyEvent::new(forward, KeyModifiers::NONE));
@@ -2910,7 +2903,6 @@ fn file_find_highlights_without_filtering_and_wraps_between_files() {
             hidden: name.starts_with('.'),
             rename_name: None,
             modified: None,
-            items: None,
         })
         .collect();
     b.marked.insert("/fixture/1".into());
@@ -2926,7 +2918,8 @@ fn file_find_highlights_without_filtering_and_wraps_between_files() {
             .collect::<Vec<_>>(),
         before
     );
-    assert_eq!(file_search_matches(&a.visible_entries(), "alpha").len(), 2);
+    let matches = |a: &App| browser_matches(a.browser.as_ref().unwrap()).len();
+    assert_eq!(matches(&a), 2);
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
     terminal.draw(|frame| render(frame, &a)).unwrap();
     assert!(
@@ -2955,13 +2948,12 @@ fn file_find_highlights_without_filtering_and_wraps_between_files() {
     a.browser.as_mut().unwrap().filter = "other".into();
     assert_eq!(a.visible_entries().len(), 1);
     a.browser.as_mut().unwrap().filter.clear();
-    a.browser.as_mut().unwrap().show_hidden = true;
-    assert_eq!(
-        file_search_matches(&a.visible_entries(), "missing").len(),
-        0
-    );
+    assert_eq!(matches(&a), 0);
     a.browser.as_mut().unwrap().search = "alpha".into();
-    assert_eq!(file_search_matches(&a.visible_entries(), "alpha").len(), 3);
+    assert_eq!(matches(&a), 2);
+    // The same cached query: showing hidden rows invalidates it.
+    a.browser.as_mut().unwrap().show_hidden = true;
+    assert_eq!(matches(&a), 3);
 }
 
 #[test]
@@ -2979,7 +2971,6 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             hidden: false,
             rename_name: None,
             modified: None,
-            items: None,
         },
         Entry {
             name: "recording-second.bin".into(),
@@ -2990,7 +2981,6 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             hidden: false,
             rename_name: None,
             modified: None,
-            items: None,
         },
         Entry {
             name: "other".into(),
@@ -3001,7 +2991,6 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             hidden: false,
             rename_name: None,
             modified: None,
-            items: None,
         },
     ]
     .into();
@@ -3067,7 +3056,6 @@ fn enter_file_previews_never_launches() {
         hidden: false,
         rename_name: None,
         modified: None,
-        items: None,
     }]
     .into();
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -5989,10 +5977,11 @@ fn ansi16_focused_row_is_uniform_and_keeps_its_bar() {
 
 fn page(dir: &str, from: usize, to: usize, next: Option<usize>, total: usize) -> Value {
     let entries = (from..to)
-        .map(|i| serde_json::json!({"name":format!("e{i:06}"),"path":format!("{dir}/e{i:06}"),"kind":"file","size":i,"modified":1}))
+        .map(|i| serde_json::json!({"name":format!("e{i:06}"),"path":format!("{dir}/e{i:06}"),"kind":"file","size":i,
+            "identity":r#"{"size":0,"modified":1999999999,"device":1,"inode":1}"#}))
         .collect::<Vec<_>>();
     serde_json::json!({"path":dir,"display_path":dir,"entries":entries,"next_offset":next,
-        "order":"directories-first-name","total":total})
+        "order":crate::files::LIST_ORDER,"total":total})
 }
 #[test]
 fn ordered_listing_pages_append_incrementally_beyond_the_old_cap() {
@@ -6032,7 +6021,11 @@ fn ordered_listing_pages_append_incrementally_beyond_the_old_cap() {
     let b = a.browser.as_ref().unwrap();
     assert_eq!(a.visible_entries().len(), total);
     assert_eq!(b.entries[total - 1].name, "e023999");
-    assert_eq!(b.entries[0].modified, Some(1));
+    assert_eq!(
+        b.entries[0].modified,
+        Some(1),
+        "seconds from the identity's nanoseconds"
+    );
     // Continuations asked for the larger page once the helper reported its order.
     let limits: Vec<u32> = rx
         .try_iter()
@@ -6045,6 +6038,52 @@ fn ordered_listing_pages_append_incrementally_beyond_the_old_cap() {
         !limits.is_empty() && limits.iter().all(|l| *l == 4000),
         "{limits:?}"
     );
+}
+/// A continuation whose snapshot the helper no longer holds lists again from the top,
+/// keeping the selection (a reread at the old offset would duplicate or skip rows).
+#[test]
+fn listing_restart_relists_from_the_top_and_keeps_the_selection() {
+    let (mut a, rx) = queued_app();
+    a.browser = Some(Browser::new(0, "/big".into()));
+    a.view = View::Files;
+    let reply = |a: &App, op, value| Reply {
+        device_id: None,
+        execution_target: None,
+        preview: None,
+        device: 0,
+        op,
+        generation: a.generation,
+        result: Ok(value),
+    };
+    let first = reply(
+        &a,
+        Operation::List {
+            path: "/big".into(),
+        },
+        page("/big", 0, 4000, Some(4000), 6000),
+    );
+    a.apply(first);
+    a.browser.as_mut().unwrap().selected = 7;
+    rx.try_iter().count();
+    let restart = reply(
+        &a,
+        Operation::ListPage {
+            path: "/big".into(),
+            offset: 4000,
+            limit: 4000,
+        },
+        serde_json::json!({"restart":true,"entries":[],"next_offset":null,"truncated":true}),
+    );
+    a.apply(restart);
+    let sent: Vec<_> = rx.try_iter().map(|t| t.op).collect();
+    assert!(
+        matches!(sent.as_slice(), [Operation::List { path }] if path == "/big"),
+        "{sent:?}"
+    );
+    let b = a.browser.as_ref().unwrap();
+    assert_eq!(b.entries.len(), 4000, "the restart reply adds no rows");
+    assert!(b.loading);
+    assert_eq!(b.restore_selection.as_deref(), Some("/big/e000007"));
 }
 #[test]
 fn streamed_preview_chunks_extend_the_retained_layout() {
@@ -6138,6 +6177,219 @@ fn streamed_preview_chunks_extend_the_retained_layout() {
         text.contains("line 2099"),
         "end of the streamed file is reachable"
     );
+}
+
+/// Opens `name` (`file` is its content) as a truncated `kind` preview showing `window`.
+fn streamed_preview(
+    name: &str,
+    file: &[u8],
+    kind: &str,
+    window: &str,
+) -> (App, mpsc::Receiver<Task>) {
+    let (mut a, rx) = file_app();
+    a.focus = Focus::Workspace;
+    let path = format!("/files/{name}");
+    let b = a.browser.as_mut().unwrap();
+    b.entries[0].name = name.into();
+    b.entries[0].path = path.clone();
+    b.entries[0].size = file.len() as u64;
+    b.preview_path = Some(path.clone());
+    a.apply(Reply {
+        device_id: None,
+        execution_target: None,
+        preview: None,
+        device: 0,
+        op: Operation::Preview { path: path.clone() },
+        generation: a.generation,
+        result: Ok(serde_json::json!({"path":path,"text":window,"truncated":true,"binary":false,"kind":kind,"title":"x"})),
+    });
+    (a, rx)
+}
+/// Answers the requested `ReadChunk` from `file` the way the request worker does;
+/// false when the stream asked for nothing.
+fn feed_chunk(a: &mut App, rx: &mpsc::Receiver<Task>, file: &[u8]) -> bool {
+    use base64::Engine;
+    let Some(op) = rx
+        .try_iter()
+        .map(|t| t.op)
+        .find(|op| matches!(op, Operation::ReadChunk { .. }))
+    else {
+        return false;
+    };
+    let Operation::ReadChunk { offset, limit, .. } = &op else {
+        unreachable!()
+    };
+    let start = (*offset as usize).min(file.len());
+    let data = &file[start..(start + *limit as usize).min(file.len())];
+    let value = serde_json::json!({"data":base64::engine::general_purpose::STANDARD.encode(data)});
+    let prepared = stream_chunk(&op, &value);
+    a.apply(Reply {
+        device_id: None,
+        execution_target: None,
+        preview: prepared,
+        device: 0,
+        op,
+        generation: a.generation,
+        result: Ok(value),
+    });
+    true
+}
+fn lab_preview_of(a: &App) -> crate::ui::views::state::LabPreview {
+    viewmodel::ViewModel::from(a).state.files.previews[0].clone()
+}
+/// Markdown is laid out whole: its chunks replace the helper's window once, when the
+/// stream ends, instead of re-laying out the growing text after every chunk.
+#[test]
+fn markdown_stream_installs_its_text_once() {
+    let file: String = (0..30_000).map(|i| format!("paragraph {i}\n\n")).collect();
+    let window = &file[..32 * 1024];
+    let (mut a, rx) = streamed_preview("notes.markdown", file.as_bytes(), "markdown", window);
+    let revision = a.browser.as_ref().unwrap().preview_revision;
+    assert!(feed_chunk(&mut a, &rx, file.as_bytes()));
+    let b = a.browser.as_ref().unwrap();
+    assert!(
+        b.preview.as_deref() == Some(window),
+        "the window stays until the end"
+    );
+    assert_eq!(b.preview_revision, revision);
+    while feed_chunk(&mut a, &rx, file.as_bytes()) {}
+    let b = a.browser.as_ref().unwrap();
+    assert!(b.preview.as_deref() == Some(file.as_str()));
+    assert_eq!(b.preview_revision, revision.wrapping_add(1), "one layout");
+    let p = lab_preview_of(&a);
+    assert_eq!(p.kind, crate::ui::views::state::PreviewKind::Markdown);
+    assert_eq!((p.lines, p.note), (60_000, None));
+    assert!(
+        p.text.lines().count() <= 120,
+        "the view gets a screenful, not the file"
+    );
+}
+/// A preview that stops at the stream limit says so in its header, and G (End) reaches
+/// the end of what loaded even past 100,000 rows, following the stream there.
+#[test]
+fn a_preview_cut_at_the_limit_says_so_and_g_reaches_its_end() {
+    let file: String = (0..500_000).map(|i| format!("item-{i:07}\n")).collect();
+    let (mut a, rx) = streamed_preview("big.log", file.as_bytes(), "text", &file[..32 * 1024]);
+    assert_eq!(lab_preview_of(&a).note, None, "streaming, not partial yet");
+    capture_app(&a, 120);
+    a.key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE));
+    while feed_chunk(&mut a, &rx, file.as_bytes()) {}
+    let b = a.browser.as_ref().unwrap();
+    assert!(b.preview.as_deref().unwrap().lines().count() > 300_000);
+    assert!(
+        b.preview_scroll.get() >= doc_max_scroll(b),
+        "G followed to the end"
+    );
+    let last = b
+        .preview
+        .as_deref()
+        .unwrap()
+        .lines()
+        .last()
+        .unwrap()
+        .to_owned();
+    let p = lab_preview_of(&a);
+    assert_eq!(p.kind, crate::ui::views::state::PreviewKind::Source("text"));
+    assert_eq!(p.note.as_deref(), Some("first 4.1 MiB of 6.2 MiB"));
+    let screen = Terminal::new(TestBackend::new(160, 30))
+        .map(|mut t| {
+            t.draw(|f| render(f, &a)).unwrap();
+            t.backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+        })
+        .unwrap();
+    assert!(screen.contains("first 4.1 MiB of 6.2 MiB"), "{screen}");
+    assert!(
+        screen.contains(&last),
+        "the last loaded line is on screen: {last}"
+    );
+    press(&mut a, 'g');
+    press(&mut a, 'g');
+    assert_eq!(a.browser.as_ref().unwrap().preview_scroll.get(), 0);
+    // A counted move that happens to land on the end does not start following.
+    a.key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE));
+    press(&mut a, 'k');
+    for c in "1000j".chars() {
+        press(&mut a, c);
+    }
+    assert!(!a.browser.as_ref().unwrap().stream.as_ref().unwrap().follow);
+}
+/// A line longer than a chunk ends the stream there instead of being broken into lines
+/// (and its characters into U+FFFD) at the chunk boundary.
+#[test]
+fn a_line_longer_than_a_chunk_ends_the_stream_unbroken() {
+    let mut file = "a".repeat(131_071);
+    file.push('é');
+    file.push_str(&"b".repeat(200_000));
+    let window = &file[..32 * 1024];
+    let (mut a, rx) = streamed_preview("one-line.json", file.as_bytes(), "code", window);
+    assert!(feed_chunk(&mut a, &rx, file.as_bytes()));
+    assert!(
+        !feed_chunk(&mut a, &rx, file.as_bytes()),
+        "the stream ended"
+    );
+    let b = a.browser.as_ref().unwrap();
+    assert!(b.preview.as_deref() == Some(window));
+    let p = lab_preview_of(&a);
+    assert_eq!(p.kind, crate::ui::views::state::PreviewKind::Source("code"));
+    assert_eq!((p.lines, p.note.as_deref()), (1, Some("partial")));
+}
+/// A streamed code preview keeps one copy of its highlighted lines: chunks extend the
+/// retained layout, not also the preview's `styled` lines.
+#[test]
+fn streamed_code_keeps_one_copy_of_its_highlighted_lines() {
+    let file: String = (0..40_000).map(|i| format!("let x{i} = {i};\n")).collect();
+    let (mut a, rx) = streamed_preview("big.rs", file.as_bytes(), "code", &file[..32 * 1024]);
+    assert!(feed_chunk(&mut a, &rx, file.as_bytes()));
+    capture_app(&a, 120);
+    let first = a
+        .browser
+        .as_ref()
+        .unwrap()
+        .preview_rich
+        .as_ref()
+        .unwrap()
+        .styled
+        .as_ref()
+        .unwrap()
+        .len();
+    while feed_chunk(&mut a, &rx, file.as_bytes()) {}
+    let b = a.browser.as_ref().unwrap();
+    let text = b.preview.as_deref().unwrap();
+    assert!(text == file);
+    assert_eq!(
+        b.preview_rich
+            .as_ref()
+            .unwrap()
+            .styled
+            .as_ref()
+            .unwrap()
+            .len(),
+        first
+    );
+    assert_eq!(preview_display_lines(b, text).len(), 40_000);
+    assert_eq!(lab_preview_of(&a).lines, 40_000);
+}
+/// With a preview open, h (←) goes back to the list like Esc, not to the parent folder;
+/// Space pages down like a pager.
+#[test]
+fn preview_h_returns_to_the_list_and_space_pages() {
+    let file: String = (0..2000).map(|i| format!("line {i}\n")).collect();
+    let (mut a, _rx) = streamed_preview("alpha.txt", file.as_bytes(), "text", &file);
+    capture_app(&a, 80);
+    press(&mut a, ' ');
+    let b = a.browser.as_ref().unwrap();
+    assert!(b.preview.is_some());
+    assert!(b.preview_scroll.get() > 1, "{}", b.preview_scroll.get());
+    press(&mut a, 'h');
+    let b = a.browser.as_ref().unwrap();
+    assert!(b.preview.is_none());
+    assert_eq!(b.path, "/files", "still in the file's folder");
+    assert_eq!(b.selected, 0, "the file stays selected");
 }
 
 /// Regression: an outdated inline-peek reply (file A, still in flight after the
@@ -6359,7 +6611,7 @@ fn loading_peek_capture_dump() {
     };
     let dir = std::path::PathBuf::from(dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let entry = |name: &str, kind: &str, size: u64, items: Option<u64>| Entry {
+    let entry = |name: &str, kind: &str, size: u64| Entry {
         name: name.into(),
         path: format!("/home/fixture/projects/cx-demo/{name}"),
         kind: kind.into(),
@@ -6368,18 +6620,17 @@ fn loading_peek_capture_dump() {
         hidden: name.starts_with('.'),
         rename_name: Some(name.into()),
         modified: Some(transport::now() as i64 - 120),
-        items,
     };
     for (cols, rows) in [(40u16, 20u16), (80, 24), (120, 40), (200, 60)] {
         let (mut a, _rx) = queued_app();
         let mut b = Browser::new(0, "/home/fixture/projects/cx-demo".into());
         b.entries = vec![
-            entry("docs", "directory", 4096, Some(1)),
-            entry("src", "directory", 4096, Some(12)),
-            entry(".gitignore", "file", 9, None),
-            entry("Cargo.toml", "file", 312, None),
-            entry("README.md", "file", 1840, None),
-            entry("data.bin", "file", 14_000, None),
+            entry("docs", "directory", 4096),
+            entry("src", "directory", 4096),
+            entry(".gitignore", "file", 9),
+            entry("Cargo.toml", "file", 312),
+            entry("README.md", "file", 1840),
+            entry("data.bin", "file", 14_000),
         ]
         .into();
         b.selected = 2;
@@ -6482,7 +6733,6 @@ fn folder_app(count: usize) -> (App, mpsc::Receiver<Task>) {
             hidden: false,
             rename_name: Some(format!("dir{i}")),
             modified: None,
-            items: None,
         })
         .collect();
     entries.extend(b.entries.iter().cloned());

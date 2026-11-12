@@ -70,11 +70,16 @@ for mono in (False, True):
             wait(lambda: any('First destination' in line for line in screen.display)); settle()
             os.write(master,b'\x1b'); settle()
             wait(lambda: any('Parent sentinel' in line for line in screen.display)); settle()
-            # Leaving linked preview via folder navigation discards link history.
+            # In a preview h steps back like Esc (to the linking preview), not to the parent folder.
             row = next(i for i,line in enumerate(screen.display) if 'same' in line)
             column = screen.display[row].index('same')
             os.write(master, f'\x1b[<16;{column+1};{row+1}M'.encode()); settle()
             wait(lambda: any('First destination' in line for line in screen.display)); settle()
+            os.write(master,b'h'); settle()
+            wait(lambda: any('Parent sentinel' in line for line in screen.display)); settle()
+            # Leaving the preview and navigating folders discards link history.
+            os.write(master,b'\x1b'); settle()
+            wait(lambda: any('sample.md' in line for line in screen.display) and not any('Parent sentinel' in line for line in screen.display)); settle()
             os.write(master,b'h'); settle()
             wait(lambda: any('files' in line for line in screen.display) and not any('First destination' in line for line in screen.display)); settle()
             os.write(master,b'l'); settle()

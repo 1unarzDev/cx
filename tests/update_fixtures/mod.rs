@@ -99,10 +99,10 @@ impl Mock {
     }
     fn success() -> Self {
         Self::new(vec![
-            response("v0.2.0"),
+            response("v9.0.0"),
             out(0, b"\n200"),
             out(0, b"verified"),
-            out(0, b"cx 0.2.0\n"),
+            out(0, b"cx 9.0.0\n"),
         ])
     }
 }
@@ -154,7 +154,7 @@ impl TestBackend for Mock {
 fn successful_stage_atomic_install_and_rollback() {
     let f = Fixture::new();
     let plan = f.ready();
-    assert_eq!(plan.version, "0.2.0");
+    assert_eq!(plan.version, "9.0.0");
     assert!(plan.stage.dir.path("metadata").exists());
     let installed = install_with(&plan, &f.source).unwrap();
     assert_eq!(installed, f.source);
@@ -223,20 +223,20 @@ fn malformed_metadata_versions_and_assets() {
     for tag in [
         "v01.2.0",
         "v0.2",
-        "v0.2.0-rc1",
-        "v0.2.0+meta",
-        "V0.2.0",
-        "v0.2.0/evil",
+        "v9.0.0-rc1",
+        "v9.0.0+meta",
+        "V9.0.0",
+        "v9.0.0/evil",
         "v18446744073709551616.0.0",
     ] {
         assert!(release(&metadata(tag), "0.1.0").is_err());
     }
     for field in ["draft", "prerelease"] {
-        let mut v: serde_json::Value = serde_json::from_slice(&metadata("v0.2.0")).unwrap();
+        let mut v: serde_json::Value = serde_json::from_slice(&metadata("v9.0.0")).unwrap();
         v[field] = true.into();
         assert!(release(&serde_json::to_vec(&v).unwrap(), "0.1.0").is_err());
     }
-    let mut v: serde_json::Value = serde_json::from_slice(&metadata("v0.2.0")).unwrap();
+    let mut v: serde_json::Value = serde_json::from_slice(&metadata("v9.0.0")).unwrap();
     v["assets"][0]["browser_download_url"] = "https://evil.example/cx".into();
     assert!(release(&serde_json::to_vec(&v).unwrap(), "0.1.0").is_err());
     let f = Fixture::new();
@@ -251,16 +251,16 @@ fn missing_gh_signature_tag_and_probe_failure_never_install() {
         Err(std::io::Error::from(std::io::ErrorKind::NotFound).into()),
     ] {
         let f = Fixture::new();
-        let b = Mock::new(vec![response("v0.2.0"), out(0, b"\n200"), failed]);
+        let b = Mock::new(vec![response("v9.0.0"), out(0, b"\n200"), failed]);
         assert!(matches!(f.check(true, &b), CheckOutcome::Unavailable(_)));
         assert_eq!(b.calls.get(), 4);
         assert_eq!(fs::read(&f.source).unwrap(), b"old executable");
         assert_eq!(fs::read_dir(f.state.join("update")).unwrap().count(), 0);
     }
-    for probe in [out(0, b"cx 9.9.9\n"), out(1, b"cx 0.2.0\n")] {
+    for probe in [out(0, b"cx 9.9.9\n"), out(1, b"cx 9.0.0\n")] {
         let f = Fixture::new();
         let b = Mock::new(vec![
-            response("v0.2.0"),
+            response("v9.0.0"),
             out(0, b"\n200"),
             out(0, b""),
             probe,
@@ -416,13 +416,13 @@ fn bounded_real_process_outcomes_without_network() {
     let args = |s: &str| vec!["-c".to_owned(), s.to_owned()];
     let o = bounded(
         Path::new("/bin/sh"),
-        &args("printf 'cx 0.2.0\\n'; exit 7"),
+        &args("printf 'cx 9.0.0\\n'; exit 7"),
         Duration::from_secs(1),
         1024,
     )
     .unwrap();
     assert_eq!(o.code, 7);
-    assert_eq!(o.bytes, b"cx 0.2.0\n");
+    assert_eq!(o.bytes, b"cx 9.0.0\n");
     assert!(bounded(
         Path::new("/bin/sh"),
         &args("while :; do :; done"),
@@ -455,11 +455,11 @@ fn fixture_provenance_gate_then_actual_probe_install_and_relaunch() {
     }
     let f = Fixture::new();
     let mut mock = Mock::new(vec![
-        response("v0.2.0"),
+        response("v9.0.0"),
         out(0, b"\n200"),
         out(0, b"verified"),
     ]);
-    mock.archive=archive(&[("cx",tar::EntryType::Regular,b"#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'cx 0.2.0\\n'; else printf 'relaunch fixture\\n'; fi\n")]);
+    mock.archive=archive(&[("cx",tar::EntryType::Regular,b"#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'cx 9.0.0\\n'; else printf 'relaunch fixture\\n'; fi\n")]);
     let b = RealProbe(mock);
     let outcome = check_with(
         true,
@@ -577,7 +577,7 @@ fn existing_cli_lock_permissions_share_same_inode() {
 #[test]
 fn exhausted_api_quota_uses_official_tag_and_keeps_signature_gate() {
     let f = Fixture::new();
-    let page = format!("\n200\nhttps://github.com/{REPO}/releases/tag/v0.2.0");
+    let page = format!("\n200\nhttps://github.com/{REPO}/releases/tag/v9.0.0");
     let b = Mock::new(vec![
         out(0, b"{}\n403"),
         out(0, page.as_bytes()),

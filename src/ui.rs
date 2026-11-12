@@ -118,12 +118,9 @@ struct Entry {
     hidden: bool,
     #[serde(default)]
     rename_name: Option<String>,
-    /// Modification time (Unix seconds); from the helper's `modified`, else its identity.
+    /// Modification time (Unix seconds), from the identity the helper sends.
     #[serde(default)]
     modified: Option<i64>,
-    /// Child count of a directory (helper's optional `items`, capped at 1000).
-    #[serde(default)]
-    items: Option<u64>,
 }
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Clipboard {

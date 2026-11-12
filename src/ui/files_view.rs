@@ -1,4 +1,5 @@
-//! File browser: navigation/selection state, transfer submission, `render_browser` and drawer labels.
+//! File browser: navigation/selection state, transfer submission and drawer labels.
+//! The Files screen is drawn by `views/mission/views.rs` from `viewmodel.rs`.
 use super::*;
 
 /// Visible (hidden/filter-applied) rows; cached in the browser's index, so this is
@@ -14,26 +15,6 @@ pub(super) fn browser_matches(b: &Browser) -> file_index::RowMatches {
         .borrow_mut()
         .search(&b.entries, b.show_hidden, &b.filter, &b.search)
 }
-#[cfg(test)]
-pub(super) fn file_search_matches(rows: &VisibleRows, query: &str) -> Vec<(usize, Vec<usize>)> {
-    if query.is_empty() {
-        return Vec::new();
-    }
-    let needle: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
-    let mut matches: Vec<(usize, Vec<usize>)> = Vec::new();
-    for (row, entry) in rows.iter().enumerate() {
-        for positions in line_matches(safe_label(&entry.name).chars(), &needle) {
-            if let Some((_, last)) = matches.last_mut().filter(|(last, _)| *last == row) {
-                last.extend(positions);
-            } else {
-                matches.push((row, positions));
-            }
-        }
-    }
-    matches
-}
-// Keep the selected context in traversal order; reserve the deepest two rows
-// before showing ancestors so narrow/short panels never hide the selected item.
 /// How long a folder or file stays highlighted before its listing/preview is fetched.
 const PREFETCH_DELAY: Duration = Duration::from_millis(150);
 

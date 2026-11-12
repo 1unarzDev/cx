@@ -39,7 +39,8 @@ REPO = HERE.parent
 HELPER_COMMAND = 'exec ~/.local/bin/cx helper'
 SIZES = (100, 1000, 20000, 100000)
 DEEP_LEVELS = 24
-UI_CAP = 10000            # src/ui/apply/files.rs stops requesting pages at 10,000 entries
+UI_CAP = 100000           # LISTING_CAP in src/ui/apply/files.rs (= files::MAX_LIST_OFFSET)
+OLD_UI_CAP = 10000        # v0.1.95 (the pre-hub layout) stopped paging at 10,000 entries
 FULL_TIMEOUT = 90.0
 END_MARKER = ph.END_MARKER
 WHEEL_DOWN = ph.WHEEL_DOWN
@@ -636,7 +637,7 @@ def dir_open(viewer, letter, expected, res, prefix):
                             what=f'{prefix} j moves')
     res.add(f'{prefix}.usable_ms', ms(t0, t_usable))
     res.add(f'{prefix}.j_after_first_rows_ms', ms(t_j, t_usable))
-    want = min(expected, UI_CAP)
+    want = min(expected, UI_CAP if viewer.hub_layout() else OLD_UI_CAP)
     t_full = viewer.until(lambda: not viewer.loading() and (viewer.count() or 0) >= want,
                           timeout=FULL_TIMEOUT, what=f'{prefix} full count')
     res.add(f'{prefix}.full_count_ms', ms(t0, t_full))
@@ -889,10 +890,12 @@ def helper_bench(fx, side, argv, env, res, run):
             res.add(f'{base}.first_page_entries', entries, unit='entries', better='info')
             res.add(f'{base}.first_page_bytes', first_bytes, unit='bytes', better='lower')
             res.add(f'{base}.bytes_per_entry', first_bytes / max(entries, 1), unit='bytes', better='lower')
-            # UI pattern today: 1000-entry continuation pages until 10,000 entries.
+            # UI pattern: continuation pages until UI_CAP entries, 4000 per page once the helper
+            # reports its `order` (older helpers: 1000). The metric keeps its baseline name.
+            limit = 4000 if first.get('order') else 1000
             offset, loaded, pages, t_ui = first.get('next_offset'), entries, [], first_ms
             while offset is not None and loaded < UI_CAP:
-                p_ms, _, page = helper.request('list_page', dict(path=d, offset=offset, limit=1000))
+                p_ms, _, page = helper.request('list_page', dict(path=d, offset=offset, limit=limit))
                 pages.append(p_ms)
                 t_ui += p_ms
                 loaded += len(page['entries'])

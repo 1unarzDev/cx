@@ -49,7 +49,6 @@ fn file_app() -> (App, mpsc::Receiver<Task>) {
             hidden: name.starts_with('.'),
             rename_name: Some((*name).into()),
             modified: None,
-            items: None,
         })
         .collect();
     a.browser = Some(b);
@@ -1468,7 +1467,6 @@ fn restart_restores_browser_host_search_focus_and_copy_without_preview_content()
         hidden: false,
         rename_name: None,
         modified: None,
-        items: None,
     });
     a.clipboard = Some(Clipboard {
         container: None,
@@ -1704,7 +1702,6 @@ fn restored_file_identity_survives_page_one_clamping() {
             hidden: false,
             rename_name: None,
             modified: None,
-            items: None,
         })
         .collect();
     browser.selected = 1100;
@@ -2628,7 +2625,6 @@ fn destination_transfer_fixture() -> (App, mpsc::Receiver<Task>) {
         hidden: false,
         rename_name: None,
         modified: None,
-        items: None,
     });
     a.browser = Some(source);
     a.execute(Action::Copy);
@@ -2644,7 +2640,6 @@ fn destination_transfer_fixture() -> (App, mpsc::Receiver<Task>) {
         hidden: false,
         rename_name: None,
         modified: None,
-        items: None,
     });
     a.browser = Some(destination);
     a.destination_active = true;
@@ -2706,7 +2701,6 @@ fn transfer_locations_stay_independent_and_submit_real_spec() {
         hidden: false,
         rename_name: None,
         modified: None,
-        items: None,
     });
     a.browser = Some(source);
     a.execute(Action::Copy);
@@ -2813,7 +2807,6 @@ fn horizontal_folder_keys_enter_and_leave_without_previewing_files() {
             hidden: false,
             rename_name: None,
             modified: None,
-            items: None,
         }]
         .into();
         a.key(KeyEvent::new(forward, KeyModifiers::NONE));
@@ -2905,7 +2898,6 @@ fn file_find_highlights_without_filtering_and_wraps_between_files() {
             hidden: name.starts_with('.'),
             rename_name: None,
             modified: None,
-            items: None,
         })
         .collect();
     b.marked.insert("/fixture/1".into());
@@ -2921,7 +2913,8 @@ fn file_find_highlights_without_filtering_and_wraps_between_files() {
             .collect::<Vec<_>>(),
         before
     );
-    assert_eq!(file_search_matches(&a.visible_entries(), "alpha").len(), 2);
+    let matches = |a: &App| browser_matches(a.browser.as_ref().unwrap()).len();
+    assert_eq!(matches(&a), 2);
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
     terminal.draw(|frame| render(frame, &a)).unwrap();
     assert!(
@@ -2950,13 +2943,12 @@ fn file_find_highlights_without_filtering_and_wraps_between_files() {
     a.browser.as_mut().unwrap().filter = "other".into();
     assert_eq!(a.visible_entries().len(), 1);
     a.browser.as_mut().unwrap().filter.clear();
-    a.browser.as_mut().unwrap().show_hidden = true;
-    assert_eq!(
-        file_search_matches(&a.visible_entries(), "missing").len(),
-        0
-    );
+    assert_eq!(matches(&a), 0);
     a.browser.as_mut().unwrap().search = "alpha".into();
-    assert_eq!(file_search_matches(&a.visible_entries(), "alpha").len(), 3);
+    assert_eq!(matches(&a), 2);
+    // The same cached query: showing hidden rows invalidates it.
+    a.browser.as_mut().unwrap().show_hidden = true;
+    assert_eq!(matches(&a), 3);
 }
 
 #[test]
@@ -2974,7 +2966,6 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             hidden: false,
             rename_name: None,
             modified: None,
-            items: None,
         },
         Entry {
             name: "recording-second.bin".into(),
@@ -2985,7 +2976,6 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             hidden: false,
             rename_name: None,
             modified: None,
-            items: None,
         },
         Entry {
             name: "other".into(),
@@ -2996,7 +2986,6 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             hidden: false,
             rename_name: None,
             modified: None,
-            items: None,
         },
     ]
     .into();
@@ -3062,7 +3051,6 @@ fn enter_file_previews_never_launches() {
         hidden: false,
         rename_name: None,
         modified: None,
-        items: None,
     }]
     .into();
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -5979,10 +5967,11 @@ fn ansi16_focused_row_is_uniform_and_keeps_its_bar() {
 
 fn page(dir: &str, from: usize, to: usize, next: Option<usize>, total: usize) -> Value {
     let entries = (from..to)
-        .map(|i| serde_json::json!({"name":format!("e{i:06}"),"path":format!("{dir}/e{i:06}"),"kind":"file","size":i,"modified":1}))
+        .map(|i| serde_json::json!({"name":format!("e{i:06}"),"path":format!("{dir}/e{i:06}"),"kind":"file","size":i,
+            "identity":r#"{"size":0,"modified":1999999999,"device":1,"inode":1}"#}))
         .collect::<Vec<_>>();
     serde_json::json!({"path":dir,"display_path":dir,"entries":entries,"next_offset":next,
-        "order":"directories-first-name","total":total})
+        "order":crate::files::LIST_ORDER,"total":total})
 }
 #[test]
 fn ordered_listing_pages_append_incrementally_beyond_the_old_cap() {
@@ -6022,7 +6011,7 @@ fn ordered_listing_pages_append_incrementally_beyond_the_old_cap() {
     let b = a.browser.as_ref().unwrap();
     assert_eq!(a.visible_entries().len(), total);
     assert_eq!(b.entries[total - 1].name, "e023999");
-    assert_eq!(b.entries[0].modified, Some(1));
+    assert_eq!(b.entries[0].modified, Some(1), "seconds from the identity's nanoseconds");
     // Continuations asked for the larger page once the helper reported its order.
     let limits: Vec<u32> = rx
         .try_iter()
@@ -6035,6 +6024,52 @@ fn ordered_listing_pages_append_incrementally_beyond_the_old_cap() {
         !limits.is_empty() && limits.iter().all(|l| *l == 4000),
         "{limits:?}"
     );
+}
+/// A continuation whose snapshot the helper no longer holds lists again from the top,
+/// keeping the selection (a reread at the old offset would duplicate or skip rows).
+#[test]
+fn listing_restart_relists_from_the_top_and_keeps_the_selection() {
+    let (mut a, rx) = queued_app();
+    a.browser = Some(Browser::new(0, "/big".into()));
+    a.view = View::Files;
+    let reply = |a: &App, op, value| Reply {
+        device_id: None,
+        execution_target: None,
+        preview: None,
+        device: 0,
+        op,
+        generation: a.generation,
+        result: Ok(value),
+    };
+    let first = reply(
+        &a,
+        Operation::List {
+            path: "/big".into(),
+        },
+        page("/big", 0, 4000, Some(4000), 6000),
+    );
+    a.apply(first);
+    a.browser.as_mut().unwrap().selected = 7;
+    rx.try_iter().count();
+    let restart = reply(
+        &a,
+        Operation::ListPage {
+            path: "/big".into(),
+            offset: 4000,
+            limit: 4000,
+        },
+        serde_json::json!({"restart":true,"entries":[],"next_offset":null,"truncated":true}),
+    );
+    a.apply(restart);
+    let sent: Vec<_> = rx.try_iter().map(|t| t.op).collect();
+    assert!(
+        matches!(sent.as_slice(), [Operation::List { path }] if path == "/big"),
+        "{sent:?}"
+    );
+    let b = a.browser.as_ref().unwrap();
+    assert_eq!(b.entries.len(), 4000, "the restart reply adds no rows");
+    assert!(b.loading);
+    assert_eq!(b.restore_selection.as_deref(), Some("/big/e000007"));
 }
 #[test]
 fn streamed_preview_chunks_extend_the_retained_layout() {
@@ -6349,7 +6384,7 @@ fn loading_peek_capture_dump() {
     };
     let dir = std::path::PathBuf::from(dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let entry = |name: &str, kind: &str, size: u64, items: Option<u64>| Entry {
+    let entry = |name: &str, kind: &str, size: u64| Entry {
         name: name.into(),
         path: format!("/home/fixture/projects/cx-demo/{name}"),
         kind: kind.into(),
@@ -6358,18 +6393,17 @@ fn loading_peek_capture_dump() {
         hidden: name.starts_with('.'),
         rename_name: Some(name.into()),
         modified: Some(transport::now() as i64 - 120),
-        items,
     };
     for (cols, rows) in [(40u16, 20u16), (80, 24), (120, 40), (200, 60)] {
         let (mut a, _rx) = queued_app();
         let mut b = Browser::new(0, "/home/fixture/projects/cx-demo".into());
         b.entries = vec![
-            entry("docs", "directory", 4096, Some(1)),
-            entry("src", "directory", 4096, Some(12)),
-            entry(".gitignore", "file", 9, None),
-            entry("Cargo.toml", "file", 312, None),
-            entry("README.md", "file", 1840, None),
-            entry("data.bin", "file", 14_000, None),
+            entry("docs", "directory", 4096),
+            entry("src", "directory", 4096),
+            entry(".gitignore", "file", 9),
+            entry("Cargo.toml", "file", 312),
+            entry("README.md", "file", 1840),
+            entry("data.bin", "file", 14_000),
         ]
         .into();
         b.selected = 2;
@@ -6472,7 +6506,6 @@ fn folder_app(count: usize) -> (App, mpsc::Receiver<Task>) {
             hidden: false,
             rename_name: Some(format!("dir{i}")),
             modified: None,
-            items: None,
         })
         .collect();
     entries.extend(b.entries.iter().cloned());

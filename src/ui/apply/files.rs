@@ -1,27 +1,15 @@
 //! Task replies for listings, previews, transfers and file mutations.
 use super::*;
 
-/// Listing pages the UI asks for once the helper reports its sorted `order`
-/// (older helpers reject limits above 1000).
-const ORDERED_PAGE_LIMIT: u32 = 4000;
-/// Entries kept per directory; helpers stop paging at offset 100000.
-pub(in crate::ui) const LISTING_CAP: usize = 100_000;
-/// The helper's sort order: directories first, then display name.
-const HELPER_ORDER: &str = "directories-first-name";
+use crate::files::{FIRST_PAGE_LIMIT, LIST_ORDER, MAX_LIST_OFFSET};
 
-/// Unix seconds from the helper's `modified`, else from the identity it always sends.
+/// Entries kept per directory: helpers page no further than `MAX_LIST_OFFSET`.
+pub(in crate::ui) const LISTING_CAP: usize = MAX_LIST_OFFSET as usize;
+
+/// Unix seconds from the identity the helper sends (its `modified` is in nanoseconds).
 fn entry_modified(e: &Value) -> Option<i64> {
-    if let Some(seconds) = e.get("modified").and_then(Value::as_i64) {
-        return Some(seconds);
-    }
-    let identity = e.get("identity")?.as_str()?;
-    let at = identity.find("\"modified\":")? + "\"modified\":".len();
-    let digits: String = identity[at..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    let nanos: u128 = digits.parse().ok()?;
-    i64::try_from(nanos / 1_000_000_000).ok()
+    let identity: Value = serde_json::from_str(e.get("identity")?.as_str()?).ok()?;
+    i64::try_from(identity["modified"].as_u64()? / 1_000_000_000).ok()
 }
 pub(in crate::ui) fn parse_entries(value: &Value) -> Vec<Entry> {
     value
@@ -45,7 +33,6 @@ pub(in crate::ui) fn parse_entries(value: &Value) -> Vec<Entry> {
                             .and_then(Value::as_str)
                             .map(str::to_owned),
                         modified: entry_modified(e),
-                        items: e.get("items").and_then(Value::as_u64),
                     })
                 })
                 .collect()
@@ -344,7 +331,25 @@ impl App {
     /// Merge one listing page into the current browser. Pages in the helper's order are
     /// appended without re-sorting; derived caches extend incrementally.
     fn apply_listing(&mut self, device: usize, value: &Value, listing_offset: u64) {
-        let ordered = value["order"].as_str() == Some(HELPER_ORDER);
+        let ordered = value["order"].as_str() == Some(LIST_ORDER);
+        if value["restart"] == true {
+            // The helper no longer holds this listing's snapshot: list again from the top
+            // (the selection is restored as pages arrive).
+            let Some(b) = self.browser.as_mut().filter(|b| b.device == device) else {
+                return;
+            };
+            if b.restore_selection.is_none() {
+                b.restore_selection = browser_entries(b)
+                    .get(b.selected)
+                    .map(|entry| entry.path.clone());
+            }
+            let path = b.path.clone();
+            let sent = self.send(device, Operation::List { path });
+            if let Some(b) = &mut self.browser {
+                b.loading = sent;
+            }
+            return;
+        }
         if let Some(b) = self.browser.as_mut().filter(|b| b.device == device) {
             apply_location(b, value);
             let entries = parse_entries(value);
@@ -394,13 +399,13 @@ impl App {
         }
         if let Some(offset) = value["next_offset"].as_u64() {
             if let Some(b) = &self.browser {
-                if b.entries.len() < LISTING_CAP && offset <= 100_000 {
+                if b.entries.len() < LISTING_CAP && offset <= MAX_LIST_OFFSET {
                     self.send(
                         b.device,
                         Operation::ListPage {
                             path: b.path.clone(),
                             offset,
-                            limit: if ordered { ORDERED_PAGE_LIMIT } else { 1000 },
+                            limit: if ordered { FIRST_PAGE_LIMIT as u32 } else { 1000 },
                         },
                     );
                     if let Some(b) = &mut self.browser {

@@ -2,22 +2,27 @@
 
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
-## Unreleased
-
-### Fixes
-- The new-session chooser (`n` in Files, palette **New session**) picks Shell with `n`, the same key that starts a shell on a device's screen, so `n` `n` in Files is a new shell; `s` stays the device screen's second session slot.
 ## v0.2.1
 
+The strict review of v0.2.0, issue by issue: 159 confirmed findings, fixed or recorded in STATUS.md.
+
+### Fixes
+- **Sessions.** An attached session no longer streams its screen to the viewer underneath: the watch ends at every terminal handoff and resumes on return, so detach stays instant after a long attach. A replaced watch's late frame never hides the new first screen. Pushed session lists refresh every 3 s again (titles, running commands, agent state); the watched screen recovers after a failed capture instead of staying "unavailable"; an oversized control-mode capture fails whole instead of dropping rows. `cx orphans` sees cx's tmux control clients, and the attach ticket is one file.
+- **Typing into a peeked session** (a tap on its screen) now has clear exits: Ctrl+\, Esc Esc (one Esc still reaches the agent), or a tap anywhere outside the screen, including the typing bar's `ctrl+\` chip and the crumb.
+- **Palette "Send Ctrl+\"** works from the hub after a detach: it forwards one to the last session and re-attaches it (selecting it first if its screen is not live yet).
+- **Keys.** `gg` is always the first row on the hub (`g` is now assigned to a device only past 20 devices, like `h j k l`). The new-session chooser picks Shell with `n`, as on a device's screen, and its tiles show that key. A pending `e` takes only a device letter; any other key does its usual job. `⌫ s ⌫` moves a stop question to slot `s`. In the link editor Ctrl chords are the keymap's (Ctrl+O no longer refuses a direction), `` ` `` `-` `+` `K` `?` `/` work over it and over the invite, and a second policy change waits for the first.
+- **The link editor** draws the link its keys change (never the first stored link); `b` on a device's screen opens it on your link to that device.
+- **The hub.** The ticker acts on the device its notice names and never offers another session's slot; a device that was not checked yet is no longer drawn as down, and a stale listing shows `◌` instead of a guessed state; help is the table of the screen you opened it from. Every drawn chip does what its key does. Onboarding's Connect Cloudflare opens the token's masked entry. Light-theme ok/warn colours reach 4.5:1 contrast.
+- **Copying.** `y` copies a file's path in Files; on the invite `y` copies the code and `Y` the `cx join` line (or tap either), over the terminal's clipboard escape.
+- **Invites.** `cx invite` is the CLI twin of `cx join`, and the line it prints is `cx join <code> <host>`. An invite lasts 30 minutes by default (at most 24 hours); a joiner whose request goes unanswered is told to cancel it. Both sides check that sshd answers on port 22 before pairing. The hub lists the other addresses an invite listens on, and Esc then `+` no longer finds the port taken. Port scans and silent connections no longer count as wrong codes; a refused join keeps a removed device out of automatic pairing.
+- **Previews.** A large preview says when it shows only part of the file (`first 4.0 MiB of 6.2 MiB`, `stopped at …`, `partial`); a line longer than a chunk is never split or garbled; streamed code keeps its highlighting across chunks; `G`/End have no 100,000-row limit; Space pages down; `h`/Left in a preview step back like Esc. Markdown streams into one layout, and a list row that fits skips the wrap pass: `G` on a 2 MB Markdown file 53 → 5 ms right after it opens.
+- **Files.** A folder's later pages come from the same snapshot as its first page (no repeated or skipped rows when it changes while listing), or the list restarts keeping the selection.
+- **SSH.** Warming a connection runs the edge policy first, so a `none` link opens no SSH master; the master's owner record is written before the master starts; pane capture and input ride the interactive channel.
+
 ### Changes
-- **Invites.** `cx invite` is the CLI twin of `cx join` (short for `cx mesh invite --backend ssh-overlay`), and the line it prints is `cx join <code> <host>`. An invite now lasts 30 minutes by default (at most 24 hours), and a joiner whose request goes unanswered is told to cancel the invite. Both sides check that sshd answers on port 22 before anything is paired. `--host-key` is gone: both sides use `/etc/ssh/ssh_host_ed25519_key.pub`.
-- **The hub's invite** copies: `y` the code, `Y` the line (or tap either), and lists the other addresses it listens on. Esc then `+` no longer finds the port taken.
-- Port scans and silent connections no longer count as wrong codes. A refused join keeps a removed device out of automatic pairing.
-- The WARP Worker accepts only the token the mesh was deployed with for its owner endpoints (run `cx mesh deploy` once after updating, and after changing the token). `--backend cloudflare-warp` now covers only `status` and `ranges`; the rest is `cx mesh` without `--backend`, as before. `cx mesh backends --json` no longer lists capabilities.
-- `CX_SECRETS_BACKEND=keyring` is gone (`auto` or `file`).
-- An attached session no longer streams its screen to the viewer underneath: the watch ends at every terminal handoff and resumes on return, so detach stays instant after a long attach.
-- Pushed session lists refresh every 3 s again (titles, running commands, agent state), as v0.1.95's polling did; the watched screen recovers after a failed capture instead of staying "unavailable"; an oversized control-mode capture fails whole instead of dropping rows.
-- Typing into a peeked session stops on Esc or a tap outside its screen; Esc no longer reaches the agent there. The palette's "Send Ctrl+\" now works from the hub after a detach: it forwards one to the last session and re-attaches it.
-- `cx orphans` sees cx's tmux control clients; the attach ticket is one file instead of one per session ever watched.
+- The WARP Worker accepts only the token the mesh was deployed with for its owner endpoints: run `cx mesh deploy` once after updating, and after changing the token. `--backend cloudflare-warp` now covers only `status` and `ranges`; the rest is `cx mesh` without `--backend`, as before. `cx mesh backends --json` no longer lists capabilities.
+- `CX_SECRETS_BACKEND=keyring` is gone (`auto` or `file`); `cx mesh invite --host-key` is gone (both sides use `/etc/ssh/ssh_host_ed25519_key.pub`); `cx edge list` drops its `observed` column.
+- Helpers name each watch in its replies and frames; older viewers ignore it, and a newer viewer treats an older helper as before.
 
 ## v0.2.0
 

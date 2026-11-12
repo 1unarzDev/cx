@@ -252,8 +252,13 @@ laptop-guest is `p`; the large fixture follows that order). Inside a device, let
 holds the slots (`a s d g`; `f` stays files, `j k` stay motion and `h l` fold as in files
 and every list, so a vim hand never attaches by accident). Sessions past the fourth are
 reached by the arrows or `Tab` then `⏎`, or through `/`. Any list inside a screen uses the
-same home-row slots (secrets cards are `a s d g`). Peek has no inline typing, so hub
-letters work there unchanged. `K` (keys), `+` (invite) and `?` (help) are global outside text input and attached
+same home-row slots (secrets cards are `a s d g`). Peek keys are the hub's letters,
+unchanged, until a tap on the peeked screen starts **inline typing** (useful on phones,
+where attaching hands the whole terminal over): then every key, one Esc included, goes to
+the session, and the footer becomes the typing bar (`ctrl+\ done · esc esc done · typing
+into the session`). Typing ends on Ctrl+\, on Esc Esc (the second Esc is not sent), or on
+a tap anywhere outside the screen (the bar's `ctrl+\` chip, the crumb toward the hub or
+device, the hub): that tap only ends typing, and the peek stays. `K` (keys), `+` (invite) and `?` (help) are global outside text input and attached
 panes: they are uppercase or symbols, so they never clash with slots, verbs or devices.
 
 | Key | Hub | Device | Peek | Mouse / touch |
@@ -271,11 +276,11 @@ panes: they are uppercase or symbols, so they never clash with slots, verbs or d
 | `↑↓←→` | move spatially | move | — | — |
 | `/` | find anything | find | — | tap `/ find` |
 | `+` / `K` / `?` | invite / keys / help | same (global) | same | footer chips |
-| `Esc` | — | back one level | back to the device | tap the crumb or `esc back` |
+| `Esc` | — | back one level | back to the device (inline typing: the session's; `Esc Esc` ends typing) | tap the crumb or `esc back` |
 | `` ` `` | — | to the hub from any cx screen | to the hub | tap `cx` |
 | `-` | re-attach the last detached session | same | same | tap `- last` |
 | `r` | (after a letter: `s r`) retry the device the ticker names | reconnect / retry this device | — | tap the ticker's `s r retry` |
-| `Ctrl+\` | — | detach from an attached session, at once | | the `⏏ ctrl+\ detach` chip at the breadcrumb's right end |
+| `Ctrl+\` | — | detach from an attached session, at once | end inline typing | the `⏏ ctrl+\ detach` chip at the breadcrumb's right end; while typing, the typing bar's `ctrl+\` chip or any tap outside the screen |
 | `a p o` / `A P O`, `u`; `j k` | edge editor: outbound / inbound key, password, off, applied at once; undo; `j k` move between the lanes | | | tap segment |
 | `y` / `Y` | copy (code, path, secret) / copy the alternate (command) | | | tap the code or line |
 

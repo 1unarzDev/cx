@@ -319,9 +319,19 @@ impl App {
         self.open_session(d, s, false);
     }
     pub(super) fn session_pane_key(&mut self, event: KeyEvent) {
-        // Esc (peek's "back") and Ctrl+\ leave inline input; every other key
-        // (Ctrl+] and Ctrl+O too) belongs to the application in the pane.
-        if detach_key(&event) || (event.code == KeyCode::Esc && event.modifiers.is_empty()) {
+        // Ctrl+\ and Esc Esc leave inline input; every other key (one Esc, Ctrl+]
+        // and Ctrl+O too) belongs to the application in the pane.
+        if event.code == KeyCode::Esc && event.modifiers.is_empty() {
+            let double = self
+                .last_esc
+                .is_some_and(|t| t.elapsed() < super::screens::DOUBLE_ESC);
+            self.last_esc = (!double).then(Instant::now);
+            if double {
+                self.leave_session_pane();
+                return;
+            }
+        }
+        if detach_key(&event) {
             self.leave_session_pane();
             return;
         }

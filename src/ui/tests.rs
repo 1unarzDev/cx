@@ -5708,7 +5708,7 @@ fn live_pane_focus_input_return_and_runtime_invalidation() {
         .collect();
     assert!(text.contains("live screen"));
     assert!(
-        text.contains(" esc  back  typing into the session"),
+        text.contains(" ctrl+\\  done   esc esc  done  typing into the session"),
         "{text}"
     );
     // Ctrl+] (legacy 0x1d, crossterm Ctrl+5) and Ctrl+O now reach the pane.
@@ -5720,14 +5720,22 @@ fn live_pane_focus_input_return_and_runtime_invalidation() {
             "Ctrl+{code}"
         );
     }
-    // Esc (peek's "back") and every Ctrl+\ encoding leave inline input
-    // without sending bytes: an Esc meant as "back" never interrupts an agent.
+    // One Esc is the application's (an agent's interrupt, vim's normal mode); Esc Esc
+    // leaves without sending the second. Every Ctrl+\ encoding leaves, sending nothing.
+    let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+    a.key(esc);
+    assert!(a.pane_focused(), "one Esc stays in the session");
+    assert!(
+        matches!(rx.try_recv().unwrap().op, Operation::SessionPaneInput { hex, .. } if hex == "1b")
+    );
+    a.key(esc);
+    assert!(!a.pane_focused(), "Esc Esc leaves input");
+    assert!(rx.try_recv().is_err());
     for key in [
-        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
         KeyEvent::new(KeyCode::Char('4'), KeyModifiers::CONTROL),
         KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::CONTROL),
     ] {
-        assert!(a.pane_focused() || a.focus_session_pane());
+        assert!(a.focus_session_pane());
         a.key(key);
         assert!(!a.pane_focused(), "{key:?} did not leave input");
         assert!(rx.try_recv().is_err());

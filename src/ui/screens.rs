@@ -15,7 +15,7 @@ pub(super) struct EdgeEdit {
 }
 
 /// A second `Esc` within this long goes to the hub (for layouts where `` ` `` is dead).
-const DOUBLE_ESC: Duration = Duration::from_millis(400);
+pub(super) const DOUBLE_ESC: Duration = Duration::from_millis(400);
 
 /// The keys screen's masked entry. The value is never drawn, logged or copied out of this
 /// buffer except into the store, and is wiped when the entry is dropped.

@@ -495,20 +495,33 @@ fn peek_shows_the_live_screen_and_a_tap_on_it_types_inline() {
     assert!(a.pane_focused());
     a.key(KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::CONTROL));
     assert!(!a.pane_focused());
-    // While typing, a tap outside the screen (the bar's `esc` chip) stops it.
-    a.mouse(tap(screen.x + 1, screen.y), area);
-    assert!(a.pane_focused());
-    a.mouse(tap(1, 29), area);
-    assert!(!a.pane_focused() && a.peek);
-    // Esc stops typing (nothing reaches the agent); a second Esc leaves the peek.
-    a.mouse(tap(screen.x + 1, screen.y), area);
-    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(!a.pane_focused() && a.peek);
-    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(!a.peek);
+    // While typing, a tap outside the screen stops it: the bar's `ctrl+\` chip
+    // (bottom row) and the crumb (top row, toward the hub) alike.
+    for row in [29, 0] {
+        a.mouse(tap(screen.x + 1, screen.y), area);
+        assert!(a.pane_focused());
+        a.mouse(tap(2, row), area);
+        assert!(!a.pane_focused() && a.peek, "row {row}");
+    }
     assert!(rx
         .try_iter()
         .all(|t| !matches!(t.op, Operation::SessionPaneInput { .. })));
+    // One Esc is the agent's; Esc Esc stops typing, and one more Esc leaves the peek.
+    a.mouse(tap(screen.x + 1, screen.y), area);
+    let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+    a.key(esc);
+    assert!(a.pane_focused());
+    a.key(esc);
+    assert!(!a.pane_focused() && a.peek);
+    assert_eq!(
+        rx.try_iter()
+            .filter(|t| matches!(t.op, Operation::SessionPaneInput { .. }))
+            .count(),
+        1,
+        "only the first Esc reached the session"
+    );
+    a.key(esc);
+    assert!(!a.peek);
 }
 
 fn live_preview_app() -> (App, mpsc::Receiver<Task>) {

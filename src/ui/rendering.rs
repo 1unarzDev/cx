@@ -1198,19 +1198,19 @@ fn find_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
         frame.set_cursor_position((row.x + 4 + width.min(row.width.saturating_sub(5)), row.y));
     }
 }
-/// Typing into a peeked session: the footer says how to leave (Esc, Ctrl+\
-/// or a tap outside the screen).
+/// Typing into a peeked session: the footer says how to leave (Ctrl+\, Esc Esc,
+/// or a tap anywhere outside the screen: this chip, the crumb, the hub).
 fn typing_bar(frame: &mut Frame<'_>, area: Rect) {
     let row = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
+    let key = Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD);
     frame.render_widget(Clear, row);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw(" "),
-            Span::styled(
-                " esc ",
-                Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
-            ),
-            Span::styled(" back  typing into the session", muted()),
+            Span::styled(" ctrl+\\ ", key),
+            Span::styled(" done  ", muted()),
+            Span::styled(" esc esc ", key),
+            Span::styled(" done  typing into the session", muted()),
         ])),
         row,
     );

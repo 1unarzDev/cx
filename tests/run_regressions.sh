@@ -11,7 +11,7 @@
 #   --no-rust      Skip cargo fmt/test (still builds target/debug/cx).
 #   --with-ssh     Also run fixtures that start a disposable loopback sshd.
 #   --with-docker  Also run fixtures that create owned network-none containers.
-#   --only NAME    Run only the named Python fixtures (basename, no .py).
+#   --only NAME    Run only the named fixtures (as --list prints them).
 #   --list         Print the selected fixtures and exit.
 # pyte: if `import pyte` fails, set CX_PYTHONPATH to a directory holding pyte
 # and wcwidth (for example an unpacked wheel cache); otherwise pyte fixtures
@@ -46,7 +46,8 @@ while [ $# -gt 0 ]; do
 done
 
 # name|requirements|arguments (BIN = target/debug/cx). Requirements are
-# space-separated: pyte, fish, poppler, sshd, docker.
+# space-separated: pyte, pillow, fish, poppler, sshd, docker, node. A name
+# ending in .mjs runs with node; every other name is tests/NAME.py.
 CORE=(
     "command_panel_live||BIN"
     "focus_exits_copy_mode_pty||BIN"
@@ -54,7 +55,7 @@ CORE=(
     "orphan_exit_pty||BIN"
     "terminal_startup_readiness_live||BIN"
     "session_runtime_live||BIN"
-    "session_watch_live||BIN"
+    "session_watch_live|pyte|BIN"
     "container_discovery_fixtures||BIN"
     "container_session_reconcile_live||BIN"
     "session_activity_timestamp_live||BIN"
@@ -83,6 +84,7 @@ CORE=(
     "ctrl_bracket_attach_pty||BIN"
     "folder_command_ui_pty||BIN"
     "mesh_util||"
+    "mesh_worker.mjs|node|"
     "session_chooser_pty|pyte|BIN"
     "startup_directory_pty|pyte|BIN"
     "terminal_startup_loader_pty|pyte|BIN"
@@ -131,6 +133,10 @@ if [ ${#only[@]} -gt 0 ]; then
         for want in "${only[@]}"; do
             [ "$name" = "$want" ] || [ "${name%%@*}" = "$want" ] && filtered+=("$entry")
         done
+    done
+    for want in "${only[@]}"; do
+        printf '%s\n' "${filtered[@]}" | cut -d'|' -f1 | grep -qx -e "$want" -e "$want@.*" ||
+            { echo "unknown fixture: $want" >&2; exit 2; }
     done
     selected=("${filtered[@]}")
 fi
@@ -193,12 +199,12 @@ have() {
     poppler) command -v pdftoppm >/dev/null 2>&1 && command -v pdfinfo >/dev/null 2>&1 ;;
     sshd) [ -x /usr/sbin/sshd ] || [ -x /usr/bin/sshd ] || command -v sshd >/dev/null 2>&1 ;;
     docker) docker info >/dev/null 2>&1 ;;
-    node) command -v node >/dev/null 2>&1 ;;
+    node) node -e 'require("node:sqlite")' >/dev/null 2>&1 ;;
     *) return 1 ;;
     esac
 }
 
-echo "== python fixtures (logs kept only on failure)"
+echo "== fixtures"
 command -v tmux >/dev/null 2>&1 || { echo "tmux is required for the fixtures"; exit 1; }
 for entry in "${selected[@]}"; do
     IFS='|' read -r name needs args <<<"$entry"
@@ -219,10 +225,11 @@ for entry in "${selected[@]}"; do
     for a in $args; do [ "$a" = BIN ] && argv+=("$BIN") || argv+=("$a"); done
     log="$private/logs/$name.log"
     start=$(date +%s)
-    if env "${extra_env[@]}" timeout 600 python3 "tests/$script.py" "${argv[@]}" >"$log" 2>&1 </dev/null; then
-        if [ "$script" = mesh_util ] && have node; then
-            node tests/mesh_worker.mjs >>"$log" 2>&1 || { report FAIL "$name (mesh_worker.mjs)"; fail=$((fail + 1)); failed+=("$name"); continue; }
-        fi
+    case "$script" in
+    *.mjs) run=(node "tests/$script") ;;
+    *) run=(python3 "tests/$script.py") ;;
+    esac
+    if env "${extra_env[@]}" timeout 600 "${run[@]}" "${argv[@]}" >"$log" 2>&1 </dev/null; then
         report PASS "$name" "$(($(date +%s) - start))s"; pass=$((pass + 1))
     else
         code=$?

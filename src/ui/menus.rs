@@ -21,9 +21,9 @@ pub(super) const HOST: &[SessionChoice] = &[
         key: 'x',
     },
     SessionChoice {
-        label: "[s] Shell",
+        label: "[n] Shell",
         provider: "shell",
-        key: 's',
+        key: 'n',
     },
     SessionChoice {
         label: "[d] Devcontainer",
@@ -33,9 +33,9 @@ pub(super) const HOST: &[SessionChoice] = &[
 ];
 pub(super) const CONTAINER: &[SessionChoice] = &[
     SessionChoice {
-        label: "[s] Shell",
+        label: "[n] Shell",
         provider: "shell",
-        key: 's',
+        key: 'n',
     },
     SessionChoice {
         label: "[c] Claude",

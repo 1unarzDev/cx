@@ -6,13 +6,13 @@
 # Optional env: CX_LAB_SIZES, CX_LAB_VARIANTS, CX_LAB_FIXTURES (small,typical,large),
 #   CX_LAB_FOCUS, CX_LAB_SELECTED, CX_LAB_HOVER=x,y, CX_LAB_FRAME, CX_LAB_FONT, CX_LAB_FONT_PX,
 #   CX_LAB_PALETTE=solarized (16-colour frames in Solarized Dark, brightblack = background).
+#   CX_LAB_PYTHON (default python3; it needs Pillow for the PNGs).
 # Prints the output directory (local-evidence/ui-lab/<concept>/round-N) on stdout.
 set -euo pipefail
 concept=${1:?usage: tests/lab.sh CONCEPT [VIEWS]}
 views=${2:-${CX_LAB_VIEWS:-all}}
 root=$(cd "$(dirname "$0")/.." && pwd)
-py=${CX_LAB_PYTHON:-/home/lunarz/cx/worktrees/.venv-test/bin/python}
-[ -x "$py" ] || py=python3
+py=${CX_LAB_PYTHON:-python3}
 
 base="$root/local-evidence/ui-lab/$concept"
 mkdir -p "$base"

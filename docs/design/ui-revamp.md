@@ -6,7 +6,8 @@ small amount of new local state the Network and Secrets views need. Nothing here
 changes the wire protocol. Additive data needs are listed in section 14.
 
 Evidence: `tests/capture_matrix.py` captures the real UI. Pass 0 (the current
-v0.1.95 UI) is in `local-evidence/ui-passes/pass0/`: 10 states at 40x20, 80x24,
+v0.1.95 UI) was captured to `local-evidence/ui-passes/pass0/` (git-ignored local evidence; rerun the
+matrix on v0.1.95 to regenerate it): 10 states at 40x20, 80x24,
 120x40 and 200x60, plus `ascii-nocolor/` at 80x24, and the 2 Network states in
 `pass0/network-remask/`. The fixture is two local
 managed shells, one "online" fake remote (`lab-arm`, served by a fake `ssh` that

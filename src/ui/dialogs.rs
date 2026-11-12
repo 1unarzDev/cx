@@ -87,7 +87,7 @@ impl App {
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
             {
-                if let KeyCode::Char(c @ ('c' | 'C' | 'x' | 'X' | 's' | 'S' | 'd' | 'D')) = key.code
+                if let KeyCode::Char(c @ ('c' | 'C' | 'x' | 'X' | 'n' | 'N' | 'd' | 'D')) = key.code
                 {
                     if let Some(index) = choices
                         .iter()

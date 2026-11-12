@@ -13,12 +13,14 @@ path and the fixture's tmux servers die with the namespace. TMUX_BIN_DIR is put
 first on PATH (for example a locally built tmux 2.7 or 3.4 prefix's bin/).
 Host mounts, services, networking and the caller's tmux servers are untouched.
 """
-import ctypes, os, sys, tempfile
+import ctypes, os, shutil, sys, tempfile
 
 if len(sys.argv) < 3:
     sys.exit(__doc__)
 bindir, fixture, *rest = sys.argv[1:]
 uid, gid = os.getuid(), os.getgid()
+# Our own TMUX_TMPDIR (unless the caller set one), removed once the namespace is gone.
+owned_tmp = None if 'TMUX_TMPDIR' in os.environ else tempfile.mkdtemp(prefix='cx-legacy-tmux-')
 os.unshare(os.CLONE_NEWUSER | os.CLONE_NEWNS | os.CLONE_NEWPID | os.CLONE_NEWCGROUP)
 for name, text in (('setgroups', 'deny'), ('uid_map', f'{uid} {uid} 1'), ('gid_map', f'{gid} {gid} 1')):
     with open(f'/proc/self/{name}', 'w') as f:
@@ -26,6 +28,8 @@ for name, text in (('setgroups', 'deny'), ('uid_map', f'{uid} {uid} 1'), ('gid_m
 child = os.fork()
 if child:
     _, status = os.waitpid(child, 0)
+    if owned_tmp:
+        shutil.rmtree(owned_tmp, ignore_errors=True)
     sys.exit(os.waitstatus_to_exitcode(status))
 libc = ctypes.CDLL(None, use_errno=True)
 MS_REC, MS_PRIVATE = 16384, 1 << 18
@@ -42,7 +46,8 @@ run_user = f'/run/user/{uid}'.encode()
 if os.path.isdir(run_user):
     mount(b'tmpfs', run_user, b'tmpfs', 0, b'mode=700')
 env = dict(os.environ, PATH=os.path.abspath(bindir) + os.pathsep + os.environ.get('PATH', ''))
-env.setdefault('TMUX_TMPDIR', tempfile.mkdtemp(prefix='cx-legacy-tmux-'))
+if owned_tmp:
+    env['TMUX_TMPDIR'] = owned_tmp
 env.pop('TMUX', None)
 env.pop('TMUX_PANE', None)
 env.pop('DBUS_SESSION_BUS_ADDRESS', None)

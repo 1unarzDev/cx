@@ -1,4 +1,0 @@
-light: altscreen_at=0.003 query_at=0.002 query_before_altscreen=True accent_light=33 accent_dark=0 stray_rgb_echo=False
-dark: altscreen_at=0.004 query_at=0.003 query_before_altscreen=True accent_light=0 accent_dark=33 stray_rgb_echo=False
-none: altscreen_at=0.103 query_at=0.004 query_before_altscreen=True accent_light=0 accent_dark=33 stray_rgb_echo=False
-late: altscreen_at=0.102 query_at=0.002 query_before_altscreen=True accent_light=0 accent_dark=33 stray_rgb_echo=False

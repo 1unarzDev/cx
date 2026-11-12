@@ -2,6 +2,11 @@
 
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
+## Unreleased
+
+### Fixes
+- The new-session chooser (`n` in Files, palette **New session**) picks Shell with `n`, the same key that starts a shell on a device's screen, so `n` `n` in Files is a new shell; `s` stays the device screen's second session slot.
+
 ## v0.2.0
 
 A new interface and a faster core. Everything below is new since v0.1.95. Numbers are medians of interleaved A/B runs against the v0.1.95 release binary on the same host (release builds, local fixtures, 120x40 PTY); see STATUS.md for the full table.

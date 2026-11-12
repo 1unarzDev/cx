@@ -1,13 +1,17 @@
 // The mesh share-code Worker (mesh/worker/worker.js) against an in-memory D1 (node:sqlite) and a fake
 // Cloudflare API: invites, the one-liner scripts, enrolment, registration, the DNS name, leave and revoke, and Claude lends.
-// No account is touched. Run: node tests/mesh_worker.mjs
-import { DatabaseSync } from "node:sqlite";
-import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
+// No account is touched. Run: node tests/mesh_worker.mjs (needs node:sqlite without a flag: Node >= 22.13).
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+
+const { DatabaseSync } = await import("node:sqlite").catch(() => {
+  console.error(`mesh_worker.mjs needs Node >= 22.13 (node:sqlite without a flag); this is ${process.version}`);
+  process.exit(1);
+});
 
 const W = join(dirname(fileURLToPath(import.meta.url)), "..", "mesh", "worker");
 const CONFIG = {
@@ -22,19 +26,26 @@ const src = readFileSync(join(W, "worker.js"), "utf8")
   .replace(/^import (\w+) from "\.\/(join|leave|claude)\.(sh|ps1)";$/gm, (_, v, n, e) => `const ${v} = ${text(`${n}.${e}`)};`)
   .replace(/^import CONFIG_TEXT from "\.\/config\.json";.*$/m, `const CONFIG_TEXT = ${JSON.stringify(JSON.stringify(CONFIG))};`);
 assert.ok(!/^import /m.test(src), "every Worker import is inlined");
-const file = join(mkdtempSync(join(tmpdir(), "mesh-worker-")), "worker.mjs");
-writeFileSync(file, src);
-const worker = await import(file);
+const dir = mkdtempSync(join(tmpdir(), "mesh-worker-"));
+writeFileSync(join(dir, "worker.mjs"), src);
+const worker = await import(join(dir, "worker.mjs"));
+rmSync(dir, { recursive: true });
 
 function d1() {
   const db = new DatabaseSync(":memory:");
   db.exec(readFileSync(join(W, "schema.sql"), "utf8"));
-  const stmt = (sql, args = []) => ({
-    bind: (...a) => stmt(sql, a),
-    run: async () => ({ meta: { changes: Number(db.prepare(sql).run(...args).changes) } }),
-    first: async () => (/\bRETURNING\b/i.test(sql) ? db.prepare(sql).get(...args) : db.prepare(sql).get(...args)) ?? null,
-    all: async () => ({ results: db.prepare(sql).all(...args) }),
-  });
+  // D1 binds `?N` by number (reused freely); older node:sqlite cannot bind a reused `?N`, so expand to positional `?`.
+  const stmt = (sql0, args0 = []) => {
+    const order = [];
+    const sql = sql0.replace(/\?(\d+)/g, (_, n) => (order.push(n - 1), "?"));
+    const args = order.length ? order.map((i) => args0[i]) : args0;
+    return {
+      bind: (...a) => stmt(sql0, a),
+      run: async () => ({ meta: { changes: Number(db.prepare(sql).run(...args).changes) } }),
+      first: async () => db.prepare(sql).get(...args) ?? null,
+      all: async () => ({ results: db.prepare(sql).all(...args) }),
+    };
+  };
   return { prepare: (sql) => stmt(sql), raw: db };
 }
 

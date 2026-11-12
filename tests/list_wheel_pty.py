@@ -31,7 +31,11 @@ for view in ['Files','Work']:
   def current():
    # The selection bar marks the selected row; older layouts used a chevron.
    for row,line in enumerate(screen.display):
-    if ('▸' in line or '›' in line or '▌' in line) and re.search(pattern,line):return re.search(pattern,line).group(),row
+    if ('▸' in line or '›' in line or '▌' in line) and re.search(pattern,line):
+     # (Tiles sit side by side: the name after the bar is the selected one.)
+     at=line.index('▌') if '▌' in line else 0
+     found=re.search(pattern,line[at:]) or re.search(pattern,line)
+     return found.group(),row
    return None
   def wait(predicate):
    end=time.monotonic()+10
@@ -40,10 +44,15 @@ for view in ['Files','Work']:
   def send(data):os.write(master,data);read(.25)
   try:
    wait(lambda:current() is not None);read(.3)
-   ordered=[re.search(pattern,line[21:]).group() for line in screen.display if re.search(pattern,line[21:]) and ('│' in line or '┃' in line)]
-   # Table rows include each fixture exactly once; selected-item text lives in sidebar.
+   # Files: the list's rows (its 48 columns at 120); a device's sessions: its tiles
+   # in slot order, which is creation order.
+   if view=='Files':
+    ordered=[re.search(pattern,line[:50]).group() for line in screen.display if re.search(pattern,line[:50])]
+   else:
+    ordered=[f'wheel-{i:02}' for i in range(12)]
    ordered=list(dict.fromkeys(ordered));assert len(ordered)==12,repr(ordered)+'\n'+'\n'.join(screen.display)
-   first,row=current();assert first==ordered[0],(first,ordered)
+   if view=='Work':send(b'\x1b[H')  # Home: the first slot (a restored selection may be any)
+   first,row=current();assert first==ordered[0],(first,ordered,'\n'.join(screen.display))
    send(f'\x1b[<65;40;{row+1}M'.encode())
    assert current()[0]==ordered[1],{'view':view,'expected':ordered[1],'actual':current(),'mouse_reporting':b'\x1b[?1000h' in raw}
    assert b'\x1b[?1000h' in raw,'list must request genuine wheel reports'
@@ -83,7 +92,7 @@ for view in ['Files','Work']:
     socket=str(state/'managed.sock')
     # Enter attaches natively at once (no focus/expand chain); Ctrl+\ returns.
     display=lambda:'\n'.join(screen.display)
-    wait(lambda:f'{ordered[5]} · ' in display() and ' live' in display())
+    wait(lambda:current() is not None and current()[0]==ordered[5]);read(.5)
     target=next(r['id'] for r in sessions if r['name']==ordered[5])
     def clients():return subprocess.check_output(['tmux','-S',socket,'list-clients','-F','#{session_name}'],env=env,text=True).splitlines()
     before_native=len(raw);send(b'\r')
@@ -92,11 +101,14 @@ for view in ['Files','Work']:
     back_start=len(raw);send(b'\x1c')
     wait(lambda:clients()==[] and current() is not None and b'\x1b[?1000h' in raw[back_start:])
     assert current()[0]==ordered[5]
-    # `i` types inline; Ctrl+] is application input there, Ctrl+\ leaves.
-    send(b'i');wait(lambda:'⏏ detach' in display())
+    # Space peeks; a tap on the peeked screen types into it; Ctrl+] is application
+    # input there, Ctrl+\ leaves.
+    send(b' ');wait(lambda:'OTHERS' in display() or 'tab' in screen.display[-1])
+    y=max(y for y,line in enumerate(screen.display) if '$' in line and y>1);x=screen.display[y].index('$')
+    send(f'\x1b[<0;{x+1};{y+1}M\x1b[<0;{x+1};{y+1}m'.encode());wait(lambda:'typing into the session' in display())
     send(b'\x1d');read(.3)
-    assert '⏏ detach' in display() and clients()==[],'Ctrl+] must reach the pane, not detach'
-    send(b'\x1c');wait(lambda:'⏏ detach' not in display())
+    assert 'typing into the session' in display() and clients()==[],'Ctrl+] must reach the pane, not detach'
+    send(b'\x1c');wait(lambda:'typing into the session' not in display())
     restored=json.loads(subprocess.check_output([binary,'sessions'],env=env));by_id={r['id']:r for r in restored}
     assert all(all(by_id[r['id']][key]==r[key] for key in ['pid','started','boot_id','socket']) for r in sessions)
    send(b'\x03');proc.wait(timeout=5);assert proc.returncode==0 and termios.tcgetattr(slave)==before

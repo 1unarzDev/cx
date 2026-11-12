@@ -311,9 +311,19 @@ def source_fixture(lines):
     return '\n'.join(out[:lines - 1] + ['// ' + END_MARKER]) + '\n'
 
 
+def hub_layout(viewer):
+    """The hub design (2026-11): a crumb `cx › …` on the first row, no tab header."""
+    top = viewer.screen.display[0]
+    return ' cx › ' in top or ' cx / ' in top
+
+
 def preview_region(viewer, name):
-    """Rows inside the preview box: its top border carries the file name as the title."""
+    """Rows inside the preview box: its top border carries the file name as the title
+    (the hub design: the open preview's PREVIEW label row, the surface to the footer)."""
     display = viewer.screen.display
+    if hub_layout(viewer):
+        top = next((y for y, line in enumerate(display) if line[:6].lstrip(' ▍>').startswith('PREVIEW')), None)
+        return None if top is None else (top, len(display) - 1, 1)
     corners = '╭┏+#┌'
     top = next((y for y, line in enumerate(display)
                 if name in line and any(c in line[:line.index(name)] for c in corners)), None)
@@ -460,24 +470,41 @@ def scenario_sessions(binary, cycles):
         assert created.returncode == 0, 'cx new failed'
         viewer = Viewer(env, 'Work')
         try:
-            viewer.wait(lambda: 'perf-shell' in viewer.text() and 'Enter Attach' in viewer.text(), what='session row')
+            hub = hub_layout(viewer)
+            viewer.wait(lambda: 'perf-shell' in viewer.text()
+                        and ('Enter Attach' in viewer.text() or (hub and 'attach' in viewer.text())), what='session row')
+            if hub:
+                # The hub design types into a session by a tap on its peeked screen.
+                viewer.measure(b' ', lambda: 'OTHERS' in viewer.text() or 'tab' in viewer.screen.display[-1], timeout=TIMEOUT)
             viewer.wait(lambda: '$' in viewer.text(), what='session preview prompt')
             viewer.quiesce(.1)
 
             def focused():
-                return '⏏ detach' in viewer.text()
+                return '⏏ detach' in viewer.text() or 'typing into the session' in viewer.text()
 
             def listing():
-                return 'Enter Attach' in viewer.text() and not focused()
+                return ('Enter Attach' in viewer.text() or (hub and ' attach' in viewer.text())) and not focused()
 
             def native():
-                return 'detach' in viewer.screen.display[-1] and '╭ Devices' not in viewer.text() and '$' in viewer.text()
+                return ('detach' in viewer.screen.display[-1] and '╭ Devices' not in viewer.text()
+                        and 'NETWORK' not in viewer.text() and '$' in viewer.text())
 
             def ui_back():
-                return '╭ Devices' in viewer.text()
+                return '╭ Devices' in viewer.text() or 'NETWORK' in viewer.text()
+
+            def inline_key():
+                if not hub:
+                    return INLINE_KEY
+                # Peek the selected session (from the hub after a detach), then tap its prompt.
+                if 'NETWORK' in viewer.text():
+                    viewer.measure(b' ', lambda: 'NETWORK' not in viewer.text(), timeout=TIMEOUT)
+                    viewer.quiesce(.1)
+                y = max(y for y, line in enumerate(viewer.screen.display) if '$' in line and y > 1)
+                x = viewer.screen.display[y].index('$')
+                return f'\x1b[<0;{x + 1};{y + 1}M\x1b[<0;{x + 1};{y + 1}m'.encode()
             enter, echo, back, attach, ret = Timings(), Timings(), Timings(), Timings(), Timings()
             for _ in range(cycles):
-                enter.add(viewer.measure(INLINE_KEY, lambda: focused() and '$' in viewer.text(), timeout=TIMEOUT))
+                enter.add(viewer.measure(inline_key(), lambda: focused() and '$' in viewer.text(), timeout=TIMEOUT))
                 viewer.quiesce(.1)
                 for _ in range(3):
                     before = viewer.text()
@@ -541,9 +568,10 @@ def motion_phases(viewer, list_rows, selected_row, cols, events=40, spacing=.04)
 
 
 def list_rows(viewer, pattern):
-    rows = [y + 1 for y, line in enumerate(viewer.screen.display) if re.search(pattern, line[20:66])]
+    lo = 0 if hub_layout(viewer) else 20
+    rows = [y + 1 for y, line in enumerate(viewer.screen.display) if re.search(pattern, line[lo:66])]
     selected = next((y + 1 for y, line in enumerate(viewer.screen.display)
-                     if re.search(pattern, line[20:66]) and ('›' in line[20:66] or '▌' in line[20:66] or '▸' in line[20:24])), rows[0] if rows else 6)
+                     if re.search(pattern, line[lo:66]) and ('›' in line[lo:66] or '▌' in line[lo:66] or '▸' in line[lo:24])), rows[0] if rows else 6)
     return rows, selected
 
 

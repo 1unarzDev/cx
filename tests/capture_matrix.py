@@ -55,7 +55,7 @@ except ImportError as e:
     sys.exit(f'capture_matrix needs pyte and pillow: {e}')
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
-DEFAULT_VIEWS = ['startup', 'files', 'files-projects', 'files-inside', 'files-preview', 'sessions', 'sessions-all',
+DEFAULT_VIEWS = ['startup', 'device', 'files', 'files-projects', 'files-inside', 'files-preview', 'sessions', 'sessions-all',
                  'sessions-next', 'palette', 'help']
 NETWORK_VIEWS = ['network', 'network-expanded']
 ALL_VIEWS = DEFAULT_VIEWS + NETWORK_VIEWS
@@ -445,18 +445,23 @@ exit 255
 # Keep recipes short and data-only: UI keymap changes should only need edits here.
 ESC, CTRL_P = b'\x1b', b'\x10'
 RECIPES = {
+    # The hub is the start view; Enter opens the selected node (this device), `f` its
+    # files (in the launch folder), Tab the hub's sessions zone. Letters follow the
+    # fixture names: laptop is `p`, lab-arm `b` (see src/ui/hotkeys.rs).
     'startup': [],  # read at 2.5s, before the device probes settle (P10's error toast)
-    'files': [],
-    'files-projects': [(b'j', .3), (b'\r', 1.2)],
-    'files-inside': [(b'j', .3), (b'\r', 1.2), (b'\r', 1.2)],
-    'files-preview': [(b'j', .3), (b'\r', 1.2), (b'\r', 1.2), (b'G', .3), (b'k', .3), (b'\r', 1.5)],
-    'sessions': [(ESC, .8)],
-    'sessions-all': [(ESC, .8), (ESC, .4), (b'gg', .4), (b'\r', 1.5)],
-    'sessions-next': [(ESC, .8), (ESC, .4), (b'gg', .4), (b'\r', 1.5), (b'j', 1.5)],
-    'network': [(CTRL_P, .5), (b'Network', .5), (b'\r', 1.0), (b'\r', 2.5)],
-    'network-expanded': [(CTRL_P, .5), (b'Network', .5), (b'\r', 1.0), (b'\r', 2.5), (b'j', 1.0), (b'l', 1.0)],
+    'device': [(b'\r', 1.5)],
+    'files': [(b'\r', .8), (b'f', 1.5)],
+    'files-projects': [(b'\r', .8), (b'f', 1.5), (b'j', .3), (b'\r', 1.2)],
+    'files-inside': [(b'\r', .8), (b'f', 1.5), (b'j', .3), (b'\r', 1.2), (b'\r', 1.2)],
+    'files-preview': [(b'\r', .8), (b'f', 1.5), (b'j', .3), (b'\r', 1.2), (b'\r', 1.2), (b'G', .3), (b'k', .3),
+                      (b'\r', 1.5)],
+    'sessions': [(b'\t', 1.0)],
+    'sessions-all': [(b'b', 1.5)],
+    'sessions-next': [(b'\t', .8), (b'j', 1.0), (b' ', 1.5)],
+    'network': [(b'e', .3), (b'b', 1.5)],
+    'network-expanded': [(b'K', 1.0)],
     'help': [(b'?', .8)],
-    'palette': [(CTRL_P, .8)],
+    'palette': [(b'/', .8)],
 }
 
 

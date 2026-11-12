@@ -51,7 +51,8 @@ for mono in (False, True):
             os.write(master,b'/hello')
             wait(lambda: any('Search' in line and '1/1' in line for line in screen.display))
             os.write(master,b'\r'); settle()
-            wait(lambda: any('j/k' in line and 'Scroll' in line for line in screen.display))
+            # Enter finishes typing; the search stays on the footer row with its count.
+            wait(lambda: 'Search' in screen.display[-1] and '1/1' in screen.display[-1])
             # Resize into the narrow labeled-row layout without losing the search.
             # The phone layout (<60 cols) gives the preview the full width, so
             # the labeled rows start below ~38 columns of preview.
@@ -66,6 +67,7 @@ for mono in (False, True):
             wait(lambda: any('hello' in line for line in screen.display))
             os.write(master,b'\x1b'); settle()
             wait(lambda: not any('Search' in line and '1/1' in line for line in screen.display))
+            time.sleep(.45)  # a second Esc within 400 ms goes to the hub
             os.write(master,b'\x1b')
             wait(lambda: any('sample.md' in line for line in screen.display) and not any('print("hello")' in line for line in screen.display))
             os.write(master, b'\x03'); proc.wait(timeout=5)

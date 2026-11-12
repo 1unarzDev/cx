@@ -483,7 +483,7 @@ fn peek_shows_the_live_screen_and_a_tap_on_it_types_inline() {
         .collect();
     assert!(text.contains("peeked screen"), "{text}");
     // A tap on the peeked screen types into it; Ctrl+\ leaves without sending.
-    let screen = view_target("peek-screen");
+    let screen = a.preview_screen();
     a.mouse(
         MouseEvent {
             kind: MouseEventKind::Down(event::MouseButton::Left),
@@ -536,7 +536,7 @@ fn preview_clicks_leave_an_open_text_input_in_charge() {
     press(&mut a, ' ');
     let mut terminal = ratatui::Terminal::new(TestBackend::new(160, 30)).unwrap();
     terminal.draw(|f| render(f, &a)).unwrap();
-    let screen = view_target("peek-screen");
+    let screen = a.preview_screen();
     // The palette is open over the peek: a tap on the screen beneath it only
     // closes the palette, never focuses the pane or sends the query to it.
     press(&mut a, '/');

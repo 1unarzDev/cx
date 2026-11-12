@@ -43,7 +43,7 @@ with tempfile.TemporaryDirectory(prefix='cx-transfer-enter-') as tmp:
   while not predicate() and time.monotonic()<end:read(.1)
   assert predicate(),'\n'.join(screen.display)
  try:
-  wait(lambda:'Enter transfer here' in '\n'.join(screen.display) and 'nested' in '\n'.join(screen.display));assert not exists('proof.txt')
+  wait(lambda:'transfer here' in '\n'.join(screen.display) and 'nested' in '\n'.join(screen.display));assert not exists('proof.txt')
   os.write(m,b'\r');wait(lambda:exists('proof.txt'))
   assert contents()=='Enter confirms current folder'
   assert not exists('nested/proof.txt'), 'hovered folder retargeted transfer'

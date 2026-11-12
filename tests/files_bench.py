@@ -50,6 +50,11 @@ ROW = re.compile(r'\b([bs])-(\d{6})\.txt')
 PREVIEW_TITLE = re.compile(r'┏ (?:\S.*? · [\d.]+ (?:B|KiB|MiB|GiB) · |PDF · \d+/\d+ )')
 COUNT = re.compile(r'(?:╭ ▸ |[━─] )(?:(\d+)/)?(\d+) items')
 SELECTED = re.compile(r'(?:│\s+(?:/\s+)?▸ |[┃│]▌ \S )(\S(?:.*?\S)?)/?(?:\s{2,}|\s*[│┃])')
+# The hub design (2026-11): a crumb `cx › …` on row 0, a FILES label with `N items` on its
+# right, rows `▌▸ name/` (bar, fold or type glyph, name) from column 1, and a PREVIEW label
+# row over the preview surface (inline from 100 columns, or the whole body when open).
+NEW_COUNT = re.compile(r'FILES\s+(?:(\d+)/)?(\d+) items')
+NEW_SELECTED = re.compile(r'^ ▌(?:[▸▾→] |  )(\S(?:.*?\S)?)/?(?=\s{2,}|$)')
 
 
 def pct(values, q):
@@ -468,19 +473,32 @@ class Viewer(ph.Viewer):
         self.open(env, dict(device_ids=env.device_ids, device=device_index + 1, focus='Workspace',
                             view='Files', browser=browser))
 
-    # Screen readers. The workspace starts at column 21; the device column is excluded.
+    def hub_layout(self):
+        """The hub design: a crumb on the first row instead of the v0.1.95 tab header."""
+        top = self.screen.display[0]
+        return ' cx › ' in top or ' cx / ' in top
+
+    # Screen readers. v0.1.95's workspace starts at column 21 (the device column is
+    # excluded); the hub design's list starts at column 1 and is 48 wide at 120 columns.
     def work(self):
+        if self.hub_layout():
+            return list(self.screen.display)
         return [line[21:] for line in self.screen.display]
 
     def selected(self):
         for line in self.screen.display[1:-1]:
+            if self.hub_layout():
+                m = NEW_SELECTED.search(line[:50])
+                if m:
+                    return m.group(1)
+                continue
             m = SELECTED.search(line[21:])
             if m and not line[21:].lstrip().startswith(('╭', '┏')):
                 return m.group(1)
         return None
 
     def count(self):
-        m = COUNT.search(self.text())
+        m = (NEW_COUNT if self.hub_layout() else COUNT).search(self.text())
         return int(m.group(1) or m.group(2)) if m else None
 
     def loading(self):
@@ -489,6 +507,8 @@ class Viewer(ph.Viewer):
     def rows(self, letter=None):
         # The list only: the revamp's inline peek beside it can show a folder's children.
         def listed(line):
+            if self.hub_layout():
+                return line[:50]
             borders = [i for i, c in enumerate(line) if c in '│┃']
             return line[:borders[1]] if len(borders) > 1 else line
         return [m for line in self.work() for m in ROW.finditer(listed(line))
@@ -523,6 +543,13 @@ class Viewer(ph.Viewer):
 
     def preview_box(self):
         display = self.screen.display
+        if self.hub_layout():
+            # The open preview's PREVIEW label row (at the left edge; the inline peek
+            # beside the list is not the opened preview); the surface runs to the footer.
+            for y, line in enumerate(display):
+                if line[:6].lstrip(' ▍>').startswith('PREVIEW'):
+                    return y, len(display) - 1, line.index('PREVIEW') - 1
+            return None
         for y, line in enumerate(display):
             # v0.1.95: '╭ ▸ … Escape back'; revamp: '┏ name · size · kind' (the list's
             # breadcrumb title has no size).

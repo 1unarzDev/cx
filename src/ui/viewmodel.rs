@@ -279,8 +279,8 @@ fn sessions(app: &App) -> Vec<LabSession> {
         .selected_session()
         .map(|(d, s)| (d, workspaces::runtime_key(&s)));
     let mut out = Vec::new();
-    for (d, w) in app.work.iter().enumerate() {
-        for s in &w.sessions {
+    for d in 0..app.work.len().min(app.devices.len()) {
+        for s in app.slot_sessions(d) {
             let key = workspaces::runtime_key(s);
             let (screen, cols) = if live.as_ref() == Some(&(d, key.clone()))
                 && !app.session_preview_lines().is_empty()
@@ -498,8 +498,8 @@ fn palette(app: &App) -> Vec<PaletteRow> {
         .map(|(i, item)| {
             let (keys, device) = match &item.target {
                 PaletteTarget::Session(d, key) => {
-                    let slot = app.work[*d]
-                        .sessions
+                    let slot = app
+                        .slot_sessions(*d)
                         .iter()
                         .position(|s| workspaces::runtime_key(s) == *key)
                         .and_then(|n| super::views::mission::SLOTS.get(n));

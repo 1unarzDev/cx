@@ -41,7 +41,7 @@ sys.exit(1)
    while label not in text() and time.monotonic()<deadline:read()
    assert label in text(),text()
   try:
-   read(1);os.write(master,b'\x10');wait('Actions')
+   read(1);os.write(master,b'\x10');wait('ACTIONS')
    os.write(master,b'Add by SSH address');read()
    os.write(master,b'\r');wait('Direct SSH from this viewer')
    read(.5);os.write(master,b'\r')

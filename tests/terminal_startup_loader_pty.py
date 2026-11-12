@@ -69,7 +69,12 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-loader-') as tmp:
         while not predicate() and time.monotonic()<end: read()
         assert predicate(), text()
     try:
-        wait(lambda:'Files' in text()); read(.4)
+        # The hub (or, with only this device, its welcome; Esc is plain SSH), then this
+        # device's Files (Enter, `f`), where `n` opens the chooser.
+        wait(lambda:'NETWORK' in text() or 'welcome' in text()); read(.4)
+        os.write(master,b'\x1b'); read(.5)
+        os.write(master,b'\r'); read(.5)
+        os.write(master,b'f'); wait(lambda:'FILES' in text()); read(.4)
         os.write(master,b'n'); wait(lambda:'[s] Shell' in text())
         os.write(master,b's'); read(.6)
         assert 'Starting terminal' in text(), 'blank/native handoff before startup finished:\n'+text()
@@ -84,7 +89,7 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-loader-') as tmp:
         # so a slow remote attach cannot flash the prior "[detached]" teardown text
         # before tmux repaints. crossterm emits LeaveAlternateScreen then Clear(All).
         assert b'\x1b[?1049l\x1b[2J' in raw, 'handoff did not clear the primary screen'
-        os.write(master,b'\x1c'); wait(lambda:'Files' in text())
+        os.write(master,b'\x1c'); wait(lambda:'NETWORK' in text())
         os.write(master,b'\x03');proc.wait(timeout=5)
         assert termios.tcgetattr(slave)==before
     finally:

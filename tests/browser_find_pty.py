@@ -60,8 +60,9 @@ for width, height in [(120, 40), (80, 24), (48, 24)]:
             send(b'/alpha')
             wait_for(lambda: 'n/N matches' in text())
             assert 'beta.txt' in text() and 'directory' in text(), text()
-            # The list row, not the inline preview's title or the sidebar's path tree.
+            # The list row (the list's 48 columns), not the inline preview's title.
             def list_occurrence(line):
+                line = line[:50]
                 at = line.find('alpha.txt')
                 while at >= 0:
                     before = line[max(0, at - 3):at]
@@ -85,8 +86,8 @@ for width, height in [(120, 40), (80, 24), (48, 24)]:
             capture('find')
             def selected_name():
                 for line in screen.display:
-                    # The selection bar is the first cell inside the list border.
-                    if re.search(r'[│|#┃+][▌>]', line) and any(name in line for name in ['alpha.txt','beta.txt','directory']):
+                    # The selection bar opens the row (column 1).
+                    if re.search(r'^ ?[▌>]', line) and any(name in line for name in ['alpha.txt','beta.txt','directory']):
                         return next(name for name in ['alpha.txt','beta.txt','directory'] if name in line)
                 return None
             first=selected_name(); assert first, text()
@@ -96,7 +97,9 @@ for width, height in [(120, 40), (80, 24), (48, 24)]:
             wait_for(lambda: '0/0' in text())
             assert 'alpha.txt' in text() and 'beta.txt' in text(), text()
             read(.6)  # let the debounced inline peek settle before comparing frames
-            before_no_match=text(); send(b'n'); assert text()==before_no_match, text()
+            # (Ages tick each second: compare the selection and the find bar.)
+            before_no_match=(selected_name(), screen.display[-1]); send(b'n')
+            assert (selected_name(), screen.display[-1])==before_no_match, text()
             send(b'\x1b'); wait_for(lambda: 'n/N matches' not in text())
             filter_name('beta'); assert 'alpha.txt' not in text(), text()
             send(b'\x03'); proc.wait(timeout=5)

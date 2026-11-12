@@ -71,13 +71,13 @@ fn render_frame(
     *app.panels.borrow_mut() = vec![(Focus::Workspace, false, body)];
     let mut preview = None;
     for t in &drawn.targets {
-        if t.action == "preview-body" {
-            preview = Some(t.area);
+        // Two surfaces the app draws and routes itself (preview links and wheel,
+        // typing into a peek): geometry only, not tap targets.
+        match t.action.as_str() {
+            "preview-body" => preview = Some(t.area),
+            "peek-screen" => app.set_preview_screen(t.area),
+            _ => hitmap::register_action(t.area, &t.action, app),
         }
-        if t.action == "peek-screen" {
-            app.set_preview_screen(t.area);
-        }
-        hitmap::register_action(t.area, &t.action, app);
     }
     // The real file preview draws its body where the design put the preview surface.
     if let (Some(b), Some(r)) = (app.active_browser(), preview) {
@@ -103,11 +103,11 @@ fn render_frame(
             // A PDF says its page (and a page still rendering) on the label row.
             if let Some(p) = pb.preview_rich.as_ref().filter(|p| p.kind == "pdf") {
                 let status = format!(
-                    " PDF {}/{}{} ",
+                    " PDF · {}/{}{} ",
                     p.page,
                     p.pages.map_or("?".into(), |n| n.to_string()),
                     pb.preview_pending_page
-                        .map(|n| format!(" · page {n}…"))
+                        .map(|n| format!(" · {} page {n}", if ascii() { "~" } else { "◌" }))
                         .unwrap_or_default()
                 );
                 let w = (status.chars().count() as u16).min(r.width);
@@ -128,6 +128,7 @@ fn render_frame(
     if app.view == View::Files {
         file_matches(frame, app, &drawn.targets);
     }
+    destination_bar(frame, app, area);
     find_bar(frame, app, area);
     if app.pane_focused() {
         typing_bar(frame, area);
@@ -1140,32 +1141,55 @@ fn file_matches(frame: &mut Frame<'_>, app: &App, targets: &[views::LabTarget]) 
         }
     }
 }
-/// The inline find / filter field on the footer row while it is being typed.
+/// The find / filter field on the footer row: while it is typed, and while a
+/// search stays active (its match position and `n/N`).
 fn find_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let Some(input) = app
+    let b = app.browser.as_ref().filter(|_| app.view == View::Files);
+    let typing = app
         .input
-        .filter(|i| matches!(i, Input::Search | Input::PreviewSearch | Input::Filter))
-    else {
-        return;
+        .filter(|i| matches!(i, Input::Search | Input::PreviewSearch | Input::Filter));
+    let preview = b.is_some_and(|b| b.preview.is_some());
+    let (key, text, label) = match (typing, b) {
+        (Some(Input::Filter), _) => (" f ", app.text.clone(), "Filter".to_string()),
+        (Some(Input::PreviewSearch), Some(b)) | (None, Some(b))
+            if preview && (typing.is_some() || !b.preview_find.query.is_empty()) =>
+        {
+            let count = doc_matches(b, &b.preview_find.query).len();
+            let at = if count == 0 {
+                0
+            } else {
+                (b.preview_find.selected + 1).min(count)
+            };
+            let query = if typing.is_some() {
+                app.text.clone()
+            } else {
+                b.preview_find.query.clone()
+            };
+            (" / ", query, format!("Search · {at}/{count}"))
+        }
+        (Some(_), Some(b)) | (None, Some(b)) if typing.is_some() || !b.search.is_empty() => {
+            let matches = browser_matches(b);
+            let at = matches
+                .iter()
+                .position(|(row, _)| *row == b.selected)
+                .map_or(0, |i| i + 1);
+            let query = if typing.is_some() {
+                app.text.clone()
+            } else {
+                b.search.clone()
+            };
+            (
+                " / ",
+                query,
+                format!("Search · {at}/{} · n/N matches", matches.len()),
+            )
+        }
+        (Some(_), _) => (" / ", app.text.clone(), "Search".to_string()),
+        _ => return,
     };
     let row = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
-    let label = match input {
-        Input::Filter => "Filter".to_string(),
-        Input::PreviewSearch => {
-            let (count, at) = app.browser.as_ref().map_or((0, 0), |b| {
-                (
-                    doc_matches(b, &b.preview_find.query).len(),
-                    b.preview_find.selected,
-                )
-            });
-            let at = if count == 0 { 0 } else { (at + 1).min(count) };
-            format!("Search · {at}/{count}")
-        }
-        _ => "Search".to_string(),
-    };
     frame.render_widget(Clear, row);
-    let key = if input == Input::Filter { " f " } else { " / " };
-    let text = safe_label(&app.text);
+    let text = safe_label(&text);
     let width = Span::raw(text.as_str()).width() as u16;
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -1175,14 +1199,16 @@ fn find_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ])),
         row,
     );
-    let lw = label.chars().count() as u16;
+    let lw = Span::raw(label.as_str()).width() as u16;
     if row.width > width + lw + 6 {
         frame.render_widget(
             Paragraph::new(Span::styled(label, muted())),
             Rect::new(row.right() - lw - 1, row.y, lw, 1),
         );
     }
-    frame.set_cursor_position((row.x + 4 + width.min(row.width.saturating_sub(5)), row.y));
+    if typing.is_some() {
+        frame.set_cursor_position((row.x + 4 + width.min(row.width.saturating_sub(5)), row.y));
+    }
 }
 /// Typing into a peeked session: the footer says how to leave (`ctrl+\`).
 fn typing_bar(frame: &mut Frame<'_>, area: Rect) {
@@ -1196,6 +1222,39 @@ fn typing_bar(frame: &mut Frame<'_>, area: Rect) {
                 Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
             ),
             Span::styled(" detach  typing into the session", muted()),
+        ])),
+        row,
+    );
+}
+/// Choosing a transfer's destination folder: the footer says what Enter does here.
+fn destination_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let Some(c) = app.clipboard.as_ref().filter(|_| {
+        app.view == View::Files
+            && app.destination_active
+            && app.input.is_none()
+            && app.dialog.is_none()
+    }) else {
+        return;
+    };
+    let row = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
+    let key = Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    let n = c.entries.len();
+    frame.render_widget(Clear, row);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(if ascii() { " ret " } else { " ⏎ " }, key),
+            Span::styled(" transfer here  ", muted()),
+            Span::styled(" esc ", key),
+            Span::styled(" cancel  ", muted()),
+            Span::styled(
+                format!(
+                    "{n} item{} from {}",
+                    if n == 1 { "" } else { "s" },
+                    safe_label(&c.source_label)
+                ),
+                muted(),
+            ),
         ])),
         row,
     );

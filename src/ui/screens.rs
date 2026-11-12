@@ -42,6 +42,19 @@ impl App {
         }
         self.hotkeys.borrow()
     }
+    /// A device's sessions in slot order (`a s d g`): creation order, so a slot keeps
+    /// its session while others come and go.
+    pub(super) fn slot_sessions(&self, d: usize) -> Vec<&Session> {
+        let mut v: Vec<&Session> = self.work[d].sessions.iter().collect();
+        v.sort_by_key(|s| {
+            let created = s
+                .terminal
+                .as_ref()
+                .and_then(|t| t.created.parse::<u64>().ok());
+            (created.unwrap_or(u64::MAX), s.started.clone(), s.id.clone())
+        });
+        v
+    }
     fn device_for_letter(&self, c: char) -> Option<usize> {
         let letters = self.hotkeys();
         self.devices
@@ -52,12 +65,13 @@ impl App {
     pub(super) fn active_browser(&self) -> Option<&Browser> {
         self.browser.as_ref()
     }
-    /// First run: only this device, no links yet, not dismissed.
+    /// First run: only this device, no links and no sessions yet, not dismissed.
     pub(super) fn onboarding(&self) -> bool {
         !self.onboarding_dismissed
             && self.view == View::Network
             && self.devices.iter().all(|d| d.target.is_none())
             && self.edge_views.is_empty()
+            && self.work.iter().all(|w| w.sessions.is_empty())
     }
     /// Remember a session's last frame in memory (never on disk), for its tile.
     pub(super) fn remember_frame(&mut self, d: usize, s: &Session, lines: &[String], cols: u16) {
@@ -106,7 +120,10 @@ impl App {
         self.focus = Focus::Workspace;
         self.hub_device = Some(dev_id(d));
         // The first session (slot a) is selected, else the new-session tile.
-        let first = self.work[d].sessions.first().map(workspaces::runtime_key);
+        let first = self
+            .slot_sessions(d)
+            .first()
+            .map(|s| workspaces::runtime_key(s));
         self.reconcile_session_selection(first.map(|k| (d, k)));
         if !self.work[d].loading {
             self.work[d].loading = self.send(d, Operation::Sessions);
@@ -167,19 +184,21 @@ impl App {
             View::Work if self.device > 0 => {
                 // Slots, then the new-session tile.
                 let d = self.device - 1;
-                let n = self.work[d].sessions.len();
+                let slots: Vec<String> = self
+                    .slot_sessions(d)
+                    .iter()
+                    .map(|s| workspaces::runtime_key(s))
+                    .collect();
+                let n = slots.len();
                 let current = self
                     .selected_session()
                     .and_then(|(_, s)| {
                         let k = workspaces::runtime_key(&s);
-                        self.work[d]
-                            .sessions
-                            .iter()
-                            .position(|x| workspaces::runtime_key(x) == k)
+                        slots.iter().position(|x| *x == k)
                     })
                     .unwrap_or(n);
                 let next = shift(current, delta, n + 1);
-                match self.work[d].sessions.get(next).map(workspaces::runtime_key) {
+                match slots.get(next).cloned() {
                     Some(key) => self.reconcile_session_selection(Some((d, key))),
                     // The new-session tile.
                     None => self.selected = self.session_rows().len(),
@@ -203,7 +222,7 @@ impl App {
     }
     /// A session slot on the current device (`a s d g`).
     fn attach_slot(&mut self, d: usize, slot: usize) {
-        if let Some(s) = self.work[d].sessions.get(slot).cloned() {
+        if let Some(s) = self.slot_sessions(d).get(slot).map(|s| (*s).clone()) {
             self.reconcile_session_selection(Some((d, workspaces::runtime_key(&s))));
             self.peek = false;
             self.open_session(d, s, false);
@@ -873,6 +892,15 @@ impl App {
             ("back", None, _) => self.back_here(),
             ("hub", None, _) => self.go_hub(),
             ("last", None, _) => self.attach_last(),
+            // Files' `/ find` chip finds as its key does (in the folder or the preview).
+            ("palette" | "find", None, _) if self.view == View::Files => {
+                let preview = self.browser.as_ref().is_some_and(|b| b.preview.is_some());
+                self.run_cmd(if preview {
+                    keymap::Cmd::PreviewSearch
+                } else {
+                    keymap::Cmd::Search
+                });
+            }
             ("palette" | "find", None, _) => self.open_palette(""),
             ("invite" | "join", None, _) => self.invite(),
             ("secrets", None, _) => self.open_secrets(),

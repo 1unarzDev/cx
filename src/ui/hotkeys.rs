@@ -83,6 +83,17 @@ mod tests {
         assert_eq!(m["nas"], 'n');
     }
 
+    /// Two devices never share a letter, so an address reads without colour (the old
+    /// two-letter chips repeated `[la]` for laptop and lab-arm).
+    #[test]
+    fn device_initials_stay_unique_without_color() {
+        let m = run(&["laptop", "lab-arm", "lab-arm-2", "field-rover"]);
+        let mut letters: Vec<char> = m.values().copied().collect();
+        letters.sort();
+        letters.dedup();
+        assert_eq!(letters.len(), 4, "{m:?}");
+    }
+
     #[test]
     fn letters_stay_stable_when_devices_come_and_go() {
         let first = run(&["innovation", "isaac"]);

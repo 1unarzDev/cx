@@ -46,6 +46,15 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-directory-') as temporary:
                 except OSError:
                     break
     try:
+        # The start view is the hub; this device's Files (Enter, then `f`) are the
+        # launch folder.
+        deadline = time.monotonic()+10
+        while time.monotonic()<deadline and 'NETWORK' not in '\n'.join(screen.display):
+            read()
+        assert 'NETWORK' in '\n'.join(screen.display), 'the hub is not the start view'
+        os.write(master, b'\r')
+        read(.4)
+        os.write(master, b'f')
         deadline = time.monotonic()+10
         while time.monotonic()<deadline:
             read()
@@ -63,7 +72,7 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-directory-') as temporary:
         process.wait(timeout=5)
         assert process.returncode == 0
         assert termios.tcgetattr(slave) == before, 'terminal modes not restored'
-        print(json.dumps(dict(result='PASS', checks=['launch cwd opened in Files', 'offline cached device checked while browsing local Files',
+        print(json.dumps(dict(result='PASS', checks=['hub is the start view', 'launch cwd opened in this device\'s Files', 'offline cached device checked while browsing local Files',
                                                      'failed refresh retained the cached row unchanged', 'terminal modes restored'])))
     finally:
         if process.poll() is None:

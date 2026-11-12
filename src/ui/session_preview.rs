@@ -359,6 +359,10 @@ impl App {
     pub(super) fn session_preview_cols(&self) -> u16 {
         self.session_preview.cols
     }
+    #[cfg(test)]
+    pub(super) fn preview_screen(&self) -> Rect {
+        self.session_preview.screen.get()
+    }
     /// Where the peek drew the session's screen (wheel and taps act on it there).
     pub(super) fn set_preview_screen(&self, r: Rect) {
         self.session_preview.screen.set(r);

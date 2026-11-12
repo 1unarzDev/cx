@@ -40,7 +40,7 @@ for shell in sys.argv[2:] or ['/bin/bash']:
             output.clear(); os.write(master,text)
         try:
             wait('before.txt')
-            send(b'\x10'); wait('Actions')
+            send(b'\x10'); wait('ACTIONS')
             time.sleep(.2); read()
             assert b'Run command here' not in output, 'command remains in Actions'
             send(b'\x1b'); time.sleep(.2); read()
@@ -49,7 +49,7 @@ for shell in sys.argv[2:] or ['/bin/bash']:
             # A command runs in a floating panel; CX is never suspended. The
             # markers use printf format strings so the panel OUTPUT differs from
             # the command text echoed in the input box (which also appears).
-            send(b':'); wait('Run command')
+            send(b':'); wait('RUN COMMAND')
             os.write(master,b"printf 'MARK%s hjkl:n x\\n' DONE; read reply; printf 'GOT%s\\n' \"$reply\" > proof.txt; exit 4\r")
             wait('MARKDONE')
             assert os.tcgetpgrp(master)==process.pid, 'CX was suspended for the command'
@@ -64,7 +64,7 @@ for shell in sys.argv[2:] or ['/bin/bash']:
             # the file list, so we don't rely on it being redrawn).
             send(b"\x1b"); time.sleep(.4); read(); assert os.tcgetpgrp(master)==process.pid
             # Ctrl+C is delivered to the running command, not to CX.
-            send(b':'); wait('Run command')
+            send(b':'); wait('RUN COMMAND')
             os.write(master,b"printf 'READY%s\\n' NOW; sleep 30\r")
             wait('READYNOW'); time.sleep(.3); send(b'\x03')
             # Ctrl+C ends the command; the finish notice confirms CX survived.

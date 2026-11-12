@@ -406,7 +406,19 @@ fn bounded(program: &Path, args: &[String], timeout: Duration, cap: usize) -> Re
             Ok(())
         });
     }
-    let mut child = c.spawn().context("update tool unavailable")?;
+    // A binary staged just now can be "text file busy" for a moment: another thread's fork
+    // holds a copy of the writer's descriptor until its exec closes it.
+    let mut spawned = c.spawn();
+    for _ in 0..20 {
+        match &spawned {
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) => {
+                std::thread::sleep(Duration::from_millis(5));
+                spawned = c.spawn();
+            }
+            _ => break,
+        }
+    }
+    let mut child = spawned.context("update tool unavailable")?;
     let pid = child.id() as i32;
     let mut pipe = child.stdout.take().context("update output unavailable")?;
     let fd = pipe.as_raw_fd();

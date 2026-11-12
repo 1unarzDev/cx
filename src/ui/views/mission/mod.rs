@@ -4,7 +4,7 @@
 //! of live session thumbnails and an alert ticker that pairs each problem with its keys.
 //! One grammar everywhere: a device letter, then a verb or a session slot.
 //! See docs/design/concept-mission.md.
-use crate::ui::lab::{
+use crate::ui::views::{
     caps::{index_rgb, named_index, rgb_to_16, rgb_to_256, XTERM16},
     fmt, ColorLevel, Concept, DeviceStatus, LabCaps, LabDevice, LabSession, LabState, LabTarget,
     LabView, SessionState, Theme, Tok,
@@ -176,7 +176,7 @@ impl<'a> Cx<'a> {
         match self.c.color {
             ColorLevel::Truecolor => Some(Color::Rgb(c.0, c.1, c.2)),
             ColorLevel::C256 => Some(Color::Indexed(rgb_to_256(c.0, c.1, c.2))),
-            ColorLevel::C16 => Some(crate::ui::lab::caps::indexed_16(rgb_to_16(c.0, c.1, c.2))),
+            ColorLevel::C16 => Some(crate::ui::views::caps::indexed_16(rgb_to_16(c.0, c.1, c.2))),
             ColorLevel::None => None,
         }
     }
@@ -556,9 +556,9 @@ impl<'a> Cx<'a> {
     }
     pub fn prov(&self, x: &LabSession) -> (&'static str, Tok) {
         match x.provider {
-            crate::ui::lab::Provider::Claude => ("claude", Tok::Claude),
-            crate::ui::lab::Provider::Codex => ("codex", Tok::Codex),
-            crate::ui::lab::Provider::Shell => ("shell", Tok::Shell),
+            crate::ui::views::Provider::Claude => ("claude", Tok::Claude),
+            crate::ui::views::Provider::Codex => ("codex", Tok::Codex),
+            crate::ui::views::Provider::Shell => ("shell", Tok::Shell),
         }
     }
     /// The session's slot key within its device (stable creation order).
@@ -668,7 +668,12 @@ impl<'a> Cx<'a> {
                     let (c, st) = match t.strip_prefix('@') {
                         Some(c) => {
                             let hue = self.s.devices.iter().find(|d| c.starts_with(d.hotkey));
-                            (c, hue.map_or(self.key_style(), |d| self.chip_style(self.s.hue(&d.id))))
+                            (
+                                c,
+                                hue.map_or(self.key_style(), |d| {
+                                    self.chip_style(self.s.hue(&d.id))
+                                }),
+                            )
                         }
                         None => (t, self.key_style()),
                     };

@@ -52,7 +52,7 @@ fn parse_pane(s: &str) -> Option<Pane> {
 #[test]
 #[ignore = "render lab capture; run via tests/lab.sh"]
 fn lab_capture() {
-    let all = concepts::all();
+    let all = concepts();
     let names: Vec<&str> = all.iter().map(|c| c.name()).collect();
     let wanted = var("CX_LAB_CONCEPT", "");
     let concept = all

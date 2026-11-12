@@ -1,7 +1,7 @@
 //! Tiles: micro-charts, phone device rows and session thumbnails that show the live tail
 //! of the real screen in its own colours, so sessions are recognised by their look.
 use super::{fit, fmt, mix, to_rgb, Cx, Rgb};
-use crate::ui::lab::{ansi_lines, LabDevice, LabSession, Tok};
+use crate::ui::views::{ansi_lines, LabDevice, LabSession, Tok};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -383,25 +383,25 @@ fn plain(s: Style) -> Style {
 /// colours, named colours stay themselves and rgb inks map by hue, so red stays red.
 pub(super) fn degrade(cx: &Cx, s: Style) -> Style {
     let mut out = plain(s);
-    if cx.c.color == crate::ui::lab::ColorLevel::C16 {
+    if cx.c.color == crate::ui::views::ColorLevel::C16 {
         // No tinted backgrounds in 16 colours: a coloured background (a diff row) becomes
         // ink of its hue instead, so + stays green and - stays red without a loud block.
         let ink = |c: ratatui::style::Color| -> Option<ratatui::style::Color> {
-            if crate::ui::lab::caps::named_index(c).is_some_and(|i| i < 16) {
+            if crate::ui::views::caps::named_index(c).is_some_and(|i| i < 16) {
                 return Some(c);
             }
-            to_rgb(c).map(|c| crate::ui::lab::caps::indexed_16(ansi16(c, false)))
+            to_rgb(c).map(|c| crate::ui::views::caps::indexed_16(ansi16(c, false)))
         };
         let from_bg = s.bg.and_then(to_rgb).and_then(|c| {
             let (hi, lo) = (c.0.max(c.1).max(c.2), c.0.min(c.1).min(c.2));
             (u16::from(hi - lo) * 4 > u16::from(hi) && hi > 24).then(|| {
                 let full = |v: u8| ((u16::from(v - lo) * 255) / u16::from(hi - lo).max(1)) as u8;
-                crate::ui::lab::caps::indexed_16(ansi16((full(c.0), full(c.1), full(c.2)), true))
+                crate::ui::views::caps::indexed_16(ansi16((full(c.0), full(c.1), full(c.2)), true))
             })
         });
         let fg = s.fg.and_then(ink);
         let grey = |c: Option<ratatui::style::Color>| {
-            c.and_then(crate::ui::lab::caps::named_index)
+            c.and_then(crate::ui::views::caps::named_index)
                 .is_none_or(|i| matches!(i, 0 | 7 | 8 | 15))
         };
         return match (from_bg, fg) {
@@ -519,7 +519,7 @@ pub(super) fn session_row(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pi
     if r.width < 12 || r.height == 0 {
         return;
     }
-    let ask = x.state == crate::ui::lab::SessionState::AwaitingInput;
+    let ask = x.state == crate::ui::views::SessionState::AwaitingInput;
     let bg = match pick {
         Some(_) => tile_bg(cx, pick),
         None if ask => cx.wash(Tok::Warn, 0.12),
@@ -585,7 +585,14 @@ pub(super) fn thumb(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pick: Pi
 
 /// `keys: false` draws the session's address as plain muted text, for screens where its
 /// letters mean something else (the edge editor's `a p o`).
-pub(super) fn thumb_with(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pick: Pick, keys: bool) {
+pub(super) fn thumb_with(
+    cx: &Cx,
+    buf: &mut Buffer,
+    r: Rect,
+    x: &LabSession,
+    pick: Pick,
+    keys: bool,
+) {
     if r.width < 12 || r.height < 3 {
         return;
     }
@@ -599,12 +606,16 @@ pub(super) fn thumb_with(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pic
     if keys {
         hx += addr(cx, buf, hx, r.y, x);
     } else {
-        let a = format!(" {} {} ", d.map_or(' ', |d| d.hotkey), cx.slot(x).unwrap_or(' '));
+        let a = format!(
+            " {} {} ",
+            d.map_or(' ', |d| d.hotkey),
+            cx.slot(x).unwrap_or(' ')
+        );
         hx += cx.put(buf, hx, r.y, 5, &a, cx.st(Tok::Muted));
     }
     hx += 1;
     let (g, word, sst) = cx.sstate(x);
-    let state = if x.state == crate::ui::lab::SessionState::Idle {
+    let state = if x.state == crate::ui::views::SessionState::Idle {
         format!("{word} {}", fmt::age(x.last_activity_secs))
     } else {
         word.to_string()
@@ -678,7 +689,7 @@ pub(super) fn thumb_with(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pic
             let v: Vec<Option<f32>> = x.activity.iter().map(|v| Some(*v)).collect();
             // A shell's neutral ink is black or white in 16 colours, the heaviest mark on
             // the row: its activity is gray there.
-            let tok = if x.state == crate::ui::lab::SessionState::Idle {
+            let tok = if x.state == crate::ui::views::SessionState::Idle {
                 Tok::Faint
             } else if ptok == Tok::Shell && !cx.tc() {
                 Tok::Muted

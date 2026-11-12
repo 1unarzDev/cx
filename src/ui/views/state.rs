@@ -36,7 +36,7 @@ pub struct Metrics {
     pub battery: Option<f32>,
     pub gpu: Option<f32>,
     pub disk: f32,
-    pub uptime: &'static str,
+    pub uptime: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -378,7 +378,7 @@ fn metrics(
         battery: None,
         gpu: None,
         disk: 0.5,
-        uptime,
+        uptime: uptime.into(),
     }
 }
 

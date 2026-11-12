@@ -10,7 +10,7 @@
 //! way, a faint line where nothing crosses (`⊘` mid-run when closed, the device's
 //! `✕` when down). Nothing here dispatches.
 use super::{fit, tiles, Cx, Size};
-use crate::ui::lab::{Access, DeviceStatus, EdgeKind, LabDevice, LabEdge, Tok};
+use crate::ui::views::{Access, DeviceStatus, EdgeKind, LabDevice, LabEdge, Tok};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -262,7 +262,12 @@ fn has_letter(d: &LabDevice) -> Option<usize> {
 
 fn label_w(cx: &Cx, d: &LabDevice, mode: Mode, nmax: usize, keys: bool) -> u16 {
     match mode {
-        Mode::Key => 3 + u16::from(!matches!(d.status, DeviceStatus::Online | DeviceStatus::Local)),
+        Mode::Key => {
+            3 + u16::from(!matches!(
+                d.status,
+                DeviceStatus::Online | DeviceStatus::Local
+            ))
+        }
         Mode::Name => 2 + name_w(cx, d, nmax, keys),
     }
 }
@@ -275,12 +280,24 @@ fn pill_w(cx: &Cx, d: &LabDevice, mode: Mode, keys: bool) -> u16 {
     }
 }
 
-fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, depth: usize, keys_only: bool, sel: Sel) -> Plan<'a> {
+fn plan<'a>(
+    cx: &Cx<'a>,
+    band: Rect,
+    root: &str,
+    depth: usize,
+    keys_only: bool,
+    sel: Sel,
+) -> Plan<'a> {
     let keys = matches!(sel, Sel::Node(..) | Sel::Targets);
     let modes: &[(Mode, usize)] = if keys_only {
         &[(Mode::Key, 0)]
     } else {
-        &[(Mode::Name, 16), (Mode::Name, 12), (Mode::Name, 9), (Mode::Key, 0)]
+        &[
+            (Mode::Name, 16),
+            (Mode::Name, 12),
+            (Mode::Name, 9),
+            (Mode::Key, 0),
+        ]
     };
     // Every named mode with a clear row between labels first, then packed: names
     // packed closer beat bare keycaps. (An even spacing keeps two peers symmetric
@@ -301,7 +318,17 @@ fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, depth: usize, keys_only: bool, 
                 continue;
             }
             for gap in (full.min(6)..=full).rev() {
-                let p = place(cx, band, tree(cx, root, depth), root, mode, nmax, sp, keys, gap);
+                let p = place(
+                    cx,
+                    band,
+                    tree(cx, root, depth),
+                    root,
+                    mode,
+                    nmax,
+                    sp,
+                    keys,
+                    gap,
+                );
                 let ok = p.hidden == 0;
                 best = Some(p);
                 if ok {
@@ -403,7 +430,11 @@ fn place<'a>(
         };
         // Columns per hop, as wide as their widest label.
         for hop in 1..=hops {
-            let col: Vec<usize> = all.iter().copied().filter(|&i| nodes[i].hop == hop).collect();
+            let col: Vec<usize> = all
+                .iter()
+                .copied()
+                .filter(|&i| nodes[i].hop == hop)
+                .collect();
             let col_w = col.iter().map(|&i| wv[i]).max().unwrap_or(0);
             for i in col {
                 let lx = if side > 0 { x } else { x - wv[i] };
@@ -425,7 +456,9 @@ fn place<'a>(
         });
     let (bx0, bx1) = (i32::from(band.x), i32::from(band.right()));
     let (by0, by1) = (i32::from(band.y), i32::from(band.bottom()));
-    let dx = ((bx0 + bx1 - lo - hi) / 2).min(bx1 - 1 - hi).max(bx0 + 1 - lo);
+    let dx = ((bx0 + bx1 - lo - hi) / 2)
+        .min(bx1 - 1 - hi)
+        .max(bx0 + 1 - lo);
     let dy = ((by0 + by1 - top - bot) / 2)
         .min(by1 - bot)
         .max(by0 - top)
@@ -442,7 +475,12 @@ fn place<'a>(
             nodes[i].shown = false;
         }
     }
-    let pill = Rect::new((pill.0 + dx).max(0) as u16, (pill.1 + dy).max(0) as u16, pw, 1);
+    let pill = Rect::new(
+        (pill.0 + dx).max(0) as u16,
+        (pill.1 + dy).max(0) as u16,
+        pw,
+        1,
+    );
     let hidden = nodes.iter().filter(|n| !n.shown).count();
     Plan {
         nodes,
@@ -468,7 +506,12 @@ pub(super) fn want_h(cx: &Cx) -> u16 {
 /// Rows the hub map's drawing takes in `band` (it sits one row under the band's top).
 pub(super) fn drawn_h(cx: &Cx, band: Rect) -> u16 {
     let p = plan(cx, band, &cx.s.viewer, 3, cx.touch(), Sel::Node("", false));
-    let ys = p.nodes.iter().filter(|n| n.shown).map(|n| n.label.y).chain([p.pill.y]);
+    let ys = p
+        .nodes
+        .iter()
+        .filter(|n| n.shown)
+        .map(|n| n.label.y)
+        .chain([p.pill.y]);
     let (lo, hi) = ys.fold((u16::MAX, 0), |a, y| (a.0.min(y), a.1.max(y)));
     hi + 1 - lo
 }
@@ -770,12 +813,20 @@ pub(super) fn draw_with(
             .filter(|m| m.shown && m.up.is_some() && m.parent == n.parent && m.side == n.side)
             .count()
             == 1;
-        let par_end = if trunk == end { (end, ky) } else { (trunk + n.side, ky) };
+        let par_end = if trunk == end {
+            (end, ky)
+        } else {
+            (trunk + n.side, ky)
+        };
         links.push(Link {
             e,
             lit,
             kid_end: (end, ky),
-            par_end: if py == ky && alone { (start, py) } else { par_end },
+            par_end: if py == ky && alone {
+                (start, py)
+            } else {
+                par_end
+            },
             toward_kid,
             side: n.side,
         });
@@ -848,7 +899,9 @@ pub(super) fn draw_with(
                 None => pat,
             };
             let (bx, by) = (band.x + x, band.y + y);
-            buf[(bx, by)].set_char(line_ch(b, pat, cx.uni())).set_style(st);
+            buf[(bx, by)]
+                .set_char(line_ch(b, pat, cx.uni()))
+                .set_style(st);
         }
     }
     // Ends: an arrowhead where access goes one way, at the end it reaches; `⊘` at the
@@ -872,7 +925,10 @@ pub(super) fn draw_with(
             put(if l.toward_kid { l.kid_end } else { l.par_end }, g);
         } else if l.e.up && closed(l.e) {
             // Mid-run, clear of both labels.
-            put(((l.par_end.0 + l.kid_end.0) / 2, l.kid_end.1), cx.g("⊘", "x"));
+            put(
+                ((l.par_end.0 + l.kid_end.0) / 2, l.kid_end.1),
+                cx.g("⊘", "x"),
+            );
         }
     }
     // Nodes. Letters are keys on the hub and in the send-to picker only.
@@ -881,13 +937,21 @@ pub(super) fn draw_with(
         let hot = sel_id == Some(n.d.id.as_str());
         let focus = matches!(sel, Sel::Node(_, true));
         let edge_end = match sel {
-            Sel::Edge(id) => cx
-                .s
-                .edge(id)
-                .is_some_and(|e| e.from == n.d.id || e.to == n.d.id),
+            Sel::Edge(id) => {
+                cx.s.edge(id)
+                    .is_some_and(|e| e.from == n.d.id || e.to == n.d.id)
+            }
             _ => false,
         };
-        node(cx, buf, &p, n, hot.then_some(focus), keys, fade_all && !edge_end);
+        node(
+            cx,
+            buf,
+            &p,
+            n,
+            hot.then_some(focus),
+            keys,
+            fade_all && !edge_end,
+        );
     }
     pill(
         cx,
@@ -935,7 +999,9 @@ pub(super) fn name(
     if at.is_none() {
         w += cx.dchip(buf, x, y, d, false) + 1;
     }
-    let key = cx.st(Tok::Accent).add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    let key = cx
+        .st(Tok::Accent)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
     for (i, ch) in nm.chars().enumerate() {
         let s = ch.to_string();
         let cst = if at == Some(i) { st.patch(key) } else { st };
@@ -997,7 +1063,8 @@ fn node(cx: &Cx, buf: &mut Buffer, p: &Plan, n: &Node, pick: Option<bool>, keys:
     let (g, gst) = cx.status(status);
     let gst = if fade { cx.ink(Tok::Faint, 1.0) } else { gst };
     let nst = if let Some(f) = pick {
-        cx.ink(Tok::Accent, if f { 1.0 } else { 0.7 }).add_modifier(Modifier::BOLD)
+        cx.ink(Tok::Accent, if f { 1.0 } else { 0.7 })
+            .add_modifier(Modifier::BOLD)
     } else if fade {
         // Muted, not faint: a faded name stays readable (faint is for lines).
         cx.ink(Tok::Muted, 0.85)
@@ -1050,7 +1117,15 @@ fn brackets(cx: &Cx, buf: &mut Buffer, r: Rect, st: Style) {
 
 /// The root: `◉` and its name in bold (hotkey underlined), no background. Selected, it
 /// takes the brackets every selected label has.
-fn pill(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str, pick: Option<bool>, keys: bool, fade: bool) {
+fn pill(
+    cx: &Cx,
+    buf: &mut Buffer,
+    p: &Plan,
+    root: &str,
+    pick: Option<bool>,
+    keys: bool,
+    fade: bool,
+) {
     let Some(d) = cx.s.device(root) else { return };
     let r = p.pill;
     let bar = |f: bool| {
@@ -1071,7 +1146,14 @@ fn pill(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str, pick: Option<bool>, key
         );
         // A keycap root keeps its bars: beside keycaps, colour alone does not read.
         cx.put(buf, r.x, r.y, 1, cx.g("▕", "["), bar(pick.unwrap_or(false)));
-        cx.put(buf, r.right() - 1, r.y, 1, cx.g("▏", "]"), bar(pick.unwrap_or(false)));
+        cx.put(
+            buf,
+            r.right() - 1,
+            r.y,
+            1,
+            cx.g("▏", "]"),
+            bar(pick.unwrap_or(false)),
+        );
     } else {
         // `◉` marks the root on every map unless its status has something to say.
         let (g, gst) = cx.status(d.status);
@@ -1086,9 +1168,23 @@ fn pill(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str, pick: Option<bool>, key
         } else {
             cx.ink(Tok::Fg, if fade { 0.85 } else { 1.0 })
         };
-        name(cx, buf, r.x + 2, r.y, d, 16, st.add_modifier(Modifier::BOLD), keys);
+        name(
+            cx,
+            buf,
+            r.x + 2,
+            r.y,
+            d,
+            16,
+            st.add_modifier(Modifier::BOLD),
+            keys,
+        );
         if let Some(f) = pick {
-            brackets(cx, buf, Rect::new(r.x.saturating_sub(1), r.y, r.width + 2, 1), bar(f));
+            brackets(
+                cx,
+                buf,
+                Rect::new(r.x.saturating_sub(1), r.y, r.width + 2, 1),
+                bar(f),
+            );
         }
     }
     let hit = if cx.touch() {

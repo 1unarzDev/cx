@@ -1,7 +1,7 @@
 //! Screens: hub, device, session peek, files, preview, palette, keys, onboarding, join,
 //! link policy and help. Each is a plain function over the shared `Cx`.
 use super::{fit, fmt, inset, orbit, tiles, Cx, Size, SLOTS};
-use crate::ui::lab::{
+use crate::ui::views::{
     caps::Pane, Access, DeviceStatus, EdgeKind, FileKind, LabDevice, LabEdge, LabSession, LabView,
     PreviewKind, Tok,
 };
@@ -45,7 +45,10 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
             let mut items: Keys = Vec::new();
             // A device that is down or answering late offers its retry verb.
             let retry = d.is_some_and(|d| {
-                matches!(d.status, DeviceStatus::Down | DeviceStatus::Stale | DeviceStatus::Unknown)
+                matches!(
+                    d.status,
+                    DeviceStatus::Down | DeviceStatus::Stale | DeviceStatus::Unknown
+                )
             });
             if cx.touch() {
                 // The primary verb first, then the way back; tiles also attach on a tap.
@@ -379,10 +382,10 @@ fn right_status(cx: &Cx, buf: &mut Buffer, y: u16) -> u16 {
     // Parts are placed right to left; an alert outranks the transfer readout.
     if let Some(n) = s.notifications.iter().max_by_key(|n| n.kind as u8) {
         let tok = match n.kind {
-            crate::ui::lab::NoticeKind::Err => Tok::Err,
-            crate::ui::lab::NoticeKind::Warn => Tok::Warn,
-            crate::ui::lab::NoticeKind::Ok => Tok::Ok,
-            crate::ui::lab::NoticeKind::Info => Tok::Info,
+            crate::ui::views::NoticeKind::Err => Tok::Err,
+            crate::ui::views::NoticeKind::Warn => Tok::Warn,
+            crate::ui::views::NoticeKind::Ok => Tok::Ok,
+            crate::ui::views::NoticeKind::Info => Tok::Info,
         };
         // The ticker above the footer says what and how to fix it; here only the count.
         let text = format!("{} {}", cx.g("▲", "^"), s.notifications.len());
@@ -992,7 +995,7 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
 }
 
 fn kind_word(d: &LabDevice) -> &'static str {
-    use crate::ui::lab::DeviceKind::*;
+    use crate::ui::views::DeviceKind::*;
     match d.kind {
         Desktop => "desktop",
         Laptop => "laptop",
@@ -1175,18 +1178,38 @@ fn stop_confirm(cx: &Cx, buf: &mut Buffer, tr: Rect, x: &LabSession) {
     let row = Rect::new(tr.x + 1, y, tr.width.saturating_sub(1), 1);
     let bg = cx.wash(Tok::Err, 0.22);
     cx.fill(buf, row, bg);
-    let del = if cx.touch() { "bksp" } else { cx.g("⌫", "bksp") };
+    let del = if cx.touch() {
+        "bksp"
+    } else {
+        cx.g("⌫", "bksp")
+    };
     let keys = format!(" {del} ");
     let tail = "again to stop, any key keeps it";
     let kw = super::width(&keys, cx.uni());
     let mut xx = row.x + 1;
     let q = format!("stop {}? ", x.title);
-    let room = row.width.saturating_sub(kw + 3 + super::width(tail, cx.uni()).min(16));
-    xx += cx.put(buf, xx, y, room, &fit(&q, room as usize, cx.uni()), cx.st(Tok::Err).add_modifier(Modifier::BOLD).patch(bg));
+    let room = row
+        .width
+        .saturating_sub(kw + 3 + super::width(tail, cx.uni()).min(16));
+    xx += cx.put(
+        buf,
+        xx,
+        y,
+        room,
+        &fit(&q, room as usize, cx.uni()),
+        cx.st(Tok::Err).add_modifier(Modifier::BOLD).patch(bg),
+    );
     let k0 = xx;
     xx += cx.put(buf, xx, y, kw, &keys, cx.key_style()) + 1;
     cx.hit(Rect::new(k0, y, kw, 1), "stop");
-    cx.put(buf, xx, y, row.right().saturating_sub(xx + 1), &fit(tail, row.right().saturating_sub(xx + 1) as usize, cx.uni()), cx.ink(Tok::Fg, 0.85).patch(bg));
+    cx.put(
+        buf,
+        xx,
+        y,
+        row.right().saturating_sub(xx + 1),
+        &fit(tail, row.right().saturating_sub(xx + 1) as usize, cx.uni()),
+        cx.ink(Tok::Fg, 0.85).patch(bg),
+    );
 }
 
 /// The ghost tile's one-row form: `new  c claude  x codex  n shell`.
@@ -1258,7 +1281,7 @@ fn peek(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession) {
     // The screen, 1:1, on a deeper surface as tall as its content. At M+ the other
     // sessions fill the rows below it as a filmstrip of live tiles (tap or `t a` to jump,
     // `tab` to step), so the screen never sits over a void.
-    let lines = crate::ui::lab::ansi_lines(&x.screen, x.screen_cols);
+    let lines = crate::ui::views::ansi_lines(&x.screen, x.screen_cols);
     let used = lines
         .iter()
         .rposition(|l| l.spans.iter().any(|s| !s.content.trim().is_empty()))
@@ -1364,7 +1387,7 @@ fn peek(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession) {
 /// is the tappable detach chip (`Ctrl+\\` does the same from the keyboard).
 fn attached(cx: &Cx, buf: &mut Buffer, x: &LabSession) {
     let a = cx.area;
-    let lines = crate::ui::lab::ansi_lines(&x.screen, x.screen_cols);
+    let lines = crate::ui::views::ansi_lines(&x.screen, x.screen_cols);
     let h = a.height.saturating_sub(1);
     let used = lines
         .iter()
@@ -1432,14 +1455,25 @@ fn attached(cx: &Cx, buf: &mut Buffer, x: &LabSession) {
                 .unwrap_or(w);
             let rest = cells.split_off(at);
             rows.push(cells);
-            cells = pad.iter().copied().chain(rest.into_iter().skip_while(|c| c.0 == ' ')).collect();
+            cells = pad
+                .iter()
+                .copied()
+                .chain(rest.into_iter().skip_while(|c| c.0 == ' '))
+                .collect();
         }
         rows.push(cells);
     }
     let skip = rows.len().saturating_sub(usize::from(h));
     for (i, row) in rows.iter().skip(skip).enumerate() {
         for (j, (c, st)) in row.iter().enumerate() {
-            cx.put(buf, a.x + j as u16, a.y + 1 + i as u16, 1, &c.to_string(), *st);
+            cx.put(
+                buf,
+                a.x + j as u16,
+                a.y + 1 + i as u16,
+                1,
+                &c.to_string(),
+                *st,
+            );
         }
     }
     let y = a.y;
@@ -1547,7 +1581,14 @@ fn files(cx: &Cx, buf: &mut Buffer, r: Rect) {
         rows -= 1;
         let more = f.entries.len() - first - rows;
         let t = format!("+{more} more{}", cx.g(" ↓", ""));
-        cx.put(buf, list.x + 1, list.y + rows as u16, list.width, &t, cx.st(Tok::Muted));
+        cx.put(
+            buf,
+            list.x + 1,
+            list.y + rows as u16,
+            list.width,
+            &t,
+            cx.st(Tok::Muted),
+        );
     }
     for (i, e) in f.entries.iter().enumerate().skip(first).take(rows) {
         let y = list.y + (i - first) as u16;
@@ -1670,14 +1711,13 @@ fn files(cx: &Cx, buf: &mut Buffer, r: Rect) {
             );
         }
         // Reachable send targets (closed links skipped), with their route's rtt.
-        let targets: Vec<(&LabDevice, Vec<&LabEdge>)> = cx
-            .s
-            .devices
-            .iter()
-            .filter(|d| d.id != f.device && cx.up(d))
-            .map(|d| (d, orbit::route_from(cx, &f.device, &d.id)))
-            .filter(|(_, r)| !r.is_empty())
-            .collect();
+        let targets: Vec<(&LabDevice, Vec<&LabEdge>)> =
+            cx.s.devices
+                .iter()
+                .filter(|d| d.id != f.device && cx.up(d))
+                .map(|d| (d, orbit::route_from(cx, &f.device, &d.id)))
+                .filter(|(_, r)| !r.is_empty())
+                .collect();
         if left >= 7 + targets.len() as u16 {
             // Room for one target per row: `s send to`, then each with its rtt and relay.
             let mut y = sy;
@@ -1686,26 +1726,56 @@ fn files(cx: &Cx, buf: &mut Buffer, r: Rect) {
             cx.put(buf, x, y, 9, "send to", cx.st(Tok::Muted));
             y += 1;
             for (d, route) in &targets {
-                let st = cx.ink(Tok::Id(cx.s.hue(&d.id)), if route.len() == 1 { 1.0 } else { 0.7 })
+                let st = cx
+                    .ink(
+                        Tok::Id(cx.s.hue(&d.id)),
+                        if route.len() == 1 { 1.0 } else { 0.7 },
+                    )
                     .add_modifier(Modifier::BOLD);
                 let x = list.x + 3;
                 cx.put(buf, x, y, 1, &d.hotkey.to_string(), st);
-                cx.put(buf, x + 2, y, 18, &fit(&d.name, 18, cx.uni()), cx.ink(Tok::Fg, 0.85));
+                cx.put(
+                    buf,
+                    x + 2,
+                    y,
+                    18,
+                    &fit(&d.name, 18, cx.uni()),
+                    cx.ink(Tok::Fg, 0.85),
+                );
                 let ms: f32 = route.iter().filter_map(|e| e.rtt_ms).sum();
                 let via = if route.len() > 1 {
-                    let hop = if route[0].from == f.device { &route[0].to } else { &route[0].from };
-                    cx.s.device(hop).map(|h| format!("via {}  ", h.name)).unwrap_or_default()
+                    let hop = if route[0].from == f.device {
+                        &route[0].to
+                    } else {
+                        &route[0].from
+                    };
+                    cx.s.device(hop)
+                        .map(|h| format!("via {}  ", h.name))
+                        .unwrap_or_default()
                 } else {
                     String::new()
                 };
-                cx.put_r(buf, list.right(), y, &format!("{via}{}", super::ms_text(ms)), cx.st(Tok::Muted));
-                cx.hit(Rect::new(list.x, y, list.width, 1), format!("send:{}", d.id));
+                cx.put_r(
+                    buf,
+                    list.right(),
+                    y,
+                    &format!("{via}{}", super::ms_text(ms)),
+                    cx.st(Tok::Muted),
+                );
+                cx.hit(
+                    Rect::new(list.x, y, list.width, 1),
+                    format!("send:{}", d.id),
+                );
                 y += 1;
             }
         } else if sy < list.bottom() {
             let mut x = list.x + 1;
             if left < 5 {
-                let t = format!("{} {sep} {} ago  ", fmt::bytes(e.size), fmt::age(e.modified_secs));
+                let t = format!(
+                    "{} {sep} {} ago  ",
+                    fmt::bytes(e.size),
+                    fmt::age(e.modified_secs)
+                );
                 x += cx.put(buf, x, sy, w, &t, cx.st(Tok::Muted));
             }
             // `s` is the key; the letters after it are what `s` then takes, drawn as
@@ -1723,7 +1793,11 @@ fn files(cx: &Cx, buf: &mut Buffer, r: Rect) {
                     break;
                 }
                 let st = cx.ink(Tok::Id(cx.s.hue(&d.id)), if hops == 1 { 1.0 } else { 0.7 });
-                let st = if hops == 1 { st.add_modifier(Modifier::BOLD) } else { st };
+                let st = if hops == 1 {
+                    st.add_modifier(Modifier::BOLD)
+                } else {
+                    st
+                };
                 cx.put(buf, x, sy, 1, &d.hotkey.to_string(), st);
                 cx.hit(Rect::new(x, sy, 1, 1), format!("send:{}", d.id));
                 x += 2;
@@ -1969,7 +2043,13 @@ fn panel(cx: &Cx, buf: &mut Buffer, r: Rect) {
 fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
     let ql = q.to_lowercase();
     // (group, description spans, the keys from the hub, action, the row's device).
-    type Row<'r> = (String, Vec<(String, Style)>, String, String, Option<&'r LabDevice>);
+    type Row<'r> = (
+        String,
+        Vec<(String, Style)>,
+        String,
+        String,
+        Option<&'r LabDevice>,
+    );
     let mut rows: Vec<Row> = Vec::new();
     for d in cx.s.devices.iter().filter(|d| d.name.contains(&ql)) {
         let (g, gst) = cx.status(d.status);
@@ -2290,7 +2370,7 @@ fn secrets(cx: &Cx, buf: &mut Buffer, r: Rect) {
             // call to action never reads as a plain gray keycap.
             let st = match cx.c.color {
                 _ if cx.has_surface() => st,
-                crate::ui::lab::ColorLevel::C16 => Style::default()
+                crate::ui::views::ColorLevel::C16 => Style::default()
                     .bg(ratatui::style::Color::Cyan)
                     .fg(ratatui::style::Color::Black)
                     .add_modifier(Modifier::BOLD),
@@ -2369,7 +2449,14 @@ fn secrets(cx: &Cx, buf: &mut Buffer, r: Rect) {
     if let (Some(k), true) = (SLOTS.get(n), top < r.bottom()) {
         let x = x0 + 2;
         let kw = cx.put(buf, x, top, 3, &format!(" {k} "), cx.key_style());
-        let t = cx.put(buf, x + kw + 1, top, w.saturating_sub(kw + 3), "new secret", cx.ink(Tok::Fg, 0.9));
+        let t = cx.put(
+            buf,
+            x + kw + 1,
+            top,
+            w.saturating_sub(kw + 3),
+            "new secret",
+            cx.ink(Tok::Fg, 0.9),
+        );
         cx.hit(Rect::new(x0, top, kw + t + 3, 1), "secret-new");
         top += 1;
     }
@@ -2485,7 +2572,14 @@ fn onboarding(cx: &Cx, buf: &mut Buffer, r: Rect) {
         // The hub's root: `◉ name` in bold, no background.
         let pw = super::width(&d.name, cx.uni()) + 2;
         let px = ill.x + (ill.width.saturating_sub(pw)) / 2;
-        cx.put(buf, px, mid, 1, cx.status(d.status).0, cx.status(d.status).1);
+        cx.put(
+            buf,
+            px,
+            mid,
+            1,
+            cx.status(d.status).0,
+            cx.status(d.status).1,
+        );
         let nst = cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD);
         cx.put(buf, px + 2, mid, pw - 2, &d.name, nst);
     }
@@ -2650,11 +2744,11 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
                 // 16 colours on a light theme: bright white is often a gray there, so the
                 // light modules are the terminal's own background and the dark ones black
                 // ink drawn with the NO_COLOR glyphs.
-                let light16 = cx.c.color == crate::ui::lab::ColorLevel::C16 && !cx.dark();
+                let light16 = cx.c.color == crate::ui::views::ColorLevel::C16 && !cx.dark();
                 let st = match cx.c.color {
                     _ if light16 => Style::default().fg(ratatui::style::Color::Black),
-                    crate::ui::lab::ColorLevel::None => Style::default(),
-                    crate::ui::lab::ColorLevel::C16 => Style::default()
+                    crate::ui::views::ColorLevel::None => Style::default(),
+                    crate::ui::views::ColorLevel::C16 => Style::default()
                         .fg(if t {
                             ratatui::style::Color::Black
                         } else {
@@ -2712,7 +2806,8 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // five-row tint: the page's hero, readable across a room.
     // A half-block pixel is square (half a cell tall, one cell wide).
     let gw: u16 = inv.code.chars().map(|c| if c == '-' { 2 } else { 4 }).sum();
-    let big = cx.size() >= Size::M && cx.uni() && gw + 3 <= tw && r.bottom().saturating_sub(y) >= 16;
+    let big =
+        cx.size() >= Size::M && cx.uni() && gw + 3 <= tw && r.bottom().saturating_sub(y) >= 16;
     if big {
         let st = cx.ink(Tok::Accent, 1.0);
         let st = if cx.has_surface() {
@@ -2831,15 +2926,42 @@ fn break_cmd(s: &str, w: usize) -> Vec<String> {
 /// to bottom, three bits per row (left bit first).
 fn glyph_bits(c: char) -> u16 {
     const G: [&str; 36] = [
-        "111101101101111", "010110010010111", "111001111100111", "111001011001111",
-        "101101111001001", "111100111001111", "111100111101111", "111001001010010",
-        "111101111101111", "111101111001111", "010101111101101", "110101110101110",
-        "011100100100011", "110101101101110", "111100110100111", "111100110100100",
-        "011100101101011", "101101111101101", "111010010010111", "001001001101010",
-        "101110100110101", "100100100100111", "101111111101101", "110101101101101",
-        "010101101101010", "110101110100100", "111101101111011", "110101110101101",
-        "011100010001110", "111010010010010", "101101101101111", "101101101101010",
-        "101101111111101", "101101010101101", "101101010010010", "111001010100111",
+        "111101101101111",
+        "010110010010111",
+        "111001111100111",
+        "111001011001111",
+        "101101111001001",
+        "111100111001111",
+        "111100111101111",
+        "111001001010010",
+        "111101111101111",
+        "111101111001111",
+        "010101111101101",
+        "110101110101110",
+        "011100100100011",
+        "110101101101110",
+        "111100110100111",
+        "111100110100100",
+        "011100101101011",
+        "101101111101101",
+        "111010010010111",
+        "001001001101010",
+        "101110100110101",
+        "100100100100111",
+        "101111111101101",
+        "110101101101101",
+        "010101101101010",
+        "110101110100100",
+        "111101101111011",
+        "110101110101101",
+        "011100010001110",
+        "111010010010010",
+        "101101101101111",
+        "101101101101010",
+        "101101111111101",
+        "101101010101101",
+        "101101010010010",
+        "111001010100111",
     ];
     let i = match c.to_ascii_uppercase() {
         d @ '0'..='9' => d as usize - '0' as usize,
@@ -3000,7 +3122,11 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
         // Phones say `pass`, so all three segments keep their shape on one row.
         let opts = [
             (Access::Key, "a", "key"),
-            (Access::Password, "p", if inner.width < 44 { "pass" } else { "password" }),
+            (
+                Access::Password,
+                "p",
+                if inner.width < 44 { "pass" } else { "password" },
+            ),
             (Access::Denied, "o", "off"),
         ];
         for (val, k, label) in opts {
@@ -3040,7 +3166,16 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
             }
             cx.hit(
                 Rect::new(lx, ly, n, 1),
-                format!("policy:{}:{}:{}", f.id, t.id, if k.eq_ignore_ascii_case("p") { "password" } else { label }),
+                format!(
+                    "policy:{}:{}:{}",
+                    f.id,
+                    t.id,
+                    if k.eq_ignore_ascii_case("p") {
+                        "password"
+                    } else {
+                        label
+                    }
+                ),
             );
             lx += n + 1;
         }
@@ -3081,15 +3216,34 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
         if users == 1 { "es" } else { "" },
     );
     let msg = format!("Each press applies at once; u undoes. {count}");
-    let msg = if super::width(&msg, cx.uni()) <= inner.width { msg } else { count };
-    cx.put(buf, inner.x, inner.y + 6, inner.width, &msg, cx.st(Tok::Muted));
+    let msg = if super::width(&msg, cx.uni()) <= inner.width {
+        msg
+    } else {
+        count
+    };
+    cx.put(
+        buf,
+        inner.x,
+        inner.y + 6,
+        inner.width,
+        &msg,
+        cx.st(Tok::Muted),
+    );
     let ry = inner.y + 8;
     if ry < inner.bottom() && cx.size() >= Size::S {
         // The rtt history (one thin row) and its figures as quiet text after it.
         cx.put(buf, inner.x, ry, 4, "rtt", cx.st(Tok::Muted));
         // At most half the row, so the figures after it keep their words.
         let sw = (inner.width.saturating_sub(5) / 2).min(40);
-        tiles::spark(cx, buf, inner.x + 5, ry, sw, &e.rtt_hist, cx.ink(Tok::Muted, 0.6));
+        tiles::spark(
+            cx,
+            buf,
+            inner.x + 5,
+            ry,
+            sw,
+            &e.rtt_hist,
+            cx.ink(Tok::Muted, 0.6),
+        );
         let v: Vec<f32> = e.rtt_hist.iter().flatten().copied().collect();
         let mut t = format!("{} samples", e.rtt_hist.len());
         if !v.is_empty() {
@@ -3110,7 +3264,11 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
         let tx = inner.x + 7 + sw;
         let room = inner.right().saturating_sub(tx) as usize;
         let t = fit_segs(&t, room, cx.uni());
-        let t = if cx.uni() { t } else { t.replace(" · ", " - ") };
+        let t = if cx.uni() {
+            t
+        } else {
+            t.replace(" · ", " - ")
+        };
         cx.put(buf, tx, ry, room as u16, &t, cx.st(Tok::Muted));
     }
 }
@@ -3174,10 +3332,20 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // One table: intent, keys (plain bold, a space between keys), what they do. The
     // device letters are the map's own: accent and underlined.
     // (Narrow, the letters fit the widest key, `a s d g`.)
-    let n = if wide { 4 } else if cx.uni() { 3 } else { 2 };
+    let n = if wide {
+        4
+    } else if cx.uni() {
+        3
+    } else {
+        2
+    };
     let devs: Vec<&LabDevice> = cx.s.devices.iter().take(n).collect();
     let more = cx.s.devices.len() - devs.len();
-    let letters = devs.iter().map(|d| d.hotkey.to_string()).collect::<Vec<_>>().join(" ")
+    let letters = devs
+        .iter()
+        .map(|d| d.hotkey.to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
         + &match (more, cx.uni()) {
             (0, _) => String::new(),
             (_, true) => " …".into(),
@@ -3189,22 +3357,38 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         "open it, then"
     };
     let groups: [(&str, Vec<(String, &str)>); 3] = [
-        ("move", vec![
-            ("j k".into(), "step through devices"),
-            ("tab".into(), "next zone"),
-            (key("⏎").into(), "open the selection"),
-            ("-".into(), "last session"),
-        ]),
-        ("act", vec![
-            ("spc".into(), "peek a session"),
-            ("e".into(), "edit a link"),
-            (key("⌫").into(), "stop a session"),
-        ]),
-        ("device", vec![
-            (letters, open),
-            ("a s d g".into(), "attach a slot"),
-            ("c x n".into(), if wide { "new claude / codex / shell" } else { "new claude/codex/shell" }),
-        ]),
+        (
+            "move",
+            vec![
+                ("j k".into(), "step through devices"),
+                ("tab".into(), "next zone"),
+                (key("⏎").into(), "open the selection"),
+                ("-".into(), "last session"),
+            ],
+        ),
+        (
+            "act",
+            vec![
+                ("spc".into(), "peek a session"),
+                ("e".into(), "edit a link"),
+                (key("⌫").into(), "stop a session"),
+            ],
+        ),
+        (
+            "device",
+            vec![
+                (letters, open),
+                ("a s d g".into(), "attach a slot"),
+                (
+                    "c x n".into(),
+                    if wide {
+                        "new claude / codex / shell"
+                    } else {
+                        "new claude/codex/shell"
+                    },
+                ),
+            ],
+        ),
     ];
     // (`esc` is on the footer, where it closes this.)
     let globals: [(&str, &str, &str); 5] = [
@@ -3283,24 +3467,45 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                 intent(buf, y, name);
             }
             let st = if gi == 2 && i == 0 {
-                cx.st(Tok::Accent).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                cx.st(Tok::Accent)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
             } else {
                 bold
             };
             // Letters underlined one by one, never the spaces between them.
             let mut x = kx;
             for part in k.split(' ') {
-                let pst = if part.starts_with('+') || part == "…" { cx.st(Tok::Muted) } else { st };
+                let pst = if part.starts_with('+') || part == "…" {
+                    cx.st(Tok::Muted)
+                } else {
+                    st
+                };
                 x += cx.put(buf, x, y, kw, part, pst) + 1;
             }
             let room = right.saturating_sub(dx);
             // The letter rule says where letters are only where it fits whole.
-            let v = if *v == open && super::width(v, cx.uni()) > room { "open it, then" } else { v };
-            cx.put(buf, dx, y, room, &fit(v, usize::from(room), cx.uni()), cx.ink(Tok::Fg, 0.85));
+            let v = if *v == open && super::width(v, cx.uni()) > room {
+                "open it, then"
+            } else {
+                v
+            };
+            cx.put(
+                buf,
+                dx,
+                y,
+                room,
+                &fit(v, usize::from(room), cx.uni()),
+                cx.ink(Tok::Fg, 0.85),
+            );
             y += 1;
         }
     }
-    let flow = |buf: &mut Buffer, y: &mut u16, name: &str, pairs: &[(&str, &str)], hits: Option<&[(&str, &str, &str)]>, kst: Style| {
+    let flow = |buf: &mut Buffer,
+                y: &mut u16,
+                name: &str,
+                pairs: &[(&str, &str)],
+                hits: Option<&[(&str, &str, &str)]>,
+                kst: Style| {
         if air {
             *y += 1;
         }

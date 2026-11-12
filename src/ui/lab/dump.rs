@@ -109,7 +109,7 @@ pub fn text(buf: &Buffer) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::lab::caps::ColorLevel;
+    use crate::ui::views::caps::ColorLevel;
     use ratatui::{layout::Rect, style::Style};
 
     #[test]

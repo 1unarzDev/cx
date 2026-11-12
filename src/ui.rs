@@ -46,6 +46,7 @@ mod keys;
 #[cfg(test)]
 mod lab;
 mod launch;
+mod views;
 pub use runtime::{run, run_restored};
 
 use anyhow::{Context, Result};

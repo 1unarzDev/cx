@@ -3,7 +3,7 @@
 //! pairs each problem with the keys that fix it. Phones get the indented device tree
 //! (relays above the devices reached through them).
 use super::{fit, orbit, tiles, views, Cx, Size};
-use crate::ui::lab::{caps::Pane, Access, LabDevice, NoticeKind, SessionState, Tok};
+use crate::ui::views::{caps::Pane, Access, LabDevice, NoticeKind, SessionState, Tok};
 use ratatui::{buffer::Buffer, layout::Rect, style::Modifier};
 
 pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
@@ -148,24 +148,23 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
 /// lan's teal. The line grammar lives in help (`?`).
 fn legend(cx: &Cx, buf: &mut Buffer, mut x: u16, y: u16, right: u16) -> u16 {
     let sep = if cx.size() >= Size::M { 3 } else { 2 };
-    let mut items: Vec<(String, Tok, Option<&crate::ui::lab::LabMesh>)> = cx
-        .s
-        .meshes
-        .iter()
-        .map(|m| {
-            let up = m
-                .members
-                .iter()
-                .filter(|id| cx.s.device(id).is_some_and(|d| cx.up(d)))
-                .count();
-            let text = if cx.size() >= Size::M {
-                format!("{} {up}/{}", m.name, m.members.len())
-            } else {
-                m.name.clone()
-            };
-            (text, orbit::mesh_tok(cx, &m.id), Some(m))
-        })
-        .collect();
+    let mut items: Vec<(String, Tok, Option<&crate::ui::views::LabMesh>)> =
+        cx.s.meshes
+            .iter()
+            .map(|m| {
+                let up = m
+                    .members
+                    .iter()
+                    .filter(|id| cx.s.device(id).is_some_and(|d| cx.up(d)))
+                    .count();
+                let text = if cx.size() >= Size::M {
+                    format!("{} {up}/{}", m.name, m.members.len())
+                } else {
+                    m.name.clone()
+                };
+                (text, orbit::mesh_tok(cx, &m.id), Some(m))
+            })
+            .collect();
     items.push(("lan".into(), Tok::Lan, None));
     for (t, tok, mesh) in &items {
         let alert = mesh.is_some_and(|m| !m.healthy);
@@ -496,7 +495,15 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // targets), keeping a breathing row above the ticker.
     let mut sy = y + 2;
     if sy + 2 < ty {
-        views::zone(cx, buf, r.x + 1, y + 1, right, "SESSIONS", focus == Pane::Sessions);
+        views::zone(
+            cx,
+            buf,
+            r.x + 1,
+            y + 1,
+            right,
+            "SESSIONS",
+            focus == Pane::Sessions,
+        );
         let list = cx.by_attention();
         for (i, x) in list.iter().enumerate() {
             if sy + 2 >= ty {
@@ -578,7 +585,11 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
     }
     if let Some(e) = t.edge {
         // Down: a faint guide (the device's `✕` is its one red mark).
-        let tok = if e.up { orbit::edge_tok(cx, e) } else { Tok::Faint };
+        let tok = if e.up {
+            orbit::edge_tok(cx, e)
+        } else {
+            Tok::Faint
+        };
         let pass = e.up && e.forward != Access::Key && e.reverse != Access::Key;
         let g = match (t.last, pass) {
             (false, false) => cx.g("├─", "+-"),
@@ -597,7 +608,9 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
         cx.dchip(buf, x, r.y, d, false);
     } else {
         let k = format!(" {} ", d.hotkey);
-        let st = cx.ink(Tok::Id(cx.s.hue(&d.id)), 1.0).add_modifier(Modifier::BOLD);
+        let st = cx
+            .ink(Tok::Id(cx.s.hue(&d.id)), 1.0)
+            .add_modifier(Modifier::BOLD);
         cx.put(buf, x, r.y, 3, &k, st.patch(bg));
     }
     x += 4;
@@ -636,7 +649,15 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
             let v: Vec<Option<f32>> = m.cpu_hist.iter().map(|v| Some(*v)).collect();
             let sw = right.saturating_sub(ex + 12).min(12);
             // One neutral tone: only a hot device's figure takes a colour.
-            tiles::spark(cx, buf, ex, r.y + 1, sw, &v, cx.ink(Tok::Muted, 0.6).patch(bg));
+            tiles::spark(
+                cx,
+                buf,
+                ex,
+                r.y + 1,
+                sw,
+                &v,
+                cx.ink(Tok::Muted, 0.6).patch(bg),
+            );
             let t = match m.temp_c {
                 Some(t) => format!("{:.0}% {t:.0}{}", m.cpu * 100.0, cx.g("°", "C")),
                 None => format!("{:.0}%", m.cpu * 100.0),
@@ -647,7 +668,8 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
                 r.y + 1,
                 10,
                 &t,
-                cx.st(if m.cpu >= 0.85 { Tok::Warn } else { Tok::Muted }).patch(bg),
+                cx.st(if m.cpu >= 0.85 { Tok::Warn } else { Tok::Muted })
+                    .patch(bg),
             );
         } else {
             cx.put(

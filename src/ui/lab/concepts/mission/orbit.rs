@@ -295,7 +295,7 @@ fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, depth: usize, keys_only: bool, 
     // column gap down to the shortest that keeps a corner.
     // The edge editor's map has the screen to itself: its rows spread to fill it.
     let sp_max = match cx.size() {
-        _ if matches!(sel, Sel::Edge(_)) => 8,
+        _ if matches!(sel, Sel::Edge(_)) => 12,
         Size::L => 4,
         Size::M => 3,
         Size::S | Size::Xs => 2,
@@ -986,7 +986,7 @@ pub(super) fn draw_with(
         };
         style(tok, l.lit, pattern(l.e))
     };
-    wash(cx, buf, &p, root, band);
+    wash(cx, buf, &p, root, band, fade_all);
     for y in 0..band.height {
         for x in 0..band.width {
             let i = usize::from(y) * usize::from(band.width) + usize::from(x);
@@ -1090,7 +1090,7 @@ pub(super) fn draw_with(
 /// A mesh the root is not in, drawn as one group: a quiet wash of its hue behind its
 /// members, where they sit together (no other label inside it). The root's own meshes
 /// are its lines' hues.
-fn wash(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str, band: Rect) {
+fn wash(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str, band: Rect, faded: bool) {
     if !cx.tc() {
         return;
     }
@@ -1104,7 +1104,9 @@ fn wash(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str, band: Rect) {
         if count < 2 || other || p.pill.intersects(bb) {
             continue;
         }
-        let st = cx.wash(mesh_tok(cx, &m.id), if cx.dark() { 0.07 } else { 0.06 });
+        // (Fainter still where the map is scenery, as in the edge editor.)
+        let a = if cx.dark() { 0.07 } else { 0.06 } * if faded { 0.5 } else { 1.0 };
+        let st = cx.wash(mesh_tok(cx, &m.id), a);
         for y in bb.top()..bb.bottom() {
             for x in bb.left()..bb.right() {
                 buf[(x, y)].set_style(st);

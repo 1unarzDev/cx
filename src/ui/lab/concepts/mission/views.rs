@@ -1887,12 +1887,17 @@ fn rust_line(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, room: u16, l: &str) {
 /// transfer then shows as the packet on that link.
 fn send_to(cx: &Cx, buf: &mut Buffer, a: Rect) {
     cx.dim(buf, a);
-    let h = (orbit::want_h(cx) + 3).min(a.height);
+    // As tall as its map (up to two thirds of the screen, all but the crumb and footer
+    // on a phone): a title row, a blank row,
+    // the map and a blank row inside its edges.
+    let f = &cx.s.files;
+    let fit_h = if cx.touch() { a.height.saturating_sub(7) } else { (a.height * 2 / 3).saturating_sub(4) };
+    let gh = orbit::height(cx, Rect::new(a.x, a.y, a.width, fit_h), &f.device, 3, orbit::Sel::Targets);
+    let h = (gh + 5).min(a.height);
     let r = Rect::new(a.x, a.bottom().saturating_sub(h), a.width, h);
     cx.clear_hits();
     cx.hit(Rect::new(a.x, a.y, a.width, r.y - a.y), "back");
     panel(cx, buf, r);
-    let f = &cx.s.files;
     let mut x = r.x + 2;
     let y = r.y + 1;
     x += cx.put(buf, x, y, 6, "send ", cx.ink(Tok::Fg, 0.9));
@@ -1915,7 +1920,7 @@ fn send_to(cx: &Cx, buf: &mut Buffer, a: Rect) {
             cx.st(Tok::Muted),
         );
     }
-    let band = Rect::new(r.x, y + 1, r.width, r.bottom().saturating_sub(y + 1));
+    let band = Rect::new(r.x, y + 2, r.width, gh);
     orbit::draw(cx, buf, band, &f.device, 3, orbit::Sel::Targets);
 }
 

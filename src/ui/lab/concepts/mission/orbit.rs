@@ -718,7 +718,10 @@ fn radial<'a>(
                 // line runs straight in, as the end keeps two cells of air).
                 let min = port(pl, s) + s * if py == pl.1 { 5 } else { 2 };
                 px = if s > 0 { px.max(min) } else { px.min(min) };
-                if s > 0 {
+                // A keycap takes its line on its letter.
+                if mode == Mode::Key {
+                    px - 1
+                } else if s > 0 {
                     px
                 } else {
                     px - w + 1

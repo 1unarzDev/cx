@@ -280,6 +280,21 @@ pub struct LabState {
     pub invite: Option<LabInvite>,
     pub notifications: Vec<LabNotice>,
     pub transfers: Vec<LabTransfer>,
+    /// Palette rows from the real app (already filtered and ranked); None in fixtures,
+    /// where the palette lists the fixture's devices, sessions and actions itself.
+    pub palette: Option<Vec<PaletteRow>>,
+}
+
+/// One palette row the app supplies: its group, label, quiet detail, the keys that
+/// reach it directly, the action a tap or `⏎` runs and the row's device (for its hue).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaletteRow {
+    pub group: String,
+    pub label: String,
+    pub detail: String,
+    pub keys: String,
+    pub action: String,
+    pub device: Option<String>,
 }
 
 impl LabState {
@@ -1141,6 +1156,7 @@ pub fn typical() -> LabState {
                 .map(|v| v * 48e6)
                 .collect(),
         }],
+        palette: None,
     }
 }
 
@@ -1179,6 +1195,7 @@ pub fn small() -> LabState {
         invite: None,
         notifications: vec![],
         transfers: vec![],
+        palette: None,
     };
     for d in &mut s.devices {
         d.meshes.retain(|m| m == "cloudflare-warp");

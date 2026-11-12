@@ -54,6 +54,54 @@ impl Concept for Mission {
     }
 }
 
+/// What one production frame drew: its tap targets and the hub's device order (the
+/// map's or the phone tree's), so keys move through exactly what is on screen.
+pub struct Drawn {
+    pub targets: Vec<LabTarget>,
+    pub order: Vec<String>,
+}
+
+/// The production entry point: one draw that also returns the frame's targets.
+pub fn render(
+    view: &LabView,
+    state: &LabState,
+    caps: &LabCaps,
+    area: Rect,
+    buf: &mut Buffer,
+) -> Drawn {
+    let cx = Cx::new(state, caps, area);
+    cx.draw(view, buf);
+    Drawn {
+        targets: cx.hits.into_inner(),
+        order: cx.order.into_inner(),
+    }
+}
+
+/// The palette over whatever screen is already in `buf` (dimmed under it); returns its
+/// targets, which replace the screen's (only the sheet is live).
+pub fn render_palette(
+    state: &LabState,
+    caps: &LabCaps,
+    area: Rect,
+    buf: &mut Buffer,
+    query: &str,
+) -> Vec<LabTarget> {
+    let cx = Cx::new(state, caps, area);
+    if area.width < 20 || area.height < 6 {
+        return Vec::new();
+    }
+    cx.dim(buf, area);
+    views::palette(&cx, buf, area, query);
+    cx.hits.into_inner()
+}
+
+/// Session ids in hub order (what needs you first), as the hub's tiles rank them.
+pub fn by_attention(state: &LabState) -> Vec<String> {
+    let caps = LabCaps::default();
+    let cx = Cx::new(state, &caps, Rect::default());
+    cx.by_attention().iter().map(|x| x.id.clone()).collect()
+}
+
 pub(super) type Rgb = (u8, u8, u8);
 
 /// Width class: phone, small, medium, large.
@@ -68,7 +116,7 @@ pub(super) enum Size {
 /// Session slot keys inside a device (home row; `f` stays "files", `j k` stay motion as
 /// in files and every list; `h l` stay fold keys as in files). Sessions past the fourth
 /// are reached by the arrows, `Tab` or `/`.
-pub(super) const SLOTS: [char; 4] = ['a', 's', 'd', 'g'];
+pub const SLOTS: [char; 4] = ['a', 's', 'd', 'g'];
 
 /// Render context: fixture, capabilities and the tap targets recorded while drawing.
 pub(super) struct Cx<'a> {
@@ -76,6 +124,8 @@ pub(super) struct Cx<'a> {
     pub c: &'a LabCaps,
     pub area: Rect,
     hits: RefCell<Vec<LabTarget>>,
+    /// The hub's device order as drawn (see `Drawn`).
+    pub order: RefCell<Vec<String>>,
 }
 
 impl<'a> Cx<'a> {
@@ -85,6 +135,7 @@ impl<'a> Cx<'a> {
             c,
             area,
             hits: RefCell::new(Vec::new()),
+            order: RefCell::new(Vec::new()),
         }
     }
 

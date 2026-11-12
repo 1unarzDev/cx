@@ -27,7 +27,9 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         .take(usize::from(cols))
         .map(|x| tiles::tail_rows(x) as u16 + 2)
         .max()
-        .unwrap_or(th_min);
+        .unwrap_or(th_min)
+        // (A session with no screen yet still gets a whole tile.)
+        .max(th_min);
     let th_max = match sz {
         Size::L => 12,
         Size::M => 9,
@@ -56,6 +58,7 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // (A blank row either side: the map never touches the legend or the vitals strip.)
     let band = Rect::new(r.x, r.y + 2, r.width, band_h.saturating_sub(2));
     let ids = orbit::order(cx, band);
+    cx.order.borrow_mut().clone_from(&ids);
     let sel_id = if on_sess && !list.is_empty() {
         list[cx.c.selected % list.len()].device.clone()
     } else {
@@ -79,7 +82,10 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let mut y = band.bottom() + 1 + band_th - grid_h;
     // The map sits centred in the rows above the vitals strip.
     let above = ((y - r.y - 1).saturating_sub(gh) / 2).max(1);
-    let band = Rect::new(band.x, r.y + 1 + above, band.width, gh);
+    // (The map draws in a band of at least three rows; a one-row drawing sits in its
+    // middle row.)
+    let pad = u16::from(gh == 1);
+    let band = Rect::new(band.x, r.y + 1 + above - pad, band.width, gh.max(3));
     orbit::draw(
         cx,
         buf,
@@ -229,6 +235,8 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
     x += cx.put(buf, x, y, right.saturating_sub(x), &via, vst) + 2;
     if cx.size() >= Size::M {
         let who = format!("{} {} {}@{}", d.os, cx.g("·", "-"), d.account, d.host);
+        // (No os word when it is not known.)
+        let who = who.trim_start_matches([' ', '·', '-']).to_string();
         x += cx.put(
             buf,
             x,
@@ -334,7 +342,12 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
             y,
             stop.saturating_sub(x),
             &d.evidence,
-            cx.ink(Tok::Err, 0.85).patch(bg),
+            // Evidence without live figures: red only when the device is down.
+            if up {
+                lab
+            } else {
+                cx.ink(Tok::Err, 0.85).patch(bg)
+            },
         ) + 2;
     }
     for m in &d.meshes {
@@ -474,6 +487,7 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let lw = cx.label(buf, r.x + 1, r.y, 16, "NETWORK", focus != Pane::Sessions);
     legend(cx, buf, r.x + 2 + lw + 1, r.y, right);
     let ids: Vec<&str> = rows.iter().map(|t| t.d.id.as_str()).collect();
+    *cx.order.borrow_mut() = ids.iter().map(|s| s.to_string()).collect();
     let sel_id = ids[cx.c.selected % ids.len().max(1)];
     let mut y = r.y + 2;
     for t in rows.iter().take(usize::from(shown)) {

@@ -818,13 +818,16 @@ fn link_tail(cx: &Cx, e: &LabEdge, loss: bool) -> String {
             format!("{}  loss {:.0}%", super::ms_text(ms), e.loss * 100.0)
         }
         (true, false, Some(ms)) => super::ms_text(ms),
+        (true, false, None) => "not measured".into(),
         _ => "no reply".into(),
     }
 }
 
 fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     let (g, gst) = cx.status(d.status);
+    // (No os word when it is not known.)
     let info = format!("{} · {}@{} · {}", d.os, d.account, d.host, kind_word(d));
+    let info = info.trim_start_matches(" · ").to_string();
     // The identity block takes the width it needs; metrics get the rest.
     let left_w = if cx.size() >= Size::M {
         (super::width(&info, cx.uni()) + 1).clamp(32, r.width * 11 / 20)
@@ -909,7 +912,8 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     }
     // Metrics block.
     let Some(m) = d.metrics.as_ref().filter(|_| cx.up(d)) else {
-        if r.height > 3 {
+        // No live figures: a down device says why; an up one says how it is known.
+        if r.height > 3 && !cx.up(d) {
             cx.put(
                 buf,
                 r.x,
@@ -918,6 +922,8 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
                 &format!("{} {}", cx.g("✕", "x"), d.evidence),
                 cx.st(Tok::Err),
             );
+        } else if r.height > 3 && d.id == cx.s.viewer {
+            cx.put(buf, r.x, r.y + 3, r.width, &d.evidence, cx.st(Tok::Muted));
         }
         return;
     };
@@ -1252,13 +1258,18 @@ fn peek(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession) {
     mx += 2;
     mx += cx.put(buf, mx, main.y, 8, p, cx.st(ptok));
     mx += 2;
-    let meta = format!(
-        "{} · up {} · {} client{}",
-        x.cwd,
-        fmt::age(x.age_secs),
-        x.clients,
-        if x.clients == 1 { "" } else { "s" }
-    );
+    // (Uptime and clients only when known: an unobserved session says nothing.)
+    let meta = if x.age_secs == 0 && x.clients == 0 {
+        x.cwd.clone()
+    } else {
+        format!(
+            "{} · up {} · {} client{}",
+            x.cwd,
+            fmt::age(x.age_secs),
+            x.clients,
+            if x.clients == 1 { "" } else { "s" }
+        )
+    };
     // Phones keep the identity (address, state, provider); the detail would truncate.
     let meta = if sz == Size::Xs { String::new() } else { meta };
     let spark_w = if sz >= Size::S { 12 } else { 0 };
@@ -1303,6 +1314,8 @@ fn peek(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession) {
         cx.fill(buf, scr, cx.rgb_bg(base));
     }
     let inner = inset(scr, 2, 1);
+    // The screen itself: the app scrolls it and types into it on a tap.
+    cx.hit(inner, "peek-screen");
     // Bottom-anchored like a live terminal: a short pane shows the newest lines.
     let skip = usize::from(used.saturating_sub(inner.height));
     for (i, l) in lines
@@ -1533,7 +1546,7 @@ fn attached(cx: &Cx, buf: &mut Buffer, x: &LabSession) {
     ) + 2;
     bx += cx.put(buf, bx, y, sw, &state, sst.patch(bar));
     // Wide screens keep one live fact on the bar: how long it has run, who else is in.
-    if a.width >= 120 {
+    if a.width >= 120 && (x.age_secs > 0 || x.clients > 0) {
         let fact = format!(
             "up {} {} {} client{}",
             fmt::age(x.age_secs),
@@ -1742,7 +1755,8 @@ fn files(cx: &Cx, buf: &mut Buffer, r: Rect) {
                     &fit(&d.name, 18, cx.uni()),
                     cx.ink(Tok::Fg, 0.85),
                 );
-                let ms: f32 = route.iter().filter_map(|e| e.rtt_ms).sum();
+                // (No figure when a hop's rtt is not measured.)
+                let ms: Option<f32> = route.iter().map(|e| e.rtt_ms).sum();
                 let via = if route.len() > 1 {
                     let hop = if route[0].from == f.device {
                         &route[0].to
@@ -1759,7 +1773,7 @@ fn files(cx: &Cx, buf: &mut Buffer, r: Rect) {
                     buf,
                     list.right(),
                     y,
-                    &format!("{via}{}", super::ms_text(ms)),
+                    &format!("{via}{}", ms.map(super::ms_text).unwrap_or_default()),
                     cx.st(Tok::Muted),
                 );
                 cx.hit(
@@ -1839,6 +1853,8 @@ fn file_preview(cx: &Cx, buf: &mut Buffer, r: Rect, full: bool) {
         r.width,
         r.height.saturating_sub(1).min(lines.len() as u16 + 1),
     );
+    // The preview surface: a tap target, and where the app draws its real preview.
+    cx.hit(body, "preview-body");
     if cx.has_surface() {
         cx.fill(buf, body, cx.surface());
     }
@@ -2040,7 +2056,7 @@ fn panel(cx: &Cx, buf: &mut Buffer, r: Rect) {
     }
 }
 
-fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
+pub(super) fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
     let ql = q.to_lowercase();
     // (group, description spans, the keys from the hub, action, the row's device).
     type Row<'r> = (
@@ -2122,6 +2138,29 @@ fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
             ));
         }
     }
+    // Rows the app supplies (ranked by it) replace the fixture's.
+    if let Some(given) = &cx.s.palette {
+        rows = given
+            .iter()
+            .map(|p| {
+                let mut spans = vec![
+                    ("  ".into(), Style::default()),
+                    (p.label.clone(), cx.ink(Tok::Fg, 0.95)),
+                ];
+                if !p.detail.is_empty() {
+                    spans.push((format!("  {}", p.detail), cx.st(Tok::Muted)));
+                }
+                let dev = p.device.as_deref().and_then(|id| cx.s.device(id));
+                (
+                    p.group.clone(),
+                    spans,
+                    p.keys.clone(),
+                    p.action.clone(),
+                    dev,
+                )
+            })
+            .collect();
+    }
     // Sized to its results (query, a gap, rows and group labels, the key hint), at most
     // 60 % of the screen, giving way up to 75 % rather than cutting results.
     let groups = {
@@ -2180,12 +2219,22 @@ fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
         "/ ",
         cx.st(Tok::Accent).add_modifier(Modifier::BOLD),
     );
+    // A query longer than the field shows its end, where the typing is.
+    let room = usize::from(inner.width.saturating_sub(4));
+    let n = q.chars().count();
+    let shown: String = if n > room && room > 1 {
+        std::iter::once('…')
+            .chain(q.chars().skip(n + 1 - room))
+            .collect()
+    } else {
+        q.to_string()
+    };
     x += cx.put(
         buf,
         x,
         y,
         inner.width.saturating_sub(4),
-        q,
+        &shown,
         cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD),
     );
     cx.put(buf, x, y, 1, cx.g("▏", "_"), cx.st(Tok::Accent));
@@ -2256,7 +2305,7 @@ fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
         }
         // The keys are keycaps, as everywhere (the row's device letter in its hue), so
         // the palette teaches the shortcuts by sight.
-        let caps: Vec<&str> = key.split(' ').collect();
+        let caps: Vec<&str> = key.split(' ').filter(|k| !k.is_empty()).collect();
         let kw = caps.len() as u16 * 3;
         let mut x = inner.x + 1;
         // The description is cut (with an ellipsis) before the key column.
@@ -2297,7 +2346,7 @@ fn secrets(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let mut top = r.y + 2;
     cx.label(buf, x0, r.y, w, "SECRETS", true);
     let note = if w >= 60 {
-        "stored in your keyring · shown only on reveal"
+        "keyring or 0600 file · shown only on reveal"
     } else {
         "shown only on reveal"
     };
@@ -2625,7 +2674,7 @@ fn onboarding(cx: &Cx, buf: &mut Buffer, r: Rect) {
         (
             "2",
             "Paste it here",
-            "stored in your keyring; cx never prints it",
+            "kept in your keyring or a 0600 file; cx never prints it",
         ),
         (
             "3",
@@ -3074,12 +3123,19 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
     x += cx.put(buf, x, y, 20, &b.name, bold);
     let (kind, tok) = edge_kind(cx, e);
     if cx.size() >= Size::S {
-        let rtt = e
-            .rtt_ms
-            .map(super::ms_text)
-            .unwrap_or_else(|| "down".into());
+        // (A link nobody measured says so; loss only from samples.)
+        let rtt = match (e.rtt_ms, e.up) {
+            (Some(v), _) => super::ms_text(v),
+            (None, true) => "rtt not measured".into(),
+            (None, false) => "down".into(),
+        };
         let sep = cx.g(" · ", " - ");
-        let t = format!("{kind}{sep}{rtt}{sep}loss {:.0}%", e.loss * 100.0);
+        let loss = if e.rtt_hist.is_empty() {
+            String::new()
+        } else {
+            format!("{sep}loss {:.0}%", e.loss * 100.0)
+        };
+        let t = format!("{kind}{sep}{rtt}{loss}");
         let tw = super::width(&t, cx.uni());
         if x + tw + 4 < inner.right() {
             cx.put_r(buf, inner.right(), y, &t, cx.ink(tok, 0.95));
@@ -3245,7 +3301,11 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
             cx.ink(Tok::Muted, 0.6),
         );
         let v: Vec<f32> = e.rtt_hist.iter().flatten().copied().collect();
-        let mut t = format!("{} samples", e.rtt_hist.len());
+        let mut t = if e.rtt_hist.is_empty() {
+            "no samples yet".to_string()
+        } else {
+            format!("{} samples", e.rtt_hist.len())
+        };
         if !v.is_empty() {
             let ms = super::ms_text;
             let lo = v.iter().copied().fold(f32::MAX, f32::min);

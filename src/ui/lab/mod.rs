@@ -74,3 +74,32 @@ mod tests {
         }
     }
 }
+#[cfg(test)]
+mod map_tests {
+    use super::*;
+    /// A network whose drawing is one row (the viewer and its direct peers) still
+    /// draws: the map's band was one row, under the three it needs.
+    #[test]
+    fn a_one_row_network_still_draws_its_map() {
+        let mut s = state::small();
+        s.edges
+            .retain(|e| e.from == "tranquility" && e.to == "innovation");
+        let buf = render_frame(
+            &mission::Mission,
+            &LabView::Hub,
+            &s,
+            &LabCaps::default(),
+            120,
+            40,
+        );
+        let row = (2..20)
+            .map(|y| {
+                (0..120)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .find(|r| r.contains("tranquility"));
+        let row = row.expect("map row");
+        assert!(row.contains("innovation") && row.contains("nas"), "{row}");
+    }
+}

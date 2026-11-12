@@ -730,13 +730,17 @@ pub(super) struct DocCache {
     width: u16,
     lines: Vec<Line<'static>>,
     /// Tagged markdown layout for link hit-testing (empty when the preview has no links).
-    hit_lines: Vec<Line<'static>>,
+    /// The link-tagged layout, built on the first click (not on paint: it is a second
+    /// full layout).
+    hit_lines: Option<Vec<Line<'static>>>,
     /// `starts[i]` is the first visual row of line `i`; `starts[lines.len()]` is the total.
     starts: Vec<usize>,
     search: Option<(String, SearchHits)>,
     links: bool,
     /// (scroll, area) of the last link hit map, so unchanged frames skip the rebuild.
     link_frame: std::cell::Cell<Option<(u32, Rect)>>,
+    /// The frame `Browser::preview_link_cells` was computed for.
+    cells_frame: std::cell::Cell<Option<(u32, Rect)>>,
 }
 impl DocCache {
     fn build(browser: &Browser, key: DocKey, text: &str) -> Self {
@@ -744,20 +748,16 @@ impl DocCache {
         let width = layout_width(browser);
         let links = markdown && !markdown_preview_links(text).is_empty();
         let lines = uncached_display_lines(browser, text);
-        let hit_lines = if links {
-            markdown_layout_lines(browser, text, true)
-        } else {
-            Vec::new()
-        };
         let mut doc = Self {
             key,
             width,
             lines,
-            hit_lines,
+            hit_lines: None,
             starts: Vec::new(),
             search: None,
             links,
             link_frame: std::cell::Cell::new(None),
+            cells_frame: std::cell::Cell::new(None),
         };
         doc.measure();
         doc
@@ -856,8 +856,54 @@ pub(super) fn with_doc<R>(browser: &Browser, f: impl FnOnce(&mut DocCache) -> R)
     }
     slot.as_mut().map(f)
 }
+/// The link cells (x, y, tag) of the preview frame last drawn, from the link-tagged
+/// layout, which is built on the first call for a document (a click), not on paint.
+pub(super) fn link_cells(browser: &Browser) -> Vec<(u16, u16, Color)> {
+    with_doc(browser, |doc| {
+        let Some((scroll, inner)) = doc.link_frame.get() else {
+            return Vec::new();
+        };
+        let stale = doc.cells_frame.get() != Some((scroll, inner))
+            || browser.preview_link_cells.borrow().is_empty();
+        if stale {
+            doc.cells_frame.set(Some((scroll, inner)));
+            let text = browser.preview.as_deref().unwrap_or("");
+            let (first, last, skip) = doc.window(scroll as usize, usize::from(inner.height));
+            let hit = doc
+                .hit_lines
+                .get_or_insert_with(|| markdown_layout_lines(browser, text, true));
+            // Hit-test the unhighlighted presentation. Search underlines are not links.
+            let mut buffer = ratatui::buffer::Buffer::empty(inner);
+            let end = last.min(hit.len());
+            ratatui::widgets::Widget::render(
+                Paragraph::new(hit[first.min(end)..end].to_vec())
+                    .wrap(Wrap { trim: false })
+                    .scroll((skip.min(u16::MAX as usize) as u16, 0)),
+                inner,
+                &mut buffer,
+            );
+            let mut cells = browser.preview_link_cells.borrow_mut();
+            cells.clear();
+            for y in inner.y..inner.bottom() {
+                for x in inner.x..inner.right() {
+                    let cell = &buffer[(x, y)];
+                    if cell.modifier.contains(Modifier::UNDERLINED) {
+                        cells.push((x, y, cell.bg));
+                    }
+                }
+            }
+        }
+        browser.preview_link_cells.borrow().clone()
+    })
+    .unwrap_or_default()
+}
 /// Search matches of the current preview for `query` (cached per layout and query).
 pub(super) fn doc_matches(browser: &Browser, query: &str) -> Vec<(usize, Vec<usize>)> {
+    // No query matches nothing: never lay the document out for it (a reply would lay it
+    // out at the last viewport's width, and the first frame again at its own).
+    if query.is_empty() {
+        return Vec::new();
+    }
     with_doc(browser, |doc| doc.matches(query).as_ref().clone()).unwrap_or_default()
 }
 /// Largest scroll offset of the current preview at the last rendered viewport.
@@ -1001,34 +1047,8 @@ pub(super) fn render_preview_body(
             reveal: std::cell::Cell::new(false),
         };
         highlight_preview_matches(&mut lines, &find);
-        if doc.links {
-            let frame_key = Some((scroll, inner));
-            if doc.link_frame.get() != frame_key || browser.preview_link_cells.borrow().is_empty() {
-                doc.link_frame.set(frame_key);
-                // Hit-test the unhighlighted presentation. Search underlines are not links.
-                let mut buffer = ratatui::buffer::Buffer::empty(inner);
-                let hit_end = last.min(doc.hit_lines.len());
-                ratatui::widgets::Widget::render(
-                    Paragraph::new(doc.hit_lines[first.min(hit_end)..hit_end].to_vec())
-                        .wrap(Wrap { trim: false })
-                        .scroll((skip.min(u16::MAX as usize) as u16, 0)),
-                    inner,
-                    &mut buffer,
-                );
-                let mut cells = browser.preview_link_cells.borrow_mut();
-                cells.clear();
-                for y in inner.y..inner.bottom() {
-                    for x in inner.x..inner.right() {
-                        let cell = &buffer[(x, y)];
-                        if cell.modifier.contains(Modifier::UNDERLINED) {
-                            cells.push((x, y, cell.bg));
-                        }
-                    }
-                }
-            }
-        } else {
-            browser.preview_link_cells.borrow_mut().clear();
-        }
+        // Link cells are laid out when a click needs them (link_cells).
+        doc.link_frame.set(doc.links.then_some((scroll, inner)));
         (lines, skip, scroll, max)
     });
     let Some((lines, skip, _, _)) = rendered else {

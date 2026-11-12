@@ -598,8 +598,7 @@ impl App {
         if self.markdown_preview_active() {
             if matches!(mouse.kind, MouseEventKind::Down(event::MouseButton::Left)) {
                 let tag = self.browser.as_ref().and_then(|b| {
-                    b.preview_link_cells
-                        .borrow()
+                    link_cells(b)
                         .iter()
                         .find(|(x, y, _)| *x == mouse.column && *y == mouse.row)
                         .map(|(_, _, tag)| *tag)

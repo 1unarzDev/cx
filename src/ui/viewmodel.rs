@@ -436,11 +436,12 @@ fn files(app: &App) -> LabFiles {
 /// draws the real body over it): not a copy of a multi-megabyte text each frame.
 fn preview_stub(text: &str) -> String {
     let head: String = text.lines().take(120).collect::<Vec<_>>().join("\n");
-    let rest = text.lines().count().saturating_sub(120);
+    // (Counting bytes, not `lines()`: a few-megabyte preview is counted every frame.)
+    let count = text.bytes().filter(|&b| b == b'\n').count() + usize::from(!text.ends_with('\n'));
+    let rest = count.saturating_sub(120);
     head + &"\n".repeat(rest)
 }
 
-/// Secret names and metadata only (never values), as `cx secrets list` shows them.
 /// The hub's invite once its listener is up: code, one-liner and a QR code of the one-liner.
 fn invite(app: &App) -> Option<LabInvite> {
     let (inv, _) = app.invite.as_ref()?.shown.as_ref()?;
@@ -463,6 +464,7 @@ fn invite(app: &App) -> Option<LabInvite> {
     })
 }
 
+/// Secret names and metadata only (never values), as `cx secrets list` shows them.
 fn secrets(app: &App) -> Vec<LabSecret> {
     let now = transport::now();
     let mut out: Vec<LabSecret> = app

@@ -166,12 +166,7 @@ fn relative_markdown_click_uses_document_host_and_restores_parent() {
     let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
     t.draw(|f| render(f, &a)).unwrap();
     let target = "../two%20file.md#section";
-    let point = *a
-        .browser
-        .as_ref()
-        .unwrap()
-        .preview_link_cells
-        .borrow()
+    let point = *link_cells(a.browser.as_ref().unwrap())
         .iter()
         .find(|(_, _, tag)| *tag == markdown_link_tag(target))
         .unwrap();
@@ -240,12 +235,7 @@ fn relative_markdown_click_uses_document_host_and_restores_parent() {
         .contains("Original document"));
     assert_eq!(a.browser.as_ref().unwrap().path, "/files");
     t.draw(|f| render(f, &a)).unwrap();
-    let point = *a
-        .browser
-        .as_ref()
-        .unwrap()
-        .preview_link_cells
-        .borrow()
+    let point = *link_cells(a.browser.as_ref().unwrap())
         .iter()
         .find(|(_, _, tag)| *tag == markdown_link_tag("one.md"))
         .unwrap();
@@ -300,8 +290,8 @@ fn markdown_links_math_and_click_picker_are_safe() {
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
     terminal.draw(|f| render(f, &a)).unwrap();
     let b = a.browser.as_ref().unwrap();
-    assert!(!b.preview_link_cells.borrow().is_empty());
-    let position = b.preview_link_cells.borrow()[0];
+    assert!(!link_cells(b).is_empty());
+    let position = link_cells(b)[0];
     assert!(a.preview_mouse(
         MouseEvent {
             kind: MouseEventKind::Down(event::MouseButton::Left),

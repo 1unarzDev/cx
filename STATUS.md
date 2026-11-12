@@ -3,8 +3,23 @@
 ## v0.2.1 release candidate (branch `revamp/base`; not tagged, pushed or deployed)
 - Integrated the strict v0.2.0 review (159 confirmed issues) from fix/021-{tests,transport,mesh,sessions,files,views}, then fixed every recheck still broken: S8 (watch ids in replies and frames), V2 (`g` is a late device letter), F2 (markdown list rows skip the wrap pass), F15 (the bench, not cx: its screen readers rebuilt pyte's display per line), T3 (duplicate `portable` job; tests/workflow_keys.py), T9 (container chooser `[n]`).
 - Decisions applied: inline typing kept and escapable (Ctrl+\, Esc Esc, any tap outside the screen; concept-mission section 6); startup measured with `CX_THEME` set by the bench (OSC 11 probe unanswered in the bench PTY); palette Send Ctrl+\ works from the hub (selects the last session first if its screen is not live).
-- Gates (2026-11-12): see the v0.2.1 report; A/B vs v0.2.0 below.
-@@AB@@
+- Gates (2026-11-12, at 76b44f5 and after): fmt; clippy with no new warning kinds vs 0e4086d (117 warnings, down from 164); `cargo test --locked` twice, 1010 passed / 0 failed / 3 ignored each; release build with no warnings; tests/run_regressions.sh --no-rust --with-ssh 64/64; session_watch_live against v0.1.95 (control-kill, 100 cycles, old helper, old viewer) and against v0.2.0 in both directions (echo works; both sides watch); ubuntu:24.04 reproduction of release.yml checks (Node 22.23.5) all steps green, regressions 70/70 with SSH and docker; static musl x86_64 15.97 MB, aarch64 15.47 MB; capture_matrix dark (52, only the known keys-screen false positive) and ASCII (52, PASS); orphan check clean.
+- A/B vs v0.2.0 (0e4086d release build), same harness for both (it now sets CX_THEME, and its screen readers no longer add ~40 ms per check, so first-rows numbers are not comparable with the v0.2.0 table below); medians, perf_harness 3 interleaved runs, files_bench 3 x 2 runs:
+
+  | metric | v0.2.0 | v0.2.1 |
+  |---|---|---|
+  | select → screen (peek), local / SSH | 6.5 / 7.3 ms | 6.6 / 7.4 ms |
+  | keystroke echo, local / SSH | 1.8 / 2.0 ms | 1.6 / 2.0 ms |
+  | Enter → attached, local / SSH | 12.9 / 31.3 ms | 12.6 / 29.5 ms |
+  | detach → cx, local / SSH | 22.2 / 21.3 ms | 21.1 / 21.4 ms |
+  | first rows 1k / 20k / 100k (cold) | 3.7 / 3.6 / 3.7 ms | 3.6 / 3.7 / 3.7 ms |
+  | 100k sibling folder | 47.7 ms | 45.4 ms |
+  | preview first paint src 5 MB / md 2 MB | 4.3 / 7.0 ms | 5.0 / 4.1 ms |
+  | G on md 2 MB right after opening | 101 ms | 5.2 ms |
+  | markdown open (perf_harness) | 46.9 ms | 23.3 ms |
+  | preview scroll j, src 5 MB / md 2 MB | 4.5 / 3.5 ms | 4.5 / 3.5 ms |
+  | viewer start → Files ready / first rows 1k | 21.4 / 16.3 ms | 21.9 / 16.3 ms |
+- Small preview first paints (src_2k, src_5m, unicode) are bimodal at about 4 and 7 ms in both builds; an 8-run re-check per side put src_5m 4.7 → 4.0, src_2k 4.4 → 5.7, unicode 4.0 → 4.9, txt_200k end 5.5 → 5.4, which is the mix of those two modes rather than a shift.
 - Deferred (decided, not bugs to chase now):
   - Old v0.2.0 `attach-ticket-<hex>` files (0 bytes) in the state dir are not swept.
   - The hub view-model carries jump routes but no mesh membership, LAN evidence, link rtt or device metrics; production draws links as direct ssh or a jump, the mesh render paths run only in the lab.

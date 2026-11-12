@@ -6561,6 +6561,36 @@ fn folder_prefetch_caches_valid_replies_and_stays_bounded() {
     assert_eq!(listed(&rx), vec![("/files/dir5".into(), a.generation)]);
 }
 
+/// Files bench (100k sibling folder, 43 ms -> 89 ms): Enter on a folder whose settled
+/// prefetch is still in flight waits for that reply instead of queueing a second List
+/// behind it; a prefetch that comes back empty-handed (dropped, failed) reads again.
+#[test]
+fn entering_a_folder_being_prefetched_uses_the_prefetch_reply() {
+    let (mut a, rx) = folder_app(2);
+    draw_text(&a);
+    settle_files(&mut a);
+    let (path, generation) = listed(&rx).pop().unwrap();
+    assert_eq!(path, "/files/dir0");
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(a.browser.as_ref().unwrap().path, path);
+    assert!(listed(&rx).is_empty(), "no second read of the folder");
+    let entries = serde_json::json!({"entries":[{"name":"inner.txt","path":"/files/dir0/inner.txt","kind":"file","size":1}]});
+    list_reply(&mut a, &path, generation, Ok(entries));
+    let b = a.browser.as_ref().unwrap();
+    assert!(
+        !b.loading && b.entries.len() == 1,
+        "the prefetch is the listing"
+    );
+    // Dropped as superseded (`Ok(Null)`): the folder is read again.
+    let (mut a, rx) = folder_app(2);
+    draw_text(&a);
+    settle_files(&mut a);
+    let (path, generation) = listed(&rx).pop().unwrap();
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    list_reply(&mut a, &path, generation, Ok(Value::Null));
+    assert_eq!(listed(&rx), vec![(path, a.generation)]);
+}
+
 /// Perf 4: a code preview paints as plain text first; the worker's later `highlight`
 /// reply styles it without counting as a request, and never styles other text.
 #[test]

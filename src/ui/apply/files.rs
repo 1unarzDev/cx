@@ -431,7 +431,17 @@ impl App {
                 let path = path.clone();
                 b.prefetch.remove(&path);
                 if b.path == path {
-                    return false;
+                    // Opened while its prefetch was in flight: the prefetch is the listing
+                    // (read again if it failed or was dropped as superseded).
+                    match &reply.result {
+                        Ok(value) if !value.is_null() && b.loading => {
+                            let value = value.clone();
+                            self.apply_listing(reply.device, &value, 0);
+                        }
+                        _ if b.loading => self.refresh_browser(),
+                        _ => {}
+                    }
+                    return true;
                 }
                 if reply.generation != self.generation {
                     // Outdated or cancelled (`Ok(Null)` from a superseded read): a peek

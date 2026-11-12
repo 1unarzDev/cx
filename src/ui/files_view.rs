@@ -345,6 +345,11 @@ impl App {
             .is_some_and(|b| b.show_hidden);
         self.finish_visual();
         self.generation += 1;
+        // The settled selection already asked for this folder: its reply is the listing.
+        let prefetched = self
+            .browser
+            .as_ref()
+            .is_some_and(|b| b.device == device && scope.is_none() && b.prefetch.contains(&path));
         if let Some(mut old) = self.browser.take() {
             old.preview = None;
             old.preview_rich = None;
@@ -383,7 +388,13 @@ impl App {
         }
         self.view = View::Files;
         self.focus = Focus::Workspace;
-        self.refresh_browser();
+        match self.browser.as_mut().filter(|_| prefetched) {
+            Some(b) => {
+                b.loading = true;
+                b.prefetch.insert(b.path.clone());
+            }
+            None => self.refresh_browser(),
+        }
         self.check_providers(device);
     }
     pub(super) fn select_file_device(&mut self) {

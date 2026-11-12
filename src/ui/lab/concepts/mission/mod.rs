@@ -123,13 +123,13 @@ impl<'a> Cx<'a> {
     pub fn g(&self, u: &'static str, a: &'static str) -> &'static str {
         self.c.glyph(u, a)
     }
-    /// The Enter key's label: `⏎`, or `ret` in ASCII and on phones (whose default fonts
-    /// lack the symbol).
+    /// The Enter key's label, a word in every tier (`⏎` drew as an odd icon in many
+    /// fonts): `enter`, `ret` on phones where chips are short.
     pub fn ret(&self) -> &'static str {
-        if self.uni() && !self.touch() {
-            "⏎"
-        } else {
+        if self.touch() {
             "ret"
+        } else {
+            "enter"
         }
     }
     pub fn st(&self, t: Tok) -> Style {
@@ -512,8 +512,8 @@ impl<'a> Cx<'a> {
         match s {
             DeviceStatus::Local => (self.g("◉", "@"), self.st(Tok::Accent)),
             DeviceStatus::Online => (self.g("●", "o"), self.st(Tok::Ok)),
-            DeviceStatus::Stale => (self.g("○", "%"), self.st(Tok::Warn)),
-            DeviceStatus::Down => (self.g("✕", "x"), self.st(Tok::Err)),
+            DeviceStatus::Stale => (self.g("○", "~"), self.st(Tok::Warn)),
+            DeviceStatus::Down => (self.g("✕", "X"), self.st(Tok::Err)),
             DeviceStatus::Unknown => (self.g("◌", "?"), self.st(Tok::Muted)),
         }
     }

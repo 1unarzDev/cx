@@ -446,9 +446,8 @@ fn footer(cx: &Cx, buf: &mut Buffer, r: Rect, items: Keys) {
             // fonts lack ⏎ ⌫); `␣` is always `spc` (it renders as a bare underscore).
             let k = match k {
                 "␣" => "spc",
-                "⏎" if !cx.uni() || cx.touch() => "ret",
-                "⌫" if cx.touch() => "bksp",
-                "⌫" if !cx.uni() => "bksp",
+                "⏎" => cx.ret(),
+                "⌫" => "bksp",
                 "↑↓" if !cx.uni() => "up/dn",
                 other => other,
             };
@@ -912,7 +911,7 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
                 r.x,
                 r.y + 3,
                 r.width,
-                &format!("{} {}", cx.g("✕", "x"), d.evidence),
+                &format!("{} {}", cx.g("✕", "X"), d.evidence),
                 cx.st(Tok::Err),
             );
         }
@@ -1175,7 +1174,7 @@ fn stop_confirm(cx: &Cx, buf: &mut Buffer, tr: Rect, x: &LabSession) {
     let row = Rect::new(tr.x + 1, y, tr.width.saturating_sub(1), 1);
     let bg = cx.wash(Tok::Err, 0.22);
     cx.fill(buf, row, bg);
-    let del = if cx.touch() { "bksp" } else { cx.g("⌫", "bksp") };
+    let del = "bksp";
     let keys = format!(" {del} ");
     let tail = "again to stop, any key keeps it";
     let kw = super::width(&keys, cx.uni());
@@ -2891,44 +2890,29 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
             None => return,
         },
     };
-    // The sheet is as tall as its rows; map (a blank row either side) and sheet sit
-    // together as one block, centred in the rows above the footer.
+    // The sheet is as tall as its rows and sits on the footer (a blank row between);
+    // the map has the rows above it, centred in them, a blank row under the crumb.
     let sheet_h: u16 = if cx.size() == Size::Xs { 9 } else { 11 }.min(r.height);
-    let bottom = r.bottom().saturating_sub(1);
-    let room = bottom.saturating_sub(r.y + sheet_h);
-    // Phones draw no map (it only crowded at that size): the link alone, on its row.
-    let band_h = if cx.touch() {
-        room.min(3)
-    } else {
-        (orbit::drawn_h(cx, Rect::new(r.x, r.y, r.width, room)) + 2).min(room)
-    };
-    let top = r.y + (room - band_h) / 2;
-    let band = Rect::new(r.x, top, r.width, band_h);
-    if band.height >= 5 {
-        let inner = Rect::new(r.x, top + 1, r.width, band_h - 2);
-        orbit::draw(cx, buf, inner, &cx.s.viewer, 3, orbit::Sel::Edge(&e.id));
+    let sheet_y = r.bottom().saturating_sub(sheet_h + 1).max(r.y);
+    let band = Rect::new(r.x, r.y + 1, r.width, sheet_y.saturating_sub(r.y + 2));
+    if !cx.touch() && band.height >= 3 {
+        orbit::draw(cx, buf, band, &cx.s.viewer, 3, orbit::Sel::Edge(&e.id));
     } else if let (Some(a), Some(b)) = (cx.s.device(&e.from), cx.s.device(&e.to)) {
-        // No map: the link itself, between its two keycaps.
-        let tok = edge_kind(cx, e).1;
+        // Phones draw no map (it only crowded at that size): the link alone, its two
+        // keycaps around the policy, in the accent like the map's edited link.
         let mid = format!(" {} ", orbit::policy(cx, e, true, false));
         let line = cx.g("───", "---");
         let w = 6 + 2 * super::width(line, cx.uni()) + super::width(&mid, cx.uni());
         let mut x = r.x + r.width.saturating_sub(w) / 2;
         let y = band.y + band.height.max(1) / 2;
+        let ink = cx.st(Tok::Accent);
         x += cx.dchip(buf, x, y, a, false);
-        x += cx.put(buf, x, y, 3, line, cx.ink(tok, 1.0));
-        x += cx.put(
-            buf,
-            x,
-            y,
-            20,
-            &mid,
-            cx.ink(tok, 1.0).add_modifier(Modifier::BOLD),
-        );
-        x += cx.put(buf, x, y, 3, line, cx.ink(tok, 1.0));
+        x += cx.put(buf, x, y, 3, line, ink);
+        x += cx.put(buf, x, y, 20, &mid, ink.add_modifier(Modifier::BOLD));
+        x += cx.put(buf, x, y, 3, line, ink);
         cx.dchip(buf, x, y, b, false);
     }
-    let sheet = Rect::new(r.x, band.bottom(), r.width, sheet_h);
+    let sheet = Rect::new(r.x, sheet_y, r.width, sheet_h);
     panel(cx, buf, sheet);
     let inner = inset(sheet, 2, 1);
     let (Some(a), Some(b)) = (cx.s.device(&e.from), cx.s.device(&e.to)) else {
@@ -3158,54 +3142,67 @@ fn wrap(s: &str, w: usize) -> Vec<String> {
 
 // ----------------------------------------------------------------------------- help
 
-/// Help for the view it was opened from (the hub here): the keys that matter there,
-/// grouped by intent, the device-letter grammar said once, the line grammar, and one
-/// row of keys that work everywhere. A calm list, centred, at every size.
+/// Help for the view it was opened from (`CX_LAB_FOCUS=device|edge|files`, else the
+/// hub): the keys that matter there, grouped by intent, one row of keys that work
+/// everywhere and, where links are drawn, the line grammar. On the hub the two steps
+/// are said apart: the device row shows real names with their letter underlined, as on
+/// the map, and the `then` keys come after it, so `c` the device and `c` claude never
+/// read as one key. A calm list, a third of the way down, at every size.
 fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
-    // Words where the symbol may be missing (ASCII, and phone fonts).
     let key = |k: &'static str| -> &'static str {
         match k {
-            "⏎" if !cx.uni() || cx.touch() => "ret",
-            "⌫" if !cx.uni() || cx.touch() => "bksp",
+            "⏎" => cx.ret(),
+            "⌫" => "bksp",
             o => o,
         }
     };
     let wide = r.width >= 60;
-    // One table: intent, keys (plain bold, a space between keys), what they do. The
-    // device letters are the map's own: accent and underlined.
-    // (Narrow, the letters fit the widest key, `a s d g`.)
-    let n = if wide { 4 } else if cx.uni() { 3 } else { 2 };
-    let devs: Vec<&LabDevice> = cx.s.devices.iter().take(n).collect();
-    let more = cx.s.devices.len() - devs.len();
-    let letters = devs.iter().map(|d| d.hotkey.to_string()).collect::<Vec<_>>().join(" ")
-        + &match (more, cx.uni()) {
-            (0, _) => String::new(),
-            (_, true) => " …".into(),
-            (n, false) => format!(" +{n}"),
-        };
-    let open = if wide {
-        "open it by its underlined letter, then"
-    } else {
-        "open it, then"
+    let ctx = match cx.c.focus {
+        Some(Pane::Custom("device")) => "IN A DEVICE",
+        Some(Pane::Custom("edge")) => "ON A LINK",
+        Some(Pane::Files) => "IN FILES",
+        _ => "ON THE HUB",
     };
-    let groups: [(&str, Vec<(String, &str)>); 3] = [
-        ("move", vec![
-            ("j k".into(), "step through devices"),
-            ("tab".into(), "next zone"),
-            (key("⏎").into(), "open the selection"),
-            ("-".into(), "last session"),
-        ]),
-        ("act", vec![
-            ("spc".into(), "peek a session"),
-            ("e".into(), "edit a link"),
-            (key("⌫").into(), "stop a session"),
-        ]),
-        ("device", vec![
-            (letters, open),
-            ("a s d g".into(), "attach a slot"),
-            ("c x n".into(), if wide { "new claude / codex / shell" } else { "new claude/codex/shell" }),
-        ]),
-    ];
+    let hub = ctx == "ON THE HUB";
+    type Group = (&'static str, Vec<(String, &'static str)>);
+    let k = |s: &str| s.to_string();
+    let groups: Vec<Group> = match ctx {
+        "IN A DEVICE" => vec![
+            ("session", vec![
+                (k("a s d g"), "attach that session"),
+                (k(key("⏎")), "attach the selection"),
+                (k("spc"), "peek"),
+                (k(key("⌫")), "stop (press twice)"),
+            ]),
+            ("new", vec![(k("c x n"), if wide { "claude / codex / shell, attached" } else { "claude/codex/shell" })]),
+            ("device", vec![(k("f"), "files"), (k("e"), if wide { "then a letter: edit that link" } else { "+ letter: edit link" }), (k("r"), "retry")]),
+            ("move", vec![(k("j k"), "step"), (k("esc"), "back"), (k("-"), "last session")]),
+        ],
+        "ON A LINK" => vec![
+            ("way out", vec![(k("a p o"), "key / password / off")]),
+            ("way back", vec![(k("A P O"), "key / password / off")]),
+            ("move", vec![(k("j k"), "lane"), (k("u"), "undo"), (k("esc"), "done")]),
+        ],
+        "IN FILES" => vec![
+            ("move", vec![(k("j k"), "step"), (k("l h"), "unfold / fold"), (k(key("⏎")), "open")]),
+            ("file", vec![
+                (k("spc"), "preview"),
+                (k("s"), if wide { "then a letter: send to that device" } else { "+ letter: send there" }),
+                (k("y"), "copy the path"),
+            ]),
+            ("back", vec![(k("esc"), "up a level")]),
+        ],
+        _ => vec![
+            ("device", vec![(String::new(), "its letter opens it")]),
+            ("then", vec![
+                (k("a s d g"), "attach a session"),
+                (k("c x n"), if wide { "new claude / codex / shell" } else { "new claude/codex/shell" }),
+                (k("f"), "files"),
+            ]),
+            ("move", vec![(k("j k"), "step"), (k("tab"), "next zone"), (k(key("⏎")), "open"), (k("-"), "last session")]),
+            ("act", vec![(k("spc"), "peek"), (k("e"), if wide { "then a letter: edit that link" } else { "+ letter: edit link" }), (k(key("⌫")), "stop a session")]),
+        ],
+    };
     // (`esc` is on the footer, where it closes this.)
     let globals: [(&str, &str, &str); 5] = [
         ("/", "find", "palette"),
@@ -3218,13 +3215,13 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         (cx.g("──", "--"), "key"),
         (cx.g("╌╌", ".."), "password"),
         (cx.g("◀", "<"), "one way"),
-        (cx.g("⊘", "x"), "closed"),
+        (cx.g("⊘", "- -"), "closed"),
     ];
     let w = r.width.saturating_sub(if wide { 4 } else { 2 }).min(68);
     let x0 = r.x + (r.width - w) / 2;
     let right = x0 + w;
     let ix = x0 + u16::from(wide);
-    let iw = if wide { 9 } else { 7 };
+    let iw = if wide { 10 } else { 9 };
     let kx = ix + iw;
     let kw = groups
         .iter()
@@ -3247,32 +3244,32 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         n
     };
     let gpairs: Vec<(&str, &str)> = globals.iter().map(|(k, t, _)| (*k, *t)).collect();
-    // The line grammar on demand: one quiet row, where it fits on one.
-    let strokes = !cx.touch() && flow_rows(&lines) == 1;
+    // The line grammar where lines are drawn: one quiet row, where it fits on one.
+    let strokes = !cx.touch() && matches!(ctx, "ON THE HUB" | "ON A LINK") && flow_rows(&lines) == 1;
     let body = groups.iter().map(|(_, k)| k.len() as u16).sum::<u16>()
         + u16::from(strokes)
         + flow_rows(&gpairs);
     let blocks = groups.len() as u16 + u16::from(strokes) + 1;
-    // A blank row under the crumb bar, the label, a blank row between blocks; then the
-    // air under the label. Short screens give up the air between blocks, then the label.
-    let gaps = blocks - 1;
+    // A blank row between blocks, except between a step and its `then`; the label and
+    // the air under it. Short screens give up the air between blocks, then the label.
+    let gaps = blocks - 1 - u16::from(hub);
     let air = body + gaps + 2 <= r.height;
     let label = body + 2 + if air { gaps } else { 0 } <= r.height;
     let under = label && air && body + gaps + 3 <= r.height;
     let total = body + if air { gaps } else { 0 } + u16::from(label) + u16::from(under);
-    // The block about a third of the way down, never touching the crumb bar.
     let spare = r.height.saturating_sub(total);
     let mut y = r.y + u16::from(spare > 0) + spare.saturating_sub(1) / 3;
     if label {
-        zone(cx, buf, x0, y, right, "ON THE HUB", true);
+        zone(cx, buf, x0, y, right, ctx, true);
         y += 1 + u16::from(under);
     }
     let intent = |buf: &mut Buffer, y: u16, t: &str| {
         cx.put(buf, ix, y, iw, t, cx.ink(Tok::Muted, 0.8));
     };
     let bold = cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD);
+    let what = cx.ink(Tok::Fg, 0.85);
     for (gi, (name, ks)) in groups.iter().enumerate() {
-        if gi > 0 && air {
+        if gi > 0 && air && !(hub && *name == "then") {
             y += 1;
         }
         for (i, (k, v)) in ks.iter().enumerate() {
@@ -3282,21 +3279,41 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
             if i == 0 {
                 intent(buf, y, name);
             }
-            let st = if gi == 2 && i == 0 {
-                cx.st(Tok::Accent).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-            } else {
-                bold
-            };
-            // Letters underlined one by one, never the spaces between them.
+            if k.is_empty() {
+                // The first step: devices by name, their letter underlined as on the map.
+                let desc = super::width(v, cx.uni()) + 3;
+                let room = right.saturating_sub(kx);
+                let mut x = kx;
+                let mut shown = 0;
+                for d in &cx.s.devices {
+                    let nw = super::width(&d.name, cx.uni());
+                    let left = cx.s.devices.len() - shown - 1;
+                    let tail = if left > 0 { 3 } else { 0 };
+                    // Wide, the names leave room for what the letter does.
+                    let keep = if wide { desc } else { 0 };
+                    if x + nw + tail + keep > kx + room && shown > 0 {
+                        break;
+                    }
+                    x += orbit::name(cx, buf, x, y, d, 16, what, true) + 2;
+                    shown += 1;
+                }
+                if shown < cx.s.devices.len() {
+                    let more = if cx.uni() { "…".to_string() } else { format!("+{}", cx.s.devices.len() - shown) };
+                    x += cx.put(buf, x, y, 4, &more, cx.st(Tok::Muted)) + 2;
+                }
+                if x + desc <= right {
+                    cx.put(buf, x + 1, y, desc, v, cx.st(Tok::Muted));
+                }
+                y += 1;
+                continue;
+            }
+            // Keys one by one, a space between them.
             let mut x = kx;
             for part in k.split(' ') {
-                let pst = if part.starts_with('+') || part == "…" { cx.st(Tok::Muted) } else { st };
-                x += cx.put(buf, x, y, kw, part, pst) + 1;
+                x += cx.put(buf, x, y, kw, part, bold) + 1;
             }
             let room = right.saturating_sub(dx);
-            // The letter rule says where letters are only where it fits whole.
-            let v = if *v == open && super::width(v, cx.uni()) > room { "open it, then" } else { v };
-            cx.put(buf, dx, y, room, &fit(v, usize::from(room), cx.uni()), cx.ink(Tok::Fg, 0.85));
+            cx.put(buf, dx, y, room, &fit(v, usize::from(room), cx.uni()), what);
             y += 1;
         }
     }

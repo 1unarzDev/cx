@@ -661,6 +661,7 @@ fn the_hub_invite_shows_its_code_and_esc_closes_its_listener() {
         cancel: cancel.clone(),
         shown: None,
         drawn_secs: Default::default(),
+        thread: None,
     });
     assert!(draw(&a, 120, 40).contains("Opening an invite"));
     tx.send(Ok(screens::InviteEvent::Ready(crate::mesh::Invite {
@@ -702,6 +703,7 @@ fn the_hub_invite_shows_its_code_and_esc_closes_its_listener() {
         cancel: Arc::new(AtomicBool::new(false)),
         shown: None,
         drawn_secs: Default::default(),
+        thread: None,
     });
     tx.send(Ok(screens::InviteEvent::Joined(
         serde_json::json!({"name": "rover"}),

@@ -62,6 +62,8 @@ pub(super) struct InviteRun {
     pub shown: Option<(crate::mesh::Invite, Instant)>,
     /// Seconds left when last drawn (the countdown redraws once a second).
     pub drawn_secs: std::cell::Cell<u64>,
+    /// The listener's thread, joined before a new code takes its port (`R`).
+    pub thread: Option<thread::JoinHandle<()>>,
 }
 pub(super) enum InviteEvent {
     Ready(crate::mesh::Invite),
@@ -458,7 +460,10 @@ impl App {
     /// revokes one that may already be shared).
     fn invite(&mut self) {
         self.close_screens();
-        self.invite = None;
+        // The old listener closes within a poll; its port is free once its thread ends.
+        if let Some(thread) = self.invite.take().and_then(|mut run| run.thread.take()) {
+            let _ = thread.join();
+        }
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let opts = crate::mesh::ssh_overlay::InviteOptions {
             ttl_hours: Some(INVITE_TTL.as_secs_f64() / 3600.0),
@@ -466,7 +471,7 @@ impl App {
             ..Default::default()
         };
         let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
+        let thread = thread::spawn(move || {
             let ready = tx.clone();
             let result = crate::mesh::ssh_overlay::invite(&opts, |inv| {
                 let _ = ready.send(Ok(InviteEvent::Ready(inv.clone())));
@@ -483,6 +488,7 @@ impl App {
             cancel,
             shown: None,
             drawn_secs: Default::default(),
+            thread: Some(thread),
         });
     }
     /// The invite's news: up (show it), joined or closed (say so); and its countdown.

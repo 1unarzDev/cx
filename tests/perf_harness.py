@@ -768,6 +768,10 @@ def scenario_instant(binary, cycles, side='local', polling=False, rtt_ms=0.0):
 
             def ui_back():
                 return '╭ Devices' in viewer.text()
+            viewer.wait(lambda: hub_layout(viewer) or '╭ Devices' in viewer.text(), timeout=30, what='first frame')
+            if hub_layout(viewer):
+                result.update(instant_hub(viewer, cycles, marker))
+                return result
             viewer.wait(lambda: live('a') or live('b'), timeout=30, what='a live preview')
             current = 'a' if live('a') else 'b'
             other = 'b' if current == 'a' else 'a'
@@ -815,6 +819,55 @@ def scenario_instant(binary, cycles, side='local', polling=False, rtt_ms=0.0):
             result['remote_killed'] = ssh.cleanup()
             result['remote_refused'] = ssh.refused()
     return result
+
+
+def instant_hub(viewer, cycles, marker):
+    """The hub design: a device's tiles already show every session's last frame, so
+    select -> screen is Space (peek) -> the selected session's screen full size; then a
+    tap types into it (echo), Ctrl+\\ leaves the pane, Enter attaches natively and
+    Ctrl+\\ returns to the hub."""
+    # (Only a selected session has a frame yet: tiles remember what was shown.)
+    viewer.wait(lambda: marker('a')() or marker('b')(), timeout=30, what='a session screen')
+    viewer.quiesce(.3)
+
+    def peek():
+        return 'OTHERS' in viewer.text() or 'tab' in viewer.screen.display[-1]
+
+    def focused():
+        return '⏏ detach' in viewer.text() or 'typing into the session' in viewer.text()
+
+    def native():
+        return ('detach' in viewer.screen.display[-1] and 'NETWORK' not in viewer.text()
+                and '$' in viewer.text() and not peek())
+
+    def tap_prompt():
+        y = max(y for y, line in enumerate(viewer.screen.display) if '$' in line and y > 1)
+        x = viewer.screen.display[y].index('$')
+        return f'\x1b[<0;{x + 1};{y + 1}M\x1b[<0;{x + 1};{y + 1}m'.encode()
+    shown, echo, attach, ret = Timings(), Timings(), Timings(), Timings()
+    for _ in range(cycles):
+        shown.add(viewer.measure(b' ', lambda: peek() and '$' in viewer.text(), timeout=TIMEOUT))
+        viewer.quiesce(.15)
+        viewer.measure(tap_prompt(), focused, timeout=TIMEOUT)
+        viewer.quiesce(.15)
+        for _ in range(3):
+            before = viewer.text()
+            echo.add(viewer.measure(b'x', lambda: viewer.text() != before))
+            before = viewer.text()
+            viewer.measure(b'\x7f', lambda: viewer.text() != before)
+        viewer.measure(DETACH_KEY, lambda: not focused(), timeout=TIMEOUT)
+        viewer.quiesce(.15)
+        viewer.measure(b'\x1b', lambda: not peek(), timeout=TIMEOUT)
+        viewer.quiesce(.15)
+        attach.add(viewer.measure(ATTACH_KEY, native, timeout=TIMEOUT))
+        viewer.quiesce(.15)
+        ret.add(viewer.measure(DETACH_KEY, lambda: 'NETWORK' in viewer.text(), timeout=TIMEOUT))
+        viewer.quiesce(.3)
+        # Back to the device's tiles for the next cycle.
+        viewer.measure(b'\x1b', lambda: True, timeout=1)
+        viewer.quiesce(.15)
+    return dict(select_to_screen=shown.report(), keystroke_echo=echo.report(),
+                enter_to_attached=attach.report(), detach_to_ui=ret.report(), cycles=cycles)
 
 
 def run_once(binary, iterations, only):

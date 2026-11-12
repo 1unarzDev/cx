@@ -1,5 +1,20 @@
 # CX status
 
+## v0.2.1 release candidate (branch `revamp/base`; not tagged, pushed or deployed)
+- Integrated the strict v0.2.0 review (159 confirmed issues) from fix/021-{tests,transport,mesh,sessions,files,views}, then fixed every recheck still broken: S8 (watch ids in replies and frames), V2 (`g` is a late device letter), F2 (markdown list rows skip the wrap pass), F15 (the bench, not cx: its screen readers rebuilt pyte's display per line), T3 (duplicate `portable` job; tests/workflow_keys.py), T9 (container chooser `[n]`).
+- Decisions applied: inline typing kept and escapable (Ctrl+\, Esc Esc, any tap outside the screen; concept-mission section 6); startup measured with `CX_THEME` set by the bench (OSC 11 probe unanswered in the bench PTY); palette Send Ctrl+\ works from the hub (selects the last session first if its screen is not live).
+- Gates (2026-11-12): see the v0.2.1 report; A/B vs v0.2.0 below.
+@@AB@@
+- Deferred (decided, not bugs to chase now):
+  - Old v0.2.0 `attach-ticket-<hex>` files (0 bytes) in the state dir are not swept.
+  - The hub view-model carries jump routes but no mesh membership, LAN evidence, link rtt or device metrics; production draws links as direct ssh or a jump, the mesh render paths run only in the lab.
+  - The device screen's ` · single-direction` marker and LabDevice.core still come from the legacy posture, so they can disagree with recorded edges; whether `cx access --graph` should validate against edges::Snapshot is a design call.
+  - Inside a device `g` is slot 4 (spec), so `gg` is not a motion there; `G` is.
+  - Files `Y` stays "clear the transfer clipboard" (the spec defines no alternate copy in Files).
+  - The invite's `R` and `+`-after-Esc paths have no unit test (they open a real listener); Esc is tested.
+  - machine_id() is read in three places (MESH-8 part): sharing it would add indirection for a 5-line read. Invite expiry stays Instant-based (MESH-13 drift part, rejected).
+- Open: the hub still shows an Error toast for an unreachable device beside the ticker that already names it (capture startup-120x40; present in v0.2.0); capture_matrix flags the keys screen's "Cloudflare…" as a cut interface name (false positive).
+
 ## v0.2.0 release candidate (branch `revamp/base`; not tagged, pushed or deployed)
 - Integrated: the final Mission design (revamp/design-final), instant sessions (revamp/instant: helper Watch, one tmux control client per server, one wake channel, warm masters), hub tiles from in-memory frames and watch events, `+` opening a real ssh-overlay invite (code, `cx mesh pair` line, QR; closed on use, expiry, Esc or `R`), a masked set/rotate entry on the keys screen, `cx join`.
 - Fixed for the release: the invite listener's reset race (drain before close), relay probe ETXTBSY under parallel forks, markdown first paint (one layout, tagged layout on first click), the 100k sibling-folder double read (Enter waits on the prefetch), update fixtures past 0.2.0, Ubuntu 24.04 fixture cleanup race, session_watch_live and perf_harness instant_* on the hub.
@@ -18,8 +33,7 @@
   | preview scroll j, src 5 MB / md 2 MB | 5.3 / 3.5 ms | 4.5 / 3.5 ms |
   | viewer start → Files ready | 47 ms | 147 ms (46 with the bench fix below) |
 - Startup attribution (v0.2.1 review): the 47 → 147 ms row was the bench, not cx. The OSC 11 background probe (caps.rs, 100 ms bound) waits for a DA1 reply that the bench PTY never sends; with the probe skipped (`CX_THEME=dark`, now set in perf_harness Env) startup is 46 ms (median of 4 runs, release build, review A/B). Real terminals answer DA1 within milliseconds.
-- Open: one 100k sibling run in six still ~80 ms; G to the end of a 2 MB Markdown preview ~106 ms; capture_matrix flags the keys screen's "Cloudflare…" as a cut interface name (false positive).
-- Open (v0.2.1 views): the hub's view-model carries jump routes but no mesh membership, LAN evidence, link rtt or device metrics yet, so production draws every link as direct ssh (or a jump) with no mesh hue, legend or vitals chart; those render paths are exercised only by the lab fixtures.
+- Resolved in v0.2.1: the 100k sibling outlier (bench) and G on a 2 MB Markdown preview.
 
 ## Claude gateway lends (Unreleased)
 - `cx claude lend | revoke | list` (mesh/claude.py, docs/claude.md): a better-ccflare key, an Access service token and policy, and a single-use code; the teammate runs `curl -sL <endpoint>/claude/<code>|sh` or `irm …|iex`. `cx mesh deploy` redeploys only the Worker.

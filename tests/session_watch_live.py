@@ -42,21 +42,30 @@ class Fixture:
         self.tag = f'watch-{os.getpid()}-{time.time_ns() % 10**9}'
         self.ssh, run_env = (ph.remote_fixture(helper_binary or viewer_binary, self.tag, False, 0.0)
                              if remote else (None, None))
-        self.env = fb.BenchEnv(viewer_binary, self.tag, self.ssh)
-        self.home = self.ssh.remote_home if self.ssh else self.env.root
-        run_env = run_env or self.env.env
-        folder = self.home / 'work'
-        folder.mkdir(exist_ok=True)
-        made = subprocess.run([helper_binary or viewer_binary, 'new', '--directory', str(folder),
-                               '--name', 'watch-shell', '--key', 'watch-shell'],
-                              env=run_env, capture_output=True, timeout=30)
-        assert made.returncode == 0, 'cx new failed'
-        self.viewer = ph.Viewer.__new__(ph.Viewer)
-        index = len(self.env.device_ids) - 1
-        self.viewer.open(self.env, dict(device_ids=self.env.device_ids, device=index + 1,
-                                        focus='Workspace', view='Work', browser=None))
-        self.viewer.wait(lambda: 'watch-shell' in self.text() and '$' in self.text(), timeout=30,
-                         what='session preview')
+        self.env = None
+        try:
+            self.env = fb.BenchEnv(viewer_binary, self.tag, self.ssh)
+            self.home = self.ssh.remote_home if self.ssh else self.env.root
+            run_env = run_env or self.env.env
+            folder = self.home / 'work'
+            folder.mkdir(exist_ok=True)
+            made = subprocess.run([helper_binary or viewer_binary, 'new', '--directory', str(folder),
+                                   '--name', 'watch-shell', '--key', 'watch-shell'],
+                                  env=run_env, capture_output=True, timeout=30)
+            assert made.returncode == 0, 'cx new failed'
+            self.viewer = ph.Viewer.__new__(ph.Viewer)
+            index = len(self.env.device_ids) - 1
+            self.viewer.open(self.env, dict(device_ids=self.env.device_ids, device=index + 1,
+                                            focus='Workspace', view='Work', browser=None))
+            self.viewer.wait(lambda: 'watch-shell' in self.text() and '$' in self.text(), timeout=30,
+                             what='session preview')
+        except BaseException:
+            # A fixture that never finished starting still owns its sshd and HOME.
+            if self.env:
+                self.env.cleanup()
+            if self.ssh:
+                self.ssh.cleanup()
+            raise
 
     def text(self):
         return self.viewer.text()

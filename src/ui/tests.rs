@@ -5578,16 +5578,16 @@ fn selected_snapshot_rejects_late_reply_and_clears_when_hidden() {
         created: "1".into(),
     });
     a.work[0].fetched = transport::now();
-    assert!(a.refresh_session_preview(160));
+    assert!(a.refresh_session_preview());
     let first = rx.try_recv().unwrap();
     a.work[0].sessions[0].terminal.as_mut().unwrap().created = "replacement".into();
-    assert!(a.refresh_session_preview(160));
+    assert!(a.refresh_session_preview());
     assert!(
         rx.try_recv().is_err(),
         "a moved selection settles before fetching"
     );
     std::thread::sleep(session_preview::SELECT_DEBOUNCE + Duration::from_millis(5));
-    a.refresh_session_preview(160);
+    a.refresh_session_preview();
     let second = rx.try_recv().unwrap();
     let reply = |task: Task| Reply {
         device_id: Some("local".into()),
@@ -5599,7 +5599,7 @@ fn selected_snapshot_rejects_late_reply_and_clears_when_hidden() {
         result: Ok(serde_json::json!({"lines":["fixture snapshot"]})),
     };
     a.apply(reply(first));
-    assert!(!a.refresh_session_preview(160)); // Newer request remains in flight.
+    assert!(!a.refresh_session_preview()); // Newer request remains in flight.
     a.apply(reply(second));
     let mut terminal = ratatui::Terminal::new(TestBackend::new(160, 30)).unwrap();
     terminal.draw(|f| render(f, &a)).unwrap();
@@ -5612,7 +5612,7 @@ fn selected_snapshot_rejects_late_reply_and_clears_when_hidden() {
         .collect();
     assert!(rendered.contains("fixture snapshot"));
     a.view = View::Files;
-    assert!(a.refresh_session_preview(80));
+    assert!(a.refresh_session_preview());
     terminal.draw(|f| render(f, &a)).unwrap();
     let rendered: String = terminal
         .backend()
@@ -5623,7 +5623,7 @@ fn selected_snapshot_rejects_late_reply_and_clears_when_hidden() {
         .collect();
     assert!(!rendered.contains("fixture snapshot"));
     a.view = View::Files;
-    assert!(!a.refresh_session_preview(160));
+    assert!(!a.refresh_session_preview());
     assert!(rx.try_recv().is_err());
 }
 
@@ -5641,24 +5641,24 @@ fn selected_snapshot_requires_live_terminal_and_helper_support() {
     let (mut a, rx) = queued_app();
     a.work[0].sessions = vec![disposable_shell()];
     a.work[0].fetched = transport::now();
-    assert!(!a.refresh_session_preview(160));
+    assert!(!a.refresh_session_preview());
     a.work[0].sessions[0].terminal = Some(crate::model::TerminalIdentity {
         server_pid: 1,
         server_start: "1".into(),
         session_id: "$1".into(),
         created: "1".into(),
     });
-    assert!(!a.refresh_session_preview(160)); // Older helper.
+    assert!(!a.refresh_session_preview()); // Older helper.
     a.providers
         .get_mut(&0)
         .unwrap()
         .0
         .push("session-preview-v1".into());
     a.work[0].fetched = 0;
-    assert!(!a.refresh_session_preview(160));
+    assert!(!a.refresh_session_preview());
     a.work[0].fetched = transport::now();
-    assert!(a.refresh_session_preview(80));
-    assert!(!a.refresh_session_preview(160));
+    assert!(a.refresh_session_preview());
+    assert!(!a.refresh_session_preview());
     assert!(matches!(
         rx.try_recv().unwrap().op,
         Operation::SessionPreview { .. }
@@ -5681,7 +5681,7 @@ fn live_pane_focus_input_return_and_runtime_invalidation() {
         created: "1".into(),
     });
     a.work[0].fetched = transport::now();
-    assert!(a.refresh_session_preview(80));
+    assert!(a.refresh_session_preview());
     let task = rx.try_recv().unwrap();
     a.apply(Reply {device_id:Some("local".into()),execution_target:Some(None),preview:None,device:0,op:task.op,generation:task.generation,result:Ok(serde_json::json!({"live":true,"pane_id":"%1","styled_lines":["\u{1b}[31mlive screen"],"cursor_x":2,"cursor_y":0,"cursor_visible":true,"bracketed_paste":true,"application_cursor":true}))});
     // A tap on the peeked screen types into it (the same entry point).
@@ -5698,9 +5698,9 @@ fn live_pane_focus_input_return_and_runtime_invalidation() {
     );
     a.work[0].sessions[0].pid = 999;
     a.work[0].sessions[0].started = "changed".into();
-    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    a.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
     assert!(
-        matches!(rx.try_recv().unwrap().op,Operation::SessionPaneInput{hex,pane_id,..} if hex=="1b" && pane_id=="%1")
+        matches!(rx.try_recv().unwrap().op,Operation::SessionPaneInput{hex,pane_id,..} if hex=="78" && pane_id=="%1")
     );
     let mut terminal = ratatui::Terminal::new(TestBackend::new(80, 24)).unwrap();
     terminal.draw(|f| render(f, &a)).unwrap();
@@ -5713,7 +5713,7 @@ fn live_pane_focus_input_return_and_runtime_invalidation() {
         .collect();
     assert!(text.contains("live screen"));
     assert!(
-        text.contains("ctrl+\\") && text.contains("detach"),
+        text.contains(" esc  back  typing into the session"),
         "{text}"
     );
     // Ctrl+] (legacy 0x1d, crossterm Ctrl+5) and Ctrl+O now reach the pane.
@@ -5725,11 +5725,16 @@ fn live_pane_focus_input_return_and_runtime_invalidation() {
             "Ctrl+{code}"
         );
     }
-    // Every Ctrl+\ encoding leaves inline input without sending bytes.
-    for code in ['4', '\\'] {
+    // Esc (peek's "back") and every Ctrl+\ encoding leave inline input
+    // without sending bytes: an Esc meant as "back" never interrupts an agent.
+    for key in [
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('4'), KeyModifiers::CONTROL),
+        KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::CONTROL),
+    ] {
         assert!(a.pane_focused() || a.focus_session_pane());
-        a.key(KeyEvent::new(KeyCode::Char(code), KeyModifiers::CONTROL));
-        assert!(!a.pane_focused(), "Ctrl+{code} did not leave input");
+        a.key(key);
+        assert!(!a.pane_focused(), "{key:?} did not leave input");
         assert!(rx.try_recv().is_err());
     }
     assert!(a.focus_session_pane());
@@ -5761,7 +5766,7 @@ fn info_reply_keeps_live_terminal_capability_and_preview_enabled() {
             .any(|s| s == "live-session-pane-v1"),
         "Info reply discarded live terminal support"
     );
-    a.refresh_session_preview(160);
+    a.refresh_session_preview();
     assert!(
         rx.try_iter()
             .any(|t| matches!(t.op, Operation::SessionPreview { .. })),

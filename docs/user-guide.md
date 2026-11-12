@@ -134,10 +134,12 @@ and a compact runtime identity; separate conversations are never merged by label
 Hovering over a session never selects it. Each tile shows the session's last
 screen in its own colours; Space peeks the selected one 1:1 (Tab steps through
 the others). **Enter attaches** to the running shell or agent; `w` watches it
-read-only. **A tap on the peeked screen types into it** inside CX.
-**Ctrl+\ (or a tap on the `⏏ detach` chip) detaches** from either; Ctrl+], Ctrl+O,
-Escape and Ctrl+C go to the application. To send a literal Ctrl+\ (SIGQUIT,
-nvim Ctrl+\ Ctrl+N), use the palette (`/`) → **Send Ctrl+\ to session**.
+read-only. **A tap on the peeked screen types into it** inside CX; Esc, Ctrl+\
+or a tap outside the screen stops typing (attach for an agent's own Esc).
+**Ctrl+\ (or a tap on the `⏏ detach` chip) detaches** from an attached session;
+Ctrl+], Ctrl+O, Escape and Ctrl+C go to the application. To send a literal Ctrl+\
+(SIGQUIT, nvim Ctrl+\ Ctrl+N), use the palette (`/`) → **Send Ctrl+\ to the last
+session**: it forwards one to the session you last detached from and re-attaches it.
 
 The pane preserves colors, blank rows, alternate-screen content and cursor location.
 It refreshes at up to 4 Hz while browsing and 10 Hz while focused. Its viewport

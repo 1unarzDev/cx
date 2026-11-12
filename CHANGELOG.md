@@ -14,6 +14,10 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 - Port scans and silent connections no longer count as wrong codes. A refused join keeps a removed device out of automatic pairing.
 - The WARP Worker accepts only the token the mesh was deployed with for its owner endpoints (run `cx mesh deploy` once after updating, and after changing the token). `--backend cloudflare-warp` now covers only `status` and `ranges`; the rest is `cx mesh` without `--backend`, as before. `cx mesh backends --json` no longer lists capabilities.
 - `CX_SECRETS_BACKEND=keyring` is gone (`auto` or `file`).
+- An attached session no longer streams its screen to the viewer underneath: the watch ends at every terminal handoff and resumes on return, so detach stays instant after a long attach.
+- Pushed session lists refresh every 3 s again (titles, running commands, agent state), as v0.1.95's polling did; the watched screen recovers after a failed capture instead of staying "unavailable"; an oversized control-mode capture fails whole instead of dropping rows.
+- Typing into a peeked session stops on Esc or a tap outside its screen; Esc no longer reaches the agent there. The palette's "Send Ctrl+\" now works from the hub after a detach: it forwards one to the last session and re-attaches it.
+- `cx orphans` sees cx's tmux control clients; the attach ticket is one file instead of one per session ever watched.
 
 ## v0.2.0
 

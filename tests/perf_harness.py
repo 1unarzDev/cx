@@ -108,7 +108,11 @@ class Env:
         self.state.mkdir(parents=True)
         self.env = dict(os.environ, HOME=str(self.root), XDG_STATE_HOME=str(self.root / 'state'),
                         TMUX_TMPDIR=str(self.root), SHELL='/bin/bash', TERM='xterm-256color',
-                        HTTPS_PROXY='http://127.0.0.1:9', HISTFILE='/dev/null')
+                        HTTPS_PROXY='http://127.0.0.1:9', HISTFILE='/dev/null',
+                        # The bench PTY answers neither OSC 11 nor DA1, so the background
+                        # probe would wait out its 100 ms on every start (real terminals
+                        # answer DA1 within milliseconds).
+                        CX_THEME='dark')
         for key in ('TMUX', 'TMUX_PANE', 'NO_COLOR', 'CX_ASCII'):
             self.env.pop(key, None)
         self.marker = f'HOME={self.root}\0'.encode()

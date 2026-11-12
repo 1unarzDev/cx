@@ -301,9 +301,15 @@ impl App {
     }
     /// `-`: re-attach the last detached session, from any screen.
     pub(super) fn attach_last(&mut self) {
+        if let Some((d, s)) = self.last_detached() {
+            self.open_session(d, s, false);
+        }
+    }
+    /// The last detached session, if it still runs; otherwise a notice says why.
+    pub(super) fn last_detached(&mut self) -> Option<(usize, Session)> {
         let Some((d, key)) = self.last_session.clone() else {
             self.set_notice("No session detached yet".into());
-            return;
+            return None;
         };
         let Some(s) = self
             .work
@@ -316,9 +322,9 @@ impl App {
             .cloned()
         else {
             self.set_notice("The last session has ended".into());
-            return;
+            return None;
         };
-        self.open_session(d, s, false);
+        Some((d, s))
     }
     /// After a detach: the hub, the sessions zone, the tile you left selected, so `⏎`
     /// (or `-`) re-attaches.

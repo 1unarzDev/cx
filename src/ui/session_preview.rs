@@ -16,11 +16,9 @@ pub(super) struct Snapshot {
     inflight: bool,
     last: Option<Instant>,
     lines: Vec<String>,
-    status: String,
     pane: String,
     live: bool,
     cursor: (u16, u16),
-    cursor_visible: bool,
     palette8: Option<Color>,
     bracketed_paste: bool,
     application_cursor: bool,
@@ -34,8 +32,6 @@ pub(super) struct Snapshot {
     /// Last keystroke or paste sent to the pane; echo polling follows it.
     last_input: Option<Instant>,
     echo_due: bool,
-    received: Option<Instant>,
-    stale_shown: std::cell::Cell<bool>,
     /// When the selection last changed: a move after a pause fetches at once,
     /// moves in a burst wait for SELECT_DEBOUNCE.
     changed_at: Option<Instant>,
@@ -65,6 +61,9 @@ struct Watched {
     live: bool,
     /// After a refusal or a closed watch: poll, and ask again from then.
     retry_at: Option<Instant>,
+    /// A pushed screen of this watch overtook its reply (in-process events
+    /// are not ordered behind it); the reply's older first screen is dropped.
+    pushed: bool,
 }
 /// See `live_frame_grace`.
 const LIVE_GRACE: Duration = Duration::from_millis(8);
@@ -284,35 +283,37 @@ impl App {
         ));
         true
     }
-    /// Palette "Send Ctrl+\ to session": Ctrl+\ always detaches, so this is
-    /// how the literal 0x1c (SIGQUIT, nvim Ctrl+\ Ctrl+N) reaches the pane.
-    /// It leaves the pane focused so a follow-up key can be typed.
+    /// Palette "Send Ctrl+\": Ctrl+\ always detaches, so this is how the
+    /// literal 0x1c (SIGQUIT, nvim Ctrl+\ Ctrl+N) reaches a pane. It forwards
+    /// one to the last detached session (the selection after a detach) and
+    /// re-attaches it, so the follow-up key is typed natively.
     pub(super) fn send_ctrl_backslash(&mut self) {
-        if !self.pane_focused() && !self.focus_session_pane() {
-            return self.type_into_preview();
-        }
-        let Some((d, _)) = self.preview_selection() else {
+        let Some((d, s)) = self.last_detached() else {
             return;
         };
-        let (_, session, pane_id) = self.session_preview.focused.clone().unwrap();
-        if self.send(
-            d,
-            Operation::SessionPaneInput {
-                session,
-                pane_id,
-                hex: "1c".into(),
-            },
-        ) {
-            self.input_sent();
-        } else {
-            self.session_preview.focused = None;
-            self.set_notice("Terminal input was not queued; focus released".into());
+        let p = &self.session_preview;
+        let pane_id = (p.live && p.key.as_ref() == Some(&key(&self.devices[d], &s)))
+            .then(|| p.pane.clone())
+            .filter(|pane| !pane.is_empty());
+        let Some(pane_id) = pane_id else {
+            self.set_notice("Live preview is still loading · try again in a moment".into());
+            return;
+        };
+        let input = Operation::SessionPaneInput {
+            session: s.clone(),
+            pane_id,
+            hex: "1c".into(),
+        };
+        if !self.send(d, input) {
+            self.set_notice("Terminal input was not queued".into());
+            return;
         }
+        self.open_session(d, s, false);
     }
     pub(super) fn session_pane_key(&mut self, event: KeyEvent) {
-        // Ctrl+\ leaves inline input; every other key (Ctrl+] and Ctrl+O too)
-        // belongs to the application in the pane.
-        if detach_key(&event) {
+        // Esc (peek's "back") and Ctrl+\ leave inline input; every other key
+        // (Ctrl+] and Ctrl+O too) belongs to the application in the pane.
+        if detach_key(&event) || (event.code == KeyCode::Esc && event.modifiers.is_empty()) {
             self.leave_session_pane();
             return;
         }
@@ -408,8 +409,9 @@ impl App {
     pub(super) fn set_preview_screen(&self, r: Rect) {
         self.session_preview.screen.set(r);
     }
-    /// Clicks on the preview: the border chip detaches or zooms; the screen
-    /// starts inline input. Returns true when the click was the preview's.
+    /// A click on the peeked screen starts inline input; while typing, a click
+    /// outside it (the bar's chip, the crumb, the hub) stops. Returns true
+    /// when the click was the preview's.
     pub(super) fn click_session_preview(&mut self, mouse: MouseEvent) -> bool {
         if !matches!(self.view, View::Work | View::Network)
             || self.dialog.is_some()
@@ -421,7 +423,14 @@ impl App {
             return false;
         }
         let at = ratatui::layout::Position::new(mouse.column, mouse.row);
-        if !self.pane_focused() && self.session_preview.screen.get().contains(at) {
+        let on_screen = self.session_preview.screen.get().contains(at);
+        if self.pane_focused() {
+            if !on_screen {
+                self.leave_session_pane();
+            }
+            return true;
+        }
+        if on_screen {
             self.type_into_preview();
             return true;
         }
@@ -506,7 +515,7 @@ impl App {
             self.set_notice("Paste was not queued; focus released".into());
         }
     }
-    pub(super) fn refresh_session_preview(&mut self, _width: u16) -> bool {
+    pub(super) fn refresh_session_preview(&mut self) -> bool {
         let selection = self.preview_selection();
         let next = selection.as_ref().map(|(d, s)| key(&self.devices[*d], s));
         let changed = next != self.session_preview.key;
@@ -662,8 +671,6 @@ impl App {
                     value["bracketed_paste"].as_bool().unwrap_or(false);
                 self.session_preview.application_cursor =
                     value["application_cursor"].as_bool().unwrap_or(false);
-                self.session_preview.cursor_visible =
-                    value["cursor_visible"].as_bool().unwrap_or(false);
                 let history = value["history_rows"].as_u64().unwrap_or(0).min(500) as u32;
                 if value.get("history_total").is_none() {
                     // Older helpers expose only a recent-history window.
@@ -706,14 +713,11 @@ impl App {
                     budget -= line.len();
                     self.session_preview.lines.push(line.to_owned());
                 }
-                self.session_preview.status.clear();
-                self.session_preview.received = Some(Instant::now());
             }
             Err(_) => {
                 self.session_preview.focused = None;
                 self.session_preview.live = false;
                 self.session_preview.lines.clear();
-                self.session_preview.status = "Terminal unavailable · refresh to check".into();
             }
         }
         let was_carried = std::mem::take(&mut self.session_preview.carried);
@@ -725,26 +729,6 @@ impl App {
     /// The runtime redraws for a preview reply only when this changed.
     pub(super) fn session_preview_revision(&self) -> u64 {
         self.session_preview.revision
-    }
-    /// True once each time the capture age crosses the live/stale threshold,
-    /// whichever label render then draws, so a parked preview never keeps
-    /// the loop redrawing.
-    pub(super) fn session_preview_staleness_changed(&self) -> bool {
-        let stale = self.preview_stale();
-        self.session_preview.stale_shown.replace(stale) != stale
-    }
-    /// No capture for a while, and none would be pushed: a live watch sends
-    /// only changes, so its quiet screen is current.
-    fn preview_stale(&self) -> bool {
-        let pushed = self.pane_watched()
-            && self
-                .preview_selection()
-                .is_some_and(|(d, _)| self.sessions_pushed(d));
-        !pushed
-            && self
-                .session_preview
-                .received
-                .is_some_and(|t| t.elapsed() >= PREVIEW_STALE)
     }
 }
 impl Remembered {
@@ -863,6 +847,39 @@ impl App {
                     .unwrap();
                 w.requested = Some(want);
                 w.retry_at = None;
+                w.pushed = false;
+            }
+        }
+    }
+    /// Before a terminal handoff (attach, expand, a command): end every watch.
+    /// Nothing reads helper events while the terminal is handed off, so an
+    /// attached pane's frames would pile up; sync_watches asks again on return.
+    pub(super) fn stop_watches(&mut self) {
+        for d in 0..self.devices.len() {
+            let Some(w) = self.session_preview.watches.get_mut(&self.devices[d].id) else {
+                continue;
+            };
+            if w.requested.is_none() {
+                continue;
+            }
+            *w = Watched {
+                target: w.target.clone(),
+                ..Watched::default()
+            };
+            let sent = self
+                .tx
+                .try_send(Task {
+                    device: d,
+                    execution: self.devices[d].clone(),
+                    op: Operation::Watch {
+                        sessions: false,
+                        pane: None,
+                    },
+                    generation: self.generation,
+                })
+                .is_ok();
+            if sent {
+                self.pending_requests.set(self.pending_requests.get() + 1);
             }
         }
     }
@@ -900,8 +917,9 @@ impl App {
         match reply.result {
             Ok(value) => {
                 w.live = true;
+                let pushed = w.pushed;
                 match (pane, value.get("pane")) {
-                    (Some(session), Some(screen)) => {
+                    (Some(session), Some(screen)) if !pushed => {
                         self.apply_watched_screen(d, session.clone(), Ok(screen.clone()))
                     }
                     _ => false,
@@ -953,7 +971,7 @@ impl App {
                 });
                 (true, true)
             }
-            Some("pane") if live => {
+            Some("pane") => {
                 let Some((sd, session)) = self.preview_selection() else {
                     return (false, false);
                 };
@@ -963,6 +981,19 @@ impl App {
                 if !matches || self.session_preview.scroll_top.is_some() {
                     return (false, false);
                 }
+                // The watch asked for this screen is live, even if its reply
+                // (in-process, on another thread) has not landed yet.
+                let want = key(&self.devices[d], &session);
+                let Some(w) = self
+                    .session_preview
+                    .watches
+                    .get_mut(&id)
+                    .filter(|w| w.requested.as_ref() == Some(&want) && w.retry_at.is_none())
+                else {
+                    return (false, false);
+                };
+                w.live = true;
+                w.pushed = true;
                 let result = match event["error"].as_str() {
                     Some(error) => Err(anyhow::anyhow!("{error}")),
                     None => Ok(event),
@@ -1018,18 +1049,14 @@ pub(super) fn render_attach_frame(frame: &mut Frame<'_>, app: &App, area: Rect) 
     let screen = Rect::new(area.x, area.y, p.cols.min(area.width), rows as u16);
     frame.render_widget(Paragraph::new(lines[start..end].to_vec()), screen);
 }
-/// Liveness turns into `stale <age>` once captures stop arriving for this long.
-const PREVIEW_STALE: Duration = Duration::from_secs(3);
 fn fingerprint(p: &Snapshot) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (
         &p.lines,
-        &p.status,
         &p.pane,
         p.live,
         p.cursor,
-        p.cursor_visible,
         p.cols,
         p.rows,
         p.history_total,
@@ -1053,22 +1080,5 @@ mod scroll_tests {
         assert_eq!(live_view_top(1200, 0, 20), 1200);
         assert_eq!(live_view_top(1200, 39, 20), 1220);
         assert_eq!(live_view_top(100_000, 0, 20), 100_000);
-    }
-    #[test]
-    fn a_parked_preview_reports_the_stale_switch_once() {
-        let (tx, _rx) = std::sync::mpsc::sync_channel(1);
-        let mut a = App::new(vec![], tx);
-        // Scrollback (or an error) draws no live/stale label; the old capture
-        // ages past the threshold and must cost one redraw, not one per loop.
-        a.session_preview.live = true;
-        a.session_preview.scroll_top = Some(10);
-        a.session_preview.received = Some(Instant::now() - Duration::from_secs(5));
-        let changes = (0..5)
-            .filter(|_| a.session_preview_staleness_changed())
-            .count();
-        assert_eq!(changes, 1);
-        a.session_preview.received = Some(Instant::now());
-        assert!(a.session_preview_staleness_changed());
-        assert!(!a.session_preview_staleness_changed());
     }
 }

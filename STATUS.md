@@ -16,8 +16,9 @@
   | 100k sibling folder | 107 ms | 43 ms |
   | preview first paint src 5 MB / md 2 MB | 105 / 111 ms | 5.7 / 6.5 ms |
   | preview scroll j, src 5 MB / md 2 MB | 5.3 / 3.5 ms | 4.5 / 3.5 ms |
-  | viewer start → Files ready | 47 ms | 147 ms |
-- Open: startup to the first Files frame is ~147 ms (v0.1.95 ~47 ms; present before the port); one 100k sibling run in six still ~80 ms; G to the end of a 2 MB Markdown preview ~106 ms; the invite screen has no clipboard copy yet; capture_matrix flags the keys screen's "Cloudflare…" as a cut interface name (false positive).
+  | viewer start → Files ready | 47 ms | 147 ms (46 with the bench fix below) |
+- Startup attribution (v0.2.1 review): the 47 → 147 ms row was the bench, not cx. The OSC 11 background probe (caps.rs, 100 ms bound) waits for a DA1 reply that the bench PTY never sends; with the probe skipped (`CX_THEME=dark`, now set in perf_harness Env) startup is 46 ms (median of 4 runs, release build, review A/B). Real terminals answer DA1 within milliseconds.
+- Open: one 100k sibling run in six still ~80 ms; G to the end of a 2 MB Markdown preview ~106 ms; the invite screen has no clipboard copy yet; capture_matrix flags the keys screen's "Cloudflare…" as a cut interface name (false positive).
 
 ## Claude gateway lends (Unreleased)
 - `cx claude lend | revoke | list` (mesh/claude.py, docs/claude.md): a better-ccflare key, an Access service token and policy, and a single-use code; the teammate runs `curl -sL <endpoint>/claude/<code>|sh` or `irm …|iex`. `cx mesh deploy` redeploys only the Worker.

@@ -296,7 +296,7 @@ impl App {
                 View::Secrets => {}
                 View::Containers => self.open_container_actions(),
                 View::Work => {
-                    // Enter attaches directly; `i` types inline, `z` zooms.
+                    // Enter attaches directly.
                     if let Some((d, s)) = self.selected_session() {
                         self.open_session(d, s, false);
                     } else if empty_work_can_create(self) {

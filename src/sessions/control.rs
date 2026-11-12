@@ -16,12 +16,18 @@ pub type Emit = Arc<dyn Fn(serde_json::Value) -> bool + Send + Sync>;
 /// listed; it lives as long as the server.
 pub(super) const CONTROL_SESSION: &str = "cxctl";
 const REPLY_LIMIT: Duration = Duration::from_secs(1);
-const BODY_LIMIT: usize = 1024 * 1024;
+/// The spawned capture's bound (`preview exceeds screen limit`): a bigger
+/// reply fails whole rather than arriving with rows missing.
+const BODY_LIMIT: usize = 256 * 1024;
 /// At most one capture per frame (~60/s), however busy the pane.
 const CAPTURE_INTERVAL: Duration = Duration::from_millis(16);
 /// List changes come in bursts (a command starting renames its window).
 const LIST_DEBOUNCE: Duration = Duration::from_millis(100);
-const SAFETY_POLL: Duration = Duration::from_secs(30);
+/// Titles, running commands, activity and agent state change with no tmux
+/// notice: re-list at the polling cadence, emitting changes only.
+const RELIST: Duration = Duration::from_secs(3);
+/// An unchanged list is still reported this often, so it stays confirmed.
+const CONFIRM: Duration = Duration::from_secs(30);
 
 pub(super) struct Client {
     pid: u32,
@@ -175,7 +181,8 @@ impl Client {
     /// Reader loop on the owning thread: replies in order, notices as wakes.
     fn read(&self, out: impl std::io::Read) {
         let mut reader = BufReader::new(out);
-        let mut block: Option<(String, bool, String)> = None;
+        // Key, ours, body (None once it outgrew BODY_LIMIT).
+        let mut block: Option<(String, bool, Option<String>)> = None;
         let mut line = Vec::new();
         loop {
             line.clear();
@@ -197,19 +204,25 @@ impl Client {
                                 .ok()
                                 .and_then(|mut io| io.pending.pop_front());
                             if let Some(reply) = reply {
-                                let _ = reply.send(if ok {
-                                    Ok(body)
-                                } else {
-                                    Err(anyhow::anyhow!("tmux: {}", body.trim()))
+                                let _ = reply.send(match body {
+                                    None => Err(anyhow::anyhow!("preview exceeds screen limit")),
+                                    Some(body) if ok => Ok(body),
+                                    Some(body) => Err(anyhow::anyhow!("tmux: {}", body.trim())),
                                 });
                             }
                         }
                         continue;
                     }
                 }
-                if body.len() + text.len() < BODY_LIMIT {
-                    body.push_str(&text);
-                    body.push('\n');
+                if body
+                    .as_ref()
+                    .is_some_and(|b| b.len() + text.len() < BODY_LIMIT)
+                {
+                    let b = body.as_mut().unwrap();
+                    b.push_str(&text);
+                    b.push('\n');
+                } else {
+                    *body = None;
                 }
                 continue;
             }
@@ -219,7 +232,7 @@ impl Client {
             };
             match parse(&text) {
                 Notice::Begin { key, ours } => {
-                    block = Some((key.to_owned(), ours, String::new()));
+                    block = Some((key.to_owned(), ours, Some(String::new())));
                 }
                 Notice::Output { pane } => {
                     if state.pane.as_ref().is_some_and(|(p, _)| p == pane) && !state.pane_dirty {
@@ -269,9 +282,17 @@ pub(super) fn running() -> Option<Arc<Client>> {
     CLIENT.lock().ok()?.as_ref().filter(|c| c.alive()).cloned()
 }
 
+/// Straight into the hidden session when it exists: a plain attach first
+/// joins the most recent user session, briefly counting as its client.
 fn start() -> Result<Arc<Client>> {
+    start_in(&["-t", "=cxctl"]).or_else(|_| start_in(&[]))
+}
+fn start_in(target: &[&str]) -> Result<Arc<Client>> {
     let mut command = tmux(true)?;
-    command.args(["-C", "attach-session", "-f", "ignore-size"]);
+    command
+        .args(["-C", "attach-session"])
+        .args(target)
+        .args(["-f", "ignore-size"]);
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -438,6 +459,13 @@ fn verified_pane(client: &Client, session: &Session) -> Result<serde_json::Value
     preview::preview_with(&|args| client.run(args), session, false, None)
 }
 
+/// A list is fetched when tmux announced a change (after the burst settles)
+/// or RELIST passed since the last one.
+fn list_due(now: Instant, last_poll: Instant, list_dirty: Option<Instant>) -> bool {
+    now.saturating_duration_since(last_poll) >= RELIST
+        || list_dirty.is_some_and(|t| now.saturating_duration_since(t) >= LIST_DEBOUNCE)
+}
+
 fn watch_loop(
     client: Arc<Client>,
     generation: u64,
@@ -449,7 +477,15 @@ fn watch_loop(
     let mut last_pane = first;
     let mut last_list: Option<serde_json::Value> = None;
     let mut last_poll = Instant::now();
+    let mut last_report = Instant::now();
     let mut prepared = false;
+    // A capture or list in flight when a newer watch started is not sent.
+    let current = || {
+        client
+            .state
+            .lock()
+            .is_ok_and(|s| s.generation == generation)
+    };
     loop {
         let (capture, list) = {
             let Ok(mut state) = client.state.lock() else {
@@ -467,12 +503,7 @@ fn watch_loop(
                 let now = Instant::now();
                 let since = last_capture.map(|t| now.saturating_duration_since(t));
                 let capture_due = state.pane_dirty && since.is_none_or(|s| s >= CAPTURE_INTERVAL);
-                let safety = now.saturating_duration_since(last_poll) >= SAFETY_POLL;
-                let list_due = sessions
-                    && (safety
-                        || state
-                            .list_dirty
-                            .is_some_and(|t| now.saturating_duration_since(t) >= LIST_DEBOUNCE));
+                let list_due = sessions && list_due(now, last_poll, state.list_dirty);
                 if capture_due || list_due {
                     state.pane_dirty &= !capture_due;
                     if list_due {
@@ -480,12 +511,9 @@ fn watch_loop(
                         // A list change may be the watched session ending.
                         state.pane_dirty |= state.pane.is_some();
                     }
-                    break (
-                        capture_due.then(|| state.pane.clone()).flatten(),
-                        list_due.then_some(safety),
-                    );
+                    break (capture_due.then(|| state.pane.clone()).flatten(), list_due);
                 }
-                let mut wait = SAFETY_POLL.saturating_sub(now.saturating_duration_since(last_poll));
+                let mut wait = RELIST.saturating_sub(now.saturating_duration_since(last_poll));
                 if state.pane_dirty {
                     wait = wait.min(CAPTURE_INTERVAL.saturating_sub(since.unwrap_or_default()));
                 }
@@ -504,53 +532,48 @@ fn watch_loop(
         if let Some((pane_id, session)) = capture {
             last_capture = Some(Instant::now());
             let session_id = session.terminal.as_ref().map(|t| t.session_id.clone());
-            match preview::preview_with(&|args| client.run(args), &session, false, None) {
-                Ok(mut value) => {
-                    let current = value["pane_id"].as_str().unwrap_or_default().to_owned();
-                    if current != pane_id {
-                        if let Ok(mut state) = client.state.lock() {
-                            if state.generation == generation {
-                                state.pane = Some((current, session.clone()));
+            // A failed capture keeps the pane watched: the next output or
+            // list change retries it (an ended session ends the client).
+            let mut value =
+                match preview::preview_with(&|args| client.run(args), &session, false, None) {
+                    Ok(value) => {
+                        let current = value["pane_id"].as_str().unwrap_or_default().to_owned();
+                        if current != pane_id {
+                            if let Ok(mut state) = client.state.lock() {
+                                if state.generation == generation {
+                                    state.pane = Some((current, session.clone()));
+                                }
                             }
                         }
-                    }
-                    if last_pane.as_ref() != Some(&value) {
-                        last_pane = Some(value.clone());
-                        value["kind"] = "pane".into();
-                        value["session_id"] = session_id.into();
-                        if !emit(value) {
-                            return;
+                        if !prepared {
+                            // Attach later skips this: tmux setup is done while watching.
+                            prepared = true;
+                            prepare_attach(&session);
                         }
+                        value
                     }
-                    if !prepared {
-                        // Attach later skips this: tmux setup is done while watching.
-                        prepared = true;
-                        prepare_attach(&session);
+                    Err(_) => {
+                        serde_json::json!({"error": "Terminal unavailable · refresh to check"})
                     }
-                }
-                Err(_) => {
-                    if let Ok(mut state) = client.state.lock() {
-                        if state.generation == generation {
-                            state.pane = None;
-                        }
-                    }
-                    let ended = serde_json::json!({
-                        "kind": "pane", "session_id": session_id,
-                        "error": "Terminal unavailable · refresh to check"
-                    });
-                    if !emit(ended) {
-                        return;
-                    }
+                };
+            if last_pane.as_ref() != Some(&value) {
+                last_pane = Some(value.clone());
+                value["kind"] = "pane".into();
+                value["session_id"] = session_id.into();
+                if !current() || !emit(value) {
+                    return;
                 }
             }
         }
-        if let Some(safety) = list {
+        if list {
             last_poll = Instant::now();
             if let Ok(value) = super::list().and_then(|l| Ok(serde_json::to_value(l)?)) {
-                // The safety poll always reports, so the list stays recently confirmed.
-                if safety || last_list.as_ref() != Some(&value) {
+                if last_list.as_ref() != Some(&value) || last_report.elapsed() >= CONFIRM {
+                    last_report = Instant::now();
                     last_list = Some(value.clone());
-                    if !emit(serde_json::json!({"kind": "sessions", "sessions": value})) {
+                    if !current()
+                        || !emit(serde_json::json!({"kind": "sessions", "sessions": value}))
+                    {
                         return;
                     }
                 }
@@ -585,15 +608,14 @@ pub(super) fn input(session: &Session, pane_id: &str, hex: &str) -> Option<Resul
     Some(client.run(&args).map(|_| ()))
 }
 
-/// Attach tickets: 0600 files saying this session's tmux setup (status line,
-/// styles) was refreshed while watching, so a native attach within
-/// TICKET_LIFETIME skips it. Identity is still verified on every attach.
+/// The attach ticket: one 0600 file naming the session (and its server
+/// instance and viewer glyph mode) whose tmux setup (status line, styles) was
+/// refreshed while watching, so a native attach within TICKET_LIFETIME skips
+/// it. One pane is watched at a time, so one file. Identity is still verified
+/// on every attach.
 const TICKET_LIFETIME: Duration = Duration::from_secs(120);
-fn ticket_path(session: &Session, ascii: bool) -> Result<PathBuf> {
-    let terminal = session
-        .terminal
-        .as_ref()
-        .context("terminal identity unavailable")?;
+fn ticket_text(session: &Session, ascii: bool) -> Option<String> {
+    let terminal = session.terminal.as_ref()?;
     let digest = Sha256::digest(
         format!(
             "{}\n{}\n{}\n{}\n{}\n{}",
@@ -606,35 +628,52 @@ fn ticket_path(session: &Session, ascii: bool) -> Result<PathBuf> {
         )
         .as_bytes(),
     );
-    let name: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
-    Ok(state()?.join(format!("attach-ticket-{name}")))
+    Some(digest[..16].iter().map(|b| format!("{b:02x}")).collect())
+}
+fn ticket() -> Result<PathBuf> {
+    Ok(state()?.join("attach-ticket"))
 }
 fn prepare_attach(session: &Session) {
     let ascii = viewer_ascii();
-    let (Ok(path), Some(terminal)) = (ticket_path(session, ascii), session.terminal.as_ref())
-    else {
+    let Some(terminal) = session.terminal.as_ref() else {
         return;
     };
     let configured =
         configured(terminal.server_pid, &terminal.server_start) || configure_managed().is_ok();
     if configured && refresh_managed_status_as(&session.id, ascii).is_ok() {
-        let _ = fs::remove_file(&path);
-        let _ = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&path);
+        let _ = write_ticket(session, ascii);
     }
 }
-/// True when a fresh, private ticket exists for this exact session, viewer
-/// glyph mode and server instance.
+fn write_ticket(session: &Session, ascii: bool) -> Result<()> {
+    let text = ticket_text(session, ascii).context("terminal identity unavailable")?;
+    let path = ticket()?;
+    let _ = fs::remove_file(&path);
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)?
+        .write_all(text.as_bytes())?;
+    Ok(())
+}
+/// True when a fresh, private ticket names this exact session, viewer glyph
+/// mode and server instance.
 pub(super) fn ticket_valid(session: &Session, ascii: bool) -> bool {
+    use std::io::Read;
     use std::os::unix::fs::MetadataExt;
-    let Ok(path) = ticket_path(session, ascii) else {
+    let (Ok(path), Some(text)) = (ticket(), ticket_text(session, ascii)) else {
         return false;
     };
-    fs::symlink_metadata(&path).is_ok_and(|m| {
+    let Ok(mut file) = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)
+    else {
+        return false;
+    };
+    let mut found = String::new();
+    file.metadata().is_ok_and(|m| {
         m.is_file()
             && m.uid() == unsafe { libc::geteuid() }
             && m.mode() & 0o777 == 0o600
@@ -643,7 +682,8 @@ pub(super) fn ticket_valid(session: &Session, ascii: bool) -> bool {
                 .ok()
                 .and_then(|t| t.elapsed().ok())
                 .is_some_and(|age| age < TICKET_LIFETIME)
-    })
+    }) && file.read_to_string(&mut found).is_ok()
+        && found == text
 }
 
 /// `configure_managed` once per server instance: a 0600 marker names the
@@ -778,6 +818,87 @@ mod tests {
         assert!(!state.alive, "%exit ends the client");
         let _ = child.kill();
         let _ = child.wait();
+    }
+    #[test]
+    fn a_reply_over_the_body_limit_fails_whole() {
+        let (client, mut child) = fixture();
+        let (tx, rx) = mpsc::sync_channel(1);
+        client.io.lock().unwrap().pending.push_back(tx);
+        let big = "x".repeat(BODY_LIMIT - 10);
+        let transcript = format!("%begin 100 1 1\n{big}\n{big}\nshort tail\n%end 100 1 1\n%exit\n");
+        client.read(std::io::Cursor::new(transcript.into_bytes()));
+        // Never a screen with rows missing from its middle.
+        assert!(rx.recv().unwrap().is_err());
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    #[test]
+    fn lists_are_refetched_at_the_polling_cadence_without_a_notice() {
+        let now = Instant::now();
+        // Titles, running commands and agent state change with no tmux notice.
+        assert!(list_due(now, now - RELIST - Duration::from_millis(1), None));
+        assert!(!list_due(now, now - Duration::from_secs(1), None));
+        assert!(list_due(now, now, Some(now - LIST_DEBOUNCE)));
+        assert!(!list_due(now, now, Some(now)));
+    }
+    fn unidentified_session() -> Session {
+        serde_json::from_value(serde_json::json!({"id":"x","name":"x","directory":"/",
+            "provider":"shell","host":"h","account":"a","pid":1,"started":"0","boot_id":"b",
+            "external":false,"socket":null}))
+        .unwrap()
+    }
+    #[test]
+    fn a_failed_capture_keeps_the_pane_watched_for_a_retry() {
+        let (client, mut child) = fixture();
+        {
+            let mut state = client.state.lock().unwrap();
+            state.pane = Some(("%7".into(), unidentified_session()));
+            state.pane_dirty = true;
+        }
+        let (tx, events) = mpsc::channel();
+        let owned = client.clone();
+        let emit: Emit = Arc::new(move |v| tx.send(v).is_ok());
+        let worker = thread::spawn(move || watch_loop(owned, 0, false, None, emit));
+        let first = events.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(first["error"].is_string());
+        // The next output retries; an unchanged failure is not sent again.
+        assert!(client.state.lock().unwrap().pane.is_some());
+        client.state.lock().unwrap().pane_dirty = true;
+        client.changed.notify_all();
+        assert!(events.recv_timeout(Duration::from_millis(200)).is_err());
+        assert!(!client.state.lock().unwrap().pane_dirty, "the retry ran");
+        client.state.lock().unwrap().generation += 1;
+        client.changed.notify_all();
+        worker.join().unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    #[test]
+    fn one_attach_ticket_names_the_last_prepared_session() {
+        let identified = |id: &str| {
+            let mut s = unidentified_session();
+            s.id = id.into();
+            s.terminal = Some(crate::model::TerminalIdentity {
+                server_pid: 1,
+                server_start: "1".into(),
+                session_id: "$1".into(),
+                created: "1".into(),
+            });
+            s
+        };
+        let (a, b) = (identified("ticket-a"), identified("ticket-b"));
+        write_ticket(&a, false).unwrap();
+        assert!(ticket_valid(&a, false) && !ticket_valid(&a, true));
+        write_ticket(&b, false).unwrap();
+        assert!(ticket_valid(&b, false) && !ticket_valid(&a, false));
+        let tickets = fs::read_dir(state().unwrap())
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .is_ok_and(|e| e.file_name().to_string_lossy().starts_with("attach-ticket"))
+            })
+            .count();
+        assert_eq!(tickets, 1, "tickets accumulate");
     }
     #[test]
     fn a_dead_client_fails_pending_and_new_commands_at_once() {

@@ -83,9 +83,10 @@ impl App {
             Action::Paste => {
                 self.view == View::Files && self.clipboard.is_some() && self.browser.is_some()
             }
-            Action::Observe | Action::PinSession | Action::SendCtrlBackslash => {
+            Action::Observe | Action::PinSession => {
                 self.view == View::Work && self.selected_session().is_some()
             }
+            Action::SendCtrlBackslash => self.last_session.is_some(),
             Action::FolderSessions => {
                 self.view == View::Files
                     && self.browser.as_ref().is_some_and(|b| b.preview.is_none())

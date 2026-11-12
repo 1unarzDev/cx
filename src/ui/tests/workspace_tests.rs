@@ -459,7 +459,7 @@ fn peek_shows_the_live_screen_and_a_tap_on_it_types_inline() {
         .push("live-session-pane-v1".into());
     a.open_device(0);
     let _ = rx.try_iter().count();
-    assert!(a.refresh_session_preview(160));
+    assert!(a.refresh_session_preview());
     let task = rx.try_recv().unwrap();
     a.apply(Reply {
         device_id: Some("local".into()),
@@ -484,19 +484,26 @@ fn peek_shows_the_live_screen_and_a_tap_on_it_types_inline() {
     assert!(text.contains("peeked screen"), "{text}");
     // A tap on the peeked screen types into it; Ctrl+\ leaves without sending.
     let screen = a.preview_screen();
-    a.mouse(
-        MouseEvent {
-            kind: MouseEventKind::Down(event::MouseButton::Left),
-            column: screen.x + 1,
-            row: screen.y,
-            modifiers: KeyModifiers::NONE,
-        },
-        Rect::new(0, 0, 160, 30),
-    );
+    let tap = |column, row| MouseEvent {
+        kind: MouseEventKind::Down(event::MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    let area = Rect::new(0, 0, 160, 30);
+    a.mouse(tap(screen.x + 1, screen.y), area);
     assert!(a.pane_focused());
     a.key(KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::CONTROL));
     assert!(!a.pane_focused());
-    // Esc leaves the peek.
+    // While typing, a tap outside the screen (the bar's `esc` chip) stops it.
+    a.mouse(tap(screen.x + 1, screen.y), area);
+    assert!(a.pane_focused());
+    a.mouse(tap(1, 29), area);
+    assert!(!a.pane_focused() && a.peek);
+    // Esc stops typing (nothing reaches the agent); a second Esc leaves the peek.
+    a.mouse(tap(screen.x + 1, screen.y), area);
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!a.pane_focused() && a.peek);
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(!a.peek);
     assert!(rx
@@ -516,7 +523,7 @@ fn live_preview_app() -> (App, mpsc::Receiver<Task>) {
     a.view = View::Work;
     a.device = 1;
     a.selected = 0;
-    assert!(a.refresh_session_preview(160));
+    assert!(a.refresh_session_preview());
     let task = rx.try_recv().unwrap();
     a.apply(Reply {
         device_id: Some("local".into()),
@@ -557,9 +564,31 @@ fn preview_clicks_leave_an_open_text_input_in_charge() {
 }
 
 #[test]
-fn palette_sends_a_literal_ctrl_backslash_to_the_session() {
+fn palette_sends_a_literal_ctrl_backslash_to_the_last_session_and_reattaches() {
     let (mut a, rx) = live_preview_app();
+    assert!(
+        !a.action_enabled(Action::SendCtrlBackslash),
+        "nothing detached yet"
+    );
+    // A detach lands on the hub with the session selected: the action is there.
+    let s = a.work[0].sessions[0].clone();
+    a.returned_from(0, &s);
     assert!(a.action_enabled(Action::SendCtrlBackslash));
+    a.refresh_session_preview();
+    if let Some(task) = rx
+        .try_iter()
+        .find(|t| matches!(t.op, Operation::SessionPreview { .. }))
+    {
+        a.apply(Reply {
+            device_id: Some("local".into()),
+            execution_target: Some(None),
+            preview: None,
+            device: 0,
+            op: task.op,
+            generation: task.generation,
+            result: Ok(serde_json::json!({"live":true,"pane_id":"%1","styled_lines":["screen"],"cols":80,"rows":24})),
+        });
+    }
     a.execute(Action::SendCtrlBackslash);
     let sent: Vec<_> = rx
         .try_iter()
@@ -569,8 +598,9 @@ fn palette_sends_a_literal_ctrl_backslash_to_the_session() {
         })
         .collect();
     assert_eq!(sent, [("1c".to_string(), "%1".to_string())]);
-    // Focus stays on the pane for the follow-up key (nvim Ctrl+\ Ctrl+N).
-    assert!(a.pane_focused());
+    // Re-attached, so the follow-up key (nvim Ctrl+\ Ctrl+N) is typed natively.
+    assert!(a.pending_attach.is_some() || a.attach_check.is_some());
+    assert!(!a.pane_focused());
 }
 
 #[test]
@@ -636,7 +666,7 @@ fn keystroke_echo_polls_immediately_and_parsed_screen_is_cached() {
         .0
         .push("live-session-pane-v1".into());
     a.focus = Focus::Workspace;
-    assert!(a.refresh_session_preview(160));
+    assert!(a.refresh_session_preview());
     let task = rx.try_recv().unwrap();
     let reply = |task: Task, line: &str| Reply {
         device_id: Some("local".into()),
@@ -658,7 +688,7 @@ fn keystroke_echo_polls_immediately_and_parsed_screen_is_cached() {
     a.type_into_preview();
     assert!(a.pane_focused());
     // Focusing takes one fresh capture; after it lands nothing is due yet.
-    a.refresh_session_preview(160);
+    a.refresh_session_preview();
     let focus = rx.try_recv().unwrap();
     a.apply(reply(focus, "\u{1b}[31mfirst"));
     assert_eq!(
@@ -666,7 +696,7 @@ fn keystroke_echo_polls_immediately_and_parsed_screen_is_cached() {
         r1,
         "identical capture: no redraw"
     );
-    a.refresh_session_preview(160);
+    a.refresh_session_preview();
     assert!(rx.try_recv().is_err());
     press(&mut a, 'x');
     assert!(matches!(
@@ -674,7 +704,7 @@ fn keystroke_echo_polls_immediately_and_parsed_screen_is_cached() {
         Operation::SessionPaneInput { .. }
     ));
     // A keystroke makes the echo capture due at once, without waiting 100 ms.
-    a.refresh_session_preview(160);
+    a.refresh_session_preview();
     let echo = rx.try_recv().unwrap();
     assert!(matches!(echo.op, Operation::SessionPreview { .. }));
     // Another key while that capture is in flight re-polls right after it lands.
@@ -682,7 +712,7 @@ fn keystroke_echo_polls_immediately_and_parsed_screen_is_cached() {
     let _ = rx.try_recv();
     a.apply(reply(echo, "firstx"));
     assert!(a.session_preview_revision() > r1);
-    a.refresh_session_preview(160);
+    a.refresh_session_preview();
     assert!(matches!(
         rx.try_recv().unwrap().op,
         Operation::SessionPreview { .. }
@@ -717,17 +747,17 @@ fn focused_scrollback_and_missing_selection_never_spin_the_event_loop() {
             })),
         }
     };
-    assert!(a.refresh_session_preview(160));
+    assert!(a.refresh_session_preview());
     a.apply(reply(rx.try_recv().unwrap()));
     // A tap on the peeked screen (the same entry point).
     a.type_into_preview();
     assert!(a.pane_focused());
-    a.refresh_session_preview(160);
+    a.refresh_session_preview();
     a.apply(reply(rx.try_recv().unwrap()));
     // Type, so echo polling runs at its fastest interval.
     press(&mut a, 'x');
     let _ = rx.try_recv();
-    a.refresh_session_preview(160);
+    a.refresh_session_preview();
     if let Ok(echo) = rx.try_recv() {
         a.apply(reply(echo));
     }
@@ -747,7 +777,7 @@ fn focused_scrollback_and_missing_selection_never_spin_the_event_loop() {
         );
     }
     // The wheel requests one history page; once it lands nothing is due.
-    a.refresh_session_preview(160);
+    a.refresh_session_preview();
     let page = rx.try_recv().unwrap();
     assert!(matches!(
         page.op,
@@ -757,7 +787,7 @@ fn focused_scrollback_and_missing_selection_never_spin_the_event_loop() {
         }
     ));
     a.apply(reply(page));
-    a.refresh_session_preview(160);
+    a.refresh_session_preview();
     assert!(rx.try_recv().is_err(), "a loaded page is not re-requested");
     // Typing while scrolled back must not make the loop poll with a zero wait.
     std::thread::sleep(Duration::from_millis(20));
@@ -811,7 +841,7 @@ fn a_helper_watch_replaces_polling_and_polling_returns_when_it_ends() {
         .0
         .push("session-preview-v1".into());
     a.focus = Focus::Workspace;
-    a.refresh_session_preview(160);
+    a.refresh_session_preview();
     a.sync_watches();
     let tasks: Vec<Task> = rx.try_iter().collect();
     // An old remote helper (no watch-v1) is never sent a Watch it cannot decode.
@@ -845,7 +875,7 @@ fn a_helper_watch_replaces_polling_and_polling_returns_when_it_ends() {
     let revision = a.session_preview_revision();
     // Watched: nothing is polled, however long since the last capture.
     std::thread::sleep(Duration::from_millis(300));
-    a.refresh_session_preview(160);
+    a.refresh_session_preview();
     a.sync_watches();
     assert!(rx.try_recv().is_err(), "a watched screen is never polled");
     // A pushed screen for the selected session applies like a polled one.
@@ -867,11 +897,80 @@ fn a_helper_watch_replaces_polling_and_polling_returns_when_it_ends() {
     // The watch ends (control client killed, helper gone): polling resumes at once.
     a.watch_event(None, serde_json::json!({"kind": "closed"}));
     assert!(!a.sessions_pushed(0));
-    a.refresh_session_preview(160);
+    a.refresh_session_preview();
     assert!(matches!(
         rx.try_recv().unwrap().op,
         Operation::SessionPreview { .. }
     ));
+}
+
+fn watched_local_app() -> (App, mpsc::Receiver<Task>, Task) {
+    let (mut a, rx) = queued_app();
+    a.work[0].sessions.push(identified_shell());
+    a.work[0].fetched = transport::now();
+    a.providers
+        .get_mut(&0)
+        .unwrap()
+        .0
+        .push("session-preview-v1".into());
+    a.focus = Focus::Workspace;
+    a.refresh_session_preview();
+    a.sync_watches();
+    let watch = rx
+        .try_iter()
+        .find(|t| matches!(t.op, Operation::Watch { pane: Some(_), .. }))
+        .expect("the selected local session is watched");
+    (a, rx, watch)
+}
+
+#[test]
+fn a_terminal_handoff_ends_the_watch_and_return_watches_again() {
+    let (mut a, rx, _) = watched_local_app();
+    // Attached, nothing reads helper events: the pane must not keep streaming.
+    a.stop_watches();
+    let ops: Vec<_> = rx.try_iter().map(|t| t.op).collect();
+    assert!(
+        matches!(
+            ops[..],
+            [Operation::Watch {
+                sessions: false,
+                pane: None
+            }]
+        ),
+        "{ops:?}"
+    );
+    assert!(!a.sessions_pushed(0));
+    a.sync_watches();
+    assert!(rx.try_iter().any(|t| matches!(
+        t.op,
+        Operation::Watch {
+            sessions: true,
+            pane: Some(_)
+        }
+    )));
+}
+
+#[test]
+fn a_pushed_screen_that_overtakes_its_watch_reply_is_kept() {
+    let (mut a, _rx, watch) = watched_local_app();
+    let screen = |line: &str| serde_json::json!({"live":true,"pane_id":"%1","styled_lines":[line],"cols":80,"rows":24});
+    // In-process, the watch thread's first change can reach the loop before
+    // the task worker's reply.
+    let mut pushed = screen("NEWER");
+    pushed["kind"] = "pane".into();
+    pushed["session_id"] = "$1".into();
+    assert!(a.watch_event(None, pushed).0);
+    a.watch_replied(Reply {
+        device_id: Some("local".into()),
+        execution_target: Some(None),
+        preview: None,
+        device: 0,
+        op: watch.op,
+        generation: watch.generation,
+        result: Ok(serde_json::json!({"watching": true, "pane": screen("OLDER")})),
+    });
+    assert_eq!(a.session_preview_lines(), ["NEWER"]);
+    assert!(a.sessions_pushed(0));
 }
 
 #[test]
@@ -900,7 +999,7 @@ fn a_refused_watch_falls_back_to_polling() {
         result: Err(anyhow::anyhow!("tmux control mode unavailable")),
     });
     assert!(!a.sessions_pushed(0));
-    a.refresh_session_preview(160);
+    a.refresh_session_preview();
     a.sync_watches();
     let ops: Vec<_> = rx.try_iter().map(|t| t.op).collect();
     assert!(ops
@@ -932,7 +1031,7 @@ fn a_hub_tile_keeps_its_pushed_screen_after_the_selection_moves() {
     a.go_hub();
     a.hub_sessions = true;
     a.reconcile_session_selection(Some((0, workspaces::runtime_key(&first))));
-    a.refresh_session_preview(160);
+    a.refresh_session_preview();
     a.sync_watches();
     let watch = rx
         .try_iter()
@@ -951,7 +1050,7 @@ fn a_hub_tile_keeps_its_pushed_screen_after_the_selection_moves() {
     });
     // Another tile selected: the first keeps its last frame from memory, unpolled.
     a.reconcile_session_selection(Some((0, workspaces::runtime_key(&second))));
-    a.refresh_session_preview(160);
+    a.refresh_session_preview();
     let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
     t.draw(|f| render(f, &a)).unwrap();
     let text: String = t

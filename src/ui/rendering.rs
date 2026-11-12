@@ -1201,7 +1201,8 @@ fn find_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
         frame.set_cursor_position((row.x + 4 + width.min(row.width.saturating_sub(5)), row.y));
     }
 }
-/// Typing into a peeked session: the footer says how to leave (`ctrl+\`).
+/// Typing into a peeked session: the footer says how to leave (Esc, Ctrl+\
+/// or a tap outside the screen).
 fn typing_bar(frame: &mut Frame<'_>, area: Rect) {
     let row = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
     frame.render_widget(Clear, row);
@@ -1209,10 +1210,10 @@ fn typing_bar(frame: &mut Frame<'_>, area: Rect) {
         Paragraph::new(Line::from(vec![
             Span::raw(" "),
             Span::styled(
-                " ctrl+\\ ",
+                " esc ",
                 Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
             ),
-            Span::styled(" detach  typing into the session", muted()),
+            Span::styled(" back  typing into the session", muted()),
         ])),
         row,
     );

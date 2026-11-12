@@ -98,15 +98,22 @@ pub fn classify(proc: Proc, cpu_percent: f64, own_lineage: &[i32]) -> Finding {
     }
 }
 
+/// From the stat text before comm's last ')': Some(true) for a tmux client
+/// (tmux renames its clients `tmux: client`), Some(false) for cx.
+fn tmux_comm(head: &str) -> Option<bool> {
+    if head.ends_with("(cx") {
+        Some(false)
+    } else {
+        (head.ends_with("(tmux") || head.ends_with("(tmux: client")).then_some(true)
+    }
+}
+
 fn read_proc(pid: i32) -> Option<Proc> {
     let base = Path::new("/proc").join(pid.to_string());
     let stat = fs::read_to_string(base.join("stat")).ok()?;
     // comm may contain spaces/parens; fields resume after the last ')'.
     let (head, rest) = stat.rsplit_once(')')?;
-    let tmux = head.ends_with("(tmux");
-    if !head.ends_with("(cx") && !tmux {
-        return None;
-    }
+    let tmux = tmux_comm(head)?;
     let fields: Vec<&str> = rest.split_whitespace().collect();
     let state = fields.first()?.chars().next()?;
     let ppid = fields.get(1)?.parse().ok()?;
@@ -404,6 +411,15 @@ mod tests {
         let f = classify(proc(21, 1, &control, Some("pipe:[1]")), 0.0, &[]);
         assert!(f.stray && f.role == "control");
         assert!(!classify(proc(22, 9, &control, Some("pipe:[1]")), 0.0, &[]).stray);
+        // tmux renames its clients: the stat comm of `tmux -C` is `tmux: client`.
+        let head = |stat: &'static str| stat.rsplit_once(')').unwrap().0;
+        assert_eq!(
+            tmux_comm(head("2049813 (tmux: client) S 1 2 3")),
+            Some(true)
+        );
+        assert_eq!(tmux_comm(head("7 (tmux) S 1 2 3")), Some(true));
+        assert_eq!(tmux_comm(head("8 (cx) S 1 2 3")), Some(false));
+        assert_eq!(tmux_comm(head("9 (tmux: server) S 1 2 3")), None);
         // The user's own tmux is never cx's.
         assert_ne!(
             role(&["tmux".into(), "-C".into(), "attach".into()]),

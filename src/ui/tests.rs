@@ -2260,7 +2260,10 @@ fn container_menus_keep_shell_available_until_scoped_agents_are_observed() {
     assert!(matches!(a.dialog, Some(Dialog::ContainerProvider(..))));
     // The Shell tile names the key that picks it.
     let text = draw_text(&a);
-    assert!(text.contains("[n] Container") && !text.contains("[s] "), "{text}");
+    assert!(
+        text.contains("[n] Container") && !text.contains("[s] "),
+        "{text}"
+    );
     press(&mut a, 'x');
     press(&mut a, 'c');
     assert!(rx

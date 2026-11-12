@@ -437,8 +437,11 @@ pub fn watch(sessions: bool, pane: Option<Session>, emit: Emit) -> Result<serde_
     thread::Builder::new()
         .name("cx-watch".into())
         .spawn(move || watch_loop(owned, generation, sessions, shown, emit))?;
-    // The reply carries the first screen; events follow only on change.
-    Ok(serde_json::json!({"watching": true, "pane_id": pane_id, "pane": first}))
+    // The reply carries the first screen; events follow only on change. Both name
+    // the watch, so a viewer can tell this watch's frames from a replaced one's.
+    Ok(
+        serde_json::json!({"watching": true, "watch": generation, "pane_id": pane_id, "pane": first}),
+    )
 }
 
 /// The session's current screen, after the same identity check as a
@@ -560,6 +563,7 @@ fn watch_loop(
                 last_pane = Some(value.clone());
                 value["kind"] = "pane".into();
                 value["session_id"] = session_id.into();
+                value["watch"] = generation.into();
                 if !current() || !emit(value) {
                     return;
                 }

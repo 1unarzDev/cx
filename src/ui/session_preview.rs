@@ -61,9 +61,17 @@ struct Watched {
     live: bool,
     /// After a refusal or a closed watch: poll, and ask again from then.
     retry_at: Option<Instant>,
-    /// A pushed screen of this watch overtook its reply (in-process events
-    /// are not ordered behind it); the reply's older first screen is dropped.
-    pushed: bool,
+    /// The helper's id of the watch whose pushed screen was shown before its reply
+    /// (in-process events are not ordered behind it): that reply's older first
+    /// screen is dropped. A leftover frame of a replaced watch has another id.
+    pushed: Option<u64>,
+    /// The id the reply named; from then on only that watch's frames apply.
+    /// (Helpers before v0.2.1 send no id: 0 for both, as before.)
+    watch: Option<u64>,
+}
+/// A watch reply's or pushed frame's watch id (0 from a helper that sends none).
+fn watch_id(value: &Value) -> u64 {
+    value["watch"].as_u64().unwrap_or(0)
 }
 /// See `live_frame_grace`.
 const LIVE_GRACE: Duration = Duration::from_millis(8);
@@ -847,7 +855,8 @@ impl App {
                     .unwrap();
                 w.requested = Some(want);
                 w.retry_at = None;
-                w.pushed = false;
+                w.pushed = None;
+                w.watch = None;
             }
         }
     }
@@ -917,9 +926,10 @@ impl App {
         match reply.result {
             Ok(value) => {
                 w.live = true;
-                let pushed = w.pushed;
+                let id = watch_id(&value);
+                w.watch = Some(id);
                 match (pane, value.get("pane")) {
-                    (Some(session), Some(screen)) if !pushed => {
+                    (Some(session), Some(screen)) if w.pushed != Some(id) => {
                         self.apply_watched_screen(d, session.clone(), Ok(screen.clone()))
                     }
                     _ => false,
@@ -984,16 +994,17 @@ impl App {
                 // The watch asked for this screen is live, even if its reply
                 // (in-process, on another thread) has not landed yet.
                 let want = key(&self.devices[d], &session);
-                let Some(w) = self
-                    .session_preview
-                    .watches
-                    .get_mut(&id)
-                    .filter(|w| w.requested.as_ref() == Some(&want) && w.retry_at.is_none())
-                else {
+                let Some(w) = self.session_preview.watches.get_mut(&id).filter(|w| {
+                    w.requested.as_ref() == Some(&want)
+                        && w.retry_at.is_none()
+                        && w.watch.is_none_or(|id| id == watch_id(&event))
+                }) else {
                     return (false, false);
                 };
                 w.live = true;
-                w.pushed = true;
+                if w.watch.is_none() {
+                    w.pushed = Some(watch_id(&event));
+                }
                 let result = match event["error"].as_str() {
                     Some(error) => Err(anyhow::anyhow!("{error}")),
                     None => Ok(event),

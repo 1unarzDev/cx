@@ -973,6 +973,54 @@ fn a_pushed_screen_that_overtakes_its_watch_reply_is_kept() {
     assert!(a.sessions_pushed(0));
 }
 
+/// A frame the replaced watch sent before the helper ended it (it is drained only
+/// after the new watch is asked for) never hides the new watch's first screen, and
+/// once the new reply names its watch, the old one's frames are ignored.
+#[test]
+fn a_replaced_watchs_late_frame_never_overrides_the_new_reply() {
+    let (mut a, rx, watch) = watched_local_app();
+    let screen = |line: &str, id: u64| serde_json::json!({"live":true,"pane_id":"%1","styled_lines":[line],"cols":80,"rows":24,"watch":id});
+    let frame = |line: &str, id: u64| {
+        let mut v = screen(line, id);
+        v["kind"] = "pane".into();
+        v["session_id"] = "$1".into();
+        v
+    };
+    let reply = |a: &mut App, task: Task, value: Value| {
+        a.watch_replied(Reply {
+            device_id: Some("local".into()),
+            execution_target: Some(None),
+            preview: None,
+            device: 0,
+            op: task.op,
+            generation: task.generation,
+            result: Ok(value),
+        })
+    };
+    reply(
+        &mut a,
+        watch,
+        serde_json::json!({"watching": true, "watch": 1, "pane": screen("BEFORE", 1)}),
+    );
+    a.stop_watches();
+    a.sync_watches();
+    let again = rx
+        .try_iter()
+        .find(|t| matches!(t.op, Operation::Watch { pane: Some(_), .. }))
+        .expect("watched again");
+    a.watch_event(None, frame("STALE", 1));
+    reply(
+        &mut a,
+        again,
+        serde_json::json!({"watching": true, "watch": 2, "pane": screen("FRESH", 2)}),
+    );
+    assert_eq!(a.session_preview_lines(), ["FRESH"]);
+    assert_eq!(a.watch_event(None, frame("STALE AGAIN", 1)), (false, false));
+    assert_eq!(a.session_preview_lines(), ["FRESH"]);
+    assert!(a.watch_event(None, frame("NEXT", 2)).0);
+    assert_eq!(a.session_preview_lines(), ["NEXT"]);
+}
+
 #[test]
 fn a_refused_watch_falls_back_to_polling() {
     let (mut a, rx) = queued_app();

@@ -177,7 +177,8 @@ cx mesh invite --backend ssh-overlay [--hours 24] [--name rover] [--address IP].
 cx mesh pair 7K2Q-M9XD-4HT host[:port] [--name N]
 ```
 
-`cx mesh join` is the WARP join above; `cx mesh pair` is this one.
+`cx join <code> <host>` is short for `cx mesh pair`. (`cx mesh join` is the WARP join above; `cx mesh pair` is this
+one.) On the hub, `+` opens the same invite: its code, this one-liner and a QR code, closed on use, expiry or Esc.
 
 **The code** is 11 Crockford base32 symbols, shown as `XXXX-XXXX-XXX`: 10 random symbols (50 bits) and a check
 symbol (a weighted sum in GF(32)) that catches every single mistyped symbol and every swap of two neighbours

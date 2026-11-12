@@ -114,6 +114,12 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Join a mesh invite: short for `cx mesh pair <code> <host[:port]> [--name N] [--json]`.
+    #[command(disable_help_flag = true)]
+    Join {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Lend your Claude Code gateway with one line (docs/claude.md): lend NAME [--hours H | --days D],
     /// revoke NAME, list; the teammate runs `curl -sL <mesh endpoint>/claude/<code>|sh`. --json for tools.
     #[command(disable_help_flag = true)]
@@ -1712,6 +1718,7 @@ fn run() -> Result<()> {
         }
         Some(Cmd::Terminal { device: d }) => sessions::login_terminal(&device(d)?),
         Some(Cmd::Mesh { args }) => mesh::run(&args),
+        Some(Cmd::Join { args }) => mesh::run(&[vec!["pair".into()], args].concat()),
         Some(Cmd::Claude { args }) => mesh::run_claude(&args),
         Some(Cmd::Secrets { command }) => secrets::run_cli(command),
         Some(Cmd::Edge { command }) => edge_cli(command),
@@ -1901,6 +1908,14 @@ fn main() {
 #[cfg(test)]
 mod enrollment_tests {
     use super::*;
+    #[test]
+    fn join_passes_its_arguments_to_mesh_pair() {
+        let cli = Cli::try_parse_from(["cx", "join", "KX74QM-ABCD", "10.0.0.2", "--json"]).unwrap();
+        let Some(Cmd::Join { args }) = cli.command else {
+            panic!("not join");
+        };
+        assert_eq!(args, ["KX74QM-ABCD", "10.0.0.2", "--json"]);
+    }
     #[test]
     fn exited_installer_cannot_leave_writer_or_reader_blocked() {
         let mut command = Command::new("sh");

@@ -4,6 +4,9 @@
 when one answers, else into a private file stored the way `ssh-keygen` stores an unencrypted private key. A metadata index (names, dates, backend, length; never
 values) lets `cx secrets list` work without touching either backend; it is still read from disk on each call.
 
+The hub's keys screen (`K`) sets and rotates the same secrets in a masked entry; the value is never drawn or
+logged, and its buffer is wiped when the entry closes.
+
 ```
 cx secrets list [--json]                     # metadata only
 printf %s "$TOKEN" | cx secrets set NAME

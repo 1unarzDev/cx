@@ -33,6 +33,10 @@ One grammar on every screen: **a device letter, then a session slot or a verb**.
 | Files: `s` + letter, `t`, `T` | Send to a device, choose a destination device/folder, transfer results |
 | Files: `r`, `d`, `M`, `o`, `S`, `n` | Rename, delete (confirm), new folder, conflict policy, sessions here, new session here |
 | Device screen: `w`, `p`, `t`, `b`, `E`, `X` | Watch, pin, agent tasks, access posture, edit endpoint, remove |
+| Invite (`+`): Esc, `R` | Close the invite, or replace it with a new code |
+| Keys (`K`): `a s d g`, `h` | Set or rotate that secret, or add a new one by name |
+
+`+` opens a single-use ssh-overlay invite for 30 minutes: the code, the `cx mesh pair <code> <host>` line to run on the new device (or `cx join <code> <host>`) and a QR code of that line. It listens on this host's mesh and LAN addresses until one device joins, it expires, or you press Esc; leaving the screen closes it. On the keys screen a slot key opens a masked entry: type or paste the value (it is shown only as dots and a count) and Enter stores it through `cx secrets` (keyring, else the 0600 file); Esc discards it.
 
 Every node, tile, chip, file row and palette row is a tap target running its key's command. A right-click or long press on a target selects it and opens a menu of the selection's keys. Hover never selects. On phones (under 70 columns) the hub is an indented device tree and footers wrap; keys read `ret` and `bksp`.
 

@@ -121,7 +121,7 @@ fn spark_str(cx: &Cx, vals: &[Option<f32>], w: u16) -> String {
     } else {
         // ASCII sparks use only `_ =`: `.` and `-` are link strokes on the map, `#`
         // the edited link.
-        s.replace('.', "_").replace('-', "=").replace('#', "=")
+        s.replace('.', "_").replace(['-', '#'], "=")
     }
 }
 

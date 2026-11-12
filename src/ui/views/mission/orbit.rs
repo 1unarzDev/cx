@@ -797,9 +797,9 @@ fn radial<'a>(
     }
     // Lines cross no label, and links from different parents share no cell.
     let mut owner: std::collections::HashMap<(i32, i32), Option<usize>> = Default::default();
-    for i in 0..n {
-        let pts = &nodes[i].pts;
-        if pts.is_empty() || nodes[i].up.is_none() {
+    for node in nodes.iter().take(n) {
+        let pts = &node.pts;
+        if pts.is_empty() || node.up.is_none() {
             continue;
         }
         for w in pts.windows(2) {
@@ -813,8 +813,8 @@ fn radial<'a>(
                 if boxes.iter().any(|bx| hit(bx, q.0, q.1)) {
                     return None;
                 }
-                let o = owner.entry(q).or_insert(nodes[i].parent);
-                if *o != nodes[i].parent {
+                let o = owner.entry(q).or_insert(node.parent);
+                if *o != node.parent {
                     return None;
                 }
                 if q == b {

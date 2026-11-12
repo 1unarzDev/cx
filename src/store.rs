@@ -237,7 +237,15 @@ mod ui_state_tests {
         // flock is per open file description: a second open in this process is refused while held.
         assert!(private_lock(dir.path(), "x.lock", false).unwrap().is_none());
         drop(held);
-        assert!(private_lock(dir.path(), "x.lock", false).unwrap().is_some());
+        // (Another test thread's fork may hold a copy of the descriptor until its exec closes it.)
+        let free = (0..200).any(|_| {
+            let got = private_lock(dir.path(), "x.lock", false).unwrap().is_some();
+            if !got {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            got
+        });
+        assert!(free, "the lock is free once dropped");
         fs::set_permissions(dir.path().join("x.lock"), fs::Permissions::from_mode(0o660)).unwrap();
         assert!(private_lock(dir.path(), "x.lock", true).is_err());
         symlink(dir.path().join("target"), dir.path().join("y.lock")).unwrap();

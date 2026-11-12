@@ -85,7 +85,7 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     };
     // Two rows share the sessions evenly (the last row's tiles widen to fill it).
     let cols = if rows == 2 {
-        cols.min((list.len() as u16 + 1) / 2)
+        cols.min((list.len() as u16).div_ceil(2))
     } else {
         cols
     };

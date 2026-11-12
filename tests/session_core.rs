@@ -13,7 +13,7 @@ mod peer_ssh;
 #[path = "../src/session_titles.rs"]
 mod session_titles;
 // The helper's watch (control mode) is not exercised by these tests.
-#[allow(dead_code)]
+#[allow(dead_code, unused_imports)]
 #[path = "../src/sessions.rs"]
 mod sessions;
 #[allow(dead_code)]

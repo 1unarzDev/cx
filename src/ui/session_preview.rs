@@ -41,6 +41,35 @@ pub(super) struct Snapshot {
     /// Border chip: `⏏ detach` while typing, `z zoom` / `z back` otherwise.
     chip: std::cell::Cell<Rect>,
     stale_shown: std::cell::Cell<bool>,
+    /// When the selection last changed: a move after a pause fetches at once,
+    /// moves in a burst wait for SELECT_DEBOUNCE.
+    changed_at: Option<Instant>,
+    /// Last frame of recent sessions, by key: memory only, never written out.
+    frames: HashMap<String, Remembered>,
+    /// Per device id: its helper watch (pushed list and selected screen).
+    watches: HashMap<String, Watched>,
+}
+/// A remembered screen, shown dimmed the moment its session is selected.
+#[derive(Clone)]
+struct Remembered {
+    lines: Vec<String>,
+    cols: u16,
+    rows: u16,
+    palette8: Option<Color>,
+    cursor: (u16, u16),
+    history_total: u32,
+    line_start: u32,
+}
+const REMEMBERED_FRAMES: usize = 32;
+#[derive(Default)]
+struct Watched {
+    target: Option<String>,
+    /// The watch last requested: the preview key of its pane, "" for list only.
+    requested: Option<String>,
+    /// The helper accepted it; its events stand in for polling.
+    live: bool,
+    /// After a refusal or a closed watch: poll, and ask again from then.
+    retry_at: Option<Instant>,
 }
 /// Moving the selection settles for this long before a preview is requested.
 pub(super) const SELECT_DEBOUNCE: Duration = Duration::from_millis(60);
@@ -291,7 +320,7 @@ impl App {
             return;
         }
         let Some((d, _)) = self.preview_selection() else {
-            self.session_preview = Snapshot::default();
+            self.reset_session_preview();
             return;
         };
         let (_, session, pane_id) = self.session_preview.focused.clone().unwrap();
@@ -415,12 +444,9 @@ impl App {
         if self.preview_fetch_parked() || self.preview_selection().is_none() {
             return None;
         }
-        let typing = p
-            .last_input
-            .is_some_and(|t| t.elapsed() < Duration::from_secs(1));
-        if p.inflight {
-            // Replies arrive on a channel the input poll cannot see.
-            return Some(Duration::from_millis(if typing { 4 } else { 20 }));
+        // Replies and pushed screens wake the loop themselves.
+        if p.inflight || self.pane_watched() {
+            return None;
         }
         let due = p
             .last
@@ -451,7 +477,7 @@ impl App {
             return;
         }
         let Some((d, _)) = self.preview_selection() else {
-            self.session_preview = Snapshot::default();
+            self.reset_session_preview();
             return;
         };
         let Some((_, session, pane_id)) = self.session_preview.focused.clone() else {
@@ -477,27 +503,50 @@ impl App {
         let next = selection.as_ref().map(|(d, s)| key(&self.devices[*d], s));
         let changed = next != self.session_preview.key;
         if changed {
-            let previous = std::mem::take(&mut self.session_preview);
+            let mut previous = std::mem::take(&mut self.session_preview);
+            if let Some(old) = previous
+                .key
+                .clone()
+                .filter(|_| !previous.carried && previous.live && !previous.lines.is_empty())
+            {
+                if previous.frames.len() >= REMEMBERED_FRAMES && !previous.frames.contains_key(&old)
+                {
+                    previous.frames.clear();
+                }
+                previous.frames.insert(old, Remembered::of(&previous));
+            }
+            let now = Instant::now();
+            let burst = previous
+                .changed_at
+                .is_some_and(|t| now.saturating_duration_since(t) < SELECT_DEBOUNCE);
+            let remembered = next.as_ref().and_then(|k| previous.frames.get(k).cloned());
             let moved = previous.key.is_some() && next.is_some();
             self.session_preview = Snapshot {
                 serial: previous.serial.wrapping_add(1),
                 zoomed: previous.zoomed && next.is_some(),
+                changed_at: Some(now),
                 ..Snapshot::default()
             };
-            if moved {
-                // Keep the old frame, dimmed, so moving never blanks the
-                // preview; fetch only once the selection settles.
-                let p = &mut self.session_preview;
-                p.carried = !previous.lines.is_empty();
-                p.lines = previous.lines;
-                p.cols = previous.cols;
-                p.rows = previous.rows;
-                p.palette8 = previous.palette8;
-                p.cursor = previous.cursor;
-                p.history_total = previous.history_total;
-                p.line_start = previous.line_start;
+            // This session's own last frame, else the old one: dimmed, so
+            // moving never blanks the preview, until the live one arrives.
+            let shown = remembered.or_else(|| moved.then(|| Remembered::of(&previous)));
+            let p = &mut self.session_preview;
+            p.frames = std::mem::take(&mut previous.frames);
+            p.watches = std::mem::take(&mut previous.watches);
+            if let Some(frame) = shown.filter(|f| !f.lines.is_empty()) {
+                p.carried = true;
+                p.lines = frame.lines;
+                p.cols = frame.cols;
+                p.rows = frame.rows;
+                p.palette8 = frame.palette8;
+                p.cursor = frame.cursor;
+                p.history_total = frame.history_total;
+                p.line_start = frame.line_start;
                 p.revision = previous.revision.wrapping_add(1);
-                p.selected_at = Some(Instant::now());
+            }
+            // Fetch at once after a pause; a burst of moves waits to settle.
+            if burst {
+                p.selected_at = Some(now);
             }
             self.session_preview.key = next;
         }
@@ -510,7 +559,7 @@ impl App {
             }
             self.session_preview.selected_at = None;
         }
-        if self.preview_fetch_parked() {
+        if self.preview_fetch_parked() || self.pane_watched() {
             return changed;
         }
         let interval = self.echo_interval();
@@ -678,6 +727,277 @@ impl App {
         let stale = p.received.is_some_and(|t| t.elapsed() >= PREVIEW_STALE);
         p.stale_shown.replace(stale) != stale
     }
+}
+impl Remembered {
+    fn of(p: &Snapshot) -> Self {
+        Remembered {
+            lines: p.lines.clone(),
+            cols: p.cols,
+            rows: p.rows,
+            palette8: p.palette8,
+            cursor: p.cursor,
+            history_total: p.history_total,
+            line_start: p.line_start,
+        }
+    }
+}
+/// After a refused watch: poll, and ask again this much later.
+const WATCH_RETRY: Duration = Duration::from_secs(10);
+/// After a watch ended (helper or control client gone): recover quickly.
+const WATCH_RECOVER: Duration = Duration::from_secs(1);
+impl App {
+    /// Forget the screen, keeping remembered frames and watches.
+    fn reset_session_preview(&mut self) {
+        let previous = std::mem::take(&mut self.session_preview);
+        self.session_preview.frames = previous.frames;
+        self.session_preview.watches = previous.watches;
+        self.session_preview.serial = previous.serial.wrapping_add(1);
+    }
+    /// This host runs this binary in-process; a remote helper says so in Info.
+    fn watch_capable(&self, d: usize) -> bool {
+        self.background_checks_enabled(d)
+            && (self.devices[d].target.is_none()
+                || self
+                    .providers
+                    .get(&d)
+                    .is_some_and(|(caps, _)| caps.iter().any(|c| c == "watch-v1")))
+    }
+    /// The selected screen arrives as pushed events (or the watch reply is
+    /// on its way): no polling. Scrollback pages are still fetched.
+    fn pane_watched(&self) -> bool {
+        let Some((d, s)) = self.preview_selection() else {
+            return false;
+        };
+        let key = key(&self.devices[d], &s);
+        self.session_preview.scroll_top.is_none()
+            && self
+                .session_preview
+                .watches
+                .get(&self.devices[d].id)
+                .is_some_and(|w| w.requested.as_ref() == Some(&key) && w.retry_at.is_none())
+    }
+    /// True while `d`'s helper pushes its session list.
+    pub(super) fn sessions_pushed(&self, d: usize) -> bool {
+        self.session_preview
+            .watches
+            .get(&self.devices[d].id)
+            .is_some_and(|w| w.live && w.target == self.devices[d].target)
+    }
+    /// Keep one watch per capable device: its list, plus the selected
+    /// managed session's screen on that device once the selection settles.
+    pub(super) fn sync_watches(&mut self) {
+        let now = Instant::now();
+        let settled = self.session_preview.selected_at.is_none();
+        let selected = self
+            .preview_selection()
+            .filter(|(_, s)| !s.external && self.session_preview.scroll_top.is_none());
+        for d in 0..self.devices.len() {
+            if !self.watch_capable(d) {
+                continue;
+            }
+            let pane = selected
+                .as_ref()
+                .filter(|(sd, _)| *sd == d)
+                .map(|(_, s)| s.clone());
+            let want = pane
+                .as_ref()
+                .map(|s| key(&self.devices[d], s))
+                .unwrap_or_default();
+            let device = &self.devices[d];
+            let w = self
+                .session_preview
+                .watches
+                .entry(device.id.clone())
+                .or_default();
+            if w.target != device.target {
+                *w = Watched {
+                    target: device.target.clone(),
+                    ..Watched::default()
+                };
+            }
+            if w.retry_at.is_some_and(|t| now < t) {
+                continue;
+            }
+            // Keep the current watch through a burst of moves.
+            if w.requested.as_ref() == Some(&want) || (pane.is_some() && !settled) {
+                continue;
+            }
+            let op = Operation::Watch {
+                sessions: true,
+                pane,
+            };
+            let sent = self
+                .tx
+                .try_send(Task {
+                    device: d,
+                    execution: self.devices[d].clone(),
+                    op,
+                    generation: self.generation,
+                })
+                .is_ok();
+            if sent {
+                self.pending_requests.set(self.pending_requests.get() + 1);
+                let w = self
+                    .session_preview
+                    .watches
+                    .get_mut(&self.devices[d].id)
+                    .unwrap();
+                w.requested = Some(want);
+                w.retry_at = None;
+            }
+        }
+    }
+    fn watched_device(
+        &self,
+        device_id: Option<&String>,
+        target: Option<&Option<String>>,
+    ) -> Option<usize> {
+        self.devices.iter().position(|d| {
+            device_id.is_none_or(|id| &d.id == id) && target.is_none_or(|t| &d.target == t)
+        })
+    }
+    /// A Watch reply: accepted (its first screen included) or refused (poll).
+    pub(super) fn watch_replied(&mut self, reply: Reply) -> bool {
+        self.pending_requests
+            .set(self.pending_requests.get().saturating_sub(1));
+        let Some(d) =
+            self.watched_device(reply.device_id.as_ref(), reply.execution_target.as_ref())
+        else {
+            return false;
+        };
+        let Operation::Watch { pane, .. } = &reply.op else {
+            return false;
+        };
+        let want = pane
+            .as_ref()
+            .map(|s| key(&self.devices[d], s))
+            .unwrap_or_default();
+        let Some(w) = self.session_preview.watches.get_mut(&self.devices[d].id) else {
+            return false;
+        };
+        if w.requested.as_ref() != Some(&want) {
+            return false; // Superseded by a newer watch.
+        }
+        match reply.result {
+            Ok(value) => {
+                w.live = true;
+                match (pane, value.get("pane")) {
+                    (Some(session), Some(screen)) => {
+                        self.apply_watched_screen(d, session.clone(), Ok(screen.clone()))
+                    }
+                    _ => false,
+                }
+            }
+            Err(_) => {
+                // Unsupported here (old tmux, control mode failed): poll.
+                w.live = false;
+                w.requested = None;
+                w.retry_at = Some(Instant::now() + WATCH_RETRY);
+                self.session_preview.last = None;
+                true
+            }
+        }
+    }
+    /// A pushed helper event; returns (redraw, navigation cache changed).
+    pub(super) fn watch_event(&mut self, target: Option<String>, event: Value) -> (bool, bool) {
+        let Some(d) = self.watched_device(None, Some(&target)) else {
+            return (false, false);
+        };
+        let id = self.devices[d].id.clone();
+        let live = self
+            .session_preview
+            .watches
+            .get(&id)
+            .is_some_and(|w| w.live);
+        match event["kind"].as_str() {
+            Some("closed") => {
+                if let Some(w) = self.session_preview.watches.get_mut(&id) {
+                    w.live = false;
+                    w.requested = None;
+                    w.retry_at = Some(Instant::now() + WATCH_RECOVER);
+                }
+                // Poll the screen at once until the watch is back.
+                self.session_preview.last = None;
+                (false, false)
+            }
+            Some("sessions") if live => {
+                // The same path as a polled list, so selection and caches agree.
+                self.pending_requests.set(self.pending_requests.get() + 1);
+                self.apply(Reply {
+                    device_id: Some(id),
+                    execution_target: Some(target),
+                    preview: None,
+                    device: d,
+                    op: Operation::Sessions,
+                    generation: self.generation,
+                    result: Ok(event["sessions"].clone()),
+                });
+                (true, true)
+            }
+            Some("pane") if live => {
+                let Some((sd, session)) = self.preview_selection() else {
+                    return (false, false);
+                };
+                let matches = sd == d
+                    && session.terminal.as_ref().map(|t| t.session_id.as_str())
+                        == event["session_id"].as_str();
+                if !matches || self.session_preview.scroll_top.is_some() {
+                    return (false, false);
+                }
+                let result = match event["error"].as_str() {
+                    Some(error) => Err(anyhow::anyhow!("{error}")),
+                    None => Ok(event),
+                };
+                (self.apply_watched_screen(d, session, result), false)
+            }
+            _ => (false, false),
+        }
+    }
+    /// Apply a pushed screen exactly like a polled one.
+    fn apply_watched_screen(&mut self, d: usize, session: Session, result: Result<Value>) -> bool {
+        let revision = self.session_preview.revision;
+        // apply_session_preview clears `inflight`; a poll in flight then still
+        // lands, and its own (older) reply is dropped by the serial.
+        let inflight = self.session_preview.inflight;
+        self.apply_session_preview(Reply {
+            device_id: Some(self.devices[d].id.clone()),
+            execution_target: Some(self.devices[d].target.clone()),
+            preview: None,
+            device: d,
+            op: Operation::SessionPreview {
+                session,
+                scrollback: false,
+                history_start: None,
+            },
+            generation: self.session_preview.serial,
+            result,
+        });
+        if inflight {
+            self.session_preview.serial = self.session_preview.serial.wrapping_add(1);
+        }
+        self.session_preview.revision != revision
+    }
+    /// Enter on the previewed session with its live screen loaded: show that
+    /// screen full-screen before the handoff, so tmux paints over the same picture.
+    pub(super) fn show_attach_frame(&self, session: &Session) -> bool {
+        let p = &self.session_preview;
+        self.preview_selection().is_some_and(|(d, s)| {
+            workspaces::runtime_key(&s) == workspaces::runtime_key(session)
+                && p.key.as_ref() == Some(&key(&self.devices[d], &s))
+        }) && p.live
+            && !p.carried
+            && !p.lines.is_empty()
+    }
+}
+/// The live screen alone, top-left, at the pane's size (no chrome).
+pub(super) fn render_attach_frame(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let p = &app.session_preview;
+    let lines = parsed_screen(p);
+    let start = (p.history_total.saturating_sub(p.line_start) as usize).min(lines.len());
+    let rows = usize::from(p.rows.min(area.height));
+    let end = (start + rows).min(lines.len());
+    let screen = Rect::new(area.x, area.y, p.cols.min(area.width), rows as u16);
+    frame.render_widget(Paragraph::new(lines[start..end].to_vec()), screen);
 }
 /// Liveness turns into `stale <age>` once captures stop arriving for this long.
 const PREVIEW_STALE: Duration = Duration::from_secs(3);

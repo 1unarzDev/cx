@@ -7792,7 +7792,7 @@ fn preview_worker_replies_before_highlighting() {
     let file = dir.path().join("main.rs");
     std::fs::write(&file, "fn main() {\n    println!(\"hi\");\n}\n").unwrap();
     let (tx, rx) = mpsc::sync_channel(4);
-    let (reply_tx, replies) = mpsc::channel();
+    let (reply_tx, replies) = mpsc::channel::<Reply>();
     start_task_workers(rx, reply_tx);
     tx.send(Task {
         device: 0,

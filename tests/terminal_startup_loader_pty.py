@@ -80,15 +80,16 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-loader-') as tmp:
         assert 'Starting terminal' in text(), 'blank/native handoff before startup finished:\n'+text()
         first=text(); read(.25)
         assert 'Starting terminal' in text() and text()!=first, 'startup loader did not animate'
-        clients=subprocess.check_output(['tmux','-S',socket,'list-clients','-F','#{client_pid}'],env=env,text=True)
-        assert not clients.strip(), 'native attach started before the first screen'
+        # The viewer's own control-mode client (its live watch) is not a native attach.
+        clients=subprocess.check_output(['tmux','-S',socket,'list-clients','-F','#{client_control_mode} #{client_pid}'],env=env,text=True)
+        assert not [c for c in clients.splitlines() if not c.startswith('1 ')], 'native attach started before the first screen'
         wait(lambda:'CX_READY_SCREEN' in text())
         os.write(master,b'printf done > loader-proof\r')
         wait(lambda:(root/'loader-proof').exists())
-        # Leaving the TUI for the handoff must wipe the primary screen it restores,
-        # so a slow remote attach cannot flash the prior "[detached]" teardown text
-        # before tmux repaints. crossterm emits LeaveAlternateScreen then Clear(All).
-        assert b'\x1b[?1049l\x1b[2J' in raw, 'handoff did not clear the primary screen'
+        # The attach handoff stays on the alternate screen, where tmux paints over
+        # cx's last frame: the primary screen, with a prior attach's "[detached]"
+        # teardown text, is never shown before tmux repaints.
+        assert b'\x1b[?1049l' not in raw, 'handoff showed the primary screen'
         os.write(master,b'\x1c'); wait(lambda:'NETWORK' in text())
         os.write(master,b'\x03');proc.wait(timeout=5)
         assert termios.tcgetattr(slave)==before
@@ -98,4 +99,4 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-loader-') as tmp:
             stop_owned_tmux(socket, env)
         finally:
             os.close(master);os.close(slave)
-print(json.dumps({'result':'PASS','checks':['loader animates during delayed shell startup','no native client before visible screen','handoff clears the primary screen (no stale detach-text flash)','single handoff accepts input and restores viewer/termios','owned tmux server and panes exit before temporary state removal']}))
+print(json.dumps({'result':'PASS','checks':['loader animates during delayed shell startup','no native client before visible screen','handoff stays on the alternate screen (no stale detach-text flash)','single handoff accepts input and restores viewer/termios','owned tmux server and panes exit before temporary state removal']}))

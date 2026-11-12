@@ -290,9 +290,8 @@ fn sessions(app: &App) -> Vec<LabSession> {
                     app.session_preview_cols(),
                 )
             } else {
-                app.frames
-                    .get(&(app.devices[d].id.clone(), key.clone()))
-                    .cloned()
+                app.remembered_frame(d, s)
+                    .map(|(lines, cols)| (lines.to_vec(), cols))
                     .unwrap_or_default()
             };
             // A session in a container says which (devcontainer, Docker, ...).

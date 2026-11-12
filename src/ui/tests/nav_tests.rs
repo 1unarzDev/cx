@@ -636,13 +636,13 @@ fn palette_query_ranks_on_labels_and_ignores_scattered_path_letters() {
 }
 
 #[test]
-fn event_loop_wakes_promptly_while_a_reply_is_pending() {
+fn a_pending_reply_never_makes_the_event_loop_poll() {
+    // Replies wake the loop through the shared channel; the wait stays idle.
     let (mut a, _rx) = queued_app();
     a.view = View::Files;
     let now = Instant::now();
     let idle = loop_wait(&a, now, None);
     assert!(idle >= Duration::from_millis(50), "{idle:?}");
     assert!(a.send(0, Operation::Sessions));
-    let waiting = loop_wait(&a, now, None);
-    assert!(waiting <= REPLY_POLL, "{waiting:?}");
+    assert_eq!(loop_wait(&a, now, None), idle);
 }

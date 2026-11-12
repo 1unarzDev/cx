@@ -28,10 +28,17 @@ impl Drop for SecretInput {
         }
     }
 }
+/// The modal reads the terminal itself, so the input thread waits meanwhile.
 pub(super) fn authentication_modal(
     screen: &mut Screen,
     prompt: crate::auth::Prompt,
 ) -> Result<crate::auth::Answer> {
+    pause_input();
+    let answer = prompt_modal(screen, prompt);
+    resume_input();
+    answer
+}
+fn prompt_modal(screen: &mut Screen, prompt: crate::auth::Prompt) -> Result<crate::auth::Answer> {
     use crate::auth::{Answer, PromptKind};
     let trust = prompt.kind == PromptKind::HostKey;
     let title = match prompt.kind {
@@ -256,9 +263,6 @@ impl WheelReports {
         true
     }
 }
-// Timestamp a bounded wheel burst before rendering/backend replies can separate
-// duplicate reports. Stop after the first non-wheel event: never pre-read input
-// intended for a native terminal that an Enter key is about to open.
 // A terminal whose pty hung up (or whose session leader died and left us
 // reparented to init) must not keep the UI spinning: nothing will ever deliver
 // SIGHUP to a process in its own group.
@@ -299,36 +303,159 @@ pub(super) fn passive_input(input: &Event) -> bool {
         _ => false,
     }
 }
-pub(super) fn read_input_batch() -> Result<Vec<(Event, Instant)>> {
-    let first = event::read()?;
-    let wheel = wheel_report(&first).is_some();
-    let mut batch = vec![(first, Instant::now())];
-    if wheel {
-        let deadline = Instant::now() + WHEEL_BURST;
-        for _ in 0..63 {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() || !event::poll(remaining)? {
-                break;
+/// Everything that can wake the event loop arrives on one channel: terminal
+/// input (from the input thread), task replies and helper events.
+pub(super) enum Wake {
+    Input(Event, Instant),
+    Reply(Box<Reply>),
+    /// A pushed helper event: the SSH target (None for this host) and `{kind, ...}`.
+    Event(Option<String>, Value),
+}
+impl From<Reply> for Wake {
+    fn from(reply: Reply) -> Self {
+        Wake::Reply(Box::new(reply))
+    }
+}
+#[derive(Default)]
+struct InputGate {
+    pauses: u32,
+    parked: bool,
+}
+/// The only reader of terminal input while cx owns the terminal. It blocks
+/// in poll(2) on the terminal, SIGWINCH and a wake pipe, and parks whenever
+/// the terminal is handed to something else (an attach, a prompt), so it
+/// never reads input meant for that program.
+pub(super) struct InputThread {
+    gate: std::sync::Arc<(std::sync::Mutex<InputGate>, std::sync::Condvar)>,
+    wake: std::os::fd::OwnedFd,
+}
+static INPUT: std::sync::OnceLock<InputThread> = std::sync::OnceLock::new();
+fn pipe() -> io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
+    use std::os::fd::FromRawFd;
+    let mut fds = [0; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe {
+        (
+            std::os::fd::OwnedFd::from_raw_fd(fds[0]),
+            std::os::fd::OwnedFd::from_raw_fd(fds[1]),
+        )
+    })
+}
+fn drain(fd: &std::os::fd::OwnedFd) {
+    use std::os::fd::AsRawFd;
+    let mut buf = [0u8; 64];
+    while unsafe { libc::read(fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
+}
+pub(super) fn start_input(tx: mpsc::Sender<Wake>) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    let (wake_read, wake) = pipe()?;
+    let (winch_read, winch) = pipe()?;
+    signal_hook::low_level::pipe::register(signal_hook::consts::SIGWINCH, winch)?;
+    // crossterm reads stdin when it is the terminal, else /dev/tty.
+    let tty = (unsafe { libc::isatty(0) } == 0)
+        .then(|| std::fs::File::open("/dev/tty"))
+        .transpose()?;
+    let tty_fd = tty.as_ref().map_or(0, |t| t.as_raw_fd());
+    let gate = std::sync::Arc::new((
+        std::sync::Mutex::new(InputGate::default()),
+        std::sync::Condvar::new(),
+    ));
+    let shared = gate.clone();
+    thread::Builder::new()
+        .name("cx-input".into())
+        .spawn(move || {
+            let _tty = tty;
+            let (lock, changed) = &*shared;
+            read_input(lock, changed, &tx, tty_fd, &wake_read, &winch_read);
+            // Gone for good: a pause must never wait for it.
+            lock.lock().unwrap().parked = true;
+            changed.notify_all();
+        })?;
+    let _ = INPUT.set(InputThread { gate, wake });
+    Ok(())
+}
+fn read_input(
+    lock: &std::sync::Mutex<InputGate>,
+    changed: &std::sync::Condvar,
+    tx: &mpsc::Sender<Wake>,
+    tty_fd: i32,
+    wake_read: &std::os::fd::OwnedFd,
+    winch_read: &std::os::fd::OwnedFd,
+) {
+    use std::os::fd::AsRawFd;
+    loop {
+        {
+            let mut state = lock.lock().unwrap();
+            while state.pauses > 0 {
+                state.parked = true;
+                changed.notify_all();
+                state = changed.wait(state).unwrap();
             }
-            let input = event::read()?;
-            let wheel = wheel_report(&input).is_some();
-            batch.push((input, Instant::now()));
-            if !wheel {
-                break;
+            state.parked = false;
+        }
+        // crossterm may hold parsed events poll(2) cannot see.
+        loop {
+            match event::poll(Duration::ZERO) {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(_) => return,
+            }
+            let Ok(input) = event::read() else {
+                return;
+            };
+            if tx.send(Wake::Input(input, Instant::now())).is_err() {
+                return;
             }
         }
+        let mut fds =
+            [tty_fd, wake_read.as_raw_fd(), winch_read.as_raw_fd()].map(|fd| libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            });
+        unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
+        if fds[0].revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+            && fds[0].revents & libc::POLLIN == 0
+        {
+            return; // The terminal is gone; the loop notices and exits.
+        }
+        drain(wake_read);
+        drain(winch_read);
     }
-    Ok(batch)
+}
+/// Stop reading terminal input until the matching `resume_input`; returns
+/// once the input thread is parked. A no-op without the thread (tests).
+pub(super) fn pause_input() {
+    use std::os::fd::AsRawFd;
+    let Some(input) = INPUT.get() else {
+        return;
+    };
+    let (lock, changed) = &*input.gate;
+    let mut state = lock.lock().unwrap();
+    state.pauses += 1;
+    unsafe { libc::write(input.wake.as_raw_fd(), [1u8].as_ptr().cast(), 1) };
+    while !state.parked {
+        state = changed.wait(state).unwrap();
+    }
+}
+pub(super) fn resume_input() {
+    let Some(input) = INPUT.get() else {
+        return;
+    };
+    let (lock, changed) = &*input.gate;
+    let mut state = lock.lock().unwrap();
+    state.pauses = state.pauses.saturating_sub(1);
+    changed.notify_all();
 }
 /// DEC private mode 2026: begin / end synchronized update.
 const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
 const SYNC_END: &[u8] = b"\x1b[?2026l";
 /// At most one frame per this interval (~60 fps); bursts are coalesced.
 pub(super) const FRAME_INTERVAL: Duration = Duration::from_millis(16);
-/// While requests are in flight the loop polls this often, so a reply is
-/// applied within a few milliseconds instead of after the idle poll timeout.
-pub(super) const REPLY_POLL: Duration = Duration::from_millis(4);
-/// How long the event loop may block on terminal input before its next pass.
+/// How long the event loop may block before its next pass. Input, replies
+/// and helper events wake it at once; this covers only timers.
 pub(super) fn loop_wait(app: &App, now: Instant, frame_wait: Option<Duration>) -> Duration {
     let mut wait = notifications::poll_interval(app.notice_started, app.notice_deadline, now);
     if matches!(app.view, View::Work | View::Network) {
@@ -342,9 +469,6 @@ pub(super) fn loop_wait(app: &App, now: Instant, frame_wait: Option<Duration>) -
     }
     if let Some(preview) = app.session_preview_wait() {
         wait = wait.min(preview);
-    }
-    if app.pending_requests.get() > 0 {
-        wait = wait.min(REPLY_POLL);
     }
     if let Some(frame_wait) = frame_wait {
         wait = wait.min(frame_wait);
@@ -544,12 +668,25 @@ impl Screen {
     /// text before tmux repaints, which looks like the session failed to load.
     /// Final teardown (Drop) passes `false` so the user's own terminal is kept.
     fn suspend(&mut self, clear: bool) -> Result<()> {
+        self.release(true, clear)
+    }
+    /// Hand the terminal to a native attach while the frame just drawn (the
+    /// session's live screen) stays up: tmux paints over it in place.
+    fn hand_off(&mut self) -> Result<()> {
+        self.release(false, false)
+    }
+    fn release(&mut self, leave_screen: bool, clear: bool) -> Result<()> {
         if self.active {
+            pause_input();
             let paste = self.bracketed_paste(false);
             let mouse = self.mouse_capture(false);
             self.active = false;
             let raw = terminal::disable_raw_mode();
-            let leave = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+            let leave = if leave_screen {
+                execute!(self.terminal.backend_mut(), LeaveAlternateScreen)
+            } else {
+                Ok(())
+            };
             let wipe = if clear {
                 execute!(
                     self.terminal.backend_mut(),
@@ -571,19 +708,31 @@ impl Screen {
     }
     /// Draw one frame: composed off-screen, sent once (synchronized), or not
     /// at all when nothing on screen changed.
-    fn draw(&mut self, render: impl FnOnce(&mut Frame<'_>)) -> Result<()> {
+    /// Returns whether anything was written.
+    fn draw(&mut self, render: impl FnOnce(&mut Frame<'_>)) -> Result<bool> {
         self.frames.begin();
         let drawn = self.terminal.draw(render);
         let committed = self.frames.commit();
         drawn?;
-        committed?;
-        Ok(())
+        Ok(committed?)
     }
+    /// Back from a handoff. The retained buffer still describes the last
+    /// frame, so only a clear of the terminal's screen is needed, not of the
+    /// buffer: the next draw repaints every cell that differs from blank.
     fn resume(&mut self) -> Result<()> {
         terminal::enable_raw_mode()?;
-        self.active = true;
-        execute!(self.terminal.backend_mut(), EnterAlternateScreen)?;
-        self.terminal.clear()?;
+        let was_active = std::mem::replace(&mut self.active, true);
+        execute!(
+            self.terminal.backend_mut(),
+            EnterAlternateScreen,
+            terminal::Clear(terminal::ClearType::All)
+        )?;
+        // Diff the next frame against blank: that repaints exactly what is drawn.
+        self.terminal.swap_buffers();
+        self.terminal.current_buffer_mut().reset();
+        if !was_active {
+            resume_input();
+        }
         Ok(())
     }
 }
@@ -870,7 +1019,10 @@ pub(super) fn start_update_check(tx: &mpsc::Sender<UpdateEvent>, force: bool) {
 // Four workers permit independent hosts to progress while preserving FIFO per SSH target.
 // Both the incoming channel and scheduler backlog are bounded. Sleeping workers use a
 // condition variable, so an idle fleet causes no polling or redraw loop.
-pub(super) fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender<Reply>) {
+pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
+    rx: mpsc::Receiver<Task>,
+    replies: mpsc::Sender<W>,
+) {
     use std::sync::{Arc, Condvar, Mutex};
     #[derive(Default)]
     struct Queue {
@@ -887,10 +1039,14 @@ pub(super) fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender
             Operation::CommandPanel { .. }
                 | Operation::SessionPreview { .. }
                 | Operation::SessionPaneInput { .. }
+                | Operation::Watch { .. }
                 | Operation::CapturePane { .. }
                 | Operation::PaneInput { .. }
                 | Operation::PaneClose { .. }
         );
+        // Bulk work (files, containers, transfers) has its own lane, as it
+        // has its own helper channel: a container burst never delays sessions.
+        let bulk = transport::channel_class(&task.op) == transport::Channel::Bulk;
         if matches!(task.op, Operation::Info) {
             return format!(
                 "capabilities:{}",
@@ -899,6 +1055,7 @@ pub(super) fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender
         }
         match &task.execution.target {
             Some(target) if panel => format!("panel:{target}"),
+            Some(target) if bulk => format!("bulk:{target}"),
             Some(target) => target.clone(),
             None if panel => "<local-command>".into(),
             None if matches!(
@@ -911,6 +1068,7 @@ pub(super) fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender
             {
                 "<local-files-read>".into()
             }
+            None if bulk => "<local-bulk>".into(),
             None => "<local>".into(),
         }
     }
@@ -922,7 +1080,7 @@ pub(super) fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender
         while let Ok(task) = rx.recv() {
             let mut queue = lock.lock().unwrap();
             for old in workspaces::superseded_reads(&mut queue.tasks, &task) {
-                let _ = discarded_replies.send(Reply {
+                let _ = discarded_replies.send(W::from(Reply {
                     device_id: Some(old.execution.id.clone()),
                     execution_target: Some(old.execution.target.clone()),
                     preview: None,
@@ -930,7 +1088,7 @@ pub(super) fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender
                     op: old.op,
                     generation: old.generation,
                     result: Ok(Value::Null),
-                });
+                }));
             }
             while queue.tasks.len() >= 32 {
                 queue = changed.wait(queue).unwrap();
@@ -1004,7 +1162,7 @@ pub(super) fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender
                     result,
                 };
                 let delivered = replies
-                    .send(reply(preview, task.op.clone(), result))
+                    .send(W::from(reply(preview, task.op.clone(), result)))
                     .is_ok();
                 lock.lock().unwrap().busy.remove(&host);
                 changed.notify_all();
@@ -1014,7 +1172,7 @@ pub(super) fn start_task_workers(rx: mpsc::Receiver<Task>, replies: mpsc::Sender
                 if let Some((text, path)) = source {
                     let highlighted = highlighted_preview(text, &path);
                     if replies
-                        .send(reply(Some(highlighted), task.op, Ok(Value::Null)))
+                        .send(W::from(reply(Some(highlighted), task.op, Ok(Value::Null))))
                         .is_err()
                     {
                         return;
@@ -1082,6 +1240,61 @@ pub(super) fn cleanup_native_preview(
     }
     Ok(())
 }
+/// Apply one task reply; returns (redraw, navigation cache changed).
+fn apply_reply(app: &mut App, reply: Reply) -> (bool, bool) {
+    if matches!(reply.op, Operation::Watch { .. }) {
+        return (app.watch_replied(reply), false);
+    }
+    // An identical live capture changes nothing on screen: skip the frame.
+    let preview = matches!(reply.op, Operation::SessionPreview { .. });
+    let revision = app.session_preview_revision();
+    let cached = matches!(
+        reply.op,
+        Operation::Sessions
+            | Operation::ExternalSessions
+            | Operation::Containers
+            | Operation::List { .. }
+            | Operation::ListPage { .. }
+            | Operation::ContainerFiles { .. }
+    ) && reply.result.is_ok();
+    app.apply(reply);
+    (
+        !preview || app.session_preview_revision() != revision,
+        cached,
+    )
+}
+/// With the input thread parked: apply queued replies and events, and move
+/// the first typed (non-passive) input, queued or still unread, into
+/// `carried`. Returns whether there was one.
+fn queued_input(
+    wake_rx: &mpsc::Receiver<Wake>,
+    app: &mut App,
+    carried: &mut Vec<(Event, Instant)>,
+) -> Result<bool> {
+    while let Ok(wake) = wake_rx.try_recv() {
+        match wake {
+            Wake::Input(input, at) => {
+                if !passive_input(&input) {
+                    carried.push((input, at));
+                    break;
+                }
+            }
+            Wake::Reply(reply) => {
+                apply_reply(app, *reply);
+            }
+            Wake::Event(target, event) => {
+                app.watch_event(target, event);
+            }
+        }
+    }
+    while carried.is_empty() && event::poll(Duration::ZERO)? {
+        let input = event::read()?;
+        if !passive_input(&input) {
+            carried.push((input, Instant::now()));
+        }
+    }
+    Ok(!carried.is_empty())
+}
 pub fn run() -> Result<()> {
     run_restored(None)
 }
@@ -1100,8 +1313,15 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     let devices = store::devices()?;
     anyhow::ensure!(!devices.is_empty(), "No local device available");
     let (tx, rx) = mpsc::sync_channel::<Task>(32);
-    let (result_tx, result_rx) = mpsc::channel::<Reply>();
-    start_task_workers(rx, result_tx);
+    // One wake source: input, replies and helper events share this channel.
+    let (wake_tx, wake_rx) = mpsc::channel::<Wake>();
+    start_task_workers(rx, wake_tx.clone());
+    let events = std::sync::Mutex::new(wake_tx.clone());
+    transport::set_event_sink(Box::new(move |target, event| {
+        if let Ok(events) = events.lock() {
+            let _ = events.send(Wake::Event(target, event));
+        }
+    }));
     let (core_tx, core_rx) = mpsc::channel();
     let core_stopping = stopping.clone();
     thread::spawn(move || {
@@ -1153,6 +1373,14 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         app.send(d, Operation::TransferJobs);
     }
     let mut screen = Screen::new().context("open terminal workspace")?;
+    start_input(wake_tx)?;
+    // Warm every up device's SSH master now, in parallel (bounded, never prompts).
+    for d in 0..app.devices.len() {
+        if app.background_checks_enabled(d) {
+            transport::prewarm(&app.devices[d]);
+        }
+    }
+    let mut prewarmed: Option<usize> = None;
     spawn_exit_watchdog(stopping.clone());
     // Drop ordering cleans owned bitmaps before Screen restores the original terminal.
     let mut native_preview = crate::terminal_preview::NativePreview::detect();
@@ -1168,6 +1396,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     let mut wheel_reports = WheelReports::default();
     let mut last_refresh = Instant::now();
     let mut last_session_refresh = Instant::now();
+    let mut last_containers = Instant::now();
     let mut last_jobs = Instant::now();
     let mut last_transfer_frame = Instant::now();
     let mut notice_was_animating = false;
@@ -1278,11 +1507,8 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         if matches!(
             update_phase,
             UpdatePhase::Ready(_) | UpdatePhase::Installed(_)
-        ) && restart_ready(
-            &app,
-            last_interaction.elapsed(),
-            event::poll(Duration::ZERO)?,
-        ) {
+        ) && restart_ready(&app, last_interaction.elapsed(), !carried.is_empty())
+        {
             if matches!(update_phase, UpdatePhase::Ready(_)) {
                 if let UpdatePhase::Ready(plan) =
                     std::mem::replace(&mut update_phase, UpdatePhase::Installing)
@@ -1298,7 +1524,10 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 match save_restart(&app) {
                     Ok(name) => {
                         // A key can arrive while serializing the snapshot; consume it before takeover.
-                        if event::poll(Duration::ZERO)? {
+                        pause_input();
+                        let queued = queued_input(&wake_rx, &mut app, &mut carried)?;
+                        if queued {
+                            resume_input();
                             let _ = std::fs::remove_file(store::state_dir().join(name));
                             last_interaction = Instant::now();
                             continue;
@@ -1311,6 +1540,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                             .arg(&name)
                             .exec();
                         let _ = std::fs::remove_file(store::state_dir().join(name));
+                        resume_input();
                         screen.resume()?;
                         app.set_notice_as(
                             NoticeKind::Warning,
@@ -1327,27 +1557,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 }
             }
         }
-        let mut cache_changed = false;
-        while let Ok(reply) = result_rx.try_recv() {
-            // An identical live capture changes nothing on screen: skip the frame.
-            let preview = matches!(reply.op, Operation::SessionPreview { .. });
-            let revision = app.session_preview_revision();
-            cache_changed |= matches!(
-                reply.op,
-                Operation::Sessions
-                    | Operation::ExternalSessions
-                    | Operation::Containers
-                    | Operation::List { .. }
-                    | Operation::ListPage { .. }
-                    | Operation::ContainerFiles { .. }
-            ) && reply.result.is_ok();
-            app.apply(reply);
-            dirty |= !preview || app.session_preview_revision() != revision;
-        }
         dirty |= app.session_preview_staleness_changed();
-        if cache_changed {
-            navigation_writer.save(workspaces::NavigationCache::snapshot(&app));
-        }
         if let Some(target) = app.pending_add.take() {
             cleanup_native_preview(&mut screen, &mut native_preview)?;
             let via = app.pending_add_via.take();
@@ -1529,22 +1739,34 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             // Typed input stays cx-owned: a queued key, paste, click or wheel is
             // handled first and may cancel the attachment. Passive reports
             // (pointer motion, button release, focus, resize) never postpone it.
-            while event::poll(Duration::ZERO)? {
-                let input = event::read()?;
-                if !passive_input(&input) {
-                    carried.push((input, Instant::now()));
-                    break;
-                }
+            // Parked first, the input thread cannot read ahead into the attach.
+            pause_input();
+            if queued_input(&wake_rx, &mut app, &mut carried)? || app.pending_attach.is_none() {
+                resume_input();
             }
         }
         if app.pending_attach.is_some() && carried.is_empty() {
             let (d, session, observe) = app.pending_attach.take().unwrap();
             cleanup_native_preview(&mut screen, &mut native_preview)?;
-            screen.suspend(true)?;
+            // The tmux client paints over the frame it shows: the live screen.
+            if app.show_attach_frame(&session) {
+                let size = screen.terminal.size()?;
+                screen.draw(|frame| {
+                    session_preview::render_attach_frame(
+                        frame,
+                        &app,
+                        Rect::new(0, 0, size.width, size.height),
+                    )
+                })?;
+            }
+            screen.hand_off()?;
+            // The drain's pause ends here; hand_off holds its own until resume.
+            resume_input();
             let result = sessions::attach(&app.devices[d], &session, observe);
             screen.resume()?;
             last_interaction = Instant::now();
             app.returned_from(d, &session);
+            let returned = result.is_ok();
             app.set_notice_as(
                 if result.is_err() {
                     NoticeKind::Error
@@ -1559,6 +1781,12 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     Err(e) => safe_text(&format!("Attachment failed: {e:#}")),
                 },
             );
+            if returned {
+                // Back at once: the notice appears without its fade-in.
+                app.notice_started = app
+                    .notice_started
+                    .and_then(|t| t.checked_sub(notifications::TRANSITION));
+            }
             app.refresh_work();
             dirty = true;
         }
@@ -1605,6 +1833,18 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         screen.bracketed_paste(app.pane_focused())?;
         screen.mouse_capture(true)?;
         dirty |= app.refresh_session_preview(screen.terminal.size()?.width);
+        app.sync_watches();
+        // Warm the master of the device the selection points at (hover/focus).
+        let focus = app
+            .selected_session()
+            .map(|(d, _)| d)
+            .or(app.device.checked_sub(1));
+        if focus != prewarmed {
+            if let Some(d) = focus.filter(|d| *d < app.devices.len()) {
+                transport::prewarm(&app.devices[d]);
+            }
+            prewarmed = focus;
+        }
         let now = Instant::now();
         dirty |= app.tick_press(now);
         dirty |= app.files_tick(now);
@@ -1612,9 +1852,17 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         let mut frame_wait = None;
         if dirty {
             let since = last_draw.elapsed();
-            if since >= FRAME_INTERVAL {
-                screen.draw(|frame| render_with_native(frame, &app, Some(&mut native_preview)))?;
-                last_draw = Instant::now();
+            let grace = app.live_frame_grace();
+            if let Some(grace) = grace {
+                frame_wait = Some(grace.max(FRAME_INTERVAL.saturating_sub(since)));
+            } else if since >= FRAME_INTERVAL {
+                // A pass that wrote nothing (a key with no visible effect)
+                // does not delay the next frame, such as its echo.
+                if screen
+                    .draw(|frame| render_with_native(frame, &app, Some(&mut native_preview)))?
+                {
+                    last_draw = Instant::now();
+                }
                 dirty = false;
             } else {
                 frame_wait = Some(FRAME_INTERVAL - since);
@@ -1622,10 +1870,36 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
         let batch = if !carried.is_empty() {
             std::mem::take(&mut carried)
-        } else if event::poll(loop_wait(&app, now, frame_wait))? {
-            read_input_batch()?
         } else {
-            Vec::new()
+            let mut batch = Vec::new();
+            let first = match wake_rx.recv_timeout(loop_wait(&app, now, frame_wait)) {
+                Ok(wake) => Some(wake),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            };
+            let mut cache_changed = false;
+            for wake in first
+                .into_iter()
+                .chain(std::iter::from_fn(|| wake_rx.try_recv().ok()).take(255))
+            {
+                match wake {
+                    Wake::Input(input, at) => batch.push((input, at)),
+                    Wake::Reply(reply) => {
+                        let (redraw, cached) = apply_reply(&mut app, *reply);
+                        dirty |= redraw;
+                        cache_changed |= cached;
+                    }
+                    Wake::Event(target, event) => {
+                        let (redraw, cached) = app.watch_event(target, event);
+                        dirty |= redraw;
+                        cache_changed |= cached;
+                    }
+                }
+            }
+            if cache_changed {
+                navigation_writer.save(workspaces::NavigationCache::snapshot(&app));
+            }
+            batch
         };
         {
             for (input, observed) in batch {
@@ -1687,11 +1961,18 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             update_phase = UpdatePhase::Checking;
             last_update_check = Instant::now();
         }
+        // Containers refresh on demand, plus once a minute in the background.
+        if last_containers.elapsed() >= Duration::from_secs(60) {
+            app.refresh_containers();
+            last_containers = Instant::now();
+        }
         if matches!(app.view, View::Work | View::Network)
             && last_session_refresh.elapsed() >= Duration::from_secs(3)
         {
             for d in 0..app.devices.len() {
+                // A device pushing its list (watch) needs no poll.
                 if app.background_checks_enabled(d)
+                    && !app.sessions_pushed(d)
                     && (app.device == 0 || app.device == d + 1)
                     && !app.work[d].loading
                 {
@@ -1712,7 +1993,6 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 app.check_providers(device);
             }
             app.refresh_work();
-            app.refresh_containers();
             if app.view == View::Network {
                 app.reload_edges();
             }

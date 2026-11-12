@@ -687,7 +687,7 @@ fn keystroke_echo_polls_immediately_and_parsed_screen_is_cached() {
         rx.try_recv().unwrap().op,
         Operation::SessionPreview { .. }
     ));
-    assert!(a.session_preview_wait().unwrap() <= Duration::from_millis(16));
+    assert_eq!(a.session_preview_wait(), None, "its reply wakes the loop");
 }
 
 #[test]
@@ -798,4 +798,168 @@ fn unreachable_or_cached_devices_keep_the_in_cx_round_trip() {
         assert!(a.attach_check.is_some(), "case {case}");
         assert!(matches!(rx.try_recv().unwrap().op, Operation::Sessions));
     }
+}
+
+#[test]
+fn a_helper_watch_replaces_polling_and_polling_returns_when_it_ends() {
+    let (mut a, rx) = queued_app();
+    a.work[0].sessions.push(identified_shell());
+    a.work[0].fetched = transport::now();
+    a.providers
+        .get_mut(&0)
+        .unwrap()
+        .0
+        .push("session-preview-v1".into());
+    a.focus = Focus::Workspace;
+    a.refresh_session_preview(160);
+    a.sync_watches();
+    let tasks: Vec<Task> = rx.try_iter().collect();
+    // An old remote helper (no watch-v1) is never sent a Watch it cannot decode.
+    assert!(tasks
+        .iter()
+        .all(|t| t.device == 0 || !matches!(t.op, Operation::Watch { .. })));
+    let watch = tasks
+        .into_iter()
+        .find(|t| {
+            matches!(
+                &t.op,
+                Operation::Watch {
+                    sessions: true,
+                    pane: Some(_)
+                }
+            )
+        })
+        .expect("the selected local session is watched");
+    let screen = |line: &str| serde_json::json!({"live":true,"pane_id":"%1","styled_lines":[line],"cols":80,"rows":24});
+    // The reply carries the first screen.
+    a.watch_replied(Reply {
+        device_id: Some("local".into()),
+        execution_target: Some(None),
+        preview: None,
+        device: 0,
+        op: watch.op,
+        generation: watch.generation,
+        result: Ok(serde_json::json!({"watching": true, "pane": screen("first")})),
+    });
+    assert!(a.sessions_pushed(0));
+    let revision = a.session_preview_revision();
+    // Watched: nothing is polled, however long since the last capture.
+    std::thread::sleep(Duration::from_millis(300));
+    a.refresh_session_preview(160);
+    a.sync_watches();
+    assert!(rx.try_recv().is_err(), "a watched screen is never polled");
+    // A pushed screen for the selected session applies like a polled one.
+    let mut pushed = screen("second");
+    pushed["kind"] = "pane".into();
+    pushed["session_id"] = "$1".into();
+    let (redraw, _) = a.watch_event(None, pushed.clone());
+    assert!(redraw && a.session_preview_revision() > revision);
+    // One for another session is ignored.
+    pushed["session_id"] = "$2".into();
+    pushed["styled_lines"] = serde_json::json!(["other"]);
+    assert_eq!(a.watch_event(None, pushed), (false, false));
+    // A pushed list replaces the device's list.
+    let mut more = identified_shell();
+    more.id = format!("cx-{}", "b".repeat(64));
+    let list = serde_json::json!({"kind": "sessions", "sessions": [identified_shell(), more]});
+    assert_eq!(a.watch_event(None, list), (true, true));
+    assert_eq!(a.work[0].sessions.len(), 2);
+    // The watch ends (control client killed, helper gone): polling resumes at once.
+    a.watch_event(None, serde_json::json!({"kind": "closed"}));
+    assert!(!a.sessions_pushed(0));
+    a.refresh_session_preview(160);
+    assert!(matches!(
+        rx.try_recv().unwrap().op,
+        Operation::SessionPreview { .. }
+    ));
+}
+
+#[test]
+fn a_refused_watch_falls_back_to_polling() {
+    let (mut a, rx) = queued_app();
+    a.work[0].sessions.push(identified_shell());
+    a.work[0].fetched = transport::now();
+    a.providers
+        .get_mut(&0)
+        .unwrap()
+        .0
+        .push("session-preview-v1".into());
+    a.focus = Focus::Workspace;
+    a.sync_watches();
+    let watch = rx
+        .try_iter()
+        .find(|t| matches!(t.op, Operation::Watch { .. }))
+        .unwrap();
+    a.watch_replied(Reply {
+        device_id: Some("local".into()),
+        execution_target: Some(None),
+        preview: None,
+        device: 0,
+        op: watch.op,
+        generation: watch.generation,
+        result: Err(anyhow::anyhow!("tmux control mode unavailable")),
+    });
+    assert!(!a.sessions_pushed(0));
+    a.refresh_session_preview(160);
+    a.sync_watches();
+    let ops: Vec<_> = rx.try_iter().map(|t| t.op).collect();
+    assert!(ops
+        .iter()
+        .any(|op| matches!(op, Operation::SessionPreview { .. })));
+    assert!(
+        !ops.iter().any(|op| matches!(op, Operation::Watch { .. })),
+        "no retry before the backoff"
+    );
+}
+
+#[test]
+fn a_hub_tile_keeps_its_pushed_screen_after_the_selection_moves() {
+    let (mut a, rx) = queued_app();
+    let first = identified_shell();
+    let mut second = identified_shell();
+    second.id = format!("cx-{}", "b".repeat(64));
+    if let Some(t) = second.terminal.as_mut() {
+        t.session_id = "$2".into();
+        t.created = "2".into();
+    }
+    a.work[0].sessions = vec![first.clone(), second.clone()];
+    a.work[0].fetched = transport::now();
+    a.providers
+        .get_mut(&0)
+        .unwrap()
+        .0
+        .push("session-preview-v1".into());
+    a.go_hub();
+    a.hub_sessions = true;
+    a.reconcile_session_selection(Some((0, workspaces::runtime_key(&first))));
+    a.refresh_session_preview(160);
+    a.sync_watches();
+    let watch = rx
+        .try_iter()
+        .find(|t| matches!(t.op, Operation::Watch { pane: Some(_), .. }))
+        .expect("the selected tile's screen is watched");
+    a.watch_replied(Reply {
+        device_id: Some("local".into()),
+        execution_target: Some(None),
+        preview: None,
+        device: 0,
+        op: watch.op,
+        generation: watch.generation,
+        result: Ok(serde_json::json!({"watching": true, "pane": {
+            "live": true, "pane_id": "%1", "styled_lines": ["PUSHED-SCREEN"],
+            "cols": 80, "rows": 24}})),
+    });
+    // Another tile selected: the first keeps its last frame from memory, unpolled.
+    a.reconcile_session_selection(Some((0, workspaces::runtime_key(&second))));
+    a.refresh_session_preview(160);
+    let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    t.draw(|f| render(f, &a)).unwrap();
+    let text: String = t
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(text.contains("PUSHED-SCREEN"), "the tile lost its frame");
 }

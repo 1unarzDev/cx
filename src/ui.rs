@@ -670,8 +670,6 @@ struct App {
     edge_views: Vec<crate::edges::EdgeView>,
     secret_list: Vec<crate::secrets::SecretMeta>,
     secret_selected: usize,
-    /// Each session's last frame, in memory only (never written to disk).
-    frames: HashMap<(String, String), (Vec<String>, u16)>,
     /// The last session detached from, for `-`.
     last_session: Option<(usize, String)>,
     last_esc: Option<Instant>,
@@ -833,7 +831,6 @@ impl App {
             edge_views: Vec::new(),
             secret_list: Vec::new(),
             secret_selected: 0,
-            frames: HashMap::new(),
             last_session: None,
             last_esc: None,
             onboarding_dismissed: false,

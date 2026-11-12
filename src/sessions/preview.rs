@@ -69,15 +69,46 @@ fn bounded(mut command: Command) -> Result<String> {
     }
     result
 }
-fn observe(managed: bool, id: &str) -> Result<SessionSnapshot> {
-    let mut command = tmux(managed)?;
-    command.args(["display-message", "-p", "-t", id, SNAPSHOT_FORMAT]);
-    let rows = parse_snapshot(bounded(command)?.trim_end())?;
+/// Runs one tmux command on the session's server and returns its output:
+/// a bounded process, or the control client.
+pub(super) type Run<'a> = &'a dyn Fn(&[&str]) -> Result<String>;
+fn spawned(managed: bool) -> impl Fn(&[&str]) -> Result<String> {
+    move |args| {
+        let mut command = tmux(managed)?;
+        command.args(args);
+        bounded(command)
+    }
+}
+fn observe(run: Run, id: &str) -> Result<SessionSnapshot> {
+    let rows =
+        parse_snapshot(run(&["display-message", "-p", "-t", id, SNAPSHOT_FORMAT])?.trim_end())?;
     anyhow::ensure!(rows.len() == 1 && !rows[0].dead, "preview terminal ended");
     Ok(rows.into_iter().next().unwrap())
 }
 
 pub fn preview(
+    session: &Session,
+    scrollback: bool,
+    history_start: Option<u32>,
+) -> Result<serde_json::Value> {
+    if !session.external {
+        // Watching already: the control client reads it without a spawn.
+        if let Some(client) = super::control::running() {
+            let via = |args: &[&str]| client.run(args);
+            if let Ok(value) = preview_with(&via, session, scrollback, history_start) {
+                return Ok(value);
+            }
+        }
+    }
+    preview_with(
+        &spawned(!session.external),
+        session,
+        scrollback,
+        history_start,
+    )
+}
+pub(super) fn preview_with(
+    run: Run,
     session: &Session,
     scrollback: bool,
     history_start: Option<u32>,
@@ -91,21 +122,18 @@ pub fn preview(
     };
     let request = parse_attach_payload(&attach_payload(&request)?)?;
     let terminal = request.session.terminal.as_ref().unwrap();
-    let managed = !session.external;
-    let before = observe(managed, &terminal.session_id)?;
+    let before = observe(run, &terminal.session_id)?;
     verify_attach_generation(&request, before.server_pid, &before.id, &before.created)?;
-    let mut size = tmux(managed)?;
-    size.args([
+    // Flags are written as conditionals so every field prints a digit: a
+    // variable this tmux lacks (bracket_paste_flag before 3.5) reads false
+    // instead of expanding to nothing and shifting the field count.
+    let meta = run(&[
         "display-message",
         "-p",
         "-t",
         &before.pane_id,
-        // Flags are written as conditionals so every field prints a digit: a
-        // variable this tmux lacks (bracket_paste_flag before 3.5) reads false
-        // instead of expanding to nothing and shifting the field count.
         LIVE_VIEW_FORMAT,
-    ]);
-    let meta = bounded(size)?;
+    ])?;
     let dims: Vec<u32> = meta
         .split_whitespace()
         .map(str::parse)
@@ -133,13 +161,12 @@ pub fn preview(
     let start = (i64::from(line_start) - i64::from(history_total)).to_string();
     let end = (i64::from(line_end) - i64::from(history_total) - 1).to_string();
     let capture = |padding: bool| -> Result<String> {
-        let mut command = tmux(managed)?;
-        command.args(["capture-pane", "-e", "-p"]);
+        let mut args = vec!["capture-pane", "-e", "-p"];
         if padding {
-            command.arg("-N");
+            args.push("-N");
         }
-        command.args(["-t", &before.pane_id, "-S", &start, "-E", &end]);
-        bounded(command)
+        args.extend(["-t", &before.pane_id, "-S", &start, "-E", &end]);
+        run(&args)
     };
     // -N preserves painted trailing cells. Older tmux is padded by the renderer.
     let screen = capture(true).or_else(|_| capture(false))?;
@@ -147,8 +174,7 @@ pub fn preview(
     let history = history_total
         .saturating_sub(line_start)
         .min(styled.len() as u32);
-    let mut colours = tmux(managed)?;
-    colours.args([
+    let palette8 = run(&[
         "show-options",
         "-p",
         "-A",
@@ -156,14 +182,13 @@ pub fn preview(
         "-t",
         &before.pane_id,
         "pane-colours[8]",
-    ]);
-    let palette8 = bounded(colours)
-        .ok()
-        .map(|s| s.trim().to_owned())
-        .filter(|s| {
-            s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit())
-        });
-    let after = observe(managed, &terminal.session_id)?;
+    ])
+    .ok()
+    .map(|s| s.trim().to_owned())
+    .filter(|s| {
+        s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit())
+    });
+    let after = observe(run, &terminal.session_id)?;
     verify_attach_generation(&request, after.server_pid, &after.id, &after.created)?;
     anyhow::ensure!(before.pane_id == after.pane_id, "preview pane changed");
     Ok(serde_json::json!({
@@ -196,6 +221,10 @@ pub fn session_pane_input(
             && hex.bytes().all(|b| b.is_ascii_hexdigit()),
         "invalid input"
     );
+    if let Some(sent) = super::control::input(session, pane_id, hex) {
+        sent?;
+        return Ok(serde_json::json!({"delivered": true}));
+    }
     let request = CheckedAttach {
         session: session.clone(),
         observe: false,
@@ -204,7 +233,7 @@ pub fn session_pane_input(
     };
     let mut request = parse_attach_payload(&attach_payload(&request)?)?;
     let terminal = request.session.terminal.clone().unwrap();
-    let current = observe(!session.external, &terminal.session_id)?;
+    let current = observe(&spawned(!session.external), &terminal.session_id)?;
     verify_attach_generation(&request, current.server_pid, &current.id, &current.created)?;
     anyhow::ensure!(
         current.pane_id == pane_id,

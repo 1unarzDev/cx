@@ -73,18 +73,6 @@ impl App {
             && self.edge_views.is_empty()
             && self.work.iter().all(|w| w.sessions.is_empty())
     }
-    /// Remember a session's last frame in memory (never on disk), for its tile.
-    pub(super) fn remember_frame(&mut self, d: usize, s: &Session, lines: &[String], cols: u16) {
-        if self.frames.len() >= 64 {
-            self.frames.clear();
-        }
-        let tail = lines.len().saturating_sub(60);
-        self.frames.insert(
-            (self.devices[d].id.clone(), workspaces::runtime_key(s)),
-            (lines[tail..].to_vec(), cols),
-        );
-    }
-
     // ------------------------------------------------------------------ navigation
 
     /// The hub, with the network zone and this device selected (`` ` ``, Esc Esc, `cx`).

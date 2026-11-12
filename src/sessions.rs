@@ -1,7 +1,10 @@
+#[path = "sessions/control.rs"]
+mod control;
 #[path = "sessions/preview.rs"]
 mod preview;
 use crate::model::{CreateSession, Device, ProcessIdentity, RunCommand, Session, TerminalIdentity};
 use anyhow::{bail, Context, Result};
+pub use control::watch;
 pub use preview::{preview, session_pane_input};
 use sha2::{Digest, Sha256};
 use std::{
@@ -1589,9 +1592,10 @@ pub fn list() -> Result<Vec<Session>> {
                 continue;
             }
             // Command-panel panes belong only in their panel.
+            // So does the hidden control-mode session.
             if managed
                 && field(true, &observed.pane_id, "#{session_name}")
-                    .is_ok_and(|n| valid_pane_name(&n))
+                    .is_ok_and(|n| valid_pane_name(&n) || n == control::CONTROL_SESSION)
             {
                 continue;
             }
@@ -2150,8 +2154,13 @@ pub fn configure_managed() -> Result<()> {
     fs::write(&conf, managed_config())?;
     fs::set_permissions(&conf, fs::Permissions::from_mode(0o600))?;
     let mut c = tmux(true)?;
-    c.arg("source-file").arg(conf);
-    output(c)?;
+    // The pid names the configured server instance, so attach can skip this.
+    c.arg("source-file")
+        .arg(conf)
+        .args([";", "display-message", "-p", "#{pid}"]);
+    if let Ok(pid) = output(c)?.trim().parse() {
+        let _ = control::record_configured(pid);
+    }
     Ok(())
 }
 
@@ -3227,9 +3236,14 @@ pub fn native_attach_checked(payload: &str) -> Result<()> {
     let mut guard = AttachGuard::new()?;
     request.guard = Some(guard.token.clone());
     let predicate_payload = attach_payload(&request)?;
+    let ascii = request.ascii || viewer_ascii();
+    if !request.session.external && !control::ticket_valid(&request.session, ascii) {
+        if !control::configured(expected.server_pid, &expected.server_start) {
+            configure_managed()?;
+        }
+        refresh_managed_status_as(&request.session.id, ascii)?;
+    }
     if !request.session.external {
-        configure_managed()?;
-        refresh_managed_status_as(&request.session.id, request.ascii || viewer_ascii())?;
         // A focus attach lands live rather than in leftover copy-mode; a
         // read-only watch keeps the scrollback view. Best effort.
         if !request.observe {
@@ -3278,18 +3292,14 @@ pub fn exit_copy_mode(id: &str) {
     if !managed_session_name(id) && !valid_pane_name(id) {
         return;
     }
-    let in_mode = tmux(true)
-        .and_then(|mut c| {
-            c.args(["display-message", "-p", "-t", id, "#{pane_in_mode}"]);
-            output(c)
-        })
-        .map(|s| s.trim() == "1")
-        .unwrap_or(false);
-    if in_mode {
-        if let Ok(mut c) = tmux(true) {
-            c.args(["send-keys", "-t", id, "-X", "cancel"]);
-            let _ = output(c);
-        }
+    // One tmux command: the mode test runs inside the server.
+    let cancel = format!("send-keys -t {id} -X cancel");
+    let args = ["if-shell", "-F", "-t", id, "#{pane_in_mode}", &cancel];
+    if let Some(client) = control::running() {
+        let _ = client.run(&args);
+    } else if let Ok(mut c) = tmux(true) {
+        c.args(args);
+        let _ = output(c);
     }
 }
 pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {

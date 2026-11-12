@@ -36,6 +36,7 @@ impl App {
                                     "native-command-v1",
                                     "session-preview-v1",
                                     "live-session-pane-v1",
+                                    "watch-v1",
                                     "stop-session-v1",
                                     "stop-agent-session-v1",
                                     "session-yolo-v1",

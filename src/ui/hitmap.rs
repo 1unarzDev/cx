@@ -7,7 +7,7 @@ use super::navigation::Target;
 use super::{
     accent, ascii, muted, navigation, selected_style, App, Block, Borders, Clear, Focus, Frame,
     Input, KeyCode, KeyEvent, Line, Modifier, MouseEvent, MouseEventKind, Paragraph, Rect, Span,
-    Style, View,
+    Style,
 };
 use crossterm::event::MouseButton;
 use std::cell::RefCell;
@@ -19,22 +19,16 @@ pub(super) const LONG_PRESS: Duration = Duration::from_millis(450);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum ListId {
-    Sessions,
-    Devices,
-    Network,
     Files,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Hit {
-    Tab(View),
-    /// Footer chip, header button or any other command target.
-    Cmd(Cmd),
     /// A list row: its list and the row's selection index.
     Row(ListId, usize),
-    /// A list scrollbar track: click or drag jumps proportionally.
-    Scrollbar(ListId, usize),
-    PaletteRow(usize),
+    /// A target the view layer drew: its action (`device:<i>`, `session:<d>:<key>`,
+    /// a footer chip's verb, ...), by index into this frame's action list.
+    View(usize),
     MenuRow(usize),
 }
 
@@ -59,10 +53,50 @@ impl HitMap {
 
 thread_local! {
     static MAP: RefCell<HitMap> = RefCell::new(HitMap::default());
+    static ACTIONS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 /// Start a frame: forget the previous frame's targets.
 pub(super) fn begin() {
     MAP.with(|m| m.borrow_mut().hits.clear());
+    ACTIONS.with(|a| a.borrow_mut().clear());
+}
+/// Register a view-layer target. A file row becomes the Files list row it shows, so a
+/// tap and the keyboard select through the same list.
+pub(super) fn register_action(rect: Rect, action: &str, app: &App) {
+    if let Some(name) = action.strip_prefix("file:") {
+        if let Some(b) = app.active_browser() {
+            let rows = super::browser_entries(b);
+            let sel = b.selected;
+            // Visible rows sit around the selection; look there first.
+            let near = sel.saturating_sub(256)..(sel + 256).min(rows.len());
+            let found = near
+                .clone()
+                .find(|&i| {
+                    rows.get(i)
+                        .is_some_and(|e| super::safe_label(&e.name) == name)
+                })
+                .or_else(|| {
+                    (0..rows.len()).find(|&i| {
+                        rows.get(i)
+                            .is_some_and(|e| super::safe_label(&e.name) == name)
+                    })
+                });
+            if let Some(i) = found {
+                register(rect, Hit::Row(ListId::Files, i));
+            }
+        }
+        return;
+    }
+    let index = ACTIONS.with(|a| {
+        let mut a = a.borrow_mut();
+        a.push(action.to_string());
+        a.len() - 1
+    });
+    register(rect, Hit::View(index));
+}
+/// The action behind a `Hit::View`.
+pub(super) fn action(index: usize) -> Option<String> {
+    ACTIONS.with(|a| a.borrow().get(index).cloned())
 }
 pub(super) fn register(rect: Rect, hit: Hit) {
     if rect.width > 0 && rect.height > 0 {
@@ -75,45 +109,6 @@ pub(super) fn modal() {
 }
 pub(super) fn with<T>(f: impl FnOnce(&HitMap) -> T) -> T {
     MAP.with(|m| f(&m.borrow()))
-}
-/// Register one row target per visible list row.
-pub(super) fn rows(list: ListId, area: Rect, offset: usize, len: usize) {
-    for (line, index) in (offset..len).enumerate() {
-        let y = area.y.saturating_add(line as u16);
-        if y >= area.bottom() {
-            break;
-        }
-        register(Rect::new(area.x, y, area.width, 1), Hit::Row(list, index));
-    }
-}
-/// Draw a one-column scrollbar on the right border when the list overflows,
-/// and register it as a drag target.
-pub(super) fn scrollbar(
-    frame: &mut Frame<'_>,
-    list: ListId,
-    track: Rect,
-    offset: usize,
-    len: usize,
-    height: usize,
-    targets: usize,
-) {
-    if len <= height || track.height < 2 || height == 0 {
-        return;
-    }
-    let mut state = ratatui::widgets::ScrollbarState::new(len.saturating_sub(height))
-        .position(offset)
-        .viewport_content_length(height);
-    let bar =
-        ratatui::widgets::Scrollbar::new(ratatui::widgets::ScrollbarOrientation::VerticalRight)
-            .begin_symbol(None)
-            .end_symbol(None)
-            .track_symbol(Some(if ascii() { "|" } else { "│" }))
-            .thumb_symbol(if ascii() { "#" } else { "┃" })
-            .track_style(muted())
-            .thumb_style(accent());
-    frame.render_stateful_widget(bar, track, &mut state);
-    let column = Rect::new(track.right().saturating_sub(1), track.y, 1, track.height);
-    register(column, Hit::Scrollbar(list, targets));
 }
 
 /// A pointer press in progress.
@@ -137,62 +132,18 @@ pub(super) struct ContextMenu {
 impl App {
     fn row_selected(&self, list: ListId, index: usize) -> bool {
         match list {
-            ListId::Sessions => self.focus == Focus::Workspace && self.selected == index,
-            ListId::Devices => self.focus == Focus::Devices && self.device == index,
-            ListId::Network => self.focus == Focus::Workspace && self.network_selected == index,
-            ListId::Files => {
-                self.focus == Focus::Workspace
-                    && self.browser.as_ref().is_some_and(|b| b.selected == index)
-            }
+            ListId::Files => self.browser.as_ref().is_some_and(|b| b.selected == index),
         }
     }
     /// Select a row exactly as keyboard motion would (same panel adapters).
     fn select_row(&mut self, list: ListId, index: usize) {
         match list {
-            ListId::Sessions => {
-                if self.selected != index {
-                    self.attach_check = None;
-                    self.pending_attach = None;
-                    self.pending_adoption = None;
-                }
-                self.focus = Focus::Workspace;
-                let current = self.selected as isize;
-                super::panels::active(self).move_by(index as isize - current);
-            }
-            ListId::Devices => {
-                self.focus = Focus::Devices;
-                let rows = self.device_rows();
-                let current = rows.iter().position(|d| *d == self.device).unwrap_or(0) as isize;
-                if let Some(target) = rows.iter().position(|d| *d == index) {
-                    super::panels::active(self).move_by(target as isize - current);
-                }
-            }
-            ListId::Network => {
-                self.focus = Focus::Workspace;
-                let current = self.network_selected as isize;
-                super::panels::active(self).move_by(index as isize - current);
-            }
             ListId::Files => {
                 self.focus = Focus::Workspace;
                 let current = self.browser.as_ref().map_or(0, |b| b.selected) as isize;
                 super::panels::active(self).move_by(index as isize - current);
             }
         }
-    }
-    fn scroll_to(&mut self, list: ListId, len: usize, rect: Rect, y: u16) {
-        let span = rect.height.saturating_sub(1).max(1) as usize;
-        let at = (y.saturating_sub(rect.y) as usize).min(span);
-        let index = (at * len.saturating_sub(1) + span / 2) / span;
-        let index = match list {
-            ListId::Devices => {
-                let rows = self.device_rows();
-                rows.get(index.min(rows.len().saturating_sub(1)))
-                    .copied()
-                    .unwrap_or(0)
-            }
-            _ => index,
-        };
-        self.select_row(list, index);
     }
     fn open_context_menu(&mut self, anchor: (u16, u16)) {
         let items = keymap::context_menu(self);
@@ -235,19 +186,13 @@ impl App {
         }
         if self.input == Some(Input::Palette) {
             if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
-                match hit {
-                    Some((_, Hit::PaletteRow(i))) => {
-                        if self.palette_selected == i {
-                            self.run_palette_selected();
-                        } else {
-                            self.palette_selected = i;
-                        }
-                    }
-                    // Tapping outside the palette closes it.
-                    _ => {
-                        self.input = None;
-                        self.text.clear();
-                    }
+                // Only the sheet is live; a tap beside it closes the palette.
+                match hit.and_then(|(_, h)| match h {
+                    Hit::View(i) => action(i),
+                    _ => None,
+                }) {
+                    Some(a) => self.view_action(&a),
+                    None => self.view_action("back"),
                 }
             }
             return Some(true);
@@ -276,10 +221,16 @@ impl App {
                     return Some(true);
                 }
                 if button == MouseButton::Right {
+                    // A view target selects what it shows, then offers that
+                    // selection's keys (the same menu as a long press).
+                    if let Hit::View(i) = hit {
+                        if let Some(a) = action(i) {
+                            self.select_target(&a);
+                        }
+                        self.open_context_menu((x, y));
+                        return Some(true);
+                    }
                     return Some(false);
-                }
-                if let Hit::Scrollbar(list, len) = hit {
-                    self.scroll_to(list, len, rect, y);
                 }
                 self.press = Some(Press {
                     hit,
@@ -292,10 +243,6 @@ impl App {
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 let press = self.press?;
-                if let Hit::Scrollbar(list, len) = press.hit {
-                    self.scroll_to(list, len, press.rect, y);
-                    return Some(true);
-                }
                 if !press.rect.contains(ratatui::layout::Position::new(x, y)) {
                     // Sliding off a target cancels the tap and the long press.
                     self.press = None;
@@ -309,8 +256,10 @@ impl App {
                 }
                 match press.hit {
                     Hit::Row(..) if press.was_selected => self.run_cmd(Cmd::Primary),
-                    Hit::Tab(view) => self.goto_view(view),
-                    Hit::Cmd(cmd) => self.run_cmd(cmd),
+                    Hit::View(i) => match action(i) {
+                        Some(a) => self.view_action(&a),
+                        None => return Some(false),
+                    },
                     _ => return Some(false),
                 }
                 Some(true)
@@ -322,7 +271,7 @@ impl App {
     /// longer than this so the menu opens while the finger is still down.
     pub(super) fn press_deadline(&self) -> Option<Instant> {
         self.press
-            .filter(|p| !p.fired && matches!(p.hit, Hit::Row(..)))
+            .filter(|p| !p.fired && matches!(p.hit, Hit::Row(..) | Hit::View(..)))
             .map(|p| p.at + LONG_PRESS)
     }
     /// Fire a due long press. Returns true when the screen changed.
@@ -336,6 +285,11 @@ impl App {
         let press = self.press.as_mut().unwrap();
         press.fired = true;
         let anchor = (press.rect.x.saturating_add(2), press.rect.y);
+        if let Hit::View(i) = press.hit {
+            if let Some(a) = action(i) {
+                self.select_target(&a);
+            }
+        }
         self.open_context_menu(anchor);
         true
     }

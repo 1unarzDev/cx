@@ -52,1096 +52,97 @@ fn render_frame(
     now: Instant,
 ) {
     let area = frame.area();
-    if area.width < 36 || area.height < 10 {
-        frame.render_widget(
-            Paragraph::new("cx · enlarge terminal\nCtrl+P actions · Ctrl+C quit")
-                .wrap(Wrap { trim: false }),
-            area,
-        );
-        return;
-    }
     hitmap::begin();
-    let areas = frame_areas(app, area);
-    let phone = areas.phone;
-    let show_search = areas.show_search;
-    let query = filters::visible_query(app);
-    render_header(frame, app, areas.header);
-    let sidebar_width = areas.sidebar_width;
-    let content = [areas.rail, areas.main];
-    let mut device_items = vec![ListItem::new("All devices")];
-    for (i, d) in app
-        .devices
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| app.device_matches(*i))
-    {
-        let status = if app.work[i].loading {
-            "checking"
-        } else if app.work[i].error.is_some() {
-            "unavailable"
-        } else if app.work[i].fetched == 0
-            || transport::now().saturating_sub(app.work[i].fetched) > 60
-        {
-            "unknown"
-        } else {
-            "ready"
-        };
-        let indicator = match status {
-            "ready" => {
-                if ascii() {
-                    "+"
-                } else {
-                    "●"
-                }
-            }
-            "checking" => {
-                if ascii() {
-                    "~"
-                } else {
-                    "◌"
-                }
-            }
-            "unavailable" => {
-                if ascii() {
-                    "x"
-                } else {
-                    "○"
-                }
-            }
-            "down" => {
-                if ascii() {
-                    "o"
-                } else {
-                    "○"
-                }
-            }
-            _ => "?",
-        };
-        let dot_style = match status {
-            "ready" => ok(),
-            "checking" => info(),
-            "unavailable" => warn(),
-            "down" => muted(),
-            _ => Style::default(),
-        };
-        let access_marker = match app.device_policy(i).access {
-            store::AccessMode::Core => "",
-            store::AccessMode::Directed => " *",
-        };
-        device_items.push(ListItem::new(Line::from(vec![
-            Span::styled(format!("{indicator} "), dot_style),
-            Span::raw(fit_label(
-                &format!("{access_marker} {}", d.name),
-                sidebar_width.saturating_sub(8) as usize,
-            )),
-        ])));
+    app.preview_rect.set(None);
+    let vm = viewmodel::ViewModel::from(app);
+    let drawn = views::mission::render(&vm.view, &vm.state, &vm.caps, area, frame.buffer_mut());
+    if vm.view == views::LabView::Hub {
+        *app.hub_order.borrow_mut() = drawn.order;
     }
-    let sidebar = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length((app.devices.len() as u16 + 3).min(content[0].height / 2)),
-            Constraint::Length(
-                (sidebar_actions(app).len() as u16 + 2)
-                    .min(content[0].height.saturating_sub(
-                        (app.devices.len() as u16 + 3).min(content[0].height / 2) + 4,
-                    ))
-                    .max(5),
-            ),
-            Constraint::Min(0),
-        ])
-        .split(content[0]);
-    *app.panels.borrow_mut() = if phone {
-        vec![(Focus::Devices, false, areas.strip)]
-    } else {
-        vec![
-            (Focus::Devices, false, sidebar[0]),
-            (Focus::Actions, false, sidebar[1]),
-        ]
-    };
-    if phone {
-        render_device_strip(frame, app, areas.strip);
-    }
-    if app.view != View::Files || app.other_browser.is_none() {
-        app.panels
-            .borrow_mut()
-            .push((Focus::Workspace, app.destination_active, content[1]));
-    }
-    let device_rows = app.device_rows();
-    let device_selected = device_rows.iter().position(|d| *d == app.device);
-    let device_height = sidebar[0].height.saturating_sub(2) as usize;
-    let device_offset = navigation::viewport(
-        "devices",
-        device_selected.unwrap_or(0),
-        device_rows.len(),
-        device_height,
+    // Phones keep a spacer row above their footer (views::mission::views::draw).
+    let spare = u16::from(area.width < 70);
+    let body = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(2 + spare),
     );
-    let mut state = ratatui::widgets::ListState::default()
-        .with_selected(device_selected)
-        .with_offset(device_offset);
-    if !phone {
-        let inner = Rect::new(
-            sidebar[0].x + 1,
-            sidebar[0].y + 1,
-            sidebar[0].width.saturating_sub(2),
-            device_height as u16,
-        );
-        for (line, index) in (device_offset..device_rows.len()).enumerate() {
-            if line >= device_height {
-                break;
-            }
-            hitmap::register(
-                Rect::new(inner.x, inner.y + line as u16, inner.width, 1),
-                hitmap::Hit::Row(hitmap::ListId::Devices, device_rows[index]),
-            );
+    // One workspace panel takes the wheel (and the open preview's clicks).
+    *app.panels.borrow_mut() = vec![(Focus::Workspace, false, body)];
+    let mut preview = None;
+    for t in &drawn.targets {
+        if t.action == "preview-body" {
+            preview = Some(t.area);
         }
+        if t.action == "peek-screen" {
+            app.set_preview_screen(t.area);
+        }
+        hitmap::register_action(t.area, &t.action, app);
     }
-    frame.render_stateful_widget(
-        List::new(device_items)
-            .block(
-                block(
-                    if app.device_filter.is_empty() {
-                        "Devices".into()
-                    } else {
-                        "Devices · filter".into()
-                    },
-                    app.focus == Focus::Devices,
-                )
-                .padding(Padding::horizontal(1)),
-            )
-            .highlight_style(selection(app.focus == Focus::Devices))
-            .highlight_symbol(selection_symbol(app.focus == Focus::Devices)),
-        sidebar[0],
-        &mut state,
-    );
-    if !phone {
-        hitmap::scrollbar(
-            frame,
-            hitmap::ListId::Devices,
-            Rect::new(
-                sidebar[0].x,
-                sidebar[0].y + 1,
-                sidebar[0].width,
-                device_height as u16,
-            ),
-            state.offset(),
-            device_rows.len(),
-            device_height,
-            device_rows.len(),
-        );
-    }
-    let actions = sidebar_actions(app);
-    let items = actions
-        .iter()
-        .map(|(action, label)| {
-            let active = app.active_transfer_keys().len();
-            if *action == Action::Jobs && active > 0 {
-                ListItem::new(Line::styled(
-                    if sidebar_width < 18 {
-                        format!("{} Sending", transfer_spinner(app.transfer_frame, ascii()))
-                    } else {
-                        format!(
-                            "{} Transfers {active}",
-                            transfer_spinner(app.transfer_frame, ascii())
-                        )
-                    },
-                    accent(),
-                ))
-            } else {
-                ListItem::new(*label)
-            }
-        })
-        .collect::<Vec<_>>();
-    let mut state =
-        ratatui::widgets::ListState::default().with_selected(if app.focus == Focus::Actions {
-            Some(app.side_selected.min(actions.len().saturating_sub(1)))
-        } else {
-            None
+    // The real file preview draws its body where the design put the preview surface.
+    if let (Some(b), Some(r)) = (app.active_browser(), preview) {
+        let r = Rect::new(r.x, r.y, r.width, body.bottom().saturating_sub(r.y));
+        let shown = b.preview.as_ref().map(|t| (b, t.as_str())).or_else(|| {
+            b.peek
+                .as_deref()
+                .and_then(|p| p.preview.as_deref().map(|t| (p, t)))
         });
-    frame.render_stateful_widget(
-        List::new(items)
-            .block(
-                block("Actions".into(), app.focus == Focus::Actions)
-                    .padding(Padding::horizontal(1)),
-            )
-            .highlight_style(selected_style()),
-        sidebar[1],
-        &mut state,
-    );
-    if !phone {
-        for (line, (action, _)) in actions.iter().enumerate() {
-            let y = sidebar[1].y + 1 + line as u16;
-            if y + 1 >= sidebar[1].bottom() {
-                break;
+        if let Some((pb, text)) = shown {
+            frame.render_widget(Clear, r);
+            if b.preview.is_some() {
+                app.preview_rect.set(Some(r));
             }
-            hitmap::register(
-                Rect::new(sidebar[1].x + 1, y, sidebar[1].width.saturating_sub(2), 1),
-                hitmap::Hit::Cmd(keymap::Cmd::Do(*action)),
-            );
-        }
-    }
-    let details = if app.view == View::Containers {
-        app.selected_container()
-            .map(|(d, c)| {
-                format!(
-                    "{}\n{}\n{}\n{}\nNetwork {}\nUser {}\n{}\nEnter actions · n shell",
-                    safe_label(&app.devices[d].name),
-                    safe_label(&c.name),
-                    if c.devcontainer {
-                        "Devcontainer"
-                    } else {
-                        "Docker · inspection"
-                    },
-                    safe_label(&c.state),
-                    safe_label(&c.network),
-                    safe_label(&c.user),
-                    safe_label(&c.folder)
-                )
-            })
-            .unwrap_or_else(|| "Choose a container\nEnter expands device\nr refresh".into())
-    } else if app.view == View::Network {
-        app.network_rows()
-            .get(app.network_selected)
-            .map(|row| {
-                let owner = row["_device"].as_u64().unwrap_or(0) as usize;
-                let observer = safe_label(&app.devices[owner].name);
-                let arrow = if ascii() { "->" } else { "→" };
-                let mut lines = vec!["Route".to_owned(), format!("viewer {arrow} {observer}")];
-                if !row["_peer"].is_u64() {
-                    lines.push(format!(
-                        "{arrow} {}",
-                        safe_label(row["address"].as_str().unwrap_or("unknown"))
-                    ));
-                    lines.push(format!(
-                        "Link {}",
-                        safe_label(row["interface"].as_str().unwrap_or("unknown"))
-                    ));
-                }
-                if let Some(Some(hops)) = app.network_jump_routes.get(&owner) {
-                    if !hops.is_empty() {
-                        lines.push("SSH hops (saved)".into());
-                        lines.extend(hops.iter().map(|hop| safe_label(hop)));
-                    }
-                }
-                lines.join("\n")
-            })
-            .unwrap_or_else(|| "No devices or LAN observations".into())
-    } else if app.view == View::Files {
-        String::new() // Render the selected file context as styled hierarchy below.
-    } else if let Some((i, s)) = app
-        .selected_session()
-        // The Keys placeholder has no session row to open.
-        .filter(|_| app.view != View::Secrets)
-    {
-        if let Some(scope) = &s.container {
-            format!(
-                "Host {}\n{} {}\nFolder {}\n{}",
-                identity(&app.devices[i]),
-                menus::session_label(app, i, &s),
-                safe_label(&scope.name),
-                session_folder_label(&s.directory),
-                selected_hint()
-            )
-        } else {
-            format!(
-                "Host {}\nFolder {}\n{}",
-                identity(&app.devices[i]),
-                session_folder_label(&s.directory),
-                selected_hint()
-            )
-        }
-    } else if let Some(i) = app.actual_device() {
-        format!(
-            "Host {}\n{} sessions\nn new · Ctrl+P actions",
-            identity(&app.devices[i]),
-            app.work[i].sessions.len()
-        )
-    } else {
-        "Choose a device\nn new · Ctrl+P actions".into()
-    };
-    if sidebar[2].height > 3 {
-        let details = if app.view == View::Network {
-            details
-        } else {
-            details
-                .lines()
-                .map(|line| fit_label(line, sidebar_width.saturating_sub(2) as usize))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        let selected_content =
-            if let Some(b) = app.browser.as_ref().filter(|_| app.view == View::Files) {
-                let entries = app.visible_entries();
-                let width = sidebar_width.saturating_sub(2) as usize;
-                let height = sidebar[2].height.saturating_sub(1) as usize;
-                let mut lines = file_context_hierarchy(
-                    &app.devices[b.device].name,
-                    &b.display_path,
-                    entries.get(b.selected),
-                    width,
-                    height.saturating_sub(if b.container.is_some() { 2 } else { 0 }),
+            render_preview_body(frame, r, pb, text, native);
+            // The inline peek of a file no longer selected stays, dimmed, until
+            // the new one arrives (a frame from memory, never a blank).
+            if b.preview.is_none() && pb.preview_pending_page.is_some() {
+                frame
+                    .buffer_mut()
+                    .set_style(r, Style::default().add_modifier(Modifier::DIM));
+            }
+            // A PDF says its page (and a page still rendering) on the label row.
+            if let Some(p) = pb.preview_rich.as_ref().filter(|p| p.kind == "pdf") {
+                let status = format!(
+                    " PDF {}/{}{} ",
+                    p.page,
+                    p.pages.map_or("?".into(), |n| n.to_string()),
+                    pb.preview_pending_page
+                        .map(|n| format!(" · page {n}…"))
+                        .unwrap_or_default()
                 );
-                if let Some(scope) = &b.container {
-                    lines.insert(
-                        1,
-                        Line::styled(
-                            fit_label(&scope.name, width),
-                            accent().add_modifier(Modifier::BOLD),
-                        ),
-                    );
-                    lines.insert(
-                        2,
-                        Line::styled(
-                            fit_label(
-                                if width < 16 {
-                                    "Container"
-                                } else {
-                                    "Container files"
-                                },
-                                width,
-                            ),
-                            muted(),
-                        ),
-                    );
-                }
-                if b.marked.len() > 0 {
-                    lines.push(Line::styled(
-                        format!("{} marked · t send", b.marked.len()),
-                        muted(),
-                    ));
-                }
-                if let Some(other) = &app.other_browser {
-                    let destination = if app.destination_active { b } else { other };
-                    lines.push(Line::styled(
-                        format!("To {}", safe_label(&app.devices[destination.device].name)),
-                        muted(),
-                    ));
-                    lines.push(Line::raw(compact_path(
-                        &destination.display_path,
-                        sidebar_width.saturating_sub(2) as usize,
-                    )));
-                }
-                Paragraph::new(lines)
-            } else {
-                Paragraph::new(details)
-            };
-        frame.render_widget(
-            selected_content.wrap(Wrap { trim: false }).block(
-                Block::default()
-                    .padding(Padding::horizontal(1))
-                    .title(Line::from(Span::styled(" Selected ", muted())))
-                    .borders(Borders::TOP)
-                    .border_set(overlay_border())
-                    .border_style(faint()),
-            ),
-            sidebar[2],
-        );
-    }
-    let split_workspace = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(5),
-            Constraint::Length(
-                if app.view == View::Files && app.transfer_drawer && content[1].height >= 12 {
-                    4
-                } else {
-                    0
-                },
-            ),
-        ])
-        .split(content[1]);
-    let workspace = split_workspace[0];
-    match app.view {
-        View::Work => {
-            let workspace = session_preview::render(frame, app, workspace);
-            // Only the list owns wheel navigation; the snapshot and metadata
-            // footer must never move the selected session behind the pointer.
-            app.panels
-                .borrow_mut()
-                .retain(|(focus, _, _)| *focus != Focus::Workspace);
-            app.panels
-                .borrow_mut()
-                .push((Focus::Workspace, false, workspace));
-            let rows = app.session_rows();
-            if rows.is_empty() {
-                let checking = app
-                    .work
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| app.device == 0 || app.device == i + 1)
-                    .any(|(_, w)| w.loading);
-                let errors: Vec<_> = app
-                    .work
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| app.device == 0 || app.device == i + 1)
-                    .filter_map(|(_, w)| w.error.as_deref())
-                    .collect();
-                let mut lines = vec![Line::from("")];
-                if checking {
-                    lines.push(Line::from(Span::styled("Checking sessions…", accent())));
-                    lines.push(Line::from("Waiting for device evidence"));
-                } else if !errors.is_empty() {
-                    lines.push(Line::from(Span::styled("Device unavailable", warn())));
-                    for error in errors {
-                        lines.push(Line::from(safe_text(error)));
-                    }
-                    lines.push(Line::from("Ctrl+P → Refresh"));
-                } else if !app.search.is_empty() {
-                    lines.push(Line::from("No matching sessions"));
-                    lines.push(Line::from("Esc clears search"));
-                    lines.push(Line::from("n starts a new session"));
-                } else {
-                    lines.push(Line::from(Span::styled(
-                        "No live sessions",
-                        Style::default().add_modifier(Modifier::BOLD),
-                    )));
-                    lines.push(Line::from("Start a shell in this device's home."));
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(Span::styled(
-                        if app.creating {
-                            "Creating session…"
-                        } else {
-                            "[ Enter / n  New session ]"
-                        },
-                        if app.focus == Focus::Workspace && !app.creating {
-                            selected_style()
-                        } else {
-                            accent().add_modifier(Modifier::BOLD)
-                        },
-                    )));
-                    if local_only(app) {
-                        lines.push(Line::from(""));
-                        lines.push(Line::from("Use this computer now."));
-                        lines.push(Line::from(Span::styled(
-                            "Network · discover reachable devices",
-                            accent().add_modifier(Modifier::BOLD),
-                        )));
-                        lines.push(Line::from("Ctrl+P · Add by SSH address"));
-                    }
-                }
-                frame.render_widget(
-                    Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-                        block("Sessions".into(), app.focus == Focus::Workspace)
-                            .padding(Padding::horizontal(1)),
-                    ),
-                    workspace,
-                );
-            } else {
-                let selected_error = rows
-                    .get(app.selected)
-                    .and_then(|(device, _)| app.work[*device].error.as_deref());
-                let table_area = if let Some(error) = selected_error {
-                    let areas = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([Constraint::Min(3), Constraint::Length(2)])
-                        .split(workspace);
-                    frame.render_widget(
-                        Paragraph::new(format!(
-                            "{}\nCtrl+P → Refresh · state unconfirmed",
-                            fit_label(&safe_text(error), usize::from(areas[1].width))
-                        ))
-                        .style(muted()),
-                        areas[1],
-                    );
-                    areas[0]
-                } else {
-                    workspace
-                };
-                session_rows::render(frame, app, table_area, &rows);
+                let w = (status.chars().count() as u16).min(r.width);
+                let row = Rect::new(r.right() - w, r.y.saturating_sub(1), w, 1);
+                frame.render_widget(Paragraph::new(Span::styled(status, muted())), row);
             }
         }
-        View::Files => {
-            if let Some(b) = &app.browser {
-                if b.preview.is_some()
-                    && b.preview_rich
-                        .as_ref()
-                        .is_some_and(|p| matches!(p.kind.as_str(), "image" | "pdf"))
-                {
-                    if app.other_browser.is_some() {
-                        app.panels.borrow_mut().push((
-                            Focus::Workspace,
-                            app.destination_active,
-                            workspace,
-                        ));
-                    }
-                    render_preview_with_native(
-                        frame,
-                        workspace,
-                        b,
-                        b.preview.as_deref().unwrap_or(""),
-                        app.focus == Focus::Workspace,
-                        native,
-                    );
-                } else if let Some(other) = &app.other_browser {
-                    let panes = Layout::default()
-                        .direction(if workspace.width >= 52 {
-                            Direction::Horizontal
-                        } else {
-                            Direction::Vertical
-                        })
-                        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                        .split(workspace);
-                    app.panels.borrow_mut().extend([
-                        (Focus::Workspace, false, panes[0]),
-                        (Focus::Workspace, true, panes[1]),
-                    ]);
-                    let (source, destination) = if app.destination_active {
-                        (other, b)
-                    } else {
-                        (b, other)
-                    };
-                    render_browser(
-                        frame,
-                        source,
-                        &app.devices[source.device],
-                        panes[0],
-                        !app.destination_active && app.focus == Focus::Workspace,
-                        "Source",
-                        app.clipboard.as_ref(),
-                        &app.folder_agents(source),
-                    );
-                    render_browser(
-                        frame,
-                        destination,
-                        &app.devices[destination.device],
-                        panes[1],
-                        app.destination_active && app.focus == Focus::Workspace,
-                        &format!("Destination · {}", app.conflict_policy()),
-                        app.clipboard.as_ref(),
-                        &app.folder_agents(destination),
-                    );
-                } else {
-                    let label = app
-                        .launch_provider
-                        .as_ref()
-                        .map(|p| format!("Start {p} here · n"))
-                        .unwrap_or_else(|| "Files".into());
-                    render_browser(
-                        frame,
-                        b,
-                        &app.devices[b.device],
-                        workspace,
-                        app.focus == Focus::Workspace,
-                        &label,
-                        app.clipboard.as_ref(),
-                        &app.folder_agents(b),
-                    );
-                }
-            }
-        }
-        View::Containers => render_containers(frame, app, workspace),
-        View::Network => render_network(frame, app, workspace),
-        View::Secrets => render_secrets(frame, app, workspace),
     }
-    if split_workspace[1].height > 0 {
-        let rows = app.job_rows();
-        let mut lines = rows
-            .iter()
-            .take(2)
-            .map(|(_, j)| {
-                Line::from(vec![
-                    Span::styled(
-                        format!(" {} ", transfer_status(j)),
-                        if j["status"] == "failed" {
-                            err()
-                        } else if j["status"] == "complete" {
-                            ok()
-                        } else {
-                            warn()
-                        },
-                    ),
-                    Span::raw(format!(
-                        "{} {}",
-                        if j["operation"] == "move" {
-                            "move"
-                        } else {
-                            "copy"
-                        },
-                        transfer_name(j)
-                    )),
-                    Span::styled(
-                        format!(
-                            " · {}",
-                            if j["source_host"] == j["destination_host"] {
-                                safe_label(j["source_host"].as_str().unwrap_or("?"))
-                            } else {
-                                format!(
-                                    "{} → {}",
-                                    safe_label(j["source_host"].as_str().unwrap_or("?")),
-                                    safe_label(j["destination_host"].as_str().unwrap_or("?"))
-                                )
-                            }
-                        ),
-                        muted(),
-                    ),
-                ])
-            })
-            .collect::<Vec<_>>();
-        if !app.file_errors.is_empty() {
-            lines.insert(
-                0,
-                Line::from(Span::styled(
-                    format!(
-                        " × {} actions rejected · {}",
-                        app.file_errors.len(),
-                        app.file_errors.last().unwrap()
-                    ),
-                    err(),
-                )),
-            );
-            lines.truncate(2);
-        }
-        frame.render_widget(
-            Paragraph::new(if lines.is_empty() {
-                vec![Line::from(" Submitting selected items…")]
-            } else {
-                lines
-            })
-            .block(block("Transfers · T details".into(), false)),
-            split_workspace[1],
-        );
+    // The design shows the highlighted file inline from 100 columns (Size M).
+    if let Some(b) = app.active_browser().filter(|_| app.view == View::Files) {
+        b.peek_shown.set(b.preview.is_none() && area.width >= 100);
     }
-    // Phone: one chip row, then the bottom tab bar (separator + tabs).
-    let (key_rows, tail) = if phone { (1, 2) } else { (2, 1) };
-    let footer = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(if show_search {
-            vec![
-                Constraint::Length(3),
-                Constraint::Length(1),
-                Constraint::Length(key_rows),
-                Constraint::Length(tail),
-            ]
-        } else {
-            vec![
-                Constraint::Length(1),
-                Constraint::Length(key_rows),
-                Constraint::Length(tail),
-            ]
-        })
-        .split(areas.footer);
-    if phone {
-        render_tab_bar(frame, app, footer[footer.len() - 1]);
+    if app.view == View::Containers && vm.view == views::LabView::Hub {
+        frame.render_widget(Clear, body);
+        hitmap::begin();
+        render_containers(frame, app, body);
     }
-    let status_row = if show_search { 1 } else { 0 };
-    let key_row = if show_search { 2 } else { 1 };
-    let mut unique_jobs = std::collections::BTreeMap::new();
-    for j in app
-        .jobs
-        .values()
-        .filter_map(|v| v["jobs"].as_array())
-        .flatten()
-    {
-        unique_jobs.insert(
-            (
-                j["key"].as_str().unwrap_or(""),
-                j["source_host"].as_str().unwrap_or(""),
-                j["destination_host"].as_str().unwrap_or(""),
-            ),
-            j,
-        );
+    if app.view == View::Files {
+        file_matches(frame, app, &drawn.targets);
     }
-    let jobs = unique_jobs.values().copied().collect::<Vec<_>>();
-    let active = jobs
-        .iter()
-        .filter(|j| {
-            matches!(
-                j["status"].as_str(),
-                Some("running" | "queued" | "submitting")
-            )
-        })
-        .count();
-    let failed = jobs.iter().filter(|j| j["status"] == "failed").count();
-    let ready = app
-        .work
-        .iter()
-        .filter(|w| {
-            w.fetched > 0 && transport::now().saturating_sub(w.fetched) < 60 && w.error.is_none()
-        })
-        .count();
-    let errors = app.work.iter().filter(|w| w.error.is_some()).count();
-    let ready = if app.view == View::Containers {
-        app.containers
-            .keys()
-            .filter(|d| app.device == 0 || app.device == **d + 1)
-            .count()
-    } else {
-        ready
-    };
-    let errors = if app.view == View::Containers {
-        app.container_errors
-            .keys()
-            .filter(|d| app.device == 0 || app.device == **d + 1)
-            .count()
-    } else {
-        errors
-    };
-    let shown = if app.view == View::Containers {
-        app.container_rows()
-            .iter()
-            .filter(|(_, c)| c.is_some())
-            .count()
-    } else if app.view == View::Network {
-        app.network_rows().len()
-    } else if app.view == View::Files {
-        app.visible_entries().len()
-    } else {
-        app.session_rows().len()
-    };
-    let total = if app.view == View::Containers {
-        app.containers
-            .iter()
-            .filter(|(d, _)| app.device == 0 || app.device == **d + 1)
-            .map(|(_, c)| c.len())
-            .sum()
-    } else if app.view == View::Network {
-        shown
-    } else if app.view == View::Files {
-        app.browser.as_ref().map(|b| b.entries.len()).unwrap_or(0)
-    } else {
-        app.session_rows_for("").len()
-    };
-    let status_sections = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(if area.width < 60 {
-            vec![
-                Constraint::Length(0),
-                Constraint::Percentage(55),
-                Constraint::Percentage(45),
-            ]
-        } else {
-            vec![
-                Constraint::Percentage(30),
-                Constraint::Percentage(30),
-                Constraint::Percentage(40),
-            ]
-        })
-        .split(footer[status_row]);
-    let healthy = ok();
-    let warning = warn();
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            format!(
-                " {} {ready}/{} devices  ",
-                if ascii() { "+" } else { "●" },
-                app.devices.len()
-            ),
-            if errors > 0 {
-                warning
-            } else if ready == 0 {
-                muted()
-            } else {
-                healthy
-            },
-        )])),
-        status_sections[0],
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!("Focus: {}", app.focus_label()),
-                accent().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                if app.dialog.is_some()
-                    || app.help
-                    || (app.view == View::Secrets && app.focus == Focus::Workspace)
-                {
-                    String::new()
-                } else {
-                    format!(" · {shown}/{total}")
-                },
-                muted(),
-            ),
-        ]))
-        .alignment(ratatui::layout::Alignment::Center),
-        status_sections[1],
-    );
-    let transfer = if active > 0 && phone {
-        // The phone layout has no Actions panel; the status line animates.
-        format!(
-            "{} Transfers {active} ",
-            transfer_spinner(app.transfer_frame, ascii())
-        )
-    } else if active > 0 {
-        format!("{} {active} active", if ascii() { "~" } else { "↔" })
-    } else if failed > 0 {
-        format!("{} {failed} failed", if ascii() { "x" } else { "×" })
-    } else if !jobs.is_empty() {
-        let completed = jobs.iter().filter(|j| j["status"] == "complete").count();
-        let skipped = jobs
-            .iter()
-            .map(|j| j["skipped"].as_u64().unwrap_or(0))
-            .sum::<u64>();
-        if skipped > 0 {
-            format!(
-                "{} {completed} done · {skipped} skipped",
-                if ascii() { "+" } else { "●" }
-            )
-        } else {
-            format!("{} {completed} complete", if ascii() { "+" } else { "●" })
-        }
-    } else {
-        format!("{} idle", if ascii() { "~" } else { "↔" })
-    };
-    frame.render_widget(
-        Paragraph::new(transfer)
-            .style(if failed > 0 { warning } else { accent() })
-            .alignment(ratatui::layout::Alignment::Right),
-        status_sections[2],
-    );
-    if show_search {
-        let editing = matches!(
-            app.input,
-            Some(Input::Search | Input::PreviewSearch | Input::Filter)
-        );
-        let text = if editing { app.text.as_str() } else { query };
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    if app.input == Some(Input::Filter) {
-                        " f  "
-                    } else {
-                        " /  "
-                    },
-                    accent().add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(safe_label(text)),
-            ]))
-            .block(block(
-                if app.input == Some(Input::Filter) {
-                    "Filter".into()
-                } else if let Some(b) = app
-                    .browser
-                    .as_ref()
-                    .filter(|b| b.preview.is_some() && app.view == View::Files)
-                {
-                    let count = doc_matches(b, &b.preview_find.query).len();
-                    format!(
-                        "Search · {}/{}",
-                        if count == 0 {
-                            0
-                        } else {
-                            (b.preview_find.selected + 1).min(count)
-                        },
-                        count
-                    )
-                } else {
-                    "Search".into()
-                },
-                editing,
-            )),
-            footer[0],
-        );
-        if editing {
-            let width = Span::raw(safe_label(text)).width() as u16;
-            frame.set_cursor_position((
-                footer[0].x + 5 + width.min(footer[0].width.saturating_sub(7)),
-                footer[0].y + 1,
-            ));
-        }
+    find_bar(frame, app, area);
+    if app.pane_focused() {
+        typing_bar(frame, area);
     }
-    let mut hints = if app.pane_focused() {
-        vec![("Ctrl+\\", "Leave input"), ("Wheel", "Scroll")]
-    } else if app.view == View::Work
-        && app.focus == Focus::Workspace
-        && app.preview_zoomed()
-        && app.dialog.is_none()
-        && app.input.is_none()
-        && !app.help
-    {
-        vec![
-            ("Enter", "Attach"),
-            ("i", "Type"),
-            ("z / Esc", "Back to list"),
-            ("w", "Watch"),
-        ]
-    } else if app.help {
-        vec![("↑↓", "Scroll"), ("PgUpDn", "Page"), ("Esc", "Close")]
-    } else if let Some(dialog) = &app.dialog {
-        if matches!(dialog, Dialog::AgentTasks(..)) {
-            vec![
-                ("↑↓", "Choose"),
-                ("Enter", "Details"),
-                ("Tab", "Focus"),
-                ("PgUpDn", "Scroll"),
-                ("Esc", "Close"),
-            ]
-        } else if matches!(dialog, Dialog::Jobs) {
-            vec![
-                ("c", "Cancel job"),
-                ("r", "Retry job"),
-                ("Esc", "Back"),
-                ("Tab", "Details"),
-                ("PgUpDn", "Scroll"),
-                (
-                    "Enter",
-                    if app.dialog_detail_focus {
-                        "Back"
-                    } else {
-                        "Details"
-                    },
-                ),
-            ]
-        } else if matches!(
-            dialog,
-            Dialog::Delete(..) | Dialog::StopShell(..) | Dialog::RemoveDevice(..) | Dialog::Reset
-        ) {
-            vec![
-                (
-                    "↑↓",
-                    if app.dialog_detail_focus {
-                        "Scroll"
-                    } else {
-                        "Choose"
-                    },
-                ),
-                (
-                    "Enter",
-                    if app.dialog_detail_focus {
-                        "Back"
-                    } else {
-                        "Confirm"
-                    },
-                ),
-                (
-                    "y / n",
-                    if matches!(dialog, Dialog::StopShell(..)) {
-                        "Stop / keep"
-                    } else if matches!(dialog, Dialog::RemoveDevice(..)) {
-                        "Remove / keep"
-                    } else if matches!(dialog, Dialog::Reset) {
-                        "Reset / cancel"
-                    } else {
-                        "Delete / cancel"
-                    },
-                ),
-                ("Tab", "Details"),
-                ("PgUpDn", "Scroll"),
-                ("Home", "Top"),
-            ]
-        } else {
-            vec![("↑↓", "Choose"), ("Enter", "Confirm"), ("Esc", "Cancel")]
-        }
-    } else if app.input == Some(Input::Add) {
-        vec![("Enter", "Connect"), ("Esc", "Cancel"), ("Ctrl U", "Clear")]
-    } else if matches!(
-        app.input,
-        Some(Input::Rename | Input::Mkdir | Input::Palette)
-    ) {
-        vec![
-            (
-                "Enter",
-                if app.palette_run_mode() {
-                    "Run"
-                } else {
-                    "Confirm"
-                },
-            ),
-            ("Esc", "Cancel"),
-            ("Ctrl U", "Clear"),
-        ]
-    } else if app.input == Some(Input::PreviewSearch)
-        || (app.input == Some(Input::Search) && app.view == View::Files)
-    {
-        vec![("↑↓", "Match"), ("Enter", "Done"), ("Esc", "Done")]
-    } else if matches!(
-        app.input,
-        Some(Input::Search | Input::PreviewSearch | Input::Filter)
-    ) {
-        vec![
-            ("↑↓", "Select"),
-            (
-                "Enter",
-                if app.input == Some(Input::Filter) {
-                    "Done"
-                } else {
-                    "Open"
-                },
-            ),
-            ("Esc", "Done"),
-            ("Tab", "Focus"),
-        ]
-    } else {
-        Vec::new()
-    };
-    // Workspace hints come from the keymap, so they match dispatch and help
-    // and each chip is a tap target running the same command as its key.
-    let modal = !hints.is_empty();
-    let mut chips: Vec<(&str, &str, Option<keymap::Cmd>)> = if modal {
-        hints.drain(..).map(|(k, l)| (k, l, None)).collect()
-    } else {
-        keymap::hints(app)
-            .into_iter()
-            .map(|(hint, cmd)| (hint.key, hint.label, Some(cmd)))
-            .collect()
-    };
-    let columns = if phone || footer[key_row].width >= 60 {
-        3
-    } else {
-        2
-    };
-    let capacity = columns * usize::from(key_rows);
-    if columns == 2
-        && !matches!(
-            app.input,
-            Some(Input::Search | Input::PreviewSearch | Input::Filter)
-        )
-    {
-        chips.retain(|(_, label, _)| !matches!(*label, "Search" | "Focus"));
-    }
-    // Help stays reachable by tap even when the chips overflow.
-    if !modal && chips.len() > capacity && capacity > 1 {
-        if let Some(help) = chips
-            .iter()
-            .position(|(_, _, cmd)| *cmd == Some(keymap::Cmd::Help))
+    if let Some(query) = &vm.palette {
+        hitmap::begin();
+        for t in
+            views::mission::render_palette(&vm.state, &vm.caps, area, frame.buffer_mut(), query)
         {
-            let help = chips.remove(help);
-            chips.truncate(capacity - 1);
-            chips.push(help);
+            hitmap::register_action(t.area, &t.action, app);
         }
     }
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(vec![Constraint::Length(1); usize::from(key_rows)])
-        .split(footer[key_row]);
-    for (i, (key, label, cmd)) in chips.into_iter().take(capacity).enumerate() {
-        let key = if ascii() && key == "↑↓" {
-            "j/k"
-        } else {
-            key
-        };
-        let cells = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(vec![Constraint::Ratio(1, columns as u32); columns])
-            .split(rows[i / columns]);
-        let key_style = accent().add_modifier(Modifier::BOLD);
-        let cell = cells[i % columns];
-        let text = if phone && !modal {
-            // Touch targets: one short word per chip, bracketed like a button.
-            let word = label
-                .split([' ', '/', '·'])
-                .find(|w| !w.is_empty())
-                .unwrap_or(label);
-            Line::from(vec![Span::styled(format!(" [{word}] "), key_style)])
-                .alignment(ratatui::layout::Alignment::Center)
-        } else {
-            Line::from(vec![
-                Span::styled(format!(" {key} "), key_style),
-                Span::raw(label),
-            ])
-        };
-        if let Some(cmd) = cmd.filter(|c| *c != keymap::Cmd::Motion) {
-            // Phone chips take their whole cell (larger touch targets).
-            let width = if phone {
-                cell.width
-            } else {
-                (text.width() as u16 + 1).min(cell.width)
-            };
-            hitmap::register(Rect::new(cell.x, cell.y, width, 1), hitmap::Hit::Cmd(cmd));
-        }
-        frame.render_widget(Paragraph::new(text), cell);
-    }
+    let workspace = body;
+    let phone = area.width < 70;
+    let _ = phone;
     // Overlays from here on: they own the focused treatment.
     set_panels_dimmed(false);
     if app.creating && app.dialog.is_none() && app.input.is_none() {
@@ -1194,9 +195,7 @@ fn render_frame(
                 5
             },
         );
-        if input == Input::Palette {
-            render_palette(frame, app, area, phone);
-        } else {
+        if input != Input::Palette {
             frame.render_widget(Clear, rect);
             let editing = matches!(input, Input::Rename | Input::Add);
             let cursor_width = if editing {
@@ -1362,10 +361,6 @@ fn render_frame(
                 vec!["Default · existing host permissions".into(), "YOLO · bypass approvals".into()],
                 format!("{}\n{}Applies to this session only.\nYOLO bypasses approval prompts; Codex also disables its sandbox.\nEnter starts · Escape cancels", safe_label(path), if *pick { "Native resume (choose): " } else if *resume { "Native resume (latest): " } else { "Fresh session: " }),
             ),
-            Dialog::StopShell(d, session) => (
-                format!("Stop {} session?", session.provider), vec!["Keep session".into(), "Stop session".into()],
-                format!("Running work in this session will end.\n{}\n{}\n{}", identity(&app.devices[*d]), safe_label(&session.name), session_folder_label(&session.directory)),
-            ),
             Dialog::Delete(d, entries) => (
                 format!("Delete {} {}?", entries.len(), if entries.len() == 1 { "item" } else { "items" }),
                 vec!["Cancel · keep files".into(), "Delete permanently".into()],
@@ -1458,12 +453,9 @@ fn render_frame(
             render_session_chooser(frame, app, area, dialog, &title, &detail);
         } else if matches!(
             dialog,
-            Dialog::Delete(..) | Dialog::StopShell(..) | Dialog::RemoveDevice(..) | Dialog::Reset
+            Dialog::Delete(..) | Dialog::RemoveDevice(..) | Dialog::Reset
         ) {
-            let stop = matches!(dialog, Dialog::StopShell(..));
-            let labels = if stop {
-                ["Keep session", "Stop session"]
-            } else if matches!(dialog, Dialog::RemoveDevice(..)) {
+            let labels = if matches!(dialog, Dialog::RemoveDevice(..)) {
                 ["Keep device", "Remove device"]
             } else if matches!(dialog, Dialog::Reset) {
                 ["Cancel", "Reset"]
@@ -1513,7 +505,6 @@ fn render_frame(
             confirmation_buttons(
                 frame,
                 rows[2],
-                stop,
                 app.dialog_selected,
                 app.dialog_detail_focus,
                 ConfirmationLayout::Separate,
@@ -1575,7 +566,7 @@ fn render_frame(
                                     format!("{operation} "),
                                     if operation == "move" { warn() } else { info() },
                                 ),
-                                Span::raw(compact_path(
+                                Span::raw(fit_path(
                                     &transfer_name(&job),
                                     file_width.saturating_sub(5),
                                 )),
@@ -1631,541 +622,10 @@ fn render_frame(
             );
         }
     }
-    if app.help {
-        hitmap::modal();
-        // One box over a dimmed backdrop (P12). Below 100 columns a centered
-        // box would leave 1-2 column slivers of the panels at the edges, so
-        // the overlay takes the full frame there.
-        dim_backdrop(frame);
-        let rect = if phone || area.width < 100 {
-            Rect::new(area.x, area.y, area.width, area.height)
-        } else {
-            popup(area, 76, area.height.saturating_sub(4).clamp(20, 40))
-        };
-        frame.render_widget(Clear, rect);
-        let key_style = accent().add_modifier(Modifier::BOLD);
-        let key_width = if rect.width < 50 { 12 } else { 18 };
-        // Descriptions wrap under their own column, never back into the key
-        // column (the block border takes one cell on each side).
-        let description_width = usize::from(rect.width.saturating_sub(2))
-            .saturating_sub(key_width + 1)
-            .max(8);
-        let key_row = |keys: &str, description: &str| -> Vec<Line<'static>> {
-            help_wrap(description, description_width)
-                .into_iter()
-                .enumerate()
-                .map(|(index, part)| {
-                    let keys = if index == 0 { keys } else { "" };
-                    Line::from(vec![
-                        Span::styled(format!("{keys:<key_width$} "), key_style),
-                        Span::raw(part),
-                    ])
-                })
-                .collect()
-        };
-        // Generated from the keymap: the same table dispatches the keys.
-        let mut help = Vec::new();
-        for (index, (title, rows)) in keymap::help_sections(app).into_iter().enumerate() {
-            if index > 0 {
-                help.push(Line::default());
-            }
-            help.push(Line::from(Span::styled(
-                title,
-                Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-            )));
-            for (keys, description) in rows {
-                help.extend(key_row(keys, description));
-            }
-        }
-        if matches!(app.dialog, Some(Dialog::Jobs)) {
-            help.push(Line::default());
-            help.push(Line::from(Span::styled("Transfer jobs", key_style)));
-            for (keys, description) in [
-                ("c · r", "Cancel / retry saved job"),
-                ("Enter / Tab", "Focus details"),
-                ("PgUp/PgDn", "Scroll details"),
-            ] {
-                help.extend(key_row(keys, description));
-            }
-        }
-        help.push(Line::default());
-        help.push(Line::from(Span::styled(
-            "Inside sessions",
-            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-        )));
-        help.push(Line::raw("Native terminals own their input."));
-        help.extend(key_row(DETACH_KEY, "Return from a managed session"));
-        help.extend(key_row("Enter · w", "Attach · watch read-only"));
-        help.extend(key_row("i · z", "Type into the preview · zoom it"));
-        help.push(Line::raw("External sessions keep their tmux bindings."));
-        help.push(Line::default());
-        help.push(Line::from(Span::styled(
-            "Mouse and touch",
-            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-        )));
-        help.extend(key_row("tap", "Select a row; tap it again to open"));
-        help.extend(key_row(
-            "hold / right",
-            "Actions for the row (same as its keys)",
-        ));
-        help.extend(key_row("tab · chip", "Go to the view / run the chip's key"));
-        help.extend(key_row("wheel", "Move one row per detent"));
-        frame.render_widget(
-            Paragraph::new(help)
-                .wrap(Wrap { trim: false })
-                .scroll((app.help_scroll, 0))
-                .block(block("Help · Esc close".into(), true)),
-            rect,
-        );
-    }
     hitmap::render_context_menu(frame, app, area);
-}
-/// Word-wraps a help description to `width` cells; a word longer than the
-/// column is cut with an ellipsis rather than spilling into the key column.
-pub(super) fn help_wrap(text: &str, width: usize) -> Vec<String> {
-    let w = |t: &str| Span::raw(t).width();
-    let width = width.max(2);
-    let mut lines: Vec<String> = Vec::new();
-    let mut line = String::new();
-    for word in text.split_whitespace() {
-        let word = if w(word) > width {
-            let mut cut = String::new();
-            for c in word.chars() {
-                if w(&cut) + w(c.encode_utf8(&mut [0; 4])) + 1 > width {
-                    break;
-                }
-                cut.push(c);
-            }
-            cut.push('…');
-            cut
-        } else {
-            word.to_owned()
-        };
-        if line.is_empty() {
-            line = word;
-        } else if w(&line) + 1 + w(&word) <= width {
-            line.push(' ');
-            line.push_str(&word);
-        } else {
-            lines.push(std::mem::take(&mut line));
-            line = word;
-        }
-    }
-    if !line.is_empty() || lines.is_empty() {
-        lines.push(line);
-    }
-    lines
 }
 /// Key that returns from a managed session. The sessions wave moves this to
 /// Ctrl+\ together with the tmux binding; help reads it from here.
-pub(super) const DETACH_KEY: &str = "Ctrl+\\";
-/// Width class XS (phones): single column, device chip strip, bottom tab bar.
-pub(super) fn phone(width: u16) -> bool {
-    width < 60
-}
-/// The frame's fixed regions, shared by rendering and the native-preview
-/// placement so they cannot disagree.
-pub(super) struct Areas {
-    pub phone: bool,
-    pub show_search: bool,
-    pub header: Rect,
-    pub rail: Rect,
-    /// Device chip strip (phone only).
-    pub strip: Rect,
-    pub main: Rect,
-    pub footer: Rect,
-    pub sidebar_width: u16,
-}
-pub(super) fn frame_areas(app: &App, area: Rect) -> Areas {
-    let query = filters::visible_query(app);
-    let show_search = matches!(
-        app.input,
-        Some(Input::Search | Input::PreviewSearch | Input::Filter)
-    ) || !query.is_empty();
-    let phone = phone(area.width);
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(if phone { 1 } else { 2 }),
-            Constraint::Min(5),
-            Constraint::Length(if show_search { 7 } else { 4 }),
-        ])
-        .split(area);
-    let sidebar_width: u16 = if phone {
-        0
-    } else if area.width < 70 {
-        17
-    } else {
-        21
-    };
-    let content = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(sidebar_width), Constraint::Min(15)])
-        .split(vertical[1]);
-    let (strip, main) = if phone {
-        let parts = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(4)])
-            .split(content[1]);
-        (parts[0], parts[1])
-    } else {
-        (Rect::default(), content[1])
-    };
-    Areas {
-        phone,
-        show_search,
-        header: vertical[0],
-        rail: content[0],
-        strip,
-        main,
-        footer: vertical[2],
-        sidebar_width,
-    }
-}
-fn tab_label(view: View, phone: bool) -> &'static str {
-    keymap::TABS
-        .iter()
-        .find(|(v, _, _)| *v == view)
-        .map(|(_, long, short)| if phone { *short } else { *long })
-        .unwrap_or("Sessions")
-}
-/// Header: product mark, clickable view tabs and the palette button.
-fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let row = Rect::new(area.x, area.y, area.width, 1);
-    let active = keymap::tab_index(app.view);
-    let mark = Span::styled(" cx ", accent().add_modifier(Modifier::BOLD));
-    // U+2026 is in every common terminal font (U+22EF often is not).
-    let more = if ascii() { " ... " } else { " … " };
-    let more_width = more.chars().count() as u16;
-    let palette = Rect::new(
-        row.right().saturating_sub(more_width),
-        row.y,
-        more_width.min(row.width),
-        1,
-    );
-    frame.render_widget(
-        Paragraph::new(Span::styled(more, accent().add_modifier(Modifier::BOLD))),
-        palette,
-    );
-    hitmap::register(palette, hitmap::Hit::Cmd(keymap::Cmd::Palette));
-    if phone(area.width) {
-        // Tabs move to the bottom bar; the header names the current view.
-        let name = if app.view == View::Containers {
-            "Containers"
-        } else {
-            keymap::TABS[active].1
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                mark,
-                Span::styled(if ascii() { "- " } else { "· " }, muted()),
-                Span::styled(name, Style::default().add_modifier(Modifier::BOLD)),
-            ])),
-            Rect::new(row.x, row.y, row.width.saturating_sub(more_width), 1),
-        );
-        return;
-    }
-    let mut spans = vec![mark, Span::raw(" ")];
-    let mut x = row.x + 5;
-    for (index, (view, label, _)) in keymap::TABS.iter().enumerate() {
-        let selected = index == active;
-        let text = format!(
-            "{}{label} ",
-            if selected {
-                if ascii() {
-                    ">"
-                } else {
-                    "▸"
-                }
-            } else {
-                " "
-            }
-        );
-        let width = text.chars().count() as u16;
-        if x + width > palette.x {
-            break;
-        }
-        hitmap::register(Rect::new(x, row.y, width, 1), hitmap::Hit::Tab(*view));
-        spans.push(Span::styled(
-            text,
-            if selected {
-                accent().add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            },
-        ));
-        spans.push(Span::raw(" "));
-        x += width + 1;
-    }
-    if app.view == View::Containers && x + 13 <= palette.x {
-        spans.push(Span::styled(
-            format!("{}Containers", if ascii() { ">" } else { "▸" }),
-            accent().add_modifier(Modifier::BOLD),
-        ));
-        x += 11;
-    }
-    frame.render_widget(Paragraph::new(Line::from(spans)), row);
-    let viewer = app
-        .devices
-        .iter()
-        .find(|d| d.target.is_none())
-        .map(identity)
-        .unwrap_or_else(|| "local viewer".into());
-    let text = format!("viewing {viewer} ");
-    let width = text.chars().count() as u16;
-    if x + width + 2 <= palette.x {
-        frame.render_widget(
-            Paragraph::new(text).style(muted()),
-            Rect::new(palette.x - width, row.y, width, 1),
-        );
-    }
-}
-/// Phone bottom tab bar: a separator row and four equal, tall tab targets.
-fn render_tab_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    if area.height == 0 {
-        return;
-    }
-    let rule = if ascii() { "=" } else { "━" };
-    frame.render_widget(
-        Paragraph::new(rule.repeat(area.width as usize)).style(muted()),
-        Rect::new(area.x, area.y, area.width, 1),
-    );
-    let labels = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
-    let cells = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(vec![Constraint::Ratio(1, 4); 4])
-        .split(labels);
-    let active = keymap::tab_index(app.view);
-    for (index, (view, _, _)) in keymap::TABS.iter().enumerate() {
-        let selected = index == active;
-        let label = format!(
-            "{}{}",
-            if selected {
-                if ascii() {
-                    ">"
-                } else {
-                    "▸"
-                }
-            } else {
-                ""
-            },
-            tab_label(*view, true)
-        );
-        frame.render_widget(
-            Paragraph::new(label)
-                .alignment(ratatui::layout::Alignment::Center)
-                .style(if selected {
-                    accent().add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                }),
-            cells[index],
-        );
-        hitmap::register(
-            Rect::new(cells[index].x, area.y, cells[index].width, area.height),
-            hitmap::Hit::Tab(*view),
-        );
-    }
-}
-fn device_glyph(app: &App, d: usize) -> (&'static str, Style) {
-    let w = &app.work[d];
-    let (unicode, plain, style) = if w.loading {
-        ("◌", ".", info())
-    } else if w.error.is_some() {
-        ("✕", "x", warn())
-    } else if w.fetched > 0 && transport::now().saturating_sub(w.fetched) <= 60 {
-        ("●", "+", ok())
-    } else {
-        ("·", "-", Style::default())
-    };
-    (if ascii() { plain } else { unicode }, style)
-}
-/// Phone device rail: one row of tappable device chips.
-fn render_device_strip(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let rows = app.device_rows();
-    let focused = app.focus == Focus::Devices;
-    let chips: Vec<(usize, Vec<Span<'static>>, u16)> = rows
-        .iter()
-        .map(|value| {
-            let mut spans = Vec::new();
-            if *value == 0 {
-                spans.push(Span::raw("All".to_string()));
-            } else {
-                let (glyph, style) = device_glyph(app, value - 1);
-                spans.push(Span::styled(glyph.to_string(), style));
-                if app.device_policy(value - 1).access == store::AccessMode::Directed {
-                    spans.push(Span::raw("* ".to_string()));
-                }
-                spans.push(Span::raw(fit_label(&app.devices[value - 1].name, 14)));
-            }
-            let width = spans.iter().map(|s| s.width() as u16).sum::<u16>() + 2;
-            (*value, spans, width)
-        })
-        .collect();
-    let selected = rows.iter().position(|v| *v == app.device).unwrap_or(0);
-    // Hidden chips are never silent: `‹N` / `N›` markers count them and are
-    // tap targets that step to the nearest hidden device.
-    let marker = |n: usize, left: bool| -> String {
-        match (left, ascii()) {
-            (true, true) => format!("<{n} "),
-            (true, false) => format!("‹{n} "),
-            (false, true) => format!(" {n}>"),
-            (false, false) => format!(" {n}›"),
-        }
-    };
-    let marker_width = |n: usize| marker(n, true).chars().count() as u16;
-    // Last chip shown when the strip starts at `first`, leaving room for the
-    // markers it needs.
-    let fit = |first: usize| -> usize {
-        let left = if first > 0 { marker_width(first) } else { 0 };
-        let mut x = left;
-        let mut last = first;
-        for (index, (_, _, width)) in chips.iter().enumerate().skip(first) {
-            let remaining = chips.len() - index - 1;
-            let reserve = if remaining > 0 {
-                marker_width(remaining)
-            } else {
-                0
-            };
-            if index > first && x + width + reserve > area.width {
-                break;
-            }
-            last = index;
-            x += width + 1;
-        }
-        last
-    };
-    // Scroll the strip so the selected chip is always visible.
-    let mut first = 0;
-    while first < selected && fit(first) < selected {
-        first += 1;
-    }
-    let last = fit(first);
-    let mut x = area.x;
-    let mut line = Vec::new();
-    if first > 0 {
-        let text = marker(first, true);
-        let width = text.chars().count() as u16;
-        line.push(Span::styled(text, accent()));
-        hitmap::register(
-            Rect::new(x, area.y, width, 1),
-            hitmap::Hit::Row(hitmap::ListId::Devices, chips[first - 1].0),
-        );
-        x += width;
-    }
-    let hidden_after = chips.len().saturating_sub(last + 1);
-    let next_hidden = chips.get(last + 1).map(|(value, _, _)| *value);
-    for (index, (value, spans, width)) in chips.into_iter().enumerate().skip(first) {
-        if index > last {
-            break;
-        }
-        let width = width.min(area.right().saturating_sub(x));
-        let chosen = index == selected;
-        let style = if chosen && focused {
-            selected_style().add_modifier(Modifier::REVERSED)
-        } else if chosen {
-            accent().add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        line.push(Span::styled("[", style));
-        for span in spans {
-            let merged = span.style.patch(style);
-            line.push(Span::styled(span.content, merged));
-        }
-        line.push(Span::styled("]", style));
-        line.push(Span::raw(" "));
-        hitmap::register(
-            Rect::new(x, area.y, width, 1),
-            hitmap::Hit::Row(hitmap::ListId::Devices, value),
-        );
-        x += width + 1;
-    }
-    if let Some(next) = next_hidden {
-        let text = marker(hidden_after, false);
-        let width = text.chars().count() as u16;
-        let at = area.right().saturating_sub(width);
-        let used: u16 = line.iter().map(|s| s.width() as u16).sum();
-        let gap = at.saturating_sub(area.x + used);
-        line.push(Span::raw(" ".repeat(gap as usize)));
-        line.push(Span::styled(text, accent()));
-        hitmap::register(
-            Rect::new(at, area.y, width, 1),
-            hitmap::Hit::Row(hitmap::ListId::Devices, next),
-        );
-    }
-    frame.render_widget(Paragraph::new(Line::from(line)), area);
-}
-/// Keys / Secrets view placeholder (the inventory lands in a later wave).
-fn render_secrets(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                "Keys and secrets",
-                Style::default().add_modifier(Modifier::BOLD),
-            )),
-            Line::from("Credentials cx uses will be listed here, always masked."),
-            Line::from(Span::styled(
-                "Nothing is read yet · provider credentials are never read.",
-                muted(),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "g s Sessions · g f Files · g n Network",
-                muted(),
-            )),
-        ])
-        .wrap(Wrap { trim: false })
-        .block(block("Keys".into(), app.focus == Focus::Workspace).padding(Padding::horizontal(1))),
-        area,
-    );
-}
-/// Dim everything already drawn so an overlay reads as the only live layer
-/// (P12): DIM plus, with color, the muted fg so terminals that ignore SGR 2
-/// still recede.
-pub(super) fn dim_backdrop(frame: &mut Frame<'_>) {
-    let colored = !no_color();
-    for cell in frame.buffer_mut().content.iter_mut() {
-        cell.modifier.insert(Modifier::DIM);
-        cell.modifier.remove(Modifier::BOLD | Modifier::REVERSED);
-        if colored {
-            cell.fg = Color::DarkGray;
-            cell.bg = Color::Reset;
-        }
-    }
-}
-/// Fit a `head · path` detail: the path keeps its tail (spec 7), the head
-/// gets what is left.
-pub(super) fn fit_detail(detail: &str, width: usize) -> String {
-    let detail = safe_label(detail);
-    let tail = |text: &str, width: usize| -> String {
-        let count = text.chars().count();
-        if count <= width {
-            return text.to_owned();
-        }
-        let keep: String = text.chars().skip(count + 1 - width.max(1)).collect();
-        format!("{}{keep}", if ascii() { "~" } else { "…" })
-    };
-    if detail.chars().count() <= width {
-        return detail;
-    }
-    match detail.rsplit_once(" · ") {
-        // Long path: the path keeps its tail in at least three fifths of the
-        // room; the head (device) takes what is left, whole when it fits, and
-        // anything the head does not need goes back to the path.
-        Some((head, path)) if width >= 20 => {
-            let room = width - 3;
-            let path_min = path.chars().count().min(room * 3 / 5);
-            let head_width = head.chars().count().min(room - path_min).max(4);
-            let head = fit_label(head, head_width);
-            let rest = width - head.chars().count() - 3;
-            format!("{head} · {}", tail(path, rest))
-        }
-        Some((_, path)) => tail(path, width),
-        None => tail(&detail, width),
-    }
-}
 /// Tail-preserving fit for paths (spec 7: `…/cx-demo`, never `/home/p…`).
 fn fit_path(path: &str, width: usize) -> String {
     let path = safe_label(path);
@@ -2175,186 +635,6 @@ fn fit_path(path: &str, width: usize) -> String {
     }
     let keep: String = path.chars().skip(count + 1 - width.max(1)).collect();
     format!("{}{keep}", if ascii() { "~" } else { "…" })
-}
-/// The command palette: one box, dimmed background, sections, MRU ranking.
-fn render_palette(frame: &mut Frame<'_>, app: &App, area: Rect, phone: bool) {
-    // Dim everything beneath; nothing bleeds through the box edges (P12).
-    dim_backdrop(frame);
-    hitmap::modal();
-    let items = app.palette_view();
-    // Below 100 columns a centered 76-wide box would sit a cell or two from
-    // the panels' own borders (two borders side by side, P12); span the frame
-    // instead, like the help overlay.
-    let wide = !phone && area.width >= 100;
-    let width = if wide { 76 } else { area.width };
-    // Rows: one per item plus one header per section.
-    let sections = items
-        .iter()
-        .enumerate()
-        .filter(|(i, item)| *i == 0 || items[*i - 1].section != item.section)
-        .count();
-    let content = (items.len() + sections).max(1) as u16;
-    let max_height = if phone {
-        area.height.saturating_sub(2).min(16)
-    } else {
-        area.height.saturating_sub(4).min(19)
-    };
-    let height = (content + 2).min(max_height);
-    let rect = if phone {
-        Rect::new(area.x, area.bottom() - height, width, height)
-    } else {
-        // Anchor the top edge where a full box would start, so the box
-        // grows downwards as results appear instead of jumping around.
-        let full = popup(area, width, max_height);
-        let x = if wide { full.x } else { area.x };
-        Rect::new(x, full.y, width, height)
-    };
-    frame.render_widget(Clear, rect);
-    let cursor = if ascii() { "_" } else { "█" };
-    let search = ">";
-    let footer = if app.palette_run_mode() {
-        format!(" {} ", app.palette_scope())
-    } else {
-        format!(" {} · Tab section ", app.palette_scope())
-    };
-    let at = app.rename_cursor.min(app.text.len());
-    let at = if app.text.is_char_boundary(at) {
-        at
-    } else {
-        app.text.len()
-    };
-    let before = safe_text(&app.text[..at]);
-    let after = safe_text(&app.text[at..]);
-    // Keep the cursor in view for long commands: show the tail before it.
-    let room = (rect.width as usize).saturating_sub(8);
-    let before_chars = before.chars().count();
-    let before = if before_chars > room {
-        before.chars().skip(before_chars - room).collect::<String>()
-    } else {
-        before
-    };
-    let after = fit_label(&after, room.saturating_sub(before.chars().count()));
-    let outer = Block::default()
-        .borders(Borders::ALL)
-        .border_set(overlay_border())
-        .border_style(accent())
-        .title(Line::from(vec![
-            Span::styled(format!(" {search} "), accent().add_modifier(Modifier::BOLD)),
-            Span::raw(before),
-            Span::styled(cursor.to_string(), accent()),
-            Span::raw(format!("{after} ")),
-        ]))
-        .title_bottom(Line::styled(
-            fit_label(&footer, rect.width.saturating_sub(2) as usize),
-            muted(),
-        ));
-    let inner = outer.inner(rect);
-    frame.render_widget(outer, rect);
-    if items.is_empty() {
-        frame.render_widget(
-            Paragraph::new("No matches · Backspace to widen · Esc close").style(muted()),
-            inner,
-        );
-        return;
-    }
-    // Interleave section headers; remember which line shows which item.
-    let mut lines: Vec<(Option<usize>, Line<'static>)> = Vec::new();
-    let key_width = 6usize;
-    let width = inner.width as usize;
-    let room = width.saturating_sub(2 + key_width + 1);
-    // One fixed label column for every row with a detail, so details align
-    // across sections (spec 7: columns are fixed).
-    let label_column = items
-        .iter()
-        .filter(|i| !i.detail.is_empty())
-        .map(|i| Span::raw(safe_label(&i.label)).width())
-        .max()
-        .unwrap_or(0)
-        .clamp(room.min(12), (room * 3 / 5).max(room.min(12)));
-    for (index, item) in items.iter().enumerate() {
-        if index == 0 || items[index - 1].section != item.section {
-            lines.push((
-                None,
-                Line::styled(
-                    format!(" {}", item.section),
-                    muted().add_modifier(Modifier::BOLD),
-                ),
-            ));
-        }
-        let selected = index == app.palette_selected;
-        let bar = if selected {
-            if ascii() {
-                "> "
-            } else {
-                "▌ "
-            }
-        } else {
-            "  "
-        };
-        let label_width = if item.detail.is_empty() {
-            room
-        } else {
-            label_column
-        };
-        let label = if item.section == "Folders" {
-            fit_path(&item.label, label_width)
-        } else {
-            fit_label(&safe_label(&item.label), label_width)
-        };
-        let label = if item.detail.is_empty() {
-            label
-        } else {
-            format!("{label:<label_column$}")
-        };
-        let detail_width = room.saturating_sub(label.chars().count() + 2);
-        let detail = if item.detail.is_empty() || detail_width < 4 {
-            String::new()
-        } else {
-            format!("  {}", fit_detail(&item.detail, detail_width))
-        };
-        let used = 2 + label.chars().count() + detail.chars().count();
-        let pad = width.saturating_sub(used + key_width.min(width));
-        lines.push((
-            Some(index),
-            Line::from(vec![
-                Span::styled(bar, accent()),
-                Span::styled(
-                    label,
-                    if selected {
-                        selected_style()
-                    } else {
-                        Style::default()
-                    },
-                ),
-                Span::styled(detail, muted()),
-                Span::raw(" ".repeat(pad)),
-                Span::styled(
-                    format!("{:>key_width$}", fit_label(&item.key, key_width)),
-                    muted(),
-                ),
-            ]),
-        ));
-    }
-    let selected_line = lines
-        .iter()
-        .position(|(i, _)| *i == Some(app.palette_selected))
-        .unwrap_or(0);
-    let height = inner.height as usize;
-    // Scrolloff keeps a section header visible above its first row.
-    let offset = navigation::viewport("palette", selected_line, lines.len(), height);
-    let visible: Vec<_> = lines.into_iter().skip(offset).take(height).collect();
-    for (row, (index, _)) in visible.iter().enumerate() {
-        if let Some(index) = index {
-            hitmap::register(
-                Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
-                hitmap::Hit::PaletteRow(*index),
-            );
-        }
-    }
-    frame.render_widget(
-        Paragraph::new(visible.into_iter().map(|(_, l)| l).collect::<Vec<_>>()),
-        inner,
-    );
 }
 fn render_containers(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let rows = app.container_rows();
@@ -2814,12 +1094,109 @@ mod contrast_regressions {
             .intersects(Modifier::ITALIC | Modifier::UNDERLINED | Modifier::REVERSED));
     }
 }
-
-/// The Selected panel's key hint, matching the footer's `Enter Attach` chip.
-fn selected_hint() -> &'static str {
-    if ascii() {
-        "Enter attach, n new"
-    } else {
-        "⏎ attach · n new"
+/// Files search: matching characters underlined (a non-colour cue), or the whole
+/// visible name when every match position is cut off.
+fn file_matches(frame: &mut Frame<'_>, app: &App, targets: &[views::LabTarget]) {
+    let Some(b) = app.active_browser().filter(|b| !b.search.is_empty()) else {
+        return;
+    };
+    let matches = browser_matches(b);
+    let rows = browser_entries(b);
+    let buf = frame.buffer_mut();
+    for t in targets {
+        let Some(name) = t.action.strip_prefix("file:") else {
+            continue;
+        };
+        let Some((_, positions)) = matches
+            .iter()
+            .find(|(row, _)| rows.get(*row).is_some_and(|e| safe_label(&e.name) == name))
+        else {
+            continue;
+        };
+        // The name starts after the selection bar and the fold/type glyph.
+        let mut cells = Vec::new();
+        let mut x = t.area.x + 3;
+        for c in name.chars() {
+            if x >= t.area.right() {
+                break;
+            }
+            cells.push(x);
+            x += Span::raw(c.to_string()).width().max(1) as u16;
+        }
+        // The last visible cell may be the cut's ellipsis.
+        let shown = cells.len().saturating_sub(1);
+        let visible: Vec<u16> = positions
+            .iter()
+            .filter(|p| **p < shown)
+            .map(|p| cells[*p])
+            .collect();
+        let underline = if visible.is_empty() {
+            cells[..shown].to_vec()
+        } else {
+            visible
+        };
+        for x in underline {
+            buf[(x, t.area.y)].modifier.insert(Modifier::UNDERLINED);
+        }
     }
+}
+/// The inline find / filter field on the footer row while it is being typed.
+fn find_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let Some(input) = app
+        .input
+        .filter(|i| matches!(i, Input::Search | Input::PreviewSearch | Input::Filter))
+    else {
+        return;
+    };
+    let row = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
+    let label = match input {
+        Input::Filter => "Filter".to_string(),
+        Input::PreviewSearch => {
+            let (count, at) = app.browser.as_ref().map_or((0, 0), |b| {
+                (
+                    doc_matches(b, &b.preview_find.query).len(),
+                    b.preview_find.selected,
+                )
+            });
+            let at = if count == 0 { 0 } else { (at + 1).min(count) };
+            format!("Search · {at}/{count}")
+        }
+        _ => "Search".to_string(),
+    };
+    frame.render_widget(Clear, row);
+    let key = if input == Input::Filter { " f " } else { " / " };
+    let text = safe_label(&app.text);
+    let width = Span::raw(text.as_str()).width() as u16;
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(key, accent().add_modifier(Modifier::BOLD)),
+            Span::raw(" "),
+            Span::raw(text),
+        ])),
+        row,
+    );
+    let lw = label.chars().count() as u16;
+    if row.width > width + lw + 6 {
+        frame.render_widget(
+            Paragraph::new(Span::styled(label, muted())),
+            Rect::new(row.right() - lw - 1, row.y, lw, 1),
+        );
+    }
+    frame.set_cursor_position((row.x + 4 + width.min(row.width.saturating_sub(5)), row.y));
+}
+/// Typing into a peeked session: the footer says how to leave (`ctrl+\`).
+fn typing_bar(frame: &mut Frame<'_>, area: Rect) {
+    let row = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
+    frame.render_widget(Clear, row);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                " ctrl+\\ ",
+                Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            ),
+            Span::styled(" detach  typing into the session", muted()),
+        ])),
+        row,
+    );
 }

@@ -3,11 +3,11 @@ use crate::{
     model::{ContainerScope, CreateSession, Device, Operation, RunCommand, Session},
     sessions, store, transport,
 };
+mod activity;
 mod container_agents;
 mod filters;
 mod rendering;
 mod session_preview;
-mod session_rows;
 mod workspaces;
 #[cfg(test)]
 use rendering::render;
@@ -41,11 +41,14 @@ mod dialogs;
 use dialogs::*;
 mod actions;
 mod containers_view;
+mod hotkeys;
 mod input;
 mod keys;
 #[cfg(test)]
 mod lab;
 mod launch;
+mod screens;
+mod viewmodel;
 mod views;
 pub use runtime::{run, run_restored};
 
@@ -89,8 +92,8 @@ enum View {
 }
 #[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Focus {
-    Devices,
-    Actions,
+    /// (A handoff from an older cx may name its removed sidebar panels.)
+    #[serde(other)]
     Workspace,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -292,15 +295,9 @@ struct Browser {
     /// Derived listing caches (visible rows, lowercase names, search matches).
     #[serde(skip)]
     index: std::cell::RefCell<ViewIndex>,
-    /// First visible list row (scrolloff-maintained by `render_browser`).
-    #[serde(skip)]
-    list_offset: std::cell::Cell<usize>,
     /// Entries the helper reported for the whole directory (`total`), when known.
     #[serde(skip)]
     total: Option<u64>,
-    /// Click/tap targets drawn by the last `render_browser`.
-    #[serde(skip)]
-    hits: std::cell::RefCell<Vec<(Rect, FileHit)>>,
     /// Child folders whose first listing page is being prefetched.
     #[serde(skip)]
     prefetch: BTreeSet<String>,
@@ -358,9 +355,7 @@ impl Browser {
             preview_anchor: None,
             restore_selection: None,
             index: Default::default(),
-            list_offset: std::cell::Cell::new(0),
             total: None,
-            hits: Default::default(),
             prefetch: BTreeSet::new(),
             settle: None,
             peek: None,
@@ -411,8 +406,6 @@ enum Action {
     PinSession,
     FolderSessions,
     Refresh,
-    Network,
-    Work,
     Copy,
     Cut,
     Rename,
@@ -480,8 +473,6 @@ const ACTIONS: &[(Action, &str)] = &[
     (Action::Visual, "Visual range selection · v"),
     (Action::Paste, "Paste here · copy into this directory"),
     (Action::Mkdir, "Create directory here"),
-    (Action::Network, "Network · choose device / All devices"),
-    (Action::Work, "Sessions · choose device / All devices"),
     (Action::Refresh, "Refresh"),
     (Action::Help, "Keyboard help"),
     (
@@ -525,7 +516,6 @@ enum Dialog {
     AgentTasks(String, Session),
     Links(Vec<crate::markdown_links::Link>),
     Delete(usize, Vec<Entry>),
-    StopShell(usize, Session),
     PendingExit(usize),
     Neighbor(usize, Value),
     Peer(usize),
@@ -552,7 +542,7 @@ struct CommandPanel {
 }
 struct App {
     session_preview: session_preview::Snapshot,
-    session_list: session_rows::State,
+    session_list: activity::State,
     devices: Vec<Device>,
     policies: Vec<store::DevicePolicy>,
     device: usize,
@@ -561,7 +551,6 @@ struct App {
     work: Vec<Cached>,
     pins: Vec<store::SessionPin>,
     selected: usize,
-    side_selected: usize,
     search: String,
     input: Option<Input>,
     text: String,
@@ -659,11 +648,36 @@ struct App {
     press: Option<hitmap::Press>,
     /// Right-click / long-press menu: the focused selection's keymap commands.
     context_menu: Option<hitmap::ContextMenu>,
-    /// Device moves only change scope; the scoped refresh runs once the
-    /// selection settles (spec 12.1, P17).
-    device_refresh_due: Option<Instant>,
     /// Palette picks, most recent first (in-memory MRU ranking).
     palette_mru: VecDeque<String>,
+    /// Hub: the selected node (view-model device id) and whether the sessions zone
+    /// has focus; the device order the last frame drew.
+    hub_device: Option<String>,
+    hub_sessions: bool,
+    hub_order: std::cell::RefCell<Vec<String>>,
+    /// Device letters (`hotkeys::assign`), by device id.
+    hotkeys: std::cell::RefCell<BTreeMap<String, char>>,
+    /// `␣`: the selected session's peek.
+    peek: bool,
+    /// `⌫` asked about this session (identity captured when asked).
+    stop_armed: Option<(usize, Session)>,
+    /// Files: the send-to picker is up.
+    send_pick: bool,
+    /// `e` was pressed: the next device letter opens that link.
+    edge_pending: bool,
+    edge: Option<screens::EdgeEdit>,
+    edge_job: Option<mpsc::Receiver<std::result::Result<String, String>>>,
+    edge_views: Vec<crate::edges::EdgeView>,
+    secret_list: Vec<crate::secrets::SecretMeta>,
+    secret_selected: usize,
+    /// Each session's last frame, in memory only (never written to disk).
+    frames: HashMap<(String, String), (Vec<String>, u16)>,
+    /// The last session detached from, for `-`.
+    last_session: Option<(usize, String)>,
+    last_esc: Option<Instant>,
+    onboarding_dismissed: bool,
+    /// Where the open file preview was drawn (native images go there).
+    preview_rect: std::cell::Cell<Option<Rect>>,
     tx: mpsc::SyncSender<Task>,
 }
 impl App {
@@ -705,16 +719,15 @@ impl App {
             .collect();
         let mut app = Self {
             session_preview: session_preview::Snapshot::default(),
-            session_list: session_rows::State::default(),
+            session_list: activity::State::default(),
             devices,
             policies,
             device: 0,
             focus: Focus::Workspace,
-            view: View::Work,
+            view: View::Network,
             work,
             pins: Vec::new(),
             selected: 0,
-            side_selected: 0,
             search: String::new(),
             input: None,
             text: String::new(),
@@ -806,8 +819,25 @@ impl App {
             panels: std::cell::RefCell::new(Vec::new()),
             press: None,
             context_menu: None,
-            device_refresh_due: None,
             palette_mru: VecDeque::new(),
+            hub_device: None,
+            hub_sessions: false,
+            hub_order: Default::default(),
+            hotkeys: Default::default(),
+            peek: false,
+            stop_armed: None,
+            send_pick: false,
+            edge_pending: false,
+            edge: None,
+            edge_job: None,
+            edge_views: Vec::new(),
+            secret_list: Vec::new(),
+            secret_selected: 0,
+            frames: HashMap::new(),
+            last_session: None,
+            last_esc: None,
+            onboarding_dismissed: false,
+            preview_rect: std::cell::Cell::new(None),
             tx,
         };
         if let Ok(message) = std::env::var("CX_STARTUP_NOTICE") {
@@ -853,35 +883,6 @@ impl App {
             Err(error) => self.set_notice_as(
                 NoticeKind::Error,
                 safe_text(&format!("Access posture unchanged: {error:#}")),
-            ),
-        }
-    }
-    fn set_availability(&mut self, availability: store::Availability) {
-        let Some(device) = self.device.checked_sub(1) else {
-            self.set_notice_as(
-                NoticeKind::Warning,
-                "The local device is always available".into(),
-            );
-            return;
-        };
-        match store::set_availability(&self.devices[device], availability) {
-            Ok(policy) => {
-                if let Some(slot) = self.policies.get_mut(device) {
-                    *slot = policy;
-                }
-                let message = if availability == store::Availability::UsuallyDown {
-                    "Device marked down · background checks paused"
-                } else {
-                    "Device marked up · background checks enabled"
-                };
-                self.set_notice_as(
-                    NoticeKind::Success,
-                    format!("{message} · {}", identity(&self.devices[device])),
-                );
-            }
-            Err(error) => self.set_notice_as(
-                NoticeKind::Error,
-                safe_text(&format!("Availability unchanged: {error:#}")),
             ),
         }
     }
@@ -957,8 +958,8 @@ impl App {
             }
         }
         self.device = self.device.min(self.devices.len());
-        self.view = View::Work;
-        self.focus = Focus::Devices;
+        self.view = View::Network;
+        self.focus = Focus::Workspace;
     }
 
     fn reconcile_devices(&mut self, updated: Vec<Device>) -> bool {
@@ -1056,81 +1057,8 @@ impl App {
         next.submitted_clipboards = std::mem::take(&mut self.submitted_clipboards);
         next.watched_jobs = std::mem::take(&mut self.watched_jobs);
         next.device = self.device.min(next.devices.len());
-        next.focus = Focus::Devices;
+        next.focus = Focus::Workspace;
         *self = next;
-    }
-    fn focus_label(&self) -> &'static str {
-        if self.help {
-            return "Help";
-        }
-        if let Some(dialog) = &self.dialog {
-            return match dialog {
-                Dialog::SessionPicker(..) => "Sessions here",
-                Dialog::PinnedEnded(..) => "Pinned work",
-                Dialog::DevcontainerUp(..) => "Start devcontainer workspace",
-                Dialog::ContainerActions(..) => "Container actions",
-                Dialog::ContainerProvider(..) => "Container session",
-                Dialog::ContainerPermissions(..) => "Container permissions",
-                Dialog::DestinationScope(..) => "Transfer destination",
-                Dialog::ContainerConfirm(..) => "Container confirmation",
-                Dialog::Links(_) => "Links",
-                Dialog::Device(_) => "Device picker",
-                Dialog::SessionChooser(..) => "New session",
-                Dialog::Provider(..) => "Provider",
-                Dialog::Permissions(..) => "Session permissions",
-                Dialog::Jobs => {
-                    if self.dialog_detail_focus {
-                        "Transfer details"
-                    } else {
-                        "Transfers"
-                    }
-                }
-                Dialog::AgentTasks(..) => "Agent tasks",
-                Dialog::Delete(..) => "Delete",
-                Dialog::StopShell(..) => "Stop session",
-                Dialog::PendingExit(_) => "Pending actions",
-                Dialog::Neighbor(..) => "Neighbor actions",
-                Dialog::Peer(_) => "Device actions",
-                Dialog::RemoveDevice(_) => "Remove device",
-                Dialog::EditDevice(_) => "Edit device",
-                Dialog::Reset => "Reset managed sessions",
-            };
-        }
-        if let Some(input) = self.input {
-            return match input {
-                Input::Search | Input::PreviewSearch => "Search",
-                Input::Palette if self.palette_run_mode() => "Run command",
-                Input::Palette => "Palette",
-                Input::Add => {
-                    if self.pending_edit.is_some() {
-                        "Edit SSH address"
-                    } else {
-                        "Add by SSH address"
-                    }
-                }
-                Input::Mkdir => "New folder",
-                Input::Rename => "Rename",
-                Input::Filter => "Filter",
-            };
-        }
-        match self.focus {
-            Focus::Devices => "Devices",
-            Focus::Actions => "Actions",
-            Focus::Workspace => match self.view {
-                View::Work => "Sessions",
-                View::Network => "Network",
-                View::Containers => "Containers",
-                View::Files if self.other_browser.is_some() => {
-                    if self.destination_active {
-                        "Destination"
-                    } else {
-                        "Source"
-                    }
-                }
-                View::Files => "Files",
-                View::Secrets => "Keys",
-            },
-        }
     }
     fn scoped_file_operation(&self, device: usize, op: Operation) -> Operation {
         if let Some(scope) = self
@@ -1341,7 +1269,15 @@ impl App {
             View::Containers => self.refresh_containers(),
             View::Work => self.refresh_work(),
             View::Files => self.refresh_browser(),
+            // The hub: every device's sessions (its evidence), the edge graph and,
+            // on this explicit refresh only, the network observation behind it.
             View::Network => {
+                for d in 0..self.work.len().min(self.devices.len()) {
+                    if (self.device == 0 || self.device == d + 1) && !self.work[d].loading {
+                        self.work[d].loading = self.send(d, Operation::Sessions);
+                    }
+                }
+                self.reload_edges();
                 for (d, device) in self.devices.iter().enumerate() {
                     self.network_jump_routes.insert(
                         d,
@@ -1434,8 +1370,6 @@ impl App {
         }
     }
 }
-/// Device moves settle this long before the scoped refresh runs (spec 12.1).
-const DEVICE_REFRESH_SETTLE: Duration = Duration::from_millis(250);
 fn shift(index: usize, delta: isize, length: usize) -> usize {
     index
         .saturating_add_signed(delta)
@@ -1507,9 +1441,6 @@ fn safe_label(text: &str) -> String {
         .collect()
 }
 
-fn local_only(app: &App) -> bool {
-    !app.devices.is_empty() && app.devices.iter().all(|d| d.target.is_none())
-}
 /// Terminals discovered outside any tmux server have no attachable tmux id.
 fn outside_tmux(s: &Session) -> bool {
     s.external && s.id.starts_with("ext-")
@@ -1530,23 +1461,6 @@ fn empty_work_can_create(app: &App) -> bool {
             .enumerate()
             .filter(|(i, _)| app.device == 0 || app.device == i + 1)
             .any(|(_, w)| w.loading || w.error.is_some())
-}
-
-fn sidebar_actions(app: &App) -> Vec<(Action, &'static str)> {
-    let mut actions = vec![
-        (Action::Work, "Sessions"),
-        (Action::Files, "Files"),
-        (Action::Network, "Network"),
-        (Action::Containers, "Containers"),
-        (Action::Jobs, "Transfers"),
-    ];
-    actions.retain(|(action, _)| {
-        app.action_enabled(*action) && !(*action == Action::Files && app.view == View::Files)
-    });
-    if app.selected_session().is_some() && app.view == View::Work {
-        actions.push((Action::Observe, "Watch · read-only"));
-    }
-    actions
 }
 
 fn popup(area: Rect, width: u16, height: u16) -> Rect {

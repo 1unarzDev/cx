@@ -1,5 +1,5 @@
 //! Scoped list filters retain the original device/job identities and text-input ownership.
-use super::{identity, App, Dialog, Focus, Input, View};
+use super::{identity, App, Dialog, Input, View};
 use score as fuzzy_score;
 impl App {
     pub(super) fn device_rows(&self) -> Vec<usize> {
@@ -23,7 +23,7 @@ impl App {
         self.input = Some(Input::Filter);
         self.text = if matches!(self.dialog, Some(Dialog::Jobs)) {
             self.job_filter.clone()
-        } else if self.focus == Focus::Devices || matches!(self.dialog, Some(Dialog::Device(_))) {
+        } else if matches!(self.dialog, Some(Dialog::Device(_))) {
             self.device_filter.clone()
         } else {
             self.search.clone()
@@ -37,7 +37,7 @@ impl App {
             self.job_filter = self.text.clone();
             self.dialog_selected = 0;
             self.dialog_scroll = 0;
-        } else if self.focus == Focus::Devices || matches!(self.dialog, Some(Dialog::Device(_))) {
+        } else if matches!(self.dialog, Some(Dialog::Device(_))) {
             self.device_filter = self.text.clone();
             self.dialog_selected = 0;
             if !self.device_rows().contains(&self.device) {
@@ -89,27 +89,4 @@ pub(super) fn score(query: &str, text: &str) -> Option<i64> {
         at = pos + 1;
     }
     Some(score)
-}
-
-/// The footer uses the same scope as filtering, including file preview/search ownership.
-pub(super) fn visible_query(app: &App) -> &str {
-    if matches!(app.dialog, Some(Dialog::Jobs)) {
-        app.job_filter.as_str()
-    } else if app.focus == Focus::Devices || matches!(app.dialog, Some(Dialog::Device(_))) {
-        app.device_filter.as_str()
-    } else if app.browser.as_ref().is_some_and(|b| b.preview.is_some()) && app.view == View::Files {
-        app.browser.as_ref().unwrap().preview_find.query.as_str()
-    } else if app.input == Some(Input::Filter) && app.view == View::Files {
-        app.browser
-            .as_ref()
-            .map(|b| b.filter.as_str())
-            .unwrap_or("")
-    } else if app.view == View::Files {
-        app.browser
-            .as_ref()
-            .map(|b| b.search.as_str())
-            .unwrap_or("")
-    } else {
-        app.search.as_str()
-    }
 }

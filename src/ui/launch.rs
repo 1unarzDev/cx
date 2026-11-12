@@ -118,7 +118,7 @@ impl App {
             return;
         }
         self.launch_provider = None;
-        if self.focus != Focus::Devices && self.view == View::Containers {
+        if self.view == View::Containers {
             if let Some((d, c)) = self.selected_container() {
                 if (c.devcontainer || c.allowed) && c.state == "running" {
                     self.open_container_chooser(d, c.scope());
@@ -128,7 +128,7 @@ impl App {
             }
             return;
         }
-        if self.focus != Focus::Devices && self.view == View::Files {
+        if self.view == View::Files {
             if let Some(b) = &self.browser {
                 if let Some(scope) = &b.container {
                     let mut scope = scope.clone();
@@ -146,12 +146,8 @@ impl App {
                 }
             }
         }
-        let location = if self.focus == Focus::Devices {
-            self.actual_device().map(|d| (d, "~".into()))
-        } else if self.view == View::Files {
+        let location = if self.view == View::Files {
             self.browser.as_ref().map(|b| (b.device, b.path.clone()))
-        } else if self.view == View::Network {
-            self.network_action_device().map(|d| (d, "~".into()))
         } else {
             self.actual_device().map(|d| (d, "~".into()))
         };

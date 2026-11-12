@@ -279,25 +279,6 @@ fn same_paths_and_ids_on_different_scopes_do_not_merge() {
 }
 
 #[test]
-fn folder_marks_count_agents_in_exact_scope_and_show_staleness() {
-    let (mut a, _) = queued_app();
-    let mut b = Browser::new(0, "/".into());
-    let mut s = disposable_shell();
-    s.directory = "/project".into();
-    s.provider = "codex".into();
-    a.work[0].sessions = vec![s.clone(), s.clone()];
-    assert_eq!(a.folder_agents(&b)["/project"], "Codex 1 ?");
-    a.work[0].fetched = transport::now();
-    assert_eq!(a.folder_agents(&b)["/project"], "Codex 1");
-    b.container = Some(container_fixture('a', true).scope());
-    assert!(a.folder_agents(&b).is_empty());
-    a.work[0].sessions[0].container = b.container.clone();
-    assert_eq!(a.folder_agents(&b)["/project"], "Codex 1");
-    b.container.as_mut().unwrap().started_at = "replacement".into();
-    assert!(a.folder_agents(&b).is_empty());
-}
-
-#[test]
 fn persistent_navigation_cache_is_instant_scoped_and_not_mutation_authority() {
     let (mut a, _) = file_app();
     a.browser.as_mut().unwrap().preview = Some("not persisted".into());
@@ -384,47 +365,6 @@ fn picker_refresh_keeps_disappeared_selection_instead_of_selecting_new_work() {
     assert!(a.pending_attach.is_none());
 }
 
-#[test]
-fn workspace_capture_matrix() {
-    let (mut a, _) = queued_app();
-    a.device = 1;
-    a.work[0].fetched = transport::now();
-    for (id, name, provider) in [
-        ("first", "Fix session discovery", "codex"),
-        ("second", "Review terminal lifecycle", "claude"),
-        ("shell", "Project shell", "shell"),
-    ] {
-        let mut s = disposable_shell();
-        s.id = id.into();
-        s.name = name.into();
-        s.directory = "/workspace/cx".into();
-        s.provider = provider.into();
-        a.work[0].sessions.push(s);
-    }
-    let pinned = a.work[0].sessions[0].clone();
-    pin(&mut a, 0, &pinned);
-    let mut ended = disposable_shell();
-    ended.name = "Compiler experiment".into();
-    ended.id = "ended".into();
-    pin(&mut a, 0, &ended);
-    for width in [48, 80, 120] {
-        let text = capture_app(&a, width);
-        // An ended pin is evidence (`ended`, err) and pins carry the flag glyph.
-        assert!(
-            text.contains("ended") && text.contains("⚑"),
-            "{width}: {text}"
-        );
-        if let Some(dir) = std::env::var_os("CX_SESSION_WORKSPACE_CAPTURE_DIR") {
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(
-                std::path::Path::new(&dir).join(format!("sessions-{width}.txt")),
-                text,
-            )
-            .unwrap();
-        }
-    }
-}
-
 fn identified_shell() -> Session {
     let mut s = disposable_shell();
     s.terminal = Some(crate::model::TerminalIdentity {
@@ -443,7 +383,8 @@ fn identity_checked_sessions_attach_on_enter_without_a_round_trip() {
     let (mut a, rx) = queued_app();
     a.work[0].sessions.push(identified_shell());
     a.work[0].fetched = transport::now();
-    a.focus = Focus::Workspace;
+    a.open_device(0);
+    let _ = rx.try_iter().count();
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(matches!(a.pending_attach, Some((0, _, false))));
     assert!(a.attach_check.is_none() && !a.pane_focused());
@@ -455,14 +396,41 @@ fn identity_checked_sessions_attach_on_enter_without_a_round_trip() {
     // Legacy rows without terminal identity keep the verification round trip.
     let (mut b, rx) = queued_app();
     b.work[0].sessions.push(disposable_shell());
-    b.focus = Focus::Workspace;
+    b.view = View::Work;
+    b.device = 1;
+    b.selected = 0;
     b.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(b.pending_attach.is_none() && b.attach_check.is_some());
     assert!(matches!(rx.try_recv().unwrap().op, Operation::Sessions));
 }
 
+/// The view-layer target whose action is `action` in the last frame.
+fn view_target(action: &str) -> Rect {
+    super::hitmap::with(|m| m.all())
+        .into_iter()
+        .find(|(_, h)| {
+            matches!(h, super::hitmap::Hit::View(i) if super::hitmap::action(*i).as_deref() == Some(action))
+        })
+        .map(|(r, _)| r)
+        .unwrap_or_else(|| panic!("no target {action}"))
+}
+fn tap_at(a: &mut App, column: u16, row: u16) {
+    for kind in [
+        MouseEventKind::Down(event::MouseButton::Left),
+        MouseEventKind::Up(event::MouseButton::Left),
+    ] {
+        let event = MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        a.mouse(event, Rect::new(0, 0, 160, 30));
+    }
+}
+
 #[test]
-fn tapping_the_selected_row_again_attaches_but_first_tap_only_selects() {
+fn tapping_a_session_tile_attaches_it_like_its_slot_key() {
     let (mut a, _) = queued_app();
     let mut second = identified_shell();
     second.id = "cx-second".into();
@@ -470,36 +438,17 @@ fn tapping_the_selected_row_again_attaches_but_first_tap_only_selects() {
     second.terminal.as_mut().unwrap().created = "2".into();
     a.work[0].sessions = vec![identified_shell(), second];
     a.work[0].fetched = transport::now();
-    a.focus = Focus::Workspace;
+    a.open_device(0);
     let mut terminal = ratatui::Terminal::new(TestBackend::new(160, 30)).unwrap();
     terminal.draw(|f| render(f, &a)).unwrap();
-    let (rect, _) = super::hitmap::with(|m| m.all())
-        .into_iter()
-        .find(|(_, hit)| *hit == super::hitmap::Hit::Row(super::hitmap::ListId::Sessions, 1))
-        .unwrap();
-    let tap = |a: &mut App| {
-        for kind in [
-            MouseEventKind::Down(event::MouseButton::Left),
-            MouseEventKind::Up(event::MouseButton::Left),
-        ] {
-            let event = MouseEvent {
-                kind,
-                column: rect.x + 4,
-                row: rect.y,
-                modifiers: KeyModifiers::NONE,
-            };
-            a.mouse(event, Rect::new(0, 0, 160, 30));
-        }
-    };
-    tap(&mut a);
-    assert_eq!(a.selected, 1);
-    assert!(a.pending_attach.is_none());
-    tap(&mut a);
+    let key = workspaces::runtime_key(&a.work[0].sessions[1]);
+    let rect = view_target(&format!("session:0:{key}"));
+    tap_at(&mut a, rect.x + 4, rect.y + 1);
     assert!(matches!(&a.pending_attach, Some((0, s, false)) if s.id == "cx-second"));
 }
 
 #[test]
-fn zoom_and_inline_input_keys_and_chips() {
+fn peek_shows_the_live_screen_and_a_tap_on_it_types_inline() {
     let (mut a, rx) = queued_app();
     a.work[0].sessions.push(identified_shell());
     a.work[0].fetched = transport::now();
@@ -508,7 +457,8 @@ fn zoom_and_inline_input_keys_and_chips() {
         .unwrap()
         .0
         .push("live-session-pane-v1".into());
-    a.focus = Focus::Workspace;
+    a.open_device(0);
+    let _ = rx.try_iter().count();
     assert!(a.refresh_session_preview(160));
     let task = rx.try_recv().unwrap();
     a.apply(Reply {
@@ -518,37 +468,11 @@ fn zoom_and_inline_input_keys_and_chips() {
         device: 0,
         op: task.op,
         generation: task.generation,
-        result: Ok(serde_json::json!({"live":true,"pane_id":"%1","styled_lines":["zoomed screen"],"cols":80,"rows":24})),
+        result: Ok(serde_json::json!({"live":true,"pane_id":"%1","styled_lines":["peeked screen"],"cols":80,"rows":24})),
     });
-    press(&mut a, 'z');
-    assert!(a.preview_zoomed());
-    let text = capture_app(&a, 120);
-    assert!(
-        text.contains("zoomed screen") && text.contains("z back"),
-        "{text}"
-    );
-    assert!(!text.contains("Sessions 1"), "zoom hides the list: {text}");
-    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(!a.preview_zoomed());
-    // The zoom chip on the preview border toggles zoom by tap.
-    let _ = capture_app(&a, 160);
+    press(&mut a, ' ');
+    assert!(a.peek);
     let mut terminal = ratatui::Terminal::new(TestBackend::new(160, 30)).unwrap();
-    terminal.draw(|f| render(f, &a)).unwrap();
-    let chip = a.session_preview_chip();
-    assert!(chip.width > 0, "zoom chip registered");
-    let tap = |rect: Rect| MouseEvent {
-        kind: MouseEventKind::Down(event::MouseButton::Left),
-        column: rect.x + 1,
-        row: rect.y,
-        modifiers: KeyModifiers::NONE,
-    };
-    a.mouse(tap(chip), Rect::new(0, 0, 160, 30));
-    assert!(a.preview_zoomed());
-    press(&mut a, 'z');
-    assert!(!a.preview_zoomed());
-    // `i` types inline; the border chip becomes ⏏ detach and leaves by tap.
-    press(&mut a, 'i');
-    assert!(a.pane_focused());
     terminal.draw(|f| render(f, &a)).unwrap();
     let text: String = terminal
         .backend()
@@ -557,10 +481,24 @@ fn zoom_and_inline_input_keys_and_chips() {
         .iter()
         .map(|c| c.symbol())
         .collect();
-    assert!(text.contains("⏏ detach"), "{text}");
-    let chip = a.session_preview_chip();
-    a.mouse(tap(chip), Rect::new(0, 0, 160, 30));
+    assert!(text.contains("peeked screen"), "{text}");
+    // A tap on the peeked screen types into it; Ctrl+\ leaves without sending.
+    let screen = view_target("peek-screen");
+    a.mouse(
+        MouseEvent {
+            kind: MouseEventKind::Down(event::MouseButton::Left),
+            column: screen.x + 1,
+            row: screen.y,
+            modifiers: KeyModifiers::NONE,
+        },
+        Rect::new(0, 0, 160, 30),
+    );
+    assert!(a.pane_focused());
+    a.key(KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::CONTROL));
     assert!(!a.pane_focused());
+    // Esc leaves the peek.
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!a.peek);
     assert!(rx
         .try_iter()
         .all(|t| !matches!(t.op, Operation::SessionPaneInput { .. })));
@@ -575,7 +513,9 @@ fn live_preview_app() -> (App, mpsc::Receiver<Task>) {
         .unwrap()
         .0
         .push("live-session-pane-v1".into());
-    a.focus = Focus::Workspace;
+    a.view = View::Work;
+    a.device = 1;
+    a.selected = 0;
     assert!(a.refresh_session_preview(160));
     let task = rx.try_recv().unwrap();
     a.apply(Reply {
@@ -593,25 +533,24 @@ fn live_preview_app() -> (App, mpsc::Receiver<Task>) {
 #[test]
 fn preview_clicks_leave_an_open_text_input_in_charge() {
     let (mut a, rx) = live_preview_app();
-    press(&mut a, '/');
-    assert!(a.input == Some(Input::Search));
+    press(&mut a, ' ');
     let mut terminal = ratatui::Terminal::new(TestBackend::new(160, 30)).unwrap();
     terminal.draw(|f| render(f, &a)).unwrap();
-    let chip = a.session_preview_chip();
-    assert!(chip.width > 0);
+    let screen = view_target("peek-screen");
+    // The palette is open over the peek: a tap on the screen beneath it only
+    // closes the palette, never focuses the pane or sends the query to it.
+    press(&mut a, '/');
+    press(&mut a, 'l');
+    assert!(a.input == Some(Input::Palette));
+    terminal.draw(|f| render(f, &a)).unwrap();
     let tap = |column, row| MouseEvent {
         kind: MouseEventKind::Down(event::MouseButton::Left),
         column,
         row,
         modifiers: KeyModifiers::NONE,
     };
-    // The preview screen sits just above its bottom border chip.
-    a.mouse(tap(chip.x, chip.y - 3), Rect::new(0, 0, 160, 30));
+    a.mouse(tap(screen.x, screen.bottom() - 1), Rect::new(0, 0, 160, 30));
     assert!(!a.pane_focused());
-    a.mouse(tap(chip.x + 1, chip.y), Rect::new(0, 0, 160, 30));
-    assert!(!a.preview_zoomed());
-    press(&mut a, 'l');
-    assert!(a.input == Some(Input::Search));
     assert!(rx
         .try_iter()
         .all(|t| !matches!(t.op, Operation::SessionPaneInput { .. })));
@@ -632,23 +571,6 @@ fn palette_sends_a_literal_ctrl_backslash_to_the_session() {
     assert_eq!(sent, [("1c".to_string(), "%1".to_string())]);
     // Focus stays on the pane for the follow-up key (nvim Ctrl+\ Ctrl+N).
     assert!(a.pane_focused());
-}
-
-#[test]
-fn preview_border_names_equal_titles_like_the_list() {
-    let (mut a, _) = queued_app();
-    for (id, created) in [("cx-a", "1"), ("cx-b", "2")] {
-        let mut s = identified_shell();
-        s.id = id.into();
-        s.name = "shell".into();
-        s.directory = "/tmp/cx-demo".into();
-        s.terminal.as_mut().unwrap().created = created.into();
-        a.work[0].sessions.push(s);
-    }
-    a.focus = Focus::Workspace;
-    a.selected = 1;
-    let text = capture_app(&a, 140);
-    assert!(text.contains("cx-demo shell 2 · "), "{text}");
 }
 
 #[test]
@@ -732,7 +654,8 @@ fn keystroke_echo_polls_immediately_and_parsed_screen_is_cached() {
     let _ = capture_app(&a, 160);
     let _ = capture_app(&a, 160);
     assert_eq!(a.session_preview_revision(), r1, "drawing never reparses");
-    press(&mut a, 'i');
+    // A tap on the peeked screen (the same entry point).
+    a.type_into_preview();
     assert!(a.pane_focused());
     // Focusing takes one fresh capture; after it lands nothing is due yet.
     a.refresh_session_preview(160);
@@ -796,7 +719,8 @@ fn focused_scrollback_and_missing_selection_never_spin_the_event_loop() {
     };
     assert!(a.refresh_session_preview(160));
     a.apply(reply(rx.try_recv().unwrap()));
-    press(&mut a, 'i');
+    // A tap on the peeked screen (the same entry point).
+    a.type_into_preview();
     assert!(a.pane_focused());
     a.refresh_session_preview(160);
     a.apply(reply(rx.try_recv().unwrap()));
@@ -807,7 +731,8 @@ fn focused_scrollback_and_missing_selection_never_spin_the_event_loop() {
     if let Ok(echo) = rx.try_recv() {
         a.apply(reply(echo));
     }
-    // Lay out the focused preview so the wheel lands on its screen.
+    // Lay out the peek (where typing starts) so the wheel lands on its screen.
+    a.peek = true;
     let _ = capture_app(&a, 160);
     let (column, row) = (100, 10);
     for _ in 0..5 {
@@ -861,7 +786,10 @@ fn unreachable_or_cached_devices_keep_the_in_cx_round_trip() {
             1 => a.work[0].fetched = 0,
             _ => a.work[0].fetched = transport::now().saturating_sub(120),
         }
-        a.focus = Focus::Workspace;
+        // The device's own screen, its first session selected.
+        a.view = View::Work;
+        a.device = 1;
+        a.selected = 0;
         a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(
             a.pending_attach.is_none(),

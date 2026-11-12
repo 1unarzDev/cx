@@ -909,70 +909,15 @@ pub(super) fn highlight_preview_matches(lines: &mut [Line<'static>], find: &Prev
         line.spans = spans;
     }
 }
-pub(super) fn render_preview(
+/// The preview without its frame, drawn into `inner` (the design's preview surface).
+pub(super) fn render_preview_body(
     frame: &mut Frame,
-    area: Rect,
+    inner: Rect,
     browser: &Browser,
     text: &str,
-    focused: bool,
-) {
-    render_preview_with_native(frame, area, browser, text, focused, None)
-}
-/// Preview panel title: name · size · kind, plus paging/streaming state.
-pub(super) fn preview_title(browser: &Browser) -> String {
-    let rich = browser.preview_rich.as_ref();
-    if let Some(p) = rich.filter(|p| p.kind == "pdf") {
-        return format!(
-            "PDF · {}/{}{}",
-            p.page,
-            p.pages.map(|n| n.to_string()).unwrap_or("?".into()),
-            browser
-                .preview_pending_page
-                .map(|page| format!(" · {} page {}", if ascii() { "~" } else { "◌" }, page))
-                .unwrap_or_default()
-        );
-    }
-    let entry = browser.preview_path.as_ref().and_then(|path| {
-        browser
-            .entries
-            .iter()
-            .find(|e| &e.path == path)
-            .map(|e| (e.name.clone(), e.size))
-    });
-    let mut parts = Vec::new();
-    if let Some((name, size)) = &entry {
-        parts.push(safe_label(name));
-        parts.push(human_size(*size));
-    }
-    match rich.map(|p| p.kind.as_str()) {
-        Some("image") => parts.push(rich.map(|p| p.title.clone()).unwrap_or_default()),
-        Some(kind) if kind != "binary" => parts.push(kind.to_owned()),
-        Some(_) => parts.push("binary".into()),
-        None if entry.is_none() => parts.push("Preview".into()),
-        None => {}
-    }
-    if let Some(stream) = &browser.stream {
-        parts.push(stream.label());
-    }
-    parts.retain(|p| !p.is_empty());
-    parts.join(" · ")
-}
-pub(super) fn render_preview_with_native(
-    frame: &mut Frame,
-    area: Rect,
-    browser: &Browser,
-    text: &str,
-    focused: bool,
     native: Option<&mut crate::terminal_preview::NativePreview>,
 ) {
     let rich = browser.preview_rich.as_ref();
-    let title = super::files_view::glyph_text(preview_title(browser));
-    let border = block(
-        fit_label(&title, usize::from(area.width.saturating_sub(6))),
-        focused,
-    );
-    let inner = border.inner(area);
-    frame.render_widget(border, area);
     if native.is_some_and(|native| native.render(frame, inner)) {
         return;
     }
@@ -1086,24 +1031,9 @@ pub(super) fn render_preview_with_native(
         }
         (lines, skip, scroll, max)
     });
-    let Some((lines, skip, scroll, max)) = rendered else {
+    let Some((lines, skip, _, _)) = rendered else {
         return;
     };
-    if max > 0 {
-        let position = format!(" {}% ", u64::from(scroll) * 100 / u64::from(max));
-        let width = (position.len() as u16).min(area.width.saturating_sub(2));
-        if width > 0 && area.height > 0 {
-            frame.render_widget(
-                Paragraph::new(Span::styled(position, muted())),
-                Rect::new(
-                    area.right().saturating_sub(width + 1),
-                    area.bottom() - 1,
-                    width,
-                    1,
-                ),
-            );
-        }
-    }
     frame.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
@@ -1137,24 +1067,7 @@ pub(super) struct PreviewStream {
     /// Keep the view pinned to the end while chunks arrive (End/G).
     pub(super) follow: bool,
 }
-impl PreviewStream {
-    pub(super) fn label(&self) -> String {
-        if self.failed {
-            format!("first {}", human_size(self.next))
-        } else if self.done {
-            if self.next < self.size {
-                format!("first {}", human_size(self.next))
-            } else {
-                String::new()
-            }
-        } else {
-            format!(
-                "loading {}%",
-                (self.next.max(1) * 100 / self.size.max(1)).min(99)
-            )
-        }
-    }
-}
+impl PreviewStream {}
 /// A streamed continuation prepared by the request worker (decode, normalize, highlight).
 #[derive(Clone)]
 pub(super) struct PreviewChunk {

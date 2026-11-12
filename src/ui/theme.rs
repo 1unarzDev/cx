@@ -24,12 +24,6 @@ pub(super) enum Tok {
     Warn,
     Err,
     Info,
-    Mesh,
-    Lan,
-    Dir,
-    ProvClaude,
-    ProvCodex,
-    ProvShell,
     /// Inline code and rendered math in previews.
     Code,
     /// Search matches that are not the current one.
@@ -93,13 +87,7 @@ fn spec(t: Tok) -> Row {
         Tok::Err => row(0xe8837f, 0xc92a2a, (210, 160), Some(Color::Red)),
         // 16-color: bright blue, plain blue is unreadable on dark backgrounds (P9).
         Tok::Info => row(0x8fb0e0, 0x1c64b8, (110, 25), Some(Color::LightBlue)),
-        Tok::Mesh => row(0xc49cf0, 0x7048c0, (177, 97), Some(Color::Magenta)),
-        Tok::Lan => row(0x7fc9b4, 0x0f7a62, (79, 29), Some(Color::Cyan)),
         // Plain blue fails contrast on dark backgrounds (P9): bright blue + bold.
-        Tok::Dir => row(0x8fb7f0, 0x1d4f91, (111, 25), Some(Color::LightBlue)),
-        Tok::ProvClaude => row(0xe0a37a, 0xa4532a, (173, 130), Some(Color::Yellow)),
-        Tok::ProvCodex => row(0x9ec5f8, 0x2659a8, (111, 25), Some(Color::LightBlue)),
-        Tok::ProvShell => row(0xaab2bf, 0x4b5563, (249, 240), None),
         Tok::Code => row(0xd7a6c9, 0x8a3d73, (182, 96), Some(Color::Magenta)),
         Tok::Match => row(0xf0c674, 0x8a5a00, (221, 94), Some(Color::Yellow)),
         Tok::Id(i) => IDS[(i % SWATCHES) as usize],
@@ -138,7 +126,6 @@ fn substitute(t: Tok, depth: ColorDepth) -> Modifier {
         (Tok::Accent | Tok::Err, ColorDepth::None) => Modifier::BOLD,
         (Tok::Info, ColorDepth::Ansi16) => Modifier::BOLD,
         // Directories are always bold, so they never rely on hue alone.
-        (Tok::Dir, _) => Modifier::BOLD,
         _ => Modifier::empty(),
     }
 }
@@ -175,20 +162,6 @@ pub(super) fn err() -> Style {
 }
 pub(super) fn info() -> Style {
     tok(Tok::Info)
-}
-pub(super) fn mesh() -> Style {
-    tok(Tok::Mesh)
-}
-pub(super) fn dir() -> Style {
-    tok(Tok::Dir)
-}
-/// Provider badge color by provider id.
-pub(super) fn provider(name: &str) -> Style {
-    tok(match name {
-        "claude" => Tok::ProvClaude,
-        "codex" => Tok::ProvCodex,
-        _ => Tok::ProvShell,
-    })
 }
 /// Stable identity hue for a key (device id, session id): FNV-1a, so a device
 /// keeps its color across views and restarts.
@@ -232,24 +205,6 @@ pub(super) fn selection(focused: bool) -> Style {
 /// Still dims behind an overlay.
 pub(super) fn selected_style() -> Style {
     selection(true)
-}
-/// Left selection bar, including the trailing gap. A focused row whose depth
-/// falls back to REVERSED (16 colors, NO_COLOR) gets the `>` marker: inside a
-/// reversed row the half-block `▌` collapses to a sliver of the row color and
-/// disappears (spec 4.1 / 5: the bar must survive at every depth).
-pub(super) fn selection_symbol_for(focused: bool, caps: Caps) -> &'static str {
-    let g = glyphs_for(caps);
-    let reversed = token_color(Tok::AccentBg, caps).is_none();
-    if caps.color == ColorDepth::None || (focused && reversed) {
-        ASCII.bar_focused
-    } else if focused {
-        g.bar_focused
-    } else {
-        g.bar_dim
-    }
-}
-pub(super) fn selection_symbol(focused: bool) -> &'static str {
-    selection_symbol_for(focused && !panels_dimmed(), caps())
 }
 
 /// Per-frame render state shared by the theme helpers.
@@ -641,14 +596,6 @@ pub(super) fn asciify(buf: &mut ratatui::buffer::Buffer, area: Rect) {
 pub(super) fn ascii() -> bool {
     !caps().unicode
 }
-/// Field separator: ` · `, or ` | ` where only ASCII is safe.
-pub(super) fn sep() -> &'static str {
-    if ascii() {
-        " | "
-    } else {
-        " · "
-    }
-}
 /// True when colors are off (`NO_COLOR`, any value, or `TERM=dumb`).
 pub(super) fn no_color() -> bool {
     caps().color == ColorDepth::None
@@ -682,7 +629,7 @@ mod tests {
             ..Caps::default()
         }
     }
-    const ALL: [Tok; 17] = [
+    const ALL: [Tok; 11] = [
         Tok::Code,
         Tok::Match,
         Tok::Muted,
@@ -694,12 +641,6 @@ mod tests {
         Tok::Warn,
         Tok::Err,
         Tok::Info,
-        Tok::Mesh,
-        Tok::Lan,
-        Tok::Dir,
-        Tok::ProvClaude,
-        Tok::ProvCodex,
-        Tok::ProvShell,
     ];
 
     #[test]
@@ -739,13 +680,6 @@ mod tests {
             token_color(Tok::Accent, at(Ansi256, Background::Light)),
             Some(Color::Indexed(30))
         );
-        assert_eq!(
-            token_color(Tok::Dir, at(Ansi16, Background::Dark)),
-            Some(Color::LightBlue)
-        );
-        assert!(tok_for(Tok::Dir, at(Ansi16, Background::Dark))
-            .add_modifier
-            .contains(Modifier::BOLD));
         // NO_COLOR substitutes keep the information as attributes.
         let none = at(None, Background::Dark);
         assert!(tok_for(Tok::Muted, none)
@@ -755,9 +689,6 @@ mod tests {
             .add_modifier
             .contains(Modifier::BOLD));
         assert!(tok_for(Tok::Err, none)
-            .add_modifier
-            .contains(Modifier::BOLD));
-        assert!(tok_for(Tok::Dir, none)
             .add_modifier
             .contains(Modifier::BOLD));
         assert!(selection_for(true, none)
@@ -798,12 +729,6 @@ mod tests {
             Tok::Warn,
             Tok::Err,
             Tok::Info,
-            Tok::Mesh,
-            Tok::Lan,
-            Tok::Dir,
-            Tok::ProvClaude,
-            Tok::ProvCodex,
-            Tok::ProvShell,
             Tok::Code,
             Tok::Match,
         ];
@@ -1023,24 +948,15 @@ mod tests {
     }
 
     #[test]
-    fn no_color_selection_uses_the_marker_bar() {
+    fn no_color_selection_is_reversed_only_when_focused() {
         let mono = Caps {
             color: ColorDepth::None,
             ..Caps::default()
         };
-        assert_eq!(selection_symbol_for(true, mono), "> ");
-        assert_eq!(selection_symbol_for(false, mono), "> ");
         assert!(selection_for(true, mono)
             .add_modifier
             .contains(Modifier::REVERSED));
         assert_eq!(selection_for(false, mono), Style::default());
-        assert_eq!(selection_symbol_for(true, Caps::default()), "▌ ");
-        assert_eq!(selection_symbol_for(false, Caps::default()), "▏ ");
-        let ascii = Caps {
-            unicode: false,
-            ..Caps::default()
-        };
-        assert_eq!(selection_symbol_for(false, ascii), ": ");
     }
 
     #[test]

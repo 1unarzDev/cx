@@ -6,12 +6,9 @@
 //! derive from it (lowercase names, the hidden/filter view, search matches, the largest
 //! size). Pages appended in the helper's order extend these caches instead of rebuilding.
 use super::Entry;
-use std::{
-    collections::HashSet,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
 };
 
 static REVISIONS: AtomicU64 = AtomicU64::new(1);
@@ -123,9 +120,6 @@ impl VisibleRows {
     pub(super) fn len(&self) -> usize {
         self.rows.len()
     }
-    pub(super) fn is_empty(&self) -> bool {
-        self.rows.is_empty()
-    }
     pub(super) fn get(&self, row: usize) -> Option<&Entry> {
         self.rows.get(row).map(|&i| &self.entries[i as usize])
     }
@@ -225,18 +219,6 @@ impl ViewIndex {
             rows: self.rows.clone(),
         }
     }
-    pub(super) fn largest(&mut self, entries: &Entries, show_hidden: bool, filter: &str) -> u64 {
-        self.update(entries, show_hidden, filter);
-        self.largest
-    }
-    /// Longest name (characters) as of the last update.
-    pub(super) fn longest(&self) -> usize {
-        self.longest
-    }
-    /// Total bytes of regular files as of the last update.
-    pub(super) fn bytes(&self) -> u64 {
-        self.bytes
-    }
     /// Search matches over the visible rows, computed once per (rows, query).
     pub(super) fn search(
         &mut self,
@@ -275,10 +257,4 @@ impl ViewIndex {
         self.search = Some((self.rows_generation, query.to_owned(), matches.clone()));
         matches
     }
-}
-
-/// Clipboard membership for one listing, built once per frame instead of a
-/// linear scan per row.
-pub(super) fn clipboard_paths(entries: &[Entry]) -> HashSet<&str> {
-    entries.iter().map(|e| e.path.as_str()).collect()
 }

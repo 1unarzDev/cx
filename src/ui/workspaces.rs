@@ -263,44 +263,6 @@ impl App {
         };
         self.dialog = Some(Dialog::SessionPicker(device, path, scope, provider, rows));
     }
-    pub(super) fn folder_agents(&self, b: &Browser) -> BTreeMap<String, String> {
-        let mut counts: BTreeMap<String, (usize, usize)> = BTreeMap::new();
-        let mut seen = BTreeSet::new();
-        for s in &self.work[b.device].sessions {
-            if !same_scope(s.container.as_ref(), b.container.as_ref())
-                || !seen.insert(runtime_key(s))
-            {
-                continue;
-            }
-            if s.provider == "claude" || s.provider == "codex" {
-                let count = counts.entry(s.directory.clone()).or_default();
-                if s.provider == "claude" {
-                    count.0 += 1;
-                } else {
-                    count.1 += 1;
-                }
-            }
-        }
-        let w = &self.work[b.device];
-        let stale =
-            w.fetched == 0 || w.error.is_some() || transport::now().saturating_sub(w.fetched) > 60;
-        counts
-            .into_iter()
-            .map(|(path, (claude, codex))| {
-                let mut parts = Vec::new();
-                if claude > 0 {
-                    parts.push(format!("Claude {claude}"));
-                }
-                if codex > 0 {
-                    parts.push(format!("Codex {codex}"));
-                }
-                (
-                    path,
-                    format!("{}{}", parts.join(" · "), if stale { " ?" } else { "" }),
-                )
-            })
-            .collect()
-    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

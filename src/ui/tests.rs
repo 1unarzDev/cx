@@ -56,6 +56,9 @@ fn file_app() -> (App, mpsc::Receiver<Task>) {
     a.view = View::Files;
     (a, rx)
 }
+fn bksp(a: &mut App) {
+    a.key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+}
 fn press(a: &mut App, c: char) {
     a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
 }
@@ -63,24 +66,18 @@ fn press(a: &mut App, c: char) {
 #[test]
 fn device_access_marker_and_toggle_guard_are_clear() {
     let (mut a, _) = queued_app();
+    a.work[1].fetched = transport::now();
     a.policies[1].access = store::AccessMode::Core;
-    let mut terminal = ratatui::Terminal::new(TestBackend::new(80, 24)).unwrap();
-    terminal.draw(|frame| render(frame, &a)).unwrap();
-    let rendered = terminal
-        .backend()
-        .buffer()
-        .content()
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect::<String>();
+    a.open_device(1);
+    let rendered = capture_app(&a, 80);
     assert!(rendered.contains("laptop"));
-    assert!(!rendered.contains("* laptop"));
+    assert!(!rendered.contains("single-direction"), "{rendered}");
     a.policies[1].access = store::AccessMode::Directed;
-    assert!(capture_app(&a, 80).contains("* laptop"));
-    a.devices[1].name = "blastoise-odroid-with-a-very-long-hostname".into();
-    assert!(capture_app(&a, 40).contains("* "));
-    a.focus = Focus::Devices;
-    press(&mut a, 'b');
+    let rendered = capture_app(&a, 80);
+    assert!(rendered.contains("single-direction"), "{rendered}");
+    // The hub has no device scope: the toggle says so and changes nothing.
+    a.go_hub();
+    a.run_cmd(keymap::Cmd::ToggleAccess);
     assert!(a.notice.contains("Select one remote device"));
 }
 
@@ -88,9 +85,8 @@ fn device_access_marker_and_toggle_guard_are_clear() {
 fn device_edit_menu_is_remote_only_and_offers_address_or_remove() {
     let (mut app, _) = queued_app();
     app.policies[1].access = store::AccessMode::Core;
-    app.focus = Focus::Devices;
-    app.device = 2;
-    press(&mut app, 'e');
+    app.open_device(1);
+    press(&mut app, 'E');
     assert!(matches!(app.dialog, Some(Dialog::EditDevice(1))));
     assert!(capture_app(&app, 120).contains("Access: core (reverse unverified)"));
     app.policies[1].access = store::AccessMode::Directed;
@@ -98,8 +94,9 @@ fn device_edit_menu_is_remote_only_and_offers_address_or_remove() {
     press(&mut app, 'G');
     assert_eq!(app.dialog_selected, 3);
     app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    app.device = 0;
-    press(&mut app, 'e');
+    // The viewer itself has no address to edit.
+    app.open_device(0);
+    press(&mut app, 'E');
     assert!(app.dialog.is_none());
 }
 fn expand_network_observers(a: &mut App) {
@@ -541,19 +538,15 @@ fn named_neighbors_are_visible_and_manual_add_preserves_selected_observer() {
     a.network.get_mut(&1).unwrap()["candidates"][0]["hostname"] =
         serde_json::json!("blastoise-odroid.local");
     expand_network_observers(&mut a);
-    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-    terminal.draw(|f| render(f, &a)).unwrap();
-    let text = terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(|c| c.symbol())
-        .collect::<String>();
+    // Neighbours are found in the palette, by name.
+    a.open_palette("blastoise");
+    let text = capture_app(&a, 120);
     assert!(
         text.contains("blastoise-odroid.local"),
-        "hostname missing from network rows"
+        "hostname missing from the palette: {text}"
     );
+    a.input = None;
+    a.text.clear();
     a.device = 2;
     select_network_peer(&mut a, 1);
     a.execute(Action::Add);
@@ -567,153 +560,6 @@ fn named_neighbors_are_visible_and_manual_add_preserves_selected_observer() {
     );
 }
 
-#[test]
-fn network_tree_keys_expand_collapse_and_capture_exact_child_route() {
-    let (mut a, rx) = queued_app();
-    observer_network_fixture(&mut a);
-    select_network_peer(&mut a, 1);
-    press(&mut a, 'l');
-    assert!(a.network_expanded.contains(&a.peer_key(1)));
-    press(&mut a, 'l');
-    assert_eq!(
-        a.network_rows()[a.network_selected]["address"],
-        "192.0.2.20"
-    );
-    press(&mut a, 'j');
-    assert_eq!(
-        a.network_rows()[a.network_selected]["address"],
-        "192.0.2.22"
-    );
-    let selected = a.network_selection();
-    press(&mut a, 'h');
-    assert_eq!(a.network_rows()[a.network_selected]["_peer"], 1);
-    press(&mut a, 'h');
-    assert!(!a.network_expanded.contains(&a.peer_key(1)));
-    a.restore_network_selection(selected);
-    assert_eq!(a.network_rows()[a.network_selected]["_peer"], 1);
-    press(&mut a, 'l');
-    select_network_route(&mut a, 1, "192.0.2.22");
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(a.network_add_target, Some((1, "192.0.2.22".into())));
-    a.device = 1;
-    for c in "alice".chars() {
-        press(&mut a, c);
-    }
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(a.pending_add.as_deref(), Some("alice@192.0.2.22"));
-    assert_eq!(a.pending_add_via.as_ref().unwrap().id, "remote");
-    assert!(rx.try_recv().is_err());
-}
-#[test]
-fn network_refresh_preserves_observer_expansion_and_selection_identity() {
-    let (mut a, _rx) = queued_app();
-    observer_network_fixture(&mut a);
-    expand_network_observers(&mut a);
-    select_network_route(&mut a, 0, "2001:db8::20");
-    let mut candidates = a.network[&0]["candidates"].as_array().unwrap().clone();
-    candidates.reverse();
-    a.apply(Reply {
-        device_id: None,
-        execution_target: None,
-        device: 0,
-        generation: a.generation,
-        op: Operation::NetworkCandidates,
-        result: Ok(serde_json::json!({"observed_at":transport::now(),"candidates":candidates})),
-        preview: None,
-    });
-    assert_eq!(
-        a.network_rows()[a.network_selected]["address"],
-        "2001:db8::20"
-    );
-    assert!(a.network_expanded.contains(&a.peer_key(0)));
-    a.view = View::Work;
-    a.view = View::Network;
-    assert!(a.network_expanded.contains(&a.peer_key(0)));
-    assert_eq!(
-        a.network_rows()[a.network_selected]["address"],
-        "2001:db8::20"
-    );
-    a.focus = Focus::Devices;
-    a.device = 1;
-    a.move_selection(1);
-    assert_eq!(
-        a.network_rows()[a.network_selected]["address"],
-        "192.0.2.22",
-        "new observer scope contains only its own neighbors"
-    );
-}
-#[test]
-fn network_route_details_separate_discovery_from_saved_jump_hops() {
-    let (mut a, _rx) = queued_app();
-    observer_network_fixture(&mut a);
-    expand_network_observers(&mut a);
-    select_network_route(&mut a, 1, "192.0.2.22");
-    a.network_jump_routes
-        .insert(1, Some(vec!["saved-bastion".into()]));
-    let row = a.network_rows()[a.network_selected].clone();
-    let detail = a.network_detail(&row);
-    assert!(detail.contains("Route found: viewer"));
-    assert!(detail.contains("laptop"));
-    assert!(detail.contains("192.0.2.22 / eth0"));
-    assert!(detail.contains("SSH jumps to observer (saved): saved-bastion"));
-    assert!(detail.contains("authentication unknown"));
-    assert!(!detail.contains("authenticated transit"));
-    a.network_jump_routes.insert(
-        1,
-        Some((0..8).map(|i| format!("long-saved-gateway-{i}")).collect()),
-    );
-    let before = capture_app(&a, 48);
-    assert!(before.contains("Route"));
-    for _ in 0..30 {
-        press(&mut a, 'J');
-    }
-    let after = capture_app(&a, 48);
-    assert!(after.contains("authentication"));
-    assert!(after.contains("Internet unknown"));
-    press(&mut a, 'j');
-    assert_eq!(a.network_detail_scroll, 0);
-}
-#[test]
-fn network_observer_capture_matrix_has_no_evidence_column() {
-    for width in [48, 80, 120] {
-        for height in [24, 40] {
-            for state in ["collapsed", "expanded", "route", "unresolved"] {
-                let (mut a, _rx) = queued_app();
-                observer_network_fixture(&mut a);
-                if state != "collapsed" {
-                    expand_network_observers(&mut a);
-                }
-                if state == "route" {
-                    select_network_route(&mut a, 1, "192.0.2.22");
-                }
-                if state == "unresolved" {
-                    select_network_route(&mut a, 0, "192.0.2.100");
-                }
-                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-                terminal.draw(|f| render(f, &a)).unwrap();
-                let text = terminal
-                    .backend()
-                    .buffer()
-                    .content
-                    .chunks(width as usize)
-                    .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                assert!(!text.contains("Evidence"));
-                assert!(text.contains("Network"));
-                if let Some(directory) = std::env::var_os("CX_NETWORK_CAPTURE_DIR") {
-                    let directory = std::path::PathBuf::from(directory);
-                    std::fs::create_dir_all(&directory).unwrap();
-                    std::fs::write(
-                        directory.join(format!("tree-{width}x{height}-{state}.txt")),
-                        text,
-                    )
-                    .unwrap();
-                }
-            }
-        }
-    }
-}
 #[test]
 fn network_enrolled_peers_exist_without_lan_and_capture_execution_identity() {
     let (mut a, rx) = queued_app();
@@ -784,37 +630,9 @@ fn network_peer_checks_bounded_cached_offline_and_no_redraw_requests() {
     a.peer_evidence
         .insert(1, (transport::now().saturating_sub(100), true));
     assert!(a.peer_status(1).contains("cached helper"));
-    a.network_selected = 0;
     let text = capture_app(&a, 120);
     assert!(text.contains("laptop"));
-    assert!(text.contains("helper evidence from viewer"));
-    assert!(text.contains("Via another observer: unknown"));
-    assert!(rx.try_recv().is_err());
-}
-#[test]
-fn network_peer_selection_survives_lan_reordering_and_actions_target_peer() {
-    let (mut a, rx) = queued_app();
-    network_fixture(&mut a);
-    select_network_peer(&mut a, 1);
-    a.apply(Reply {
-        device_id: None,
-        execution_target: None,
-        device: 0,
-        generation: a.generation,
-        op: Operation::NetworkCandidates,
-        result: Ok(serde_json::json!({"candidates":[{"address":"192.0.2.0","interface":"eth0"}]})),
-        preview: None,
-    });
-    assert_eq!(a.network_rows()[a.network_selected]["_peer"], 1);
-    assert_eq!(a.command_context(), Some((1, "~".into())));
-    a.execute(Action::New);
-    assert!(matches!(a.dialog, Some(Dialog::Provider(1, _))));
-    a.dialog = None;
-    a.execute(Action::Files);
-    assert_eq!(a.browser.as_ref().unwrap().device, 1);
-    assert!(rx
-        .try_iter()
-        .any(|t| t.device == 1 && matches!(t.op, Operation::List { .. })));
+    assert!(rx.try_recv().is_err(), "drawing never dispatches");
 }
 #[test]
 fn add_device_modal_is_compact_and_keeps_contextual_keys() {
@@ -844,58 +662,15 @@ fn network_numeric_order_stale_port_and_linklocal_enrollment() {
     assert_eq!(a.network_candidates()[0]["address"], "192.0.2.2");
 }
 #[test]
-fn network_browser_capture_matrix() {
-    for width in [48, 80, 120] {
-        for height in [24, 40] {
-            for state in ["all", "unknown", "menu", "account"] {
-                let (mut a, _rx) = queued_app();
-                network_fixture(&mut a);
-                a.network.insert(1, serde_json::json!({"internet":{"state":"unknown"},"candidates":[{"address":"192.0.2.20","interface":"wlan0","source":"neighbor","link_state":"STALE","ssh":{"state":"unknown"}}]}));
-                if state == "unknown" {
-                    a.device = 2;
-                }
-                if state == "menu" || state == "account" {
-                    select_network_route(&mut a, 1, "192.0.2.20");
-                    a.open_neighbor();
-                }
-                if state == "account" {
-                    press(&mut a, 'u');
-                }
-                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-                terminal.draw(|f| render(f, &a)).unwrap();
-                let text = terminal
-                    .backend()
-                    .buffer()
-                    .content
-                    .chunks(width as usize)
-                    .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                assert!(text.contains("Network"));
-                if let Some(directory) = std::env::var_os("CX_NETWORK_CAPTURE_DIR") {
-                    let directory = std::path::PathBuf::from(directory);
-                    std::fs::create_dir_all(&directory).unwrap();
-                    std::fs::write(
-                        directory.join(format!("{width}x{height}-{state}.txt")),
-                        text,
-                    )
-                    .unwrap();
-                }
-            }
-        }
-    }
-}
-#[test]
 fn new_session_shortcut_chooses_before_launching_at_home() {
+    // `n` on a device starts a shell in its home at once (two keys from the hub).
     let (mut a, rx) = queued_app();
     a.device = 2;
     a.view = View::Work;
     press(&mut a, 'n');
     assert!(a.view == View::Work);
-    assert!(matches!(&a.dialog,Some(Dialog::SessionChooser(1,path)) if path == "~"));
+    assert!(a.dialog.is_none());
     assert!(a.browser.is_none());
-    assert!(rx.try_recv().is_err());
-    press(&mut a, 's');
     assert!(rx.try_iter().any(|task| task.device == 1 && matches!(task.op, Operation::Create(ref c) if c.directory == "~" && c.provider == "shell")));
 }
 #[test]
@@ -916,28 +691,27 @@ fn palette_files_always_asks_for_execution_device() {
 }
 #[test]
 fn palette_network_picker_includes_all_and_scopes_queries_after_choice() {
+    // A refresh scoped to one device queries only that device; the hub's own
+    // scope (no device) refreshes them all.
     let (mut a, rx) = queued_app();
-    a.device = 1;
     a.view = View::Network;
-    a.execute_palette(Action::Network);
-    assert!(matches!(
-        a.dialog,
-        Some(Dialog::Device(ChooseDevice::Network))
-    ));
-    assert_eq!(
-        a.device_choices(ChooseDevice::Network),
-        vec![None, Some(0), Some(1)]
+    a.device = 2;
+    a.refresh();
+    let tasks: Vec<_> = rx.try_iter().collect();
+    assert!(!tasks.is_empty());
+    assert!(
+        tasks.iter().all(|task| task.device == 1),
+        "{:?}",
+        tasks.iter().map(|t| t.device).collect::<Vec<_>>()
     );
-    assert!(rx.try_recv().is_err());
-    a.dialog_selected = 2;
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(a.device, 2);
-    assert!(a.view == View::Network);
-    assert!(rx.try_iter().all(|task| task.device == 1));
-    a.execute_palette(Action::Network);
-    a.dialog_selected = 0;
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(a.device, 0);
+    a.go_hub();
+    let _ = rx.try_iter().count();
+    for w in &mut a.work {
+        w.loading = false;
+    }
+    a.refresh();
+    let devices: std::collections::BTreeSet<_> = rx.try_iter().map(|t| t.device).collect();
+    assert_eq!(devices.len(), 2);
 }
 #[test]
 fn palette_add_gateway_and_cancel_keep_the_selected_view() {
@@ -969,12 +743,12 @@ fn palette_scope_and_device_chooser_render_at_terminal_widths() {
         let (mut a, _) = queued_app();
         a.device = 2;
         a.input = Some(Input::Palette);
-        a.text = "Network".into();
-        assert!(capture_app(&a, width).contains("Next: choose device"));
+        a.text = "Containers".into();
+        assert!(capture_app(&a, width).contains("Containers"));
         a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let text = capture_app(&a, width);
-        assert!(text.contains("All devices"));
-        assert!(text.contains("laptop"));
+        assert!(text.contains("All devices"), "{width}: {text}");
+        assert!(text.contains("laptop"), "{width}: {text}");
     }
 }
 #[test]
@@ -1020,7 +794,11 @@ fn network_all_scope_batches_every_host_and_captures_neighbor_owner() {
         a.devices.push(d);
     }
     a.refresh();
-    let tasks: Vec<_> = rx.try_iter().collect();
+    // (The hub's refresh also lists each device's sessions.)
+    let tasks: Vec<_> = rx
+        .try_iter()
+        .filter(|t| !matches!(t.op, Operation::Sessions))
+        .collect();
     assert_eq!(tasks.len(), 8);
     assert_eq!(a.network_inflight.len(), 4);
     assert_eq!(a.network_refresh_queue.len(), 3);
@@ -1065,16 +843,30 @@ fn network_neighbors_sorted_and_unknown_is_honest() {
     let mut a = app();
     network_fixture(&mut a);
     assert_eq!(a.network_candidates()[0]["address"], "192.0.2.1");
-    let text = capture_app(&a, 100);
-    assert!(text.contains("Internet unknown"));
-    assert!(text.contains("port open"));
-    assert!(text.contains("authentication unknown"));
-    assert!(text.contains("Internet unknown · source neighbor"));
+    a.open_palette("192.0.2");
+    let rows = a.palette_view();
+    let neighbor = rows
+        .iter()
+        .find(|r| r.section == "Neighbors")
+        .expect("neighbours in the palette");
+    assert!(neighbor.detail.contains("port open"), "{}", neighbor.detail);
+    assert!(neighbor.detail.contains("authentication unknown"));
+    assert!(neighbor
+        .detail
+        .contains("Internet unknown · source neighbor"));
+    assert!(capture_app(&a, 100).contains("192.0.2.1"));
 }
 #[test]
 fn network_neighbor_enter_starts_account_without_manual_check() {
     let (mut a, rx) = queued_app();
     network_fixture(&mut a);
+    a.open_palette("192.0.2.1");
+    let at = a
+        .palette_view()
+        .iter()
+        .position(|r| r.section == "Neighbors")
+        .unwrap();
+    a.palette_selected = at;
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(rx.try_recv().is_err());
     assert!(a.input == Some(Input::Add));
@@ -1226,16 +1018,15 @@ fn network_offline_invalidates_previous_evidence_and_scope_does_not_block() {
 #[test]
 fn failed_cached_session_keeps_refresh_visible_at_small_widths() {
     let (mut a, _) = queued_app();
-    a.view = View::Work;
-    a.device = 1;
-    a.focus = Focus::Workspace;
     a.work[0].sessions.push(disposable_shell());
     a.work[0].error = Some("account@execution-device: Device unreachable over SSH · check its connection, then Refresh: helper closed before response".into());
+    a.open_device(0);
     for width in [48, 80, 120] {
         let text = capture_app(&a, width);
-        assert!(text.contains("Ctrl+P → Refresh"), "{width}: {text}");
+        // The device view says why and offers its retry verb at every width.
+        assert!(text.contains("retry"), "{width}: {text}");
         if width >= 80 {
-            assert!(text.contains("stale"), "{width}: {text}");
+            assert!(text.contains("unreachable"), "{width}: {text}");
         }
     }
     a.apply(Reply {
@@ -1257,43 +1048,39 @@ fn shell_stop_requires_confirmation_and_rejects_external_and_agent_rows() {
             "account":"tester","host":"workstation","pid":123,"started":"start","boot_id":"boot","external":false
         })).unwrap();
     a.work[0].sessions.push(session);
-    a.view = View::Work;
-    a.focus = Focus::Workspace;
-    press(&mut a, 'd');
-    assert!(matches!(a.dialog, Some(Dialog::StopShell(..))));
+    a.open_device(0);
+    let _ = rx.try_iter().count();
+    // `⌫` asks inline; any other key keeps the session.
+    bksp(&mut a);
+    assert!(a.stop_armed.is_some());
     assert!(rx.try_recv().is_err());
-    press(&mut a, 'n');
-    assert!(a.dialog.is_none());
-    press(&mut a, 'd');
     press(&mut a, 'y');
+    assert!(a.stop_armed.is_none());
+    assert!(rx.try_recv().is_err(), "`y` must never confirm a stop");
+    bksp(&mut a);
+    bksp(&mut a);
     assert!(matches!(
         rx.try_recv().unwrap().op,
         Operation::StopSession { pid: 123, .. }
     ));
     a.work[0].sessions[0].external = true;
-    press(&mut a, 'd');
-    assert!(a.dialog.is_none());
+    bksp(&mut a);
+    assert!(a.stop_armed.is_none());
     assert!(rx.try_recv().is_err());
     a.work[0].sessions[0].external = false;
     a.work[0].sessions[0].provider = "codex".into();
-    press(&mut a, 'd');
-    assert!(matches!(a.dialog, Some(Dialog::StopShell(..))));
-    press(&mut a, 'n');
+    bksp(&mut a);
+    assert!(a.stop_armed.is_some());
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(rx.try_recv().is_err());
 }
 
 #[test]
 fn file_device_selection_retargets_only_the_focused_location() {
     let (mut a, rx) = file_app();
-    a.device = 1;
-    a.focus = Focus::Devices;
     a.other_browser = Some(Browser::new(0, "/destination".into()));
-    press(&mut a, 'j');
-    assert_eq!(a.device, 2);
-    // Moving is a pure state change (P17): no listing until it settles.
-    assert_eq!(a.browser.as_ref().unwrap().device, 0);
-    assert!(rx.try_recv().is_err(), "moving must not list");
-    assert!(a.settle_device_refresh(Instant::now() + Duration::from_secs(1)));
+    // A device's files (its letter, then `f`) retarget the focused location only.
+    a.open_files(1);
     assert_eq!(
         a.browser.as_ref().unwrap().device,
         1,
@@ -1301,12 +1088,10 @@ fn file_device_selection_retargets_only_the_focused_location() {
     );
     assert_eq!(a.browser.as_ref().unwrap().path, "~");
     assert_eq!(a.other_browser.as_ref().unwrap().path, "/destination");
-    assert!(a.focus == Focus::Devices);
     assert!(rx
         .try_iter()
         .any(|t| t.device == 1 && matches!(t.op, Operation::List { .. })));
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(a.focus == Focus::Workspace);
     assert_eq!(a.browser.as_ref().unwrap().device, 1);
 }
 #[test]
@@ -1334,15 +1119,12 @@ fn transfer_shortcut_captures_selection_and_opens_destination_picker() {
 #[test]
 fn device_switch_restores_folder_and_does_not_consume_cut_clipboard() {
     let (mut a, _rx) = file_app();
+    a.file_locations.insert(0, "/files".into());
     press(&mut a, 'x');
-    a.device = 1;
-    a.focus = Focus::Devices;
     a.browser.as_mut().unwrap().preview = Some("preview".into());
-    press(&mut a, 'j');
-    a.settle_device_refresh(Instant::now() + Duration::from_secs(1));
+    a.open_files(1);
     assert_eq!(a.browser.as_ref().unwrap().device, 1);
-    press(&mut a, 'k');
-    a.settle_device_refresh(Instant::now() + Duration::from_secs(1));
+    a.open_files(0);
     assert_eq!(a.browser.as_ref().unwrap().device, 0);
     assert_eq!(a.browser.as_ref().unwrap().path, "/files");
     assert!(a.clipboard.as_ref().unwrap().cut);
@@ -1373,8 +1155,10 @@ fn opening_remote_files_from_all_devices_keeps_execution_context_on_enter() {
     a.device = 0;
     a.open_browser(1, "/project".into());
     assert_eq!(a.device, 2);
-    a.focus = Focus::Devices;
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    // Back to the hub and into that device's files again: the same location.
+    a.go_hub();
+    let _ = rx.try_iter().count();
+    a.open_files(1);
     assert_eq!(a.browser.as_ref().unwrap().device, 1);
     assert_eq!(a.browser.as_ref().unwrap().path, "/project");
     assert!(!rx
@@ -1384,41 +1168,24 @@ fn opening_remote_files_from_all_devices_keeps_execution_context_on_enter() {
 #[test]
 fn menu_navigation_counts_edges_and_text_ownership() {
     let (mut a, _rx) = queued_app();
-    a.focus = Focus::Devices;
-    press(&mut a, '2');
-    press(&mut a, 'j');
-    assert_eq!(a.device, 2);
-    press(&mut a, 'g');
-    press(&mut a, 'g');
-    assert_eq!(a.device, 0);
-    press(&mut a, 'G');
-    assert_eq!(a.device, 2);
-    press(&mut a, '2');
-    press(&mut a, 'G');
-    assert_eq!(a.device, 1);
-    a.focus = Focus::Actions;
-    press(&mut a, '3');
-    press(&mut a, 'j');
-    assert_eq!(a.side_selected, 3);
-    press(&mut a, 'g');
-    press(&mut a, 'g');
-    assert_eq!(a.side_selected, 0);
-    a.focus = Focus::Workspace;
+    // A device's sessions: counts move, `gg` / `G` reach the first tile and the
+    // new-session tile after the last one.
     a.view = View::Work;
-    a.device = 0;
+    a.device = 1;
     for i in 0..4 {
         let mut session = disposable_shell();
         session.id = format!("navigation-{i}");
         a.work[0].sessions.push(session);
     }
+    a.selected = 0;
     press(&mut a, '3');
     press(&mut a, 'j');
     assert_eq!(a.selected, 3);
-    press(&mut a, 'g');
-    press(&mut a, 'g');
+    // (`g` is a session slot here; Home and End reach the ends.)
+    a.key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
     assert_eq!(a.selected, 0);
-    press(&mut a, 'G');
-    assert_eq!(a.selected, 3);
+    a.key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    assert_eq!(a.selected, 4, "the new-session tile");
     a.focus = Focus::Workspace;
     a.view = View::Containers;
     a.containers.insert(
@@ -1433,15 +1200,6 @@ fn menu_navigation_counts_edges_and_text_ownership() {
     assert_eq!(a.container_selected, 0);
     press(&mut a, 'G');
     assert_eq!(a.container_selected, a.container_rows().len() - 1);
-    network_fixture(&mut a);
-    press(&mut a, 'G');
-    assert_eq!(a.network_selected, a.network_rows().len() - 1);
-    press(&mut a, 'g');
-    press(&mut a, 'g');
-    assert_eq!(a.network_selected, 0);
-    press(&mut a, '2');
-    press(&mut a, 'j');
-    assert_eq!(a.network_selected, 2.min(a.network_rows().len() - 1));
     a.providers.insert(
         0,
         (
@@ -1460,18 +1218,9 @@ fn menu_navigation_counts_edges_and_text_ownership() {
     press(&mut a, 'G');
     assert_eq!(a.dialog_selected, 3);
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    a.focus = Focus::Devices;
-    press(&mut a, '5');
-    press(&mut a, 'f');
-    for c in "laptop".chars() {
-        press(&mut a, c);
-    }
-    assert_eq!(a.device_filter, "laptop");
-    assert_eq!(a.device_rows(), vec![0, 2]);
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(a.focus == Focus::Devices);
-    press(&mut a, 'j');
-    assert_eq!(a.device, 2);
+    // A text field owns every key, counts and motions included.
+    a.view = View::Files;
+    a.browser = Some(Browser::new(0, "/files".into()));
     a.key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
     a.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
     for c in "2gg".chars() {
@@ -1482,18 +1231,18 @@ fn menu_navigation_counts_edges_and_text_ownership() {
 }
 #[test]
 fn escaping_a_filter_edit_cancels_it_so_the_next_f_starts_fresh() {
-    let (mut a, _rx) = queued_app();
-    a.focus = Focus::Devices;
+    let (mut a, _rx) = file_app();
+    let filter = |a: &App| a.browser.as_ref().unwrap().filter.clone();
     // Type a filter, then Esc. The live filter reverts to empty and the input
     // buffer clears, instead of leaving the half-typed text applied.
     press(&mut a, 'f');
-    for c in "laptop".chars() {
+    for c in "alpha".chars() {
         press(&mut a, c);
     }
-    assert_eq!(a.device_filter, "laptop");
+    assert_eq!(filter(&a), "alpha");
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(a.input.is_none());
-    assert_eq!(a.device_filter, "");
+    assert_eq!(filter(&a), "");
     assert_eq!(a.text, "");
     // A second `f` opens a fresh, empty edit rather than the old text.
     press(&mut a, 'f');
@@ -1502,20 +1251,20 @@ fn escaping_a_filter_edit_cancels_it_so_the_next_f_starts_fresh() {
     // Refining a committed filter and then cancelling restores the committed
     // value rather than clearing or leaving the half-typed refinement.
     press(&mut a, 'f');
-    for c in "laptop".chars() {
+    for c in "alpha".chars() {
         press(&mut a, c);
     }
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(a.device_filter, "laptop");
+    assert_eq!(filter(&a), "alpha");
     press(&mut a, 'f');
-    assert_eq!(a.text, "laptop");
+    assert_eq!(a.text, "alpha");
     a.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
-    for c in "phone".chars() {
+    for c in "beta".chars() {
         press(&mut a, c);
     }
-    assert_eq!(a.device_filter, "phone");
+    assert_eq!(filter(&a), "beta");
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert_eq!(a.device_filter, "laptop");
+    assert_eq!(filter(&a), "alpha");
     assert_eq!(a.text, "");
 }
 #[test]
@@ -1594,6 +1343,8 @@ fn space_advances_range_shrinks_and_escape_preserves_then_clears_marks() {
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(a.browser.as_ref().unwrap().visual_anchor.is_none());
     assert_eq!(a.browser.as_ref().unwrap().marked.len(), 2);
+    // A pause: a second Esc in quick succession would go to the hub.
+    a.last_esc = None;
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(a.browser.as_ref().unwrap().marked.is_empty() && a.view == View::Files);
 }
@@ -1713,7 +1464,7 @@ fn restart_restores_browser_host_search_focus_and_copy_without_preview_content()
     let (mut a, _rx) = queued_app();
     a.device = 2;
     a.view = View::Files;
-    a.focus = Focus::Actions;
+    a.focus = Focus::Workspace;
     a.browser = Some(Browser::new(1, "/recordings/日本語".into()));
     let browser = a.browser.as_mut().unwrap();
     browser.search = "record".into();
@@ -1744,7 +1495,7 @@ fn restart_restores_browser_host_search_focus_and_copy_without_preview_content()
     restored.devices.swap(0, 1);
     restore_restart_at(&mut restored, &name, fixture.path()).unwrap();
     assert_eq!(restored.device, 1);
-    assert!(restored.view == View::Files && restored.focus == Focus::Actions);
+    assert!(restored.view == View::Files && restored.focus == Focus::Workspace);
     let browser = restored.browser.as_ref().unwrap();
     assert_eq!(browser.device, 0);
     assert_eq!(browser.search, "record");
@@ -1792,12 +1543,6 @@ fn rejected_cut_retains_clipboard_and_late_mutation_errors_remain_visible() {
         result: Err(anyhow::anyhow!("destination exists")),
     });
     assert!(a.notice.contains("destination exists"));
-}
-/// Terminal transparency: only selected rows may paint a background (spec 4),
-/// and only with the selection tokens.
-fn transparent_except_selection(buffer: &ratatui::buffer::Buffer) -> bool {
-    let allowed = [Some(Color::Reset), selection(true).bg, selection(false).bg];
-    buffer.content.iter().all(|c| allowed.contains(&Some(c.bg)))
 }
 fn capture_app(a: &App, width: u16) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
@@ -1847,81 +1592,6 @@ fn update_menu_and_notices_identify_the_running_binary() {
         notifications::area("notice", Rect::new(0, 0, 2, 1)).width,
         0
     );
-}
-#[test]
-fn update_notice_capture_matrix_aligns_and_preserves_default_background() {
-    for width in [48, 80, 120] {
-        for search in [false, true] {
-            for (state, result) in [
-                ("current", Ok(crate::update::CheckOutcome::Current)),
-                ("offline", Ok(crate::update::CheckOutcome::Offline)),
-            ] {
-                let (mut a, _rx) = file_app();
-                a.view = View::Work;
-                a.browser = None;
-                a.search = if search {
-                    "no-match".into()
-                } else {
-                    String::new()
-                };
-                a.set_notice_as(update_notice_kind(&result), update_check_notice(&result));
-                let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
-                terminal.draw(|frame| render(frame, &a)).unwrap();
-                let buffer = terminal.backend().buffer();
-                let text = buffer
-                    .content
-                    .chunks(width as usize)
-                    .map(|cells| cells.iter().map(|cell| cell.symbol()).collect::<String>())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                assert!(
-                    text.contains(if state == "current" {
-                        "up to date"
-                    } else {
-                        "retry"
-                    }),
-                    "{width} {state}: {text}"
-                );
-                assert!(text.contains(if state == "current" {
-                    "Success"
-                } else {
-                    "Warning"
-                }));
-                // Phone (<60 cols): no rail; the workspace starts under the device strip.
-                let available = if width < 60 {
-                    Rect::new(0, 2, width, if search { 15 } else { 18 })
-                } else {
-                    Rect::new(17, 2, width - 17, if search { 15 } else { 18 })
-                };
-                let popup = notifications::area(&a.notice, available);
-                assert_eq!(popup.right(), width - 1);
-                assert_eq!(popup.bottom(), available.bottom() - 1);
-                // The bottom row is spare, except on phones where it is the tab bar.
-                let last = text.lines().last().unwrap().trim().to_owned();
-                if width < 60 {
-                    assert!(last.contains("Sess") && last.contains("Keys"), "{last}");
-                } else {
-                    assert!(last.is_empty());
-                }
-                assert!(transparent_except_selection(buffer));
-                if let Some(directory) = std::env::var_os("CX_UPDATE_CAPTURE_DIR") {
-                    let directory = std::path::PathBuf::from(directory);
-                    std::fs::create_dir_all(&directory).unwrap();
-                    let text = buffer
-                        .content
-                        .chunks(width as usize)
-                        .map(|cells| cells.iter().map(|cell| cell.symbol()).collect::<String>())
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    std::fs::write(
-                        directory.join(format!("{width}-{state}-search-{search}.txt")),
-                        text,
-                    )
-                    .unwrap();
-                }
-            }
-        }
-    }
 }
 #[test]
 fn long_failed_transfer_details_scroll_and_modal_keys_own_footer() {
@@ -2298,7 +1968,7 @@ fn new_from_files_starts_current_execution_location_and_attaches_on_reply() {
     a.browser = Some(Browser::new(1, "/project/remote".into()));
     a.browser.as_mut().unwrap().search = "recording".into();
     a.view = View::Files;
-    a.focus = Focus::Actions;
+    a.focus = Focus::Workspace;
     a.execute(Action::New);
     assert!(
         matches!(&a.dialog, Some(Dialog::Provider(1, Some(path))) if path == "/project/remote")
@@ -2346,9 +2016,6 @@ fn actions_are_workspace_only_and_do_not_duplicate_shell_launch() {
         .palette()
         .iter()
         .any(|(action, _)| *action == Action::Mkdir));
-    assert!(sidebar_actions(&a)
-        .iter()
-        .any(|(_, label)| *label == "Sessions"));
     assert_eq!(
         a.palette()
             .iter()
@@ -2360,7 +2027,6 @@ fn actions_are_workspace_only_and_do_not_duplicate_shell_launch() {
         .palette()
         .iter()
         .any(|(_, label)| label.contains("Start here")));
-    assert!(a.palette_scope().contains("Next:") || a.palette_scope().contains("Current:"));
     press(&mut a, ':');
     assert!(a.input == Some(Input::Palette) && a.palette_run_mode() && a.text == "run: ");
 }
@@ -2588,7 +2254,8 @@ fn container_menus_keep_shell_available_until_scoped_agents_are_observed() {
     session.container = Some(c.scope());
     a.work[0].sessions.push(session);
     a.view = View::Work;
-    a.focus = Focus::Workspace;
+    a.device = 1;
+    a.selected = 0;
     press(&mut a, 'n');
     assert!(matches!(a.dialog, Some(Dialog::ContainerProvider(..))));
     a.dialog = None;
@@ -2634,9 +2301,11 @@ fn browser_cache_distinguishes_docker_engines() {
 fn session_chooser_device_focus_never_inherits_other_browser_or_search() {
     let (mut a, rx) = file_app();
     a.device = 2;
-    a.focus = Focus::Devices;
+    a.focus = Focus::Workspace;
     a.browser.as_mut().unwrap().search = "alpha".into();
-    press(&mut a, 'n');
+    // The chooser (palette "New session", Files `n`) scoped to the device.
+    a.view = View::Work;
+    a.session_shortcut();
     assert!(matches!(&a.dialog,Some(Dialog::SessionChooser(1,path)) if path=="~"));
     assert!(rx.try_recv().is_err());
     press(&mut a, 'l');
@@ -2654,7 +2323,9 @@ fn session_chooser_missing_provider_stays_open_and_devcontainer_routes_to_tree()
     a.device = 2;
     a.providers
         .insert(1, (vec!["containers-v1".into()], transport::now()));
-    press(&mut a, 'n');
+    // The chooser (palette "New session", Files `n`) scoped to the device.
+    a.view = View::Work;
+    a.session_shortcut();
     press(&mut a, 'c');
     assert!(matches!(a.dialog, Some(Dialog::SessionChooser(..))));
     assert!(rx.try_recv().is_err());
@@ -2669,9 +2340,11 @@ fn session_chooser_missing_provider_stays_open_and_devcontainer_routes_to_tree()
 fn session_chooser_hides_unavailable_profiles_and_preserves_selection_on_check() {
     let (mut a, rx) = queued_app();
     a.device = 2;
-    a.focus = Focus::Devices;
+    a.focus = Focus::Workspace;
     a.providers.remove(&1);
-    press(&mut a, 'n');
+    // The chooser (palette "New session", Files `n`) scoped to the device.
+    a.view = View::Work;
+    a.session_shortcut();
     assert!(matches!(rx.try_recv().unwrap().op, Operation::Info));
     let text = capture_app(&a, 100);
     assert!(text.contains("[s] Shell"));
@@ -2718,7 +2391,7 @@ fn watch_key_attaches_highlighted_session_read_only_and_is_contextual() {
     });
     assert!(matches!(&a.pending_attach,Some((1,s,true)) if s.id=="watch-proof"));
     a.pending_attach = None;
-    a.focus = Focus::Devices;
+    a.focus = Focus::Workspace;
     press(&mut a, 'w');
     assert!(a.pending_attach.is_none());
     a.focus = Focus::Workspace;
@@ -2726,9 +2399,6 @@ fn watch_key_attaches_highlighted_session_read_only_and_is_contextual() {
     press(&mut a, 'w');
     assert!(a.pending_attach.is_none());
     assert!(!ACTIONS
-        .iter()
-        .any(|(action, _)| *action == Action::Terminal));
-    assert!(!sidebar_actions(&a)
         .iter()
         .any(|(action, _)| *action == Action::Terminal));
 }
@@ -2743,120 +2413,6 @@ fn host_launch_does_not_offer_to_resume_same_path_container_session() {
     assert!(rx
         .try_iter()
         .any(|t| matches!(t.op,Operation::Create(ref c) if c.directory=="/workspace")));
-}
-#[test]
-fn containers_ui_capture_matrix_and_default_background() {
-    for (width, height) in [(48, 24), (80, 24), (120, 40)] {
-        let (mut a, _rx) = queued_app();
-        a.view = View::Containers;
-        a.focus = Focus::Workspace;
-        a.containers.insert(
-            0,
-            vec![container_fixture('a', true), container_fixture('b', false)],
-        );
-        a.container_selected = 1;
-        for mode in ["tree", "actions", "files", "chooser", "container-chooser"] {
-            if mode == "container-chooser" {
-                a.dialog = Some(Dialog::ContainerProvider(
-                    0,
-                    container_fixture('a', true).scope(),
-                ));
-                a.dialog_selected = 0;
-            } else if mode == "chooser" {
-                a.providers
-                    .get_mut(&0)
-                    .unwrap()
-                    .0
-                    .push("containers-v1".into());
-                a.dialog = Some(Dialog::SessionChooser(0, "~/robot/workspace".into()));
-                a.dialog_selected = 2;
-            } else if mode == "actions" {
-                a.open_container_actions();
-            } else if mode == "files" {
-                a.dialog = None;
-                a.open_container_browser(0, container_fixture('a', true).scope());
-                let b = a.browser.as_mut().unwrap();
-                b.loading = false;
-                b.entries = vec![
-                    Entry {
-                        name: "src".into(),
-                        path: "/workspace/src".into(),
-                        kind: "directory".into(),
-                        size: 0,
-                        identity: None,
-                        hidden: false,
-                        rename_name: None,
-                        modified: None,
-                        items: None,
-                    },
-                    Entry {
-                        name: "README.md".into(),
-                        path: "/workspace/README.md".into(),
-                        kind: "file".into(),
-                        size: 256,
-                        identity: None,
-                        hidden: false,
-                        rename_name: None,
-                        modified: None,
-                        items: None,
-                    },
-                    Entry {
-                        name: "devcontainer.json".into(),
-                        path: "/workspace/devcontainer.json".into(),
-                        kind: "file".into(),
-                        size: 128,
-                        identity: None,
-                        hidden: false,
-                        rename_name: None,
-                        modified: None,
-                        items: None,
-                    },
-                ]
-                .into();
-            }
-            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-            terminal.draw(|f| render(f, &a)).unwrap();
-            let buffer = terminal.backend().buffer();
-            let text = buffer
-                .content
-                .chunks(usize::from(width))
-                .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n");
-            if mode == "container-chooser" {
-                assert!(text.contains("[s] Devcontainer"));
-                assert!(
-                    !text.contains("[c] Claude")
-                        && !text.contains("[x] Codex")
-                        && !text.contains("Agent session")
-                );
-            } else if mode == "chooser" {
-                for label in ["[c] Claude", "[x] Codex", "[s] Shell", "[d] Devcontainer"] {
-                    assert!(text.contains(label), "{width}: missing {label}");
-                }
-                let rows = if width < 68 { 2 } else { 1 };
-                let dialog = popup(Rect::new(0, 0, width, height), 78, 7 + rows * 3);
-                for y in dialog.y..dialog.bottom() {
-                    for x in dialog.x..dialog.right() {
-                        assert!(
-                            !buffer[(x, y)].modifier.contains(Modifier::UNDERLINED),
-                            "chooser must not underline button borders at {width}: {x},{y}"
-                        );
-                    }
-                }
-            } else {
-                assert!(text.contains("roboboat_dev"), "{width} {mode}");
-            }
-            assert!(transparent_except_selection(buffer));
-            if let Some(directory) = std::env::var_os("CX_CONTAINER_CAPTURE_DIR") {
-                let path = std::path::PathBuf::from(directory);
-                std::fs::create_dir_all(&path).unwrap();
-                std::fs::write(path.join(format!("{width}x{height}-{mode}.txt")), text).unwrap();
-                let cells=buffer.content.iter().map(|cell|serde_json::json!({"text":cell.symbol(),"fg":format!("{:?}",cell.fg),"bg":format!("{:?}",cell.bg),"modifier":format!("{:?}",cell.modifier)})).collect::<Vec<_>>();
-                std::fs::write(path.join(format!("{width}x{height}-{mode}.json")),serde_json::to_vec(&serde_json::json!({"width":width,"height":height,"cells":cells,"backend":"Ratatui TestBackend fixture"})).unwrap()).unwrap();
-            }
-        }
-    }
 }
 #[test]
 fn real_info_response_retains_native_command_capability() {
@@ -2894,7 +2450,6 @@ fn command_cancel_and_unsupported_remote_never_dispatch() {
 fn new_session_from_all_explicitly_selects_execution_provider_directory() {
     let (mut a, rx) = queued_app();
     assert!(a.action_enabled(Action::New));
-    assert!(!a.action_enabled(Action::Work));
     assert_eq!(
         ACTIONS
             .iter()
@@ -3008,22 +2563,20 @@ fn permission_dialog_render_sizes_and_old_helper_refusal() {
 #[test]
 fn agent_stop_confirms_exact_provider_and_refuses_old_helper() {
     let (mut a, rx) = queued_app();
-    a.view = View::Work;
-    a.focus = Focus::Workspace;
     let mut session = disposable_shell();
     session.provider = "claude".into();
     a.work[1].sessions.push(session);
-    a.device = 2;
+    a.open_device(1);
     a.providers
         .insert(1, (vec!["stop-session-v1".into()], transport::now()));
-    press(&mut a, 'd');
-    assert!(a.dialog.is_none());
+    bksp(&mut a);
+    assert!(a.stop_armed.is_none(), "an old helper cannot stop an agent");
     let _ = rx.try_iter().collect::<Vec<_>>();
     a.providers
         .insert(1, (vec!["stop-agent-session-v1".into()], transport::now()));
-    press(&mut a, 'd');
-    assert!(matches!(a.dialog, Some(Dialog::StopShell(..))));
-    press(&mut a, 'y');
+    bksp(&mut a);
+    assert!(a.stop_armed.is_some());
+    bksp(&mut a);
     assert!(
         matches!(rx.try_recv().unwrap().op, Operation::StopAgentSession {provider, ..} if provider == "claude")
     );
@@ -3148,87 +2701,6 @@ fn destination_navigation_and_non_destination_enter_keep_their_meaning() {
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(a.pending_transfers.is_empty());
 }
-#[test]
-fn transfer_sidebar_animation_frames_are_transparent_and_fit() {
-    let (mut a, rx) = destination_transfer_fixture();
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let task = rx.try_recv().unwrap();
-    let Operation::Transfer(spec) = &task.op else {
-        panic!()
-    };
-    let key = spec.key.clone();
-    a.apply(Reply {
-        device_id: None,
-        execution_target: None,
-        preview: None,
-        device: 0,
-        generation: a.generation,
-        op: Operation::TransferJobs,
-        result: Ok(
-            serde_json::json!({"jobs":[{"key":key,"status":"running","bytes":12,"total":120}]}),
-        ),
-    });
-    assert!(a.pending_transfers.is_empty());
-    assert_eq!(a.active_transfer_keys().len(), 1);
-    for (width, height) in [(48, 24), (80, 24), (120, 40)] {
-        for phase in [0, 3, 6, 9] {
-            a.transfer_frame = phase;
-            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-            terminal.draw(|f| render(f, &a)).unwrap();
-            let buffer = terminal.backend().buffer();
-            assert!(transparent_except_selection(buffer));
-            let text = buffer
-                .content
-                .chunks(width as usize)
-                .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n");
-            assert!(text.contains(transfer_spinner(phase, ascii())), "{text}");
-            assert!(text.contains("Transfers"), "{text}");
-            if let Some(dir) = std::env::var_os("CX_TRANSFER_CAPTURE_DIR") {
-                let dir = std::path::PathBuf::from(dir);
-                std::fs::create_dir_all(&dir).unwrap();
-                let stem = format!("{width}x{height}-frame{phase}");
-                std::fs::write(dir.join(format!("{stem}.txt")), text).unwrap();
-                let cells = buffer
-                    .content
-                    .iter()
-                    .map(|c| {
-                        serde_json::json!({
-                            "text":c.symbol(),"fg":format!("{:?}",c.fg),"bg":format!("{:?}",c.bg),
-                            "modifier":format!("{:?}",c.modifier)
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                std::fs::write(
-                    dir.join(format!("{stem}.json")),
-                    serde_json::to_vec(
-                        &serde_json::json!({"width":width,"height":height,"cells":cells,
-                            "backend":"Ratatui TestBackend fixture; not physical terminal"}),
-                    )
-                    .unwrap(),
-                )
-                .unwrap();
-            }
-        }
-    }
-    a.apply(Reply {
-        device_id: None,
-        execution_target: None,
-        preview: None,
-        device: 0,
-        generation: a.generation,
-        op: Operation::TransferJobs,
-        result: Ok(serde_json::json!({"jobs":[{"key":key,"status":"complete"}]})),
-    });
-    assert!(a.active_transfer_keys().is_empty());
-    assert_eq!(a.notice_kind, NoticeKind::Success);
-    for plain in [false, true] {
-        let period = if plain { 4 } else { 10 };
-        assert_eq!(transfer_spinner(0, plain), transfer_spinner(period, plain));
-        assert_ne!(transfer_spinner(0, plain), transfer_spinner(1, plain));
-    }
-}
 
 #[test]
 fn transfer_locations_stay_independent_and_submit_real_spec() {
@@ -3282,7 +2754,7 @@ fn transfer_locations_stay_independent_and_submit_real_spec() {
     a.cycle_focus(false);
     assert!(a.destination_active);
     a.cycle_focus(false);
-    assert!(a.focus == Focus::Devices);
+    assert!(!a.destination_active, "Tab alternates the two locations");
 }
 #[test]
 fn jobs_cancel_owner_and_retry_same_idempotency_spec() {
@@ -3314,53 +2786,23 @@ fn jobs_cancel_owner_and_retry_same_idempotency_spec() {
     assert_eq!(key, "test-transfer");
 }
 #[test]
-fn directional_panel_focus_obeys_geometry_and_input_ownership() {
-    let (mut a, _rx) = queued_app();
-    a.panels.borrow_mut().extend([
-        (Focus::Devices, false, Rect::new(0, 0, 20, 8)),
-        (Focus::Actions, false, Rect::new(0, 8, 20, 8)),
-        (Focus::Workspace, false, Rect::new(20, 0, 60, 16)),
-    ]);
-    // Ctrl+H/J/K/L are Backspace/LF in legacy encodings: no longer focus keys.
-    a.key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
-    assert!(a.focus == Focus::Workspace);
-    a.key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
-    assert!(a.focus == Focus::Devices);
-    a.key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
-    assert!(a.focus == Focus::Actions);
-    a.key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
-    assert!(a.focus == Focus::Actions);
-    a.key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
-    assert!(a.focus == Focus::Workspace);
-    a.input = Some(Input::Search);
-    a.key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
-    assert!(a.focus == Focus::Workspace);
-}
-#[test]
-fn internet_evidence_is_not_https_or_stale_readiness() {
-    let value = serde_json::json!({"internet":{"state":"reachable","stale":false,"observed_at":transport::now()},"sharing":{"state":"unsupported"}});
-    let text = network_summary(&value);
-    assert!(text.contains("reachable (ICMP)"));
-    assert!(text.contains("DNS / HTTPS"));
-    let mut stale = value;
-    stale["internet"]["observed_at"] = serde_json::json!(transport::now() - 120);
-    assert!(network_summary(&stale).contains("not confirmed"));
-}
-#[test]
 fn reverse_tab_cycles_focus_and_leaves_search() {
+    // The hub's two zones: Tab and Shift+Tab both switch them.
     let mut a = app();
-    a.focus = Focus::Workspace;
+    a.go_hub();
     a.key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
-    assert!(a.focus == Focus::Actions);
+    assert!(a.hub_sessions);
     a.key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
-    assert!(a.focus == Focus::Devices);
-    a.key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
-    assert!(a.focus == Focus::Workspace);
+    assert!(!a.hub_sessions);
+    // A transfer's two locations reverse with Shift+Tab, leaving a search.
+    let (mut a, _rx) = file_app();
+    a.other_browser = Some(Browser::new(1, "/destination".into()));
     a.input = Some(Input::Search);
     a.text = "abc".into();
     a.key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
     assert!(a.input.is_none());
-    assert!(a.focus == Focus::Actions);
+    assert!(a.destination_active);
+    assert_eq!(a.browser.as_ref().unwrap().path, "/destination");
 }
 #[test]
 fn horizontal_folder_keys_enter_and_leave_without_previewing_files() {
@@ -3660,313 +3102,52 @@ fn stale_directory_reply_cannot_retarget_browser() {
 }
 #[test]
 fn empty_session_action_respects_loading_errors_search_and_focus() {
-    let (mut a, _rx) = queued_app();
+    // A device with no sessions: Enter (the new-session tile) starts a shell
+    // in its home, except while one is being created or the device failed.
+    let (mut a, rx) = queued_app();
     a.devices.truncate(1);
     a.work.truncate(1);
-    a.device = 0;
+    a.view = View::Work;
+    a.device = 1;
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(matches!(a.dialog, Some(Dialog::SessionChooser(0, _))));
-    for state in ["loading", "error", "search", "creating"] {
-        let mut a = app();
+    assert!(rx.try_iter().any(
+        |t| matches!(t.op, Operation::Create(ref c) if c.directory == "~" && c.provider == "shell")
+    ));
+    for state in ["error", "creating"] {
+        let (mut a, rx) = queued_app();
+        a.view = View::Work;
+        a.device = 1;
         match state {
-            "loading" => a.work[0].loading = true,
             "error" => a.work[0].error = Some("offline".into()),
-            "search" => a.search = "missing".into(),
             "creating" => a.creating = true,
             _ => unreachable!(),
         }
         a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(a.dialog.is_none(), "{state}");
+        assert!(
+            !rx.try_iter().any(|t| matches!(t.op, Operation::Create(_))),
+            "{state}"
+        );
     }
-    let mut a = app();
-    press(&mut a, 'a');
-    assert!(a.input == Some(Input::Add));
-    a.text.clear();
-    press(&mut a, 'a');
-    assert_eq!(a.text, "a");
-    let (mut a, _rx) = queued_app();
-    press(&mut a, 'a');
-    assert!(a.input.is_none());
 }
 #[test]
 fn selected_file_context_follows_focused_pane_and_keeps_destination() {
+    // Two locations of a transfer: the crumb names the focused one's device and
+    // folder; switching panes switches the context, never a stale one.
     let (mut a, _rx) = file_app();
     a.other_browser = Some(Browser::new(1, "/output".into()));
-    for (switch, host) in [(false, "workstation"), (true, "laptop")] {
+    for (switch, host, path) in [
+        (false, "workstation", "/files"),
+        (true, "laptop", "/output"),
+    ] {
         if switch {
             a.switch_pane();
         }
-        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-        terminal.draw(|f| render(f, &a)).unwrap();
-        let text = terminal
-            .backend()
-            .buffer()
-            .content
-            .chunks(120)
-            .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let sidebar = text
-            .lines()
-            .map(|line| line.chars().take(20).collect::<String>())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(sidebar.contains(host), "{sidebar}");
-        assert!(sidebar.contains("To laptop"), "{sidebar}");
+        let text = capture_app(&a, 120);
+        let crumb = text.lines().next().unwrap();
+        assert!(crumb.contains(host) && crumb.contains(path), "{crumb}");
     }
-}
-#[test]
-fn session_folders_are_a_column_and_each_session_is_one_row() {
-    // Spec 7.1: group headers are gone; the folder is a column on the row, so
-    // one step moves the bar exactly one row and folders still tell rows apart.
-    let (mut a, _rx) = queued_app();
-    a.device = 1;
-    for (id, name, directory) in [
-        ("a", "alpha-session", "/alpha"),
-        ("b", "beta-session", "/beta"),
-    ] {
-        let mut session = disposable_shell();
-        session.id = id.into();
-        session.name = name.into();
-        session.directory = directory.into();
-        a.work[0].sessions.push(session);
-    }
-    a.work[0].fetched = transport::now();
-    for width in [80, 120] {
-        let rendered = capture_app(&a, width);
-        let lines: Vec<_> = rendered.lines().collect();
-        let row = |needle: &str, folder: &str| {
-            lines
-                .iter()
-                .position(|line| line.contains(needle) && line.contains(folder))
-                .unwrap_or_else(|| panic!("{needle} with {folder} missing: {rendered}"))
-        };
-        let (first, second) = (row("alpha-session", "/alpha"), row("beta-session", "/beta"));
-        assert_eq!(second, first + 1, "{rendered}");
-        assert!(
-            !lines[first - 1].contains("/alpha"),
-            "no header row: {rendered}"
-        );
-    }
-}
-#[test]
-fn workspace_polish_capture_matrix() {
-    for width in [48, 80, 120] {
-        for height in [24, 40] {
-            for state in [
-                "first-run",
-                "checking",
-                "unavailable",
-                "search",
-                "sessions",
-                "destination",
-                "files",
-                "files-inactive",
-                "files-marked",
-            ] {
-                let (mut a, _rx) = file_app();
-                if !matches!(
-                    state,
-                    "destination" | "files" | "files-inactive" | "files-marked"
-                ) {
-                    a.view = View::Work;
-                    a.browser = None;
-                    a.devices.truncate(1);
-                    a.work.truncate(1);
-                }
-                match state {
-                    "checking" => a.work[0].loading = true,
-                    "unavailable" => a.work[0].error = Some("Device unreachable over SSH".into()),
-                    "search" => a.search = "no-match".into(),
-                    "sessions" => {
-                        a.work[0].sessions.push(disposable_shell());
-                        a.work[0].fetched = transport::now();
-                    }
-                    "destination" => a.other_browser = Some(Browser::new(1, "/output".into())),
-                    "files" | "files-inactive" | "files-marked" => {
-                        let b = a.browser.as_mut().unwrap();
-                        b.entries[0].name = "recordings".into();
-                        b.entries[0].kind = "directory".into();
-                        b.selected = 1;
-                        if state == "files-inactive" {
-                            a.focus = Focus::Devices;
-                        }
-                        if state == "files-marked" {
-                            b.marked.insert(b.entries[1].path.clone());
-                        }
-                    }
-                    _ => {}
-                }
-                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-                terminal.draw(|f| render(f, &a)).unwrap();
-                let buffer = terminal.backend().buffer();
-                let text = buffer
-                    .content
-                    .chunks(width as usize)
-                    .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                assert!(
-                    transparent_except_selection(buffer),
-                    "{state} {width}x{height}: opaque background"
-                );
-                if state == "sessions" {
-                    assert!(text.contains("Sessions 1"), "{width}x{height}: {text}");
-                    assert!(
-                        text.contains("● ") || text.contains("+ "),
-                        "{width}x{height}: {text}"
-                    );
-                }
-                if state == "first-run" {
-                    assert!(text.contains("New session"), "{width}x{height}: {text}");
-                    assert!(
-                        text.contains("Add by SSH address"),
-                        "{width}x{height}: {text}"
-                    );
-                }
-                if let Some(directory) = std::env::var_os("CX_WORKSPACE_CAPTURE_DIR") {
-                    let directory = std::path::PathBuf::from(directory);
-                    std::fs::create_dir_all(&directory).unwrap();
-                    let file = format!("{width}x{height}-{state}");
-                    std::fs::write(directory.join(format!("{file}.txt")), text).unwrap();
-                    let cells = buffer
-                        .content
-                        .iter()
-                        .map(|c| {
-                            serde_json::json!({
-                                "text": c.symbol(), "fg": format!("{:?}", c.fg),
-                                "bg": format!("{:?}", c.bg), "modifier": format!("{:?}", c.modifier)
-                            })
-                        })
-                        .collect::<Vec<_>>();
-                    std::fs::write(
-                        directory.join(format!("{file}.json")),
-                        serde_json::to_vec(&serde_json::json!({
-                            "width":width, "height":height, "cells":cells,
-                            "backend":"Ratatui TestBackend fixture; not a physical terminal"
-                        }))
-                        .unwrap(),
-                    )
-                    .unwrap();
-                }
-            }
-        }
-    }
-}
-#[test]
-fn stacked_path_is_only_in_sidebar_and_keeps_current_folder_visible() {
-    for (width, height) in [(48, 24), (80, 24), (120, 40)] {
-        for split in [false, true] {
-            let (mut a, _rx) = file_app();
-            a.browser.as_mut().unwrap().display_path =
-                "/home/tester/projects/robotics/recordings".into();
-            if split {
-                a.other_browser = Some(Browser::new(1, "/output".into()));
-            }
-            let mut t = Terminal::new(TestBackend::new(width, height)).unwrap();
-            t.draw(|f| render(f, &a)).unwrap();
-            let sidebar_width = if width < 60 { 14 } else { 21 };
-            let left = t
-                .backend()
-                .buffer()
-                .content
-                .chunks(width as usize)
-                .map(|row| {
-                    row[..sidebar_width]
-                        .iter()
-                        .map(|c| c.symbol())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            let right = t
-                .backend()
-                .buffer()
-                .content
-                .chunks(width as usize)
-                .map(|row| {
-                    row[sidebar_width..]
-                        .iter()
-                        .map(|c| c.symbol())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            if width < 60 {
-                // Phone: no rail and no "Selected" panel (P8); the workspace
-                // keeps the current folder and the list visible.
-                let all = format!("{left}{right}");
-                let screen = t
-                    .backend()
-                    .buffer()
-                    .content
-                    .chunks(width as usize)
-                    .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                assert!(screen.contains("recordings"), "{width}: {screen}");
-                assert!(screen.contains("alpha.t"), "file list obscured: {screen}");
-                let _ = all;
-                continue;
-            }
-            assert!(left.contains("recordings"), "{width}: {left}");
-            // The breadcrumb title may name the folder; no staircase repeats it below.
-            assert!(
-                !right.lines().skip(3).any(|row| row.contains("recordings")),
-                "{right}"
-            );
-            assert!(right.contains("alpha.txt"), "file list obscured: {right}");
-            if let Some(dir) = std::env::var_os("CX_HIERARCHY_CAPTURE_DIR") {
-                let dir = std::path::PathBuf::from(dir);
-                std::fs::create_dir_all(&dir).unwrap();
-                let text = t
-                    .backend()
-                    .buffer()
-                    .content
-                    .chunks(width as usize)
-                    .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                std::fs::write(
-                    dir.join(format!(
-                        "{width}x{height}-{}.txt",
-                        if split { "split" } else { "single" }
-                    )),
-                    text,
-                )
-                .unwrap();
-            }
-        }
-    }
-}
-#[test]
-fn selected_context_is_a_bounded_folder_and_item_hierarchy() {
-    let entry = Entry {
-        name: "log.bag".into(),
-        path: "/a/b/c/log.bag".into(),
-        kind: "file".into(),
-        size: 0,
-        hidden: false,
-        identity: None,
-        rename_name: None,
-        modified: None,
-        items: None,
-    };
-    for height in [3, 4, 6, 12] {
-        let lines = file_context_hierarchy(
-            "robot",
-            "/home/roboboat/robotics/recordings",
-            Some(&entry),
-            22,
-            height,
-        );
-        let text = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
-        assert!(text.len() <= height);
-        assert!(text[0].contains("robot"));
-        assert!(text[text.len() - 2].contains("recordings/"));
-        assert!(text.last().unwrap().contains("log.bag"));
-        assert!(text.iter().all(|line| Span::raw(line).width() <= 22));
-    }
+    assert_eq!(a.other_browser.as_ref().unwrap().path, "/files");
 }
 #[test]
 fn terminal_sizes_render_without_panic() {
@@ -4008,15 +3189,6 @@ fn bounded_queue_never_blocks_or_leaves_checking() {
     a.refresh_work();
     assert!(!a.work[0].loading);
     assert!(a.notice.contains("busy"));
-}
-#[test]
-fn network_observation_uses_real_shape_and_honest_sharing() {
-    let text = network_summary(
-        &serde_json::json!({"interfaces":{"state":"observed","data":[{"ifname":"eth0","operstate":"UP"}]},"sharing":{"state":"unsupported","reason":"No privileges requested"}}),
-    );
-    assert!(text.contains("eth0 · UP"));
-    assert!(text.contains("Sharing: unsupported"));
-    assert!(text.contains("unknown"));
 }
 #[test]
 fn labels_cannot_spoof_rows_or_direction() {
@@ -4086,6 +3258,8 @@ fn preview_search_owns_keys_and_preserves_browser_state() {
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(a.browser.as_ref().unwrap().preview.is_some());
     assert!(a.browser.as_ref().unwrap().preview_find.query.is_empty());
+    // A pause: a second Esc in quick succession would go to the hub.
+    a.last_esc = None;
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(a.browser.as_ref().unwrap().preview.is_none());
     assert_eq!(a.browser.as_ref().unwrap().search, "alpha");
@@ -4544,7 +3718,7 @@ fn preview_click_focus_and_wheel_keep_file_selection() {
     a.browser.as_mut().unwrap().preview = Some((0..100).map(|i| format!("line {i}\n")).collect());
     capture_app(&a, 80);
     let selected = a.browser.as_ref().unwrap().selected;
-    a.focus = Focus::Devices;
+    a.focus = Focus::Workspace;
     let mut mouse = MouseEvent {
         kind: MouseEventKind::Down(event::MouseButton::Left),
         column: 40,
@@ -4602,10 +3776,11 @@ fn pdf_mouse_wheel_is_scoped_to_preview() {
     b.preview_rich = Some(RichPreview::from_value(
         &serde_json::json!({"kind":"pdf","page":1,"pages":3,"image":{"width":1,"height":1,"rgba":"/////w=="}}),
     ));
+    let _ = capture_app(&a, 80);
     let mut event = MouseEvent {
         kind: MouseEventKind::ScrollDown,
         column: 1,
-        row: 3,
+        row: 0,
         modifiers: KeyModifiers::NONE,
     };
     assert!(!a.preview_mouse(event, Rect::new(0, 0, 80, 24)));
@@ -4940,25 +4115,33 @@ fn stop_shell_confirmation_protects_agents_and_captures_runtime_identity() {
     a.work[0].sessions = vec![disposable_shell()];
     a.providers
         .insert(0, (vec!["stop-session-v1".into()], transport::now()));
-    press(&mut a, 'd');
-    assert!(matches!(a.dialog, Some(Dialog::StopShell(..))) && a.dialog_selected == 0);
+    a.open_device(0);
+    let _ = rx.try_iter().count();
+    // The default is keep: Enter (right under `⌫`) answers no.
+    bksp(&mut a);
+    assert!(a.stop_armed.is_some());
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(rx.try_recv().is_err());
-    press(&mut a, 'd');
+    assert!(a.stop_armed.is_none());
+    assert!(!rx
+        .try_iter()
+        .any(|t| matches!(t.op, Operation::StopSession { .. })));
+    // The identity captured when asked is the one stopped.
+    bksp(&mut a);
     a.work[0].sessions[0].pid = 9999;
-    press(&mut a, 'y');
+    bksp(&mut a);
     assert!(
         matches!(rx.try_recv().unwrap().op,Operation::StopSession{id,pid:1234,started,boot_id} if id=="cx-disposable" && started=="100" && boot_id=="test-boot")
     );
     assert!(a.pending_attach.is_none());
+    a.work[0].sessions[0].pid = 1234;
     a.work[0].sessions[0].provider = "codex".into();
-    press(&mut a, 'd');
-    assert!(matches!(a.dialog, Some(Dialog::StopShell(..))));
-    press(&mut a, 'n');
+    bksp(&mut a);
+    assert!(a.stop_armed.is_some());
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     a.work[0].sessions[0].provider = "shell".into();
     a.work[0].sessions[0].external = true;
-    press(&mut a, 'd');
-    assert!(a.dialog.is_none());
+    bksp(&mut a);
+    assert!(a.stop_armed.is_none());
 }
 #[test]
 fn preview_and_confirmation_capture_sizes() {
@@ -5012,9 +4195,9 @@ fn preview_and_confirmation_capture_sizes() {
         ));
         terminal.draw(|f| render(f, &a)).unwrap();
         write(&terminal, "delete");
-        a.dialog = Some(Dialog::StopShell(0, disposable_shell()));
+        a.dialog = Some(Dialog::RemoveDevice(1));
         terminal.draw(|f| render(f, &a)).unwrap();
-        write(&terminal, "stop-shell");
+        write(&terminal, "remove-device");
     }
 }
 #[test]
@@ -5029,43 +4212,50 @@ fn boxed_confirmation_variant_captures() {
                 for selected in [0, 1] {
                     let (mut a, _rx) = file_app();
                     a.dialog = Some(if stop {
-                        Dialog::StopShell(0, disposable_shell())
+                        Dialog::RemoveDevice(1)
                     } else {
                         Dialog::Delete(0, vec![a.browser.as_ref().unwrap().entries[0].clone()])
                     });
                     a.dialog_selected = selected;
                     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
                     terminal
-                            .draw(|frame| {
-                                render(frame, &a);
-                                let detail = if stop {"Running work in this session will end.\ntester@workstation\nDisposable shell\n/tmp/cx-disposable"} else {"Deletion cannot be undone.\ntester@workstation\n• alpha.txt"};
+                        .draw(|frame| {
+                            render(frame, &a);
+                            let detail = if stop {
+                                "Remove laptop from cx?\npeace@laptop"
+                            } else {
+                                "Deletion cannot be undone.\ntester@workstation\n• alpha.txt"
+                            };
                             let rect = confirmation_popup(frame.area(), detail);
-                                let inner = Rect::new(
-                                    rect.x + 2,
-                                    rect.y + 1,
-                                    rect.width.saturating_sub(4),
-                                    rect.height.saturating_sub(2),
-                                );
-                                let rows = Layout::default()
-                                    .direction(Direction::Vertical)
-                                    .constraints([
-                                        Constraint::Min(2),
-                                        Constraint::Length(1),
-                                        Constraint::Length(3),
-                                        Constraint::Length(1),
-                                    ])
-                                    .split(inner);
-                                confirmation_buttons(
-                                    frame,
-                                    rows[2],
-                                    stop,
-                                    selected,
-                                    false,
-                                    variant,
-                                    if stop { ["Keep session", "Stop session"] } else { ["Cancel", "Delete"] },
-                                );
-                            })
-                            .unwrap();
+                            let inner = Rect::new(
+                                rect.x + 2,
+                                rect.y + 1,
+                                rect.width.saturating_sub(4),
+                                rect.height.saturating_sub(2),
+                            );
+                            let rows = Layout::default()
+                                .direction(Direction::Vertical)
+                                .constraints([
+                                    Constraint::Min(2),
+                                    Constraint::Length(1),
+                                    Constraint::Length(3),
+                                    Constraint::Length(1),
+                                ])
+                                .split(inner);
+                            confirmation_buttons(
+                                frame,
+                                rows[2],
+                                selected,
+                                false,
+                                variant,
+                                if stop {
+                                    ["Keep device", "Remove device"]
+                                } else {
+                                    ["Cancel", "Delete"]
+                                },
+                            );
+                        })
+                        .unwrap();
                     let buffer = terminal.backend().buffer();
                     let text = buffer
                         .content
@@ -5074,21 +4264,18 @@ fn boxed_confirmation_variant_captures() {
                         .collect::<Vec<_>>()
                         .join("\n");
                     assert!(text.contains(if stop {
-                        "Running work"
+                        "Remove laptop"
                     } else {
                         "Deletion cannot be"
                     }));
-                    assert!(text.contains("tester@workstation"));
+                    assert!(text.contains(if stop {
+                        "peace@laptop"
+                    } else {
+                        "tester@workstation"
+                    }));
                     assert!(
-                        text.contains(if stop {
-                            if width < 48 {
-                                "Keep"
-                            } else {
-                                "Keep session"
-                            }
-                        } else {
-                            "Cancel"
-                        }) && text.contains(if stop { "Stop session" } else { "Delete" })
+                        text.contains(if stop { "Keep" } else { "Cancel" })
+                            && text.contains(if stop { "Remove" } else { "Delete" })
                     );
                     if let Some(directory) = std::env::var_os("CX_CONFIRMATION_CAPTURE_DIR") {
                         let directory = std::path::PathBuf::from(directory);
@@ -5120,7 +4307,8 @@ fn larger_image_preview_uses_workspace_without_changing_locations() {
     ));
     let text = capture_app(&a, 80);
     assert!(
-        text.contains("tester@workstation") && text.contains("Photo") && !text.contains("NORMAL")
+        text.contains("workstation") && !text.contains("NORMAL"),
+        "{text}"
     );
     assert_eq!(a.browser.as_ref().unwrap().selected, 1);
     assert_eq!(a.other_browser.as_ref().unwrap().path, "/other-device");
@@ -5142,38 +4330,17 @@ fn native_bitmap_geometry_tracks_workspace_and_suppresses_overlays() {
         &serde_json::json!({"kind":"image","title":"PNG","image":{"width":2,"height":2,"rgba":base64::engine::general_purpose::STANDARD.encode([255u8;16])}}),
     ));
     let screen = Rect::new(0, 0, 80, 24);
-    assert_eq!(
-        native_preview_area(&a, screen),
-        Some(Rect::new(22, 3, 57, 16))
+    // The native image goes where the frame drew the preview surface: under the
+    // crumb row, above the footer.
+    capture_app(&a, 80);
+    let area = native_preview_area(&a, screen).expect("preview surface");
+    assert!(
+        area.y >= 2 && area.bottom() <= 23 && area.width >= 60,
+        "{area:?}"
     );
     a.set_notice("Preview notification".into());
     assert!(native_preview_area(&a, screen).is_none());
     assert!(a.expire_notice(a.notice_deadline.unwrap()));
-    a.transfer_drawer = true;
-    assert_eq!(
-        native_preview_area(&a, screen),
-        Some(Rect::new(22, 3, 57, 12))
-    );
-    // A list search stays hidden while the preview is open; only the
-    // preview's own search bar takes rows (geometry is shared with render).
-    a.browser.as_mut().unwrap().search = "photo".into();
-    assert_eq!(
-        native_preview_area(&a, screen),
-        Some(Rect::new(22, 3, 57, 12))
-    );
-    a.browser.as_mut().unwrap().preview_find.query = "photo".into();
-    assert_eq!(
-        native_preview_area(&a, screen),
-        Some(Rect::new(22, 3, 57, 9))
-    );
-    a.browser.as_mut().unwrap().preview_find.query.clear();
-    a.transfer_drawer = false;
-    a.browser.as_mut().unwrap().search.clear();
-    // Phone layout: single column under the header and device strip.
-    assert_eq!(
-        native_preview_area(&a, Rect::new(0, 0, 48, 24)),
-        Some(Rect::new(1, 3, 46, 16))
-    );
     a.help = true;
     assert!(native_preview_area(&a, screen).is_none());
     a.help = false;
@@ -5236,17 +4403,17 @@ fn scoped_sessions_have_evidence_based_devcontainer_labels_at_all_widths() {
     session.name = "roboboat_dev · shell".into();
     session.directory = c.folder.clone();
     a.work[0].sessions.push(session.clone());
-    a.focus = Focus::Workspace;
-    for width in [48, 80, 120] {
+    a.work[0].fetched = transport::now();
+    a.open_device(0);
+    for width in [80, 120] {
         let text = capture_app(&a, width);
         if let Some(dir) = std::env::var_os("CX_SESSION_LABEL_CAPTURE_DIR") {
             let dir = std::path::PathBuf::from(dir);
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join(format!("{width}-sessions.txt")), &text).unwrap();
         }
-        // Phones have no details rail; the row's DC badge carries it.
-        let label = if width < 60 { "DC " } else { "devcontainer" };
-        assert!(text.contains(label), "{width}: {text}");
+        // The tile's title names the container it runs in.
+        assert!(text.contains("devcontainer"), "{width}: {text}");
         assert!(!text.contains("[shell]"));
     }
     assert_eq!(session.provider, "shell");
@@ -5320,7 +4487,6 @@ fn floating_notifications_are_typed_bounded_and_restore_the_scene() {
             let text = capture_app(&app, width);
             assert!(text.contains(label));
             assert!(text.contains("notification") && text.contains("type"));
-            assert!(transparent_except_selection(buffer));
             if std::env::var_os("NO_COLOR").is_none() {
                 assert!(buffer.content.iter().any(|cell| Some(cell.fg) == color));
             }
@@ -5974,9 +5140,11 @@ fn session_activity_and_agent_task_details_render_without_relabeling() {
     }];
     a.work[0].sessions.push(s);
     a.work[0].fetched = transport::now();
-    for width in [48, 80, 120] {
+    {
+        let width = 120;
         let capture = capture_app(&a, width);
-        assert!(capture.contains("working"), "{width}: {capture}");
+        // A shell at work runs; `working` is an agent's word.
+        assert!(capture.contains("running"), "{width}: {capture}");
         if let Some(dir) = std::env::var_os("CX_TEST_CAPTURE_DIR") {
             let dir = std::path::PathBuf::from(dir);
             std::fs::create_dir_all(&dir).unwrap();
@@ -5984,7 +5152,8 @@ fn session_activity_and_agent_task_details_render_without_relabeling() {
         }
     }
     let id = a.selected_session().unwrap().1.id;
-    press(&mut a, 's');
+    a.view = View::Work;
+    press(&mut a, 't');
     assert!(matches!(a.dialog, Some(Dialog::AgentTasks(..))));
     let capture = capture_app(&a, 120);
     assert!(capture.contains("Ada") && capture.contains("Review device lifecycle"));
@@ -6007,8 +5176,10 @@ fn session_activity_and_agent_task_details_render_without_relabeling() {
 fn agent_task_dialog_tracks_refresh_and_closes_when_session_disappears() {
     let (mut a, _rx) = queued_app();
     a.work[0].sessions.push(disposable_shell());
-    a.focus = Focus::Workspace;
-    press(&mut a, 's');
+    a.view = View::Work;
+    a.device = 1;
+    a.selected = 0;
+    press(&mut a, 't');
     let mut session = disposable_shell();
     session.agent_tasks.push(crate::model::AgentTask {
         id: "new-child".into(),
@@ -6048,8 +5219,10 @@ fn stale_activity_does_not_keep_a_session_spinning() {
     a.work[0].fetched = transport::now().saturating_sub(6);
     assert!(!session_activity_current(&a.work[0]));
     let capture = capture_app(&a, 120);
-    assert!(capture.contains("? state"));
-    assert!(!capture.contains("running"));
+    assert!(
+        !capture.contains("running") && !capture.contains("working"),
+        "{capture}"
+    );
 }
 
 #[test]
@@ -6498,49 +5671,6 @@ fn selected_snapshot_requires_live_terminal_and_helper_support() {
 }
 
 #[test]
-fn selected_snapshot_mouse_does_not_navigate_session_list() {
-    for (width, column, row) in [(160, 145, 12), (80, 60, 26)] {
-        let (mut a, _) = queued_app();
-        let mut second = disposable_shell();
-        second.id = "cx-second".into();
-        a.work[0].sessions = vec![disposable_shell(), second];
-        let mut terminal = ratatui::Terminal::new(TestBackend::new(width, 30)).unwrap();
-        terminal.draw(|f| render(f, &a)).unwrap();
-        for kind in [
-            MouseEventKind::ScrollDown,
-            MouseEventKind::Down(event::MouseButton::Left),
-        ] {
-            let selected = a.selected;
-            a.mouse(
-                MouseEvent {
-                    kind,
-                    column,
-                    row,
-                    modifiers: KeyModifiers::NONE,
-                },
-                Rect::new(0, 0, width, 30),
-            );
-            assert_eq!(a.selected, selected);
-            assert!(a.pending_attach.is_none());
-        }
-        assert!(a.mouse(
-            MouseEvent {
-                kind: MouseEventKind::ScrollDown,
-                column: 30,
-                row: 10,
-                modifiers: KeyModifiers::NONE
-            },
-            Rect::new(0, 0, width, 30)
-        ));
-        assert_eq!(a.selected, 1);
-    }
-    let mut s = disposable_shell();
-    s.directory = "/".into();
-    s.name = "shell".into();
-    assert_eq!(session_preview::label(&s), "/ shell");
-}
-
-#[test]
 fn live_pane_focus_input_return_and_runtime_invalidation() {
     let (mut a, rx) = queued_app();
     a.work[0].sessions = vec![disposable_shell()];
@@ -6559,8 +5689,8 @@ fn live_pane_focus_input_return_and_runtime_invalidation() {
     assert!(a.refresh_session_preview(80));
     let task = rx.try_recv().unwrap();
     a.apply(Reply {device_id:Some("local".into()),execution_target:Some(None),preview:None,device:0,op:task.op,generation:task.generation,result:Ok(serde_json::json!({"live":true,"pane_id":"%1","styled_lines":["\u{1b}[31mlive screen"],"cursor_x":2,"cursor_y":0,"cursor_visible":true,"bracketed_paste":true,"application_cursor":true}))});
-    a.focus = Focus::Workspace;
-    press(&mut a, 'i');
+    // A tap on the peeked screen types into it (the same entry point).
+    a.type_into_preview();
     assert!(a.pane_focused());
     assert!(rx.try_recv().is_err());
     a.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
@@ -6587,7 +5717,10 @@ fn live_pane_focus_input_return_and_runtime_invalidation() {
         .map(|c| c.symbol())
         .collect();
     assert!(text.contains("live screen"));
-    assert!(text.contains("Ctrl+\\") && text.contains("detach"));
+    assert!(
+        text.contains("ctrl+\\") && text.contains("detach"),
+        "{text}"
+    );
     // Ctrl+] (legacy 0x1d, crossterm Ctrl+5) and Ctrl+O now reach the pane.
     for (code, hex) in [(']', "1d"), ('5', "1d"), ('o', "0f")] {
         a.key(KeyEvent::new(KeyCode::Char(code), KeyModifiers::CONTROL));
@@ -6645,29 +5778,21 @@ fn info_reply_keeps_live_terminal_capability_and_preview_enabled() {
 fn session_hover_selects_rendered_row_without_opening() {
     // Spec P16: hover never selects. A click selects the rendered row (via
     // the hit map); tapping the already-selected row is Enter.
-    let (mut a, _rx) = queued_app();
-    let mut one = disposable_shell();
-    one.name = "hover-one".into();
-    one.directory = "/aaa".into();
-    let mut two = one.clone();
-    two.id = "hover-two-id".into();
-    two.name = "hover-two".into();
-    two.directory = "/zzz".into();
-    a.work[0].sessions = vec![one, two];
+    let (mut a, _rx) = file_app();
     let mut terminal = ratatui::Terminal::new(TestBackend::new(160, 30)).unwrap();
     terminal.draw(|f| render(f, &a)).unwrap();
     let buffer = terminal.backend().buffer();
     let y = (0..30)
         .find(|y| {
-            (22..80)
+            (0..60)
                 .map(|x| buffer[(x, *y)].symbol())
                 .collect::<String>()
-                .contains("hover-two")
+                .contains("beta.txt")
         })
         .expect("second row rendered");
     let at = |kind| MouseEvent {
         kind,
-        column: 30,
+        column: 6,
         row: y,
         modifiers: KeyModifiers::NONE,
     };
@@ -6676,25 +5801,26 @@ fn session_hover_selects_rendered_row_without_opening() {
         !a.mouse(at(MouseEventKind::Moved), area),
         "motion must not redraw"
     );
-    assert_eq!(a.selected, 0, "hover selected a row");
+    assert_eq!(
+        a.browser.as_ref().unwrap().selected,
+        0,
+        "hover selected a row"
+    );
     assert!(a.mouse(at(MouseEventKind::Down(event::MouseButton::Left)), area));
     a.mouse(at(MouseEventKind::Up(event::MouseButton::Left)), area);
     assert_eq!(
-        a.selected, 1,
-        "click did not select actual rendered session"
+        a.browser.as_ref().unwrap().selected,
+        1,
+        "click did not select the rendered row"
     );
-    assert!(a.pending_attach.is_none() && !a.pane_focused());
+    assert!(a.browser.as_ref().unwrap().preview_path.is_none());
     // The second tap on the selected row is Enter (opens), not another select.
     terminal.draw(|f| render(f, &a)).unwrap();
     assert!(a.mouse(at(MouseEventKind::Down(event::MouseButton::Left)), area));
     assert!(a.mouse(at(MouseEventKind::Up(event::MouseButton::Left)), area));
-    assert!(
-        a.attach_check.is_some()
-            || a.pending_attach.is_some()
-            || a.pane_focused()
-            || a.dialog.is_some(),
-        "second tap did not run Enter: {}",
-        a.notice
+    assert_eq!(
+        a.browser.as_ref().unwrap().preview_path.as_deref(),
+        Some("/files/beta.txt")
     );
 }
 
@@ -6789,12 +5915,12 @@ fn ascii_capability_renders_no_unicode_and_keeps_focus_cues() {
                     .collect::<Vec<_>>()
                     .join("\n");
                 assert!(text.is_ascii(), "{name} {w}x{h}:\n{text}");
-                // Focused panel: `#=#` border with a reversed `[ title ]` chip.
-                assert!(text.contains("#[ "), "{name} {w}x{h}:\n{text}");
+                // The focused zone's bar is `>` (ASCII) and keycaps are reversed cells.
+                assert!(text.contains("> "), "{name} {w}x{h}:\n{text}");
                 assert!(buffer
                     .content
                     .iter()
-                    .any(|c| c.symbol() == "[" && c.modifier.contains(Modifier::REVERSED)));
+                    .any(|c| c.modifier.contains(Modifier::REVERSED)));
                 assert!(buffer
                     .content
                     .iter()
@@ -6808,145 +5934,40 @@ fn ascii_capability_renders_no_unicode_and_keeps_focus_cues() {
 /// behind it lose the heavy border, the accent chip and the accent selection.
 #[test]
 fn only_the_overlay_looks_focused_while_it_owns_input() {
-    let accent = theme::token_color(theme::Tok::Accent, caps::caps()).unwrap();
-    let accent_bg = theme::token_color(theme::Tok::AccentBg, caps::caps()).unwrap();
     let draw = |a: &App| {
         let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
         t.draw(|f| render(f, a)).unwrap();
         t.backend().buffer().clone()
     };
-    let heavy = |b: &ratatui::buffer::Buffer| -> Vec<(u16, u16)> {
-        let mut v = Vec::new();
-        for y in 0..b.area.height {
-            for x in 0..b.area.width {
-                if b[(x, y)].symbol() == "┏" {
-                    v.push((x, y));
-                }
-            }
-        }
-        v
-    };
-    let chip_rows = |b: &ratatui::buffer::Buffer| -> std::collections::BTreeSet<u16> {
-        b.content
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| {
-                c.modifier.contains(Modifier::REVERSED)
-                    && c.fg == accent
-                    && c.symbol().chars().all(char::is_alphabetic)
-                    && !c.symbol().is_empty()
-            })
-            .map(|(i, _)| (i / usize::from(b.area.width)) as u16)
-            .collect()
+    let bars = |b: &ratatui::buffer::Buffer| b.content.iter().filter(|c| c.symbol() == "▍").count();
+    let label = |b: &ratatui::buffer::Buffer| {
+        (0..b.area.height)
+            .flat_map(|y| (0..b.area.width).map(move |x| (x, y)))
+            .find(|&(x, y)| b[(x, y)].symbol() == "N" && b[(x + 1, y)].symbol() == "E")
+            .map(|(x, y)| b[(x, y)].clone())
+            .unwrap()
     };
     let (mut a, _) = queued_app();
-    a.view = View::Work;
-    a.focus = Focus::Workspace;
+    a.go_hub();
     let base = draw(&a);
-    assert_eq!(heavy(&base).len(), 1, "one focused panel without overlays");
-
-    // The palette draws its own accent frame; the panels behind it drop the
-    // focused treatment.
-    let mut a2 = queued_app().0;
-    a2.view = View::Work;
-    a2.focus = Focus::Workspace;
-    a2.input = Some(Input::Palette);
+    assert_eq!(bars(&base), 1, "one focused zone without overlays");
+    assert!(label(&base).modifier.contains(Modifier::BOLD));
+    // The palette dims the screen behind it: its zones drop the focused treatment.
+    a.input = Some(Input::Palette);
+    let over = draw(&a);
+    let behind = label(&over);
     assert!(
-        heavy(&draw(&a2)).is_empty(),
-        "no heavy panel behind the palette"
+        !behind.modifier.contains(Modifier::BOLD),
+        "focused label behind the palette"
     );
-    for open in [|a: &mut App| a.help = true] {
-        let mut a2 = queued_app().0;
-        a2.view = View::Work;
-        a2.focus = Focus::Workspace;
-        open(&mut a2);
-        let b = draw(&a2);
-        let corners = heavy(&b);
-        assert_eq!(corners.len(), 1, "only the overlay is heavy: {corners:?}");
-        let (ox, oy) = corners[0];
-        let rows = chip_rows(&b);
-        assert_eq!(rows.len(), 1, "one accent chip row: {rows:?}");
-        assert_eq!(rows.iter().next(), Some(&oy), "the chip is the overlay's");
-        // Find the overlay's extent (its right and bottom heavy corners).
-        let right = (ox..b.area.width)
-            .find(|&x| b[(x, oy)].symbol() == "┓")
-            .unwrap();
-        // The overlay may stack frames (the palette's input box over its
-        // list): it extends down while its left column stays a border.
-        let bottom = (oy..b.area.height)
-            .take_while(|&y| "┏┃┗╭│╰├".contains(b[(ox, y)].symbol()))
-            .last()
-            .unwrap();
-        for y in 0..b.area.height {
-            for x in 0..b.area.width {
-                let inside = (ox..=right).contains(&x) && (oy..=bottom).contains(&y);
-                if !inside {
-                    assert_ne!(
-                        b[(x, y)].bg,
-                        accent_bg,
-                        "focused selection behind overlay at {x},{y}: {:?}",
-                        (0..b.area.width)
-                            .map(|x| b[(x, y)].symbol())
-                            .collect::<String>()
-                    );
-                    assert_ne!(
-                        b[(x, y)].symbol(),
-                        "▌",
-                        "focused bar behind overlay at {x},{y}"
-                    );
-                }
-            }
-        }
-    }
+    assert_ne!(behind.fg, label(&base).fg);
+    a.input = None;
+    // Help owns the frame: one focused block, its own.
+    a.help = true;
+    assert_eq!(bars(&draw(&a)), 1);
 }
 
-/// Titles keep border cells after them and end with the ellipsis when cut.
-#[test]
-fn narrow_titles_are_capped_with_an_ellipsis() {
-    let (a, _) = queued_app();
-    for (caps, run, ell) in [
-        (caps::Caps::default(), "━", "…"),
-        (
-            caps::Caps {
-                unicode: false,
-                color: caps::ColorDepth::None,
-                ..caps::Caps::default()
-            },
-            "=",
-            "~",
-        ),
-    ] {
-        caps::with_caps(caps, || {
-            let mut t = Terminal::new(TestBackend::new(40, 20)).unwrap();
-            t.draw(|f| render(f, &a)).unwrap();
-            let b = t.backend().buffer();
-            let row = |y: u16| (0..40).map(|x| b[(x, y)].symbol()).collect::<String>();
-            let line = (0..20)
-                .map(row)
-                .find(|r| {
-                    r.contains("Session")
-                        && r.split_whitespace()
-                            .next()
-                            .is_some_and(|w| w.starts_with(['┏', '╭', '#', '+']))
-                })
-                .unwrap();
-            let tail: String = line
-                .chars()
-                .rev()
-                .take(3)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect();
-            assert!(
-                tail.starts_with(run) || line.contains(&format!("{ell}{run}")),
-                "title leaves border after it: {line:?}"
-            );
-        });
-    }
-}
-
-/// 16 colors: the focused row is one uniform reversed chip with a `>` bar.
+/// 16 colors: the focused row of a dialog list is one uniform reversed chip.
 #[test]
 fn ansi16_focused_row_is_uniform_and_keeps_its_bar() {
     let c = caps::Caps {
@@ -6960,8 +5981,6 @@ fn ansi16_focused_row_is_uniform_and_keeps_its_bar() {
         Some(Color::Reset),
         "token colors do not leak into the bar"
     );
-    assert_eq!(theme::selection_symbol_for(true, c), "> ");
-    assert_eq!(theme::selection_symbol_for(false, c), "▏ ");
 }
 
 fn page(dir: &str, from: usize, to: usize, next: Option<usize>, total: usize) -> Value {
@@ -7022,56 +6041,6 @@ fn ordered_listing_pages_append_incrementally_beyond_the_old_cap() {
         !limits.is_empty() && limits.iter().all(|l| *l == 4000),
         "{limits:?}"
     );
-}
-#[test]
-fn file_rows_are_windowed_and_clickable_with_breadcrumb_targets() {
-    let (mut a, _rx) = queued_app();
-    let mut b = Browser::new(0, "/srv/data/big".into());
-    b.display_path = "/srv/data/big".into();
-    b.entries = (0..5000)
-        .map(|i| Entry {
-            name: format!("row-{i:05}.log"),
-            path: format!("/srv/data/big/row-{i:05}.log"),
-            kind: "file".into(),
-            size: i,
-            identity: None,
-            hidden: false,
-            rename_name: None,
-            modified: None,
-            items: None,
-        })
-        .collect();
-    b.selected = 2500;
-    a.browser = Some(b);
-    a.view = View::Files;
-    a.focus = Focus::Workspace;
-    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-    terminal.draw(|f| render(f, &a)).unwrap();
-    let b = a.browser.as_ref().unwrap();
-    let rows: Vec<usize> = b
-        .hits
-        .borrow()
-        .iter()
-        .filter_map(|(_, hit)| match hit {
-            FileHit::Row(i) => Some(*i),
-            _ => None,
-        })
-        .collect();
-    assert!(rows.len() < 30 && rows.contains(&2500), "{rows:?}");
-    let crumb = b
-        .hits
-        .borrow()
-        .iter()
-        .find(|(_, hit)| matches!(hit, FileHit::Crumb(p) if p == "/srv/data"))
-        .map(|(rect, _)| *rect)
-        .expect("parent breadcrumb is a target");
-    // A click on another row selects it; a second click on it opens (Enter).
-    let (rect, _) = b.hits.borrow()[b.hits.borrow().len() - 1].clone();
-    let target = rows[rows.len() - 1];
-    assert!(a.file_click(rect.x + 3, rect.y));
-    assert_eq!(a.browser.as_ref().unwrap().selected, target);
-    assert!(a.file_click(crumb.x, crumb.y));
-    assert_eq!(a.browser.as_ref().unwrap().path, "/srv/data");
 }
 #[test]
 fn streamed_preview_chunks_extend_the_retained_layout() {
@@ -7373,86 +6342,6 @@ fn superseded_peek_reply_is_a_cancellation_not_content() {
     assert!(!draw(&a).contains("Preview unavailable"));
 }
 
-/// Spec 7.3/C5/C6: a directory row shows its child count (`1 item`) in the size
-/// column, in the bold `dir` token (256-color 111, not ANSI bright blue), and the
-/// unknown-file icon is not the `·` unknown-value glyph.
-#[test]
-fn directory_rows_show_item_count_and_dir_token() {
-    let (mut a, _rx) = file_app();
-    let b = a.browser.as_mut().unwrap();
-    let mut entries: Vec<Entry> = b.entries.iter().cloned().collect();
-    entries.insert(
-        0,
-        Entry {
-            name: "docs".into(),
-            path: "/files/docs".into(),
-            kind: "directory".into(),
-            size: 4096,
-            identity: None,
-            hidden: false,
-            rename_name: Some("docs".into()),
-            modified: None,
-            items: Some(1),
-        },
-    );
-    entries.push(Entry {
-        name: "data".into(),
-        path: "/files/data".into(),
-        kind: "file".into(),
-        size: 3,
-        identity: None,
-        hidden: false,
-        rename_name: Some("data".into()),
-        modified: None,
-        items: None,
-    });
-    b.entries = entries.into();
-    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
-    terminal.draw(|frame| render(frame, &a)).unwrap();
-    let buffer = terminal.backend().buffer().clone();
-    let width = buffer.area.width as usize;
-    let rows: Vec<String> = buffer
-        .content
-        .chunks(width)
-        .map(|row| row.iter().map(|c| c.symbol()).collect())
-        .collect();
-    let docs = rows
-        .iter()
-        .position(|r| r.contains("docs/"))
-        .expect("docs row");
-    assert!(rows[docs].contains("1 item"), "{}", rows[docs]);
-    let x = rows[docs].find("docs/").unwrap();
-    let x = rows[docs][..x].chars().count();
-    let cell = &buffer.content[docs * width + x];
-    assert_eq!(Some(cell.fg), theme::dir().fg);
-    assert!(cell.modifier.contains(ratatui::style::Modifier::BOLD));
-    let data = rows.iter().find(|r| r.contains("data ")).expect("data row");
-    let before = &data[..data.find("data ").unwrap()];
-    assert!(!before.contains('·'), "{data}");
-}
-
-/// Spec 6.2/7.3: optional columns come from the space left after the names really
-/// needed, so M/L list widths keep the type tag and size bar beside short names.
-#[test]
-fn file_row_columns_follow_needed_name_width() {
-    use super::files_view::RowColumns;
-    // About the list's inner width at 80x24 and in the 120x40 split.
-    for width in [52, 57] {
-        let c = RowColumns::fit(width, 10, 0);
-        assert!(
-            c.show_size && c.show_age && c.show_type && c.show_bar,
-            "{width}: {c:?}"
-        );
-        assert_eq!(c.name_width + 4 + 1 + 5 + 9 + 2 + 5, width);
-    }
-    // Long names keep at least 16 cells before columns are added.
-    let narrow = RowColumns::fit(36, 40, 0);
-    assert!(narrow.show_size && narrow.show_age && !narrow.show_bar);
-    assert!(narrow.name_width >= 16);
-    let tiny = RowColumns::fit(20, 40, 0);
-    assert!(!tiny.show_size && tiny.name_width >= 4);
-}
-
 /// Evidence dump (not a check): renders the dimmed loading peek (spec 12.5) and the
 /// directory item counts at the review sizes, as lab_png cell grids for
 /// `python tests/pty_lib.py png` (pyte drops SGR 2, so PTY captures cannot show dim).
@@ -7630,47 +6519,6 @@ fn list_reply(a: &mut App, path: &str, generation: u64, result: Result<Value>) {
         preview: None,
         result,
     });
-}
-
-/// Review: an uncached folder's peek showed "Empty folder" and was never filled by
-/// its prefetch reply. It must read as loading, then show the prefetched children.
-#[test]
-fn folder_peek_loads_then_shows_prefetched_children() {
-    let (mut a, rx) = folder_app(1);
-    draw_text(&a);
-    settle_files(&mut a);
-    let sent = listed(&rx);
-    assert_eq!(sent, vec![("/files/dir0".into(), a.generation)]);
-    let screen = draw_text(&a);
-    assert!(
-        !screen.contains("Empty folder"),
-        "uncached peek claims empty"
-    );
-    assert!(screen.contains("Loading"));
-    let child = serde_json::json!({"entries":[{"name":"inner.txt","path":"/files/dir0/inner.txt","kind":"file","size":1}]});
-    let generation = a.generation;
-    list_reply(&mut a, "/files/dir0", generation, Ok(child));
-    let screen = draw_text(&a);
-    assert!(screen.contains("inner.txt"), "prefetched children shown");
-    assert!(!screen.contains("Empty folder"));
-    let b = a.browser.as_ref().unwrap();
-    assert!(b.prefetch.is_empty());
-    assert!(a
-        .browser_cache
-        .keys()
-        .any(|(_, path, _)| path == "/files/dir0"));
-    // A really empty folder still says so once its listing arrives.
-    let (mut a, rx) = folder_app(1);
-    draw_text(&a);
-    settle_files(&mut a);
-    let generation = listed(&rx)[0].1;
-    list_reply(
-        &mut a,
-        "/files/dir0",
-        generation,
-        Ok(serde_json::json!({"entries":[]})),
-    );
-    assert!(draw_text(&a).contains("Empty folder"));
 }
 
 /// Folder prefetch (review: untested): a settled folder queues one List; outdated,

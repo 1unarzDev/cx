@@ -25,11 +25,8 @@ pub(super) struct Snapshot {
     bracketed_paste: bool,
     application_cursor: bool,
     pub(super) focused: Option<(Device, Session, String)>,
-    /// `z`: the preview fills the workspace, read-only and live.
-    zoomed: bool,
     /// Bumped on every applied capture; keys the parsed-screen cache.
     revision: u64,
-    parsed: std::cell::RefCell<Option<(u64, Vec<Line<'static>>)>>,
     /// The previous session's frame, kept dimmed until the new one arrives.
     carried: bool,
     /// Selection-driven fetches wait for the selection to settle.
@@ -38,8 +35,6 @@ pub(super) struct Snapshot {
     last_input: Option<Instant>,
     echo_due: bool,
     received: Option<Instant>,
-    /// Border chip: `⏏ detach` while typing, `z zoom` / `z back` otherwise.
-    chip: std::cell::Cell<Rect>,
     stale_shown: std::cell::Cell<bool>,
 }
 /// Moving the selection settles for this long before a preview is requested.
@@ -130,7 +125,7 @@ impl App {
         self.session_preview.last = None;
     }
     pub(super) fn scroll_session_preview(&mut self, mouse: MouseEvent) -> bool {
-        if self.view != View::Work
+        if !matches!(self.view, View::Work | View::Network)
             || self.dialog.is_some()
             || self.help
             || self.command_panel.is_some()
@@ -222,7 +217,7 @@ impl App {
             }
             return Some((d, session.clone()));
         }
-        if self.view != View::Work
+        if !matches!(self.view, View::Work | View::Network)
             || self.dialog.is_some()
             || self.help
             || self.command_panel.is_some()
@@ -357,25 +352,21 @@ impl App {
         };
         self.set_notice(message.into());
     }
-    #[cfg(test)]
-    pub(super) fn session_preview_chip(&self) -> Rect {
-        self.session_preview.chip.get()
+    /// The live capture of the selected session (its tile and peek).
+    pub(super) fn session_preview_lines(&self) -> &[String] {
+        &self.session_preview.lines
     }
-    pub(super) fn preview_zoomed(&self) -> bool {
-        self.session_preview.zoomed
+    pub(super) fn session_preview_cols(&self) -> u16 {
+        self.session_preview.cols
     }
-    /// `z`: zoom the preview to the workspace, or return to the list.
-    pub(super) fn toggle_preview_zoom(&mut self) {
-        if self.session_preview.zoomed {
-            self.session_preview.zoomed = false;
-        } else if self.selected_session().is_some() {
-            self.session_preview.zoomed = true;
-        }
+    /// Where the peek drew the session's screen (wheel and taps act on it there).
+    pub(super) fn set_preview_screen(&self, r: Rect) {
+        self.session_preview.screen.set(r);
     }
     /// Clicks on the preview: the border chip detaches or zooms; the screen
     /// starts inline input. Returns true when the click was the preview's.
     pub(super) fn click_session_preview(&mut self, mouse: MouseEvent) -> bool {
-        if self.view != View::Work
+        if !matches!(self.view, View::Work | View::Network)
             || self.dialog.is_some()
             || self.help
             || self.command_panel.is_some()
@@ -385,14 +376,6 @@ impl App {
             return false;
         }
         let at = ratatui::layout::Position::new(mouse.column, mouse.row);
-        if self.session_preview.chip.get().contains(at) {
-            if self.pane_focused() {
-                self.leave_session_pane();
-            } else {
-                self.toggle_preview_zoom();
-            }
-            return true;
-        }
         if !self.pane_focused() && self.session_preview.screen.get().contains(at) {
             self.type_into_preview();
             return true;
@@ -401,7 +384,7 @@ impl App {
     }
     /// How soon the event loop must wake for preview work, if sooner than idle.
     pub(super) fn session_preview_wait(&self) -> Option<Duration> {
-        if self.view != View::Work && !self.pane_focused() {
+        if !matches!(self.view, View::Work | View::Network) && !self.pane_focused() {
             return None;
         }
         let p = &self.session_preview;
@@ -481,7 +464,6 @@ impl App {
             let moved = previous.key.is_some() && next.is_some();
             self.session_preview = Snapshot {
                 serial: previous.serial.wrapping_add(1),
-                zoomed: previous.zoomed && next.is_some(),
                 ..Snapshot::default()
             };
             if moved {
@@ -652,6 +634,13 @@ impl App {
                 }
                 self.session_preview.status.clear();
                 self.session_preview.received = Some(Instant::now());
+                if !*scrollback {
+                    let (lines, cols) = (
+                        self.session_preview.lines.clone(),
+                        self.session_preview.cols,
+                    );
+                    self.remember_frame(reply.device, session, &lines, cols);
+                }
             }
             Err(_) => {
                 self.session_preview.focused = None;
@@ -703,246 +692,6 @@ fn fingerprint(p: &Snapshot) -> u64 {
     p.focused.is_some().hash(&mut h);
     h.finish()
 }
-/// Parse the captured ANSI rows once per capture revision, not once per frame.
-fn parsed_screen(p: &Snapshot) -> std::cell::Ref<'_, Vec<Line<'static>>> {
-    let stale = p
-        .parsed
-        .borrow()
-        .as_ref()
-        .is_none_or(|(revision, _)| *revision != p.revision);
-    if stale {
-        *p.parsed.borrow_mut() = Some((
-            p.revision,
-            rendering::ansi_screen(&p.lines, p.palette8, p.cols),
-        ));
-    }
-    std::cell::Ref::map(p.parsed.borrow(), |cached| {
-        &cached.as_ref().expect("parsed screen cached").1
-    })
-}
-pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) -> Rect {
-    let p = &app.session_preview;
-    p.screen.set(Rect::default());
-    p.chip.set(Rect::default());
-    let Some((d, s)) = app.preview_selection().or_else(|| app.selected_session()) else {
-        return area;
-    };
-    let focused = app.pane_focused();
-    let full = focused || p.zoomed;
-    let narrow = area.width < 90 || frame.area().width < 120;
-    // Phones keep a peek of the last lines (spec 6.1 XS); only a list too
-    // small for a row plus a two-line peek drops it.
-    if !full && (area.width < 16 || area.height < 8) {
-        return area;
-    }
-    let (list, pane) = if full {
-        (Rect::new(area.x, area.y, 0, 0), area)
-    } else if narrow {
-        // List over preview; phones get a short peek of the last lines.
-        let peek = if area.width < 50 {
-            // Two to four screen lines plus the frame.
-            (area.height / 3).clamp(4, 6)
-        } else {
-            area.height / 2
-        };
-        let parts = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(3), Constraint::Length(peek)])
-            .split(area);
-        (parts[0], parts[1])
-    } else {
-        let parts = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area);
-        (parts[0], parts[1])
-    };
-    let device = &app.devices[d];
-    let mut title = session_rows::display_title(app, d, &s);
-    if pane.width >= 40 {
-        title = format!("{title}{}{}", sep(), safe_label(&device.name));
-    }
-    if let Some(idle) = session_rows::idle_now(&app.work[d], &s).filter(|_| pane.width >= 60) {
-        title = format!("{title}{}idle {}", sep(), session_rows::age(idle));
-    }
-    let border = block(title, focused);
-    let inner = border.inner(pane);
-    frame.render_widget(border, pane);
-    // The screen owns the whole interior: identity and liveness live on the
-    // border, never on a content row.
-    let screen = inner;
-    p.screen.set(screen);
-    let current = p.key.as_ref() == Some(&key(device, &s));
-    let a = ascii();
-    // Bottom chrome strip: device · folder · size · liveness, dim; chip right.
-    if pane.height >= 2 && pane.width >= 12 {
-        let chip = if focused {
-            if a {
-                " [^\\ detach] "
-            } else {
-                " ⏏ detach "
-            }
-        } else if p.zoomed {
-            if a {
-                " [z back] "
-            } else {
-                " z back "
-            }
-        } else if a {
-            " [z zoom] "
-        } else {
-            " z zoom "
-        };
-        let chip_width = Span::raw(chip).width() as u16;
-        let y = pane.bottom() - 1;
-        let chip_x = pane.right().saturating_sub(chip_width + 2);
-        let (live_text, live_style) = if app.preview_selection().is_none() {
-            ("no preview".to_string(), muted())
-        } else if p.scroll_top.is_some() {
-            ("scrollback · wheel down returns".to_string(), warn())
-        } else if !current || (p.lines.is_empty() && p.status.is_empty()) {
-            ("loading".to_string(), info())
-        } else if !p.status.is_empty() {
-            ("unavailable".to_string(), err())
-        } else if p.carried {
-            ("loading".to_string(), info())
-        } else if !p.live {
-            ("snapshot".to_string(), muted())
-        } else {
-            let stale = p.received.is_some_and(|t| t.elapsed() >= PREVIEW_STALE);
-            match p.received.map(|t| t.elapsed().as_secs()) {
-                Some(age) if stale => (format!("stale {}", session_rows::age(age)), warn()),
-                _ => (
-                    if focused {
-                        format!("live{}typing", sep())
-                    } else {
-                        "live".into()
-                    },
-                    ok(),
-                ),
-            }
-        };
-        let mut facts = Vec::new();
-        if pane.width >= 70 {
-            facts.push(session_rows::folder_tail(
-                &s.directory,
-                session_rows::device_home(device).as_deref(),
-                28,
-            ));
-        }
-        if p.cols > 0 && p.rows > 0 && pane.width >= 50 {
-            facts.push(format!("{}x{}", p.cols, p.rows));
-        }
-        let room = usize::from(chip_x.saturating_sub(pane.x + 2));
-        let live_text = if Span::raw(live_text.as_str()).width() + 2 > room {
-            // Narrow frames keep the first word: `live`, `stale`, `loading`.
-            live_text
-                .split(sep())
-                .next()
-                .unwrap_or_default()
-                .to_string()
-        } else {
-            live_text
-        };
-        let mut strip = vec![Span::styled(format!(" {live_text}"), live_style)];
-        for fact in facts {
-            strip.push(Span::styled(format!("{}{fact}", sep()), muted()));
-        }
-        strip.push(Span::raw(" "));
-        let line = Line::from(strip);
-        if line.width() <= room {
-            frame.render_widget(
-                Paragraph::new(line),
-                Rect::new(pane.x + 1, y, room as u16 + 1, 1),
-            );
-        } else {
-            frame.render_widget(
-                Paragraph::new(Span::styled(format!(" {live_text} "), live_style)),
-                Rect::new(pane.x + 1, y, room as u16 + 1, 1),
-            );
-        }
-        if chip_x > pane.x + 2 {
-            let rect = Rect::new(chip_x, y, chip_width, 1);
-            frame.render_widget(
-                Paragraph::new(Span::styled(
-                    chip,
-                    if focused {
-                        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
-                    } else {
-                        accent().add_modifier(Modifier::BOLD)
-                    },
-                )),
-                rect,
-            );
-            p.chip.set(rect);
-        }
-    }
-    if !current || p.lines.is_empty() {
-        let message = if outside_tmux(&s) {
-            format!("Outside tmux{}Enter moves it into CX", sep())
-        } else if app.preview_selection().is_none() {
-            format!("No live preview{}Enter attaches", sep())
-        } else if !p.status.is_empty() {
-            p.status.clone()
-        } else {
-            "Loading terminal…".to_string()
-        };
-        if !(current && p.carried) {
-            frame.render_widget(
-                Paragraph::new(Span::styled(message, muted())).wrap(Wrap { trim: true }),
-                Rect::new(
-                    screen.x + 1,
-                    screen.y,
-                    screen.width.saturating_sub(1),
-                    screen.height,
-                ),
-            );
-            return list;
-        }
-    }
-    let (cx, cy) = p.cursor;
-    let cy = u32::from(cy).saturating_add(p.history_total);
-    let top = p.scroll_top.unwrap_or_else(|| app.live_top());
-    let left = preview_left(focused && p.scroll_top.is_none(), cx, screen.width);
-    let relative_top = top.saturating_sub(p.line_start).min(u32::from(u16::MAX)) as u16;
-    {
-        // Only the visible window is copied out of the cached parse.
-        let lines = parsed_screen(p);
-        let start = usize::from(relative_top).min(lines.len());
-        let end = (start + usize::from(screen.height)).min(lines.len());
-        let mut paragraph = Paragraph::new(lines[start..end].to_vec()).scroll((0, left));
-        if p.carried {
-            paragraph = paragraph.style(Style::default().add_modifier(Modifier::DIM));
-        }
-        frame.render_widget(paragraph, screen);
-        // A remote screen is user content: the ASCII pass leaves it alone.
-        protect_content(frame.buffer_mut(), screen);
-    }
-    if focused
-        && !p.carried
-        && p.scroll_top.is_none()
-        && p.cursor_visible
-        && screen.width > 0
-        && screen.height > 0
-    {
-        frame.set_cursor_position((
-            screen.x + cx.saturating_sub(left).min(screen.width - 1),
-            screen.y + cy.saturating_sub(top).min(u32::from(screen.height - 1)) as u16,
-        ));
-    }
-    list
-}
-
-/// Horizontal scroll of a preview narrower than the pane. Lines stay anchored
-/// at their start (a peek or zoom reads like the terminal); only typing, where
-/// the cursor must stay visible, scrolls just far enough to show it.
-fn preview_left(typing: bool, cursor_x: u16, width: u16) -> u16 {
-    if typing {
-        cursor_x.saturating_sub(width.saturating_sub(1))
-    } else {
-        0
-    }
-}
 fn live_view_top(history: u32, cursor_y: u16, height: u16) -> u32 {
     history.saturating_add(u32::from(cursor_y.saturating_sub(height.saturating_sub(1))))
 }
@@ -971,13 +720,5 @@ mod scroll_tests {
         a.session_preview.received = Some(Instant::now());
         assert!(a.session_preview_staleness_changed());
         assert!(!a.session_preview_staleness_changed());
-    }
-    #[test]
-    fn narrow_previews_stay_left_anchored_unless_typing_hides_the_cursor() {
-        // A peek or zoom never cuts the start of lines to chase the prompt.
-        assert_eq!(preview_left(false, 29, 21), 0);
-        // Typing scrolls only as far as needed to keep the cursor visible.
-        assert_eq!(preview_left(true, 10, 21), 0);
-        assert_eq!(preview_left(true, 29, 21), 9);
     }
 }

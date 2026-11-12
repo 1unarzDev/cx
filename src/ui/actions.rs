@@ -30,54 +30,11 @@ impl App {
             .iter()
             .copied()
             .filter(|(a, label)| {
-                (matches!(
-                    a,
-                    Action::Work | Action::Network | Action::Files | Action::Terminal | Action::Add
-                ) || self.action_enabled(*a))
+                (matches!(a, Action::Files | Action::Terminal | Action::Add)
+                    || self.action_enabled(*a))
                     && label.to_lowercase().contains(&self.text.to_lowercase())
             })
             .collect()
-    }
-    pub(super) fn palette_scope(&self) -> String {
-        let Some(item) = self.palette_view().into_iter().nth(self.palette_selected) else {
-            return "No matches · type to filter · Esc cancel".into();
-        };
-        let action = match item.target {
-            PaletteTarget::Action(action) => action,
-            PaletteTarget::Session(..) => return "Enter attaches · Esc cancel".into(),
-            PaletteTarget::Device(_) => return "Enter scopes views to this device".into(),
-            PaletteTarget::Folder(..) => return "Enter opens the folder in Files".into(),
-            PaletteTarget::Cmd(_) => return "Enter goes there · Esc cancel".into(),
-            PaletteTarget::Run => return "Enter runs in a panel · Esc cancel".into(),
-        };
-        if matches!(
-            action,
-            Action::Work
-                | Action::Network
-                | Action::Files
-                | Action::Terminal
-                | Action::New
-                | Action::Shell
-                | Action::Add
-        ) {
-            return if action == Action::Add {
-                "Next: choose direct SSH or a gateway · Esc cancel".into()
-            } else {
-                "Next: choose device · Esc cancel".into()
-            };
-        }
-        if matches!(action, Action::Update | Action::Jobs | Action::Quit) {
-            return "Scope: this viewer · Enter run · Esc cancel".into();
-        }
-        self.command_context()
-            .map(|(d, path)| {
-                format!(
-                    "Current: {} · {}",
-                    safe_label(&self.devices[d].name),
-                    safe_label(&path)
-                )
-            })
-            .unwrap_or_else(|| "Scope: All devices · Enter run · Esc cancel".into())
     }
     pub(super) fn container_read_only_action(&self, action: Action) -> bool {
         self.view == View::Files
@@ -97,14 +54,12 @@ impl App {
                         .is_some_and(|b| b.container.is_none() && b.preview.is_none())
             }
             Action::Containers => self.view != View::Containers,
-            Action::Work => self.view != View::Work,
             Action::Terminal if self.view == View::Network => self
                 .network_rows()
                 .get(self.network_selected)
                 .is_some_and(|r| r["_peer"].is_u64() || r["_known_peer"].is_u64()),
             Action::New | Action::Shell => !self.creating,
             Action::Command => self.command_context().is_some(),
-            Action::Network => self.view != View::Network,
             Action::Destination | Action::Conflict => self.clipboard.is_some(),
             Action::TransferTo => {
                 self.view == View::Files
@@ -219,14 +174,6 @@ impl App {
             }
             Action::Help => self.help = true,
             Action::Refresh => self.refresh(),
-            Action::Work => {
-                self.view = View::Work;
-                self.refresh_work();
-            }
-            Action::Network => {
-                self.view = View::Network;
-                self.refresh();
-            }
             Action::Command => {
                 // Spec 6.6: `:` is the palette in run mode.
                 if let Some(target) = self.command_ready() {
@@ -237,14 +184,6 @@ impl App {
             Action::New => {
                 if self.creating {
                     return;
-                }
-                if self.view == View::Network {
-                    if let Some(d) = self.network_action_device() {
-                        self.check_providers(d);
-                        self.dialog = Some(Dialog::Provider(d, None));
-                        self.dialog_selected = 0;
-                        return;
-                    }
                 }
                 if self.view == View::Files {
                     if let Some(browser) = &self.browser {
@@ -458,8 +397,6 @@ impl App {
     pub(super) fn execute_palette(&mut self, action: Action) {
         let purpose = match action {
             Action::Containers => Some(ChooseDevice::Containers),
-            Action::Work => Some(ChooseDevice::Work),
-            Action::Network => Some(ChooseDevice::Network),
             Action::Files => Some(ChooseDevice::Files),
             Action::Terminal => Some(ChooseDevice::Terminal),
             Action::New => Some(ChooseDevice::New),
@@ -496,6 +433,8 @@ pub(super) enum PaletteTarget {
     Session(usize, String),
     /// Device index and folder path.
     Folder(usize, String),
+    /// A LAN neighbour an enrolled device observed: connect (enroll) it.
+    Neighbor(usize, String),
     /// Run the typed command (palette run mode).
     Run,
 }
@@ -510,7 +449,14 @@ pub(super) struct PaletteItem {
     pub id: String,
 }
 /// Section order on equal scores (spec 6.6: switcher first, then actions).
-const PALETTE_SECTIONS: [&str; 5] = ["Sessions", "Actions", "Go to", "Devices", "Folders"];
+const PALETTE_SECTIONS: [&str; 6] = [
+    "Sessions",
+    "Actions",
+    "Go to",
+    "Devices",
+    "Folders",
+    "Neighbors",
+];
 const PALETTE_MRU: usize = 32;
 
 impl App {
@@ -567,27 +513,21 @@ impl App {
                 target: PaletteTarget::Action(action),
             });
         }
-        for (view, label, _) in keymap::TABS {
-            let cmd = keymap::Cmd::Goto(view);
+        for (label, cmd, key) in [
+            ("Hub", keymap::Cmd::View("hub"), "`"),
+            ("Files", keymap::Cmd::Goto(View::Files), ""),
+            ("Keys / Secrets", keymap::Cmd::View("secrets"), "K"),
+        ] {
             items.push(PaletteItem {
                 section: "Go to",
-                label: if view == View::Secrets {
-                    "Keys / Secrets".into()
-                } else {
-                    label.into()
-                },
+                label: label.into(),
                 detail: String::new(),
-                key: keymap::BINDINGS
-                    .iter()
-                    .find(|b| b.cmd == cmd && b.chord.is_some())
-                    .map(|b| b.label)
-                    .unwrap_or("")
-                    .into(),
+                key: key.into(),
                 id: format!("goto:{label}"),
                 target: PaletteTarget::Cmd(cmd),
             });
         }
-        for value in self.device_rows() {
+        for value in self.device_rows().into_iter().filter(|v| *v > 0) {
             let (label, detail, id) = if value == 0 {
                 (
                     "All devices".to_owned(),
@@ -637,6 +577,29 @@ impl App {
                 key: String::new(),
                 id: format!("folder:{}:{path}", self.devices[d].id),
                 target: PaletteTarget::Folder(d, path),
+            });
+        }
+        // LAN neighbours the devices observed (Refresh on the hub observes): the
+        // palette is where an unenrolled one is found and connected.
+        for c in self.network_candidates() {
+            let (Some(d), Some(address)) = (c["_device"].as_u64(), c["address"].as_str()) else {
+                continue;
+            };
+            let d = d as usize;
+            if d >= self.devices.len() {
+                continue;
+            }
+            items.push(PaletteItem {
+                section: "Neighbors",
+                label: safe_label(c["hostname"].as_str().unwrap_or(address)),
+                detail: format!(
+                    "{address} via {} · {}",
+                    safe_label(&self.devices[d].name),
+                    neighbor_detail(&c).replace('\n', " · ")
+                ),
+                key: String::new(),
+                id: format!("neighbor:{}:{address}", self.devices[d].id),
+                target: PaletteTarget::Neighbor(d, address.into()),
             });
         }
         items
@@ -721,34 +684,18 @@ impl App {
             PaletteTarget::Device(value) => {
                 self.input = None;
                 self.text.clear();
-                self.focus = Focus::Devices;
-                let rows = self.device_rows();
-                let current = rows.iter().position(|d| *d == self.device).unwrap_or(0);
-                if let Some(target) = rows.iter().position(|d| *d == value) {
-                    panels::active(self).move_by(target as isize - current as isize);
+                if let Some(d) = value.checked_sub(1) {
+                    self.open_device(d);
                 }
-                self.focus = Focus::Workspace;
             }
             PaletteTarget::Session(device, key) => {
                 self.input = None;
                 self.text.clear();
-                if self.view != View::Work {
-                    self.goto_view(View::Work);
-                }
-                // The switcher spans all devices: widen the scope when needed.
-                if self.device != 0 && self.device != device + 1 {
-                    self.device = 0;
-                }
-                self.search.clear();
-                if let Some(index) = self
-                    .session_rows()
-                    .iter()
-                    .position(|(d, s)| *d == device && workspaces::runtime_key(s) == key)
-                {
-                    self.selected = index;
-                    self.focus = Focus::Workspace;
-                    // Enter on a session attaches directly (user decision).
-                    self.primary();
+                // Enter on a session attaches directly (user decision), from its device.
+                self.open_device(device);
+                self.reconcile_session_selection(Some((device, key)));
+                if let Some((d, s)) = self.selected_session() {
+                    self.open_session(d, s, false);
                 }
             }
             PaletteTarget::Folder(device, path) => {
@@ -758,6 +705,15 @@ impl App {
                 self.destination_active = false;
                 self.open_host_browser(device, path);
                 self.focus = Focus::Workspace;
+            }
+            PaletteTarget::Neighbor(d, address) => {
+                self.input = None;
+                self.text.clear();
+                if let Some(c) = self.network_candidates().into_iter().find(|c| {
+                    c["_device"].as_u64() == Some(d as u64) && c["address"] == address.as_str()
+                }) {
+                    self.connect_neighbor(d, c);
+                }
             }
             PaletteTarget::Run => {}
         }

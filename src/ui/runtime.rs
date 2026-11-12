@@ -331,7 +331,7 @@ pub(super) const REPLY_POLL: Duration = Duration::from_millis(4);
 /// How long the event loop may block on terminal input before its next pass.
 pub(super) fn loop_wait(app: &App, now: Instant, frame_wait: Option<Duration>) -> Duration {
     let mut wait = notifications::poll_interval(app.notice_started, app.notice_deadline, now);
-    if app.view == View::Work {
+    if matches!(app.view, View::Work | View::Network) {
         wait = wait.min(Duration::from_millis(250));
     }
     if app.command_panel.as_ref().is_some_and(|p| p.alive) {
@@ -349,10 +349,7 @@ pub(super) fn loop_wait(app: &App, now: Instant, frame_wait: Option<Duration>) -
     if let Some(frame_wait) = frame_wait {
         wait = wait.min(frame_wait);
     }
-    for deadline in [app.press_deadline(), app.device_refresh_due]
-        .into_iter()
-        .flatten()
-    {
+    for deadline in [app.press_deadline()].into_iter().flatten() {
         wait = wait.min(deadline.saturating_duration_since(now));
     }
     wait
@@ -607,7 +604,6 @@ pub(super) struct RestartState {
     selected: usize,
     #[serde(default)]
     selected_session: Option<(String, String)>,
-    side_selected: usize,
     search: String,
     browser: Option<Browser>,
     other_browser: Option<Browser>,
@@ -642,7 +638,6 @@ pub(super) fn save_restart_at(app: &App, directory: &std::path::Path) -> Result<
         selected_session: app
             .selected_session()
             .map(|(device, session)| (app.devices[device].id.clone(), session.id)),
-        side_selected: app.side_selected,
         search: app.search.clone(),
         browser: restart_browser(&app.browser),
         other_browser: restart_browser(&app.other_browser),
@@ -797,7 +792,6 @@ pub(super) fn restore_restart_inner(
                 .selected
                 .min(app.session_rows().len().saturating_sub(1)),
         );
-    app.side_selected = state.side_selected;
     app.destination_active = state.destination_active;
     app.conflict = state.conflict.min(2);
     app.launch_provider = state.launch_provider;
@@ -1048,20 +1042,11 @@ pub(super) fn native_preview_area(app: &App, area: Rect) -> Option<Rect> {
     if !matches!(rich.kind.as_str(), "image" | "pdf") || rich.raster.is_none() {
         return None;
     }
-    let main = rendering::frame_areas(app, area).main;
-    let workspace = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(5),
-            Constraint::Length(if app.transfer_drawer && main.height >= 12 {
-                4
-            } else {
-                0
-            }),
-        ])
-        .split(main);
-    let inner = Block::default().borders(Borders::ALL).inner(workspace[0]);
-    (inner.width > 0 && inner.height > 0).then_some(inner)
+    // Where the last frame drew the preview surface.
+    let _ = area;
+    app.preview_rect
+        .get()
+        .filter(|r| r.width > 0 && r.height > 0)
 }
 pub(super) fn prepare_native_preview(
     app: &App,
@@ -1155,8 +1140,12 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         app.refresh_browser();
     }
     if restore.is_none() {
+        // The start view is the hub; Files of this device open in the launch folder.
         app.open_startup_directory(std::env::current_dir()?);
+        app.view = View::Network;
+        app.device = 0;
     }
+    app.reload_edges();
     app.refresh_work();
     app.refresh_containers();
     for d in 0..app.devices.len() {
@@ -1555,6 +1544,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             let result = sessions::attach(&app.devices[d], &session, observe);
             screen.resume()?;
             last_interaction = Instant::now();
+            app.returned_from(d, &session);
             app.set_notice_as(
                 if result.is_err() {
                     NoticeKind::Error
@@ -1573,6 +1563,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             dirty = true;
         }
         dirty |= app.expire_notice(Instant::now());
+        dirty |= app.poll_edge_job();
         let was_encoding = native_preview.pending();
         let size = screen.terminal.size()?;
         prepare_native_preview(
@@ -1593,7 +1584,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         // Animate only while work is pending; idle keeps its existing bounded redraw.
         if (app.creating
             || !app.active_transfer_keys().is_empty()
-            || (app.view == View::Work
+            || (matches!(app.view, View::Work | View::Network)
                 && app
                     .session_rows()
                     .iter()
@@ -1616,7 +1607,6 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         dirty |= app.refresh_session_preview(screen.terminal.size()?.width);
         let now = Instant::now();
         dirty |= app.tick_press(now);
-        dirty |= app.settle_device_refresh(now);
         dirty |= app.files_tick(now);
         // Coalesce bursts (key repeat, reply floods) to at most ~60 fps.
         let mut frame_wait = None;
@@ -1697,7 +1687,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             update_phase = UpdatePhase::Checking;
             last_update_check = Instant::now();
         }
-        if app.view == View::Work && last_session_refresh.elapsed() >= Duration::from_secs(3) {
+        if matches!(app.view, View::Work | View::Network)
+            && last_session_refresh.elapsed() >= Duration::from_secs(3)
+        {
             for d in 0..app.devices.len() {
                 if app.background_checks_enabled(d)
                     && (app.device == 0 || app.device == d + 1)
@@ -1722,7 +1714,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             app.refresh_work();
             app.refresh_containers();
             if app.view == View::Network {
-                app.refresh();
+                app.reload_edges();
             }
             if app.browser.is_some() {
                 if let Some(local) = app.devices.iter().position(|d| d.target.is_none()) {

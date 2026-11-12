@@ -94,17 +94,9 @@ impl App {
             self.input_key(key, mode);
             return;
         }
-        // `g` then a view letter goes there; `gg` stays "first row".
-        if self.navigation.goto_pending()
-            && key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
-        {
-            if let KeyCode::Char(c) = key.code {
-                if let Some(cmd) = keymap::chord(c) {
-                    self.navigation.reset();
-                    self.run_cmd(cmd);
-                    return;
-                }
-            }
+        if self.screen_key(key) {
+            self.navigation.reset();
+            return;
         }
         match keymap::resolve(self, &key) {
             Some(cmd) if cmd != keymap::Cmd::Motion => {
@@ -125,20 +117,11 @@ impl App {
     /// all arrive here, so a tap and its key share one implementation.
     pub(super) fn run_cmd(&mut self, cmd: keymap::Cmd) {
         use keymap::Cmd;
-        // Any command other than a motion acts on what the user sees as
-        // scoped, so a pending Files device switch lands first.
-        if cmd != Cmd::Motion && self.view == View::Files && self.device_refresh_due.is_some() {
-            self.device_refresh_due = None;
-            self.settle_file_device();
-        }
         match cmd {
             Cmd::Motion => {}
             Cmd::Goto(view) => self.goto_view(view),
-            Cmd::PrevView => self.cycle_view(-1),
-            Cmd::NextView => self.cycle_view(1),
             Cmd::NextPanel => self.cycle_focus(false),
             Cmd::PrevPanel => self.cycle_focus(true),
-            Cmd::FocusDir(dx, dy) => self.directional_focus(i32::from(dx), i32::from(dy)),
             Cmd::Palette => self.open_palette(""),
             Cmd::RunCommand => self.execute(Action::Command),
             Cmd::Help => {
@@ -149,10 +132,6 @@ impl App {
             Cmd::Primary => self.primary(),
             Cmd::Back => self.back(),
             Cmd::Search => {
-                if self.focus == Focus::Devices {
-                    self.begin_list_filter();
-                    return;
-                }
                 self.finish_visual();
                 self.input = Some(Input::Search);
                 self.focus = Focus::Workspace;
@@ -165,15 +144,11 @@ impl App {
                     self.search.clone()
                 };
             }
-            Cmd::Filter => self.begin_list_filter(),
             Cmd::New => self.session_shortcut(),
             Cmd::Jobs => self.execute(Action::Jobs),
-            Cmd::AddDevice => self.execute(Action::Add),
             Cmd::Watch => self.execute(Action::Observe),
-            Cmd::TypeInline => self.type_into_preview(),
-            Cmd::Zoom => self.toggle_preview_zoom(),
+            Cmd::View(verb) => self.view_action(verb),
             Cmd::Pin => self.toggle_pin(),
-            Cmd::Stop => self.stop_selected_session(),
             Cmd::AgentTasks => {
                 if let Some((device, session)) = self.selected_session() {
                     self.dialog =
@@ -182,11 +157,6 @@ impl App {
                     self.dialog_scroll = 0;
                     self.dialog_detail_focus = false;
                 }
-            }
-            Cmd::Refresh => {
-                // Explicit: the one place a device refresh clears provider caches.
-                self.device_refresh_due = None;
-                self.refresh();
             }
             Cmd::ToggleAccess => self.toggle_access(),
             Cmd::RemoveDevice => {
@@ -208,8 +178,6 @@ impl App {
                     self.network_tree_motion(false);
                 } else if self.view == View::Files && self.focus == Focus::Workspace {
                     self.parent_directory();
-                } else {
-                    self.focus = Focus::Devices;
                 }
             }
             Cmd::Right => {
@@ -275,12 +243,6 @@ impl App {
                     );
                 }
             }
-            Cmd::DetailDown => {
-                self.network_detail_scroll = self.network_detail_scroll.saturating_add(1).min(256)
-            }
-            Cmd::DetailUp => {
-                self.network_detail_scroll = self.network_detail_scroll.saturating_sub(1)
-            }
             Cmd::Do(action) => {
                 if self.action_enabled(action) {
                     self.execute(action);
@@ -327,26 +289,9 @@ impl App {
             self.focus = Focus::Workspace;
         }
     }
-    pub(super) fn cycle_view(&mut self, step: isize) {
-        let index = keymap::tab_index(self.view) as isize;
-        let tabs = keymap::TABS.len() as isize;
-        let next = (index + step).rem_euclid(tabs) as usize;
-        self.goto_view(keymap::TABS[next].0);
-    }
     /// Enter: the primary action of the focused panel.
     pub(super) fn primary(&mut self) {
-        if self.focus == Focus::Actions {
-            let actions = sidebar_actions(self);
-            if let Some((action, _)) = actions.get(self.side_selected) {
-                self.execute(*action)
-            };
-        } else if self.focus == Focus::Devices {
-            // Scope is already applied by moving; Enter lands in the view.
-            if self.view == View::Files {
-                self.select_file_device();
-            }
-            self.focus = Focus::Workspace;
-        } else {
+        {
             match self.view {
                 View::Secrets => {}
                 View::Containers => self.open_container_actions(),
@@ -382,10 +327,6 @@ impl App {
     }
     /// Esc: back / clear / focus up one level.
     pub(super) fn back(&mut self) {
-        if self.view == View::Work && self.focus == Focus::Workspace && self.preview_zoomed() {
-            self.toggle_preview_zoom();
-            return;
-        }
         if self.view == View::Files && self.focus == Focus::Workspace {
             if let Some(b) = self.browser.as_mut().filter(|b| b.preview.is_some()) {
                 if !b.preview_find.query.is_empty() {
@@ -428,24 +369,23 @@ impl App {
             }
         } else if !self.search.is_empty() {
             self.search.clear();
-        } else {
-            self.focus = Focus::Devices;
         }
     }
-    pub(super) fn stop_selected_session(&mut self) {
-        let Some((device, session)) = self.selected_session() else {
-            return;
-        };
-        if !self.observed(device, &session) {
+    /// Whether `session` may be stopped here now (CX-managed, still listed, helper
+    /// support checked); says why not otherwise.
+    pub(super) fn stoppable(&mut self, device: usize, session: &Session) -> bool {
+        if !self.observed(device, session) {
             self.set_notice("This pinned runtime has ended; no process was stopped".into());
-            return;
+            return false;
         }
         if session.external || !["shell", "codex", "claude"].contains(&session.provider.as_str()) {
             self.set_notice_as(
                 NoticeKind::Warning,
                 "Only CX-managed sessions can be stopped here".into(),
             );
-        } else if self.devices[device].target.is_some()
+            return false;
+        }
+        if self.devices[device].target.is_some()
             && !self.providers.get(&device).is_some_and(|(caps, checked)| {
                 transport::now().saturating_sub(*checked) < 60
                     && caps.iter().any(|c| {
@@ -458,48 +398,34 @@ impl App {
             })
         {
             self.check_providers(device);
-            self.set_notice("Checking session-stop support · press d again when ready".into());
-        } else {
-            self.dialog_selected = 0;
-            self.dialog_scroll = 0;
-            self.dialog_detail_focus = false;
-            self.dialog = Some(Dialog::StopShell(device, session));
-        }
-    }
-    /// Run the debounced device-scoped refresh once the selection settled.
-    /// Returns true when it ran (the frame changes).
-    pub(super) fn settle_device_refresh(&mut self, now: Instant) -> bool {
-        if self.device_refresh_due.is_none_or(|due| now < due) {
+            self.set_notice("Checking session-stop support · press ⌫ again when ready".into());
             return false;
-        }
-        self.device_refresh_due = None;
-        match self.view {
-            View::Work => {
-                for d in 0..self.devices.len() {
-                    if self.background_checks_enabled(d)
-                        && (self.device == 0 || self.device == d + 1)
-                        && !self.work[d].loading
-                    {
-                        self.work[d].loading = self.send(d, Operation::Sessions);
-                    }
-                }
-            }
-            View::Network => {
-                let selection = self.network_selection();
-                self.refresh();
-                self.restore_network_selection(selection);
-            }
-            View::Containers => self.refresh_containers(),
-            View::Files => self.settle_file_device(),
-            View::Secrets => {}
         }
         true
     }
-    /// Switch the Files browser to the scoped device without moving focus.
-    pub(super) fn settle_file_device(&mut self) {
-        let focus = self.focus;
-        self.select_file_device();
-        self.focus = focus;
+    /// Stop the session captured when `⌫` asked (its runtime identity, rechecked on
+    /// the execution host).
+    pub(super) fn send_stop(&mut self, d: usize, session: Session) {
+        self.send(
+            d,
+            if session.provider == "shell" {
+                Operation::StopSession {
+                    id: session.id,
+                    pid: session.pid,
+                    started: session.started,
+                    boot_id: session.boot_id,
+                }
+            } else {
+                Operation::StopAgentSession {
+                    id: session.id,
+                    pid: session.pid,
+                    started: session.started,
+                    boot_id: session.boot_id,
+                    provider: session.provider,
+                }
+            },
+        );
+        self.set_notice("Stopping confirmed session…".into());
     }
     pub(super) fn switch_pane(&mut self) {
         std::mem::swap(&mut self.browser, &mut self.other_browser);
@@ -510,70 +436,12 @@ impl App {
         self.generation += 1;
         self.refresh_browser();
     }
-    pub(super) fn directional_focus(&mut self, dx: i32, dy: i32) {
-        let panels = self.panels.borrow().clone();
-        let Some((_, _, current)) = panels.iter().find(|(focus, dest, _)| {
-            *focus == self.focus && (*focus != Focus::Workspace || *dest == self.destination_active)
-        }) else {
-            return;
-        };
-        let center = |r: &Rect| {
-            (
-                r.x as i32 * 2 + r.width as i32,
-                r.y as i32 * 2 + r.height as i32,
-            )
-        };
-        let (cx, cy) = center(current);
-        let selected = panels
-            .iter()
-            .filter_map(|(focus, dest, r)| {
-                let (x, y) = center(r);
-                let primary = (x - cx) * dx + (y - cy) * dy;
-                let cross = if dx != 0 {
-                    (y - cy).abs()
-                } else {
-                    (x - cx).abs()
-                };
-                (primary > 0).then_some((primary + cross * 2, *focus, *dest))
-            })
-            .min_by_key(|(score, _, _)| *score);
-        if let Some((_, focus, dest)) = selected {
-            if focus == Focus::Workspace
-                && self.other_browser.is_some()
-                && dest != self.destination_active
-            {
-                self.switch_pane();
-            }
-            self.focus = focus;
-        }
-    }
+    /// Tab in Files: the two locations of a transfer take turns.
     pub(super) fn cycle_focus(&mut self, reverse: bool) {
+        let _ = reverse;
         if self.view == View::Files && self.other_browser.is_some() {
-            if self.focus == Focus::Workspace && self.destination_active == reverse {
-                self.switch_pane();
-                return;
-            }
-            if (self.focus == Focus::Actions && !reverse)
-                || (self.focus == Focus::Devices && reverse)
-            {
-                if self.destination_active != reverse {
-                    self.switch_pane();
-                }
-            }
+            self.switch_pane();
         }
-        let step = |focus| match (focus, reverse) {
-            (Focus::Workspace, false) | (Focus::Actions, true) => Focus::Devices,
-            (Focus::Devices, false) | (Focus::Workspace, true) => Focus::Actions,
-            (Focus::Actions, false) | (Focus::Devices, true) => Focus::Workspace,
-        };
-        // Skip panels the current layout does not draw (the phone layout has
-        // no Actions panel). Without a rendered layout every panel counts.
-        let drawn: Vec<Focus> = self.panels.borrow().iter().map(|(f, _, _)| *f).collect();
-        let mut next = step(self.focus);
-        if !drawn.is_empty() && !drawn.contains(&next) {
-            next = step(next);
-        }
-        self.focus = next;
     }
     pub(super) fn mouse(&mut self, mouse: MouseEvent, area: Rect) -> bool {
         if self.scroll_session_preview(mouse) || self.click_session_preview(mouse) {
@@ -621,11 +489,6 @@ impl App {
                     && self.dialog.is_none()
                     && self.input.is_none() =>
             {
-                // Rows, breadcrumb segments and the inline preview are tap targets.
-                if mouse.modifiers == KeyModifiers::NONE && self.file_click(mouse.column, mouse.row)
-                {
-                    return true;
-                }
                 let target = self
                     .panels
                     .borrow()
@@ -668,7 +531,6 @@ impl App {
             self.dialog,
             Some(
                 Dialog::Delete(..)
-                    | Dialog::StopShell(..)
                     | Dialog::PendingExit(..)
                     | Dialog::ContainerConfirm(..)
                     | Dialog::DevcontainerUp(..)

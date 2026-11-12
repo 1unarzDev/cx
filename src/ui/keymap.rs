@@ -1,7 +1,7 @@
 //! The single keymap. Key dispatch (`keys.rs`), the help overlay, footer hints,
 //! the context menu and the palette's key column all read `BINDINGS`, so a key
 //! and its description can never drift apart.
-use super::{local_only, Action, App, Focus, View};
+use super::{Action, App, Focus, View};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// What a key, chip, tab or context-menu entry does. Mouse targets carry the
@@ -11,11 +11,8 @@ pub(super) enum Cmd {
     /// Documentation-only rows (selection motions are read by `navigation`).
     Motion,
     Goto(View),
-    PrevView,
-    NextView,
     NextPanel,
     PrevPanel,
-    FocusDir(i8, i8),
     Palette,
     RunCommand,
     Help,
@@ -25,19 +22,11 @@ pub(super) enum Cmd {
     /// Esc: back / clear / focus up one level.
     Back,
     Search,
-    Filter,
     New,
     Jobs,
-    AddDevice,
     Watch,
-    /// Type into the selected session's live preview.
-    TypeInline,
-    /// Zoom the live preview over the list (Esc returns).
-    Zoom,
     Pin,
-    Stop,
     AgentTasks,
-    Refresh,
     ToggleAccess,
     RemoveDevice,
     EditDevice,
@@ -50,40 +39,25 @@ pub(super) enum Cmd {
     ClearMarks,
     PreviewLinks,
     PreviewSearch,
-    DetailDown,
-    DetailUp,
     /// A palette/workspace action with its own availability (`action_enabled`).
     Do(Action),
+    /// A verb of the design's screens (`screens::view_action`): the same as its key
+    /// and its tap target.
+    View(&'static str),
 }
 
 /// Where a binding applies. Lookup walks the active contexts most specific first.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Ctx {
     Global,
-    Sessions,
-    Devices,
-    Actions,
+    Hub,
+    Device,
     FilesList,
     Files,
     Preview,
-    Network,
     Containers,
 }
-impl Ctx {
-    pub(super) fn title(self) -> &'static str {
-        match self {
-            Ctx::Global => "Everywhere",
-            Ctx::Sessions => "Sessions",
-            Ctx::Devices => "Devices",
-            Ctx::Actions => "Actions panel",
-            Ctx::FilesList => "Files",
-            Ctx::Files => "Files and previews",
-            Ctx::Preview => "File preview",
-            Ctx::Network => "Network",
-            Ctx::Containers => "Containers",
-        }
-    }
-}
+impl Ctx {}
 
 #[derive(Clone, Copy)]
 pub(super) struct K {
@@ -105,24 +79,10 @@ const fn ctrl(c: char) -> K {
         alt: false,
     }
 }
-const fn alt(c: char) -> K {
-    K {
-        code: KeyCode::Char(c),
-        ctrl: false,
-        alt: true,
-    }
-}
 const fn code(code: KeyCode) -> K {
     K {
         code,
         ctrl: false,
-        alt: false,
-    }
-}
-const fn ctrl_code(code: KeyCode) -> K {
-    K {
-        code,
-        ctrl: true,
         alt: false,
     }
 }
@@ -147,19 +107,17 @@ impl K {
 /// A footer chip: key text and a short label. Rank orders chips (lower first).
 #[derive(Clone, Copy)]
 pub(super) struct Hint {
-    pub key: &'static str,
     pub label: &'static str,
-    pub rank: u8,
 }
-const fn hint(key: &'static str, label: &'static str, rank: u8) -> Option<Hint> {
-    Some(Hint { key, label, rank })
+/// A binding's short name (context-menu rows); the key text and rank are kept in the
+/// table as documentation of the footer the design draws.
+const fn hint(_key: &'static str, label: &'static str, _rank: u8) -> Option<Hint> {
+    Some(Hint { label })
 }
 
 pub(super) struct Binding {
     pub ctx: Ctx,
     pub keys: &'static [K],
-    /// `g` followed by this character (the goto chord).
-    pub chord: Option<char>,
     /// Key text for help and the context menu.
     pub label: &'static str,
     pub cmd: Cmd,
@@ -183,7 +141,6 @@ macro_rules! bind {
         Binding {
             ctx: Ctx::$ctx,
             keys: &[$($k),*],
-            chord: None,
             label: $label,
             cmd: $cmd,
             help: $help,
@@ -202,21 +159,6 @@ macro_rules! alias {
         Binding { fold: true, ..bind!($ctx, [$($k),*], $label, $cmd, $help, $hint, $when) }
     };
 }
-macro_rules! goto {
-    ($c:expr, $label:expr, $view:ident, $help:expr) => {
-        Binding {
-            ctx: Ctx::Global,
-            keys: &[],
-            chord: Some($c),
-            label: $label,
-            cmd: Cmd::Goto(View::$view),
-            help: $help,
-            hint: None,
-            when: None,
-            fold: false,
-        }
-    };
-}
 
 fn files_search(app: &App) -> bool {
     app.browser.as_ref().is_some_and(|b| !b.search.is_empty())
@@ -233,20 +175,15 @@ fn pdf_preview(app: &App) -> bool {
 fn not_pdf_preview(app: &App) -> bool {
     !pdf_preview(app)
 }
+/// A remote device's own screen (the viewer has no address or posture to edit).
 fn real_device(app: &App) -> bool {
-    app.device > 0
-}
-fn work_local_only(app: &App) -> bool {
-    app.view == View::Work && local_only(app)
-}
-fn list_filter(app: &App) -> bool {
-    app.view != View::Files || app.focus == Focus::Devices
+    app.device
+        .checked_sub(1)
+        .and_then(|d| app.devices.get(d))
+        .is_some_and(|d| d.target.is_some())
 }
 fn sessions_selected(app: &App) -> bool {
     app.selected_session().is_some()
-}
-fn sessions_empty(app: &App) -> bool {
-    app.selected_session().is_none()
 }
 /// False on the Keys/Secrets placeholder body, where Enter and `/` have
 /// nothing to act on (the device rail keeps its own keys).
@@ -260,151 +197,165 @@ fn not_destination_paste(app: &App) -> bool {
     !destination_paste(app)
 }
 
-use KeyCode::{BackTab, Down, End, Enter, Esc, Home, Left, PageDown, PageUp, Right, Tab, Up, F};
+use KeyCode::{
+    BackTab, Backspace, Down, End, Enter, Esc, Home, Left, PageDown, PageUp, Right, Tab, Up, F,
+};
 
 /// Order matters twice: the first matching binding wins within a context, and
 /// help lists bindings in this order.
 pub(super) const BINDINGS: &[Binding] = &[
-    // Sessions list.
+    // Hub (the start view). Device letters, `e` + letter and the slots are read by
+    // `screens::screen_key` first; these rows name them for help and the menus.
     bind!(
-        Sessions,
+        Hub,
         [code(Enter)],
         "Enter",
-        Cmd::Primary,
-        "Attach the selected session",
-        hint("Enter", "Attach", 0),
-        Some(sessions_selected)
+        Cmd::View("open"),
+        "Open the selected device / attach the selected session",
+        hint("Enter", "Open", 0)
     ),
     bind!(
-        Sessions,
+        Hub,
+        [ch(' ')],
+        "Space",
+        Cmd::View("peek"),
+        "Peek the selected session",
+        hint("Space", "Peek", 1)
+    ),
+    bind!(
+        Hub,
+        [code(Backspace)],
+        "Backspace",
+        Cmd::View("stop"),
+        "Stop the selected session · Backspace again",
+        hint("Bksp", "Stop", 2)
+    ),
+    bind!(
+        Hub,
+        [code(Tab)],
+        "Tab",
+        Cmd::View("zone"),
+        "Network / sessions zone"
+    ),
+    // A device's sessions.
+    bind!(
+        Device,
         [code(Enter)],
-        "Enter",
-        Cmd::Primary,
-        "Start a new session here",
-        hint("Enter/n", "New session", 0),
-        Some(sessions_empty)
+        "Enter · a s d g",
+        Cmd::View("attach"),
+        "Attach the selected session / a slot",
+        hint("Enter", "Attach", 0)
     ),
     bind!(
-        Sessions,
-        [ch('i')],
-        "i",
-        Cmd::TypeInline,
-        "Type into the live preview · Ctrl+\\ leaves",
-        hint("i", "Type", 1),
-        Some(sessions_selected)
+        Device,
+        [ch('c')],
+        "c",
+        Cmd::View("new-claude"),
+        "New claude session here, attached",
+        hint("c", "Claude", 1)
     ),
     bind!(
-        Sessions,
-        [ch('z')],
-        "z",
-        Cmd::Zoom,
-        "Zoom the live preview · z / Esc back",
-        hint("z", "Zoom", 1),
-        Some(sessions_selected)
+        Device,
+        [ch('x')],
+        "x",
+        Cmd::View("new-codex"),
+        "New codex session here, attached",
+        hint("x", "Codex", 2)
     ),
     bind!(
-        Sessions,
+        Device,
+        [ch('n')],
+        "n",
+        Cmd::View("new-shell"),
+        "New shell here, attached",
+        hint("n", "Shell", 3)
+    ),
+    bind!(
+        Device,
+        [ch(' ')],
+        "Space",
+        Cmd::View("peek"),
+        "Peek the selected session",
+        hint("Space", "Peek", 4)
+    ),
+    bind!(
+        Device,
+        [ch('f')],
+        "f",
+        Cmd::View("files"),
+        "Files on this device",
+        hint("f", "Files", 4)
+    ),
+    bind!(
+        Device,
+        [ch('r')],
+        "r",
+        Cmd::View("retry"),
+        "Retry / refresh this device",
+        hint("r", "Retry", 5)
+    ),
+    bind!(
+        Device,
+        [code(Backspace)],
+        "Backspace",
+        Cmd::View("stop"),
+        "Stop the selected session · Backspace again",
+        hint("Bksp", "Stop · twice", 6)
+    ),
+    bind!(
+        Device,
         [ch('w')],
         "w",
         Cmd::Watch,
         "Watch selected session · read-only",
-        hint("w", "Watch · read-only", 2),
+        hint("", "Watch · read-only", 4),
         Some(sessions_selected)
     ),
     bind!(
-        Sessions,
+        Device,
         [ch('p')],
         "p",
         Cmd::Pin,
         "Pin / unpin; keep an ended-work bookmark",
-        hint("p", "Pin / unpin", 3),
+        hint("", "Pin / unpin", 4),
         Some(sessions_selected)
     ),
     bind!(
-        Sessions,
-        [ch('s')],
-        "s",
+        Device,
+        [ch('t')],
+        "t",
         Cmd::AgentTasks,
-        "Inspect selected session's tasks and subagents",
-        hint("s", "Agent tasks", 4),
+        "Inspect the session's tasks and subagents",
+        hint("", "Agent tasks", 4),
         Some(sessions_selected)
     ),
     bind!(
-        Sessions,
-        [ch('d')],
-        "d",
-        Cmd::Stop,
-        "Stop selected CX-managed session · confirm",
-        hint("d", "Stop · confirm", 5),
-        Some(sessions_selected)
-    ),
-    // Devices rail.
-    bind!(
-        Devices,
-        [code(Enter)],
-        "Enter",
-        Cmd::Primary,
-        "Scope the view to this device",
-        hint("Enter", "Open", 0)
-    ),
-    bind!(
-        Devices,
-        [ch('r')],
-        "r",
-        Cmd::Refresh,
-        "Refresh the selected device (moving never refreshes)",
-        hint("r", "Refresh", 1)
-    ),
-    bind!(
-        Devices,
+        Device,
         [ch('b'), ch('B')],
         "b",
         Cmd::ToggleAccess,
-        "Toggle selected remote device access · * means single-direction"
+        "Toggle this device's access · * means single-direction",
+        None,
+        Some(real_device)
     ),
     bind!(
-        Devices,
-        [ch('e'), ch('E')],
-        "e",
+        Device,
+        [ch('E')],
+        "E",
         Cmd::EditDevice,
-        "Edit the selected device's SSH address",
+        "Edit this device's SSH address",
         None,
         Some(real_device)
     ),
     bind!(
-        Devices,
-        [ch('x'), ch('X')],
-        "x",
+        Device,
+        [ch('X')],
+        "X",
         Cmd::RemoveDevice,
-        "Remove the selected device · confirm",
+        "Remove this device · confirm",
         None,
         Some(real_device)
     ),
-    bind!(
-        Devices,
-        [ch('/')],
-        "/ · f",
-        Cmd::Filter,
-        "Filter devices",
-        hint("/", "Filter", 2)
-    ),
-    bind!(
-        Devices,
-        [code(Right), ch('l')],
-        "→ / l",
-        Cmd::Right,
-        "Focus the workspace"
-    ),
-    // Actions panel.
-    bind!(
-        Actions,
-        [code(Enter)],
-        "Enter",
-        Cmd::Primary,
-        "Run the selected action",
-        hint("Enter", "Run", 0)
-    ),
-    // File preview (checked before Files).
     bind!(
         Preview,
         [ch('j'), ch('k'), code(Down), code(Up)],
@@ -464,7 +415,6 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Finish search / clear highlights / return to files",
         hint("Esc", "Back", 5)
     ),
-    // File list verbs (no preview open).
     bind!(
         FilesList,
         [code(Enter)],
@@ -491,6 +441,13 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Previous matching file",
         None,
         Some(files_search)
+    ),
+    bind!(
+        FilesList,
+        [ch('/')],
+        "/",
+        Cmd::Search,
+        "Find in this folder, live matches"
     ),
     bind!(
         FilesList,
@@ -609,7 +566,6 @@ pub(super) const BINDINGS: &[Binding] = &[
         hint("o", "Conflict policy", 3),
         Some(destination_paste)
     ),
-    // Files and previews.
     bind!(
         Files,
         [code(Enter)],
@@ -630,8 +586,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         "← / h",
         Cmd::Left,
         "Parent directory",
-        hint("h / l", "Parent / open", 1),
-        Some(destination_paste)
+        hint("h / l", "Parent / open", 1)
     ),
     alias!(
         Files,
@@ -642,8 +597,8 @@ pub(super) const BINDINGS: &[Binding] = &[
     ),
     bind!(
         Files,
-        [ch('s')],
-        "s",
+        [ch('S')],
+        "S",
         Cmd::SessionsHere,
         "Sessions in selected / current folder",
         hint("s", "Sessions here", 0),
@@ -656,34 +611,6 @@ pub(super) const BINDINGS: &[Binding] = &[
         Cmd::Back,
         "Clear selection / filter / search, then back to Sessions"
     ),
-    // Network.
-    bind!(
-        Network,
-        [code(Enter)],
-        "Enter",
-        Cmd::Primary,
-        "Open / connect",
-        hint("Enter", "Open / connect", 1)
-    ),
-    bind!(
-        Network,
-        [code(Left), ch('h')],
-        "h / l",
-        Cmd::Left,
-        "Fold / expand",
-        hint("h / l", "Fold / expand", 2)
-    ),
-    alias!(Network, [code(Right), ch('l')], "l", Cmd::Right, "Expand"),
-    bind!(
-        Network,
-        [ch('J')],
-        "J / K",
-        Cmd::DetailDown,
-        "Scroll details",
-        hint("J / K", "Scroll details", 3)
-    ),
-    alias!(Network, [ch('K')], "K", Cmd::DetailUp, "Scroll details up"),
-    // Containers.
     bind!(
         Containers,
         [code(Enter)],
@@ -707,7 +634,6 @@ pub(super) const BINDINGS: &[Binding] = &[
         Cmd::Right,
         "Expand"
     ),
-    // Everywhere.
     bind!(
         Global,
         [code(Up), code(Down), ch('j'), ch('k')],
@@ -732,46 +658,6 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Page",
         None
     ),
-    goto!('s', "g s", Work, "Go to Sessions"),
-    goto!('f', "g f", Files, "Go to Files"),
-    goto!('n', "g n", Network, "Go to Network"),
-    goto!('k', "g k", Secrets, "Go to Keys / Secrets"),
-    bind!(
-        Global,
-        [ch('[')],
-        "[ / ]",
-        Cmd::PrevView,
-        "Previous / next view"
-    ),
-    alias!(Global, [ch(']')], "]", Cmd::NextView, "Next view"),
-    bind!(
-        Global,
-        [alt('1')],
-        "Alt+1..4",
-        Cmd::Goto(View::Work),
-        "Go to view 1-4 (Sessions, Files, Network, Keys)"
-    ),
-    alias!(
-        Global,
-        [alt('2')],
-        "Alt+2",
-        Cmd::Goto(View::Files),
-        "Go to Files"
-    ),
-    alias!(
-        Global,
-        [alt('3')],
-        "Alt+3",
-        Cmd::Goto(View::Network),
-        "Go to Network"
-    ),
-    alias!(
-        Global,
-        [alt('4')],
-        "Alt+4",
-        Cmd::Goto(View::Secrets),
-        "Go to Keys / Secrets"
-    ),
     bind!(
         Global,
         [code(Tab)],
@@ -785,48 +671,6 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Shift+Tab",
         Cmd::PrevPanel,
         "Previous panel"
-    ),
-    bind!(
-        Global,
-        [ctrl_code(Left)],
-        "Ctrl+arrows",
-        Cmd::FocusDir(-1, 0),
-        "Move panel focus by direction"
-    ),
-    alias!(
-        Global,
-        [ctrl_code(Right)],
-        "Ctrl+→",
-        Cmd::FocusDir(1, 0),
-        "Focus panel to the right"
-    ),
-    alias!(
-        Global,
-        [ctrl_code(Up)],
-        "Ctrl+↑",
-        Cmd::FocusDir(0, -1),
-        "Focus panel above"
-    ),
-    alias!(
-        Global,
-        [ctrl_code(Down)],
-        "Ctrl+↓",
-        Cmd::FocusDir(0, 1),
-        "Focus panel below"
-    ),
-    bind!(
-        Global,
-        [code(Left), ch('h')],
-        "← / h",
-        Cmd::Left,
-        "Focus devices"
-    ),
-    alias!(
-        Global,
-        [code(Right), ch('l')],
-        "→ / l",
-        Cmd::Right,
-        "Focus the workspace"
     ),
     bind!(
         Global,
@@ -846,42 +690,6 @@ pub(super) const BINDINGS: &[Binding] = &[
     ),
     bind!(
         Global,
-        [ch('/')],
-        "/",
-        Cmd::Search,
-        "Search",
-        hint("/", "Search", 7),
-        Some(not_placeholder)
-    ),
-    bind!(
-        Global,
-        [ch('f')],
-        "f",
-        Cmd::Filter,
-        "Filter the list",
-        None,
-        Some(list_filter)
-    ),
-    bind!(
-        Global,
-        [ch('a')],
-        "a",
-        Cmd::AddDevice,
-        "Add by SSH address",
-        hint("a", "Add by SSH address", 2),
-        Some(work_local_only)
-    ),
-    bind!(
-        Global,
-        [ch('n')],
-        "n",
-        Cmd::New,
-        "New session in current folder",
-        hint("n", "New session", 1),
-        Some(not_files_search)
-    ),
-    bind!(
-        Global,
         [ch(':')],
         ":",
         Cmd::RunCommand,
@@ -889,7 +697,6 @@ pub(super) const BINDINGS: &[Binding] = &[
         hint("n / :", "Session / command", 5),
         Some(not_files_search)
     ),
-    // `:` always runs; only its footer chip yields to the search's `n / N`.
     alias!(
         Global,
         [ch(':')],
@@ -930,28 +737,60 @@ pub(super) const BINDINGS: &[Binding] = &[
         "Quit cx; work keeps running",
         hint("Ctrl C", "Quit", 10)
     ),
+    bind!(
+        Global,
+        [ch('/')],
+        "/",
+        Cmd::Palette,
+        "Find anything: sessions, devices, actions, folders"
+    ),
+    bind!(
+        Global,
+        [ch('`')],
+        "`",
+        Cmd::View("hub"),
+        "The hub, from any screen (also Esc Esc)"
+    ),
+    bind!(
+        Global,
+        [ch('-')],
+        "-",
+        Cmd::View("last"),
+        "Re-attach the last detached session"
+    ),
+    bind!(
+        Global,
+        [ch('+')],
+        "+",
+        Cmd::View("invite"),
+        "Invite a device"
+    ),
+    bind!(
+        Global,
+        [ch('K')],
+        "K",
+        Cmd::View("secrets"),
+        "Keys and secrets"
+    ),
 ];
 
 /// Contexts for the current focus, most specific first, ending with Global.
 pub(super) fn contexts(app: &App) -> Vec<Ctx> {
     let mut ctx = Vec::with_capacity(3);
-    match app.focus {
-        Focus::Devices => ctx.push(Ctx::Devices),
-        Focus::Actions => ctx.push(Ctx::Actions),
-        Focus::Workspace => match app.view {
-            View::Work => ctx.push(Ctx::Sessions),
-            View::Files => {
-                if app.browser.as_ref().is_some_and(|b| b.preview.is_some()) {
-                    ctx.push(Ctx::Preview);
-                } else {
-                    ctx.push(Ctx::FilesList);
-                }
-                ctx.push(Ctx::Files);
+    match app.view {
+        View::Network => ctx.push(Ctx::Hub),
+        View::Work if app.device > 0 => ctx.push(Ctx::Device),
+        View::Work => {}
+        View::Files => {
+            if app.browser.as_ref().is_some_and(|b| b.preview.is_some()) {
+                ctx.push(Ctx::Preview);
+            } else {
+                ctx.push(Ctx::FilesList);
             }
-            View::Network => ctx.push(Ctx::Network),
-            View::Containers => ctx.push(Ctx::Containers),
-            View::Secrets => {}
-        },
+            ctx.push(Ctx::Files);
+        }
+        View::Containers => ctx.push(Ctx::Containers),
+        View::Secrets => {}
     }
     ctx.push(Ctx::Global);
     ctx
@@ -974,106 +813,6 @@ fn winner(app: &App, key: &KeyEvent) -> Option<&'static Binding> {
 /// The command a key runs in the current context, if any.
 pub(super) fn resolve(app: &App, key: &KeyEvent) -> Option<Cmd> {
     winner(app, key).map(|b| b.cmd)
-}
-/// True when this binding is the one its first key actually runs right now.
-fn effective(app: &App, binding: &'static Binding) -> bool {
-    let Some(k) = binding.keys.first() else {
-        return binding.chord.is_some();
-    };
-    let mut modifiers = KeyModifiers::NONE;
-    if k.ctrl {
-        modifiers |= KeyModifiers::CONTROL;
-    }
-    if k.alt {
-        modifiers |= KeyModifiers::ALT;
-    }
-    winner(app, &KeyEvent::new(k.code, modifiers)).is_some_and(|w| std::ptr::eq(w, binding))
-}
-
-/// The goto chord `g <c>`, if `c` names a view.
-pub(super) fn chord(c: char) -> Option<Cmd> {
-    BINDINGS.iter().find(|b| b.chord == Some(c)).map(|b| b.cmd)
-}
-
-/// Footer chips for the focused context, ranked. A key or label already
-/// claimed by a more specific context is not repeated.
-pub(super) fn hints(app: &App) -> Vec<(Hint, Cmd)> {
-    let mut out: Vec<(Hint, Cmd)> = Vec::new();
-    for ctx in contexts(app) {
-        for binding in BINDINGS.iter().filter(|b| b.ctx == ctx) {
-            let Some(hint) = binding.hint else { continue };
-            // Combined chips ("n / :") yield when any of their keys already
-            // has a chip of its own.
-            let parts = |key: &'static str| key.split(" / ");
-            if !effective(app, binding)
-                || out.iter().any(|(h, _)| {
-                    h.label == hint.label || parts(h.key).any(|a| parts(hint.key).any(|b| a == b))
-                })
-            {
-                continue;
-            }
-            out.push((hint, binding.cmd));
-        }
-    }
-    out.sort_by_key(|(hint, _)| hint.rank);
-    out
-}
-
-/// Help sections: the active contexts first (with their available bindings),
-/// then every other context, so the overlay is complete but leads with what applies.
-pub(super) fn help_sections(app: &App) -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
-    let active = contexts(app);
-    // Key labels a more specific active context already explains; the generic
-    // Everywhere row for the same key (e.g. Enter "Open") is folded (P15).
-    let specific: Vec<&'static str> = active
-        .iter()
-        .filter(|ctx| **ctx != Ctx::Global)
-        .flat_map(|ctx| BINDINGS.iter().filter(move |b| b.ctx == *ctx))
-        .filter(|b| available(app, b))
-        .map(|b| b.label)
-        .collect();
-    let mut order = active.clone();
-    for ctx in [
-        Ctx::Sessions,
-        Ctx::Devices,
-        Ctx::FilesList,
-        Ctx::Files,
-        Ctx::Preview,
-        Ctx::Network,
-        Ctx::Containers,
-        Ctx::Actions,
-    ] {
-        if !order.contains(&ctx) {
-            order.push(ctx);
-        }
-    }
-    order
-        .into_iter()
-        .map(|ctx| {
-            let mut rows: Vec<(&'static str, &'static str)> = Vec::new();
-            for binding in BINDINGS.iter().filter(|b| b.ctx == ctx && !b.fold) {
-                if active.contains(&ctx) && !available(app, binding) {
-                    continue;
-                }
-                if ctx == Ctx::Global && specific.contains(&binding.label) {
-                    continue;
-                }
-                // One row per key label; the first description wins.
-                if rows.iter().any(|(label, _)| *label == binding.label) {
-                    continue;
-                }
-                // Secondary halves of combined rows ("N" after "n / N") are folded.
-                if rows.iter().any(|(label, _)| {
-                    label.contains(" / ") && label.split(" / ").any(|p| p == binding.label)
-                }) {
-                    continue;
-                }
-                rows.push((binding.label, binding.help));
-            }
-            (ctx.title(), rows)
-        })
-        .filter(|(_, rows)| !rows.is_empty())
-        .collect()
 }
 
 /// The short name of a binding: its footer-chip label, else the help text
@@ -1098,7 +837,7 @@ pub(super) fn context_menu(app: &App) -> Vec<(&'static str, &'static str, Cmd)> 
         if ctx == Ctx::Global {
             break;
         }
-        for binding in BINDINGS.iter().filter(|b| b.ctx == ctx) {
+        for binding in BINDINGS.iter().filter(|b| b.ctx == ctx && !b.fold) {
             if matches!(
                 binding.cmd,
                 Cmd::Motion | Cmd::Back | Cmd::Left | Cmd::Right
@@ -1139,22 +878,6 @@ pub(super) fn key_for(app: &App, cmd: Cmd) -> Option<&'static str> {
         .map(|b| b.label)
 }
 
-/// The four top-level views in tab order.
-pub(super) const TABS: [(View, &str, &str); 4] = [
-    (View::Work, "Sessions", "Sess"),
-    (View::Files, "Files", "Files"),
-    (View::Network, "Network", "Net"),
-    (View::Secrets, "Keys", "Keys"),
-];
-pub(super) fn tab_index(view: View) -> usize {
-    match view {
-        View::Work | View::Containers => 0,
-        View::Files => 1,
-        View::Network => 2,
-        View::Secrets => 3,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1162,7 +885,7 @@ mod tests {
     fn every_dispatchable_binding_has_a_key_or_chord_and_help() {
         for b in BINDINGS {
             assert!(!b.help.is_empty() && !b.label.is_empty());
-            assert!(!b.keys.is_empty() || b.chord.is_some(), "{}", b.label);
+            assert!(!b.keys.is_empty(), "{}", b.label);
         }
     }
     #[test]
@@ -1175,11 +898,16 @@ mod tests {
         }
     }
     #[test]
-    fn goto_chords_cover_the_four_views() {
-        assert_eq!(chord('s'), Some(Cmd::Goto(View::Work)));
-        assert_eq!(chord('f'), Some(Cmd::Goto(View::Files)));
-        assert_eq!(chord('n'), Some(Cmd::Goto(View::Network)));
-        assert_eq!(chord('k'), Some(Cmd::Goto(View::Secrets)));
-        assert_eq!(chord('x'), None);
+    fn no_static_binding_takes_a_device_letter_on_the_hub() {
+        // The hub's letters are devices: only `e` (link) and `j k` (motion) are
+        // bound there, and `K` (keys) is uppercase.
+        for c in 'a'..='z' {
+            let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+            let taken = BINDINGS
+                .iter()
+                .filter(|b| matches!(b.ctx, Ctx::Hub | Ctx::Global))
+                .any(|b| b.keys.iter().any(|k| k.matches(&key)));
+            assert_eq!(taken, "jkgG".contains(c), "{c}");
+        }
     }
 }

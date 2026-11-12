@@ -33,7 +33,7 @@ impl App {
             Dialog::PinnedEnded(..) => 2,
             Dialog::Jobs => self.job_rows().len(),
             Dialog::AgentTasks(_, session) => session.agent_tasks.len(),
-            Dialog::Delete(..) | Dialog::StopShell(..) => 2,
+            Dialog::Delete(..) => 2,
             Dialog::PendingExit(_) => 2,
             Dialog::Neighbor(..) => 1,
             Dialog::Peer(_) => 5,
@@ -102,7 +102,7 @@ impl App {
         }
         if matches!(
             dialog,
-            Dialog::Delete(..) | Dialog::StopShell(..) | Dialog::RemoveDevice(..) | Dialog::Reset
+            Dialog::Delete(..) | Dialog::RemoveDevice(..) | Dialog::Reset
         ) && !key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -137,7 +137,6 @@ impl App {
             Dialog::Jobs
                 | Dialog::AgentTasks(..)
                 | Dialog::Delete(..)
-                | Dialog::StopShell(..)
                 | Dialog::RemoveDevice(..)
                 | Dialog::Reset
                 | Dialog::ContainerConfirm(..)
@@ -172,10 +171,7 @@ impl App {
                     if self.dialog_detail_focus
                         && matches!(
                             dialog,
-                            Dialog::Delete(..)
-                                | Dialog::StopShell(..)
-                                | Dialog::RemoveDevice(..)
-                                | Dialog::Reset
+                            Dialog::Delete(..) | Dialog::RemoveDevice(..) | Dialog::Reset
                         ) =>
                 {
                     self.dialog_detail_focus = false;
@@ -248,7 +244,6 @@ impl App {
             | Dialog::Permissions(..)
             | Dialog::SessionPicker(..)
             | Dialog::PinnedEnded(..)
-            | Dialog::StopShell(..)
             | Dialog::PendingExit(..)) => self.session_dialog_enter(dialog),
             dialog @ (Dialog::DevcontainerUp(..)
             | Dialog::ContainerActions(..)
@@ -403,31 +398,6 @@ impl App {
                     }
                 } else {
                     self.refresh_sessions_on(d);
-                }
-            }
-            Dialog::StopShell(d, session) => {
-                self.dialog = None;
-                if self.dialog_selected == 1 {
-                    self.send(
-                        d,
-                        if session.provider == "shell" {
-                            Operation::StopSession {
-                                id: session.id,
-                                pid: session.pid,
-                                started: session.started,
-                                boot_id: session.boot_id,
-                            }
-                        } else {
-                            Operation::StopAgentSession {
-                                id: session.id,
-                                pid: session.pid,
-                                started: session.started,
-                                boot_id: session.boot_id,
-                                provider: session.provider,
-                            }
-                        },
-                    );
-                    self.set_notice("Stopping confirmed session…".into());
                 }
             }
             Dialog::PendingExit(_) => {
@@ -675,18 +645,12 @@ pub(super) enum ConfirmationLayout {
 pub(super) fn confirmation_buttons(
     frame: &mut Frame,
     area: Rect,
-    stop: bool,
     selected: usize,
     detail_focus: bool,
     layout: ConfirmationLayout,
     labels: [&str; 2],
 ) {
     frame.render_widget(Clear, area);
-    let labels = if stop && area.width < 38 {
-        ["Keep", "Stop"]
-    } else {
-        labels
-    };
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])

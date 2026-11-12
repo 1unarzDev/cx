@@ -1,6 +1,6 @@
 //! Active-panel adapters: keyboard and mouse motions share the same selection effects.
 use super::navigation::{List, Target};
-use super::{doc_max_scroll, shift, sidebar_actions, App, Focus, View};
+use super::{doc_max_scroll, shift, App, View};
 
 pub(super) struct Active<'a> {
     app: &'a mut App,
@@ -11,7 +11,7 @@ pub(super) fn active(app: &mut App) -> Active<'_> {
 impl Target for Active<'_> {
     fn move_by(&mut self, delta: isize) {
         let app = &mut *self.app;
-        if app.view == View::Containers && app.focus == Focus::Workspace {
+        if app.view == View::Containers {
             let length = app.container_rows().len();
             List {
                 selected: &mut app.container_selected,
@@ -20,86 +20,20 @@ impl Target for Active<'_> {
             .move_by(delta);
             return;
         }
-        if app.view == View::Network {
-            app.network_detail_scroll = 0;
-        }
-        match app.focus {
-            Focus::Devices => Devices { app }.move_by(delta),
-            Focus::Actions => {
-                let length = sidebar_actions(app).len();
+        match app.view {
+            View::Files => Files { app }.move_by(delta),
+            // The design's screens: the hub's zones, a device's slots, secret cards.
+            View::Network | View::Secrets => app.screen_move(delta),
+            View::Work if app.device > 0 => app.screen_move(delta),
+            _ => {
+                let length = app.session_rows().len();
                 List {
-                    selected: &mut app.side_selected,
+                    selected: &mut app.selected,
                     length,
                 }
                 .move_by(delta);
             }
-            Focus::Workspace => match app.view {
-                View::Files => Files { app }.move_by(delta),
-                View::Network => {
-                    let length = app.network_rows().len();
-                    List {
-                        selected: &mut app.network_selected,
-                        length,
-                    }
-                    .move_by(delta);
-                }
-                View::Secrets => {}
-                _ => {
-                    let length = app.session_rows().len();
-                    List {
-                        selected: &mut app.selected,
-                        length,
-                    }
-                    .move_by(delta);
-                }
-            },
         }
-    }
-}
-struct Devices<'a> {
-    app: &'a mut App,
-}
-impl Target for Devices<'_> {
-    /// Moving in Devices is a pure scope change: no refresh, no cache clearing
-    /// (P17). The scoped refresh runs once the selection settles.
-    fn move_by(&mut self, delta: isize) {
-        let rows = self.app.device_rows();
-        let current = rows.iter().position(|d| *d == self.app.device).unwrap_or(0);
-        let next = rows[shift(current, delta, rows.len())];
-        if next == self.app.device {
-            return;
-        }
-        let network_selection = if self.app.view == View::Network {
-            self.app.network_selection()
-        } else {
-            None
-        };
-        let session = self
-            .app
-            .selected_session()
-            .map(|(d, s)| (d, super::workspaces::runtime_key(&s)));
-        self.app.device = next;
-        if self.app.view == View::Files {
-            // The browser switch lists a (possibly remote) directory, so it
-            // waits for the selection to settle like every other scope change.
-            self.app.device_refresh_due =
-                Some(std::time::Instant::now() + super::DEVICE_REFRESH_SETTLE);
-            return;
-        }
-        // Keep the selected session when it is still in scope, by identity.
-        self.app.selected = session
-            .and_then(|(device, key)| {
-                self.app
-                    .session_rows()
-                    .iter()
-                    .position(|(d, s)| *d == device && super::workspaces::runtime_key(s) == key)
-            })
-            .unwrap_or(0);
-        if self.app.view == View::Network {
-            self.app.restore_network_selection(network_selection);
-        }
-        self.app.device_refresh_due =
-            Some(std::time::Instant::now() + super::DEVICE_REFRESH_SETTLE);
     }
 }
 struct Files<'a> {

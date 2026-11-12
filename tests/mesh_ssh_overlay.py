@@ -3,7 +3,8 @@
 
 Two cx identities on this machine, each with its own temporary HOME and state. The viewer runs
 `cx invite` (a one-shot listener on 127.0.0.1) and the joiner runs `cx mesh pair CODE 127.0.0.1:PORT`.
-Both check that sshd answers on 127.0.0.1:22 (this host's own; only a TCP connect). Then a private sshd (running as this user, authorizing only the
+Both check that sshd answers (only a TCP connect; a stand-in listener given as CX_JOIN_SSH_PORT,
+honoured by debug builds, so the host need not run sshd on port 22). Then a private sshd (running as this user, authorizing only the
 viewer's temporary authorized_keys) proves the key the viewer installed logs in. Also: an enrolled
 identity refused, wrong codes refused and rate-limited, replay, a typo caught offline, expiry and
 Ctrl-C (the port closed each time), revoke, and `cx mesh backends --json` with a fake tailscale on PATH.
@@ -62,13 +63,17 @@ def is_open(port):
 with tempfile.TemporaryDirectory(prefix="cx-mesh-join-") as temporary:
     root = pathlib.Path(temporary)
     root.chmod(0o700)
+    # The "sshd answers" check is a TCP connect: a listener stands in for port 22.
+    stand_in = socket.socket()
+    stand_in.bind(("127.0.0.1", 0))
+    stand_in.listen(16)
 
     def side(name, machine):
         home = root / name
         (home / ".ssh").mkdir(parents=True, mode=0o700)
         env = dict(os.environ, HOME=str(home), XDG_STATE_HOME=str(home / "state"), XDG_CONFIG_HOME=str(home / "config"),
                    XDG_CACHE_HOME=str(home / "cache"), USER=account, CX_JOIN_MACHINE_ID=machine, CLOUDFLARE_API_TOKEN="",
-                   CX_JOIN_HOST_KEY=str(root / "host.pub"))
+                   CX_JOIN_HOST_KEY=str(root / "host.pub"), CX_JOIN_SSH_PORT=str(stand_in.getsockname()[1]))
         return home, env
 
     viewer, venv = side("viewer", "viewer-machine")

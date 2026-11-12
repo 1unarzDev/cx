@@ -310,6 +310,20 @@ fn host_key() -> Result<String> {
     peer_ssh::host_public_key().context("this host has no readable SSH Ed25519 host key")
 }
 
+/// sshd's port on both devices: 22, as pairing enrolls `account@host` with no port. Debug
+/// builds take the loopback fixture's stand-in from CX_JOIN_SSH_PORT (CI runners need not run
+/// sshd on 22).
+fn sshd_port() -> u16 {
+    #[cfg(debug_assertions)]
+    if let Some(p) = std::env::var("CX_JOIN_SSH_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+    {
+        return p;
+    }
+    SSH_PORT
+}
+
 fn machine_id() -> String {
     fixture_machine_id().unwrap_or_else(|| {
         fs::read_to_string("/etc/machine-id")
@@ -686,7 +700,7 @@ fn accept(
     now: u64,
 ) -> Result<(JoinResponse, Value)> {
     let device = check_request(p, req, local, source, now)?;
-    ensure_sshd(&source.to_string(), SSH_PORT).context("the joining device")?;
+    ensure_sshd(&source.to_string(), sshd_port()).context("the joining device")?;
     let name = pair_new(&device, &req.host_key, &req.client_key)?;
     let identity = peer_ssh::identity()?;
     let me = store::local_device();
@@ -813,7 +827,7 @@ pub fn join(code_text: &str, host_text: &str, opts: &JoinOptions) -> Result<Valu
     check_identity(&name, &local.host, &local.account, &machine_id())?;
     let identity = peer_ssh::identity()?;
     let key = code::key(&code);
-    ensure_sshd(&host, SSH_PORT).context("the viewer")?;
+    ensure_sshd(&host, sshd_port()).context("the viewer")?;
     let stream = connect(&host, port)?;
     stream.set_write_timeout(Some(ANSWER_TIMEOUT))?;
     let mut request = JoinRequest {

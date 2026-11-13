@@ -3134,7 +3134,8 @@ impl AttachGuard {
     }
     fn passed(&mut self) -> Result<bool> {
         use std::io::{Read, Seek, SeekFrom};
-        validate_attach_guard_file(&self.file)?;
+        // (The predicate removes the name once it has written its verdict.)
+        validate_attach_guard_meta(&self.file, 0..=1)?;
         self.file.seek(SeekFrom::Start(0))?;
         let mut bytes = Vec::new();
         (&mut self.file).take(3).read_to_end(&mut bytes)?;
@@ -3147,13 +3148,16 @@ impl Drop for AttachGuard {
     }
 }
 fn validate_attach_guard_file(file: &fs::File) -> Result<()> {
+    validate_attach_guard_meta(file, 1..=1)
+}
+fn validate_attach_guard_meta(file: &fs::File, links: std::ops::RangeInclusive<u64>) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
     let metadata = file.metadata()?;
     anyhow::ensure!(
         metadata.is_file()
             && metadata.uid() == unsafe { libc::geteuid() }
             && metadata.mode() & 0o777 == 0o600
-            && metadata.nlink() == 1
+            && links.contains(&metadata.nlink())
             && metadata.len() <= 2,
         "invalid attachment guard file"
     );
@@ -3204,7 +3208,69 @@ pub fn native_attach_check(
     );
     file.write_all(b"ok")?;
     file.sync_all()?;
+    // Its owner reads the verdict through the descriptor it holds, so the name can go
+    // now: an attach can last days and its process can die without unwinding (a closed
+    // terminal's watchdog `_exit`, SIGHUP over ssh), which used to leave the file behind.
+    let _ = fs::remove_file(attach_guard_path(token)?);
     Ok(())
+}
+/// Stale attachment leftovers in the state dir: `attach-guard-<64 hex>` files (and
+/// v0.2.0's `attach-ticket-<hex>`) older than an hour that no process holds open. Only
+/// where /proc tells which files are open; nothing else is ever touched.
+pub fn sweep_attach_leftovers() {
+    use std::os::unix::fs::MetadataExt;
+    const BOUND: Duration = Duration::from_secs(3600);
+    let Ok(dir) = state().and_then(|d| Ok(d.canonicalize()?)) else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return;
+    };
+    let hex = |h: &str| !h.is_empty() && h.len() <= 64 && h.bytes().all(|b| b.is_ascii_hexdigit());
+    let stale: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            let ours = name
+                .strip_prefix("attach-guard-")
+                .is_some_and(valid_attach_guard)
+                || name.strip_prefix("attach-ticket-").is_some_and(hex);
+            // (DirEntry metadata does not follow a symlink.)
+            ours && e.metadata().is_ok_and(|m| {
+                m.is_file()
+                    && m.uid() == unsafe { libc::geteuid() }
+                    && m.modified()
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age > BOUND)
+            })
+        })
+        .map(|e| e.path())
+        .collect();
+    if stale.is_empty() {
+        return;
+    }
+    // A live owner holds its guard open.
+    let Ok(procs) = fs::read_dir("/proc") else {
+        return;
+    };
+    let mut open = std::collections::HashSet::new();
+    for p in procs.flatten() {
+        if !p.file_name().to_string_lossy().bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        for fd in fs::read_dir(p.path().join("fd")).into_iter().flatten().flatten() {
+            if let Ok(target) = fs::read_link(fd.path()) {
+                if target.starts_with(&dir) {
+                    open.insert(target);
+                }
+            }
+        }
+    }
+    for path in stale.iter().filter(|p| !open.contains(*p)) {
+        let _ = fs::remove_file(path);
+    }
 }
 fn attach_predicate(executable: &std::path::Path, payload: &str) -> Result<String> {
     // if-shell inherits the server's environment, which may predate this
@@ -4103,6 +4169,9 @@ esac
                 )
                 .unwrap();
                 assert!(guard.passed().unwrap());
+                // The owner keeps the verdict through its descriptor; the name is gone
+                // at once, so an owner that dies mid-attach leaves nothing behind.
+                assert!(!guard_path.exists(), "a passed guard must not outlive its check");
                 assert!(
                     native_attach_check(
                         &payload,
@@ -4366,6 +4435,39 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
         }
         assert!(valid_attach_guard(&"a".repeat(64)));
         assert!(!valid_attach_guard(&"g".repeat(64)));
+    }
+    #[test]
+    fn startup_sweep_removes_only_stale_unowned_attach_leftovers() {
+        crate::store::isolate_test_state();
+        let dir = state().unwrap();
+        let old = std::time::SystemTime::now() - Duration::from_secs(2 * 3600);
+        let make = |name: &str, aged: bool| {
+            let path = dir.join(name);
+            fs::write(&path, b"ok").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            if aged {
+                fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_modified(old)
+                    .unwrap();
+            }
+            path
+        };
+        let stale = make(&format!("attach-guard-{}", "a".repeat(64)), true);
+        let ticket = make("attach-ticket-0123abcd", true);
+        let fresh = make(&format!("attach-guard-{}", "b".repeat(64)), false);
+        let held = make(&format!("attach-guard-{}", "c".repeat(64)), true);
+        let _owner = fs::File::open(&held).unwrap();
+        let current = make("attach-ticket", true);
+        let other = make("attach-guard-notes", true);
+        let unrelated = make("devices.json", true);
+        sweep_attach_leftovers();
+        assert!(!stale.exists() && !ticket.exists(), "stale leftovers stay");
+        for kept in [&fresh, &held, &current, &other, &unrelated] {
+            assert!(kept.exists(), "{} was removed", kept.display());
+        }
     }
 
     #[test]

@@ -1313,6 +1313,8 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     let _ = super::caps::caps();
     let devices = store::devices()?;
     anyhow::ensure!(!devices.is_empty(), "No local device available");
+    // Off the start path: attach guards a killed attach left behind.
+    thread::spawn(crate::sessions::sweep_attach_leftovers);
     let (tx, rx) = mpsc::sync_channel::<Task>(32);
     // One wake source: input, replies and helper events share this channel.
     let (wake_tx, wake_rx) = mpsc::channel::<Wake>();

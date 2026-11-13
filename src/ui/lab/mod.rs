@@ -753,7 +753,8 @@ mod nebula_tests {
     }
 
     /// A folded cluster's member letters wear one calm tone: its up members share a
-    /// colour and its down ones one dimmer colour, never a colour per letter.
+    /// colour and its down ones one dimmer colour, never a colour per letter, and
+    /// nothing but letters and a closing `…` sits in the row (no down marker).
     #[test]
     fn folded_member_letters_share_one_tone() {
         let mut rows = 0;
@@ -782,7 +783,11 @@ mod nebula_tests {
                                 gap = 0;
                             } else if sym == " " {
                                 gap += 1;
-                            } else if n > 0 && sym != "✕" {
+                            } else if n > 0 {
+                                assert!(
+                                    !["✕", "×", "!"].contains(&sym),
+                                    "{f} {w}x{h}: fold at ({x},{y}) has {sym:?} in its letters"
+                                );
                                 break;
                             }
                             cx += if right { 1 } else { -1 };

@@ -286,7 +286,8 @@ fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, sel: &str) -> Plan<'a> {
     };
     let mut ladder: Vec<(Mode, usize)> = Vec::new();
     if !cx.touch() {
-        if cx.size() >= Size::M {
+        // Narrow but tall (95x50) still has room for folded clusters' letter rows.
+        if cx.size() >= Size::M || cx.area.height >= 45 {
             ladder.extend([(Mode::Full, 16), (Mode::Full, 12)]);
         }
         ladder.extend([
@@ -681,6 +682,71 @@ fn letter_tok(cl: &Cl) -> Tok {
     }
 }
 
+/// The most member letters a folded cluster shows; the rest end in a dim `…`.
+const ROW_MAX: usize = 8;
+
+/// A folded cluster's member letters, up ones first (in member order), then down and
+/// never-seen ones, at most `ROW_MAX` and then `…`: each paired with whether it is up.
+fn row_members(cx: &Cx, cl: &Cl, nodes: &[N]) -> (Vec<(usize, bool)>, bool) {
+    let mut v: Vec<(usize, bool)> = cl.members.iter().map(|&m| (m, cx.up(nodes[m].d))).collect();
+    v.sort_by_key(|&(_, up)| !up);
+    let more = v.len() > ROW_MAX;
+    v.truncate(ROW_MAX);
+    (v, more)
+}
+
+/// The letter row's cells, outer end last: letters one apart, an extra space before
+/// the down and never-seen ones (so they read apart without colour), then `…` when cut.
+/// The left half draws it reversed, so both halves keep the dim end outermost.
+fn letter_segs(cx: &Cx, cl: &Cl, nodes: &[N], a: f32) -> Vec<(String, Style, bool)> {
+    let (v, more) = row_members(cx, cl, nodes);
+    let mut out = Vec::new();
+    let mut prev_up = true;
+    for (m, up) in v {
+        if prev_up && !up && !out.is_empty() {
+            out.push((String::new(), Style::default(), false));
+        }
+        prev_up = up;
+        out.push((
+            nodes[m].d.hotkey.to_string(),
+            letter_ink(cx, cl, up, a),
+            true,
+        ));
+    }
+    if more {
+        out.push((cx.g("…", "~").into(), letter_ink(cx, cl, false, a), false));
+    }
+    out
+}
+
+/// The letter row's width in cells.
+fn letter_w(cx: &Cx, cl: &Cl, nodes: &[N]) -> u16 {
+    let segs = letter_segs(cx, cl, nodes, 1.0);
+    let w: u16 = segs
+        .iter()
+        .map(|(t, ..)| super::width(t, cx.uni()) + 1)
+        .sum();
+    w.saturating_sub(1)
+}
+
+/// A member letter's ink: the cluster's one tone, full for up members; down and
+/// never-seen ones in the same hue, desaturated and pulled toward mid-grey (not toward
+/// the background, so they stay legible on light and dark), or dimmed where the
+/// terminal has no blending.
+fn letter_ink(cx: &Cx, cl: &Cl, up: bool, a: f32) -> Style {
+    let tok = letter_tok(cl);
+    if up {
+        return cx.ink(tok, 0.9 * a);
+    }
+    if cx.tc() {
+        let mid = super::mix(cx.bg0(), cx.fg0(), 0.5);
+        let c = super::mix(mid, cx.rgb(tok), 0.4);
+        cx.rgb_fg(super::mix(cx.bg0(), c, a))
+    } else {
+        cx.st(tok).add_modifier(Modifier::DIM)
+    }
+}
+
 fn cl_count(cl: &Cl) -> String {
     format!("+{}", cl.members.len())
 }
@@ -693,10 +759,7 @@ fn cl_w(cx: &Cx, cl: &Cl, nodes: &[N], mode: Mode) -> i32 {
             let nm = i32::from(super::width(&fit(&cl.name, 16, cx.uni()), cx.uni()));
             let row0 = 2 + nm + 1 + count;
             if mode == Mode::Full {
-                row0.max(
-                    2 + 2 * cl.members.len().min(8) as i32 - 1
-                        + 2 * i32::from(cl.members.iter().any(|&i| !cx.up(nodes[i].d))),
-                )
+                row0.max(2 + i32::from(letter_w(cx, cl, nodes)))
             } else {
                 row0
             }
@@ -1656,38 +1719,25 @@ fn label(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It, r: R, pick: Option<bool>,
             }
             if p.mode == Mode::Full && r.h > 1 {
                 // Its members' letters (keys that open it on them) in the cluster's one
-                // tone, down and never-seen ones dim, the pointed-at one in the accent.
-                let mut segs: Vec<(String, Style)> = cl
-                    .members
-                    .iter()
-                    .take(8)
-                    .map(|&m| {
-                        let d = p.nodes[m].d;
-                        let st = if cx.up(d) {
-                            cx.ink(letter_tok(cl), 0.8 * a)
-                        } else {
-                            cx.ink(Tok::Muted, 0.5 * a)
-                        };
-                        (d.hotkey.to_string(), st)
-                    })
-                    .collect();
-                if cl.members.iter().any(|&m| !cx.up(p.nodes[m].d)) {
-                    segs.push((cx.g("✕", "!").into(), cx.ink(Tok::Err, 0.8 * a)));
-                }
-                let letters = segs.len().min(cl.members.len().min(8));
-                let ew = ev_w(cx, &segs) as u16;
+                // tone: up ones first, down and never-seen ones after them in a dimmer
+                // shade of the same hue, the pointed-at one bold and underlined in it.
+                let ew = letter_w(cx, cl, &p.nodes);
+                let mut segs = letter_segs(cx, cl, &p.nodes, a);
                 let mut xx = if left {
+                    segs.reverse();
                     (x + w).saturating_sub(2 + ew)
                 } else {
                     x + 2
                 };
-                for (k, (t, st)) in segs.into_iter().enumerate() {
-                    let st = if k < letters && cx.c.hover == Some((xx, y + 1)) {
-                        cx.st(Tok::Accent).add_modifier(Modifier::BOLD)
+                for (t, mut st, key) in segs {
+                    if key && cx.c.hover == Some((xx, y + 1)) {
+                        st = st.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+                    }
+                    xx += if t.is_empty() {
+                        0
                     } else {
-                        st
-                    };
-                    xx += cx.put(buf, xx, y + 1, 2, &t, st) + 1;
+                        cx.put(buf, xx, y + 1, 2, &t, st)
+                    } + 1;
                 }
             }
         }

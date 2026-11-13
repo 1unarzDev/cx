@@ -147,6 +147,8 @@ Guard notation:
 | v0.2.2 | Key pills could paint outside their rounded caps | (new: the only sanctioned background) | rust:pills_are_the_only_background_and_always_capped **NEW** |
 | v0.2.2 | Left closed the new-session chooser (its choices sit in a row) and the agent step | an explicit "Left is back" rule in `dialog_key` dismissed the popup | rust:arrows_move_in_popups_and_only_esc_closes_them **NEW**, py:chooser_arrows_pty **NEW** (red on v0.2.1) |
 | v0.2.2 | The hub key `` ` `` has no key of its own on a 65% keyboard | (user feedback) | rust:hub_letters_open_devices_and_shift_h_returns_from_anywhere, py:grid_keys_pty (Shift+H from Files) |
+| v0.2.2 | After an update replaced `~/.local/bin/cx`, a running viewer could not attach local sessions and a running helper refused typed input | `current_exe()` reads `<path> (deleted)` once the file is renamed over; cx handed that path to tmux's attach-check predicate (and askpass, transfers, native commands, containers, enrollment) | rust:a_replaced_binary_resolves_to_the_new_file_at_its_path **NEW**, py:swap_attach_pty [ci] and py:swap_attach_pty@ssh **NEW** (red on f011523) |
+| v0.2.2 | bash/sh users started from a terminal were never offered Claude/Codex locally | the `SHELL -l -i -c 'claude --version'` probe ran in its own group of cx's terminal; interactive bash took that terminal for job control and was stopped by SIGTTOU until the 3 s timeout | py:provider_probe_tty [ci] **NEW** (red on f011523: bash 6.0 s, nothing offered) |
 
 ## 6. SSH routes, neighbours and transport
 

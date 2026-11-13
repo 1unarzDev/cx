@@ -1,29 +1,44 @@
 #!/usr/bin/env python3
 """A fixture's adoption discovery never lists a real terminal of this machine.
 
-usage: probe_isolation.py BINARY
+usage: probe_isolation.py BINARY   (a debug build, as tests/run_regressions.sh passes)
 
 Outside, this starts a terminal of its own: an interactive bash leading a private PTY,
-exactly what discovery lists. It stands in for the user's real terminals. Then it runs
-its inner half under tests/isolate.sh, the wrapper every PTY harness and fixture runs
-in. The inner half starts a second terminal and asks the fixture's helper for the
-outside-CX terminals it can see (`external_sessions`, the same discovery the viewer
-uses). The inner terminal must be listed, so discovery works, and it must be the only
-one: the outside terminal is not there. Discovery never runs outside the namespace.
+exactly what discovery lists. It stands in for the user's real terminals. Two guards:
+- the debug build's helper, asked outside any private namespace (as a fixture run
+  without tests/isolate.sh, or one that needs the host's ids, asks), lists nothing;
+- under tests/isolate.sh (always new namespaces, whatever the environment says), the
+  helper lists a second terminal started there, so discovery works, and only that one.
+pty_lib.Pty refuses to start outside a private pid namespace, so the outside terminal
+is started here directly.
 """
-import json, os, pathlib, subprocess, sys, tempfile, time
-
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import pty_lib  # noqa: E402
+import fcntl, json, os, pathlib, pty, subprocess, sys, tempfile, termios, time
 
 HERE = pathlib.Path(__file__).resolve().parent
 
 
 def terminal(home):
     """An interactive bash leading its own PTY (this process holds the master), and its tty."""
-    shell = pty_lib.Pty(['bash', '--norc', '--noprofile', '-i'], dict(os.environ, HOME=str(home), PS1='$ '),
-                        home, 80, 24)
-    return shell, os.readlink(f'/proc/{shell.proc.pid}/fd/0')
+    master, slave = pty.openpty()
+
+    def lead():
+        os.setsid()
+        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+    shell = subprocess.Popen(['bash', '--norc', '--noprofile', '-i'], stdin=slave, stdout=slave, stderr=slave,
+                             env=dict(os.environ, HOME=str(home), PS1='$ '), cwd=home, preexec_fn=lead)
+    os.close(slave)
+    return (shell, master), os.readlink(f'/proc/{shell.pid}/fd/0')
+
+
+def close(terminal):
+    shell, master = terminal
+    os.write(master, b'exit\n')
+    try:
+        shell.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        shell.kill()
+        shell.wait()
+    os.close(master)
 
 
 def listed(binary, home):
@@ -38,6 +53,12 @@ def listed(binary, home):
     reply = json.loads(out.stdout.split(b'\n', 1)[1])
     assert reply['error'] is None, reply['error']
     return {(row.get('origin') or {}).get('tty') for row in reply['result']}
+
+
+def private():
+    """In a private pid namespace with its own /proc (pty_lib.isolated, without pyte)."""
+    return (os.readlink('/proc/self/ns/pid') != 'pid:[4026531836]'
+            and os.readlink('/proc/self') == str(os.getpid()))
 
 
 def inside(binary, outside_tty):
@@ -57,7 +78,7 @@ def inside(binary, outside_tty):
             pids = [int(p) for p in os.listdir('/proc') if p.isdigit()]
             assert len(pids) < 50 and 1 in pids, len(pids)
         finally:
-            shell.close(quit_key=b'exit\n')
+            close(shell)
     print(json.dumps(dict(result='PASS', listed=len(seen))))
 
 
@@ -68,13 +89,15 @@ def main():
     with tempfile.TemporaryDirectory(prefix='cx-probe-out-') as tmp:
         shell, tty = terminal(pathlib.Path(tmp))
         try:
-            # A fresh namespace even when this script already runs in one (the regression runner).
-            env = {k: v for k, v in os.environ.items() if k != 'CX_TEST_NS'}
+            # The regression runner starts this on the host (hostids): there a debug build
+            # lists nothing, the outside terminal included. isolate.sh nests anyway.
+            if not private():
+                assert listed(binary, pathlib.Path(tmp)) == set(), 'a terminal was listed outside a namespace'
             done = subprocess.run([str(HERE / 'isolate.sh'), sys.executable, __file__, binary, '--inside', tty],
-                                  env=env, timeout=120)
-            assert shell.proc.poll() is None, 'the outside terminal ended early'
+                                  timeout=120)
+            assert shell[0].poll() is None, 'the outside terminal ended early'
         finally:
-            shell.close(quit_key=b'exit\n')
+            close(shell)
     return done.returncode
 
 

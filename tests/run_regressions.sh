@@ -23,7 +23,8 @@
 # server, even when this script is started from inside a cx pane. Every
 # fixture but the docker and hostids ones runs under tests/isolate.sh (private user, pid
 # and mount namespaces), so adoption discovery in a fixture viewer or helper
-# never sees a real terminal; that needs unprivileged user namespaces.
+# never sees a real terminal; that needs unprivileged user namespaces. The
+# others run BIN, a debug build, which lists no terminal outside such a namespace.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 ROOT=$(pwd)
@@ -42,7 +43,7 @@ while [ $# -gt 0 ]; do
         while [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; do only+=("$1"); shift; done
         continue
         ;;
-    -h | --help) sed -n '2,26p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,27p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
@@ -50,9 +51,11 @@ done
 
 # name|requirements|arguments (BIN = target/debug/cx). Requirements are
 # space-separated: pyte, pillow, fish, poppler, sshd, docker, node, userns, and
-# hostids (always met: a CLI fixture that checks root-owned files such as
+# hostids (always met: a fixture that checks root-owned files such as
 # /etc/ssh/ssh_config, which a user namespace shows as nobody's, so it runs
-# outside tests/isolate.sh; none of them starts a viewer). A name
+# outside tests/isolate.sh; a debug build lists no terminal outside a private pid
+# namespace, which probe_isolation checks, so the viewer peer_mesh_cli starts and
+# their helpers see none). A name
 # ending in .mjs runs with node; every other name is tests/NAME.py.
 CORE=(
     "command_panel_live||BIN"
@@ -113,7 +116,7 @@ CORE=(
     "yazi_files_pty|pyte pillow|BIN"
     "list_wheel_pty|pyte|BIN"
     "pdf_pages_pty|pyte poppler|BIN"
-    "probe_isolation|pyte|BIN"
+    "probe_isolation|hostids|BIN"
     "capture_matrix|pyte pillow|--self-test"
     "files_bench|pyte|--self-test"
 )

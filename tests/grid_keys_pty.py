@@ -26,6 +26,7 @@ UP, DOWN, RIGHT, LEFT = b'\x1b[A', b'\x1b[B', b'\x1b[C', b'\x1b[D'
 
 
 def main():
+    pty_lib.isolate()
     binary = str(pathlib.Path(sys.argv[1]).resolve())
     env = ph.Env(binary)
     viewer = None

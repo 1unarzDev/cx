@@ -1220,6 +1220,16 @@ fn origin(terminal: &crate::adoption::Terminal) -> crate::model::ExternalOrigin 
     }
 }
 fn external_terminals() -> Vec<crate::adoption::Terminal> {
+    // Debug builds are test builds: they list terminals only inside a private pid
+    // namespace with its own /proc (tests/isolate.sh), never in the machine's first one
+    // (inode 0xEFFFFFFC), so a fixture viewer or helper can never offer a real terminal.
+    let private = std::fs::read_link("/proc/self/ns/pid")
+        .is_ok_and(|ns| ns != std::path::Path::new("pid:[4026531836]"))
+        && std::fs::read_link("/proc/self")
+            .is_ok_and(|me| me == std::path::Path::new(&std::process::id().to_string()));
+    if cfg!(debug_assertions) && !private {
+        return vec![];
+    }
     // This install, and its replaced copies other viewers may still run after an update.
     let mut executables = vec![];
     if let Ok(exe) = crate::self_exe() {

@@ -23,11 +23,22 @@ class Screen(pyte.Screen):
         pass
 
 
+def isolated():
+    """Whether this process runs in a private pid namespace (not the machine's first one,
+    inode 0xEFFFFFFC) whose own /proc is mounted (it names this process by its pid there):
+    checked, never inherited."""
+    try:
+        return (os.readlink('/proc/self/ns/pid') != 'pid:[4026531836]'
+                and os.readlink('/proc/self') == str(os.getpid()))
+    except OSError:
+        return False
+
+
 def isolate():
     """Re-run this script under tests/isolate.sh (private user, pid and mount namespaces), so
     the viewers it starts can never list a real terminal of this machine. Call it first in
     main(); a no-op once inside."""
-    if os.environ.get('CX_TEST_NS') != '1':
+    if not isolated():
         script = str(pathlib.Path(__file__).resolve().parent / 'isolate.sh')
         os.execv(script, [script, sys.executable, *sys.argv])
 
@@ -42,6 +53,8 @@ class Pty:
     """One process on a private PTY of cols x rows (its controlling terminal), with a screen."""
 
     def __init__(self, argv, env, cwd, cols, rows):
+        if not isolated():
+            raise SystemExit('pty_lib: not in a private pid namespace; call pty_lib.isolate() first')
         self.master, self.slave = pty.openpty()
         self.termios_before = termios.tcgetattr(self.slave)
         # CELL_PIXELS (w, h): report a pixel size too, as bitmap terminals do (TIOCGWINSZ).

@@ -11,9 +11,7 @@
 # The tty group is left out of /etc/group inside: its gid is not mapped there, and a
 # fixture sshd would fail to chown the pseudo-terminal of `ssh -t` to it.
 # Fails closed: without unprivileged user namespaces the command does not run.
-# Already inside (CX_TEST_NS=1): runs the command directly.
-[ "${CX_TEST_NS:-}" = 1 ] && exec "$@"
-export CX_TEST_NS=1
+# Always new namespaces, also when started inside some: nothing inherited turns it off.
 # Outer namespace as root to mount; inner one back at the caller's ids. The inner
 # shell stays pid 1 (no exec) and reaps orphaned fixture processes.
 exec unshare --user --map-root-user --mount --pid --cgroup --fork --kill-child --mount-proc \

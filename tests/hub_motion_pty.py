@@ -84,6 +84,7 @@ def press(viewer, key):
 
 
 def main():
+    pty_lib.isolate()
     env, viewer = start()
     try:
         end = time.monotonic() + 10

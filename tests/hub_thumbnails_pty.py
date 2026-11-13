@@ -19,6 +19,7 @@ NAMES = ['thumb-a', 'thumb-b', 'thumb-c']
 
 
 def main():
+    pty_lib.isolate()
     binary = str(pathlib.Path(sys.argv[1]).resolve())
     env = ph.Env(binary)
     viewer = None

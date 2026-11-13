@@ -2161,6 +2161,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     .and_then(|t| t.checked_sub(notifications::TRANSITION));
             }
             app.refresh_work();
+            // The vitals fell due while attached: a sample now would redraw the frame
+            // just painted on return (a new rtt point) a round trip later.
+            last_vitals = Instant::now();
             dirty = true;
         }
         dirty |= app.expire_notice(Instant::now());

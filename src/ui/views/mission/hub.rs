@@ -518,7 +518,6 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
                     Rect::new(r.x + 3, sy, r.width.saturating_sub(4), h),
                     x,
                     cx.c.has_color(),
-                    false,
                 );
                 sy += h;
             }

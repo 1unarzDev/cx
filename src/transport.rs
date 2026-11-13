@@ -31,7 +31,11 @@ pub fn read_frame<T: serde::de::DeserializeOwned>(r: &mut impl BufRead) -> Resul
         let n = r.take(4097).read_until(b'\n', &mut line)?;
         scanned += n;
         if n == 0 {
-            bail!("helper closed before response")
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "helper closed before response",
+            )
+            .into());
         }
         if scanned > 16384 || line.len() > 4096 {
             bail!("excessive shell startup noise")
@@ -742,6 +746,17 @@ impl std::error::Error for ConnectionFailure {}
 pub(crate) fn is_connection_failure(error: &anyhow::Error) -> bool {
     error.downcast_ref::<ConnectionFailure>().is_some()
 }
+/// A lost channel's error: its classified reason alone when the cause is the pipe itself.
+/// Whether the write (`Broken pipe`) or the read (end of stream) noticed first is a race,
+/// and a device status that alternated between the two redrew an idle screen on every
+/// retry. A protocol error (startup noise, a bad frame) keeps its cause.
+fn lost(reason: ConnectionFailure, cause: anyhow::Error) -> anyhow::Error {
+    if cause.downcast_ref::<std::io::Error>().is_some() {
+        reason.into()
+    } else {
+        cause.context(reason)
+    }
+}
 impl Connection {
     fn failure_reason(&self) -> ConnectionFailure {
         self.failure
@@ -866,7 +881,7 @@ pub fn list_pages(
             if let Err(error) = frame(&mut conn.input, &req) {
                 let reason = conn.failure_reason();
                 *slot = None;
-                return Err(error).context(reason);
+                return Err(lost(reason, error));
             }
             sent.push_back((at, id));
         }
@@ -881,7 +896,7 @@ pub fn list_pages(
                 Ok(Err(e)) => {
                     let reason = conn.failure_reason();
                     *slot = None;
-                    return Err(e).context(reason);
+                    return Err(lost(reason, e));
                 }
                 Ok(Ok(_)) => {
                     *slot = None;
@@ -1144,7 +1159,7 @@ fn exchange(
     if let Err(error) = frame(&mut conn.input, &req) {
         let reason = conn.failure_reason();
         *slot = None;
-        return Err(error).context(reason);
+        return Err(lost(reason, error));
     }
     let response = match conn
         .replies
@@ -1154,7 +1169,7 @@ fn exchange(
         Ok(Err(e)) => {
             let reason = conn.failure_reason();
             *slot = None;
-            return Err(e).context(reason);
+            return Err(lost(reason, e));
         }
         Err(_) => {
             *slot = None;
@@ -1665,6 +1680,22 @@ fn run_bounded_update_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A lost channel reads the same whichever side of the pipe noticed first (an idle
+    /// hub's offline status never alternates), and a protocol error keeps its cause.
+    #[test]
+    fn a_lost_channel_reports_one_stable_reason() {
+        let eof = read_frame::<Response>(&mut std::io::Cursor::new(Vec::new())).unwrap_err();
+        let pipe = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+        let a = format!("{:#}", lost(ConnectionFailure::Closed, eof));
+        let b = format!("{:#}", lost(ConnectionFailure::Closed, pipe));
+        assert_eq!(a, b);
+        assert_eq!(a, ConnectionFailure::Closed.to_string());
+        let noise =
+            read_frame::<Response>(&mut std::io::Cursor::new(vec![b'x'; 20000])).unwrap_err();
+        let e = lost(ConnectionFailure::Closed, noise);
+        assert!(is_connection_failure(&e));
+        assert!(format!("{e:#}").contains("startup noise"), "{e:#}");
+    }
     /// TR-2: a helper update replaces every channel a request can use.
     #[test]
     fn invalidation_covers_every_request_channel() {

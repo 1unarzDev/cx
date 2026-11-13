@@ -108,6 +108,10 @@ pub fn handle(op: &Operation) -> Result<Value> {
         Operation::RemoveEmptyDirectory { path, identity } => {
             remove_empty_directory(&decode_path(path)?, identity)
         }
+        Operation::Trash {
+            path,
+            expected_identity,
+        } => trash_entry(&decode_path(path)?, expected_identity.as_deref()),
         Operation::Move {
             path,
             destination,
@@ -366,8 +370,9 @@ fn list_page(path: &Path, offset: u64, limit: u32) -> Result<Value> {
             + json_string_len(&opaque)
             + json_string_len(&identity)
             + rename_name.map_or(4, json_string_len);
+        let mode = metadata.mode() & 0o7777;
         let entry = json!({"name":item.display,"path":opaque,"kind":kind,"size":metadata.len(),
-            "hidden":hidden,"rename_name":rename_name,"identity":identity});
+            "hidden":hidden,"rename_name":rename_name,"identity":identity,"mode":mode});
         if !entries.is_empty() && bytes + size > LIST_BYTES {
             break;
         }
@@ -1183,6 +1188,109 @@ fn move_entry(path: &Path, destination: &Path, expected: Option<&str>) -> Result
     source.dir.sync_all()?;
     target.dir.sync_all()?;
     Ok(json!({"path":encode_path(&destination),"moved":true}))
+}
+/// The freedesktop trash (`$XDG_DATA_HOME/Trash`, else `~/.local/share/Trash`).
+fn trash_dir() -> Result<PathBuf> {
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .filter(|d| Path::new(d).is_absolute())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")))
+        .context("no home directory for the trash")?;
+    Ok(data.join("Trash"))
+}
+/// `Path=` of a .trashinfo: the absolute path, percent-encoded except `/` and the
+/// unreserved characters.
+fn trash_path_value(path: &Path) -> String {
+    let mut out = String::new();
+    for &b in path.as_os_str().as_bytes() {
+        if b.is_ascii_alphanumeric() || b"/-_.~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+/// Move an entry to the trash: claim a `.trashinfo` name first (O_EXCL), then the
+/// identity-checked move. A different filesystem is refused, never copied.
+fn trash_entry(path: &Path, expected: Option<&str>) -> Result<Value> {
+    use std::io::Write;
+    let path = absolute(path)?;
+    let name = path
+        .file_name()
+        .context("nothing to trash at the root")?
+        .to_owned();
+    let trash = trash_dir()?;
+    for sub in ["files", "info"] {
+        fs::create_dir_all(trash.join(sub))?;
+    }
+    let _ = fs::set_permissions(&trash, fs::Permissions::from_mode(0o700));
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+    let date = {
+        let days = now.div_euclid(86400);
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = yoe + era * 400 + i64::from(m <= 2);
+        let t = now.rem_euclid(86400);
+        format!(
+            "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}",
+            t / 3600,
+            t % 3600 / 60,
+            t % 60
+        )
+    };
+    for n in 0..1000u32 {
+        let mut slot = name.clone();
+        if n > 0 {
+            slot.push(format!(".{n}"));
+        }
+        let mut info_name = slot.clone();
+        info_name.push(".trashinfo");
+        let info_path = trash.join("info").join(&info_name);
+        let destination = trash.join("files").join(&slot);
+        if fs::symlink_metadata(&destination).is_ok() {
+            continue;
+        }
+        let mut info = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&info_path)
+        {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).context("claim a trash info file"),
+        };
+        info.write_all(
+            format!(
+                "[Trash Info]\nPath={}\nDeletionDate={date}\n",
+                trash_path_value(&path)
+            )
+            .as_bytes(),
+        )?;
+        info.sync_all()?;
+        return match move_entry(&path, &destination, expected) {
+            Ok(_) => Ok(json!({"path":encode_path(&path),"trashed":encode_path(&destination)})),
+            Err(e) => {
+                let _ = fs::remove_file(&info_path);
+                let cross = e
+                    .chain()
+                    .filter_map(|c| c.downcast_ref::<std::io::Error>())
+                    .any(|io| io.raw_os_error() == Some(libc::EXDEV));
+                if cross {
+                    bail!("not on the trash's filesystem · D deletes permanently")
+                }
+                Err(e)
+            }
+        };
+    }
+    bail!("too many trashed entries with this name")
 }
 /// Tree moves remove only an empty directory with the original device/inode.
 /// Child deletion changes directory timestamps, so the full selection identity is inappropriate here.

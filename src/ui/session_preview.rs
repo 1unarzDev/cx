@@ -322,6 +322,7 @@ impl App {
                         history_start: None,
                     },
                     generation: THUMB_GENERATION,
+                    hover: false,
                 })
                 .is_ok();
             if !sent {
@@ -732,6 +733,7 @@ impl App {
                         .map(|top| top.saturating_sub(150)),
                 },
                 generation: self.session_preview.serial,
+                hover: false,
             })
             .is_ok();
         self.session_preview.last = Some(Instant::now());
@@ -963,6 +965,7 @@ impl App {
                     execution: self.devices[d].clone(),
                     op,
                     generation: self.generation,
+                    hover: false,
                 })
                 .is_ok();
             if sent {
@@ -1004,6 +1007,7 @@ impl App {
                         pane: None,
                     },
                     generation: self.generation,
+                    hover: false,
                 })
                 .is_ok();
             if sent {

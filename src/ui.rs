@@ -121,6 +121,9 @@ struct Entry {
     /// Modification time (Unix seconds), from the identity the helper sends.
     #[serde(default)]
     modified: Option<i64>,
+    /// Permission bits, from helpers that send them.
+    #[serde(default)]
+    mode: Option<u32>,
 }
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Clipboard {
@@ -320,6 +323,12 @@ struct Browser {
     /// Streaming state for text previews larger than the helper's first window.
     #[serde(skip)]
     stream: Option<PreviewStream>,
+    /// When the listing cache last served or stored this folder (LRU eviction).
+    #[serde(skip)]
+    used: u64,
+    /// The first row on screen (yazi's scroll offset, kept per folder).
+    #[serde(skip)]
+    offset: std::cell::Cell<usize>,
 }
 impl Browser {
     fn new(device: usize, path: String) -> Self {
@@ -363,6 +372,8 @@ impl Browser {
             peek_value: None,
             peek_inflight: Vec::new(),
             stream: None,
+            used: 0,
+            offset: std::cell::Cell::new(0),
         }
     }
 }
@@ -377,6 +388,8 @@ struct Task {
     execution: Device,
     op: Operation,
     generation: u64,
+    /// A Files prefetch for the hovered entry: the next hover replaces it in the queue.
+    hover: bool,
 }
 struct Reply {
     device_id: Option<String>,
@@ -1086,6 +1099,14 @@ impl App {
         self.send_explicit(device, self.scoped_file_operation(device, op))
     }
     fn send_explicit(&self, device: usize, op: Operation) -> bool {
+        self.send_task(device, op, false)
+    }
+    /// A prefetch for what the Files view hovers: queued hover reads it outdates are
+    /// dropped before they reach the helper (yazi cancels its preloads the same way).
+    fn send_hover(&self, device: usize, op: Operation) -> bool {
+        self.send_task(device, self.scoped_file_operation(device, op), true)
+    }
+    fn send_task(&self, device: usize, op: Operation, hover: bool) -> bool {
         let sent = self
             .tx
             .try_send(Task {
@@ -1093,6 +1114,7 @@ impl App {
                 execution: self.devices[device].clone(),
                 op,
                 generation: self.generation,
+                hover,
             })
             .is_ok();
         if sent {

@@ -15,8 +15,11 @@ pub(super) fn browser_matches(b: &Browser) -> file_index::RowMatches {
         .borrow_mut()
         .search(&b.entries, b.show_hidden, &b.filter, &b.search)
 }
-/// How long a folder or file stays highlighted before its listing/preview is fetched.
-const PREFETCH_DELAY: Duration = Duration::from_millis(150);
+/// How long a folder or file stays highlighted before its listing/preview is fetched:
+/// at once, as yazi does. Moving on drops a queued prefetch (`App::send_hover`).
+const PREFETCH_DELAY: Duration = Duration::ZERO;
+/// Folders kept in the listing cache (least recently used goes first).
+pub(super) const CACHE_FOLDERS: usize = 128;
 
 pub(super) fn human_size(size: u64) -> String {
     if size < 1024 {
@@ -134,7 +137,7 @@ impl App {
                 let path = entry.path.clone();
                 let sent = !b.loading
                     && b.prefetch.len() < 4
-                    && self.send(device, Operation::List { path: path.clone() });
+                    && self.send_hover(device, Operation::List { path: path.clone() });
                 if let Some(b) = self.browser.as_mut() {
                     if sent {
                         b.prefetch.insert(path);
@@ -162,7 +165,7 @@ impl App {
                 child.peek_value = None;
                 b.peek = Some(child);
                 let generation = self.generation;
-                if self.send(
+                if self.send_hover(
                     device,
                     Operation::Preview {
                         path: entry.path.clone(),
@@ -344,12 +347,7 @@ impl App {
             } else {
                 self.file_locations.insert(old.device, old.path.clone());
             }
-            if self.browser_cache.len() >= 64 {
-                if let Some(key) = self.browser_cache.keys().next().cloned() {
-                    self.browser_cache.remove(&key);
-                }
-            }
-            self.browser_cache.insert(
+            self.cache_put(
                 (
                     old.device,
                     old.path.clone(),
@@ -376,6 +374,7 @@ impl App {
             }
             None => self.refresh_browser(),
         }
+        self.prefetch_parent();
         self.check_providers(device);
     }
     pub(super) fn select_file_device(&mut self) {
@@ -567,7 +566,82 @@ impl App {
     pub(super) fn parent_directory(&mut self) {
         if let Some(b) = &self.browser {
             if let Some(path) = b.parent.clone() {
+                let child = b.path.clone();
                 self.open_browser(b.device, path);
+                // Up hovers the folder just left (yazi's `leave`).
+                if let Some(b) = self.browser.as_mut() {
+                    if let Some(i) = browser_entries(b).position_of(&child) {
+                        b.selected = i;
+                        b.restore_selection = Some(child);
+                    }
+                }
+            }
+        }
+    }
+    /// Store a folder in the listing cache, evicting the least recently used.
+    pub(super) fn cache_put(&mut self, key: (usize, String, String), mut b: Browser) {
+        static CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        b.used = CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if !self.browser_cache.contains_key(&key) && self.browser_cache.len() >= CACHE_FOLDERS {
+            if let Some(old) = self
+                .browser_cache
+                .iter()
+                .min_by_key(|(_, b)| b.used)
+                .map(|(k, _)| k.clone())
+            {
+                self.browser_cache.remove(&old);
+            }
+        }
+        self.browser_cache.insert(key, b);
+    }
+    /// A listing first page that arrived for a folder other than the visible one: it
+    /// fills (or refreshes) the cache, so the parent column, the preview and the next
+    /// visit paint from memory. The visible folder keeps its own state.
+    pub(super) fn cache_listing(&mut self, device: usize, path: &str, value: &Value) {
+        if value.is_null() || value["entries"].as_array().is_none() {
+            return;
+        }
+        let path = value["path"].as_str().unwrap_or(path).to_owned();
+        if self
+            .browser
+            .as_ref()
+            .is_some_and(|b| b.device == device && (b.path == path || b.container.is_some()))
+        {
+            return;
+        }
+        let key = (device, path.clone(), browser_scope_key(None));
+        let mut cached = self
+            .browser_cache
+            .remove(&key)
+            .unwrap_or_else(|| Browser::new(device, path));
+        let keep = browser_entries(&cached)
+            .get(cached.selected)
+            .map(|e| e.path.clone());
+        apply::files::apply_location(&mut cached, value);
+        cached.entries = apply::files::parse_entries(value).into();
+        cached.total = value["total"].as_u64();
+        cached.loading = false;
+        if let Some(keep) = keep {
+            cached.selected = browser_entries(&cached).position_of(&keep).unwrap_or(0);
+        }
+        self.cache_put(key, cached);
+    }
+    /// Ask for the parent folder's listing when the cache has none (the parent column).
+    pub(super) fn prefetch_parent(&mut self) {
+        let Some(b) = self.browser.as_ref().filter(|b| b.container.is_none()) else {
+            return;
+        };
+        let Some(parent) = b.parent.clone() else {
+            return;
+        };
+        let key = (b.device, parent.clone(), browser_scope_key(None));
+        if self.browser_cache.contains_key(&key) || b.prefetch.contains(&parent) {
+            return;
+        }
+        let device = b.device;
+        if self.send(device, Operation::List { path: parent.clone() }) {
+            if let Some(b) = self.browser.as_mut() {
+                b.prefetch.insert(parent);
             }
         }
     }

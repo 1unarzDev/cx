@@ -850,6 +850,7 @@ fn channel_key(class: Channel, target: &str) -> String {
         Channel::Interactive => format!("session-preview:{target}"),
         Channel::Capabilities => format!("capabilities:{target}"),
         Channel::Bulk => format!("bulk:{target}"),
+        Channel::Files => format!("files:{target}"),
         Channel::Metadata => target.to_owned(),
     }
 }
@@ -858,8 +859,11 @@ pub(crate) enum Channel {
     /// Screens, keystrokes and the watch: never queued behind anything else.
     Interactive,
     Capabilities,
-    /// Files, containers and transfers: long bursts that must not delay sessions.
+    /// Containers and transfers: long bursts that must not delay sessions.
     Bulk,
+    /// File browsing reads (listings, previews): what the user waits on in Files,
+    /// never queued behind a container burst or a transfer's chunks.
+    Files,
     /// Session inventory and everything else.
     Metadata,
 }
@@ -879,18 +883,18 @@ pub(crate) fn channel_class(op: &Operation) -> Channel {
         | Operation::ContainerFiles { .. }
         | Operation::ContainerFileAction { .. }
         | Operation::ContainerProviders { .. }
-        | Operation::List { .. }
-        | Operation::ListPage { .. }
-        | Operation::Preview { .. }
-        | Operation::PreviewPage { .. }
-        | Operation::ReadChunk { .. }
-        | Operation::FileInfo { .. }
         | Operation::ReceivePrepare { .. }
         | Operation::ReceiveChunk { .. }
         | Operation::ReceiveFinalize { .. }
         | Operation::ReceiveSymlink { .. }
         | Operation::Jobs
         | Operation::TransferJobs => Channel::Bulk,
+        Operation::List { .. }
+        | Operation::ListPage { .. }
+        | Operation::Preview { .. }
+        | Operation::PreviewPage { .. }
+        | Operation::ReadChunk { .. }
+        | Operation::FileInfo { .. } => Channel::Files,
         _ => Channel::Metadata,
     }
 }
@@ -1274,10 +1278,11 @@ fn mediated_host_update(
     Ok((true, Some(version)))
 }
 /// Every helper channel class, so an invalidation reaches all of them.
-const CHANNELS: [Channel; 4] = [
+const CHANNELS: [Channel; 5] = [
     Channel::Interactive,
     Channel::Capabilities,
     Channel::Bulk,
+    Channel::Files,
     Channel::Metadata,
 ];
 /// Replace all of the target's helper channels after its helper changed;
@@ -1981,7 +1986,7 @@ mod tests {
         assert_eq!(channel_class(&Operation::Containers), Channel::Bulk);
         assert_eq!(
             channel_class(&Operation::List { path: "/".into() }),
-            Channel::Bulk
+            Channel::Files
         );
         assert_eq!(channel_class(&Operation::Sessions), Channel::Metadata);
         assert_eq!(channel_class(&Operation::Info), Channel::Capabilities);

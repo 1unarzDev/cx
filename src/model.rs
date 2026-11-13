@@ -248,6 +248,13 @@ pub enum Operation {
         path: String,
         expected_identity: Option<String>,
     },
+    /// Move an entry to the device's freedesktop trash (`$XDG_DATA_HOME/Trash`),
+    /// writing its `.trashinfo`. Same-filesystem only: anything else is refused (the
+    /// UI offers a permanent delete instead). Older helpers reject the variant.
+    Trash {
+        path: String,
+        expected_identity: Option<String>,
+    },
     RemoveEmptyDirectory {
         path: String,
         identity: String,

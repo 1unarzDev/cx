@@ -316,6 +316,7 @@ fn scheduler_supersedes_navigation_without_discarding_mutations() {
         execution: a.devices[0].clone(),
         generation,
         op,
+        hover: false,
     };
     let mut tasks = VecDeque::new();
     for n in 1..20 {

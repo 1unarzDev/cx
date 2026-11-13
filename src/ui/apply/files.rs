@@ -33,13 +33,14 @@ pub(in crate::ui) fn parse_entries(value: &Value) -> Vec<Entry> {
                             .and_then(Value::as_str)
                             .map(str::to_owned),
                         modified: entry_modified(e),
+                        mode: e.get("mode").and_then(Value::as_u64).map(|m| m as u32),
                     })
                 })
                 .collect()
         })
         .unwrap_or_default()
 }
-fn apply_location(b: &mut Browser, value: &Value) {
+pub(in crate::ui) fn apply_location(b: &mut Browser, value: &Value) {
     b.path = value
         .get("path")
         .and_then(Value::as_str)
@@ -299,7 +300,9 @@ impl App {
             Operation::Mkdir { .. } if reply.generation == self.generation => {
                 self.refresh_browser()
             }
-            Operation::Rename { path, .. } | Operation::Remove { path, .. } => {
+            Operation::Rename { path, .. }
+            | Operation::Remove { path, .. }
+            | Operation::Trash { path, .. } => {
                 if self.file_errors.is_empty() && self.file_queue.is_empty() && !self.file_busy {
                     self.set_notice(format!(
                         "File action complete · {}",
@@ -396,6 +399,9 @@ impl App {
             if range_finished {
                 self.set_notice("Directory refreshed · range finished; selected files kept".into());
             }
+            if listing_offset == 0 {
+                self.prefetch_parent();
+            }
         }
         if let Some(offset) = value["next_offset"].as_u64() {
             if let Some(b) = &self.browser {
@@ -430,6 +436,11 @@ impl App {
     pub(in crate::ui) fn apply_files_side_reply(&mut self, reply: &mut Reply) -> bool {
         match &reply.op {
             Operation::List { path } => {
+                // Every listing warms the cache, whatever navigation happened since.
+                if let Ok(value) = &reply.result {
+                    let (path, value) = (path.clone(), value.clone());
+                    self.cache_listing(reply.device, &path, &value);
+                }
                 let Some(b) = self
                     .browser
                     .as_mut()
@@ -439,6 +450,13 @@ impl App {
                 };
                 let path = path.clone();
                 b.prefetch.remove(&path);
+                if matches!(reply.result, Ok(Value::Null)) && b.path != path {
+                    // Dropped from the queue by a newer hover: nothing to show.
+                    if let Some(settle) = b.settle.as_mut().filter(|s| s.0 == path) {
+                        settle.2 = false;
+                    }
+                    return true;
+                }
                 if b.path == path {
                     // Opened while its prefetch was in flight: the prefetch is the listing
                     // (read again if it failed or was dropped as superseded).
@@ -480,7 +498,8 @@ impl App {
                         Err(_) => b.peek = None,
                     }
                 }
-                if let Ok(value) = &reply.result {
+                if let (Ok(value), Some(_)) = (&reply.result, container.as_ref()) {
+                    // Container listings (host ones were cached above).
                     if !self.browser_cache.contains_key(&key) {
                         let mut cached = Browser::new(reply.device, path);
                         apply_location(&mut cached, value);
@@ -488,12 +507,7 @@ impl App {
                         cached.show_hidden = show_hidden;
                         cached.entries = parse_entries(value).into();
                         cached.total = value["total"].as_u64();
-                        if self.browser_cache.len() >= 64 {
-                            if let Some(old) = self.browser_cache.keys().next().cloned() {
-                                self.browser_cache.remove(&old);
-                            }
-                        }
-                        self.browser_cache.insert(key, cached);
+                        self.cache_put(key, cached);
                     }
                 }
                 true

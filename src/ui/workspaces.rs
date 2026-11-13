@@ -412,6 +412,14 @@ pub(super) fn navigation_read(op: &Operation) -> bool {
 /// Replies already reject old navigation generations. Discard those reads before
 /// they consume helper time, retaining mutation ordering and reply accounting.
 pub(super) fn superseded_reads(tasks: &mut VecDeque<Task>, incoming: &Task) -> Vec<Task> {
+    if incoming.hover {
+        // A new hover outdates every queued hover prefetch of the same device.
+        let (dropped, kept): (VecDeque<Task>, VecDeque<Task>) = std::mem::take(tasks)
+            .into_iter()
+            .partition(|t| t.hover && t.device == incoming.device);
+        *tasks = kept;
+        return dropped.into();
+    }
     let preview = matches!(incoming.op, Operation::SessionPreview { .. });
     // Thumbnail captures (one per tile) neither replace nor are replaced by a poll.
     let thumb = |t: &Task| t.generation == super::session_preview::THUMB_GENERATION;

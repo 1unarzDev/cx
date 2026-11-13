@@ -22,6 +22,7 @@ impl App {
                 other => other,
             },
             Operation::Remove { .. }
+                | Operation::Trash { .. }
                 | Operation::Rename { .. }
                 | Operation::Transfer(_)
                 | Operation::ScopedTransfer(_)

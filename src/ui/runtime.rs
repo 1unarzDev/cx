@@ -1047,7 +1047,11 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
             || transport::channel_class(&task.op) == transport::Channel::Interactive;
         // Bulk work (files, containers, transfers) has its own lane, as it
         // has its own helper channel: a container burst never delays sessions.
-        let bulk = transport::channel_class(&task.op) == transport::Channel::Bulk;
+        let class = transport::channel_class(&task.op);
+        let bulk = class == transport::Channel::Bulk;
+        // File browsing reads have their own lane and helper channel too: a listing
+        // never waits for a container burst, a transfer or the startup inventory.
+        let files = class == transport::Channel::Files;
         if matches!(task.op, Operation::Info) {
             return format!(
                 "capabilities:{}",
@@ -1057,6 +1061,7 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
         match &task.execution.target {
             Some(target) if panel => format!("panel:{target}"),
             Some(target) if bulk => format!("bulk:{target}"),
+            Some(target) if files => format!("files:{target}"),
             Some(target) => target.clone(),
             None if panel => "<local-command>".into(),
             None if matches!(

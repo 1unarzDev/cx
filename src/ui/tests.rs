@@ -50,6 +50,7 @@ fn file_app() -> (App, mpsc::Receiver<Task>) {
             hidden: name.starts_with('.'),
             rename_name: Some((*name).into()),
             modified: None,
+            mode: None,
         })
         .collect();
     a.browser = Some(b);
@@ -1480,6 +1481,7 @@ fn restart_restores_browser_host_search_focus_and_copy_without_preview_content()
         hidden: false,
         rename_name: None,
         modified: None,
+        mode: None,
     });
     a.clipboard = Some(Clipboard {
         container: None,
@@ -1715,6 +1717,7 @@ fn restored_file_identity_survives_page_one_clamping() {
             hidden: false,
             rename_name: None,
             modified: None,
+            mode: None,
         })
         .collect();
     browser.selected = 1100;
@@ -2637,6 +2640,7 @@ fn destination_transfer_fixture() -> (App, mpsc::Receiver<Task>) {
         hidden: false,
         rename_name: None,
         modified: None,
+        mode: None,
     });
     a.browser = Some(source);
     a.execute(Action::Copy);
@@ -2652,6 +2656,7 @@ fn destination_transfer_fixture() -> (App, mpsc::Receiver<Task>) {
         hidden: false,
         rename_name: None,
         modified: None,
+        mode: None,
     });
     a.browser = Some(destination);
     a.destination_active = true;
@@ -2713,6 +2718,7 @@ fn transfer_locations_stay_independent_and_submit_real_spec() {
         hidden: false,
         rename_name: None,
         modified: None,
+        mode: None,
     });
     a.browser = Some(source);
     a.execute(Action::Copy);
@@ -2819,6 +2825,7 @@ fn horizontal_folder_keys_enter_and_leave_without_previewing_files() {
             hidden: false,
             rename_name: None,
             modified: None,
+            mode: None,
         }]
         .into();
         a.key(KeyEvent::new(forward, KeyModifiers::NONE));
@@ -2910,6 +2917,7 @@ fn file_find_highlights_without_filtering_and_wraps_between_files() {
             hidden: name.starts_with('.'),
             rename_name: None,
             modified: None,
+            mode: None,
         })
         .collect();
     b.marked.insert("/fixture/1".into());
@@ -2978,6 +2986,7 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             hidden: false,
             rename_name: None,
             modified: None,
+            mode: None,
         },
         Entry {
             name: "recording-second.bin".into(),
@@ -2988,6 +2997,7 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             hidden: false,
             rename_name: None,
             modified: None,
+            mode: None,
         },
         Entry {
             name: "other".into(),
@@ -2998,6 +3008,7 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             hidden: false,
             rename_name: None,
             modified: None,
+            mode: None,
         },
     ]
     .into();
@@ -3063,6 +3074,7 @@ fn enter_file_previews_never_launches() {
         hidden: false,
         rename_name: None,
         modified: None,
+        mode: None,
     }]
     .into();
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -6649,6 +6661,7 @@ fn loading_peek_capture_dump() {
         hidden: name.starts_with('.'),
         rename_name: Some(name.into()),
         modified: Some(transport::now() as i64 - 120),
+        mode: None,
     };
     for (cols, rows) in [(40u16, 20u16), (80, 24), (120, 40), (200, 60)] {
         let (mut a, _rx) = queued_app();
@@ -6762,6 +6775,7 @@ fn folder_app(count: usize) -> (App, mpsc::Receiver<Task>) {
             hidden: false,
             rename_name: Some(format!("dir{i}")),
             modified: None,
+            mode: None,
         })
         .collect();
     entries.extend(b.entries.iter().cloned());
@@ -6962,6 +6976,7 @@ fn preview_worker_replies_before_highlighting() {
             path: crate::files::encode_path(&file),
         },
         generation: 7,
+        hover: false,
     })
     .unwrap();
     let wait = std::time::Duration::from_secs(10);

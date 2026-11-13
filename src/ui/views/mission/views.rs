@@ -693,7 +693,7 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
             .saturating_sub(2);
         // The tiles take the rows the LINKS star leaves, up to a tall screen (the same
         // size whether or not the screen has arrived).
-        let th = ((room + 1) / rows.max(1)).saturating_sub(1).min(22).max(5);
+        let th = ((room + 1) / rows.max(1)).saturating_sub(1).clamp(5, 22);
         let mut bottom = main.y;
         for i in 0..tiles_n as usize {
             let (ci, ri) = (i as u16 % cols, i as u16 / cols);

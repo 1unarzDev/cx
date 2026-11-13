@@ -7111,3 +7111,48 @@ fn hidden_toggle_keeps_the_cursor_row_as_yazi_does() {
     let b = a.browser.as_ref().unwrap();
     assert_eq!(browser_entries(b).get(b.selected).unwrap().name, ".dot");
 }
+
+#[test]
+fn hidden_toggle_onto_a_folder_prefetches_its_listing() {
+    let (mut a, rx) = file_app();
+    let b = a.browser.as_mut().unwrap();
+    b.entries.insert(
+        0,
+        Entry {
+            name: ".dot".into(),
+            path: "/files/.dot".into(),
+            kind: "directory".into(),
+            size: 0,
+            identity: None,
+            hidden: true,
+            rename_name: None,
+            modified: None,
+            mode: None,
+        },
+    );
+    draw_text(&a);
+    a.files_tick(Instant::now());
+    while rx.try_recv().is_ok() {}
+    press(&mut a, '.');
+    draw_text(&a);
+    a.files_tick(Instant::now());
+    a.flush_hover();
+    let task = rx
+        .try_iter()
+        .find(|t| matches!(&t.op, Operation::List { path } if path == "/files/.dot"))
+        .expect("the hovered folder is prefetched");
+    // An empty folder: yazi's `No items` in the preview column.
+    a.apply(Reply {
+        device_id: None,
+        execution_target: None,
+        device: 0,
+        generation: task.generation,
+        op: task.op,
+        preview: None,
+        result: Ok(
+            serde_json::json!({"path":"/files/.dot","display_path":"/files/.dot",
+            "parent":"/files","entries":[],"next_offset":null,"total":0}),
+        ),
+    });
+    assert!(draw_text(&a).contains("No items"), "{}", draw_text(&a));
+}

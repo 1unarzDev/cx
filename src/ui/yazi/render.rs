@@ -517,7 +517,8 @@ fn column(
     }
     if col.rows.is_empty() {
         if let Some(text) = &col.empty {
-            let y = list.y + list.height / 2;
+            // yazi's: centred across the column, on its first row.
+            let y = list.y;
             let w = width(text) as u16;
             let x = list.x + list.width.saturating_sub(w) / 2;
             p.put(x, y, list.right(), text, t.overall);

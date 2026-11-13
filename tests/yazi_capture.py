@@ -10,7 +10,7 @@ reference's yazi config through XDG_CONFIG_HOME (never ~/.config), drives the sa
 and writes <state>-<cols>x<rows>.{txt,json,png} plus <state>-<cols>x<rows>-sxs.png (yazi
 left, cx right) into ~/.cache/cx-files-yazi/<ROUND>/. Needs pyte and pillow.
 """
-import argparse, json, os, pathlib, shutil, sys, time
+import argparse, json, os, pathlib, shutil, sys, tempfile, time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import perf_harness as ph  # noqa: E402
@@ -57,6 +57,11 @@ def main():
     ref = pathlib.Path(a.ref)
     out = pathlib.Path.home() / '.cache/cx-files-yazi' / a.round
     out.mkdir(parents=True, exist_ok=True)
+    # The fixture on the reference's filesystem, not tmpfs: a folder's own size (the
+    # status line's `4K`) is its st_size, which tmpfs reports as 60B, 100B...
+    scratch = out.parent / '.tmp'
+    scratch.mkdir(exist_ok=True)
+    tempfile.tempdir = str(scratch)
     only = {s for s in a.only.split(',') if s}
     from PIL import Image
     for size in a.sizes.split(','):

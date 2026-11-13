@@ -7035,3 +7035,27 @@ fn yazi_visual_range_is_not_counted_in_the_header() {
     let out = capture_app(&a, 80);
     assert!(out.lines().next().unwrap_or("").trim_end().ends_with('1'));
 }
+
+#[test]
+fn yazi_hover_markdown_is_source_and_code_is_cropped() {
+    let (mut a, _rx) = file_app();
+    let text = "# Fixture project\n\n- item one\n\n```sh\ncargo run\n```\n";
+    let mut peek = Browser::new(0, "/files".into());
+    peek.source = true;
+    peek.preview_path = Some("/files/README.md".into());
+    peek.preview = Some(text.into());
+    peek.preview_rich = Some(RichPreview {
+        kind: "markdown".into(),
+        title: String::new(),
+        raster: None,
+        styled: None,
+        truncated: false,
+        page: 1,
+        pages: None,
+        chunk: None,
+    });
+    let lines = preview::preview_display_lines(&peek, text);
+    let first: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert_eq!(first, "# Fixture project");
+    a.browser.as_mut().unwrap().peek = Some(Box::new(peek));
+}

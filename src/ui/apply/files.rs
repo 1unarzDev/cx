@@ -93,6 +93,13 @@ pub(in crate::ui) fn apply_preview(
         safe_text(value["text"].as_str().unwrap_or("Preview unavailable"))
     });
     b.preview_rich = Some(rich);
+    if b.source {
+        // yazi's column shows markdown as source: drop the markdown styling so the
+        // worker's syntax highlighting (a `highlight` reply) applies.
+        if let Some(r) = b.preview_rich.as_mut().filter(|r| r.kind == "markdown") {
+            r.styled = None;
+        }
+    }
     let restored = b.preview_restore.take();
     let restoring = restored.is_some();
     if let Some((scroll, find)) = restored {

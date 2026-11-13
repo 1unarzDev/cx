@@ -337,6 +337,10 @@ struct Browser {
     /// paints from memory.
     #[serde(skip)]
     peek_cache: Vec<(String, Option<String>, Box<Browser>)>,
+    /// A hover preview in the yazi column: source as it is (markdown highlighted, not
+    /// laid out) and lines cropped at the edge, not wrapped (yazi's `wrap = no`).
+    #[serde(skip)]
+    source: bool,
     /// When the listing cache last served or stored this folder (LRU eviction).
     #[serde(skip)]
     used: u64,
@@ -387,6 +391,7 @@ impl Browser {
             peek_inflight: Vec::new(),
             stream: None,
             peek_cache: Vec::new(),
+            source: false,
             used: 0,
             offset: std::cell::Cell::new(0),
         }

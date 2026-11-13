@@ -1174,7 +1174,8 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
                 };
                 let source = preview
                     .as_ref()
-                    .filter(|p| p.kind == "code")
+                    // Markdown too: a hover preview shows it as highlighted source.
+                    .filter(|p| p.kind == "code" || p.kind == "markdown")
                     .and(result.as_ref().ok())
                     .map(|value| {
                         let text = safe_text(value["text"].as_str().unwrap_or(""));

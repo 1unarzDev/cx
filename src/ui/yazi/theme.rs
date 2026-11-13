@@ -425,6 +425,10 @@ impl Theme {
         set!(hovered, "indicator.current");
         set!(parent_hovered, "indicator.parent");
         set!(preview_hovered, "indicator.preview");
+        // yazi 26 draws the hovered help row's desc in the hovered indicator's colour.
+        if let Some(c) = t.hovered.fg {
+            t.help_hovered = t.help_hovered.fg(c);
+        }
         set!(status, "status.overall");
         set!(perm_sep, "status.perm_sep");
         set!(perm_type, "status.perm_type");

@@ -600,7 +600,16 @@ fn column(
         let room = inner_end.saturating_sub(x) as usize;
         let lm_w = if lm_w + 4 <= room { lm_w } else { 0 };
         let name_room = room.saturating_sub(if lm_w > 0 { lm_w + 1 } else { 0 });
-        let name = ellipsis(&row.name, name_room, !row.dir, look.unicode);
+        let mut name = ellipsis(&row.name, name_room, !row.dir, look.unicode);
+        if name != row.name && !row.dir && row.name.contains('.') && x > x0 + 1 {
+            // yazi keeps the extension even when that takes the icon's gap (`▯….toml`).
+            let wider = ellipsis(&row.name, name_room + 1, true, look.unicode);
+            let ext = row.name.rfind('.').map_or("", |i| &row.name[i..]);
+            if !name.ends_with(ext) && wider.ends_with(ext) {
+                name = wider;
+                x -= 1;
+            }
+        }
         // A cut name keeps the highlights that fall in its kept head.
         let head = if name == row.name {
             name.len()

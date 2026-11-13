@@ -612,15 +612,24 @@ pub(super) fn markdown_layout_lines(
 /// browser's current preview, e.g. by tests probing an alternative source).
 fn uncached_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
     let rich = browser.preview_rich.as_ref();
-    if rich.is_some_and(|p| p.kind == "markdown") {
+    if rich.is_some_and(|p| p.kind == "markdown") && !browser.source {
         let mut lines = markdown_layout_lines(browser, text, false);
         if ascii() || no_color() {
             strip_colors(&mut lines);
         }
         lines
     } else if !ascii() && !no_color() {
-        rich.and_then(|p| p.styled.clone())
-            .unwrap_or_else(|| preview_lines(text, rich.map(|p| p.kind.as_str()).unwrap_or("text")))
+        rich.and_then(|p| p.styled.clone()).unwrap_or_else(|| {
+            let kind = rich.map(|p| p.kind.as_str()).unwrap_or("text");
+            preview_lines(
+                text,
+                if browser.source && kind == "markdown" {
+                    "text"
+                } else {
+                    kind
+                },
+            )
+        })
     } else {
         safe_text(text)
             .lines()
@@ -1050,9 +1059,22 @@ pub(super) fn render_preview_body(
         );
         return;
     }
+    let height = usize::from(inner.height);
+    if browser.source {
+        // yazi's column: one line per row, cropped at the edge.
+        let scroll = browser.preview_scroll.get() as usize;
+        let lines = with_doc(browser, |doc| {
+            let first = scroll.min(doc.lines.len());
+            doc.lines[first..(first + height).min(doc.lines.len())].to_vec()
+        });
+        if let Some(lines) = lines {
+            frame.render_widget(Paragraph::new(lines), inner);
+            protect_content(frame.buffer_mut(), inner);
+        }
+        return;
+    }
     let query = browser.preview_find.query.clone();
     let reveal = browser.preview_find.reveal.replace(false);
-    let height = usize::from(inner.height);
     let rendered = with_doc(browser, |doc| {
         let matches = doc.matches(&query);
         let selected = browser
@@ -1243,7 +1265,7 @@ pub(super) fn apply_highlight(b: &mut Browser, chunk: PreviewChunk) -> bool {
     let Some(rich) = b
         .preview_rich
         .as_mut()
-        .filter(|r| r.kind == "code" && r.styled.is_none())
+        .filter(|r| (r.kind == "code" || (r.kind == "markdown" && b.source)) && r.styled.is_none())
     else {
         return false;
     };

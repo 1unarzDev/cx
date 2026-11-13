@@ -185,6 +185,7 @@ impl App {
                 child.preview_path = Some(entry.path.clone());
                 child.preview_pending_page = Some(1);
                 child.peek_value = None;
+                child.source = true;
                 b.peek = Some(child);
                 let generation = self.generation;
                 // Images come fitted to the preview's pixel box (decoded on the helper).

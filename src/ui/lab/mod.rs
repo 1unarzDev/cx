@@ -612,8 +612,11 @@ mod size_fuzz {
     }
 
     /// The whole matrix: 20x5 to 250x80, every width to 140 and every height to 60.
-    /// Run it with overflow checks in an optimised build, e.g.
-    /// `CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS=true cargo test --release -- --ignored size_fuzz`.
+    /// Run it with its overlay twin (every overlay from 1x1) with overflow checks in an
+    /// optimised build:
+    /// `CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS=true cargo test --release -- --ignored
+    /// ui::lab::size_fuzz::every_view_renders_at_every_size
+    /// ui::tests::nav_tests::every_overlay_renders_at_every_size`.
     #[test]
     #[ignore]
     fn every_view_renders_at_every_size() {

@@ -70,8 +70,9 @@ def main():
                 tree = env.root / '.cache/cx-yazi-ref/tree'
                 shutil.copytree(ref / 'tree', tree, symlinks=True)
                 if not a.no_theme:
-                    shutil.copytree(ref / 'config/yazi', env.root / 'xdg/yazi', symlinks=True)
-                    env.env['XDG_CONFIG_HOME'] = str(env.root / 'xdg')
+                    # At ~/.config/yazi (the private HOME), so `~/` paths in it resolve.
+                    shutil.copytree(ref / 'config/yazi', env.root / '.config/yazi', symlinks=True)
+                    env.env.pop('XDG_CONFIG_HOME', None)
                 env.env['COLORTERM'] = 'truecolor'
                 project = tree / 'project'
                 target = (project / start).resolve()

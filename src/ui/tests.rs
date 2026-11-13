@@ -7002,3 +7002,36 @@ fn preview_worker_replies_before_highlighting() {
     );
     assert!(chunk.lines.is_some());
 }
+
+#[test]
+fn yazi_ctrl_c_closes_a_tab_and_dash_stays_in_files() {
+    let (mut a, _rx) = file_app();
+    press(&mut a, 't');
+    press(&mut a, 't');
+    assert_eq!(a.yz.tabs.len(), 2);
+    a.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert_eq!(a.yz.tabs.len(), 1);
+    assert!(!a.quit && a.view == View::Files);
+    // yazi's `-`, `_`, Ctrl+- and `+`-free keys never reach cx's globals in Files.
+    for k in ['-', '_', 'A', 'H', 'L'] {
+        press(&mut a, k);
+        assert_eq!(a.view, View::Files, "{k}");
+    }
+    a.key(KeyEvent::new(KeyCode::Char('-'), KeyModifiers::CONTROL));
+    a.key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+    assert!(!a.quit && a.view == View::Files);
+}
+
+#[test]
+fn yazi_visual_range_is_not_counted_in_the_header() {
+    let (mut a, _rx) = file_app();
+    press(&mut a, 'v');
+    press(&mut a, 'j');
+    let out = capture_app(&a, 80);
+    let header = out.lines().next().unwrap_or("");
+    assert!(!header.trim_end().ends_with('2'), "{header}");
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    press(&mut a, ' ');
+    let out = capture_app(&a, 80);
+    assert!(out.lines().next().unwrap_or("").trim_end().ends_with('1'));
+}

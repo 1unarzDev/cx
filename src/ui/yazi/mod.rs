@@ -81,6 +81,8 @@ pub(super) enum Y {
     LocalShell(String, bool),
     /// A user prepend cx does not run (a yazi plugin): says so.
     Unsupported(String),
+    /// A yazi default cx does not do: the notice says so (the key never falls to cx).
+    NotInCx(&'static str),
     /// cx's own: the send-to popup (kept from the earlier Files view).
     SendTo,
     /// cx's own: a new agent or shell session in this folder.
@@ -124,10 +126,19 @@ pub(super) fn keymap() -> &'static [Bind] {
                 CloseTab,
                 "Close the current tab, or Files when it is the last"
             ),
+            b!(
+                ["<C-z>"],
+                NotInCx("Suspend is not in cx · Ctrl+\\ detaches"),
+                "Suspend the process (not in cx)"
+            ),
             b!(["k"], Arrow(-1), "Previous file"),
             b!(["j"], Arrow(1), "Next file"),
             b!(["<Up>"], Arrow(-1), "Previous file"),
             b!(["<Down>"], Arrow(1), "Next file"),
+            b!(["g", "g"], Top, "Go to top"),
+            b!(["G"], Bottom, "Go to bottom"),
+            b!(["<Home>"], Top, "Go to top"),
+            b!(["<End>"], Bottom, "Go to bottom"),
             b!(["<C-u>"], Page(-1, 2), "Move cursor up half page"),
             b!(["<C-d>"], Page(1, 2), "Move cursor down half page"),
             b!(["<C-b>"], Page(-1, 1), "Move cursor up one page"),
@@ -136,24 +147,30 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(["<S-PageDown>"], Page(1, 2), "Move cursor down half page"),
             b!(["<PageUp>"], Page(-1, 1), "Move cursor up one page"),
             b!(["<PageDown>"], Page(1, 1), "Move cursor down one page"),
-            b!(["g", "g"], Top, "Go to top"),
-            b!(["G"], Bottom, "Go to bottom"),
-            b!(["<Home>"], Top, "Go to top"),
-            b!(["<End>"], Bottom, "Go to bottom"),
             b!(["h"], Leave, "Back to the parent directory"),
             b!(["l"], Enter, "Enter the child directory"),
             b!(["<Left>"], Leave, "Back to the parent directory"),
             b!(["<Right>"], Enter, "Enter the child directory"),
+            b!(
+                ["H"],
+                NotInCx("Shift+H is cx's hub key · history is Alt+← / Alt+→"),
+                "Back to previous directory: Alt+← in cx (H is the hub key)"
+            ),
+            b!(
+                ["L"],
+                NotInCx("History is Alt+← / Alt+→ in cx"),
+                "Forward to next directory: Alt+→ in cx"
+            ),
             b!(["<A-Left>"], Back, "Back to previous directory"),
             b!(["<A-Right>"], Forward, "Forward to next directory"),
-            b!(["K"], Seek(-5), "Seek up 5 units in the preview"),
-            b!(["J"], Seek(5), "Seek down 5 units in the preview"),
-            b!(["<Tab>"], Spot, "Spot hovered file"),
             b!(["<Space>"], Toggle, "Toggle the current selection state"),
             b!(["<C-a>"], ToggleAll, "Select all files"),
             b!(["<C-r>"], Invert, "Invert selection of all files"),
             b!(["v"], Visual, "Enter visual mode (selection mode)"),
             b!(["V"], VisualUnset, "Enter visual mode (unset mode)"),
+            b!(["K"], Seek(-5), "Seek up 5 units in the preview"),
+            b!(["J"], Seek(5), "Seek down 5 units in the preview"),
+            b!(["<Tab>"], Spot, "Spot hovered file"),
             b!(["o"], Open, "Open selected files"),
             b!(["O"], OpenInteractive, "Open selected files interactively"),
             b!(["<Enter>"], Open, "Open selected files"),
@@ -174,11 +191,31 @@ pub(super) fn keymap() -> &'static [Bind] {
                 Paste(true),
                 "Paste yanked files (overwrite if the destination exists)"
             ),
+            b!(
+                ["-"],
+                NotInCx("Symlinks are not in cx"),
+                "Symlink the absolute path of yanked files (not in cx)"
+            ),
+            b!(
+                ["_"],
+                NotInCx("Symlinks are not in cx"),
+                "Symlink the relative path of yanked files (not in cx)"
+            ),
+            b!(
+                ["<C-->"],
+                NotInCx("Hardlinks are not in cx"),
+                "Hardlink yanked files (not in cx)"
+            ),
             b!(["Y"], Unyank, "Cancel the yank status"),
             b!(["X"], Unyank, "Cancel the yank status"),
             b!(["d"], Trash, "Trash selected files"),
             b!(["D"], Delete, "Permanently delete selected files"),
             b!(["a"], Create, "Create a file (ends with / for directories)"),
+            b!(
+                ["A"],
+                NotInCx("Bulk create is not in cx · a creates one at a time"),
+                "Bulk create files (not in cx)"
+            ),
             b!(["r"], Rename, "Rename selected file(s)"),
             b!([";"], Shell(false), "Run a shell command"),
             b!(
@@ -203,19 +240,29 @@ pub(super) fn keymap() -> &'static [Bind] {
                 "Linemode: permissions"
             ),
             b!(
+                ["m", "b"],
+                NotInCx("Birth time is not in cx · m m shows mtime"),
+                "Linemode: btime (not in cx)"
+            ),
+            b!(
                 ["m", "m"],
                 Linemode(render::Linemode::Mtime),
                 "Linemode: mtime"
             ),
             b!(
-                ["m", "b"],
-                Linemode(render::Linemode::Bar),
-                "Linemode: size bar and day"
+                ["m", "o"],
+                NotInCx("Owner is not in cx · m p shows permissions"),
+                "Linemode: owner (not in cx)"
             ),
             b!(
                 ["m", "n"],
                 Linemode(render::Linemode::None),
                 "Linemode: none"
+            ),
+            b!(
+                ["m", "d"],
+                Linemode(render::Linemode::Bar),
+                "Linemode: size bar and day (cx's default)"
             ),
             b!(["c", "c"], Copy("path"), "Copy file path"),
             b!(["c", "C"], Copy("url"), "Copy file URL"),
@@ -238,11 +285,15 @@ pub(super) fn keymap() -> &'static [Bind] {
                 Sort("mtime", true),
                 "Sort by modified time (reverse)"
             ),
-            b!([",", "b"], Sort("mtime", false), "Sort by birth time"),
+            b!(
+                [",", "b"],
+                Sort("mtime", false),
+                "Sort by birth time (cx: modified time)"
+            ),
             b!(
                 [",", "B"],
                 Sort("mtime", true),
-                "Sort by birth time (reverse)"
+                "Sort by birth time (reverse; cx: modified time)"
             ),
             b!([",", "e"], Sort("extension", false), "Sort by extension"),
             b!(
@@ -1036,6 +1087,7 @@ impl App {
                     self.run_opener(cmd, block);
                 }
             }
+            NotInCx(why) => self.set_notice(why.into()),
             Unsupported(desc) => {
                 self.set_notice(format!("{desc} is a yazi plugin · not in cx"));
             }
@@ -1556,8 +1608,14 @@ impl App {
                 safe_label(&self.devices[device].name)
             ));
         }
-        v.count = if !b.marked.is_empty() {
-            Some((b.marked.len(), Mark::Selected))
+        // Committed selections only: a live visual range is not counted (yazi's).
+        let committed = if b.visual_anchor.is_some() {
+            &b.visual_base
+        } else {
+            &b.marked
+        };
+        v.count = if !committed.is_empty() {
+            Some((committed.len(), Mark::Selected))
         } else {
             self.clipboard.as_ref().map(|c| {
                 (
@@ -2150,6 +2208,41 @@ mod tests {
         }
         // `'` is not bound in yazi's default keymap (keymap-default.toml).
         assert!(keymap().iter().filter(|b| b.on == ["'"]).count() == 1);
+    }
+
+    /// Every row of yazi 26's built-in `[mgr]` keymap (a checked-in copy) resolves in
+    /// cx, in yazi's order. Keys cx does not do are bound to a notice (`NotInCx`), so none
+    /// is a silent no-op or falls through to a cx global.
+    #[test]
+    fn yazi_default_keymap_parity() {
+        let doc = toml::parse(include_str!("keymap-default-mgr.toml"));
+        let rows = doc.path("mgr.keymap").map(|v| v.arr()).unwrap_or(&[]);
+        assert_eq!(rows.len(), 116);
+        let mut order = Vec::new();
+        for row in rows {
+            let on = row.get("on").expect("on");
+            let seq: Vec<String> = match on.str() {
+                Some(k) => vec![k.to_string()],
+                None => on
+                    .arr()
+                    .iter()
+                    .filter_map(|v| v.str().map(String::from))
+                    .collect(),
+            };
+            assert!(App::binding(&seq).is_some(), "{seq:?} is not bound");
+            let at = keymap()
+                .iter()
+                .position(|b| b.on.len() == seq.len() && b.on.iter().zip(&seq).all(|(a, b)| a == b))
+                .unwrap();
+            order.push(at);
+        }
+        for (i, w) in order.windows(2).enumerate() {
+            assert!(
+                w[0] < w[1],
+                "keymap order differs from yazi at row {}",
+                i + 1
+            );
+        }
     }
 
     #[test]

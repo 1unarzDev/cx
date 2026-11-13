@@ -59,6 +59,11 @@ impl App {
             }
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            // In Files, yazi's Ctrl+C closes the tab (and Files on the last one).
+            if self.yazi_active() && self.context_menu.is_none() && !self.help {
+                self.yazi_key(key);
+                return;
+            }
             self.request_quit();
             return;
         }

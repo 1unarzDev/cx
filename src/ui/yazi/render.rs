@@ -196,7 +196,7 @@ pub(crate) fn ellipsis(s: &str, w: usize, keep_ext: bool, unicode: bool) -> Stri
     let ext = keep_ext
         .then(|| s.rfind('.').filter(|&i| i > 0).map(|i| &s[i..]))
         .flatten()
-        .filter(|e| width(e) + 2 <= w);
+        .filter(|e| width(e) < w);
     let tail = ext.unwrap_or("");
     let room = w - 1 - width(tail);
     let mut head = String::new();
@@ -440,6 +440,7 @@ fn linemode(
     size_max: u64,
     now: i64,
     unicode: bool,
+    compact: bool,
 ) -> Vec<(String, u8)> {
     // (text, kind): 0 plain, 1 bar filled, 2 bar empty.
     match mode {
@@ -484,9 +485,13 @@ fn linemode(
                 let used = halves.div_ceil(2);
                 out.push((bar, 1));
                 out.push((empty.repeat(cells - used), 2));
-                out.push((format!(" {:>5}", readable_size(row.size)), 0));
+                // A narrow column keeps the bar and the day (the status line has the size).
+                if !compact {
+                    out.push((format!(" {:>5}", readable_size(row.size)), 0));
+                }
             }
-            if let Some(m) = row.modified {
+            // Folders stay icon + name, as in yazi's default linemode.
+            if let Some(m) = row.modified.filter(|_| !row.dir) {
                 out.push((format!(" {:>5}", day(m, now)), 3));
             }
             out
@@ -586,7 +591,8 @@ fn column(
         }
         // The linemode (current column only), right-aligned before the padding.
         let lm = if which == Which::Current {
-            linemode(row, mode, col.size_max, now, look.unicode)
+            let room = inner_end.saturating_sub(x) as usize;
+            linemode(row, mode, col.size_max, now, look.unicode, room < 48)
         } else {
             Vec::new()
         };

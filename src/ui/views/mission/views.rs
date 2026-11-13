@@ -2638,11 +2638,21 @@ fn onboarding(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // Primary action.
     let btn = format!("  {}  Connect Cloudflare  ", cx.ret());
     let bw = super::width(&btn, cx.uni());
-    // The primary action: bold, underlined accent ink, no cell behind it.
-    let bst = cx
-        .st(Tok::Accent)
-        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-    cx.put(buf, x0, y, bw, &btn, bst);
+    // The primary action: bold accent ink, no cell behind it, only the label
+    // underlined (not the key glyph or the air around it).
+    let key = format!("  {}  ", cx.ret());
+    let kw = super::width(&key, cx.uni());
+    let bst = cx.st(Tok::Accent).add_modifier(Modifier::BOLD);
+    cx.put(buf, x0, y, kw, &key, bst);
+    let label = "Connect Cloudflare";
+    cx.put(
+        buf,
+        x0 + kw,
+        y,
+        bw.saturating_sub(kw),
+        label,
+        bst.add_modifier(Modifier::UNDERLINED),
+    );
     cx.hit(Rect::new(x0, y, bw, 1), "connect-cloudflare");
     // The button's note sits beside it when it fits whole, else on a muted row under
     // it (never cut).

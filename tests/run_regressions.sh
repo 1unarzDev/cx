@@ -21,7 +21,7 @@
 # directory for every step, so a fixture that runs bare `tmux` (or
 # `tmux kill-server`) can never reach the caller's managed or personal tmux
 # server, even when this script is started from inside a cx pane. Every
-# fixture but the docker ones runs under tests/isolate.sh (private user, pid
+# fixture but the docker and hostids ones runs under tests/isolate.sh (private user, pid
 # and mount namespaces), so adoption discovery in a fixture viewer or helper
 # never sees a real terminal; that needs unprivileged user namespaces.
 set -u
@@ -42,14 +42,17 @@ while [ $# -gt 0 ]; do
         while [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; do only+=("$1"); shift; done
         continue
         ;;
-    -h | --help) sed -n '2,24p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,26p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
 done
 
 # name|requirements|arguments (BIN = target/debug/cx). Requirements are
-# space-separated: pyte, pillow, fish, poppler, sshd, docker, node, userns. A name
+# space-separated: pyte, pillow, fish, poppler, sshd, docker, node, userns, and
+# hostids (always met: a CLI fixture that checks root-owned files such as
+# /etc/ssh/ssh_config, which a user namespace shows as nobody's, so it runs
+# outside tests/isolate.sh; none of them starts a viewer). A name
 # ending in .mjs runs with node; every other name is tests/NAME.py.
 CORE=(
     "command_panel_live||BIN"
@@ -70,7 +73,7 @@ CORE=(
     "native_runtime_metadata_live||BIN"
     "codex_process_mode_live||BIN"
     "session_names_live||BIN"
-    "install_fixture||"
+    "install_fixture|hostids|"
     "workflow_keys||"
     "device_policy_cli||BIN"
     "codex_wheel_pty||BIN"
@@ -115,20 +118,20 @@ CORE=(
     "files_bench|pyte|--self-test"
 )
 SSH=(
-    "jump_routes_cli|sshd|BIN"
+    "jump_routes_cli|sshd hostids|BIN"
     "access_routes_cli|sshd|BIN"
     "peer_pairing_cli|sshd|BIN"
-    "peer_mesh_cli|sshd|BIN"
-    "peer_managed_ssh|sshd|BIN"
-    "mesh_ssh_overlay|sshd|BIN"
-    "edge_policy_ssh|sshd|BIN"
+    "peer_mesh_cli|sshd hostids|BIN"
+    "peer_managed_ssh|sshd hostids|BIN"
+    "mesh_ssh_overlay|sshd hostids|BIN"
+    "edge_policy_ssh|sshd hostids|BIN"
     "ssh_multiplex|sshd|BIN"
     "swap_attach_pty@ssh|sshd|BIN --ssh"
     "yazi_files_pty@ssh|sshd pyte pillow|BIN --ssh"
-    "enrollment_tooling_cli|sshd|BIN"
+    "enrollment_tooling_cli|sshd hostids|BIN"
     "enrollment_auth_pty|sshd pyte|BIN"
     "enrollment_ssh|sshd|."
-    "robot_enrollment|sshd|"
+    "robot_enrollment|sshd hostids|"
     "hub_matrix|userns pyte pillow|BIN --jobs 3"
 )
 DOCKER=(
@@ -224,6 +227,7 @@ have() {
     docker) docker info >/dev/null 2>&1 ;;
     node) node -e 'require("node:sqlite")' >/dev/null 2>&1 ;;
     userns) unshare -UrnmCpfu --mount-proc true >/dev/null 2>&1 ;;
+    hostids) true ;;
     *) return 1 ;;
     esac
 }
@@ -254,7 +258,7 @@ for entry in "${selected[@]}"; do
     *) run=(python3 "tests/$script.py") ;;
     esac
     # Docker fixtures follow container processes in the host's /proc.
-    case " $needs " in *" docker "*) ;; *) run=(tests/isolate.sh "${run[@]}") ;; esac
+    case " $needs " in *" docker "* | *" hostids "*) ;; *) run=(tests/isolate.sh "${run[@]}") ;; esac
     if env "${extra_env[@]}" timeout 600 "${run[@]}" "${argv[@]}" >"$log" 2>&1 </dev/null; then
         report PASS "$name" "$(($(date +%s) - start))s"; pass=$((pass + 1))
     else

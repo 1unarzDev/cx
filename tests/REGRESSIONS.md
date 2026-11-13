@@ -213,7 +213,7 @@ Guard notation:
 | `21632fc` v0.1.84 | "unsupported artifact member" when enabling terminal moving | the member allowlist lacked `cx-reptyr` | **NEW** rust:relay_and_portable_tool_members_extract_but_other_members_are_refused |
 | `538baee` v0.1.82 | "SSH access unavailable" notices came from background discovery | errors were not marked best-effort | UNGUARDED |
 | `f91242a` | Adoption stalled after availability returned | needed a second Enter | rust:adoption_continues_after_availability_without_second_enter |
-| v0.3.0 | Fixture viewers and probes (capture_matrix, perf_harness, files_bench, every PTY fixture) ran adoption discovery over the host's real `/proc` | isolated HOME and TMUX_TMPDIR do not hide processes | **NEW** py:probe_isolation [ci] (an outside terminal is never listed; a fixture one is); every non-docker fixture and `pty_lib.isolate()` harness runs under tests/isolate.sh |
+| v0.3.0 | Fixture viewers and probes (capture_matrix, perf_harness, files_bench, every PTY fixture) ran adoption discovery over the host's real `/proc` | isolated HOME and TMUX_TMPDIR do not hide processes | **NEW** py:probe_isolation [ci] (an outside terminal is never listed; a fixture one is); every fixture but the docker and `hostids` CLI ones (none starts a viewer), and every `pty_lib.isolate()` harness, runs under tests/isolate.sh |
 
 ## 9. Files, transfers, updater and installer
 
@@ -395,6 +395,6 @@ CX_PYTHONPATH=/path/with/pyte:/path/with/wcwidth tests/run_regressions.sh   # wh
 ```
 
 The script unsets TMUX/TMUX_PANE and uses a private TMUX_TMPDIR. A fixture can therefore never reach the caller's managed or
-personal tmux server, even when the script runs inside a cx pane. Every fixture except the docker ones runs under `tests/isolate.sh`
+personal tmux server, even when the script runs inside a cx pane. Every fixture except the docker and `hostids` ones runs under `tests/isolate.sh`
 (private user, pid, mount and cgroup namespaces): it sees only its own processes, never a real terminal, and no user bus. Fixtures with an unmet requirement (pyte, pillow, fish, poppler,
 sshd, docker, node with `node:sqlite`) are reported as SKIP, never as PASS; CI fails on any SKIP. `mesh_worker.mjs` runs with node.

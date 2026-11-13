@@ -637,6 +637,7 @@ mod nebula_tests {
     //! The hub's nebula: mirror-drawn halves, folding clusters, and arrow moves that
     //! reverse, reach every device and never go against their key.
     use super::*;
+    use ratatui::style::{Color, Modifier};
     use std::collections::{BTreeSet, VecDeque};
 
     const SIZES: [(u16, u16); 4] = [(80, 24), (95, 50), (120, 40), (190, 50)];
@@ -752,59 +753,189 @@ mod nebula_tests {
         }
     }
 
-    /// A folded cluster's member letters wear one calm tone: its up members share a
-    /// colour and its down ones one dimmer colour, never a colour per letter, and
-    /// nothing but letters and a closing `…` sits in the row (no down marker).
-    #[test]
-    fn folded_member_letters_share_one_tone() {
-        let mut rows = 0;
-        for f in ["large", "nebula-25", "nebula-15"] {
-            let s = LabState::fixture(f).unwrap();
-            for (w, h) in [(120, 40), (190, 50), (95, 50)] {
-                let (buf, _) = drawn(&s, 0, w, h);
-                for y in 0..h - 1 {
-                    for x in 0..w {
-                        if buf[(x, y)].symbol() != "◍" {
-                            continue;
+    /// The folded clusters' letter rows of a frame: each row's cells, inner end
+    /// first, found under every cluster mark (`◍`, `*` in ASCII).
+    fn letter_rows(buf: &Buffer) -> Vec<Vec<(u16, u16)>> {
+        let (w, h) = (buf.area.width, buf.area.height);
+        let mut rows = Vec::new();
+        for y in 0..h - 1 {
+            for x in 0..w {
+                // (A mark with its `+N` count beside it: not a `*` in session text.)
+                let line: String = (x.saturating_sub(30)..(x + 30).min(w))
+                    .map(|i| buf[(i, y)].symbol())
+                    .collect();
+                let counted = line
+                    .split('+')
+                    .skip(1)
+                    .any(|t| t.starts_with(|c: char| c.is_ascii_digit()));
+                if !["◍", "*"].contains(&buf[(x, y)].symbol()) || !counted {
+                    continue;
+                }
+                let right = x + 2 < w
+                    && buf[(x + 2, y)]
+                        .symbol()
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-');
+                let (mut cx, mut gap, mut row) = (i32::from(x), 0, Vec::new());
+                let step = if right { 1 } else { -1 };
+                while cx >= 0 && cx < i32::from(w) {
+                    let sym = buf[(cx as u16, y + 1)].symbol();
+                    if sym == " " {
+                        gap += 1;
+                        if !row.is_empty() && gap > 1 {
+                            // A double space with letters after it: a missing tooth.
+                            let n = cx + step;
+                            let more = n >= 0
+                                && n < i32::from(w)
+                                && buf[(n as u16, y + 1)]
+                                    .symbol()
+                                    .chars()
+                                    .all(|c| c.is_ascii_lowercase());
+                            assert!(!more, "a gap in the letter row at ({cx},{})", y + 1);
+                            break;
                         }
-                        let right = x + 2 < w
-                            && buf[(x + 2, y)]
-                                .symbol()
-                                .chars()
-                                .all(|c| c.is_ascii_alphanumeric() || c == '-');
-                        let mut fgs = BTreeSet::new();
-                        let (mut cx, mut gap, mut n) = (x as i32, 0, 0);
-                        while gap < 3 && cx >= 0 && cx < i32::from(w) {
-                            let c = &buf[(cx as u16, y + 1)];
-                            let sym = c.symbol();
-                            if sym.len() == 1 && sym.chars().all(|c| c.is_ascii_lowercase()) {
-                                fgs.insert(format!("{:?}", c.fg));
-                                n += 1;
-                                gap = 0;
-                            } else if sym == " " {
-                                gap += 1;
-                            } else if n > 0 {
-                                assert!(
-                                    !["✕", "×", "!"].contains(&sym),
-                                    "{f} {w}x{h}: fold at ({x},{y}) has {sym:?} in its letters"
-                                );
-                                break;
-                            }
-                            cx += if right { 1 } else { -1 };
+                        if row.is_empty() && gap > 3 {
+                            break;
                         }
-                        if n >= 3 {
-                            rows += 1;
-                            assert!(
-                                fgs.len() <= 2,
-                                "{f} {w}x{h}: fold at ({x},{y}) letters in {} colours",
-                                fgs.len()
-                            );
-                        }
+                    } else if sym
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || "·…:~".contains(c))
+                        && sym.chars().count() == 1
+                    {
+                        gap = 0;
+                        row.push((cx as u16, y + 1));
+                    } else {
+                        break;
                     }
+                    cx += step;
+                }
+                if row.len() >= 3 {
+                    rows.push(row);
                 }
             }
         }
-        assert!(rows > 5, "only {rows} folded rows seen");
+        rows
+    }
+
+    /// A folded cluster's member letters read cleanly in every tier: an even pitch (one
+    /// space between cells, never a gap), up members in the cluster's one tone (a drift
+    /// of a few percent at most in truecolor, one colour otherwise), then at most one
+    /// dim `·` and the down and never-seen members in the theme's neutral dim ink (the
+    /// same ink in every cluster, so no hue), never a ✕ or ! marker in the row.
+    #[test]
+    fn folded_member_letters_share_one_tone() {
+        let tiers = [
+            (ColorLevel::Truecolor, Theme::Dark, true),
+            (ColorLevel::Truecolor, Theme::Light, true),
+            (ColorLevel::C16, Theme::Dark, true),
+            (ColorLevel::None, Theme::Dark, false),
+        ];
+        let mut seen = 0;
+        for f in ["large", "nebula-25", "nebula-15"] {
+            let s = LabState::fixture(f).unwrap();
+            for (w, h) in [(120, 40), (190, 50), (95, 50)] {
+                for (color, theme, unicode) in tiers {
+                    let caps = LabCaps {
+                        color,
+                        theme,
+                        unicode,
+                        ..map_caps(0)
+                    };
+                    let area = Rect::new(0, 0, w, h);
+                    let mut buf = Buffer::empty(area);
+                    mission::render(&LabView::Hub, &s, &caps, area, &mut buf);
+                    let rows = letter_rows(&buf);
+                    let mut downs = BTreeSet::new();
+                    for row in &rows {
+                        let at = format!("{f} {w}x{h} {color:?} {theme:?}: row at {:?}", row[0]);
+                        let mut xs: Vec<u16> = row.iter().map(|c| c.0).collect();
+                        xs.sort();
+                        assert!(
+                            xs.windows(2).all(|p| p[1] - p[0] == 2),
+                            "{at}: uneven pitch"
+                        );
+                        let syms: Vec<&str> = row.iter().map(|&c| buf[c].symbol()).collect();
+                        assert!(
+                            syms.iter().all(|t| !["✕", "×", "!", " "].contains(t)),
+                            "{at}: {syms:?}"
+                        );
+                        let sep = ["·", ":"];
+                        assert!(syms.iter().filter(|t| sep.contains(t)).count() <= 1, "{at}");
+                        let split = syms.iter().position(|t| sep.contains(t));
+                        let letter = |t: &&str| t.chars().all(|c| c.is_ascii_lowercase());
+                        let ups: Vec<_> = row[..split.unwrap_or(row.len())]
+                            .iter()
+                            .filter(|&&c| letter(&buf[c].symbol()))
+                            .map(|&c| (buf[c].fg, buf[c].modifier))
+                            .collect();
+                        let dn: BTreeSet<String> = split
+                            .map_or(&row[..0], |i| &row[i + 1..])
+                            .iter()
+                            .filter(|&&c| letter(&buf[c].symbol()))
+                            .map(|&c| format!("{:?}{:?}", buf[c].fg, buf[c].modifier))
+                            .collect();
+                        assert!(dn.len() <= 1, "{at}: down letters in {} inks", dn.len());
+                        downs.extend(dn);
+                        let Some(&(f0, m0)) = ups.first() else {
+                            continue;
+                        };
+                        seen += 1;
+                        for &(fg, m) in &ups {
+                            match (f0, fg) {
+                                (Color::Rgb(r0, g0, b0), Color::Rgb(r, g, b)) => {
+                                    let d = [(r0, r), (g0, g), (b0, b)]
+                                        .iter()
+                                        .map(|&(a, b)| (i32::from(a) - i32::from(b)).abs())
+                                        .max()
+                                        .unwrap();
+                                    assert!(d <= 24, "{at}: letters drift {d} apart");
+                                }
+                                _ => assert_eq!((f0, m0), (fg, m), "{at}: letters in two inks"),
+                            }
+                        }
+                    }
+                    assert!(
+                        downs.len() <= 1,
+                        "{f} {w}x{h} {color:?} {theme:?}: down ink varies by cluster {downs:?}"
+                    );
+                }
+            }
+        }
+        assert!(seen > 20, "only {seen} folded rows seen");
+    }
+
+    /// Pointing at a member letter names that device on the cluster's title line, and
+    /// the letter turns the accent, bold and underlined.
+    #[test]
+    fn a_pointed_at_letter_names_its_device() {
+        let s = LabState::fixture("nebula-25").unwrap();
+        let (buf, _) = drawn(&s, 0, 120, 40);
+        let rows = letter_rows(&buf);
+        assert!(!rows.is_empty());
+        for row in rows {
+            let &(x, y) = row
+                .iter()
+                .find(|&&c| buf[c].symbol().chars().all(|c| c.is_ascii_lowercase()))
+                .unwrap();
+            let k = buf[(x, y)].symbol().chars().next().unwrap();
+            let d = s.devices.iter().find(|d| d.hotkey == k).unwrap();
+            let caps = LabCaps {
+                hover: Some((x, y)),
+                ..map_caps(0)
+            };
+            let area = Rect::new(0, 0, 120, 40);
+            let mut hb = Buffer::empty(area);
+            mission::render(&LabView::Hub, &s, &caps, area, &mut hb);
+            let title: String = (0..120).map(|i| hb[(i, y - 1)].symbol()).collect();
+            let stem: String = d.name.chars().take(6).collect();
+            assert!(title.contains(&stem), "hover {k}: {title:?} lacks {stem}");
+            assert!(hb[(x, y)].modifier.contains(Modifier::UNDERLINED));
+            assert_ne!(
+                hb[(x, y)].fg,
+                buf[(x, y)].fg,
+                "hover {k}: the letter keeps its ink"
+            );
+        }
     }
 
     /// In every frame: a move never goes against its key; going back and forth settles

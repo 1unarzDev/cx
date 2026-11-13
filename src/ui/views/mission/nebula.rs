@@ -685,36 +685,42 @@ fn letter_tok(cl: &Cl) -> Tok {
 /// The most member letters a folded cluster shows; the rest end in a dim `…`.
 const ROW_MAX: usize = 8;
 
-/// A folded cluster's member letters, up ones first (in member order), then down and
-/// never-seen ones, at most `ROW_MAX` and then `…`: each paired with whether it is up.
+/// A folded cluster's member letters, up ones first, then down and never-seen ones,
+/// each part alphabetical (so a row reads the same at every size and arrows walk it
+/// in a stated order), at most `ROW_MAX` and then `…`: each paired with whether it is up.
 fn row_members(cx: &Cx, cl: &Cl, nodes: &[N]) -> (Vec<(usize, bool)>, bool) {
     let mut v: Vec<(usize, bool)> = cl.members.iter().map(|&m| (m, cx.up(nodes[m].d))).collect();
-    v.sort_by_key(|&(_, up)| !up);
+    v.sort_by_key(|&(m, up)| (!up, nodes[m].d.hotkey));
     let more = v.len() > ROW_MAX;
     v.truncate(ROW_MAX);
     (v, more)
 }
 
-/// The letter row's cells, outer end last: letters one apart, an extra space before
-/// the down and never-seen ones (so they read apart without colour), then `…` when cut.
+/// The letter row's cells, outer end last, every cell one apart (an even pitch): the
+/// up letters, one dim `·` before the down and never-seen ones (so the split reads
+/// without colour too), then `…` when cut. Each cell carries the member it names.
 /// The left half draws it reversed, so both halves keep the dim end outermost.
-fn letter_segs(cx: &Cx, cl: &Cl, nodes: &[N], a: f32) -> Vec<(String, Style, bool)> {
+fn letter_segs(cx: &Cx, cl: &Cl, nodes: &[N], a: f32) -> Vec<(String, Style, Option<usize>)> {
     let (v, more) = row_members(cx, cl, nodes);
+    let ups = v.iter().filter(|&&(_, up)| up).count();
     let mut out = Vec::new();
-    let mut prev_up = true;
-    for (m, up) in v {
-        if prev_up && !up && !out.is_empty() {
-            out.push((String::new(), Style::default(), false));
+    for (i, &(m, up)) in v.iter().enumerate() {
+        if !up && i == ups && i > 0 {
+            out.push((cx.g("·", ":").into(), cx.ink(Tok::Muted, 0.55 * a), None));
         }
-        prev_up = up;
+        let t = if ups > 1 {
+            i as f32 / (ups - 1) as f32
+        } else {
+            0.0
+        };
         out.push((
             nodes[m].d.hotkey.to_string(),
-            letter_ink(cx, cl, up, a),
-            true,
+            letter_ink(cx, cl, up, t, a),
+            Some(m),
         ));
     }
     if more {
-        out.push((cx.g("…", "~").into(), letter_ink(cx, cl, false, a), false));
+        out.push((cx.g("…", "~").into(), cx.ink(Tok::Faint, a), None));
     }
     out
 }
@@ -729,21 +735,20 @@ fn letter_w(cx: &Cx, cl: &Cl, nodes: &[N]) -> u16 {
     w.saturating_sub(1)
 }
 
-/// A member letter's ink: the cluster's one tone, full for up members; down and
-/// never-seen ones in the same hue, desaturated and pulled toward mid-grey (not toward
-/// the background, so they stay legible on light and dark), or dimmed where the
-/// terminal has no blending.
-fn letter_ink(cx: &Cx, cl: &Cl, up: bool, a: f32) -> Style {
-    let tok = letter_tok(cl);
-    if up {
-        return cx.ink(tok, 0.9 * a);
+/// A member letter's ink, one rule in every theme: up members in the cluster's tone
+/// (in truecolor drifting a few percent lighter along the row, `t` from 0 to 1, so the
+/// row reads as one calm stroke), down and never-seen ones in the theme's neutral dim
+/// ink with no hue at all.
+fn letter_ink(cx: &Cx, cl: &Cl, up: bool, t: f32, a: f32) -> Style {
+    if !up {
+        return cx.ink(Tok::Muted, 0.8 * a);
     }
+    let tok = letter_tok(cl);
     if cx.tc() {
-        let mid = super::mix(cx.bg0(), cx.fg0(), 0.5);
-        let c = super::mix(mid, cx.rgb(tok), 0.4);
+        let c = super::mix(cx.rgb(tok), cx.fg0(), 0.06 * t);
         cx.rgb_fg(super::mix(cx.bg0(), c, a))
     } else {
-        cx.st(tok).add_modifier(Modifier::DIM)
+        cx.ink(tok, a)
     }
 }
 
@@ -1649,9 +1654,14 @@ fn label(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It, r: R, pick: Option<bool>,
                 gst
             };
             if p.mode == Mode::Key {
-                let hue = Tok::Id(cx.s.hue(&d.id));
+                // The same ink its letter has in its folded cluster's row.
+                let (tok, ta) = if up {
+                    (p.cls.get(p.nodes[i].cl).map_or(Tok::Fg, letter_tok), a)
+                } else {
+                    (Tok::Muted, 0.8 * a)
+                };
                 let st =
-                    faded(cx, hue, a, sel_k).add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+                    faded(cx, tok, ta, sel_k).add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
                 let (lx, gx) = if left { (x + w - 1, x) } else { (x, x + 1) };
                 cx.put(buf, lx, y, 1, &d.hotkey.to_string(), st);
                 if !up {
@@ -1703,10 +1713,55 @@ fn label(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It, r: R, pick: Option<bool>,
                 cx.put(buf, nx, y, w - 1, &count, cst);
                 return;
             }
-            let nm = fit(&cl.name, 16, cx.uni());
+            let mut nm = fit(&cl.name, 16, cx.uni());
+            let mut count = count;
+            // The name in the plain foreground; the hue stays on the dot and letters.
+            let mut nst = cx.ink(Tok::Fg, 0.9 * a);
+            let mut cst = cst;
+            // The letter row, laid out first so a pointed-at letter can name its device.
+            let mut cells = Vec::new();
+            if p.mode == Mode::Full && r.h > 1 {
+                let ew = letter_w(cx, cl, &p.nodes);
+                let mut segs = letter_segs(cx, cl, &p.nodes, a);
+                let mut xx = if left {
+                    segs.reverse();
+                    (x + w).saturating_sub(2 + ew)
+                } else {
+                    x + 2
+                };
+                for (t, st, m) in segs {
+                    let tw = super::width(&t, cx.uni());
+                    cells.push((xx, t, st, m));
+                    xx += tw + 1;
+                }
+            }
+            let hover = cells
+                .iter()
+                .find(|(xx, _, _, m)| m.is_some() && cx.c.hover == Some((*xx, y + 1)))
+                .and_then(|c| c.3);
+            if let Some(m) = hover {
+                // The title line names the pointed-at member: its name, then its rtt
+                // or when it was last seen, in the label's own cells.
+                let d = p.nodes[m].d;
+                let up = cx.up(d);
+                let tail = cx.meta(d);
+                // The name first; its rtt or age only where it fits beside it.
+                let room = usize::from(w.saturating_sub(2));
+                let tw = usize::from(super::width(&tail, cx.uni()));
+                let full = usize::from(super::width(&d.name, cx.uni()));
+                nm = fit(&d.name, room.max(1), cx.uni());
+                count = if full + 1 + tw <= room {
+                    tail
+                } else {
+                    String::new()
+                };
+                nst = cx
+                    .ink(if up { Tok::Fg } else { Tok::Muted }, a)
+                    .add_modifier(Modifier::BOLD);
+                cst = cx.ink(Tok::Muted, a);
+            }
             let nw = super::width(&nm, cx.uni());
-            let cw = count.len() as u16;
-            let nst = cx.ink(cl.tok, 0.9 * a);
+            let cw = super::width(&count, cx.uni());
             if left {
                 cx.put(buf, x + w - 1, y, 1, gl, gst);
                 let nx = (x + w).saturating_sub(2 + nw);
@@ -1717,28 +1772,16 @@ fn label(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It, r: R, pick: Option<bool>,
                 cx.put(buf, x + 2, y, nw, &nm, nst);
                 cx.put(buf, x + 3 + nw, y, cw, &count, cst);
             }
-            if p.mode == Mode::Full && r.h > 1 {
-                // Its members' letters (keys that open it on them) in the cluster's one
-                // tone: up ones first, down and never-seen ones after them in a dimmer
-                // shade of the same hue, the pointed-at one bold and underlined in it.
-                let ew = letter_w(cx, cl, &p.nodes);
-                let mut segs = letter_segs(cx, cl, &p.nodes, a);
-                let mut xx = if left {
-                    segs.reverse();
-                    (x + w).saturating_sub(2 + ew)
-                } else {
-                    x + 2
-                };
-                for (t, mut st, key) in segs {
-                    if key && cx.c.hover == Some((xx, y + 1)) {
-                        st = st.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-                    }
-                    xx += if t.is_empty() {
-                        0
-                    } else {
-                        cx.put(buf, xx, y + 1, 2, &t, st)
-                    } + 1;
+            // Its members' letters (keys that open it on them) in the cluster's one
+            // tone, down and never-seen ones after a dim `·` in the neutral dim ink,
+            // the pointed-at one bold and underlined in the accent.
+            for (xx, t, mut st, m) in cells {
+                if m.is_some() && m == hover {
+                    st = cx
+                        .st(Tok::Accent)
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
                 }
+                cx.put(buf, xx, y + 1, 2, &t, st);
             }
         }
     }

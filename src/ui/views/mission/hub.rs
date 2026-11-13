@@ -22,21 +22,19 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let tick_h = u16::from(!alerts(cx).is_empty());
     let vit_h: u16 = if sz >= Size::M { 2 } else { 1 };
     let (cols, th_min) = views::grid_shape(cx, r.width.saturating_sub(2), r.height);
-    let need = list
-        .iter()
-        .take(usize::from(cols))
-        .map(|x| tiles::tail_rows(x) as u16 + 2)
-        .max()
-        .unwrap_or(th_min)
-        // (A session with no screen yet still gets a whole tile.)
-        .max(th_min);
+    // Tiles take the rows the map leaves, up to a tall screen: a screen that has not
+    // arrived yet keeps its size (no tile grows when its text lands).
     let th_max = match sz {
-        Size::L => 12,
-        Size::M => 9,
-        _ => 6,
+        Size::L => 22,
+        Size::M => 16,
+        _ => 12,
     };
+    let need = th_max;
     let fixed = tick_h + 1 + vit_h + 1 + 1 + 1; // ticker, sessions label, vitals, network label, gaps
-    let orbit_min = orbit::want_h(cx).min(r.height.saturating_sub(fixed + th_min));
+    // (Plus the band's blank row either side, and the air kept where the screen is tall.)
+    let pad = if sz >= Size::M && r.height >= 30 { 4 } else { 2 };
+    let orbit_min = (orbit::want_h(cx) + pad).min(r.height.saturating_sub(fixed + th_min));
+    // (`min` then `max`: the bounds cross on a short screen, and the floor wins.)
     let th = r
         .height
         .saturating_sub(fixed + orbit_min)
@@ -560,13 +558,25 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
             focus == Pane::Sessions,
         );
         let list = cx.by_attention();
+        let sel = (focus == Pane::Sessions && !list.is_empty()).then(|| cx.c.selected % list.len());
+        // With rows to spare, the selected session's (else the first's) last lines sit
+        // under its row: the phone's live preview.
+        let tail_at = sel.unwrap_or(0);
         for (i, x) in list.iter().enumerate() {
             if sy + 2 >= ty {
                 break;
             }
-            let pick = (focus == Pane::Sessions && i == cx.c.selected % list.len()).then_some(true);
+            let pick = (sel == Some(i)).then_some(true);
             tiles::session_row(cx, buf, Rect::new(r.x, sy, r.width, 2), x, pick);
-            sy += 3;
+            sy += 2;
+            let left = ty.saturating_sub(sy + 1);
+            let rest = (list.len() - i - 1) as u16 * 3;
+            if i == tail_at && left >= rest + 4 {
+                let h = (left - rest - 1).min(12);
+                tiles::screen_text(cx, buf, Rect::new(r.x + 3, sy, r.width.saturating_sub(4), h), x, cx.c.has_color());
+                sy += h;
+            }
+            sy += 1;
         }
     }
     let shown = &al[..usize::from(tick_h).min(al.len())];

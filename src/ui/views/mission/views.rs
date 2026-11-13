@@ -559,17 +559,18 @@ pub(super) fn zone(
 
 /// Session grid shape for a width: (columns, tile height).
 pub(super) fn grid_shape(cx: &Cx, w: u16, h: u16) -> (u16, u16) {
+    // Few, large screens: two or three a row, each wide enough to read.
     let (min_w, max_cols) = match cx.size() {
         Size::Xs => (w, 1),
-        Size::S => (24, 3),
-        Size::M => (34, 3),
-        Size::L => (40, 4),
+        Size::S => (30, 2),
+        Size::M => (44, 3),
+        Size::L => (56, 3),
     };
-    let cols = ((w + 2) / (min_w + 2)).clamp(1, max_cols);
-    let th = if cx.size() == Size::L && h >= 50 {
-        8
+    let cols = ((w + 2) / (min_w + 2)).max(1).min(max_cols);
+    let th = if h >= 50 {
+        10
     } else if h >= 36 {
-        7
+        8
     } else if h >= 28 {
         6
     } else {
@@ -606,15 +607,29 @@ pub(super) fn thumbs_grid(
     } else {
         cells.min(list.len() + 1)
     };
+    let picked = (sel.1 && !list.is_empty()).then(|| sel.0 % list.len());
+    let mut x = r.x;
     for i in 0..n {
         let (ci, ri) = (i as u16 % cols, i as u16 / cols);
-        let in_row = (n - usize::from(ri * cols)).min(usize::from(cols)) as u16;
-        let tw = if in_row < cols {
-            (r.width + gap) / in_row - gap
-        } else {
-            tw
+        if ci == 0 {
+            x = r.x;
+        }
+        let first = usize::from(ri * cols);
+        let in_row = (n - first).min(usize::from(cols)) as u16;
+        // The focused selection is the large live screen: two shares of its row.
+        let big = picked.filter(|&p| (first..first + usize::from(in_row)).contains(&p) && in_row > 1 && r.width >= 90);
+        let shares = in_row + u16::from(big.is_some());
+        let unit = ((r.width + gap) / shares).saturating_sub(gap);
+        let tw = match big {
+            Some(p) if p == i => 2 * unit + gap,
+            Some(_) => unit,
+            None if in_row < cols => unit,
+            None => tw,
         };
-        let tr = Rect::new(r.x + ci * (tw + gap), r.y + ri * (th + 1), tw, th);
+        // (The row's last tile takes what rounding left.)
+        let tw = if ci + 1 == in_row { r.right().saturating_sub(x) } else { tw };
+        let tr = Rect::new(x, r.y + ri * (th + 1), tw, th);
+        x += tw + gap;
         match list.get(i) {
             Some(x) => {
                 let pick = (sel.0 % list.len() == i).then_some(sel.1);

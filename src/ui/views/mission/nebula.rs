@@ -105,6 +105,9 @@ struct Plan<'a> {
     /// Half the root label's width plus the air before the first ring.
     r0: f32,
     hops: u8,
+    /// How much the rings are flattened (1 = not at all) so the outer one passes just
+    /// beyond the furthest label instead of claiming rows of its own.
+    ring_k: f32,
     /// Devices that could not be placed at all (none unless the band is tiny).
     hidden: usize,
 }
@@ -284,6 +287,12 @@ fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, sel: &str) -> Plan<'a> {
         Size::S => 4.0,
         Size::Xs => 3.0,
     };
+    // A narrow but tall screen (95x50) has the rows for a taller orbit.
+    let cap = if cx.area.height >= 45 {
+        cap.max(6.0)
+    } else {
+        cap
+    };
     let mut ladder: Vec<(Mode, usize)> = Vec::new();
     if !cx.touch() {
         // Narrow but tall (95x50) still has room for folded clusters' letter rows.
@@ -345,6 +354,7 @@ struct Placed {
     ry: f32,
     r0: f32,
     hops: u8,
+    ring_k: f32,
     hidden: usize,
 }
 
@@ -360,6 +370,7 @@ fn finish<'a>(nodes: Vec<N<'a>>, cls: Vec<Cl>, p: Placed) -> Plan<'a> {
         ry: p.ry,
         r0: p.r0,
         hops: p.hops,
+        ring_k: p.ring_k,
         hidden: p.hidden,
     }
 }
@@ -579,6 +590,22 @@ fn layout<'a>(
         y: root_r.y + dy,
         ..root_r
     };
+    // The rings pass a row past the furthest label at most, inside the band (its
+    // spare rows): flattened to stay there, left out where that leaves too little.
+    let outer = if ringed(cx, t.mode) {
+        t.ry * ring(hops.min(2))
+    } else {
+        0.0
+    };
+    let cy = root_r.y as f32 + 0.5;
+    let reach = ((0.5 - top as f32).max(bot as f32 - 0.5) + 1.0)
+        .min(cy - f32::from(band.y))
+        .min(f32::from(band.bottom()) - cy - 0.01);
+    let ring_k = if outer <= 0.0 || reach < 1.5 {
+        0.0
+    } else {
+        (reach / outer).min(1.0)
+    };
     let inside = |r: R| {
         r.x >= i32::from(band.x)
             && r.x + r.w <= i32::from(band.right())
@@ -612,6 +639,7 @@ fn layout<'a>(
         ry: t.ry,
         r0,
         hops,
+        ring_k,
         hidden,
     }
 }
@@ -633,8 +661,9 @@ fn ev_w(cx: &Cx, v: &[(String, Style)]) -> i32 {
 }
 
 /// The quiet row under a device: activity sparkline, cpu and the latency of its link
-/// (what is wrong instead when it is down).
-fn evidence(cx: &Cx, d: &LabDevice, up: Option<&LabEdge>) -> Vec<(String, Style)> {
+/// (what is wrong instead when it is down). `linked` is false for a device the map
+/// knows no link to, which says so instead of drawing one.
+fn evidence(cx: &Cx, d: &LabDevice, up: Option<&LabEdge>, linked: bool) -> Vec<(String, Style)> {
     let mut v = Vec::new();
     if !cx.up(d) {
         let t = if d.status == DeviceStatus::Unknown {
@@ -655,6 +684,9 @@ fn evidence(cx: &Cx, d: &LabDevice, up: Option<&LabEdge>) -> Vec<(String, Style)
     if let Some(ms) = up.and_then(|e| e.rtt_ms) {
         v.push((super::ms_text(ms), cx.ink(Tok::Muted, 0.75)));
     }
+    if !linked {
+        v.push(("no route".into(), cx.ink(Tok::Muted, 0.75)));
+    }
     v
 }
 
@@ -663,12 +695,12 @@ fn dev_w(cx: &Cx, d: &LabDevice, up: Option<&LabEdge>, mode: Mode, nmax: usize) 
         Mode::Key => 1 + i32::from(!cx.up(d)),
         Mode::Name => 2 + i32::from(orbit::name_w(cx, d, nmax, true)),
         Mode::Line => {
-            let ev = evidence(cx, d, up);
+            let ev = evidence(cx, d, up, up.is_some());
             2 + i32::from(orbit::name_w(cx, d, nmax, true))
                 + if ev.is_empty() { 0 } else { 2 + ev_w(cx, &ev) }
         }
         Mode::Full => (2 + i32::from(orbit::name_w(cx, d, nmax, true)))
-            .max(2 + ev_w(cx, &evidence(cx, d, up))),
+            .max(2 + ev_w(cx, &evidence(cx, d, up, up.is_some()))),
     }
 }
 
@@ -682,68 +714,84 @@ fn letter_tok(cl: &Cl) -> Tok {
     }
 }
 
-/// The most member letters a folded cluster shows; the rest end in a dim `…`.
+/// The most member letters a folded cluster shows, on either half; the rest are in
+/// its `+N` count (and a step away once it blooms).
 const ROW_MAX: usize = 8;
 
 /// A folded cluster's member letters, up ones first, then down and never-seen ones,
 /// each part alphabetical (so a row reads the same at every size and arrows walk it
-/// in a stated order), at most `ROW_MAX` and then `…`: each paired with whether it is up.
-fn row_members(cx: &Cx, cl: &Cl, nodes: &[N]) -> (Vec<(usize, bool)>, bool) {
+/// in a stated order), at most `ROW_MAX`: each paired with whether it is up.
+fn row_members(cx: &Cx, cl: &Cl, nodes: &[N]) -> Vec<(usize, bool)> {
     let mut v: Vec<(usize, bool)> = cl.members.iter().map(|&m| (m, cx.up(nodes[m].d))).collect();
     v.sort_by_key(|&(m, up)| (!up, nodes[m].d.hotkey));
-    let more = v.len() > ROW_MAX;
     v.truncate(ROW_MAX);
-    (v, more)
+    v
 }
 
-/// The letter row's cells, outer end last, every cell one apart (an even pitch): the
-/// up letters, one dim `·` before the down and never-seen ones (so the split reads
-/// without colour too), then `…` when cut. Each cell carries the member it names.
-/// The left half draws it reversed, so both halves keep the dim end outermost.
-fn letter_segs(cx: &Cx, cl: &Cl, nodes: &[N], a: f32) -> Vec<(String, Style, Option<usize>)> {
-    let (v, more) = row_members(cx, cl, nodes);
+/// The letter row's cells left to right, one apart: the up letters in the cluster's
+/// hue, one extra space, then the down and never-seen ones in a faint shade of the
+/// same hue. The left half mirrors the block, not the order: every part still reads
+/// alphabetically left to right, and the faint part sits outermost on both halves.
+/// A cell of `None` text is the extra space. Each letter carries the member it names.
+fn letter_segs(
+    cx: &Cx,
+    cl: &Cl,
+    nodes: &[N],
+    a: f32,
+    left: bool,
+) -> Vec<(Option<String>, Style, Option<usize>)> {
+    let v = row_members(cx, cl, nodes);
     let ups = v.iter().filter(|&&(_, up)| up).count();
-    let mut out = Vec::new();
-    for (i, &(m, up)) in v.iter().enumerate() {
-        if !up && i == ups && i > 0 {
-            out.push((cx.g("·", ":").into(), cx.ink(Tok::Muted, 0.55 * a), None));
-        }
-        let t = if ups > 1 {
+    let cell = |i: usize, (m, up): (usize, bool)| {
+        let t = if up && ups > 1 {
             i as f32 / (ups - 1) as f32
         } else {
             0.0
         };
-        out.push((
-            nodes[m].d.hotkey.to_string(),
+        (
+            Some(nodes[m].d.hotkey.to_string()),
             letter_ink(cx, cl, up, t, a),
             Some(m),
-        ));
+        )
+    };
+    let up: Vec<_> = v[..ups]
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| cell(i, c))
+        .collect();
+    let down: Vec<_> = v[ups..]
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| cell(i, c))
+        .collect();
+    let gap = (!up.is_empty() && !down.is_empty()).then(|| (None, Style::default(), None));
+    if left {
+        down.into_iter().chain(gap).chain(up).collect()
+    } else {
+        up.into_iter().chain(gap).chain(down).collect()
     }
-    if more {
-        out.push((cx.g("…", "~").into(), cx.ink(Tok::Faint, a), None));
-    }
-    out
 }
 
 /// The letter row's width in cells.
 fn letter_w(cx: &Cx, cl: &Cl, nodes: &[N]) -> u16 {
-    let segs = letter_segs(cx, cl, nodes, 1.0);
-    let w: u16 = segs
+    letter_segs(cx, cl, nodes, 1.0, false)
         .iter()
-        .map(|(t, ..)| super::width(t, cx.uni()) + 1)
-        .sum();
-    w.saturating_sub(1)
+        .map(|(t, ..)| t.as_ref().map_or(0, |t| super::width(t, cx.uni())) + 1)
+        .sum::<u16>()
+        .saturating_sub(1)
 }
 
-/// A member letter's ink, one rule in every theme: up members in the cluster's tone
-/// (in truecolor drifting a few percent lighter along the row, `t` from 0 to 1, so the
-/// row reads as one calm stroke), down and never-seen ones in the theme's neutral dim
-/// ink with no hue at all.
+/// A member letter's ink: one hue at two strengths. Up members in the cluster's tone
+/// at full strength (in truecolor drifting a few percent lighter along the row, `t`
+/// from 0 to 1), down and never-seen ones in a faint shade of the same hue (dim in 16
+/// colours), never the neutral ink the orbit dust is drawn in.
 fn letter_ink(cx: &Cx, cl: &Cl, up: bool, t: f32, a: f32) -> Style {
-    if !up {
-        return cx.ink(Tok::Muted, 0.8 * a);
-    }
     let tok = letter_tok(cl);
+    if !up {
+        // (Light needs a little more ink to stay legible; 16 colours dim it.)
+        let k = if cx.tc() && !cx.dark() { 0.62 } else { 0.5 };
+        return cx.ink(tok, k * a);
+    }
     if cx.tc() {
         let c = super::mix(cx.rgb(tok), cx.fg0(), 0.06 * t);
         cx.rgb_fg(super::mix(cx.bg0(), c, a))
@@ -889,7 +937,10 @@ impl Canvas {
         let a2 = 2 * self.a - 1;
         let flip = |sx: i32| if side < 0 { a2 - sx } else { sx };
         for (i, (sx, sy)) in Self::raster(pts).into_iter().enumerate() {
-            if pat.on(i) {
+            // A ring leaves the cell on the mirror axis empty: both halves' dots would
+            // crowd it, and one alone would break the mirror.
+            let seam = pat == Pat::Ring && (a2 - 2 * sx).abs() <= 1;
+            if pat.on(i) && !seam {
                 self.dot(flip(sx), sy, st, pri);
             }
         }
@@ -1161,7 +1212,9 @@ fn scene<'a>(p: &Plan<'a>, root: Option<&'a LabDevice>) -> Vec<It<'a>> {
                 None
             },
             edge: n.up,
-            bundle: (n.parent.is_none() && tops > 1).then_some(cl.phi),
+            // Every first hop's curve heads for its cluster's fork, a lone one too, so
+            // a lone device's link bends like the bundles beside it.
+            bundle: (n.parent.is_none() && tops >= 1).then_some(cl.phi),
             alpha: 1.0,
             ghost: false,
             moving: false,
@@ -1298,6 +1351,23 @@ fn nodes_of(tree: Vec<orbit::Node>) -> Vec<N> {
         .collect()
 }
 
+/// Whether this screen and mode draw orbit rings at all.
+fn ringed(cx: &Cx, mode: Mode) -> bool {
+    cx.uni() && mode != Mode::Key && (cx.size() >= Size::M || cx.area.height >= 45)
+}
+
+/// The orbit rings drawn around this device, as (rx, ry): one per hop, at most two,
+/// where the screen has the room. (No halo around this device itself: its label hides
+/// most of so tight a ring, and the fragments read as noise.)
+fn rings(cx: &Cx, p: &Plan) -> Vec<(f32, f32)> {
+    if !ringed(cx, p.mode) || p.ring_k <= 0.0 {
+        return Vec::new();
+    }
+    (1..=p.hops.min(2))
+        .map(|h| (p.r0 + p.rx * ring(h), p.ry * ring(h) * p.ring_k))
+        .collect()
+}
+
 fn rows_of(p: &Plan) -> i32 {
     let labs = p
         .nodes
@@ -1412,7 +1482,9 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, sel: &str, focus: bool
         } else {
             orbit::edge_tok(cx, e)
         };
-        let alpha = if on { 1.0 } else { 0.55 } * it.alpha.max(0.2);
+        // (A grey link needs more ink than a hued one to read as present.)
+        let rest = if tok == Tok::Muted { 0.8 } else { 0.55 };
+        let alpha = if on { 1.0 } else { rest } * it.alpha.max(0.2);
         let mut st = cx.ink(tok, alpha);
         if on {
             st = st.add_modifier(Modifier::BOLD);
@@ -1437,19 +1509,21 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, sel: &str, focus: bool
         }
         taps.push((screen(bez(a, c, b, 0.5)), e));
     }
-    // Rings and the halo: quiet dots that never touch a link or a label.
+    // Rings: quiet dots that never touch a link or a label.
     if cx.uni() && p.mode != Mode::Key {
         let mut rc = Canvas::new(band, p.a);
         rc.mask.clone_from(&cv.mask);
         let faint = cx.ink(Tok::Faint, if cx.dark() { 0.75 } else { 0.9 });
         let c = (p.ax(), p.cy());
-        let mut ellipses = vec![(p.root.w as f32 / 2.0 + 2.5, 1.6)];
-        if cx.size() >= Size::M {
-            for h in 1..=p.hops.min(2) {
-                ellipses.push((p.r0 + p.rx * ring(h), p.ry * ring(h)));
-            }
-        }
-        for (rx, ry) in ellipses {
+        let ellipses = rings(cx, &p);
+        // A ring shows whole or not at all (never cut by the band's edge).
+        let whole = |rx: f32, ry: f32| {
+            c.1 - ry >= f32::from(band.y)
+                && c.1 + ry < f32::from(band.bottom())
+                && c.0 - rx >= f32::from(band.x)
+                && c.0 + rx < f32::from(band.right())
+        };
+        for (rx, ry) in ellipses.into_iter().filter(|&(rx, ry)| whole(rx, ry)) {
             let pts = half_ellipse(c, rx, ry);
             for side in [1, -1] {
                 rc.stroke(&pts, side, Pat::Ring, faint, 1);
@@ -1631,7 +1705,7 @@ fn label(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It, r: R, pick: Option<bool>,
             orbit::name(cx, buf, x + 2, y, d, 16, st, true);
             if p.mode == Mode::Full {
                 let mut ev = vec![("you".to_string(), cx.st(Tok::Accent))];
-                ev.extend(evidence(cx, d, None));
+                ev.extend(evidence(cx, d, None, true));
                 let ew = ev_w(cx, &ev);
                 let mut xx = (it.dot.0 - ew as f32 / 2.0).round().max(0.0) as u16;
                 for (t, st) in ev {
@@ -1655,10 +1729,13 @@ fn label(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It, r: R, pick: Option<bool>,
             };
             if p.mode == Mode::Key {
                 // The same ink its letter has in its folded cluster's row.
-                let (tok, ta) = if up {
-                    (p.cls.get(p.nodes[i].cl).map_or(Tok::Fg, letter_tok), a)
+                let tok = p.cls.get(p.nodes[i].cl).map_or(Tok::Fg, letter_tok);
+                let ta = if up {
+                    a
+                } else if cx.tc() && !cx.dark() {
+                    0.62 * a
                 } else {
-                    (Tok::Muted, 0.8 * a)
+                    0.5 * a
                 };
                 let st =
                     faded(cx, tok, ta, sel_k).add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
@@ -1687,7 +1764,7 @@ fn label(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It, r: R, pick: Option<bool>,
             cx.put(buf, gx, y, 1, g, gst);
             orbit::name(cx, buf, nx, y, d, p.nmax, nst, true);
             if (p.mode == Mode::Full && r.h > 1) || p.mode == Mode::Line {
-                let ev = evidence(cx, d, p.nodes[i].up);
+                let ev = evidence(cx, d, p.nodes[i].up, p.nodes[i].up.is_some());
                 let ew = ev_w(cx, &ev) as u16;
                 let (mut xx, y) = match (p.mode, left) {
                     (Mode::Line, true) => (x, y),
@@ -1713,68 +1790,76 @@ fn label(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It, r: R, pick: Option<bool>,
                 cx.put(buf, nx, y, w - 1, &count, cst);
                 return;
             }
-            let mut nm = fit(&cl.name, 16, cx.uni());
-            let mut count = count;
+            let nm = fit(&cl.name, 16, cx.uni());
             // The name in the plain foreground; the hue stays on the dot and letters.
-            let mut nst = cx.ink(Tok::Fg, 0.9 * a);
-            let mut cst = cst;
+            let nst = cx.ink(Tok::Fg, 0.9 * a);
             // The letter row, laid out first so a pointed-at letter can name its device.
             let mut cells = Vec::new();
             if p.mode == Mode::Full && r.h > 1 {
                 let ew = letter_w(cx, cl, &p.nodes);
-                let mut segs = letter_segs(cx, cl, &p.nodes, a);
                 let mut xx = if left {
-                    segs.reverse();
                     (x + w).saturating_sub(2 + ew)
                 } else {
                     x + 2
                 };
-                for (t, st, m) in segs {
-                    let tw = super::width(&t, cx.uni());
-                    cells.push((xx, t, st, m));
-                    xx += tw + 1;
+                for (t, st, m) in letter_segs(cx, cl, &p.nodes, a, left) {
+                    if let Some(t) = t {
+                        let tw = super::width(&t, cx.uni());
+                        cells.push((xx, t, st, m));
+                        xx += tw;
+                    }
+                    xx += 1;
                 }
             }
             let hover = cells
                 .iter()
                 .find(|(xx, _, _, m)| m.is_some() && cx.c.hover == Some((*xx, y + 1)))
                 .and_then(|c| c.3);
-            if let Some(m) = hover {
-                // The title line names the pointed-at member: its name, then its rtt
-                // or when it was last seen, in the label's own cells.
-                let d = p.nodes[m].d;
-                let up = cx.up(d);
-                let tail = cx.meta(d);
-                // The name first; its rtt or age only where it fits beside it.
-                let room = usize::from(w.saturating_sub(2));
-                let tw = usize::from(super::width(&tail, cx.uni()));
-                let full = usize::from(super::width(&d.name, cx.uni()));
-                nm = fit(&d.name, room.max(1), cx.uni());
-                count = if full + 1 + tw <= room {
-                    tail
-                } else {
-                    String::new()
-                };
-                nst = cx
-                    .ink(if up { Tok::Fg } else { Tok::Muted }, a)
-                    .add_modifier(Modifier::BOLD);
-                cst = cx.ink(Tok::Muted, a);
-            }
             let nw = super::width(&nm, cx.uni());
             let cw = super::width(&count, cx.uni());
+            // The title stays put; a pointed-at member's name (and its rtt or age where
+            // it fits) trails it outward, dim, past the count.
+            let tail = hover.map(|m| {
+                let d = p.nodes[m].d;
+                (format!("{}  {}", d.name, cx.meta(d)), d.name.clone())
+            });
+            let tst = cx.ink(Tok::Muted, a);
             if left {
                 cx.put(buf, x + w - 1, y, 1, gl, gst);
                 let nx = (x + w).saturating_sub(2 + nw);
                 cx.put(buf, nx, y, nw, &nm, nst);
-                cx.put(buf, nx.saturating_sub(cw + 1), y, cw, &count, cst);
+                let cx0 = nx.saturating_sub(cw + 1);
+                cx.put(buf, cx0, y, cw, &count, cst);
+                if let Some((long, short)) = tail {
+                    let room = usize::from(cx0.saturating_sub(cx.area.x + 2));
+                    let t = if super::width(&long, cx.uni()) as usize <= room {
+                        long
+                    } else {
+                        fit(&short, room, cx.uni())
+                    };
+                    let tw = super::width(&t, cx.uni());
+                    if tw > 0 {
+                        cx.put(buf, cx0 - 2 - tw, y, tw, &t, tst);
+                    }
+                }
             } else {
                 cx.put(buf, x, y, 1, gl, gst);
                 cx.put(buf, x + 2, y, nw, &nm, nst);
                 cx.put(buf, x + 3 + nw, y, cw, &count, cst);
+                if let Some((long, short)) = tail {
+                    let tx = x + 5 + nw + cw;
+                    let room = usize::from(cx.area.right().saturating_sub(tx + 1));
+                    let t = if super::width(&long, cx.uni()) as usize <= room {
+                        long
+                    } else {
+                        fit(&short, room, cx.uni())
+                    };
+                    let tw = super::width(&t, cx.uni());
+                    cx.put(buf, tx, y, tw, &t, tst);
+                }
             }
-            // Its members' letters (keys that open it on them) in the cluster's one
-            // tone, down and never-seen ones after a dim `·` in the neutral dim ink,
-            // the pointed-at one bold and underlined in the accent.
+            // Its members' letters (keys that open it on them): one hue at two
+            // strengths, the pointed-at one bold and underlined in the accent.
             for (xx, t, mut st, m) in cells {
                 if m.is_some() && m == hover {
                     st = cx

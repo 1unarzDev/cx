@@ -135,19 +135,62 @@ pub(super) fn moves(items: &[Item]) -> Vec<[Option<usize>; 4]> {
     // * a move into an item whose way back is one way (it leads elsewhere, and that
     //   elsewhere does not lead back) becomes a pair, so back and forth settles;
     // * every item is reached from the root (the first item);
-    // * every item of a group (a bloomed cluster) is reached from the group's first
-    //   item without leaving the group, since leaving it folds it.
+    // * every item of a group (a bloomed cluster) is reached from each of its items
+    //   without leaving the group, since leaving it folds it.
     // A lost item is linked from a reached one through an empty key first, so no
-    // existing move changes; else it takes over the reached item's nearest key.
-    let groups: Vec<usize> = {
-        let mut g: Vec<usize> = Vec::new();
-        for (i, it) in items.iter().enumerate().skip(1) {
-            if !g.iter().any(|&j| items[j].group == it.group) {
-                g.push(i);
+    // existing move changes; else it takes over the reached item's nearest key. A
+    // link is kept only if it leaves fewer items lost (so two lost items never take
+    // the same key from each other in turn); failing that, the nearest one is.
+    settle(&mut mv);
+    for _ in 0..4 * n + 4 {
+        let before = lost(items, &mv);
+        if before.is_empty() {
+            break;
+        }
+        let mut cands: Vec<(Rank, (usize, usize, usize))> = Vec::new();
+        for (start, us) in &before {
+            let g = items[*start].group;
+            let inside = |i: usize| *start == 0 || items[i].group == g;
+            let seen = reached(&mv, *start, &inside);
+            for &u in us {
+                for a in (0..n).filter(|&a| seen[a]) {
+                    for d in 0..4 {
+                        if let Some((x, sc)) = rank(items, a, u, d, 80.0) {
+                            cands.push(((mv[a][d].is_some(), x, sc), (a, d, u)));
+                        }
+                    }
+                }
             }
         }
-        g
-    };
+        cands.sort_by(|p, q| p.partial_cmp(q).unwrap());
+        cands.dedup_by_key(|c| c.1);
+        let count = |l: &[(usize, Vec<usize>)]| l.iter().map(|x| x.1.len()).sum::<usize>();
+        let link = |mv: &mut Vec<[Option<usize>; 4]>, (a, d, u): (usize, usize, usize)| {
+            // As a pair at once, so settling cannot undo it.
+            mv[a][d] = Some(u);
+            mv[u][opposite(d)] = Some(a);
+            settle(mv);
+        };
+        let pick = cands
+            .iter()
+            .map(|c| c.1)
+            .find(|&f| {
+                let mut m = mv.clone();
+                link(&mut m, f);
+                count(&lost(items, &m)) < count(&before)
+            })
+            .or(cands.first().map(|c| c.1));
+        let Some(f) = pick else { break };
+        link(&mut mv, f);
+    }
+    mv
+}
+
+/// Pair every move with a way back, in bounded rounds: a move into an item whose way
+/// back is one way (it leads elsewhere, and that elsewhere does not lead back) gets
+/// that way back.
+fn settle(mv: &mut [[Option<usize>; 4]]) {
+    let n = mv.len();
     for _ in 0..4 * n + 4 {
         let mut changed = false;
         for a in 0..n {
@@ -160,41 +203,25 @@ pub(super) fn moves(items: &[Item]) -> Vec<[Option<usize>; 4]> {
                 }
             }
         }
-        if changed {
-            continue;
+        if !changed {
+            break;
         }
-        let mut fix = None;
-        let starts = std::iter::once(0).chain(groups.iter().copied());
-        for start in starts {
+    }
+}
+
+/// The items each start leaves unreached: from the root, every item; from an item
+/// of a group, the rest of its group (without leaving it).
+fn lost(items: &[Item], mv: &[[Option<usize>; 4]]) -> Vec<(usize, Vec<usize>)> {
+    let n = items.len();
+    (0..n)
+        .filter_map(|start| {
             let g = items[start].group;
             let inside = |i: usize| start == 0 || items[i].group == g;
-            let seen = reached(&mv, start, &inside);
-            let lost: Vec<usize> = (0..n).filter(|&u| inside(u) && !seen[u]).collect();
-            if lost.is_empty() {
-                continue;
-            }
-            let mut best: Option<(Rank, (usize, usize, usize))> = None;
-            for &u in &lost {
-                for a in (0..n).filter(|&a| seen[a]) {
-                    for d in 0..4 {
-                        if let Some((x, sc)) = rank(items, a, u, d, 80.0) {
-                            let r = (mv[a][d].is_some(), x, sc);
-                            if best.is_none_or(|(k, _)| r < k) {
-                                best = Some((r, (a, d, u)));
-                            }
-                        }
-                    }
-                }
-            }
-            fix = best.map(|(_, f)| f);
-            if fix.is_some() {
-                break;
-            }
-        }
-        let Some((a, d, u)) = fix else { break };
-        mv[a][d] = Some(u);
-    }
-    mv
+            let seen = reached(mv, start, &inside);
+            let l: Vec<usize> = (0..n).filter(|&u| inside(u) && !seen[u]).collect();
+            (!l.is_empty()).then_some((start, l))
+        })
+        .collect()
 }
 
 #[cfg(test)]

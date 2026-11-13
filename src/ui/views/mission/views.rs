@@ -889,7 +889,7 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
                 .enumerate()
                 .filter(|(_, m)| d.meshes.contains(&m.id))
         {
-            let tok = if i == 0 { Tok::Mesh } else { Tok::Id(6) };
+            let tok = orbit::mesh_tok_at(i);
             mx += cx.put(
                 buf,
                 mx,
@@ -1228,7 +1228,7 @@ fn edge_kind(cx: &Cx, e: &LabEdge) -> (String, Tok) {
             let i = cx.s.meshes.iter().position(|x| &x.id == m).unwrap_or(0);
             (
                 format!("{}{m}", tiles::mesh_glyph(cx)),
-                if i == 0 { Tok::Mesh } else { Tok::Id(6) },
+                orbit::mesh_tok_at(i),
             )
         }
         EdgeKind::Lan => ("lan".into(), Tok::Muted),

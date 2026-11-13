@@ -78,11 +78,14 @@ fn between<'a>(cx: &Cx<'a>, a: &str, b: &str) -> Option<&'a LabEdge> {
 }
 
 pub(super) fn mesh_tok(cx: &Cx, id: &str) -> Tok {
-    // Mesh hues are kept apart from teal (lan) and the accent: violet, then blue.
-    match cx.s.meshes.iter().position(|m| m.id == id) {
-        Some(0) | None => Tok::Mesh,
-        Some(_) => Tok::Id(4),
-    }
+    mesh_tok_at(cx.s.meshes.iter().position(|m| m.id == id).unwrap_or(0))
+}
+
+/// The hue of the `i`th mesh, each its own family apart from teal (lan) and the
+/// accent, in 16 colours too: violet, blue, amber, then pink (magenta, bright blue,
+/// yellow, bright magenta), round again after four.
+pub(super) fn mesh_tok_at(i: usize) -> Tok {
+    [Tok::Mesh, Tok::Id(5), Tok::Id(1), Tok::Id(7)][i % 4]
 }
 
 /// A link's hue: its mesh, teal for lan, neutral for direct ssh, red when down.
@@ -1612,12 +1615,14 @@ pub(super) fn name(
     }
     let mut w = 0;
     let at = has_letter(d).filter(|&i| i + 1 < nm.chars().count() || nm == d.name);
-    if at.is_none() {
-        w += cx.dchip(buf, x, y, d, false) + 1;
-    }
     let key = cx
         .st(Tok::Accent)
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    // A letter the name lacks stands before it in the same key ink (never the
+    // device's identity chip, whose hue can read as an error beside the graph).
+    if at.is_none() {
+        w += cx.put(buf, x, y, 1, &d.hotkey.to_string(), st.patch(key)) + 1;
+    }
     for (i, ch) in nm.chars().enumerate() {
         // ASCII has no underline: the letter sits in parentheses, `(t)ranquility`.
         let s = if at == Some(i) && !cx.uni() {
@@ -1711,7 +1716,7 @@ pub(super) fn name_w(cx: &Cx, d: &LabDevice, nmax: usize, keys: bool) -> u16 {
     let at = has_letter(d).filter(|&i| i + 1 < nm.chars().count() || nm == d.name);
     super::width(&nm, cx.uni())
         + match (at, keys) {
-            (None, true) => 4,
+            (None, true) => 2,
             (Some(_), true) if !cx.uni() => 2,
             _ => 0,
         }

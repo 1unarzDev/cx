@@ -92,6 +92,8 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // (Counting the row of mesh wash above the map where rows are airy.)
     let lift = u16::from(sz >= Size::M);
     let above = ((y - r.y - 1).saturating_sub(gh + lift) / 2).max(1) + lift;
+    // (Not so low that the drawing runs into the vitals strip.)
+    let above = above.min(y.saturating_sub(r.y + gh + 1)).max(1);
     // (A row more either side where there is air, for the mesh wash's margin. The
     // map draws in a band of at least three rows; a one-row drawing sits in its
     // middle row.)
@@ -100,6 +102,11 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     } else {
         let pad = u16::from(gh == 1);
         Rect::new(band.x, r.y + 1 + above - pad, band.width, gh.max(3))
+    };
+    // (Never into the vitals strip's rows: a ring that does not fit is left out whole.)
+    let band = Rect {
+        height: band.height.min(y.saturating_sub(band.y)).max(1),
+        ..band
     };
     nebula::draw(cx, buf, band, &sel_id, on_graph);
     if let Some(d) = cx.s.device(&sel_id) {

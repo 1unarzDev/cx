@@ -4,7 +4,7 @@
 usage: chooser_arrows_pty.py BINARY
 
 A private HOME; the viewer runs on a 120x40 PTY.
-  * Files, `n`: the session chooser. Left and Right keep it open and, with more than
+  * Files, `!`: the session chooser. Left and Right keep it open and, with more than
     one choice offered (Shell, plus Devcontainer, Claude or Codex where the host has
     them), move its selection along the row; Esc closes it. Before v0.2.2 Left closed it.
   * The palette's New session: the device chooser, Enter: the agent step. Left there
@@ -69,8 +69,8 @@ def main():
             return letter
         settle(strip, 'no device letter on the vitals strip', 15)
         press(letter.encode(), lambda: 'new' in text(), 'the device did not open')
-        press(b'f', lambda: 'FILES' in text(), 'files did not open')
-        press(b'n', lambda: '[n] Shell' in text() and selected(), 'n did not open the chooser')
+        press(b'f', lambda: 'NOR' in text(), 'files did not open')  # yazi's mode pill
+        press(b'!', lambda: '[n] Shell' in text() and selected(), '! did not open the chooser')
         # (The availability check may add choices: it can take two 3 s probe timeouts.)
         end = time.monotonic() + 8
         while time.monotonic() < end and sum(c in text() for c in CHOICES) < 2:

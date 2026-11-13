@@ -238,8 +238,9 @@ struct SnapshotKey {
 struct SnapshotEntry {
     name: std::ffi::OsString,
     display: String,
-    /// `display` lowercased: the first sort key after directories.
-    fold: String,
+    /// `display` lowercased when that differs (the first sort key after directories;
+    /// most names are lowercase already, so most entries allocate nothing).
+    fold: Option<String>,
     directory: bool,
 }
 struct Snapshot {
@@ -280,7 +281,10 @@ fn read_snapshot(key: SnapshotKey) -> Result<Snapshot> {
         };
         let shown = display(&name.to_string_lossy());
         entries.push(SnapshotEntry {
-            fold: shown.to_lowercase(),
+            fold: shown
+                .chars()
+                .any(char::is_uppercase)
+                .then(|| shown.to_lowercase()),
             display: shown,
             name,
             directory,
@@ -289,13 +293,13 @@ fn read_snapshot(key: SnapshotKey) -> Result<Snapshot> {
     entries.sort_unstable_by(|a, b| {
         (
             !a.directory,
-            a.fold.as_str(),
+            a.fold.as_deref().unwrap_or(&a.display),
             a.display.as_str(),
             a.name.as_os_str(),
         )
             .cmp(&(
                 !b.directory,
-                b.fold.as_str(),
+                b.fold.as_deref().unwrap_or(&b.display),
                 b.display.as_str(),
                 b.name.as_os_str(),
             ))

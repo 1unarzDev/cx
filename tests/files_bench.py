@@ -30,7 +30,7 @@ Output: JSON (--out, default local-evidence/perf/files-bench-<label>.json) holdi
 and a flat `metrics` map {name: {unit, better, samples, median, p95}}, plus a markdown table
 on stdout and next to the JSON (.md). Compare two results with tests/files_bench_compare.py.
 """
-import argparse, hashlib, json, os, pathlib, platform, pwd, re, shlex, shutil, signal, socket
+import argparse, gc, hashlib, json, os, pathlib, platform, pwd, re, shlex, shutil, signal, socket
 import statistics, subprocess, sys, tempfile, time, uuid
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -1324,6 +1324,9 @@ def markdown(report):
 
 def main():
     pty_lib.isolate()
+    # No collection pauses inside a timed window: one landed in the same cold Enter on
+    # every run of one binary (+2.6 ms) and none on another's, depending on its bytes.
+    gc.disable()
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('binary')
     parser.add_argument('--remote', action='store_true', help='also measure over a loopback sshd')

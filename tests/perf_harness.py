@@ -32,7 +32,7 @@ QUIET seconds; latency is measured to the last output chunk before that quiet wi
 Cleanup kills only what this harness spawned and verifies no process carrying the private
 HOME survives; `cx orphans --json` (read-only) must report no stray among our pids.
 """
-import argparse, json, os, pathlib, platform, re, shutil, statistics, subprocess, sys, tempfile, time
+import argparse, gc, json, os, pathlib, platform, re, shutil, statistics, subprocess, sys, tempfile, time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import pty_lib  # noqa: E402
@@ -989,6 +989,9 @@ def aggregate(runs):
 
 def main():
     pty_lib.isolate()
+    # No collection pauses inside a timed window: one landed in the same cold Enter on
+    # every run of one binary (+2.6 ms) and none on another's, depending on its bytes.
+    gc.disable()
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('binary')
     parser.add_argument('--out')

@@ -99,7 +99,13 @@ fn raster_boxed(bytes: &[u8], (bw, bh): (u32, u32)) -> Result<(Value, String)> {
     // A filtered resize (its support widens with the scale), not `thumbnail`'s sampling:
     // thin lines and fine detail average out instead of turning into moiré.
     let img = reader.decode()?;
+    // (`thumbnail` to twice the box first keeps a big photo's resize as fast as before.)
     let mut img = if w > bw || h > bh {
+        let img = if w > bw * 2 && h > bh * 2 {
+            img.thumbnail(bw * 2, bh * 2)
+        } else {
+            img
+        };
         img.resize(bw, bh, image::imageops::FilterType::Triangle)
     } else {
         img

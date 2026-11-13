@@ -10,7 +10,7 @@ A private HOME with four managed shells; the viewer runs on a 190x50 PTY.
   * Palette (`/`): Down, Ctrl+N and Ctrl+P move the drawn selection; Left moves the
     text cursor, so typing lands where it is.
   * File search (`f`, then `/`): Down moves to the next match, Left/Right move the
-    cursor in the query.
+    cursor in the query; then Shift+H returns to the hub.
 Before v0.2.2 the palette drew the hub's selection, never its own (the arrows changed
 nothing visible), and the tiles only moved in a line.
 """
@@ -167,7 +167,13 @@ def main():
         press(UP, lambda: re.search(r'Search · 2/4', text()), 'Up did not move to the previous match')
         viewer.write(LEFT * 4 + b'x')
         settle(lambda: '/  xwork' in viewer.screen.display[-1], 'Left did not move the search cursor')
-        print(f'PASS grid_keys_pty: {moves} grid moves, palette, file search')
+        # Shift+H is the hub from Files (v0.2.2; a 65% keyboard has no backtick).
+        viewer.write(b'\x1b')  # Esc ends the search (its matches stay highlighted)
+        viewer.read(.3)
+        hub = lambda: re.search(r'cx › (network|sessions)', viewer.screen.display[0])  # noqa: E731
+        assert not hub(), f'still on the hub:\n{text()}'
+        press(b'H', hub, 'Shift+H did not return to the hub from Files')
+        print(f'PASS grid_keys_pty: {moves} grid moves, palette, file search, Shift+H')
     finally:
         if viewer:
             viewer.close()

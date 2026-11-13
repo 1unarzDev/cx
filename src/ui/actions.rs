@@ -495,7 +495,7 @@ impl App {
             });
         }
         for (label, cmd, key) in [
-            ("Hub", keymap::Cmd::View("hub"), "`"),
+            ("Hub", keymap::Cmd::View("hub"), "H"),
             ("Files", keymap::Cmd::Goto(View::Files), ""),
             ("Keys / Secrets", keymap::Cmd::View("secrets"), "K"),
         ] {

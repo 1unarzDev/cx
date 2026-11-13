@@ -40,7 +40,7 @@ You can also find a discovered LAN neighbor in the palette (`/`, after a Refresh
 | Backspace, Backspace | Stop the selected CX-managed session (any other key keeps it) |
 | `f` on a device | Its files |
 | `e` then a letter | Edit the link to that device: `a p o` / `A P O` set key, password or off per direction, `u` undoes |
-| `` ` `` (or Esc Esc) | Back to the hub from any screen; Esc goes back one level |
+| `H` (Shift+H, or Esc Esc) | Back to the hub from any screen, Files included; Esc goes back one level |
 | `-` | Re-attach the last session you detached from |
 | `/` | Find anything: sessions, devices, actions, folders, LAN neighbours |
 | `K`, `+`, `?` | Keys and secrets, invite a device, help |

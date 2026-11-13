@@ -18,7 +18,7 @@ One grammar on every screen: **a device letter, then a session slot or a verb**.
 | `e` + letter | The link to that device: `a p o` (outbound) / `A P O` (the way back) set key, password or off at once, `j k` move the lane bar, `u` undoes |
 | `r` (device screen) | Retry / refresh the device |
 | `f` (device screen) | Its files |
-| `` ` ``, Esc Esc | The hub, from any screen (a second Esc within 400 ms) |
+| `H` (Shift+H), Esc Esc | The hub, from any screen, Files included (a second Esc within 400 ms). v0.2.1's `` ` `` still works in v0.2.2 and goes away after it |
 | Esc | Back one level |
 | `-` | Re-attach the last detached session |
 | `/`, Ctrl+P | Find anything: sessions, devices, actions, folders, LAN neighbours; `run:` runs a command |

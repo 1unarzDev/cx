@@ -739,8 +739,9 @@ pub(super) const BINDINGS: &[Binding] = &[
     ),
     bind!(
         Global,
-        [ch('`')],
-        "`",
+        // (`` ` `` is the hidden alias of v0.2.1's hub key, for one release.)
+        [ch('H'), ch('`')],
+        "H",
         Cmd::View("hub"),
         "The hub, from any screen (also Esc Esc)"
     ),

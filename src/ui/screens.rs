@@ -898,9 +898,10 @@ impl App {
                 return true;
             }
         }
-        // `` ` `` `-` `+` `K` are the keymap's Global rows (BINDINGS), resolved after this,
-        // also over the link editor and the invite, which own the rest of the plain keys.
-        if matches!(key.code, KeyCode::Char('`' | '-' | 'K'))
+        // `H` (and its alias `` ` ``) `-` `+` `K` are the keymap's Global rows (BINDINGS),
+        // resolved after this, also over the link editor and the invite, which own the
+        // rest of the plain keys.
+        if matches!(key.code, KeyCode::Char('H' | '`' | '-' | 'K'))
             || (key.code == KeyCode::Char('+') && self.invite.is_none())
         {
             return false;

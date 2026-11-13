@@ -63,7 +63,7 @@ fn sessions(a: &mut App, device: usize, count: usize) {
 }
 
 #[test]
-fn hub_letters_open_devices_and_backtick_returns_from_anywhere() {
+fn hub_letters_open_devices_and_shift_h_returns_from_anywhere() {
     let (mut a, _rx) = file_app();
     sessions(&mut a, 1, 2);
     a.go_hub();
@@ -73,13 +73,30 @@ fn hub_letters_open_devices_and_backtick_returns_from_anywhere() {
     press(&mut a, l);
     assert!(a.view == View::Work && a.device == 2);
     assert!(a.dialog.is_none(), "a letter opened a chooser (P13)");
-    // `f` there is its files; `` ` `` is the hub from any screen.
-    press(&mut a, '`');
+    // `f` there is its files; Shift+H is the hub from any screen (a 65% keyboard has
+    // no backtick key of its own).
+    let shift_h = KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT);
+    a.key(shift_h);
     assert!(a.view == View::Network && a.device == 0);
     a.view = View::Files;
+    a.key(shift_h);
+    assert!(a.view == View::Network);
+    // `` ` `` (v0.2.1's hub key) still works for one release, unlisted.
+    press(&mut a, l);
     press(&mut a, '`');
     assert!(a.view == View::Network);
-    // A double Esc also reaches the hub (where `` ` `` is a dead key).
+    // Help, the footers and the palette name `H`, never the backtick.
+    press(&mut a, l);
+    let shown = draw(&a, 120, 40);
+    assert!(
+        shown.contains("H hub") && !shown.contains("` hub"),
+        "{shown}"
+    );
+    a.help = true;
+    let help = draw(&a, 120, 40);
+    assert!(!help.contains('`'), "{help}");
+    a.help = false;
+    // A double Esc also reaches the hub.
     let l = letter(&a, 1);
     press(&mut a, l);
     a.key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
@@ -169,7 +186,7 @@ fn nodes_tiles_and_chips_are_tap_targets_with_key_semantics() {
     let node = act("device:1");
     click(&mut a, node.x + 1, node.y, area);
     assert!(a.view == View::Work && a.device == 2 && a.dialog.is_none());
-    // The footer's `` ` hub`` chip, then `? help`.
+    // The footer's `H hub` chip, then `? help`.
     draw(&a, 120, 40);
     let hub = act("hub");
     click(&mut a, hub.x, hub.y, area);
@@ -801,20 +818,20 @@ fn the_selected_session_always_has_a_hub_tile() {
     assert!(text.contains(&s.name), "{} has no tile: {text}", s.name);
 }
 
-/// `` ` `` `-` `+` `K` dispatch through the keymap's Global rows, not a parallel match: the
+/// `H` (and `` ` ``) `-` `+` `K` dispatch through the keymap's Global rows, not a parallel match: the
 /// design's screen keys leave them alone, and they still reach their views.
 #[test]
 fn global_view_keys_go_through_the_keymap() {
     let (mut a, _rx) = queued_app();
     a.go_hub();
-    for c in ['`', '-', '+', 'K'] {
+    for c in ['H', '`', '-', '+', 'K'] {
         let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
         assert!(!a.screen_key(key), "{c} was caught before the keymap");
         assert!(keymap::resolve(&a, &key).is_some(), "{c} has a binding");
     }
     press(&mut a, 'K');
     assert!(a.view == View::Secrets);
-    press(&mut a, '`');
+    press(&mut a, 'H');
     assert!(a.view == View::Network);
 }
 
@@ -890,7 +907,7 @@ fn global_keys_reach_past_the_link_editor() {
     press(&mut a, 'K');
     assert!(a.view == View::Secrets && a.edge.is_none());
     a.go_hub();
-    for k in ['e', l, '`'] {
+    for k in ['e', l, 'H'] {
         press(&mut a, k);
     }
     assert!(a.view == View::Network && a.edge.is_none());

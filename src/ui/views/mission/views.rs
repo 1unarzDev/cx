@@ -64,7 +64,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                     ("esc", "back", "back"),
                     ("f", "files", "files"),
                     ("e", "link", "links"),
-                    ("`", "hub", "hub"),
+                    ("H", "hub", "hub"),
                 ]);
                 // The destructive verb goes last, never first on a row.
                 if n > 0 {
@@ -89,7 +89,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                 }
                 items.extend([
                     ("esc", "back", "back"),
-                    ("`", "hub", "hub"),
+                    ("H", "hub", "hub"),
                     ("-", "last", "last"),
                     ("/", "find", "palette"),
                 ]);
@@ -107,7 +107,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                     (arrows, "move", ""),
                     ("tab", "sessions", ""),
                     ("esc", "back", "back"),
-                    ("`", "hub", "hub"),
+                    ("H", "hub", "hub"),
                 ];
             }
             footer(cx, buf, foot, items);
@@ -137,7 +137,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                     vec![
                         ("⏎", "attach", "attach"),
                         ("esc", "back", "back"),
-                        ("`", "hub", "hub"),
+                        ("H", "hub", "hub"),
                         ("⌫", "stop", "stop"),
                     ]
                 } else {
@@ -147,7 +147,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                         ("tab", "next", "peek-next"),
                         ("⌫", "stop", "stop"),
                         ("esc", "back", "back"),
-                        ("`", "hub", "hub"),
+                        ("H", "hub", "hub"),
                     ]
                 },
             );
@@ -186,7 +186,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                             ("y", "copy path", "copy-path"),
                             ("/", "find", "palette"),
                             ("esc", "back", "back"),
-                            ("`", "hub", "hub"),
+                            ("H", "hub", "hub"),
                         ]
                     } else if !cx.touch() {
                         // 80 columns: the motion keys first, as at M; `⏎` previews.
@@ -207,7 +207,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                             ("s", "send", "send"),
                             ("␣", "select", "select"),
                             ("/", "find", "palette"),
-                            ("`", "hub", "hub"),
+                            ("H", "hub", "hub"),
                         ]
                     },
                 );
@@ -221,7 +221,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                         ("esc", "back", "back"),
                         ("/", "find", "find"),
                         ("y", "copy path", "copy-path"),
-                        ("`", "hub", "hub"),
+                        ("H", "hub", "hub"),
                     ],
                 );
             }
@@ -3653,7 +3653,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         "global",
         vec![
             (k("/"), "find"),
-            (k("`"), "hub"),
+            (k("H"), "hub"),
             (k("+"), "invite"),
             (k("K"), "secrets"),
             (k("ctrl+\\"), "detach"),
@@ -3799,7 +3799,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
             if name.trim() == "global" {
                 let act = match k.as_str() {
                     "/" => "palette",
-                    "`" => "hub",
+                    "H" => "hub",
                     "+" => "invite",
                     "K" => "secrets",
                     _ => "detach",

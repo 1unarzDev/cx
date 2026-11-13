@@ -46,6 +46,7 @@ def settle(v, quiet=0.35, cap=4.0):
 
 
 def main():
+    pty_lib.isolate()
     ap = argparse.ArgumentParser()
     ap.add_argument('binary')
     ap.add_argument('round')

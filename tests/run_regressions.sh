@@ -20,7 +20,10 @@
 # Safety: TMUX/TMUX_PANE are unset and TMUX_TMPDIR points at a private
 # directory for every step, so a fixture that runs bare `tmux` (or
 # `tmux kill-server`) can never reach the caller's managed or personal tmux
-# server, even when this script is started from inside a cx pane.
+# server, even when this script is started from inside a cx pane. Every
+# fixture but the docker ones runs under tests/isolate.sh (private user, pid
+# and mount namespaces), so adoption discovery in a fixture viewer or helper
+# never sees a real terminal; that needs unprivileged user namespaces.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 ROOT=$(pwd)
@@ -107,6 +110,7 @@ CORE=(
     "yazi_files_pty|pyte pillow|BIN"
     "list_wheel_pty|pyte|BIN"
     "pdf_pages_pty|pyte poppler|BIN"
+    "probe_isolation|pyte|BIN"
     "capture_matrix|pyte pillow|--self-test"
     "files_bench|pyte|--self-test"
 )
@@ -249,6 +253,8 @@ for entry in "${selected[@]}"; do
     *.mjs) run=(node "tests/$script") ;;
     *) run=(python3 "tests/$script.py") ;;
     esac
+    # Docker fixtures follow container processes in the host's /proc.
+    case " $needs " in *" docker "*) ;; *) run=(tests/isolate.sh "${run[@]}") ;; esac
     if env "${extra_env[@]}" timeout 600 "${run[@]}" "${argv[@]}" >"$log" 2>&1 </dev/null; then
         report PASS "$name" "$(($(date +%s) - start))s"; pass=$((pass + 1))
     else

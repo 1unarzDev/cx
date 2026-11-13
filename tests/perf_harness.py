@@ -5,7 +5,8 @@ usage: perf_harness.py BINARY [--out FILE] [--repeat N] [--iterations N] [--only
 Run with: uv run --with pyte python tests/perf_harness.py target/release/cx --out perf.json
 
 Every run uses a private temp HOME/XDG_STATE_HOME/TMUX_TMPDIR, only local fixture files and
-a fixture shell session; no SSH, providers, user config or networking. The viewer is opened
+a fixture shell session; no SSH, providers, user config or networking. The whole harness runs
+under tests/isolate.sh, so its viewers never see a real process or terminal. The viewer is opened
 through the private `restart` handoff so each scenario starts in a known view.
 
 Scenarios (all times in milliseconds):
@@ -987,6 +988,7 @@ def aggregate(runs):
 
 
 def main():
+    pty_lib.isolate()
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('binary')
     parser.add_argument('--out')

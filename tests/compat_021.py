@@ -44,6 +44,7 @@ def version(binary):
 
 
 def main():
+    pty_lib.isolate()
     versions = dict(old=version(OLD), new=version(NEW))
     assert versions['old'] != versions['new'], versions
     # Short root: ssh control sockets must fit sun_path.

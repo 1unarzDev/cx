@@ -23,6 +23,15 @@ class Screen(pyte.Screen):
         pass
 
 
+def isolate():
+    """Re-run this script under tests/isolate.sh (private user, pid and mount namespaces), so
+    the viewers it starts can never list a real terminal of this machine. Call it first in
+    main(); a no-op once inside."""
+    if os.environ.get('CX_TEST_NS') != '1':
+        script = str(pathlib.Path(__file__).resolve().parent / 'isolate.sh')
+        os.execv(script, [script, sys.executable, *sys.argv])
+
+
 CELL_PIXELS = None
 # (trigger, reply): the PTY answers a query once it shows up in the output (a terminal's
 # DA1 / kitty graphics / CSI 16 t answers for the startup probe). Empty: nothing answers.

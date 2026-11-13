@@ -152,66 +152,23 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                 },
             );
         }
-        LabView::Files | LabView::FilePreview => {
+        LabView::Files => {
+            // The yazi clone (src/ui/yazi), drawn from the fixture: the app draws the
+            // same from its own state (rendering::render_yazi).
+            let pv = yazi_files(cx, buf, a);
+            if cx.c.focus == Some(Pane::Dialog) {
+                send_to(cx, buf, body);
+            } else if pv.width > 0 {
+                file_preview(cx, buf, pv, false);
+            }
+        }
+        LabView::FilePreview => {
             let d = cx.s.device(&cx.s.files.device);
             let mut crumbs: Vec<Crumb> = d.map(Crumb::Dev).into_iter().collect();
             crumbs.push(Crumb::Text(cx.s.files.cwd.clone()));
-            if matches!(view, LabView::FilePreview) {
-                crumbs.push(Crumb::Text(cx.s.files.preview_path.clone()));
-            }
+            crumbs.push(Crumb::Text(cx.s.files.preview_path.clone()));
             top(cx, buf, &crumbs, true);
-            if matches!(view, LabView::Files) && cx.c.focus == Some(Pane::Dialog) {
-                // `s` (send to): the network as the destination picker.
-                files(cx, buf, body);
-                send_to(cx, buf, body);
-                footer(
-                    cx,
-                    buf,
-                    foot,
-                    vec![("a-z", "send there", "send"), ("esc", "cancel", "back")],
-                );
-            } else if matches!(view, LabView::Files) {
-                files(cx, buf, body);
-                footer(
-                    cx,
-                    buf,
-                    foot,
-                    if cx.size() >= Size::M {
-                        // The preview is already inline: the footer teaches the motion keys.
-                        vec![
-                            ("⏎", "open", "open"),
-                            ("j k", "move", ""),
-                            ("h l", "up / in", ""),
-                            ("s", "send to", "send"),
-                            ("y", "copy path", "copy-path"),
-                            ("/", "find", "palette"),
-                            ("esc", "back", "back"),
-                            ("H", "hub", "hub"),
-                        ]
-                    } else if !cx.touch() {
-                        // 80 columns: the motion keys first, as at M; `⏎` previews.
-                        vec![
-                            ("⏎", "open", "open"),
-                            ("j k", "move", ""),
-                            ("h l", "up / in", ""),
-                            ("s", "send", "send"),
-                            ("␣", "select", "select"),
-                            ("/", "find", "palette"),
-                            ("esc", "back", "back"),
-                        ]
-                    } else {
-                        // Tapping a row opens it, so phones keep `s send` instead.
-                        vec![
-                            ("⏎", "open", "open"),
-                            ("esc", "back", "back"),
-                            ("s", "send", "send"),
-                            ("␣", "select", "select"),
-                            ("/", "find", "palette"),
-                            ("H", "hub", "hub"),
-                        ]
-                    },
-                );
-            } else {
+            {
                 file_preview(cx, buf, body, true);
                 footer(
                     cx,
@@ -1590,314 +1547,66 @@ fn attached(cx: &Cx, buf: &mut Buffer, x: &LabSession) {
 
 // ---------------------------------------------------------------------------- files
 
-fn files(cx: &Cx, buf: &mut Buffer, r: Rect) {
-    let sz = cx.size();
-    let list_w = if sz >= Size::M {
-        (r.width * 2 / 5).clamp(40, 64)
-    } else {
-        r.width.saturating_sub(2)
-    };
-    // Phones keep the spacer row above their wrapped footer.
-    let list_h = r.height.saturating_sub(1 + u16::from(cx.touch()));
-    let list = Rect::new(r.x + 1, r.y + 1, list_w, list_h);
+/// The lab's Files view: the yazi renderer over the fixture's listing. Returns the
+/// preview column (the lab draws the fixture's preview there).
+fn yazi_files(cx: &Cx, buf: &mut Buffer, a: Rect) -> Rect {
+    use crate::ui::yazi::render;
     let f = &cx.s.files;
-    let max = f.entries.iter().map(|e| e.size).max().unwrap_or(1).max(1);
-    let sel = f.selected;
-    cx.label(buf, list.x, r.y, list_w, "FILES", true);
-    cx.put_r(
-        buf,
-        list.right(),
-        r.y,
-        &format!("{} items", f.total.max(f.offset + f.entries.len())),
-        cx.st(Tok::Muted),
-    );
-    let mut rows = list.height as usize;
-    let first = sel.saturating_sub(rows.saturating_sub(3));
-    // A cut tree says so on its last row (`+1 more ↓`), never silently.
-    // (A window of a long listing: the rows after it count as more.)
-    let total = f.total.max(f.offset + f.entries.len()) - f.offset;
-    let cut = total.saturating_sub(first) > rows;
-    if cut {
-        rows -= 1;
-        let more = total - first - rows;
-        let t = format!("+{more} more{}", cx.g(" ↓", ""));
-        cx.put(
-            buf,
-            list.x + 1,
-            list.y + rows as u16,
-            list.width,
-            &t,
-            cx.st(Tok::Muted),
-        );
-    }
-    for (i, e) in f.entries.iter().enumerate().skip(first).take(rows) {
-        let y = list.y + (i - first) as u16;
-        let picked = i == sel;
-        let row = Rect::new(list.x, y, list.width, 1);
-        if picked {
-            cx.fill(buf, row, Style::default());
-            cx.put(buf, list.x, y, 1, cx.g("▌", ">"), cx.st(Tok::Accent));
-        }
-        let mut x = list.x + 1;
-        // Indent guides.
-        for _ in 0..e.depth {
-            // ASCII: indentation alone (`:` is the unfocused selection bar).
-            x += cx.put(buf, x, y, 2, cx.g("│ ", "  "), cx.ink(Tok::Faint, 1.0));
-        }
-        let (icon, nst) = match e.kind {
-            FileKind::Dir => (
-                if e.expanded {
-                    cx.g("▾ ", "v ")
-                } else {
-                    cx.g("▸ ", "  ")
-                },
-                cx.st(Tok::Dir).add_modifier(Modifier::BOLD),
-            ),
-            // (ASCII `*` is a live session.)
-            FileKind::Symlink => (cx.g("→ ", "& "), cx.st(Tok::Info)),
-            FileKind::File => ("  ", cx.ink(Tok::Fg, 0.95)),
-        };
-        let nst = if picked {
-            cx.st(Tok::Accent).add_modifier(Modifier::BOLD)
-        } else {
-            nst
-        };
-        x += cx.put(buf, x, y, 2, icon, cx.ink(Tok::Muted, 0.9));
-        let right_w: u16 = if list.width >= 44 { 20 } else { 8 };
-        let room = list.right().saturating_sub(x + right_w + 2);
-        let name = if e.kind == FileKind::Dir {
-            format!("{}/", e.name)
-        } else {
-            e.name.clone()
-        };
-        x += cx.put(buf, x, y, room, &fit(&name, room as usize, cx.uni()), nst);
-        if let Some(gc) = e.git {
-            let tok = match gc {
-                'M' => Tok::Warn,
-                'A' => Tok::Ok,
-                'D' => Tok::Err,
-                _ => Tok::Muted,
-            };
-            cx.put(
-                buf,
-                x + 1,
-                y,
-                1,
-                // Untracked is `U` (`?` means unknown and help).
-                &if gc == '?' { 'U' } else { gc }.to_string(),
-                cx.st(tok).add_modifier(Modifier::BOLD),
-            );
-        }
-        let rx = list.right();
-        let age = fmt::age(e.modified_secs);
-        cx.put_r(buf, rx, y, &age, cx.st(Tok::Muted));
-        if e.kind != FileKind::Dir && right_w >= 20 {
-            let sz = fmt::bytes(e.size);
-            cx.put_r(buf, rx.saturating_sub(5), y, &sz, cx.ink(Tok::Fg, 0.7));
-            let bw = 6u16;
-            let v = ((e.size as f32).ln() / (max as f32).ln()).clamp(0.0, 1.0);
-            tiles::gauge(
-                cx,
-                buf,
-                rx.saturating_sub(5 + 7 + bw),
-                y,
-                bw,
-                v,
-                cx.ink(Tok::Info, 0.8),
-            );
-        }
-        cx.hit(row, format!("file:{}", e.name));
-    }
-    // Rows left under the tree: the selected entry's facts and where `s` can send it,
-    // as the same device keycaps the schematic uses.
-    let shown = f.entries.len().saturating_sub(first).min(rows) as u16;
-    let dy = list.y + shown + 1;
-    let left = list.bottom().saturating_sub(dy);
-    if let Some(e) = f.entries.get(sel).filter(|_| left >= 2) {
-        let path = format!(
-            "{}/{}",
-            f.cwd.trim_end_matches('/'),
-            cx.s.files.preview_path
-        );
-        let git = match e.git {
-            Some('M') => "modified since the last commit",
-            Some('A') => "new, staged",
-            Some('?') => "untracked",
-            _ => "unchanged",
-        };
-        let sep = cx.g("·", "-");
-        let size_age = format!(
-            "{} {sep} modified {} ago",
-            fmt::bytes(e.size),
-            fmt::age(e.modified_secs)
-        );
-        let w = list.width.saturating_sub(1);
-        // Five rows: a SELECTED zone with one fact per row; fewer: the path, then the
-        // facts and the send targets on one row.
-        let (facts, sy) = if left >= 5 {
-            zone(cx, buf, list.x, dy, list.right(), "SELECTED", false);
-            (vec![path, size_age, format!("git: {git}")], dy + 6)
-        } else {
-            (vec![path], dy + 1)
-        };
-        let fy = if left >= 5 { dy + 2 } else { dy };
-        for (i, t) in facts.iter().enumerate() {
-            cx.put(
-                buf,
-                list.x + 1,
-                fy + i as u16,
-                w,
-                &fit(t, w as usize, cx.uni()),
-                cx.ink(Tok::Fg, 0.85),
-            );
-        }
-        // Reachable send targets (closed links skipped), with their route's rtt.
-        let targets: Vec<(&LabDevice, Vec<&LabEdge>)> =
-            cx.s.devices
+    let now = 1_794_484_800i64;
+    let rows = a.height.saturating_sub(2) as usize;
+    let first = f.selected.saturating_sub(rows.saturating_sub(6));
+    let to_row = |e: &crate::ui::views::FileNode| render::Row {
+        name: e.name.clone(),
+        dir: e.kind == FileKind::Dir,
+        link: e.kind == FileKind::Symlink,
+        size: e.size,
+        modified: Some(now - i64::from(e.modified_secs)),
+        ..render::Row::default()
+    };
+    let view = render::View {
+        cwd: f.cwd.clone(),
+        current: render::Column {
+            rows: f
+                .entries
                 .iter()
-                .filter(|d| d.id != f.device && cx.up(d))
-                .map(|d| (d, orbit::route_from(cx, &f.device, &d.id)))
-                .filter(|(_, r)| !r.is_empty())
-                .collect();
-        if left >= 7 + targets.len() as u16 {
-            // Room for one target per row: `s send to`, then each with its rtt and relay.
-            let mut y = sy;
-            let mut x = list.x + 1;
-            x += cx.keycap(buf, x, y, 3, "s", cx.key_style()) + 1;
-            cx.put(buf, x, y, 9, "send to", cx.st(Tok::Muted));
-            y += 1;
-            for (d, route) in &targets {
-                let st = cx
-                    .ink(
-                        Tok::Id(cx.s.hue(&d.id)),
-                        if route.len() == 1 { 1.0 } else { 0.7 },
-                    )
-                    .add_modifier(Modifier::BOLD);
-                let x = list.x + 3;
-                cx.put(buf, x, y, 1, &d.hotkey.to_string(), st);
-                cx.put(
-                    buf,
-                    x + 2,
-                    y,
-                    18,
-                    &fit(&d.name, 18, cx.uni()),
-                    cx.ink(Tok::Fg, 0.85),
-                );
-                // (No figure when a hop's rtt is not measured.)
-                let ms: Option<f32> = route.iter().map(|e| e.rtt_ms).sum();
-                let via = if route.len() > 1 {
-                    let hop = if route[0].from == f.device {
-                        &route[0].to
-                    } else {
-                        &route[0].from
-                    };
-                    cx.s.device(hop)
-                        .map(|h| format!("via {}  ", h.name))
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                cx.put_r(
-                    buf,
-                    list.right(),
-                    y,
-                    &format!("{via}{}", ms.map(super::ms_text).unwrap_or_default()),
-                    cx.st(Tok::Muted),
-                );
-                cx.hit(
-                    Rect::new(list.x, y, list.width, 1),
-                    format!("send:{}", d.id),
-                );
-                y += 1;
-            }
-        } else if sy < list.bottom() {
-            let mut x = list.x + 1;
-            if left < 5 {
-                let t = format!(
-                    "{} {sep} {} ago  ",
-                    fmt::bytes(e.size),
-                    fmt::age(e.modified_secs)
-                );
-                x += cx.put(buf, x, sy, w, &t, cx.st(Tok::Muted));
-            }
-            // `s` is the key; the letters after it are what `s` then takes, drawn as
-            // plain coloured text (here they are not keys on their own).
-            x += cx.keycap(buf, x, sy, 3, "s", cx.key_style()) + 1;
-            x += cx.put(buf, x, sy, 9, "send to ", cx.st(Tok::Muted));
-            // Only devices a transfer can reach from here (closed links are skipped);
-            // one reached through a relay is drawn in its hue but not bold.
-            for d in cx.s.devices.iter().filter(|d| d.id != f.device && cx.up(d)) {
-                let hops = orbit::route_from(cx, &f.device, &d.id).len();
-                if hops == 0 {
-                    continue;
-                }
-                if x + 2 > list.right() {
-                    break;
-                }
-                let st = cx.ink(Tok::Id(cx.s.hue(&d.id)), if hops == 1 { 1.0 } else { 0.7 });
-                let st = if hops == 1 {
-                    st.add_modifier(Modifier::BOLD)
-                } else {
-                    st
-                };
-                cx.put(buf, x, sy, 1, &d.hotkey.to_string(), st);
-                cx.hit(Rect::new(x, sy, 1, 1), format!("send:{}", d.id));
-                x += 2;
-            }
-        }
-    }
-    if sz >= Size::M {
-        let pv = Rect::new(
-            list.right() + 3,
-            r.y,
-            r.right().saturating_sub(list.right() + 4),
-            r.height,
-        );
-        match &f.folder {
-            Some(items) if cx.s.preview().is_none() => folder_preview(cx, buf, pv, items),
-            _ => file_preview(cx, buf, pv, false),
-        }
-    }
-}
-
-/// A highlighted folder's entries where a file's preview goes (yazi's third column):
-/// folders first in their colour, then files, as many as the column holds.
-fn folder_preview(cx: &Cx, buf: &mut Buffer, r: Rect, items: &[crate::ui::views::FileNode]) {
-    if items.is_empty() {
-        cx.put(
-            buf,
-            r.x,
-            r.y + 1,
-            r.width,
-            "empty folder",
-            cx.st(Tok::Muted),
-        );
-        return;
-    }
-    let rows = usize::from(r.height.saturating_sub(1));
-    for (i, e) in items.iter().take(rows).enumerate() {
-        let y = r.y + 1 + i as u16;
-        let (name, st) = match e.kind {
-            FileKind::Dir => (format!("{}/", e.name), cx.st(Tok::Dir)),
-            FileKind::Symlink => (e.name.clone(), cx.st(Tok::Info)),
-            FileKind::File => (e.name.clone(), cx.ink(Tok::Fg, 0.85)),
-        };
-        let more = items.len() > rows && i + 1 == rows;
-        let name = if more {
-            format!("+{} more", items.len() - rows + 1)
-        } else {
-            name
-        };
-        let st = if more { cx.st(Tok::Muted) } else { st };
-        cx.put(
-            buf,
-            r.x,
-            y,
-            r.width,
-            &fit(&name, r.width as usize, cx.uni()),
-            st,
+                .skip(first)
+                .take(rows)
+                .map(to_row)
+                .collect(),
+            hovered: (!f.entries.is_empty()).then(|| f.selected - first),
+            empty: f.entries.is_empty().then(|| "No items".into()),
+            size_max: f.entries.iter().map(|e| e.size).max().unwrap_or(0),
+        },
+        preview: Some(render::Preview::Body),
+        status: render::Status {
+            name: f
+                .entries
+                .get(f.selected)
+                .map(|e| e.name.clone())
+                .unwrap_or_default(),
+            size: f.entries.get(f.selected).map(|e| e.size),
+            cursor: f.offset + f.selected,
+            len: f.total,
+            ..render::Status::default()
+        },
+        now,
+        ..render::View::default()
+    };
+    let look = render::Look {
+        unicode: cx.uni(),
+        icons: false,
+        pills: cx.pills(),
+        color: true,
+    };
+    let t = crate::ui::yazi::theme();
+    let d = render::render(&view, t, look, a, buf);
+    for (i, row) in view.current.rows.iter().enumerate() {
+        cx.hit(
+            Rect::new(d.current.x, d.current.y + i as u16, d.current.width, 1),
+            format!("file:{}", row.name),
         );
     }
+    d.preview
 }
 
 fn file_preview(cx: &Cx, buf: &mut Buffer, r: Rect, full: bool) {
@@ -2054,7 +1763,7 @@ fn rust_line(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, room: u16, l: &str) {
 /// Send-to picker over the files view: a bottom sheet holding the schematic seen from
 /// the files' device, where pressing (or tapping) a device sends the file there; the
 /// transfer then shows as the packet on that link.
-fn send_to(cx: &Cx, buf: &mut Buffer, a: Rect) {
+pub(super) fn send_to(cx: &Cx, buf: &mut Buffer, a: Rect) {
     cx.dim(buf, a);
     // As tall as its map (up to two thirds of the screen, all but the crumb and footer
     // on a phone): a title row, a blank row,

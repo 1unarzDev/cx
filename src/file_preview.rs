@@ -80,6 +80,58 @@ fn raster(bytes: &[u8]) -> Result<(Value, String)> {
         img = img.thumbnail(next_w, next_h);
     }
 }
+/// The image decoded once and fitted to the viewer's pixel box: JPEG (quality 85)
+/// when every pixel is opaque, else PNG; at most ~600 KB on the wire.
+fn raster_boxed(bytes: &[u8], (bw, bh): (u32, u32)) -> Result<(Value, String)> {
+    let mut reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(32 * 1024 * 1024);
+    reader.limits(limits);
+    let (w, h) = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()?
+        .into_dimensions()?;
+    if w == 0 || h == 0 || u64::from(w) * u64::from(h) * 4 > 32 * 1024 * 1024 {
+        bail!("image exceeds decoded preview limit");
+    }
+    // Never enlarge: a small image keeps its own pixels.
+    // A filtered resize (its support widens with the scale), not `thumbnail`'s sampling:
+    // thin lines and fine detail average out instead of turning into moiré.
+    let img = reader.decode()?;
+    // (`thumbnail` to twice the box first keeps a big photo's resize as fast as before.)
+    let mut img = if w > bw || h > bh {
+        let img = if w > bw * 2 && h > bh * 2 {
+            img.thumbnail(bw * 2, bh * 2)
+        } else {
+            img
+        };
+        img.resize(bw, bh, image::imageops::FilterType::Triangle)
+    } else {
+        img
+    };
+    let opaque = !img.color().has_alpha() || img.to_rgba8().pixels().all(|p| p[3] == 255);
+    loop {
+        let mut out = Cursor::new(Vec::new());
+        // JPEG only for big boxes (bitmap terminals): at half-block size its chroma
+        // subsampling smears colour fringes across every few pixels, and PNG is small.
+        let key = if opaque && img.width() * img.height() > 65_536 {
+            let rgb = image::DynamicImage::ImageRgb8(img.to_rgb8());
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85).encode_image(&rgb)?;
+            "jpeg"
+        } else {
+            img.write_to(&mut out, image::ImageFormat::Png)?;
+            "png"
+        };
+        if out.get_ref().len() <= 600_000 {
+            return Ok((
+                json!({"width":img.width(),"height":img.height(),key:STANDARD.encode(out.into_inner())}),
+                format!("{w} × {h}"),
+            ));
+        }
+        img = img.thumbnail((img.width() * 3 / 4).max(1), (img.height() * 3 / 4).max(1));
+    }
+}
 fn extension(path: &Path) -> String {
     path.extension()
         .and_then(|v| v.to_str())
@@ -111,15 +163,29 @@ pub(super) fn text_kind(path: &Path) -> &'static str {
     }
 }
 pub(super) fn render(path: &Path, file: File) -> Result<Value> {
-    render_inner(path, file, None)
+    render_inner(path, file, None, None)
+}
+/// An image fitted to `(width, height)` pixels (clamped to 16..=1280 x 16..=960).
+pub(super) fn render_boxed(path: &Path, file: File, (w, h): (u32, u32)) -> Result<Value> {
+    render_inner(
+        path,
+        file,
+        None,
+        Some((w.clamp(16, 1280), h.clamp(16, 960))),
+    )
 }
 pub(super) fn render_page(path: &Path, file: File, page: u32) -> Result<Value> {
     if !(1..=10000).contains(&page) {
         bail!("PDF page must be between 1 and 10000");
     }
-    render_inner(path, file, Some(page))
+    render_inner(path, file, Some(page), None)
 }
-fn render_inner(path: &Path, mut file: File, requested_page: Option<u32>) -> Result<Value> {
+fn render_inner(
+    path: &Path,
+    mut file: File,
+    requested_page: Option<u32>,
+    boxed: Option<(u32, u32)>,
+) -> Result<Value> {
     let before = file.metadata()?;
     let size = before.len();
     let mut bytes = Vec::new();
@@ -167,7 +233,11 @@ fn render_inner(path: &Path, mut file: File, requested_page: Option<u32>) -> Res
                 bail!("source grew beyond preview input limit");
             }
             if image {
-                match raster(&bytes) {
+                let made = match boxed {
+                    Some(b) => raster_boxed(&bytes, b),
+                    None => raster(&bytes),
+                };
+                match made {
                     Ok((value, dimensions)) => {
                         img = value;
                         title = dimensions;

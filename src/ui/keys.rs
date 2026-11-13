@@ -59,6 +59,11 @@ impl App {
             }
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            // In Files, yazi's Ctrl+C closes the tab (and Files on the last one).
+            if self.yazi_active() && self.context_menu.is_none() && !self.help {
+                self.yazi_key(key);
+                return;
+            }
             self.request_quit();
             return;
         }
@@ -92,6 +97,10 @@ impl App {
         // Input fields own every printable key, including navigation shortcuts.
         if let Some(mode) = self.input {
             self.input_key(key, mode);
+            return;
+        }
+        if self.yazi_active() && self.yazi_key(key) {
+            self.navigation.reset();
             return;
         }
         if self.screen_key(key) {
@@ -220,16 +229,6 @@ impl App {
                     } else {
                         self.next_file_match(step);
                     }
-                }
-            }
-            Cmd::ClearClipboard => {
-                self.clipboard = None;
-                self.set_notice("Clipboard cleared · files unchanged".into());
-            }
-            Cmd::ClearMarks => {
-                self.finish_visual();
-                if let Some(b) = &mut self.browser {
-                    b.marked.clear();
                 }
             }
             Cmd::PreviewLinks => self.show_preview_links(),

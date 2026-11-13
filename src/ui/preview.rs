@@ -434,12 +434,34 @@ pub(super) fn raster_lines(w: usize, h: usize, bytes: &[u8], area: Rect) -> Vec<
     let scale = (available_w as f64 / w as f64).min(available_h as f64 / h as f64);
     let width = ((w as f64 * scale).floor() as usize).max(1);
     let height = ((h as f64 * scale).floor() as usize).max(1);
+    // Each half-block pixel is the average of the source pixels it covers (box filter),
+    // not one sampled pixel: gradients and photos stay smooth instead of speckled.
     let pixel = |x: usize, y: usize| -> Option<Color> {
         if y >= height {
             return None;
         }
-        let at = ((y * h / height) * w + x * w / width) * 4;
-        (bytes[at + 3] >= 128).then_some(Color::Rgb(bytes[at], bytes[at + 1], bytes[at + 2]))
+        let (x0, x1) = (x * w / width, ((x + 1) * w / width).max(x * w / width + 1));
+        let (y0, y1) = (
+            y * h / height,
+            ((y + 1) * h / height).max(y * h / height + 1),
+        );
+        let (mut sum, mut alpha, mut n) = ([0u64; 3], 0u64, 0u64);
+        for sy in y0..y1.min(h) {
+            for sx in x0..x1.min(w) {
+                let at = (sy * w + sx) * 4;
+                let a = u64::from(bytes[at + 3]);
+                for c in 0..3 {
+                    sum[c] += u64::from(bytes[at + c]) * a;
+                }
+                alpha += a;
+                n += 1;
+            }
+        }
+        if n == 0 || alpha * 2 < n * 255 {
+            return None;
+        }
+        let c = |i: usize| (sum[i] / alpha) as u8;
+        Some(Color::Rgb(c(0), c(1), c(2)))
     };
     (0..height.div_ceil(2))
         .map(|row| {
@@ -612,15 +634,24 @@ pub(super) fn markdown_layout_lines(
 /// browser's current preview, e.g. by tests probing an alternative source).
 fn uncached_display_lines(browser: &Browser, text: &str) -> Vec<Line<'static>> {
     let rich = browser.preview_rich.as_ref();
-    if rich.is_some_and(|p| p.kind == "markdown") {
+    if rich.is_some_and(|p| p.kind == "markdown") && !browser.source {
         let mut lines = markdown_layout_lines(browser, text, false);
         if ascii() || no_color() {
             strip_colors(&mut lines);
         }
         lines
     } else if !ascii() && !no_color() {
-        rich.and_then(|p| p.styled.clone())
-            .unwrap_or_else(|| preview_lines(text, rich.map(|p| p.kind.as_str()).unwrap_or("text")))
+        rich.and_then(|p| p.styled.clone()).unwrap_or_else(|| {
+            let kind = rich.map(|p| p.kind.as_str()).unwrap_or("text");
+            preview_lines(
+                text,
+                if browser.source && kind == "markdown" {
+                    "text"
+                } else {
+                    kind
+                },
+            )
+        })
     } else {
         safe_text(text)
             .lines()
@@ -1050,9 +1081,22 @@ pub(super) fn render_preview_body(
         );
         return;
     }
+    let height = usize::from(inner.height);
+    if browser.source {
+        // yazi's column: one line per row, cropped at the edge.
+        let scroll = browser.preview_scroll.get() as usize;
+        let lines = with_doc(browser, |doc| {
+            let first = scroll.min(doc.lines.len());
+            doc.lines[first..(first + height).min(doc.lines.len())].to_vec()
+        });
+        if let Some(lines) = lines {
+            frame.render_widget(Paragraph::new(lines), inner);
+            protect_content(frame.buffer_mut(), inner);
+        }
+        return;
+    }
     let query = browser.preview_find.query.clone();
     let reveal = browser.preview_find.reveal.replace(false);
-    let height = usize::from(inner.height);
     let rendered = with_doc(browser, |doc| {
         let matches = doc.matches(&query);
         let selected = browser
@@ -1243,7 +1287,7 @@ pub(super) fn apply_highlight(b: &mut Browser, chunk: PreviewChunk) -> bool {
     let Some(rich) = b
         .preview_rich
         .as_mut()
-        .filter(|r| r.kind == "code" && r.styled.is_none())
+        .filter(|r| (r.kind == "code" || (r.kind == "markdown" && b.source)) && r.styled.is_none())
     else {
         return false;
     };
@@ -1519,6 +1563,45 @@ impl App {
                 }
                 return;
             }
+        }
+        // An image opens fitted to the whole screen (decoded and scaled on the helper),
+        // not waiting for the column-sized thumbnail the peek may be reading.
+        let (sw, sh) = self.yz.screen_px.get();
+        let image = yazi::openers::mime(path.rsplit('/').next().unwrap_or(""), false)
+            .starts_with("image/")
+            && !path.to_ascii_lowercase().ends_with(".svg")
+            && sw > 0
+            && self.browser.as_ref().is_some_and(|b| b.container.is_none());
+        if image {
+            // The column's thumbnail shows at once; the screen-sized one replaces it.
+            if let Some(b) = self.browser.as_mut() {
+                let thumb = b
+                    .peek
+                    .as_deref()
+                    .filter(|p| {
+                        p.preview_path.as_deref() == Some(path.as_str())
+                            && p.preview_pending_page.is_none()
+                            && p.preview_rich.as_ref().is_some_and(|r| r.raster.is_some())
+                    })
+                    .map(|p| (p.preview.clone(), p.preview_rich.clone()));
+                if let Some((text, rich)) = thumb {
+                    b.preview = text;
+                    b.preview_rich = rich;
+                    b.preview_revision = b.preview_revision.wrapping_add(1);
+                }
+            }
+            let op = Operation::PreviewImage {
+                path,
+                width: sw,
+                height: sh,
+            };
+            if !self.send(device, op) {
+                if let Some(b) = &mut self.browser {
+                    b.preview_pending_page = None;
+                    b.preview = Some("Preview queue busy · Escape and retry".into());
+                }
+            }
+            return;
         }
         // The peek is still reading this file (a PDF page takes seconds): its reply
         // opens the preview instead of a second read queued behind it.

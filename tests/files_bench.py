@@ -33,6 +33,7 @@ import statistics, subprocess, sys, tempfile, time, uuid
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import perf_harness as ph  # noqa: E402  (PTY plumbing, Env cleanup, fixture text)
+import pty_lib  # noqa: E402
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent
@@ -56,6 +57,10 @@ SELECTED = re.compile(r'(?:│\s+(?:/\s+)?▸ |[┃│]▌ \S )(\S(?:.*?\S)?)/?(
 # row over the preview surface (inline from 100 columns, or the whole body when open).
 NEW_COUNT = re.compile(r'FILES\s+(?:(\d+)/)?(\d+) items')
 NEW_SELECTED = re.compile(r'^ ▌(?:[▸▾→] |  )(\S(?:.*?\S)?)/?(?=\s{2,}|$)')
+# The yazi Files view (2026-11-12): a status line `NOR  4K  name … perm  Top   3/9`
+# (cap glyphs may sit at both ends), the current column between x=cols/8 and x=cols*5/8.
+YAZI_STATUS = re.compile(r'^\W?\s*(?:NOR|SEL|UNS)\s+\S+\s+(\S(?:.*?\S)?)(?:\s{2,}|$)')
+YAZI_POS = re.compile(r'(\d+)/(\d+)\s*\W?\s*$')
 
 
 def pct(values, q):
@@ -474,6 +479,19 @@ class Viewer(ph.Viewer):
         self.open(env, dict(device_ids=env.device_ids, device=device_index + 1, focus='Workspace',
                             view='Files', browser=browser))
 
+    def yazi(self, display=None):
+        """The yazi Files list: its status line names the mode."""
+        last = (display or self.screen.display)[-1]
+        return bool(re.match(r'^\W?\s*(?:NOR|SEL|UNS) ', last))
+
+    def columns(self, display=None):
+        """(parent, current, preview) column texts of the yazi view, without the rails."""
+        display = display or self.screen.display
+        w = len(display[0])
+        a, b = w // 8, w * 5 // 8
+        return ([line[:a] for line in display[1:-1]], [line[a + 1:b - 1] for line in display[1:-1]],
+                [line[b:] for line in display[1:-1]])
+
     def hub_layout(self, display=None):
         """The hub design: a crumb on the first row instead of the v0.1.95 tab header.
         (pyte builds `display` anew on every access, ~1 ms at 120x40: readers take it
@@ -491,6 +509,9 @@ class Viewer(ph.Viewer):
 
     def selected(self):
         display = self.screen.display
+        if self.yazi(display):
+            m = YAZI_STATUS.match(display[-1])
+            return m.group(1) if m else None
         hub = self.hub_layout(display)
         for line in display[1:-1]:
             if hub:
@@ -504,6 +525,9 @@ class Viewer(ph.Viewer):
         return None
 
     def count(self):
+        if self.yazi():
+            m = YAZI_POS.search(self.screen.display[-1])
+            return int(m.group(2)) if m else None
         m = (NEW_COUNT if self.hub_layout() else COUNT).search(self.text())
         return int(m.group(1) or m.group(2)) if m else None
 
@@ -512,18 +536,29 @@ class Viewer(ph.Viewer):
 
     def rows(self, letter=None):
         # The list only: the revamp's inline peek beside it can show a folder's children.
-        hub = self.hub_layout()
+        display = self.screen.display
+        if self.yazi(display):
+            return [m for line in self.columns(display)[1] for m in ROW.finditer(line)
+                    if letter is None or m.group(1) == letter]
+        hub = self.hub_layout(display)
+        work = display if hub else [line[21:] for line in display]
 
         def listed(line):
             if hub:
                 return line[:50]
             borders = [i for i, c in enumerate(line) if c in '│┃']
             return line[:borders[1]] if len(borders) > 1 else line
-        return [m for line in self.work() for m in ROW.finditer(listed(line))
+        return [m for line in work for m in ROW.finditer(listed(line))
                 if letter is None or m.group(1) == letter]
 
     def has_row(self, name):
-        return any(re.search(r'(?:▸ |\s)' + re.escape(name) + r'/?(?:\s|$)', line) for line in self.work()[1:-1])
+        display = self.screen.display
+        if self.yazi(display):
+            # The hovered row reads `▌name` without the pill caps (`>` in ASCII).
+            return any(re.search(r'(?:^|[\s▌>])' + re.escape(name) + r'(?:\s|$)', line)
+                       for line in self.columns(display)[1])
+        work = display if self.hub_layout(display) else [line[21:] for line in display]
+        return any(re.search(r'(?:▸ |\s)' + re.escape(name) + r'/?(?:\s|$)', line) for line in work[1:-1])
 
     def write_at(self, data):
         t0 = time.monotonic()
@@ -630,6 +665,206 @@ def scenario_startup(binary, fx, side, device_index, ssh, tag, res, run):
             res.details.setdefault('cleanup', []).append(env.cleanup())
 
 
+def full_frame(screen, letter):
+    """A complete Files frame: header, the current column's rows and the status line
+    (yazi's layout, which cx's Files clones), and no Loading text."""
+    display = screen.display
+    if not re.match(r'^\W?\s*(?:NOR|SEL|UNS) ', display[-1]) or not display[0].strip():
+        return False
+    w = len(display[0])
+    current = [line[w // 8:w * 5 // 8] for line in display[1:-1]]
+    return any(f'{letter}-000000' in line for line in current) and 'Loading' not in ''.join(current)
+
+
+def chrome_frame(screen):
+    """Files chrome: the status line's mode pill and a header."""
+    display = screen.display
+    return bool(re.match(r'^\W?\s*(?:NOR|SEL|UNS) ', display[-1])) and bool(display[0].strip())
+
+
+def scenario_firstframe(binary, fx, side, device_index, ssh, tag, res, run):
+    """Spawn -> first complete frame (header, columns with rows, status line) for yazi and cx
+    on the same folder, cold then warm (a second spawn right after). Remote: yazi runs on
+    the fixture host over `ssh -tt` (what "yazi over SSH" means); cx runs here and lists
+    the folder through its helper. Both pay the SSH connect. yazi runs with a private
+    HOME (its built-in config), never the user's."""
+    if not shutil.which('yazi'):
+        res.notes.append('firstframe: yazi not installed') if run == 0 else None
+        return
+    if ssh:
+        # cx's ssh is the fixture's Python wrapper (yazi's is ssh itself): its start-up is
+        # in every cx connect and in none of yazi's. A refused command measures just that.
+        for _ in range(3):
+            t0 = time.monotonic()
+            subprocess.run([str(ssh.tools / 'ssh'), 'fixture', 'true'], capture_output=True, timeout=10)
+            res.add(f'{side}.firstframe.ssh_wrapper_ms', ms(t0, time.monotonic()))
+    for n in [x for x in (1000, 100000) if x in fx.sizes]:
+        folder = fx.dirs[n] / 'big'
+        for tool in ('yazi', 'cx'):
+            env = BenchEnv(binary, tag, ssh)
+            try:
+                for temp in ('cold', 'warm'):
+                    t0 = time.monotonic()
+                    if tool == 'cx':
+                        v = Viewer(env, device_index, folder, None)
+                        screen, read = v.screen, v._read
+                        closer = v.close
+                    else:
+                        cmd = f'exec env HOME={shlex.quote(str(env.root))} TERM=xterm-256color yazi {shlex.quote(str(folder))}'
+                        argv = ([shutil.which('ssh'), '-tt', '-F', str(ssh.root / 'client.conf'), 'fixture', cmd]
+                                if ssh else ['sh', '-c', cmd])
+                        pty_ = pty_lib.Pty(argv, env.env, env.root, ph.COLS, ph.ROWS)
+                        screen = pty_.screen
+
+                        def read(timeout, pty_=pty_):
+                            return pty_.read(timeout) is not None
+                        closer = lambda pty_=pty_: pty_.close(quit_key=b'q')  # noqa: E731
+                    t = chrome = None
+                    loading = False
+                    end = t0 + 30
+                    try:
+                        while time.monotonic() < end:
+                            if not read(min(.5, end - time.monotonic())):
+                                continue
+                            if chrome is None and chrome_frame(screen):
+                                chrome = time.monotonic()
+                            loading = loading or 'Loading' in '\n'.join(screen.display[1:-1])
+                            if full_frame(screen, 'b'):
+                                t = time.monotonic()
+                                break
+                    finally:
+                        closer()
+                    if chrome is not None:
+                        # The header and status line (the columns may still be empty).
+                        res.add(f'{side}.firstframe.{n}.{tool}.{temp}_chrome_ms', ms(t0, chrome))
+                    if loading:
+                        res.notes.append(f'run {run} {side} firstframe {tool} {n} {temp}: a Loading frame')
+                    if t is None:
+                        res.notes.append(f'run {run} {side} firstframe {tool} {n} {temp}: no full frame in 30 s')
+                    else:
+                        res.add(f'{side}.firstframe.{n}.{tool}.{temp}_ms', ms(t0, t))
+            finally:
+                res.details.setdefault('cleanup', []).append(env.cleanup())
+
+
+# ---------------------------------------------------------------------------
+# yazi navigation: what the 2026-11-12 targets name
+def preview_has(viewer, probe):
+    return viewer.yazi() and any(probe in line for line in viewer.columns()[2])
+
+
+def scenario_nav(binary, fx, side, device_index, ssh, tag, res, run):
+    """Folder moves served by the prefetch, hover previews, and `'` device switches."""
+    n = min(fx.sizes)
+    env = BenchEnv(binary, tag, ssh)
+    base = f'{side}.nav'
+    try:
+        parent = fx.dirs[n]
+        viewer = open_viewer(env, device_index, parent, parent / 'big',
+                             lambda v: v.selected() == 'big' and v.has_row('sibling'))
+        try:
+            # l into the hovered folder (its listing was prefetched while hovering).
+            viewer.quiesce(.3, 3)
+            t0 = viewer.write_at(b'l')
+            t = viewer.until(lambda: viewer.rows('b'), timeout=FULL_TIMEOUT, what='enter prefetched')
+            res.add(f'{base}.enter_prefetched_ms', ms(t0, t))
+            viewer.quiesce(.3, 3)
+            # h back: the parent column's listing is in memory.
+            t0 = viewer.write_at(b'h')
+            t = viewer.until(lambda: viewer.has_row('sibling') and not viewer.rows('b'), timeout=FULL_TIMEOUT,
+                             what='leave')
+            res.add(f'{base}.leave_ms', ms(t0, t))
+            viewer.quiesce(.3, 3)
+            # j onto the sibling then l at once (key-repeat speed: the prefetch races).
+            viewer.write_at(b'j')
+            t0 = viewer.write_at(b'l')
+            t = viewer.until(lambda: viewer.rows('s'), timeout=FULL_TIMEOUT, what='enter right after hover')
+            res.add(f'{base}.enter_after_hover_ms', ms(t0, t))
+        finally:
+            res.details.setdefault('viewer_close', []).append(viewer.close())
+        # Hover previews of text files: cold, then moving back (kept in memory). Two
+        # files with distinct first lines (the preview just left stays, dimmed, meanwhile).
+        pair = fx.root / 'hover'
+        pair.mkdir(exist_ok=True)
+        first, second = pair / 'a-first.rs', pair / 'b-second.rs'
+        first.write_text('// alpha hover probe\n' + source_text(4096))
+        second.write_text('// bravo hover probe\n' + source_text(4096))
+        viewer = open_viewer(env, device_index, pair, first, lambda v: v.selected() == first.name)
+        try:
+            viewer.until(lambda: preview_has(viewer, 'alpha hover probe'), timeout=30, what='first hover preview')
+            viewer.quiesce(.3, 3)
+            t0 = viewer.write_at(b'j')
+            viewer.until(lambda: viewer.selected() == second.name, what='hover second')
+            t = viewer.until(lambda: preview_has(viewer, 'bravo hover probe'), timeout=30, what='hover preview cold')
+            res.add(f'{base}.hover_preview_cold_ms', ms(t0, t))
+            viewer.quiesce(.3, 3)
+            t0 = viewer.write_at(b'k')
+            viewer.until(lambda: viewer.selected() == first.name, what='hover back')
+            t = viewer.until(lambda: preview_has(viewer, 'alpha hover probe'), timeout=30, what='hover preview warm')
+            res.add(f'{base}.hover_preview_warm_ms', ms(t0, t))
+        finally:
+            res.details.setdefault('viewer_close', []).append(viewer.close())
+        # Hover onto a 1920x1080 image: the preview column's first bitmap (half-blocks in
+        # this PTY; the helper fits the image to the column first).
+        png, jpg = fx.files['png'], fx.files['jpeg']
+        viewer = open_viewer(env, device_index, jpg['path'].parent, jpg['path'],
+                             lambda v: v.selected() == jpg['path'].name)
+        try:
+            def blocks():
+                return viewer.yazi() and sum(line.count('▀') + line.count('▄')
+                                             for line in viewer.columns()[2]) >= 100
+            def cells():
+                w = viewer.screen.columns
+                x0, rows = w * 5 // 8, range(1, viewer.screen.lines - 1)
+                return tuple((viewer.screen.buffer[y][x].fg, viewer.screen.buffer[y][x].bg)
+                             for y in rows for x in range(x0, w, 7))
+            viewer.until(blocks, timeout=30, what='first image preview')
+            viewer.quiesce(.3, 3)
+            before = cells()
+            t0 = viewer.write_at(b'j')
+            viewer.until(lambda: viewer.selected() == png['path'].name, what='hover png')
+            t = viewer.until(lambda: blocks() and cells() != before, timeout=30, what='hover image preview')
+            res.add(f'{base}.hover_image_ms', ms(t0, t))
+        finally:
+            res.details.setdefault('viewer_close', []).append(viewer.close())
+        if device_index:
+            # `'` + letter: from the local device to this remote one (cold), back (seen),
+            # and to the remote again (seen).
+            viewer = open_viewer(env, 0, parent, parent / 'big', lambda v: v.selected() == 'big', settle=REMOTE_SETTLE)
+            try:
+                viewer.quiesce(.3, 3)
+                viewer.write_at(b"'")
+                viewer.until(lambda: '(here)' in viewer.text(), what='device panel')
+                m = re.search(r'(?:^|\s)(\w)\s+\W?\s*fixture', viewer.text())
+                if not m:
+                    raise AssertionError('no letter for the fixture device in the panel')
+                letter = m.group(1).encode()
+
+                def on_remote():
+                    # The remote's home (its last folder): rows listed, nothing loading.
+                    d = viewer.screen.display
+                    return (viewer.yazi(d) and 'fixture' in d[0] and 'Loading' not in '\n'.join(d)
+                            and YAZI_POS.search(d[-1]) is not None and not d[-1].rstrip().endswith('0/0'))
+                t0 = viewer.write_at(letter)
+                t = viewer.until(on_remote, timeout=30, what='switch to the remote (cold)')
+                res.add(f'{base}.switch_cold_ms', ms(t0, t))
+                viewer.quiesce(.3, 3)
+                t0 = viewer.write_at(b"''")
+                t = viewer.until(lambda: viewer.yazi() and 'fixture' not in viewer.screen.display[0]
+                                 and viewer.selected() == 'big', timeout=30, what="'' back (seen)")
+                res.add(f'{base}.switch_seen_ms', ms(t0, t))
+                viewer.quiesce(.3, 3)
+                t0 = viewer.write_at(b"''")
+                t = viewer.until(on_remote, timeout=30, what="'' to the remote (seen)")
+                res.add(f'{base}.switch_seen_remote_ms', ms(t0, t))
+            finally:
+                res.details.setdefault('viewer_close', []).append(viewer.close())
+    except AssertionError as error:
+        res.notes.append(f'run {run} {side} nav: {error}')
+    finally:
+        res.details.setdefault('cleanup', []).append(env.cleanup())
+
+
 # ---------------------------------------------------------------------------
 # UI scenarios
 def dir_open(viewer, letter, expected, res, prefix):
@@ -644,7 +879,7 @@ def dir_open(viewer, letter, expected, res, prefix):
                             what=f'{prefix} j moves')
     res.add(f'{prefix}.usable_ms', ms(t0, t_usable))
     res.add(f'{prefix}.j_after_first_rows_ms', ms(t_j, t_usable))
-    want = min(expected, UI_CAP if viewer.hub_layout() else OLD_UI_CAP)
+    want = min(expected, UI_CAP if viewer.hub_layout() or viewer.yazi() else OLD_UI_CAP)
     t_full = viewer.until(lambda: not viewer.loading() and (viewer.count() or 0) >= want,
                           timeout=FULL_TIMEOUT, what=f'{prefix} full count')
     res.add(f'{prefix}.full_count_ms', ms(t0, t_full))
@@ -989,6 +1224,30 @@ def markdown(report):
             out.append(f"| {side} | {cell(side + '.startup.viewer_ready_ms')} | "
                        f"{cell(side + '.startup.preview_src_2k_first_paint_ms')} | {cell(d + '_ms') if d else '-'} |")
         out.append('')
+    if present('local.firstframe') or present('remote.firstframe'):
+        out += ['## Spawn -> first complete frame, yazi vs cx (remote: `ssh -tt host yazi` vs cx here)', '',
+                '| Side | Entries | yazi cold | yazi warm | cx cold | cx warm |', '|---|---|---|---|---|---|']
+        for side in sides:
+            for n in report['sizes']:
+                b = f'{side}.firstframe.{n}'
+                if present(b):
+                    out.append(f'| {side} | {n} | ' + ' | '.join(
+                        cell(f'{b}.{tool}.{temp}_ms') for tool in ('yazi', 'cx') for temp in ('cold', 'warm')) + ' |')
+        if any(k.endswith('_chrome_ms') for k in m):
+            out += ['', 'Spawn -> first chrome (header and status line; columns may be empty):', '',
+                    '| Side | Entries | yazi cold | yazi warm | cx cold | cx warm |', '|---|---|---|---|---|---|']
+            for side in sides:
+                for n in report['sizes']:
+                    b = f'{side}.firstframe.{n}'
+                    if present(b):
+                        out.append(f'| {side} | {n} | ' + ' | '.join(
+                            cell(f'{b}.{tool}.{temp}_chrome_ms') for tool in ('yazi', 'cx')
+                            for temp in ('cold', 'warm')) + ' |')
+        if present('remote.firstframe.ssh_wrapper'):
+            out.append(f"\ncx's remote connects include the fixture's ssh wrapper start-up "
+                       f"({cell('remote.firstframe.ssh_wrapper_ms')}); yazi's do not. "
+                       'cx warm paints the folder\'s last listing before the connect finishes.')
+        out.append('')
     out += ['## Directory open (Enter -> ...)', '',
             '| Side | Entries | Case | First rows | Usable (j moves) | Full count | Final count |',
             '|---|---|---|---|---|---|---|']
@@ -1070,7 +1329,7 @@ def main():
     parser.add_argument('--label', default='run')
     parser.add_argument('--rtt', type=float, default=0.0, help='added round-trip ms for --remote (relay)')
     parser.add_argument('--oplog', help='diagnostic: log remote helper ops (names, sizes, helper ms) to FILE')
-    parser.add_argument('--only', default='', help='comma list of startup,dirs,deep,previews,scroll,helper')
+    parser.add_argument('--only', default='', help='comma list of startup,dirs,deep,previews,scroll,helper,nav,firstframe')
     parser.add_argument('--files', default='', help='comma list of preview fixture keys (default all)')
     parser.add_argument('--sides', default='local,remote', help='comma list: local,remote')
     parser.add_argument('--sizes', default=','.join(map(str, SIZES)))
@@ -1083,7 +1342,8 @@ def main():
         sys.exit('sshd is required for --remote')
     for key in ('TMUX', 'TMUX_PANE'):
         os.environ.pop(key, None)
-    only = {s for s in args.only.split(',') if s} or {'startup', 'dirs', 'deep', 'previews', 'scroll', 'helper'}
+    only = {s for s in args.only.split(',') if s} or {'startup', 'dirs', 'deep', 'previews', 'scroll', 'helper',
+                                                      'nav', 'firstframe'}
     sizes = tuple(int(s) for s in args.sizes.split(',') if s)
     tag = uuid.uuid4().hex
     res = Results()
@@ -1110,7 +1370,7 @@ def main():
         sides = [(n, i) for n, i in [('local', 0)] + ([('remote', 1)] if ssh else []) if n in wanted]
         if args.files:
             keep = set(args.files.split(','))
-            fx.files = {k: v for k, v in fx.files.items() if k in keep or k in ('src_5m', 'md_2m')}
+            fx.files = {k: v for k, v in fx.files.items() if k in keep or k in ('src_5m', 'md_2m', 'src_200k', 'src_2k', 'png', 'jpeg')}
             fx.preview_keys = [k for k in fx.files if k in keep]
         for run in range(args.runs):
             for side, index in sides:
@@ -1135,6 +1395,10 @@ def main():
                     scenario_previews(binary, fx, side, index, remote, tag, res, run, line_maps)
                 if 'scroll' in only:
                     scenario_scroll(binary, fx, side, index, remote, tag, res, run)
+                if 'firstframe' in only:
+                    scenario_firstframe(binary, fx, side, index, remote, tag, res, run)
+                if 'nav' in only:
+                    scenario_nav(binary, fx, side, index, remote, tag, res, run)
                 print(f'run {run + 1}/{args.runs} {side} done at {time.monotonic() - started:.0f}s', file=sys.stderr)
     finally:
         refused = ssh.refused() if ssh else {}

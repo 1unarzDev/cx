@@ -40,7 +40,9 @@ for mono in (False, True):
         try:
             wait(lambda: any('sample.md' in line for line in screen.display))
             os.write(master, b'\r')
-            wait(lambda: any('aligned bullet' in line for line in screen.display))
+            # The opened preview (the list's preview column shows the file too).
+            wait(lambda: any('PREVIEW' in line for line in screen.display)
+                 and any('aligned bullet' in line for line in screen.display))
             row = next(i for i,line in enumerate(screen.display) if 'aligned bullet' in line)
             column = screen.display[row].index('aligned bullet')
             assert screen.display[row+1][column-2:column] == '  ', '\n'.join(screen.display)
@@ -59,7 +61,9 @@ for mono in (False, True):
             wait(lambda: any('Links' in line for line in screen.display) and any('Viewer browser' in line for line in screen.display))
             os.write(master,b'\x1b'); settle()
             os.write(master,b'\x1b'); settle()
-            wait(lambda: any('sample.md' in line for line in screen.display) and not any('aligned bullet' in line for line in screen.display))
+            # Back in the list (yazi's view: its status line); the preview column may
+            # still show the file beside it.
+            wait(lambda: any('sample.md' in line for line in screen.display) and ' NOR ' in screen.display[-1])
             os.write(master, b'\x03'); proc.wait(timeout=5)
             assert proc.returncode == 0 and termios.tcgetattr(slave) == before
             checks.append(dict(mode='monochrome' if mono else 'ANSI palette', result='PASS', link_mouse_and_keyboard=True, hanging_indent=True, inert_math=True, escape_selection_and_termios=True))

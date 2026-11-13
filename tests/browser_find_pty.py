@@ -57,12 +57,18 @@ for width, height in [(120, 40), (80, 24), (48, 24)]:
         def filter_name(value): send(b'f\x15'+value.encode()+b'\r')
         try:
             wait_for(lambda: 'alpha.txt' in text() and 'beta.txt' in text())
+            # yazi's Files: the current column is x=width/8..width*5/8; find shows in the header.
+            lo, hi = width // 8, width * 5 // 8
+            def finding(): return '(find: ' in screen.display[0]
             send(b'/alpha')
-            wait_for(lambda: 'n/N matches' in text())
+            wait_for(finding)
+            # Enter finishes the search (yazi's find box closes); it never opens the file.
+            def preview_opened(): return 'beta.txt' not in text()
+            send(b'\r'); assert not preview_opened(), text()
             assert 'beta.txt' in text() and 'directory' in text(), text()
             # The list row (the list's 48 columns), not the inline preview's title.
             def list_occurrence(line):
-                line = line[:50]
+                line = ' ' * lo + line[lo:hi]
                 at = line.find('alpha.txt')
                 while at >= 0:
                     before = line[max(0, at - 3):at]
@@ -78,29 +84,28 @@ for width, height in [(120, 40), (80, 24), (48, 24)]:
             assert screen.buffer[row][col].bg in ('default', '1d3a42', '262b33', '005f5f', '303030') or selected_row, text()
             # Enter finishes the search; it never opens the file (the list stays; an inline
             # peek on wide layouts may show the content beside it).
-            def preview_opened(): return 'beta.txt' not in text()
-            send(b'\r'); assert not preview_opened(), text()
             send(b'nN'); assert not preview_opened(), text()
             send(b'/\x15a\r')
-            wait_for(lambda: 'n/N matches' in text())
+            wait_for(finding)
             capture('find')
             def selected_name():
                 for line in screen.display:
-                    # The selection bar opens the row (column 1).
-                    if re.search(r'^ ?[▌>]', line) and any(name in line for name in ['alpha.txt','beta.txt','directory']):
+                    # The hovered row's bar (or `>`) opens its cell in the current column.
+                    line = line[lo + 1:hi]
+                    if re.search(r'^[▌>]', line) and any(name in line for name in ['alpha.txt','beta.txt','directory']):
                         return next(name for name in ['alpha.txt','beta.txt','directory'] if name in line)
                 return None
             first=selected_name(); assert first, text()
             send(b'n'); assert selected_name() and selected_name()!=first, text(); capture('next')
             send(b'N'); assert selected_name()==first, text(); capture('previous')
             send(b'/\x15missing\r')
-            wait_for(lambda: '0/0' in text())
+            wait_for(lambda: '(find: missing)' in screen.display[0])
             assert 'alpha.txt' in text() and 'beta.txt' in text(), text()
             read(.6)  # let the debounced inline peek settle before comparing frames
             # (Ages tick each second: compare the selection and the find bar.)
             before_no_match=(selected_name(), screen.display[-1]); send(b'n')
             assert (selected_name(), screen.display[-1])==before_no_match, text()
-            send(b'\x1b'); wait_for(lambda: 'n/N matches' not in text())
+            send(b'\x1b'); wait_for(lambda: not finding())
             filter_name('beta'); assert 'alpha.txt' not in text(), text()
             send(b'\x03'); proc.wait(timeout=5)
             assert proc.returncode == 0 and termios.tcgetattr(slave)==before

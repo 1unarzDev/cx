@@ -31,7 +31,7 @@ with tempfile.TemporaryDirectory(prefix='cx-session-chooser-') as tmp:
  def sessions():return json.loads(subprocess.check_output([binary,'sessions'],env=env))
  try:
   # The device's screen; its files (home), where `n` opens the chooser.
-  read(1);send(b'f');read(1);send(b'n');wait(lambda:'[n] Shell' in text())
+  read(1);send(b'f');read(1);send(b'!');wait(lambda:'[n] Shell' in text())
   # (Devcontainer is offered once this device's capabilities arrive: containers-v1.)
   assert '[c] Claude' not in text() and '[x] Codex' not in text(), text()
   assert not sessions(),'n created a session before a profile choice'
@@ -43,8 +43,8 @@ with tempfile.TemporaryDirectory(prefix='cx-session-chooser-') as tmp:
   send(b'gg');wait(lambda:selected('[n] Shell'))
   send(b'l');send(b'\x1b[D');send(b'\x1b[C');send(b'h')
   send(b'\x1b');wait(lambda:'[n] Shell' not in text());assert not sessions()
-  if 'FILES' not in text():send(b'f');read(.5)  # an Esc from Files is the device's screen
-  send(b'n');wait(lambda:'[n] Shell' in text());send(b'n')
+  if ' NOR ' not in text():send(b'f');read(.5)  # an Esc from Files is the device's screen
+  send(b'!');wait(lambda:'[n] Shell' in text());send(b'n')
   wait(lambda:len(sessions())==1);created=sessions()[0];assert created['provider']=='shell' and pathlib.Path(created['directory'])==root
   wait(lambda:'Ctrl+\\' in text() or '[n] Shell' not in text());read(1);send(b'printf "chooser-proof" > chooser-proof\n')
   wait(lambda:(root/'chooser-proof').exists());assert (root/'chooser-proof').read_text()=='chooser-proof'

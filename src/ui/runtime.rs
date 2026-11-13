@@ -456,6 +456,15 @@ const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
 const SYNC_END: &[u8] = b"\x1b[?2026l";
 /// At most one frame per this interval (~60 fps); bursts are coalesced.
 pub(super) const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+/// Files paints a reply that lands just after a key's frame without waiting out the
+/// 60 fps budget (a local listing or preview arrives in a few milliseconds).
+fn frame_interval(app: &App) -> Duration {
+    if app.view == View::Files {
+        FRAME_INTERVAL / 4
+    } else {
+        FRAME_INTERVAL
+    }
+}
 /// How long the event loop may block before its next pass. Input, replies
 /// and helper events wake it at once; this covers only timers.
 pub(super) fn loop_wait(app: &App, now: Instant, frame_wait: Option<Duration>) -> Duration {
@@ -968,6 +977,7 @@ pub(super) fn can_restart(app: &App) -> bool {
         && !app.creating
         && app.pending_attach.is_none()
         && app.pending_command.is_none()
+        && app.pending_jump.is_none()
         && app.pending_command_panel.is_none()
         && app.command_panel.is_none()
         && app.pending_add.is_none()
@@ -1030,7 +1040,10 @@ pub(super) fn start_update_check(tx: &mpsc::Sender<UpdateEvent>, force: bool) {
         let _ = tx.send(UpdateEvent::Checked(force, result));
     });
 }
-// Four workers permit independent hosts to progress while preserving FIFO per SSH target.
+// Eight workers permit independent hosts and lanes to progress while preserving FIFO per
+// lane. A device has up to seven lanes (metadata, capabilities, bulk, interactive, panel,
+// files, hover), and opening a lane's helper channel blocks its worker for a handshake:
+// with fewer workers a Files read waited on another lane's channel setup.
 // Both the incoming channel and scheduler backlog are bounded. Sleeping workers use a
 // condition variable, so an idle fleet causes no polling or redraw loop.
 pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
@@ -1052,7 +1065,11 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
             || transport::channel_class(&task.op) == transport::Channel::Interactive;
         // Bulk work (files, containers, transfers) has its own lane, as it
         // has its own helper channel: a container burst never delays sessions.
-        let bulk = transport::channel_class(&task.op) == transport::Channel::Bulk;
+        let class = transport::channel_class(&task.op);
+        let bulk = class == transport::Channel::Bulk;
+        // File browsing reads have their own lane and helper channel too: a listing
+        // never waits for a container burst, a transfer or the startup inventory.
+        let files = class == transport::Channel::Files;
         if matches!(task.op, Operation::Info) {
             return format!(
                 "capabilities:{}",
@@ -1062,14 +1079,18 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
         match &task.execution.target {
             Some(target) if panel => format!("panel:{target}"),
             Some(target) if bulk => format!("bulk:{target}"),
+            Some(target) if files && task.hover => format!("files-hover:{target}"),
+            Some(target) if files => format!("files:{target}"),
             Some(target) => target.clone(),
             None if panel => "<local-command>".into(),
+            None if task.hover => "<local-hover>".into(),
             None if matches!(
                 task.op,
                 Operation::List { .. }
                     | Operation::ListPage { .. }
                     | Operation::Preview { .. }
                     | Operation::PreviewPage { .. }
+                    | Operation::PreviewImage { .. }
             ) =>
             {
                 "<local-files-read>".into()
@@ -1105,7 +1126,7 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
         lock.lock().unwrap().closed = true;
         changed.notify_all();
     });
-    for _ in 0..4 {
+    for _ in 0..8 {
         let shared = shared.clone();
         let replies = replies.clone();
         thread::spawn(move || {
@@ -1131,13 +1152,84 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
                         queue = changed.wait(queue).unwrap();
                     }
                 };
-                let result = transport::request(&task.execution, task.op.clone());
+                if let (
+                    false,
+                    Operation::ListPage {
+                        path,
+                        offset,
+                        limit,
+                    },
+                ) = (task.hover, &task.op)
+                {
+                    // A long listing: pages pipelined a batch at a time; the rest goes back
+                    // in the queue, so other reads of this device interleave between batches.
+                    // A listing of another folder since then stops it.
+                    let superseded = |queue: &Queue| {
+                        queue.tasks.iter().any(|t| {
+                            t.device == task.device
+                                && !t.hover
+                                && t.generation > task.generation
+                                && t.generation != super::WARM_GENERATION
+                                && matches!(&t.op, Operation::List { path: p } | Operation::ListPage { path: p, .. } if p != path)
+                        })
+                    };
+                    let mut delivered = true;
+                    let more = transport::list_pages(
+                        &task.execution,
+                        path,
+                        *offset,
+                        *limit,
+                        |op, result| {
+                            delivered = replies
+                                .send(W::from(Reply {
+                                    device_id: Some(task.execution.id.clone()),
+                                    execution_target: Some(task.execution.target.clone()),
+                                    preview: None,
+                                    device: task.device,
+                                    op,
+                                    generation: task.generation,
+                                    result,
+                                }))
+                                .is_ok();
+                            delivered && !superseded(&lock.lock().unwrap())
+                        },
+                    );
+                    let mut queue = lock.lock().unwrap();
+                    queue.busy.remove(&host);
+                    if let Some((offset, limit)) = more.filter(|_| delivered && !superseded(&queue))
+                    {
+                        queue.tasks.push_back(Task {
+                            device: task.device,
+                            execution: task.execution.clone(),
+                            op: Operation::ListPage {
+                                path: path.clone(),
+                                offset,
+                                limit,
+                            },
+                            generation: task.generation,
+                            hover: false,
+                        });
+                    }
+                    changed.notify_all();
+                    drop(queue);
+                    if !delivered {
+                        return;
+                    }
+                    continue;
+                }
+                let result = if task.hover {
+                    transport::request_hover(&task.execution, task.op.clone())
+                } else {
+                    transport::request(&task.execution, task.op.clone())
+                };
                 let preview = if matches!(
                     match &task.op {
                         Operation::ContainerFiles { operation, .. } => operation.as_ref(),
                         other => other,
                     },
-                    Operation::Preview { .. } | Operation::PreviewPage { .. }
+                    Operation::Preview { .. }
+                        | Operation::PreviewPage { .. }
+                        | Operation::PreviewImage { .. }
                 ) {
                     // Plain text paints first; source highlighting follows below.
                     result.as_ref().ok().map(RichPreview::plain)
@@ -1152,7 +1244,8 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
                 };
                 let source = preview
                     .as_ref()
-                    .filter(|p| p.kind == "code")
+                    // Markdown too: a hover preview shows it as highlighted source.
+                    .filter(|p| p.kind == "code" || p.kind == "markdown")
                     .and(result.as_ref().ok())
                     .map(|value| {
                         let text = safe_text(value["text"].as_str().unwrap_or(""));
@@ -1189,7 +1282,9 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
     }
 }
 /// Geometry mirrors the existing workspace layout; no preview owns another location.
-pub(super) fn native_preview_area(app: &App, area: Rect) -> Option<Rect> {
+/// The browser whose image the terminal draws natively, and where: the opened
+/// preview, or the yazi view's preview column for a hovered image.
+fn native_source(app: &App, area: Rect) -> Option<(&Browser, Rect)> {
     if area.width < 36
         || area.height < 10
         || app.view != View::Files
@@ -1201,24 +1296,37 @@ pub(super) fn native_preview_area(app: &App, area: Rect) -> Option<Rect> {
         return None;
     }
     let browser = app.browser.as_ref()?;
-    browser.preview.as_ref()?;
-    let rich = browser.preview_rich.as_ref()?;
+    let (shown, rect) = if browser.preview.is_some() {
+        // Where the last frame drew the preview surface.
+        (browser, app.preview_rect.get()?)
+    } else {
+        // Overlays (which-key, popups, send-to) sit over the column: no bitmap then.
+        if !app.yz.pending.is_empty() || app.yz.popup.is_some() || app.send_pick {
+            return None;
+        }
+        let hovered = browser_entries(browser).get(browser.selected)?.path.clone();
+        let peek = browser
+            .peek
+            .as_deref()
+            .filter(|p| p.preview_path.as_deref() == Some(hovered.as_str()))?;
+        peek.preview.as_ref()?;
+        (peek, app.yz.preview_rect.get())
+    };
+    let rich = shown.preview_rich.as_ref()?;
     if !matches!(rich.kind.as_str(), "image" | "pdf") || rich.raster.is_none() {
         return None;
     }
-    // Where the last frame drew the preview surface.
-    let _ = area;
-    app.preview_rect
-        .get()
-        .filter(|r| r.width > 0 && r.height > 0)
+    (rect.width > 0 && rect.height > 0).then_some((shown, rect))
+}
+pub(super) fn native_preview_area(app: &App, area: Rect) -> Option<Rect> {
+    native_source(app, area).map(|(_, r)| r)
 }
 pub(super) fn prepare_native_preview(
     app: &App,
     area: Rect,
     native: &mut crate::terminal_preview::NativePreview,
 ) {
-    if let Some(area) = native_preview_area(app, area) {
-        let browser = app.browser.as_ref().unwrap();
+    if let Some((browser, area)) = native_source(app, area) {
         let (width, height, rgba) = browser
             .preview_rich
             .as_ref()
@@ -1228,8 +1336,11 @@ pub(super) fn prepare_native_preview(
             .unwrap();
         // Revision changes on every accepted response, even if title/path/dimensions match.
         let key = format!(
-            "{}:{}:{}",
-            app.generation, browser.device, browser.preview_revision
+            "{}:{}:{}:{}",
+            app.generation,
+            browser.device,
+            browser.preview_path.as_deref().unwrap_or(""),
+            browser.preview_revision
         );
         native.prepare(&key, *width as u32, *height as u32, rgba, area);
     } else {
@@ -1384,7 +1495,13 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
     }
     if restore.is_some() && app.view == View::Files {
+        app.fill_browser_from_cache();
         app.refresh_browser();
+        if let Some(b) = app.browser.as_ref() {
+            let (d, path) = (b.device, b.path.clone());
+            app.yazi_warm_hover(d, path);
+        }
+        app.yazi_warm_devices();
     }
     if restore.is_none() {
         // The start view is the hub; Files of this device open in the launch folder.
@@ -1735,6 +1852,34 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             }
             dirty = true;
         }
+        if let Some((zoxide, dir)) = app.pending_jump.take() {
+            // `z`/`Z`: fzf or zoxide owns the terminal; its answer is where Files goes.
+            cleanup_native_preview(&mut screen, &mut native_preview)?;
+            app.stop_watches();
+            screen.suspend(true)?;
+            let mut command = if zoxide {
+                let mut c = std::process::Command::new("zoxide");
+                c.args(["query", "-i"]);
+                c
+            } else {
+                std::process::Command::new("fzf")
+            };
+            let output = command
+                .current_dir(&dir)
+                .stdin(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::piped())
+                .output();
+            screen.resume()?;
+            last_interaction = Instant::now();
+            if let Some(out) = output.ok().filter(|o| o.status.success()) {
+                let picked = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+                if !picked.is_empty() {
+                    app.yazi_jump_to(&dir, &picked);
+                }
+            }
+            dirty = true;
+        }
         if let Some((device, command)) = app.pending_command.take() {
             cleanup_native_preview(&mut screen, &mut native_preview)?;
             app.stop_watches();
@@ -1884,9 +2029,10 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         if dirty {
             let since = last_draw.elapsed();
             let grace = app.live_frame_grace();
+            let interval = frame_interval(&app);
             if let Some(grace) = grace {
-                frame_wait = Some(grace.max(FRAME_INTERVAL.saturating_sub(since)));
-            } else if since >= FRAME_INTERVAL {
+                frame_wait = Some(grace.max(interval.saturating_sub(since)));
+            } else if since >= interval {
                 // A pass that wrote nothing (a key with no visible effect)
                 // does not delay the next frame, such as its echo.
                 if screen
@@ -1896,9 +2042,11 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 }
                 dirty = false;
             } else {
-                frame_wait = Some(FRAME_INTERVAL - since);
+                frame_wait = Some(interval - since);
             }
         }
+        // Hover prefetches queued for this frame leave once it is out.
+        app.flush_hover();
         let batch = if !carried.is_empty() {
             std::mem::take(&mut carried)
         } else {

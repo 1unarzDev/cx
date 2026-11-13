@@ -37,8 +37,6 @@ pub(super) enum Cmd {
     SessionsHere,
     NextMatch,
     PrevMatch,
-    ClearClipboard,
-    ClearMarks,
     PreviewLinks,
     PreviewSearch,
     /// A palette/workspace action with its own availability (`action_enabled`).
@@ -159,9 +157,6 @@ macro_rules! alias {
     };
 }
 
-fn files_search(app: &App) -> bool {
-    app.browser.as_ref().is_some_and(|b| !b.search.is_empty())
-}
 fn markdown_preview(app: &App) -> bool {
     app.markdown_preview_active()
 }
@@ -412,157 +407,6 @@ pub(super) const BINDINGS: &[Binding] = &[
         hint("Back")
     ),
     bind!(
-        FilesList,
-        [code(Enter)],
-        "Enter",
-        Cmd::Primary,
-        "Transfer the clipboard into this folder",
-        hint("Transfer here"),
-        Some(destination_paste)
-    ),
-    bind!(
-        FilesList,
-        [ch('n')],
-        "n / N",
-        Cmd::NextMatch,
-        "Next / previous matching file",
-        hint("Next / previous"),
-        Some(files_search)
-    ),
-    alias!(
-        FilesList,
-        [ch('N')],
-        "N",
-        Cmd::PrevMatch,
-        "Previous matching file",
-        None,
-        Some(files_search)
-    ),
-    bind!(
-        FilesList,
-        [ch('/')],
-        "/",
-        Cmd::Search,
-        "Find in this folder, live matches"
-    ),
-    bind!(
-        FilesList,
-        [ch(' ')],
-        "Space",
-        Cmd::Do(Action::Select),
-        "Select and advance",
-        hint("Select"),
-        Some(not_destination_paste)
-    ),
-    bind!(
-        FilesList,
-        [ch('v')],
-        "v",
-        Cmd::Do(Action::Visual),
-        "Visual range selection"
-    ),
-    bind!(
-        FilesList,
-        [ch('u')],
-        "u",
-        Cmd::ClearMarks,
-        "Clear selection"
-    ),
-    bind!(
-        FilesList,
-        [ch('.')],
-        ".",
-        Cmd::Do(Action::Hidden),
-        "Show / hide hidden files"
-    ),
-    bind!(
-        FilesList,
-        [ch('f')],
-        "f",
-        Cmd::Do(Action::Filter),
-        "Filter names"
-    ),
-    bind!(
-        FilesList,
-        [ch('c')],
-        "c",
-        Cmd::Do(Action::Copy),
-        "Copy, then choose another folder or device",
-        hint("Copy / cut"),
-        Some(not_destination_paste)
-    ),
-    bind!(
-        FilesList,
-        [ch('x')],
-        "x",
-        Cmd::Do(Action::Cut),
-        "Cut, then choose another folder or device"
-    ),
-    bind!(
-        FilesList,
-        [ch('p')],
-        "p",
-        Cmd::Do(Action::Paste),
-        "Paste here",
-        hint("Paste / transfer"),
-        Some(not_destination_paste)
-    ),
-    bind!(
-        FilesList,
-        [ch('Y')],
-        "Y",
-        Cmd::ClearClipboard,
-        "Clear clipboard · files unchanged"
-    ),
-    bind!(
-        FilesList,
-        [ch('t')],
-        "t",
-        Cmd::Do(Action::TransferTo),
-        "Transfer to… choose device, folder, then Enter"
-    ),
-    bind!(
-        FilesList,
-        [ch('T')],
-        "T",
-        Cmd::Do(Action::Jobs),
-        "Transfer jobs and results",
-        hint("Progress"),
-        Some(destination_paste)
-    ),
-    bind!(
-        FilesList,
-        [ch('r')],
-        "r",
-        Cmd::Do(Action::Rename),
-        "Rename the selected file",
-        hint("Rename / delete"),
-        Some(not_destination_paste)
-    ),
-    bind!(
-        FilesList,
-        [ch('d')],
-        "d",
-        Cmd::Do(Action::Delete),
-        "Delete · confirm permanently"
-    ),
-    bind!(
-        FilesList,
-        [ch('M')],
-        "M",
-        Cmd::Do(Action::Mkdir),
-        "New folder"
-    ),
-    bind!(
-        FilesList,
-        [ch('o')],
-        "o",
-        Cmd::Do(Action::Conflict),
-        "Cycle copy conflict policy",
-        hint("Conflict policy"),
-        Some(destination_paste)
-    ),
-    bind!(
         Files,
         [code(Enter)],
         "Enter",
@@ -804,6 +648,34 @@ fn winner(app: &App, key: &KeyEvent) -> Option<&'static Binding> {
     }
     None
 }
+/// Whether a key is one of cx's global keys (any screen).
+pub(super) fn global_key(key: &KeyEvent) -> bool {
+    BINDINGS.iter().any(|b| {
+        b.ctx == Ctx::Global && b.cmd != Cmd::Motion && b.keys.iter().any(|k| k.matches(key))
+    })
+}
+
+/// Every key of cx's global bindings, as key events (the yazi layer's shadow test).
+#[cfg(test)]
+pub(super) fn global_keys() -> Vec<(KeyEvent, &'static str)> {
+    BINDINGS
+        .iter()
+        .filter(|b| b.ctx == Ctx::Global && b.cmd != Cmd::Motion)
+        .flat_map(|b| {
+            b.keys.iter().map(|k| {
+                let mut m = KeyModifiers::NONE;
+                if k.ctrl {
+                    m |= KeyModifiers::CONTROL;
+                }
+                if k.alt {
+                    m |= KeyModifiers::ALT;
+                }
+                (KeyEvent::new(k.code, m), b.help)
+            })
+        })
+        .collect()
+}
+
 /// The command a key runs in the current context, if any.
 pub(super) fn resolve(app: &App, key: &KeyEvent) -> Option<Cmd> {
     winner(app, key).map(|b| b.cmd)

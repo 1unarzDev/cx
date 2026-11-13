@@ -588,10 +588,28 @@ impl Drop for Connection {
 }
 impl Connection {
     fn open(target: &str) -> Result<Self> {
-        // Join (or start) the route's shared master, waiting only briefly so
-        // the operation's own timeout still covers a direct handshake. A
-        // typed failure is the same evidence a direct BatchMode attempt gives.
-        let master = ensure_master(target, CHANNEL_MASTER_WAIT);
+        Self::open_waiting(target, CHANNEL_MASTER_WAIT)
+    }
+    /// Join (or start) the route's shared master, waiting at most `wait` so
+    /// the operation's own timeout still covers a direct handshake. A typed
+    /// failure is the same evidence a direct BatchMode attempt gives. Files
+    /// reads pass zero: a cold first listing connects directly in parallel
+    /// with the starting master (one handshake, as `ssh host` pays), and later
+    /// channels join the master.
+    fn open_waiting(target: &str, wait: std::time::Duration) -> Result<Self> {
+        let master = if wait.is_zero() {
+            // No local `-O check` on the request path: the channel joins a live
+            // master by itself (ControlMaster=no) or connects directly.
+            let owned = target.to_owned();
+            let _ = std::thread::Builder::new()
+                .name("cx-ssh-prewarm".into())
+                .spawn(move || {
+                    ensure_master(&owned, std::time::Duration::ZERO);
+                });
+            MasterState::Unavailable
+        } else {
+            ensure_master(target, wait)
+        };
         if let MasterState::Failed(failure) = master {
             return Err(failure.into());
         }
@@ -759,9 +777,162 @@ static CONNECTIONS: std::sync::LazyLock<
 static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// One framed metadata channel per endpoint, separate from native PTY traffic.
 pub fn request(d: &Device, op: Operation) -> Result<serde_json::Value> {
-    retry_observation(&op, || request_once(d, op.clone()))
+    retry_observation(&op, || request_once(d, op.clone(), false))
 }
-fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
+/// A Files prefetch of the hovered entry: its own helper channel, so a parent-folder
+/// prefetch or a page of a long listing never delays what the cursor is on.
+pub fn request_hover(d: &Device, op: Operation) -> Result<serde_json::Value> {
+    let hover = channel_class(&op) == Channel::Files;
+    request_once(d, op, hover)
+}
+/// Continuation pages a long listing still needs, at most this many per call.
+pub const PAGE_BATCH: usize = 8;
+/// A long listing's continuation pages from `offset`: up to `PAGE_BATCH` `ListPage`
+/// requests pipelined on the device's Files channel (one round trip for the batch,
+/// not one per page). `page` gets each reply in order and returns false to stop.
+/// A page that ends early (its byte budget) replans from its `next_offset` with that
+/// page's size; replies already in flight past it are read and dropped. Returns
+/// where the listing continues (offset and page size), when it does.
+pub fn list_pages(
+    d: &Device,
+    path: &str,
+    mut offset: u64,
+    mut limit: u32,
+    mut page: impl FnMut(Operation, Result<serde_json::Value>) -> bool,
+) -> Option<(u64, u32)> {
+    let op = |offset, limit| Operation::ListPage {
+        path: path.to_owned(),
+        offset,
+        limit,
+    };
+    let next = |value: &serde_json::Value| {
+        value["next_offset"]
+            .as_u64()
+            .filter(|_| value["restart"].as_bool() != Some(true))
+    };
+    let Some(target) = &d.target else {
+        for _ in 0..PAGE_BATCH {
+            let result = crate::dispatch(op(offset, limit));
+            let after = result.as_ref().ok().and_then(next);
+            if !page(op(offset, limit), result) {
+                return None;
+            }
+            offset = after?;
+        }
+        return Some((offset, limit));
+    };
+    let pipelined = (|| -> Result<Option<(u64, u32)>> {
+        if !valid_target(target) {
+            bail!("invalid SSH target")
+        }
+        crate::edges::guard(d)?;
+        let entry = CONNECTIONS
+            .lock()
+            .map_err(|_| anyhow!("transport lock unavailable"))?
+            .entry(channel_key(Channel::Files, target))
+            .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(None)))
+            .clone();
+        let mut slot = entry
+            .lock()
+            .map_err(|_| anyhow!("connection lock unavailable"))?;
+        let route = crate::store::route(target)?;
+        if slot
+            .as_mut()
+            .is_some_and(|c| c.route != route || !matches!(c.child.try_wait(), Ok(None)))
+        {
+            *slot = None;
+        }
+        if slot.is_none() {
+            // A new helper has no snapshot: its first reply says `restart`.
+            *slot = Some(Connection::open_waiting(target, std::time::Duration::ZERO)?);
+        }
+        let conn = slot.as_mut().context("helper channel unavailable")?;
+        let mut sent = std::collections::VecDeque::new();
+        for k in 0..PAGE_BATCH as u64 {
+            let at = offset + k * u64::from(limit);
+            if at > crate::files::MAX_LIST_OFFSET {
+                break;
+            }
+            let id = format!(
+                "{}-{}",
+                std::process::id(),
+                NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            );
+            let req = Request {
+                version: 1,
+                id: id.clone(),
+                op: op(at, limit),
+            };
+            if let Err(error) = frame(&mut conn.input, &req) {
+                let reason = conn.failure_reason();
+                *slot = None;
+                return Err(error).context(reason);
+            }
+            sent.push_back((at, id));
+        }
+        let mut wanted = Some(offset);
+        let mut stopped = false;
+        while let Some((at, id)) = sent.pop_front() {
+            let response = match conn
+                .replies
+                .recv_timeout(std::time::Duration::from_secs(15))
+            {
+                Ok(Ok(r)) if r.version == 1 && r.id == id => r,
+                Ok(Err(e)) => {
+                    let reason = conn.failure_reason();
+                    *slot = None;
+                    return Err(e).context(reason);
+                }
+                Ok(Ok(_)) => {
+                    *slot = None;
+                    bail!("incompatible or mismatched helper response")
+                }
+                Err(_) => {
+                    *slot = None;
+                    return Err(ConnectionFailure::Timeout.into());
+                }
+            };
+            if stopped || wanted != Some(at) {
+                // Past an early end, the end of the listing, or a stop: read and dropped.
+                continue;
+            }
+            let result = match response.error {
+                Some(e) => Err(anyhow!("{e}")),
+                None => response
+                    .result
+                    .ok_or_else(|| anyhow!("empty helper response")),
+            };
+            wanted = result.as_ref().ok().and_then(next);
+            let sent_op = op(at, limit);
+            match wanted {
+                Some(after) if after != at + u64::from(limit) => {
+                    // The byte budget ended this page early: plan from it, at its size.
+                    limit = u32::try_from(after.saturating_sub(at))
+                        .unwrap_or(limit)
+                        .clamp(1, limit);
+                    stopped = true;
+                }
+                Some(_) => {}
+                None => stopped = true,
+            }
+            if let Some(after) = wanted {
+                offset = after;
+            }
+            if !page(sent_op, result) {
+                return Ok(None);
+            }
+        }
+        Ok(wanted.map(|_| (offset, limit)))
+    })();
+    match pipelined {
+        Ok(next) => next,
+        Err(error) => {
+            page(op(offset, limit), Err(error));
+            None
+        }
+    }
+}
+fn request_once(d: &Device, op: Operation, hover: bool) -> Result<serde_json::Value> {
     let Some(target) = &d.target else {
         return crate::dispatch(op);
     };
@@ -775,7 +946,12 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
         let mut all = CONNECTIONS
             .lock()
             .map_err(|_| anyhow!("transport lock unavailable"))?;
-        all.entry(channel_key(channel_class(&op), target))
+        let key = if hover {
+            format!("files-hover:{target}")
+        } else {
+            channel_key(channel_class(&op), target)
+        };
+        all.entry(key)
             .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(None)))
             .clone()
     };
@@ -795,7 +971,12 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
         *slot = None;
     }
     if slot.is_none() {
-        *slot = Some(Connection::open(target)?);
+        let wait = if channel_class(&op) == Channel::Files {
+            std::time::Duration::ZERO
+        } else {
+            CHANNEL_MASTER_WAIT
+        };
+        *slot = Some(Connection::open_waiting(target, wait)?);
     }
     let response_timeout = if channel_class(&op) == Channel::Interactive {
         3
@@ -859,6 +1040,7 @@ fn channel_key(class: Channel, target: &str) -> String {
         Channel::Interactive => format!("session-preview:{target}"),
         Channel::Capabilities => format!("capabilities:{target}"),
         Channel::Bulk => format!("bulk:{target}"),
+        Channel::Files => format!("files:{target}"),
         Channel::Metadata => target.to_owned(),
     }
 }
@@ -867,8 +1049,11 @@ pub(crate) enum Channel {
     /// Screens, keystrokes and the watch: never queued behind anything else.
     Interactive,
     Capabilities,
-    /// Files, containers and transfers: long bursts that must not delay sessions.
+    /// Containers and transfers: long bursts that must not delay sessions.
     Bulk,
+    /// File browsing reads (listings, previews): what the user waits on in Files,
+    /// never queued behind a container burst or a transfer's chunks.
+    Files,
     /// Session inventory and everything else.
     Metadata,
 }
@@ -889,18 +1074,19 @@ pub(crate) fn channel_class(op: &Operation) -> Channel {
         | Operation::ContainerFiles { .. }
         | Operation::ContainerFileAction { .. }
         | Operation::ContainerProviders { .. }
-        | Operation::List { .. }
-        | Operation::ListPage { .. }
-        | Operation::Preview { .. }
-        | Operation::PreviewPage { .. }
-        | Operation::ReadChunk { .. }
-        | Operation::FileInfo { .. }
         | Operation::ReceivePrepare { .. }
         | Operation::ReceiveChunk { .. }
         | Operation::ReceiveFinalize { .. }
         | Operation::ReceiveSymlink { .. }
         | Operation::Jobs
         | Operation::TransferJobs => Channel::Bulk,
+        Operation::List { .. }
+        | Operation::ListPage { .. }
+        | Operation::Preview { .. }
+        | Operation::PreviewPage { .. }
+        | Operation::PreviewImage { .. }
+        | Operation::ReadChunk { .. }
+        | Operation::FileInfo { .. } => Channel::Files,
         _ => Channel::Metadata,
     }
 }
@@ -1284,10 +1470,11 @@ fn mediated_host_update(
     Ok((true, Some(version)))
 }
 /// Every helper channel class, so an invalidation reaches all of them.
-const CHANNELS: [Channel; 4] = [
+const CHANNELS: [Channel; 5] = [
     Channel::Interactive,
     Channel::Capabilities,
     Channel::Bulk,
+    Channel::Files,
     Channel::Metadata,
 ];
 /// Replace all of the target's helper channels after its helper changed;
@@ -1299,7 +1486,9 @@ fn invalidate_metadata(target: &str) -> Result<()> {
             .map_err(|_| anyhow!("transport lock unavailable"))?;
         CHANNELS
             .iter()
-            .filter_map(|class| all.get(&channel_key(*class, target)).cloned())
+            .map(|class| channel_key(*class, target))
+            .chain([format!("files-hover:{target}")])
+            .filter_map(|key| all.get(&key).cloned())
             .collect()
     };
     for entry in entries {
@@ -1657,6 +1846,35 @@ mod tests {
         assert!(!prewarm(&invalid));
     }
     #[test]
+    fn continuation_pages_arrive_contiguous_and_in_order() {
+        let d = tempfile::tempdir().unwrap();
+        for i in 0..5000 {
+            std::fs::write(d.path().join(format!("{i:05}{}", "n".repeat(200))), b"").unwrap();
+        }
+        let path = crate::files::encode_path(d.path());
+        let first = crate::dispatch(Operation::List { path: path.clone() }).unwrap();
+        let mut seen = first["entries"].as_array().unwrap().len() as u64;
+        let mut next = first["next_offset"].as_u64().map(|o| (o, 4000));
+        assert!(next.is_some(), "byte budget split the listing");
+        while let Some((offset, limit)) = next {
+            next = list_pages(
+                &crate::store::local_device(),
+                &path,
+                offset,
+                limit,
+                |op, page| {
+                    let Operation::ListPage { offset, .. } = op else {
+                        panic!("a page")
+                    };
+                    assert_eq!(offset, seen, "pages follow each other");
+                    seen += page.unwrap()["entries"].as_array().unwrap().len() as u64;
+                    true
+                },
+            );
+        }
+        assert_eq!(seen, 5000);
+    }
+    #[test]
     fn bounded_frames() {
         let v = serde_json::json!({"x":"quoted\n☃"});
         let mut b = Vec::new();
@@ -1991,7 +2209,7 @@ mod tests {
         assert_eq!(channel_class(&Operation::Containers), Channel::Bulk);
         assert_eq!(
             channel_class(&Operation::List { path: "/".into() }),
-            Channel::Bulk
+            Channel::Files
         );
         assert_eq!(channel_class(&Operation::Sessions), Channel::Metadata);
         assert_eq!(channel_class(&Operation::Info), Channel::Capabilities);

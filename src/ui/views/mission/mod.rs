@@ -25,6 +25,7 @@ mod views;
 
 /// What one production frame drew: its tap targets and the hub's device order (the
 /// map's or the phone tree's), so keys move through exactly what is on screen.
+#[derive(Default)]
 pub struct Drawn {
     pub targets: Vec<LabTarget>,
     pub order: Vec<String>,
@@ -70,6 +71,27 @@ pub fn render_palette(
     }
     cx.dim(buf, area);
     views::palette(&cx, buf, area, query, cursor);
+    cx.hits.into_inner()
+}
+
+/// The send-to sheet alone, over the Files view the app drew (yazi's).
+pub fn render_send_to(
+    state: &LabState,
+    caps: &LabCaps,
+    area: Rect,
+    buf: &mut Buffer,
+) -> Vec<LabTarget> {
+    let cx = Cx::new(state, caps, area);
+    if area.width < 20 || area.height < 6 {
+        return Vec::new();
+    }
+    let body = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(2),
+    );
+    views::send_to(&cx, buf, body);
     cx.hits.into_inner()
 }
 

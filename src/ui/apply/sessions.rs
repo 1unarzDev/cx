@@ -260,6 +260,7 @@ impl App {
                         last_poll: std::time::Instant::now()
                             - std::time::Duration::from_millis(500),
                         label: self.command_panel_label.take().unwrap_or_default(),
+                        quiet: std::mem::take(&mut self.yz.shell_quiet),
                     });
                 } else {
                     self.set_notice_as(
@@ -296,6 +297,8 @@ impl App {
                     panel.status = value["status"].as_i64().map(|s| s as i32);
                     if was_alive && !panel.alive {
                         let empty = panel.lines.iter().all(|l| l.trim().is_empty());
+                        // `;` (quiet): a success leaves nothing to read either.
+                        let empty = empty || (panel.quiet && panel.status == Some(0));
                         finished = Some((panel.status, empty, panel.id.clone(), panel.device));
                     }
                 }

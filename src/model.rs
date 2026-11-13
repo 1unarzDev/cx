@@ -236,6 +236,14 @@ pub enum Operation {
         path: String,
         page: u32,
     },
+    /// An image preview decoded and downscaled on the helper to the viewer's pixel box
+    /// (the preview area in pixels), sent as JPEG when opaque, else PNG: never the
+    /// original. Same reply shape as `Preview`. Older helpers reject the variant.
+    PreviewImage {
+        path: String,
+        width: u32,
+        height: u32,
+    },
     Mkdir {
         path: String,
     },
@@ -245,6 +253,13 @@ pub enum Operation {
         expected_identity: Option<String>,
     },
     Remove {
+        path: String,
+        expected_identity: Option<String>,
+    },
+    /// Move an entry to the device's freedesktop trash (`$XDG_DATA_HOME/Trash`),
+    /// writing its `.trashinfo`. Same-filesystem only: anything else is refused (the
+    /// UI offers a permanent delete instead). Older helpers reject the variant.
+    Trash {
         path: String,
         expected_identity: Option<String>,
     },

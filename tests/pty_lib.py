@@ -23,13 +23,21 @@ class Screen(pyte.Screen):
         pass
 
 
+CELL_PIXELS = None
+# (trigger, reply): the PTY answers a query once it shows up in the output (a terminal's
+# DA1 / kitty graphics / CSI 16 t answers for the startup probe). Empty: nothing answers.
+ANSWERS = []
+
+
 class Pty:
     """One process on a private PTY of cols x rows (its controlling terminal), with a screen."""
 
     def __init__(self, argv, env, cwd, cols, rows):
         self.master, self.slave = pty.openpty()
         self.termios_before = termios.tcgetattr(self.slave)
-        fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
+        # CELL_PIXELS (w, h): report a pixel size too, as bitmap terminals do (TIOCGWINSZ).
+        px = (cols * CELL_PIXELS[0], rows * CELL_PIXELS[1]) if CELL_PIXELS else (0, 0)
+        fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, *px))
 
         def tty():
             os.setsid()
@@ -38,8 +46,8 @@ class Pty:
                                      stderr=self.slave, preexec_fn=tty)
         self.screen = Screen(cols, rows)
         self.stream = pyte.Stream(self.screen)
-        # A glyph split across two reads stays whole (a per-chunk decode would make it
-        # U+FFFD and shift the rest of the row).
+        # Incremental: a character split across two reads is not two replacement marks
+        # (three U+FFFD for one `▀` shifted the rest of the row into the next one).
         self.decoder = codecs.getincrementaldecoder('utf-8')('replace')
 
     def read(self, timeout):
@@ -50,6 +58,9 @@ class Pty:
             data = os.read(self.master, 1 << 16)
         except OSError:
             return None
+        for trigger, reply in ANSWERS:
+            if trigger in data:
+                os.write(self.master, reply)
         self.stream.feed(self.decoder.decode(data))
         return data
 
@@ -113,6 +124,7 @@ def metrics_fixture(root, busy=0, total=1000, cores=8, mem_kb=(8 << 20, 5 << 20)
 # pyte color names -> palette indices (lab_png's dump format: None, 0..255 or "#rrggbb").
 NAMED = {name: i for i, name in enumerate(['black', 'red', 'green', 'brown', 'blue', 'magenta', 'cyan', 'white'])}
 NAMED['yellow'] = 3
+PALETTE16 = {hexa: i for i, hexa in enumerate(pyte.graphics.FG_BG_256[:16])}
 
 
 def color(name):
@@ -123,7 +135,10 @@ def color(name):
     if base in NAMED:
         return NAMED[base] + (8 if bright else 0)
     if len(name) == 6:
-        return '#' + name
+        # `38;5;n` for n < 16 is a palette slot like SGR 30-37/90-97 (crossterm writes
+        # it so); pyte turns it into xterm's hex, which would paint a fixed colour.
+        slot = PALETTE16.get(name)
+        return slot if slot is not None else '#' + name
     return None
 
 

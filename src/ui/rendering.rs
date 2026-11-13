@@ -45,17 +45,106 @@ pub(super) fn overlay_owns_input(app: &App) -> bool {
             .input
             .is_some_and(|i| !matches!(i, Input::Search | Input::PreviewSearch | Input::Filter))
 }
-fn render_frame(
+/// The Files list (not an opened preview): the yazi clone draws it.
+pub(super) fn yazi_drawn(app: &App) -> bool {
+    app.view == View::Files && app.browser.as_ref().is_some_and(|b| b.preview.is_none())
+}
+fn render_yazi(
     frame: &mut Frame<'_>,
     app: &App,
     native: Option<&mut crate::terminal_preview::NativePreview>,
+    area: Rect,
+) {
+    let v = app.yazi_view(area.height);
+    let t = yazi::theme();
+    let caps = caps::caps();
+    let plain = ascii();
+    let look = yazi::render::Look {
+        unicode: !plain,
+        // The user's yazi theme means a nerd font is there; else cx's own detection.
+        icons: !plain && (caps.icons || t.from_user),
+        pills: !plain && (caps.pills || t.from_user),
+        color: !no_color(),
+    };
+    let mut d = yazi::render::render(&v, t, look, area, frame.buffer_mut());
+    app.yz.preview_rect.set(d.preview);
+    // The pixel box a fitted image preview is asked for: the cells times the cell size
+    // where the terminal draws bitmaps, else two half-block pixels per cell row.
+    let (cw, ch) = crate::terminal_preview::graphics_cell().unwrap_or((1, 2));
+    app.yz.preview_px.set((
+        u32::from(d.preview.width) * u32::from(cw),
+        u32::from(d.preview.height) * u32::from(ch),
+    ));
+    app.yz.screen_px.set((
+        u32::from(area.width) * u32::from(cw),
+        u32::from(area.height) * u32::from(ch),
+    ));
+    if let Some(b) = app.browser.as_ref() {
+        b.peek_shown
+            .set(d.preview.width >= 8 && d.preview.height >= 2);
+        if matches!(v.preview, Some(yazi::render::Preview::Body)) {
+            if let Some(p) = b.peek.as_deref() {
+                if let Some(text) = p.preview.as_deref() {
+                    render_preview_body(frame, d.preview, p, text, native);
+                }
+            }
+        } else if v.preview.is_none()
+            && b.peek
+                .as_deref()
+                .is_some_and(|p| p.preview_pending_page.is_some())
+        {
+            // A file's preview on its way: the one just left stays, dimmed, meanwhile
+            // (over SSH that is a round trip without a blank column).
+            if let Some((_, _, p)) = b.peek_cache.last() {
+                if let Some(text) = p.preview.as_deref() {
+                    render_preview_body(frame, d.preview, p, text, None);
+                    // Dim what is drawn, not the blank cells (a smaller frame).
+                    let buf = frame.buffer_mut();
+                    for y in d.preview.top()..d.preview.bottom() {
+                        for x in d.preview.left()..d.preview.right() {
+                            let cell = &mut buf[(x, y)];
+                            if cell.symbol() != " " {
+                                cell.modifier.insert(Modifier::DIM);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    yazi::render::overlays(&v, t, look, area, frame.buffer_mut(), &mut d);
+    if let Some(at) = d.cursor {
+        frame.set_cursor_position(at);
+    }
+    let files = hitmap::file_rows(app);
+    for (i, row) in v.current.rows.iter().enumerate() {
+        let r = Rect::new(d.current.x, d.current.y + i as u16, d.current.width, 1);
+        hitmap::register_action(r, &format!("file:{}", row.name), &files);
+    }
+    if app.send_pick {
+        let vm = viewmodel::ViewModel::from(app);
+        for t in views::mission::render_send_to(&vm.state, &vm.caps, area, frame.buffer_mut()) {
+            hitmap::register_action(t.area, &t.action, &files);
+        }
+    }
+}
+fn render_frame(
+    frame: &mut Frame<'_>,
+    app: &App,
+    mut native: Option<&mut crate::terminal_preview::NativePreview>,
     now: Instant,
 ) {
     let area = frame.area();
     hitmap::begin();
     app.preview_rect.set(None);
+    let yazi = yazi_drawn(app);
     let vm = viewmodel::ViewModel::from(app);
-    let drawn = views::mission::render(&vm.view, &vm.state, &vm.caps, area, frame.buffer_mut());
+    let drawn = if yazi {
+        render_yazi(frame, app, native.take(), area);
+        views::mission::Drawn::default()
+    } else {
+        views::mission::render(&vm.view, &vm.state, &vm.caps, area, frame.buffer_mut())
+    };
     if vm.view == views::LabView::Hub {
         *app.hub_order.borrow_mut() = drawn.order;
     }
@@ -119,20 +208,19 @@ fn render_frame(
             }
         }
     }
-    // The design shows the highlighted file inline from 100 columns (Size M).
-    if let Some(b) = app.browser.as_ref().filter(|_| app.view == View::Files) {
-        b.peek_shown.set(b.preview.is_none() && area.width >= 100);
-    }
+
     if app.view == View::Containers && vm.view == views::LabView::Hub {
         frame.render_widget(Clear, body);
         hitmap::begin();
         render_containers(frame, app, body);
     }
-    if app.view == View::Files {
+    if app.view == View::Files && !yazi {
         file_matches(frame, app, &drawn.targets);
     }
-    destination_bar(frame, app, area);
-    find_bar(frame, app, area);
+    if !yazi {
+        destination_bar(frame, app, area);
+        find_bar(frame, app, area);
+    }
     if app.pane_focused() {
         typing_bar(frame, area);
     }
@@ -197,10 +285,11 @@ fn render_frame(
             notifications::appearance(app.notice_started, app.notice_deadline, now),
         );
     }
-    if let Some(input) = app
-        .input
-        .filter(|i| !matches!(*i, Input::Search | Input::PreviewSearch | Input::Filter))
-    {
+    if let Some(input) = app.input.filter(|i| {
+        !matches!(*i, Input::Search | Input::PreviewSearch | Input::Filter)
+            // The yazi view draws its own input boxes.
+            && !(yazi && matches!(*i, Input::Rename | Input::Mkdir))
+    }) {
         let rect = popup(
             area,
             if input == Input::Add { 64 } else { 76 },

@@ -102,7 +102,6 @@ pub enum Tok {
     /// The third mesh's hue (a group colour, never a device's).
     Amber,
     Lan,
-    Dir,
     Claude,
     Codex,
     Shell,
@@ -152,13 +151,6 @@ fn row(t: Tok) -> Option<Row> {
             29,
             Some(Color::Cyan),
         )),
-        Tok::Dir => Some((
-            (0x8f, 0xb7, 0xf0),
-            (0x1d, 0x4f, 0x91),
-            111,
-            25,
-            Some(Color::LightBlue),
-        )),
         Tok::Claude => Some((
             (0xe0, 0xa3, 0x7a),
             (0xa4, 0x53, 0x2a),
@@ -203,7 +195,7 @@ impl LabCaps {
         if self.color == ColorLevel::None {
             s = match t {
                 Tok::Muted | Tok::Faint => s.add_modifier(Modifier::DIM),
-                Tok::Accent | Tok::Err | Tok::Dir => s.add_modifier(Modifier::BOLD),
+                Tok::Accent | Tok::Err => s.add_modifier(Modifier::BOLD),
                 _ => s,
             };
         } else if self.color == ColorLevel::C16 && matches!(t, Tok::Faint) {

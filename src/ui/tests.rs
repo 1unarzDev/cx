@@ -50,6 +50,7 @@ fn file_app() -> (App, mpsc::Receiver<Task>) {
             hidden: name.starts_with('.'),
             rename_name: Some((*name).into()),
             modified: None,
+            mode: None,
         })
         .collect();
     a.browser = Some(b);
@@ -1100,7 +1101,11 @@ fn file_device_selection_retargets_only_the_focused_location() {
 fn transfer_shortcut_captures_selection_and_opens_destination_picker() {
     let (mut a, _rx) = file_app();
     press(&mut a, ' ');
-    press(&mut a, 't');
+    // `e`: the send-to sheet (yazi leaves e unbound); a device letter then sends.
+    press(&mut a, 'e');
+    assert!(a.send_pick);
+    a.send_pick = false;
+    a.execute(Action::TransferTo);
     assert!(matches!(
         a.dialog,
         Some(Dialog::Device(ChooseDevice::Destination))
@@ -1115,7 +1120,8 @@ fn transfer_shortcut_captures_selection_and_opens_destination_picker() {
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     a.view = View::Files;
     a.focus = Focus::Workspace;
-    press(&mut a, 'T');
+    // yazi's `w` (tasks) lists the transfers.
+    press(&mut a, 'w');
     assert!(matches!(a.dialog, Some(Dialog::Jobs)));
 }
 #[test]
@@ -1310,7 +1316,9 @@ fn transfer_filter_and_counted_detail_navigation_preserve_job_identity() {
 #[test]
 fn yazi_motion_counts_and_delete_yes_no_do_not_leak_into_inputs() {
     let (mut a, rx) = file_app();
+    // yazi has no counts: digits switch tabs (there is one, so nothing moves).
     press(&mut a, '2');
+    press(&mut a, 'j');
     press(&mut a, 'j');
     assert_eq!(a.browser.as_ref().unwrap().selected, 2);
     press(&mut a, 'g');
@@ -1323,10 +1331,8 @@ fn yazi_motion_counts_and_delete_yes_no_do_not_leak_into_inputs() {
     assert!(a.dialog.is_none() && rx.try_recv().is_err());
     press(&mut a, 'd');
     press(&mut a, 'y');
-    assert!(matches!(
-        rx.try_recv().unwrap().op,
-        Operation::Remove { .. }
-    ));
+    // `d` trashes; `D` deletes for good.
+    assert!(matches!(rx.try_recv().unwrap().op, Operation::Trash { .. }));
     press(&mut a, 'f');
     press(&mut a, '5');
     press(&mut a, 'j');
@@ -1378,14 +1384,20 @@ fn hidden_and_filter_do_not_lose_selected_paths_or_turn_text_into_actions() {
 }
 #[test]
 fn delete_defaults_to_cancel_and_uses_captured_identity() {
+    // yazi's confirm: `n` (or any key but y/Enter) cancels; the identity is the one
+    // captured when D was pressed.
     let (mut a, rx) = file_app();
-    press(&mut a, 'd');
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    press(&mut a, 'D');
+    let text = draw_text(&a);
+    assert!(
+        text.contains("Permanently delete 1 selected file?"),
+        "{text}"
+    );
+    press(&mut a, 'n');
     assert!(rx.try_recv().is_err());
-    press(&mut a, 'd');
+    press(&mut a, 'D');
     a.browser.as_mut().unwrap().entries[0].identity = Some("replacement".into());
-    press(&mut a, 'j');
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    press(&mut a, 'y');
     assert!(
         matches!(rx.try_recv().unwrap().op, Operation::Remove { path, expected_identity: Some(id) }
             if path == "/files/alpha.txt" && id == "identity-alpha.txt")
@@ -1417,7 +1429,7 @@ fn copy_batch_stays_in_folder_and_paste_is_nonmodal_and_serialized() {
     let (mut a, rx) = file_app();
     press(&mut a, ' ');
     press(&mut a, ' ');
-    press(&mut a, 'c');
+    press(&mut a, 'y');
     assert!(a.dialog.is_none());
     assert_eq!(a.clipboard.as_ref().unwrap().entries.len(), 2);
     a.browser.as_mut().unwrap().path = "/destination".into();
@@ -1431,7 +1443,8 @@ fn copy_batch_stays_in_folder_and_paste_is_nonmodal_and_serialized() {
     assert_eq!(spec.destination_path, "/destination");
     assert_eq!(spec.conflict, "rename");
     assert_eq!(a.file_queue.len(), 1);
-    assert!(a.transfer_drawer && a.dialog.is_none());
+    // Progress shows in the status line (yazi's), not a drawer or dialog.
+    assert!(!a.transfer_drawer && a.dialog.is_none());
     a.apply(Reply {
         device_id: None,
         execution_target: None,
@@ -1480,6 +1493,7 @@ fn restart_restores_browser_host_search_focus_and_copy_without_preview_content()
         hidden: false,
         rename_name: None,
         modified: None,
+        mode: None,
     });
     a.clipboard = Some(Clipboard {
         container: None,
@@ -1630,28 +1644,20 @@ fn recursive_delete_warning_is_visible_and_detail_scrolling_cannot_confirm() {
     b.entries[0].kind = "directory".into();
     b.marked
         .extend(["/files/alpha.txt".into(), "/files/beta.txt".into()]);
-    press(&mut a, 'd');
-    let text = capture_app(&a, 48);
+    // yazi's confirm, with cx's warning when a folder is in it; only y/Enter confirm.
+    press(&mut a, 'D');
+    let text = capture_app(&a, 120);
     assert!(
         text.contains("No undo")
             && text.contains("folders include their contents.")
-            && text.contains("Cancel")
+            && text.contains("(N)o"),
+        "{text}"
     );
-    assert!(!text
-        .lines()
-        .skip(21)
-        .collect::<String>()
-        .contains("Copy / cut"));
     a.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    press(&mut a, 'j');
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(a.dialog.is_some() && !a.dialog_detail_focus && rx.try_recv().is_err());
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(a.dialog.is_none() && rx.try_recv().is_err());
-    press(&mut a, 'd');
-    a.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(a.yz.popup.is_none() && rx.try_recv().is_err());
+    press(&mut a, 'D');
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(a.dialog.is_none() && !a.dialog_detail_focus && rx.try_recv().is_err());
+    assert!(a.yz.popup.is_none() && rx.try_recv().is_err());
 }
 #[test]
 fn changing_session_labels_preserves_row_order_and_selection() {
@@ -1715,6 +1721,7 @@ fn restored_file_identity_survives_page_one_clamping() {
             hidden: false,
             rename_name: None,
             modified: None,
+            mode: None,
         })
         .collect();
     browser.selected = 1100;
@@ -2037,7 +2044,8 @@ fn new_shortcut_chooses_profile_and_preserves_focused_folder() {
     a.browser = Some(Browser::new(1, "/projects/robot".into()));
     a.device = 1;
     a.focus = Focus::Workspace;
-    press(&mut a, 'n');
+    // `!` (yazi's n is find-next, T is cx's transfers): a new session in this folder.
+    press(&mut a, '!');
     assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(1,path)) if path == "/projects/robot"));
     assert!(rx.try_recv().is_err());
     // `n` is Shell everywhere: the device screen's verb and the chooser's choice (`n` `n` = new shell).
@@ -2054,7 +2062,7 @@ fn moving_to_client_only_host_drops_unavailable_launch_profile() {
     a.launch_provider = Some("codex".into());
     a.providers
         .insert(1, (vec!["shell".into()], transport::now()));
-    press(&mut a, 'n');
+    press(&mut a, '!');
     assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(1, path)) if path == "/server/files"));
     assert!(a.launch_provider.is_none());
     assert!(rx.try_recv().is_err());
@@ -2470,7 +2478,7 @@ fn new_session_from_all_explicitly_selects_execution_provider_directory() {
     let list = rx.try_recv().unwrap();
     assert!(matches!(list.op, Operation::List { .. }));
     a.browser.as_mut().unwrap().path = "/projects/test".into();
-    press(&mut a, 'n');
+    press(&mut a, '!');
     assert!(matches!(a.dialog, Some(Dialog::SessionChooser(..))));
     press(&mut a, 'x');
     assert!(matches!(a.dialog, Some(Dialog::SessionPicker(..))));
@@ -2637,6 +2645,7 @@ fn destination_transfer_fixture() -> (App, mpsc::Receiver<Task>) {
         hidden: false,
         rename_name: None,
         modified: None,
+        mode: None,
     });
     a.browser = Some(source);
     a.execute(Action::Copy);
@@ -2652,6 +2661,7 @@ fn destination_transfer_fixture() -> (App, mpsc::Receiver<Task>) {
         hidden: false,
         rename_name: None,
         modified: None,
+        mode: None,
     });
     a.browser = Some(destination);
     a.destination_active = true;
@@ -2713,6 +2723,7 @@ fn transfer_locations_stay_independent_and_submit_real_spec() {
         hidden: false,
         rename_name: None,
         modified: None,
+        mode: None,
     });
     a.browser = Some(source);
     a.execute(Action::Copy);
@@ -2819,6 +2830,7 @@ fn horizontal_folder_keys_enter_and_leave_without_previewing_files() {
             hidden: false,
             rename_name: None,
             modified: None,
+            mode: None,
         }]
         .into();
         a.key(KeyEvent::new(forward, KeyModifiers::NONE));
@@ -2910,6 +2922,7 @@ fn file_find_highlights_without_filtering_and_wraps_between_files() {
             hidden: name.starts_with('.'),
             rename_name: None,
             modified: None,
+            mode: None,
         })
         .collect();
     b.marked.insert("/fixture/1".into());
@@ -2978,6 +2991,7 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             hidden: false,
             rename_name: None,
             modified: None,
+            mode: None,
         },
         Entry {
             name: "recording-second.bin".into(),
@@ -2988,6 +3002,7 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             hidden: false,
             rename_name: None,
             modified: None,
+            mode: None,
         },
         Entry {
             name: "other".into(),
@@ -2998,6 +3013,7 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
             hidden: false,
             rename_name: None,
             modified: None,
+            mode: None,
         },
     ]
     .into();
@@ -3016,10 +3032,10 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
         .buffer()
         .content
         .iter()
-        .skip(80 * 18)
         .map(|c| c.symbol())
         .collect::<String>();
-    assert!(bottom.contains("Search"));
+    // yazi's find box (top centre).
+    assert!(bottom.contains("Find next:"));
     assert!(bottom.contains("rcb"));
 }
 #[test]
@@ -3063,6 +3079,7 @@ fn enter_file_previews_never_launches() {
         hidden: false,
         rename_name: None,
         modified: None,
+        mode: None,
     }]
     .into();
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -3854,6 +3871,23 @@ fn pdf_scroll_requests_the_next_page() {
             .any(|t| matches!(t.op, Operation::PreviewPage { page: 2, .. })),
         "PDF scrolling never requests another page"
     );
+}
+#[test]
+fn half_block_fallback_averages_instead_of_sampling() {
+    // A black/white 1-pixel checkerboard at a quarter size is even grey, not speckle.
+    let (w, h) = (8usize, 8usize);
+    let mut bytes = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            let v = if (x + y) % 2 == 0 { 255 } else { 0 };
+            bytes.extend_from_slice(&[v, v, v, 255]);
+        }
+    }
+    let lines = raster_lines(w, h, &bytes, Rect::new(0, 0, 4, 2));
+    for span in lines.iter().flat_map(|l| &l.spans) {
+        assert_eq!(span.style.fg, Some(Color::Rgb(127, 127, 127)), "{span:?}");
+        assert_eq!(span.style.bg, Some(Color::Rgb(127, 127, 127)), "{span:?}");
+    }
 }
 #[test]
 fn rich_preview_rejects_bad_images_and_keeps_transparent_pixels_default() {
@@ -5802,9 +5836,10 @@ fn session_hover_selects_rendered_row_without_opening() {
                 .contains("beta.txt")
         })
         .expect("second row rendered");
+    // The current column (yazi's 1:4:3: x20-99 at 160 columns).
     let at = |kind| MouseEvent {
         kind,
-        column: 6,
+        column: 30,
         row: y,
         modifiers: KeyModifiers::NONE,
     };
@@ -6622,6 +6657,7 @@ fn superseded_peek_reply_is_a_cancellation_not_content() {
         .contains("unavailable")));
     assert!(!draw(&a).contains("Preview unavailable"));
     a.files_tick(Instant::now() + Duration::from_millis(200));
+    a.flush_hover(); // hover prefetches leave after the frame
     let again = peek_requests(&rx);
     assert_eq!(again.len(), 1, "cancelled peek is requested again");
     // (b) Enter waits for the in-flight peek read; when that read comes back
@@ -6670,6 +6706,7 @@ fn loading_peek_capture_dump() {
         hidden: name.starts_with('.'),
         rename_name: Some(name.into()),
         modified: Some(transport::now() as i64 - 120),
+        mode: None,
     };
     for (cols, rows) in [(40u16, 20u16), (80, 24), (120, 40), (200, 60)] {
         let (mut a, _rx) = queued_app();
@@ -6783,6 +6820,7 @@ fn folder_app(count: usize) -> (App, mpsc::Receiver<Task>) {
             hidden: false,
             rename_name: Some(format!("dir{i}")),
             modified: None,
+            mode: None,
         })
         .collect();
     entries.extend(b.entries.iter().cloned());
@@ -6841,6 +6879,7 @@ fn folder_prefetch_caches_valid_replies_and_stays_bounded() {
     list_reply(&mut a, &path, generation, Ok(Value::Null));
     assert!(a.browser_cache.is_empty());
     a.files_tick(std::time::Instant::now() + std::time::Duration::from_millis(400));
+    a.flush_hover(); // hover prefetches leave after the frame
     let again = listed(&rx);
     assert_eq!(again, vec![(path.clone(), a.generation)]);
     // A failure is dropped silently: no cache entry, no notice, no "Empty folder".
@@ -6868,6 +6907,7 @@ fn folder_prefetch_caches_valid_replies_and_stays_bounded() {
         .keys()
         .any(|(_, path, _)| path == "/files/dir1"));
     a.files_tick(std::time::Instant::now() + std::time::Duration::from_millis(400));
+    a.flush_hover(); // hover prefetches leave after the frame
     assert_eq!(listed(&rx), vec![("/files/dir5".into(), a.generation)]);
 }
 
@@ -6983,6 +7023,7 @@ fn preview_worker_replies_before_highlighting() {
             path: crate::files::encode_path(&file),
         },
         generation: 7,
+        hover: false,
     })
     .unwrap();
     let wait = std::time::Duration::from_secs(10);
@@ -6998,4 +7039,256 @@ fn preview_worker_replies_before_highlighting() {
         first.result.as_ref().unwrap()["text"].as_str()
     );
     assert!(chunk.lines.is_some());
+}
+
+#[test]
+fn yazi_ctrl_c_closes_a_tab_and_dash_stays_in_files() {
+    let (mut a, _rx) = file_app();
+    press(&mut a, 't');
+    press(&mut a, 't');
+    assert_eq!(a.yz.tabs.len(), 2);
+    a.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert_eq!(a.yz.tabs.len(), 1);
+    assert!(!a.quit && a.view == View::Files);
+    // yazi's `_`, Ctrl+- and `+`-free keys never reach cx's globals in Files (`-`
+    // does: yazi_unsupported_defaults_give_way_to_cx_globals).
+    for k in ['_', 'A', 'L'] {
+        press(&mut a, k);
+        assert_eq!(a.view, View::Files, "{k}");
+    }
+    a.key(KeyEvent::new(KeyCode::Char('-'), KeyModifiers::CONTROL));
+    // Legacy terminals send Ctrl+- as 0x1f, which crossterm reads as Ctrl+7.
+    a.key(KeyEvent::new(KeyCode::Char('7'), KeyModifiers::CONTROL));
+    a.key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+    assert!(!a.quit && a.view == View::Files);
+    // On the last tab Ctrl+C quits, as in yazi.
+    a.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert!(a.quit);
+    // H is cx's hub key (Shift+H, decision 2026-11-12); yazi's back is Alt+Left.
+    let (mut a, _rx) = file_app();
+    press(&mut a, 'H');
+    assert_eq!(a.view, View::Network);
+}
+
+#[test]
+fn yazi_esc_and_ctrl_s_with_nothing_to_clear_stay_in_files() {
+    let (mut a, _rx) = file_app();
+    let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+    let ctrl_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+    // Visual mode, then Esc twice "to be sure": the second Esc does nothing.
+    press(&mut a, 'v');
+    press(&mut a, 'j');
+    a.key(esc);
+    assert!(a.browser.as_ref().unwrap().visual_anchor.is_none());
+    a.key(esc);
+    a.key(esc);
+    assert_eq!(a.view, View::Files);
+    // Ctrl+S cancels a find, and only that: the selection stays, Files stays.
+    press(&mut a, ' ');
+    a.yz.find = Some(("x".into(), false));
+    a.key(ctrl_s);
+    assert!(a.yz.find.is_none());
+    assert!(!a.browser.as_ref().unwrap().marked.is_empty());
+    a.key(ctrl_s);
+    assert_eq!(a.view, View::Files);
+    assert!(!a.browser.as_ref().unwrap().marked.is_empty());
+    // q leaves at once, selection or not (yazi's quit).
+    press(&mut a, 'q');
+    assert_eq!(a.view, View::Work);
+}
+
+#[test]
+fn yazi_unsupported_defaults_give_way_to_cx_globals() {
+    // `-` (yazi: symlink, not in cx) is cx's re-attach-last everywhere, Files included.
+    let (mut a, _rx) = file_app();
+    let (mut b, _rx2) = file_app();
+    press(&mut a, '-');
+    b.run_cmd(keymap::Cmd::View("last"));
+    assert_eq!(a.view, b.view);
+    assert_eq!(a.notice, b.notice);
+    assert!(!a.notice.contains("Symlinks"), "{}", a.notice);
+    // T is cx's transfers in Files too (yazi leaves it unbound); `!` starts a session.
+    let (mut a, _rx) = file_app();
+    press(&mut a, 'T');
+    assert!(matches!(a.dialog, Some(Dialog::Jobs)));
+}
+
+#[test]
+fn yazi_semicolon_panel_closes_on_success_and_colon_stays() {
+    let (mut a, _rx) = file_app();
+    press(&mut a, ';');
+    assert!(a.yz.shell_quiet);
+    let (mut a, _rx) = file_app();
+    press(&mut a, ':');
+    assert!(!a.yz.shell_quiet);
+}
+
+#[test]
+fn yazi_narrow_linemode_keeps_the_size_and_drops_the_bar_first() {
+    let (mut a, _rx) = file_app();
+    a.browser.as_mut().unwrap().entries[1].size = 4096;
+    let row = |out: &str| {
+        out.lines()
+            .find(|l| l.contains("gamma.txt"))
+            .unwrap_or("")
+            .to_owned()
+    };
+    // 120 cols: the bar and the size.
+    let wide = row(&capture_app(&a, 120));
+    assert!(wide.contains('━') && wide.contains("15B"), "{wide}");
+    // 80 cols (a 40-cell current column): the size, no bar, a gap before it.
+    let mid = row(&capture_app(&a, 80));
+    assert!(
+        !mid.contains('━') && mid.contains("gamma.txt ") && mid.contains("15B"),
+        "{mid}"
+    );
+    // 40 cols: yazi's none.
+    let narrow = row(&capture_app(&a, 40));
+    assert!(!narrow.contains('━') && !narrow.contains("15B"), "{narrow}");
+}
+
+#[test]
+fn yazi_unlisted_folder_is_quiet_before_loading_shows() {
+    let (mut a, _rx) = file_app();
+    let b = a.browser.as_mut().unwrap();
+    b.entries.clear();
+    b.loading = true;
+    // The first frames: header, status line, an empty column (no "Loading..." flash).
+    let out = capture_app(&a, 80);
+    assert!(!out.contains("Loading"), "{out}");
+    assert!(out.contains("NOR"), "{out}");
+    assert!(a
+        .files_due(Instant::now())
+        .is_some_and(|d| d <= yazi::LOADING_QUIET));
+    // A stalled link says so after LOADING_QUIET.
+    let (d, p, _) = a.yz.loading_since.get().unwrap();
+    a.yz.loading_since
+        .set(Some((d, p, Instant::now() - yazi::LOADING_QUIET)));
+    assert!(capture_app(&a, 80).contains("Loading..."));
+}
+
+#[test]
+fn yazi_visual_range_is_not_counted_in_the_header() {
+    let (mut a, _rx) = file_app();
+    press(&mut a, 'v');
+    press(&mut a, 'j');
+    let out = capture_app(&a, 80);
+    let header = out.lines().next().unwrap_or("");
+    assert!(!header.trim_end().ends_with('2'), "{header}");
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    press(&mut a, ' ');
+    let out = capture_app(&a, 80);
+    assert!(out.lines().next().unwrap_or("").trim_end().ends_with('1'));
+}
+
+#[test]
+fn yazi_hover_markdown_is_source_and_code_is_cropped() {
+    let (mut a, _rx) = file_app();
+    let text = "# Fixture project\n\n- item one\n\n```sh\ncargo run\n```\n";
+    let mut peek = Browser::new(0, "/files".into());
+    peek.source = true;
+    peek.preview_path = Some("/files/README.md".into());
+    peek.preview = Some(text.into());
+    peek.preview_rich = Some(RichPreview {
+        kind: "markdown".into(),
+        title: String::new(),
+        raster: None,
+        styled: None,
+        truncated: false,
+        page: 1,
+        pages: None,
+        chunk: None,
+    });
+    let lines = preview::preview_display_lines(&peek, text);
+    let first: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert_eq!(first, "# Fixture project");
+    a.browser.as_mut().unwrap().peek = Some(Box::new(peek));
+}
+
+#[test]
+fn restart_into_files_paints_the_folders_last_listing_before_the_reply() {
+    let (mut a, rx) = file_app();
+    // The listing from before (a persisted navigation cache restores into browser_cache).
+    let listed = a.browser.take().unwrap();
+    a.browser_cache
+        .insert((0, "/files".into(), String::new()), listed);
+    let mut handed = Browser::new(0, "/files".into());
+    handed.restore_selection = Some("/files/beta.txt".into());
+    a.browser = Some(handed);
+    a.fill_browser_from_cache();
+    a.refresh_browser();
+    let b = a.browser.as_ref().unwrap();
+    assert_eq!(b.entries.len(), 4, "rows painted from the last listing");
+    assert_eq!(browser_entries(b).get(b.selected).unwrap().name, "beta.txt");
+    assert!(b.loading, "and refreshed in place");
+    assert!(matches!(rx.try_recv().unwrap().op, Operation::List { path } if path == "/files"));
+}
+
+#[test]
+fn hidden_toggle_keeps_the_cursor_row_as_yazi_does() {
+    let (mut a, _rx) = file_app();
+    let b = a.browser.as_mut().unwrap();
+    b.entries.insert(
+        0,
+        Entry {
+            name: ".dot".into(),
+            path: "/files/.dot".into(),
+            kind: "directory".into(),
+            size: 0,
+            identity: None,
+            hidden: true,
+            rename_name: None,
+            modified: None,
+            mode: None,
+        },
+    );
+    b.selected = 0; // alpha.txt, the first visible row
+    a.execute(Action::Hidden);
+    let b = a.browser.as_ref().unwrap();
+    assert_eq!(browser_entries(b).get(b.selected).unwrap().name, ".dot");
+}
+
+#[test]
+fn hidden_toggle_onto_a_folder_prefetches_its_listing() {
+    let (mut a, rx) = file_app();
+    let b = a.browser.as_mut().unwrap();
+    b.entries.insert(
+        0,
+        Entry {
+            name: ".dot".into(),
+            path: "/files/.dot".into(),
+            kind: "directory".into(),
+            size: 0,
+            identity: None,
+            hidden: true,
+            rename_name: None,
+            modified: None,
+            mode: None,
+        },
+    );
+    draw_text(&a);
+    a.files_tick(Instant::now());
+    while rx.try_recv().is_ok() {}
+    press(&mut a, '.');
+    draw_text(&a);
+    a.files_tick(Instant::now());
+    a.flush_hover();
+    let task = rx
+        .try_iter()
+        .find(|t| matches!(&t.op, Operation::List { path } if path == "/files/.dot"))
+        .expect("the hovered folder is prefetched");
+    // An empty folder: yazi's `No items` in the preview column.
+    a.apply(Reply {
+        device_id: None,
+        execution_target: None,
+        device: 0,
+        generation: task.generation,
+        op: task.op,
+        preview: None,
+        result: Ok(
+            serde_json::json!({"path":"/files/.dot","display_path":"/files/.dot",
+            "parent":"/files","entries":[],"next_offset":null,"total":0}),
+        ),
+    });
+    assert!(draw_text(&a).contains("No items"), "{}", draw_text(&a));
 }

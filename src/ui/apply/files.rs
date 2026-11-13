@@ -33,13 +33,14 @@ pub(in crate::ui) fn parse_entries(value: &Value) -> Vec<Entry> {
                             .and_then(Value::as_str)
                             .map(str::to_owned),
                         modified: entry_modified(e),
+                        mode: e.get("mode").and_then(Value::as_u64).map(|m| m as u32),
                     })
                 })
                 .collect()
         })
         .unwrap_or_default()
 }
-fn apply_location(b: &mut Browser, value: &Value) {
+pub(in crate::ui) fn apply_location(b: &mut Browser, value: &Value) {
     b.path = value
         .get("path")
         .and_then(Value::as_str)
@@ -92,6 +93,13 @@ pub(in crate::ui) fn apply_preview(
         safe_text(value["text"].as_str().unwrap_or("Preview unavailable"))
     });
     b.preview_rich = Some(rich);
+    if b.source {
+        // yazi's column shows markdown as source: drop the markdown styling so the
+        // worker's syntax highlighting (a `highlight` reply) applies.
+        if let Some(r) = b.preview_rich.as_mut().filter(|r| r.kind == "markdown") {
+            r.styled = None;
+        }
+    }
     let restored = b.preview_restore.take();
     let restoring = restored.is_some();
     if let Some((scroll, find)) = restored {
@@ -267,7 +275,9 @@ impl App {
             {
                 self.apply_listing(reply.device, &value, listing_offset)
             }
-            Operation::Preview { ref path } | Operation::PreviewPage { ref path, .. }
+            Operation::Preview { ref path }
+            | Operation::PreviewPage { ref path, .. }
+            | Operation::PreviewImage { ref path, .. }
                 if reply.generation == self.generation
                     && self
                         .browser
@@ -299,7 +309,9 @@ impl App {
             Operation::Mkdir { .. } if reply.generation == self.generation => {
                 self.refresh_browser()
             }
-            Operation::Rename { path, .. } | Operation::Remove { path, .. } => {
+            Operation::Rename { path, .. }
+            | Operation::Remove { path, .. }
+            | Operation::Trash { path, .. } => {
                 if self.file_errors.is_empty() && self.file_queue.is_empty() && !self.file_busy {
                     self.set_notice(format!(
                         "File action complete · {}",
@@ -331,6 +343,10 @@ impl App {
     /// Merge one listing page into the current browser. Pages in the helper's order are
     /// appended without re-sorting; derived caches extend incrementally.
     fn apply_listing(&mut self, device: usize, value: &Value, listing_offset: u64) {
+        // Another device's listing (a warm-up on entering Files) only fed the cache.
+        if self.browser.as_ref().is_none_or(|b| b.device != device) {
+            return;
+        }
         let ordered = value["order"].as_str() == Some(LIST_ORDER);
         if value["restart"] == true {
             // The helper no longer holds this listing's snapshot: list again from the top
@@ -370,10 +386,19 @@ impl App {
             }
             if !ordered {
                 b.entries.sort_by(|a, b| {
-                    (a.kind != "directory", a.name.as_str())
-                        .cmp(&(b.kind != "directory", b.name.as_str()))
+                    (
+                        a.kind != "directory",
+                        a.name.to_lowercase(),
+                        a.name.as_str(),
+                    )
+                        .cmp(&(
+                            b.kind != "directory",
+                            b.name.to_lowercase(),
+                            b.name.as_str(),
+                        ))
                 });
             }
+
             let last_page = value["next_offset"].is_null();
             if let Some(path) = &b.restore_selection {
                 b.selected = browser_entries(b).position_of(path).unwrap_or(0);
@@ -396,22 +421,37 @@ impl App {
             if range_finished {
                 self.set_notice("Directory refreshed · range finished; selected files kept".into());
             }
+            if listing_offset == 0 {
+                self.prefetch_parent();
+            }
+        }
+        if self.yz.sort.is_some() {
+            self.yazi_sort();
         }
         if let Some(offset) = value["next_offset"].as_u64() {
             if let Some(b) = &self.browser {
                 if b.entries.len() < LISTING_CAP && offset <= MAX_LIST_OFFSET {
-                    self.send(
-                        b.device,
-                        Operation::ListPage {
-                            path: b.path.clone(),
-                            offset,
-                            limit: if ordered {
-                                FIRST_PAGE_LIMIT as u32
-                            } else {
-                                1000
+                    // The lane worker pipelines every page after the first (one request
+                    // here); remote pages a little under the first page, so each fits its
+                    // byte budget and none of a pipelined batch is wasted.
+                    if listing_offset == 0 {
+                        let first = value["entries"].as_array().map_or(0, Vec::len);
+                        let limit = if ordered && self.devices[b.device].target.is_none() {
+                            FIRST_PAGE_LIMIT as u32
+                        } else if ordered {
+                            (first * 9 / 10).clamp(100, FIRST_PAGE_LIMIT) as u32
+                        } else {
+                            1000
+                        };
+                        self.send(
+                            b.device,
+                            Operation::ListPage {
+                                path: b.path.clone(),
+                                offset,
+                                limit,
                             },
-                        },
-                    );
+                        );
+                    }
                     if let Some(b) = &mut self.browser {
                         b.loading = true;
                     }
@@ -430,6 +470,16 @@ impl App {
     pub(in crate::ui) fn apply_files_side_reply(&mut self, reply: &mut Reply) -> bool {
         match &reply.op {
             Operation::List { path } => {
+                // Every listing warms the cache, whatever navigation happened since.
+                if let Ok(value) = &reply.result {
+                    let (path, value) = (path.clone(), value.clone());
+                    self.cache_listing(reply.device, &path, &value);
+                }
+                if reply.generation == WARM_GENERATION {
+                    // A warm-up read (`App::send_warm`): the cache was all it was for. It
+                    // must not settle a prefetch of the same folder still in flight.
+                    return true;
+                }
                 let Some(b) = self
                     .browser
                     .as_mut()
@@ -439,6 +489,13 @@ impl App {
                 };
                 let path = path.clone();
                 b.prefetch.remove(&path);
+                if matches!(reply.result, Ok(Value::Null)) && b.path != path {
+                    // Dropped from the queue by a newer hover: nothing to show.
+                    if let Some(settle) = b.settle.as_mut().filter(|s| s.0 == path) {
+                        settle.2 = false;
+                    }
+                    return true;
+                }
                 if b.path == path {
                     // Opened while its prefetch was in flight: the prefetch is the listing
                     // (read again if it failed or was dropped as superseded).
@@ -480,7 +537,8 @@ impl App {
                         Err(_) => b.peek = None,
                     }
                 }
-                if let Ok(value) = &reply.result {
+                if let (Ok(value), Some(_)) = (&reply.result, container.as_ref()) {
+                    // Container listings (host ones were cached above).
                     if !self.browser_cache.contains_key(&key) {
                         let mut cached = Browser::new(reply.device, path);
                         apply_location(&mut cached, value);
@@ -488,17 +546,13 @@ impl App {
                         cached.show_hidden = show_hidden;
                         cached.entries = parse_entries(value).into();
                         cached.total = value["total"].as_u64();
-                        if self.browser_cache.len() >= 64 {
-                            if let Some(old) = self.browser_cache.keys().next().cloned() {
-                                self.browser_cache.remove(&old);
-                            }
-                        }
-                        self.browser_cache.insert(key, cached);
+                        self.cache_put(key, cached);
                     }
                 }
                 true
             }
-            Operation::Preview { path } => {
+            Operation::Preview { path } | Operation::PreviewImage { path, .. } => {
+                let boxed = matches!(reply.op, Operation::PreviewImage { .. });
                 let generation = reply.generation;
                 let Some(b) = self.browser.as_mut().filter(|b| b.device == reply.device) else {
                     return false;
@@ -541,7 +595,19 @@ impl App {
                 match std::mem::replace(&mut reply.result, Ok(Value::Null)) {
                     Ok(value) => {
                         apply_preview(peek, &path, 1, reply.preview.take(), &value);
-                        peek.peek_value = Some(value);
+                        // A fitted thumbnail is not the file's full preview (Enter reads).
+                        peek.peek_value = (!boxed).then_some(value);
+                    }
+                    Err(_) if boxed => {
+                        // A helper without fitted images: its plain preview instead.
+                        let device = reply.device;
+                        let generation = self.generation;
+                        if self.send_hover(device, Operation::Preview { path: path.clone() }) {
+                            if let Some(b) = self.browser.as_mut() {
+                                b.peek_inflight.push((path, generation));
+                            }
+                        }
+                        return true;
                     }
                     Err(e) => {
                         peek.preview_pending_page = None;
@@ -550,7 +616,10 @@ impl App {
                         peek.preview_revision = peek.preview_revision.wrapping_add(1);
                     }
                 }
-                self.open_waiting_preview(reply.device, path);
+                if !boxed {
+                    // (A fitted thumbnail never stands in for the opened preview.)
+                    self.open_waiting_preview(reply.device, path);
+                }
                 true
             }
             Operation::ReadChunk { path, offset, .. } => {

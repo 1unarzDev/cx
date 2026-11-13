@@ -314,7 +314,12 @@ fn query_osc11(limit: Duration) -> Option<Background> {
     let deadline = started + limit;
     let mut reply = Vec::new();
     let mut answered = false;
-    if std::io::Write::write_all(&mut tty, b"\x1b]11;?\x07\x1b[c").is_ok() {
+    // Then yazi's graphics probe (kitty query, cell pixels, DA1; inside tmux also
+    // through passthrough to the terminal outside it): see `terminal_preview::probe_query`.
+    let (graphics, da1_wanted, tmux) = crate::terminal_preview::probe_query();
+    let mut query = b"\x1b]11;?\x07".to_vec();
+    query.extend_from_slice(&graphics);
+    if std::io::Write::write_all(&mut tty, &query).is_ok() {
         let mut chunk = [0u8; 256];
         while reply.len() < 1024 {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -337,7 +342,7 @@ fn query_osc11(limit: Duration) -> Option<Background> {
                 Ok(0) | Err(_) => break,
                 Ok(n) => reply.extend_from_slice(&chunk[..n]),
             }
-            if da1_complete(&reply) {
+            if crate::terminal_preview::da1_replies(&reply).len() >= da1_wanted {
                 answered = true;
                 let ms = started.elapsed().as_millis().min(u128::from(u32::MAX - 1)) as u32;
                 TERMINAL_RTT_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
@@ -345,9 +350,13 @@ fn query_osc11(limit: Duration) -> Option<Background> {
             }
         }
     }
+    // A terminal that does not know APC prints the query's body: erase that line
+    // (the line under the shell prompt, blank when cx starts).
+    let _ = std::io::Write::write_all(&mut tty, b"\r\x1b[2K");
     unsafe {
         libc::tcsetattr(fd, libc::TCSANOW, &saved);
     }
+    crate::terminal_preview::note_probe(&reply, tmux);
     if !answered {
         // (No reply within the limit: at least that slow.)
         let ms = limit.as_millis().min(u128::from(u32::MAX - 2)) as u32 + 1;
@@ -367,17 +376,6 @@ static TERMINAL_RTT_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::Atomic
 pub(crate) fn terminal_rtt_ms() -> Option<u32> {
     let v = TERMINAL_RTT_MS.load(std::sync::atomic::Ordering::Relaxed);
     (v != u32::MAX).then_some(v)
-}
-
-/// True once `bytes` holds a complete DA1 reply (`ESC [ ? ... c`).
-fn da1_complete(bytes: &[u8]) -> bool {
-    bytes.windows(3).enumerate().any(|(i, w)| {
-        w == b"\x1b[?"
-            && bytes[i + 3..]
-                .iter()
-                .find(|b| !(b.is_ascii_digit() || **b == b';'))
-                == Some(&b'c')
-    })
 }
 
 trait NoCtty {
@@ -987,10 +985,11 @@ mod tests {
         for (reply, want) in cases {
             assert_eq!(osc11_reply_background(reply), *want, "{reply:?}");
         }
-        assert!(da1_complete(b"\x1b]11;rgb:0/0/0\x07\x1b[?62;22c"));
-        assert!(da1_complete(b"\x1b[?1;2c"));
-        assert!(!da1_complete(b"\x1b[?62;2"));
-        assert!(!da1_complete(b"\x1b]11;rgb:0/0/0\x07"));
+        let da1 = |r: &[u8]| crate::terminal_preview::da1_replies(r).len();
+        assert_eq!(da1(b"\x1b]11;rgb:0/0/0\x07\x1b[?62;22c"), 1);
+        assert_eq!(da1(b"\x1b[?1;2c\x1b[?62;4c"), 2);
+        assert_eq!(da1(b"\x1b[?62;2"), 0);
+        assert_eq!(da1(b"\x1b]11;rgb:0/0/0\x07"), 0);
     }
 
     #[test]

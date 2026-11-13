@@ -32,6 +32,7 @@ use file_index::{Entries, ViewIndex, VisibleRows};
 mod files_view;
 use files_view::*;
 mod network_view;
+mod yazi;
 use network_view::*;
 mod runtime;
 pub(crate) use runtime::sweep_stale_restarts;
@@ -123,6 +124,9 @@ struct Entry {
     /// Modification time (Unix seconds), from the identity the helper sends.
     #[serde(default)]
     modified: Option<i64>,
+    /// Permission bits, from helpers that send them.
+    #[serde(default)]
+    mode: Option<u32>,
 }
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Clipboard {
@@ -168,20 +172,29 @@ impl RichPreview {
             let image = value.get("image")?;
             let w = usize::try_from(image["width"].as_u64()?).ok()?;
             let h = usize::try_from(image["height"].as_u64()?).ok()?;
-            if let Some(encoded) = image["png"].as_str() {
+            let encoded = image["png"]
+                .as_str()
+                .map(|e| (e, image::ImageFormat::Png))
+                .or_else(|| {
+                    image["jpeg"]
+                        .as_str()
+                        .map(|e| (e, image::ImageFormat::Jpeg))
+                });
+            if let Some((encoded, format)) = encoded {
                 if w == 0 || h == 0 || w > 1280 || h > 960 || encoded.len() > 800_000 {
                     return None;
                 }
                 let png = base64::engine::general_purpose::STANDARD
                     .decode(encoded)
                     .ok()?;
-                if png.len() > 600_000 || !png.starts_with(b"\x89PNG\r\n\x1a\n") {
+                let magic = match format {
+                    image::ImageFormat::Png => png.starts_with(b"\x89PNG\r\n\x1a\n"),
+                    _ => png.starts_with(&[0xff, 0xd8, 0xff]),
+                };
+                if png.len() > 600_000 || !magic {
                     return None;
                 }
-                let mut reader = image::ImageReader::with_format(
-                    std::io::Cursor::new(png),
-                    image::ImageFormat::Png,
-                );
+                let mut reader = image::ImageReader::with_format(std::io::Cursor::new(png), format);
                 let mut limits = image::Limits::default();
                 limits.max_image_width = Some(1280);
                 limits.max_image_height = Some(960);
@@ -297,8 +310,9 @@ struct Browser {
     /// Derived listing caches (visible rows, lowercase names, search matches).
     #[serde(skip)]
     index: std::cell::RefCell<ViewIndex>,
-    /// Entries the helper reported for the whole directory (`total`), when known.
-    #[serde(skip)]
+    /// Entries the helper reported for the whole directory (`total`), when known
+    /// (persisted with a big folder's head).
+    #[serde(default)]
     total: Option<u64>,
     /// Child folders whose first listing page is being prefetched.
     #[serde(skip)]
@@ -322,6 +336,20 @@ struct Browser {
     /// Streaming state for text previews larger than the helper's first window.
     #[serde(skip)]
     stream: Option<PreviewStream>,
+    /// Hover previews of files just left, as (path, identity, preview): moving back
+    /// paints from memory.
+    #[serde(skip)]
+    peek_cache: Vec<(String, Option<String>, Box<Browser>)>,
+    /// A hover preview in the yazi column: source as it is (markdown highlighted, not
+    /// laid out) and lines cropped at the edge, not wrapped (yazi's `wrap = no`).
+    #[serde(skip)]
+    source: bool,
+    /// When the listing cache last served or stored this folder (LRU eviction).
+    #[serde(skip)]
+    used: u64,
+    /// The first row on screen (yazi's scroll offset, kept per folder).
+    #[serde(skip)]
+    offset: std::cell::Cell<usize>,
 }
 impl Browser {
     fn new(device: usize, path: String) -> Self {
@@ -365,6 +393,10 @@ impl Browser {
             peek_value: None,
             peek_inflight: Vec::new(),
             stream: None,
+            peek_cache: Vec::new(),
+            source: false,
+            used: 0,
+            offset: std::cell::Cell::new(0),
         }
     }
 }
@@ -374,11 +406,16 @@ struct Cached {
     error: Option<String>,
     fetched: u64,
 }
+/// The generation of warm-up reads (`App::send_warm`): never current, never
+/// superseding or superseded.
+const WARM_GENERATION: u64 = u64::MAX - 1;
 struct Task {
     device: usize,
     execution: Device,
     op: Operation,
     generation: u64,
+    /// A Files prefetch for the hovered entry: the next hover replaces it in the queue.
+    hover: bool,
 }
 struct Reply {
     device_id: Option<String>,
@@ -536,6 +573,8 @@ struct CommandPanel {
     last_poll: std::time::Instant,
     /// The command, for the panel title.
     label: String,
+    /// Close on a 0 exit (Files `;`, yazi's non-blocking shell).
+    quiet: bool,
 }
 struct App {
     session_preview: session_preview::Snapshot,
@@ -639,6 +678,10 @@ struct App {
     attach_check: Option<(usize, Session, bool, u64)>,
     command_target: Option<(usize, String)>,
     pending_command: Option<(Device, RunCommand)>,
+    /// `z`/`Z` in Files: run fzf (false) or zoxide (true) here, from this folder.
+    pending_jump: Option<(bool, String)>,
+    /// The Files view's yazi state (tabs, chords, popups, sort, linemode).
+    yz: yazi::Yazi,
     pending_command_panel: Option<(usize, RunCommand)>,
     command_panel: Option<CommandPanel>,
     /// A command panel to attach full-screen on the next loop turn.
@@ -702,6 +745,9 @@ struct App {
     /// Where the open file preview was drawn (native images go there).
     preview_rect: std::cell::Cell<Option<Rect>>,
     tx: mpsc::SyncSender<Task>,
+    /// Hover prefetches wait here until the frame showing the move is out
+    /// (`flush_hover`), so the move never waits on their dispatch.
+    hover_outbox: std::cell::RefCell<Vec<Task>>,
 }
 impl App {
     fn set_notice(&mut self, message: String) {
@@ -833,6 +879,8 @@ impl App {
             attach_check: None,
             command_target: None,
             pending_command: None,
+            pending_jump: None,
+            yz: yazi::Yazi::default(),
             pending_command_panel: None,
             command_panel: None,
             pending_panel_expand: None,
@@ -875,6 +923,7 @@ impl App {
             onboarding_dismissed: false,
             preview_rect: std::cell::Cell::new(None),
             tx,
+            hover_outbox: std::cell::RefCell::new(Vec::new()),
         };
         if let Ok(message) = std::env::var("CX_STARTUP_NOTICE") {
             app.set_notice_as(NoticeKind::Info, safe_text(&message));
@@ -1112,16 +1161,43 @@ impl App {
     fn send(&self, device: usize, op: Operation) -> bool {
         self.send_explicit(device, self.scoped_file_operation(device, op))
     }
+    /// Dispatch the queued hover prefetches (after a frame, or at the next Files tick).
+    fn flush_hover(&self) {
+        for task in self.hover_outbox.borrow_mut().drain(..) {
+            if self.tx.try_send(task).is_ok() {
+                self.pending_requests.set(self.pending_requests.get() + 1);
+            }
+        }
+    }
     fn send_explicit(&self, device: usize, op: Operation) -> bool {
-        let sent = self
-            .tx
-            .try_send(Task {
-                device,
-                execution: self.devices[device].clone(),
-                op,
-                generation: self.generation,
-            })
-            .is_ok();
+        self.send_task(device, op, false)
+    }
+    /// A prefetch for what the Files view hovers: queued hover reads it outdates are
+    /// dropped before they reach the helper (yazi cancels its preloads the same way).
+    fn send_hover(&self, device: usize, op: Operation) -> bool {
+        self.send_task(device, self.scoped_file_operation(device, op), true)
+    }
+    /// A read that only warms a helper channel and the listing cache: WARM_GENERATION, so
+    /// its reply (or failure) never touches the visible folder or raises a notice.
+    fn send_warm(&self, device: usize, op: Operation, hover: bool) -> bool {
+        self.send_generation(device, op, hover, WARM_GENERATION)
+    }
+    fn send_task(&self, device: usize, op: Operation, hover: bool) -> bool {
+        self.send_generation(device, op, hover, self.generation)
+    }
+    fn send_generation(&self, device: usize, op: Operation, hover: bool, generation: u64) -> bool {
+        let task = Task {
+            device,
+            execution: self.devices[device].clone(),
+            op,
+            generation,
+            hover,
+        };
+        if hover {
+            self.hover_outbox.borrow_mut().push(task);
+            return true;
+        }
+        let sent = self.tx.try_send(task).is_ok();
         if sent {
             self.pending_requests.set(self.pending_requests.get() + 1);
         }

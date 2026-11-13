@@ -31,6 +31,8 @@ for view in ['Files','Work']:
   def current():
    # The selection bar marks the selected row; older layouts used a chevron.
    for row,line in enumerate(screen.display):
+    # Files (yazi's columns): the current column only; the parent's cwd row has a bar too.
+    line=line[15:75] if view=='Files' else line
     if ('▸' in line or '›' in line or '▌' in line) and re.search(pattern,line):
      # (Tiles sit side by side: the name after the bar is the selected one.)
      at=line.index('▌') if '▌' in line else 0
@@ -47,7 +49,7 @@ for view in ['Files','Work']:
    # Files: the list's rows (its 48 columns at 120); a device's sessions: its tiles
    # in slot order, which is creation order.
    if view=='Files':
-    ordered=[re.search(pattern,line[:50]).group() for line in screen.display if re.search(pattern,line[:50])]
+    ordered=[re.search(pattern,line[15:75]).group() for line in screen.display if re.search(pattern,line[15:75])]
    else:
     ordered=[f'wheel-{i:02}' for i in range(12)]
    ordered=list(dict.fromkeys(ordered));assert len(ordered)==12,repr(ordered)+'\n'+'\n'.join(screen.display)

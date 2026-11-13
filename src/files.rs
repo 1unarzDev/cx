@@ -34,6 +34,22 @@ pub fn display(text: &str) -> String {
         })
         .collect()
 }
+/// A path for display with this account's home shown as `~` (as yazi's header does).
+fn home_relative(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    match std::env::var_os("HOME").filter(|h| h.len() > 1) {
+        Some(home) => {
+            let home = home.to_string_lossy();
+            let home = home.trim_end_matches('/');
+            match text.strip_prefix(home) {
+                Some("") => "~".into(),
+                Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+                _ => text.into_owned(),
+            }
+        }
+        None => text.into_owned(),
+    }
+}
 pub(crate) fn encode_path(path: &Path) -> String {
     #[cfg(unix)]
     {
@@ -92,6 +108,14 @@ pub fn handle(op: &Operation) -> Result<Value> {
             limit,
         } => list_page(&decode_path(path)?, *offset, *limit),
         Operation::Preview { path } => preview(&decode_path(path)?),
+        Operation::PreviewImage {
+            path,
+            width,
+            height,
+        } => {
+            let path = decode_path(path)?;
+            file_preview::render_boxed(&path, open_read(&path)?, (*width, *height))
+        }
         Operation::PreviewPage { path, page } => {
             let path = decode_path(path)?;
             file_preview::render_page(&path, open_read(&path)?, *page)
@@ -108,6 +132,10 @@ pub fn handle(op: &Operation) -> Result<Value> {
         Operation::RemoveEmptyDirectory { path, identity } => {
             remove_empty_directory(&decode_path(path)?, identity)
         }
+        Operation::Trash {
+            path,
+            expected_identity,
+        } => trash_entry(&decode_path(path)?, expected_identity.as_deref()),
         Operation::Move {
             path,
             destination,
@@ -195,7 +223,8 @@ const SNAPSHOT_CACHE_ENTRIES: usize = 262_144;
 const SNAPSHOT_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 /// Order of `entries` across all pages: directories first, then display name, then raw name.
 /// This is the UI's own sort key, so a client that sees it may append pages without re-sorting.
-pub(crate) const LIST_ORDER: &str = "directories-first-name";
+/// Names compare case-insensitively first (yazi's default `sort_sensitive = false`).
+pub(crate) const LIST_ORDER: &str = "directories-first-name-nocase";
 
 /// Which directory a snapshot lists. Its times are not part of it: a continuation page
 /// comes from its first page's snapshot even after the directory changed, so the pages
@@ -209,6 +238,9 @@ struct SnapshotKey {
 struct SnapshotEntry {
     name: std::ffi::OsString,
     display: String,
+    /// `display` lowercased when that differs (the first sort key after directories;
+    /// most names are lowercase already, so most entries allocate nothing).
+    fold: Option<String>,
     directory: bool,
 }
 struct Snapshot {
@@ -247,18 +279,30 @@ fn read_snapshot(key: SnapshotKey) -> Result<Snapshot> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => return Err(e.into()),
         };
+        let shown = display(&name.to_string_lossy());
         entries.push(SnapshotEntry {
-            display: display(&name.to_string_lossy()),
+            fold: shown
+                .chars()
+                .any(char::is_uppercase)
+                .then(|| shown.to_lowercase()),
+            display: shown,
             name,
             directory,
         });
     }
     entries.sort_unstable_by(|a, b| {
-        (!a.directory, a.display.as_str(), a.name.as_os_str()).cmp(&(
-            !b.directory,
-            b.display.as_str(),
-            b.name.as_os_str(),
-        ))
+        (
+            !a.directory,
+            a.fold.as_deref().unwrap_or(&a.display),
+            a.display.as_str(),
+            a.name.as_os_str(),
+        )
+            .cmp(&(
+                !b.directory,
+                b.fold.as_deref().unwrap_or(&b.display),
+                b.display.as_str(),
+                b.name.as_os_str(),
+            ))
     });
     Ok(Snapshot {
         key,
@@ -366,8 +410,9 @@ fn list_page(path: &Path, offset: u64, limit: u32) -> Result<Value> {
             + json_string_len(&opaque)
             + json_string_len(&identity)
             + rename_name.map_or(4, json_string_len);
+        let mode = metadata.mode() & 0o7777;
         let entry = json!({"name":item.display,"path":opaque,"kind":kind,"size":metadata.len(),
-            "hidden":hidden,"rename_name":rename_name,"identity":identity});
+            "hidden":hidden,"rename_name":rename_name,"identity":identity,"mode":mode});
         if !entries.is_empty() && bytes + size > LIST_BYTES {
             break;
         }
@@ -381,7 +426,7 @@ fn list_page(path: &Path, offset: u64, limit: u32) -> Result<Value> {
     }
     Ok(json!({
         "path":encode_path(&path),
-        "display_path":display(&path.to_string_lossy()),
+        "display_path":display(&home_relative(&path)),
         "parent":path.parent().map(encode_path),
         "next_offset":next_offset,
         "entries":entries,
@@ -1184,6 +1229,109 @@ fn move_entry(path: &Path, destination: &Path, expected: Option<&str>) -> Result
     target.dir.sync_all()?;
     Ok(json!({"path":encode_path(&destination),"moved":true}))
 }
+/// The freedesktop trash (`$XDG_DATA_HOME/Trash`, else `~/.local/share/Trash`).
+fn trash_dir() -> Result<PathBuf> {
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .filter(|d| Path::new(d).is_absolute())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")))
+        .context("no home directory for the trash")?;
+    Ok(data.join("Trash"))
+}
+/// `Path=` of a .trashinfo: the absolute path, percent-encoded except `/` and the
+/// unreserved characters.
+fn trash_path_value(path: &Path) -> String {
+    let mut out = String::new();
+    for &b in path.as_os_str().as_bytes() {
+        if b.is_ascii_alphanumeric() || b"/-_.~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+/// Move an entry to the trash: claim a `.trashinfo` name first (O_EXCL), then the
+/// identity-checked move. A different filesystem is refused, never copied.
+fn trash_entry(path: &Path, expected: Option<&str>) -> Result<Value> {
+    use std::io::Write;
+    let path = absolute(path)?;
+    let name = path
+        .file_name()
+        .context("nothing to trash at the root")?
+        .to_owned();
+    let trash = trash_dir()?;
+    for sub in ["files", "info"] {
+        fs::create_dir_all(trash.join(sub))?;
+    }
+    let _ = fs::set_permissions(&trash, fs::Permissions::from_mode(0o700));
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+    let date = {
+        let days = now.div_euclid(86400);
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = yoe + era * 400 + i64::from(m <= 2);
+        let t = now.rem_euclid(86400);
+        format!(
+            "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}",
+            t / 3600,
+            t % 3600 / 60,
+            t % 60
+        )
+    };
+    for n in 0..1000u32 {
+        let mut slot = name.clone();
+        if n > 0 {
+            slot.push(format!(".{n}"));
+        }
+        let mut info_name = slot.clone();
+        info_name.push(".trashinfo");
+        let info_path = trash.join("info").join(&info_name);
+        let destination = trash.join("files").join(&slot);
+        if fs::symlink_metadata(&destination).is_ok() {
+            continue;
+        }
+        let mut info = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&info_path)
+        {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).context("claim a trash info file"),
+        };
+        info.write_all(
+            format!(
+                "[Trash Info]\nPath={}\nDeletionDate={date}\n",
+                trash_path_value(&path)
+            )
+            .as_bytes(),
+        )?;
+        info.sync_all()?;
+        return match move_entry(&path, &destination, expected) {
+            Ok(_) => Ok(json!({"path":encode_path(&path),"trashed":encode_path(&destination)})),
+            Err(e) => {
+                let _ = fs::remove_file(&info_path);
+                let cross = e
+                    .chain()
+                    .filter_map(|c| c.downcast_ref::<std::io::Error>())
+                    .any(|io| io.raw_os_error() == Some(libc::EXDEV));
+                if cross {
+                    bail!("not on the trash's filesystem · D deletes permanently")
+                }
+                Err(e)
+            }
+        };
+    }
+    bail!("too many trashed entries with this name")
+}
 /// Tree moves remove only an empty directory with the original device/inode.
 /// Child deletion changes directory timestamps, so the full selection identity is inappropriate here.
 fn remove_empty_directory(path: &Path, expected: &str) -> Result<Value> {
@@ -1895,8 +2043,11 @@ mod tests {
     }
     fn ui_sort(entries: &mut [Value]) {
         entries.sort_by(|a, b| {
-            (a["kind"] != "directory", a["name"].as_str())
-                .cmp(&(b["kind"] != "directory", b["name"].as_str()))
+            let key = |e: &Value| {
+                let name = e["name"].as_str().unwrap_or("").to_owned();
+                (e["kind"] != "directory", name.to_lowercase(), name)
+            };
+            key(a).cmp(&key(b))
         });
     }
     #[test]
@@ -1927,8 +2078,12 @@ mod tests {
         let old_time = started.elapsed();
         ui_sort(&mut old);
         let started = std::time::Instant::now();
-        let (new, requests) = all_pages(d.path(), || list(d.path()).unwrap(), 1000);
+        let (mut new, requests) = all_pages(d.path(), || list(d.path()).unwrap(), 1000);
         let new_time = started.elapsed();
+        // Listings now carry permission bits (the old pages did not).
+        for e in &mut new {
+            assert!(e.as_object_mut().unwrap().remove("mode").is_some());
+        }
         eprintln!(
             "20002-entry listing: old {old_time:?} (21 requests), new {new_time:?} ({requests} requests)"
         );

@@ -101,8 +101,11 @@ fn hub_letters_open_devices_and_shift_h_returns_from_anywhere() {
     press(&mut a, l);
     a.key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
     assert!(a.view == View::Files);
+    // In Files Esc only clears (yazi's: a double Esc "to be sure" stays); H is the hub.
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(a.view == View::Files);
+    press(&mut a, 'H');
     assert!(a.view == View::Network);
     // `e` then a letter opens the link to that device.
     press(&mut a, 'e');
@@ -992,24 +995,33 @@ fn help_is_the_table_of_the_screen_below() {
     let text = draw(&a, 120, 40);
     assert!(text.contains("IN A DEVICE"), "{text}");
     assert!(text.contains("b E X") && text.contains("w p t"), "{text}");
+    // Files is yazi's: `~` opens its help, the keymap with the user's prepends first.
     let (mut a, _rx) = file_app();
-    press(&mut a, '?');
+    press(&mut a, '~');
     let text = draw(&a, 120, 40);
     assert!(
-        text.contains("IN FILES") && text.contains("up a folder"),
+        text.contains("mgr.help") && text.contains("Quit Files") && !text.contains("not in cx"),
         "{text}"
     );
 }
 
-/// Files' `y` copies the selected path to the clipboard; `c` stays the transfer copy.
+/// Files' `c` opens the which-key panel and `cc` copies the path (OSC 52); `y` yanks
+/// for a paste (a transfer when pasted on another device).
 #[test]
-fn files_y_copies_the_path() {
+fn files_cc_copies_the_path_and_y_yanks() {
     let (mut a, _rx) = file_app();
-    press(&mut a, 'y');
+    press(&mut a, 'c');
+    let text = draw(&a, 120, 40);
+    assert!(
+        text.contains("Copy file path") && text.contains("Copy directory path"),
+        "{text}"
+    );
+    press(&mut a, 'c');
     assert_eq!(a.copy_out.take().as_deref(), Some("/files/alpha.txt"));
     assert!(a.clipboard.is_none(), "no transfer copy");
-    press(&mut a, 'c');
+    press(&mut a, 'y');
     assert!(a.clipboard.is_some());
+    assert!(a.copy_out.is_none());
 }
 
 /// An `e` that is not followed by a device letter is dropped, and that key does what
@@ -1520,6 +1532,7 @@ fn sweep_app(sizes: &[(u16, u16)]) -> Vec<String> {
                 inflight: false,
                 last_poll: std::time::Instant::now(),
                 label: "echo a long command label that runs".into(),
+                quiet: false,
             })
         }),
         ("command-panel-empty", |a| {
@@ -1534,6 +1547,7 @@ fn sweep_app(sizes: &[(u16, u16)]) -> Vec<String> {
                 inflight: true,
                 last_poll: std::time::Instant::now(),
                 label: "echo hi".into(),
+                quiet: false,
             })
         }),
         ("creating", |a| a.creating = true),
@@ -1700,42 +1714,45 @@ fn every_overlay_renders_at_every_size() {
     assert!(fails.is_empty(), "{} panic sites: {fails:#?}", fails.len());
 }
 
-/// A highlighted folder shows its own entries where a file's preview goes (yazi's third
-/// column), and says when it is empty.
+/// A highlighted folder shows its own entries in the preview column (yazi's third
+/// column), says yazi's `No items` when it is empty, and nothing while it is listed.
 #[test]
 fn a_highlighted_folder_previews_its_entries() {
     let (mut a, _rx) = file_app();
-    let entry = |name: &str, kind: &str| Entry {
+    let entry = |dir: &str, name: &str, kind: &str| Entry {
         name: name.into(),
-        path: format!("/files/docs/{name}"),
+        path: format!("{dir}/{name}"),
         kind: kind.into(),
         size: 3,
         identity: None,
         hidden: false,
         rename_name: None,
         modified: None,
+        mode: None,
     };
     let mut child = Browser::new(0, "/files/docs".into());
-    child.entries = vec![entry("guides", "directory"), entry("inner-note.md", "file")].into();
-    a.browser.as_mut().unwrap().peek = Some(Box::new(child));
-    // Lazy: the column waits for the highlight to rest, so a folder's own first rows
-    // paint alone.
-    assert!(!draw(&a, 190, 50).contains("inner-note.md"));
-    a.browser.as_mut().unwrap().settle = Some(("/files/docs".into(), Instant::now(), true));
+    child.entries = vec![
+        entry("/files/docs", "guides", "directory"),
+        entry("/files/docs", "inner-note.md", "file"),
+    ]
+    .into();
+    let b = a.browser.as_mut().unwrap();
+    let mut entries: Vec<Entry> = b.entries.iter().cloned().collect();
+    entries.insert(0, entry("/files", "docs", "directory"));
+    b.entries = entries.into();
+    b.selected = 0;
+    b.peek = Some(Box::new(child));
     let text = draw(&a, 190, 50);
     assert!(
-        text.contains("guides/") && text.contains("inner-note.md"),
+        text.contains("guides") && text.contains("inner-note.md"),
         "{text}"
     );
     let b = a.browser.as_mut().unwrap();
     b.peek.as_mut().unwrap().entries = Vec::new().into();
-    assert!(draw(&a, 190, 50).contains("empty folder"));
+    assert!(draw(&a, 190, 50).contains("No items"));
     // Still listing: nothing claims the folder is empty.
-    b_loading(&mut a);
-    assert!(!draw(&a, 190, 50).contains("empty folder"));
-}
-fn b_loading(a: &mut App) {
     a.browser.as_mut().unwrap().peek.as_mut().unwrap().loading = true;
+    assert!(!draw(&a, 190, 50).contains("No items"));
 }
 
 /// Every map move is undone by the opposite arrow, and a run of moves by the opposite
@@ -1897,4 +1914,19 @@ fn the_palette_and_the_link_editor_have_rounded_corners() {
         assert!(!t.contains(square), "link {w}x{h}:\n{t}");
         a.edge = None;
     }
+}
+
+/// Arrows never close a popup, the Files which-key panel included: after a prefix key
+/// an arrow leaves the chord waiting; Esc cancels it.
+#[test]
+fn an_arrow_keeps_the_files_which_key_panel() {
+    let (mut a, _rx) = file_app();
+    press(&mut a, 'g');
+    assert_eq!(a.yz.pending, ["g"]);
+    for code in [KeyCode::Left, KeyCode::Right, KeyCode::Up, KeyCode::Down] {
+        a.key(KeyEvent::new(code, KeyModifiers::NONE));
+        assert_eq!(a.yz.pending, ["g"], "{code:?} closed the which-key panel");
+    }
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(a.yz.pending.is_empty());
 }

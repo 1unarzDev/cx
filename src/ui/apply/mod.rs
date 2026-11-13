@@ -22,6 +22,7 @@ impl App {
                 other => other,
             },
             Operation::Remove { .. }
+                | Operation::Trash { .. }
                 | Operation::Rename { .. }
                 | Operation::Transfer(_)
                 | Operation::ScopedTransfer(_)
@@ -403,6 +404,7 @@ impl App {
                 | Operation::ListPage { .. }
                 | Operation::Preview { .. }
                 | Operation::PreviewPage { .. }
+                | Operation::PreviewImage { .. }
                 | Operation::Mkdir { .. }
                 | Operation::Rename { .. }
                 | Operation::Remove { .. }

@@ -276,6 +276,10 @@ struct DeviceCache {
     sessions: Vec<Session>,
     browsers: Vec<Browser>,
 }
+/// Folders up to this many entries are persisted whole; bigger ones keep a head.
+const PERSIST_ENTRIES: usize = 2048;
+/// The head of a big folder that is persisted (a few screens at any size).
+const PERSIST_HEAD: usize = 256;
 impl NavigationCache {
     pub(super) fn snapshot(app: &App) -> Self {
         let devices = app
@@ -289,11 +293,7 @@ impl NavigationCache {
                     .iter()
                     .chain(app.other_browser.iter())
                     .chain(app.browser_cache.values())
-                    .filter(|b| {
-                        b.device == d
-                            && b.entries.len() <= 2048
-                            && (!b.loading || !b.entries.is_empty())
-                    })
+                    .filter(|b| b.device == d && (!b.loading || !b.entries.is_empty()))
                     .filter(|b| {
                         seen.insert((b.path.clone(), browser_scope_key(b.container.as_ref())))
                     })
@@ -304,8 +304,15 @@ impl NavigationCache {
                         clean.container = b.container.clone();
                         clean.display_path = b.display_path.clone();
                         clean.parent = b.parent.clone();
-                        clean.entries = b.entries.clone();
-                        clean.selected = b.selected;
+                        if b.entries.len() > PERSIST_ENTRIES {
+                            // A big folder keeps its first screens (it paints at once when
+                            // reopened; the reply brings the rest) and its size.
+                            clean.entries = b.entries.iter().take(PERSIST_HEAD).cloned().collect();
+                            clean.total = Some(b.total.unwrap_or(b.entries.len() as u64));
+                        } else {
+                            clean.entries = b.entries.clone();
+                        }
+                        clean.selected = b.selected.min(clean.entries.len().saturating_sub(1));
                         clean.restore_selection =
                             browser_entries(b).get(b.selected).map(|e| e.path.clone());
                         clean
@@ -360,7 +367,7 @@ impl NavigationCache {
                     .insert(app.devices[d].id.clone(), cached.device.observed_at);
             }
             for mut b in cached.browsers.into_iter().take(24) {
-                if b.entries.len() > 2048 {
+                if b.entries.len() > PERSIST_ENTRIES {
                     continue;
                 }
                 b.device = d;
@@ -412,6 +419,7 @@ pub(super) fn navigation_read(op: &Operation) -> bool {
         Operation::List { .. }
         | Operation::ListPage { .. }
         | Operation::Preview { .. }
+        | Operation::PreviewImage { .. }
         | Operation::PreviewPage { .. } => true,
         Operation::ContainerFiles { operation, .. } => navigation_read(operation),
         _ => false,
@@ -421,6 +429,18 @@ pub(super) fn navigation_read(op: &Operation) -> bool {
 /// Replies already reject old navigation generations. Discard those reads before
 /// they consume helper time, retaining mutation ordering and reply accounting.
 pub(super) fn superseded_reads(tasks: &mut VecDeque<Task>, incoming: &Task) -> Vec<Task> {
+    if incoming.generation == super::WARM_GENERATION {
+        return Vec::new();
+    }
+    if incoming.hover {
+        // A new hover outdates every queued hover prefetch of the same device.
+        let (dropped, kept): (VecDeque<Task>, VecDeque<Task>) =
+            std::mem::take(tasks).into_iter().partition(|t| {
+                t.hover && t.device == incoming.device && t.generation != super::WARM_GENERATION
+            });
+        *tasks = kept;
+        return dropped.into();
+    }
     let preview = matches!(incoming.op, Operation::SessionPreview { .. });
     // Thumbnail captures (one per tile) neither replace nor are replaced by a poll.
     let thumb = |t: &Task| t.generation == super::session_preview::THUMB_GENERATION;

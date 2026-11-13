@@ -24,6 +24,9 @@ use std::{
 /// never get this device's exposed secrets.
 pub static SERVING_HELPER: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+/// Names (never values) of the variables exposed secrets set in a session, so a cx run inside it
+/// keeps them out of tmux's server environment.
+const SESSION_SECRETS: &str = "CX_SESSION_SECRETS";
 
 fn state() -> Result<PathBuf> {
     let root = crate::store::ensure()?;
@@ -2200,6 +2203,8 @@ pub fn configure_managed() -> Result<()> {
 
 /// Refresh the allowlisted Anthropic variables in tmux's server environment.
 /// Tmux keeps a server-wide snapshot, which otherwise survives shell reloads.
+/// Variables an exposed secret set in this cx's session ([`SESSION_SECRETS`]) are
+/// left as they are: that value is the session's own and never goes to the server.
 pub fn refresh_provider_environment() -> Result<()> {
     const VARS: &[&str] = &[
         "ANTHROPIC_API_KEY",
@@ -2207,7 +2212,11 @@ pub fn refresh_provider_environment() -> Result<()> {
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_CUSTOM_HEADERS",
     ];
-    for name in VARS {
+    let injected = std::env::var(SESSION_SECRETS).unwrap_or_default();
+    for name in VARS
+        .iter()
+        .filter(|name| !injected.split(',').any(|v| v == **name))
+    {
         let mut command = tmux(true)?;
         command.args(["set-environment", "-g"]);
         match std::env::var(name) {
@@ -2666,7 +2675,13 @@ fn create_with_permissions(
     }
     // `cx secrets get --dir STATE VAR=NAME... --exec --` reads the values in the pane and execs the launcher with them in its
     // environment: argv and tmux (options, environment) only ever see names, and the server keeps nothing.
+    let mut marker = String::new();
     if !exposed.is_empty() {
+        let vars: Vec<&str> = exposed
+            .iter()
+            .filter_map(|spec| spec.split_once('=').map(|(var, _)| var))
+            .collect();
+        marker = format!("{SESSION_SECRETS}={} ", quote(&vars.join(",")));
         let mut wrapped = vec![
             crate::self_exe()?.to_str().context("cx path")?.into(),
             "secrets".into(),
@@ -2685,7 +2700,7 @@ fn create_with_permissions(
             .iter()
             .any(|arg| arg.contains("tui.terminal_title="));
     let command = format!(
-        "{}exec env {}CX_VIEWER_THEME=1 CX_TMUX_BIN={} CX_MANAGED_SOCKET={} CX_MANAGED_SESSION={} {}",
+        "{}exec env {}{marker}CX_VIEWER_THEME=1 CX_TMUX_BIN={} CX_MANAGED_SOCKET={} CX_MANAGED_SESSION={} {}",
         if title_tracking { "printf '\\033]0;CX awaiting native title\\007'; " } else { "" },
         if title_tracking { "CX_CODEX_TITLE=thread-name-v1 " } else { "" },
         quote(

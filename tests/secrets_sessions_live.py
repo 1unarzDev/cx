@@ -11,7 +11,9 @@ writing the index as the keys screen does. `~/.local/bin/tmux` is a wrapper that
 Local: a session started before exposure, one with the secrets exposed and one after exposure is turned off. Only
 the exposed one has the canaries, in its shell's environment; they are absent from every tmux argv, the pane's
 start command, the cmdline of every process under the fixture's tmux server, the server's global and session
-environments, its options, cx's own output, and every file under the private root except the secrets store.
+environments, its options, cx's own output, and every file under the private root except the secrets store. A cx
+run with the exposed pane's environment (as one typed into it) keeps them there too: its sessions get them only
+while exposure is on, never from tmux's server environment.
 --ssh: the device is this machine with the same state (so its helper could read the store): a session created on
 it through ssh gets neither canary, and neither appears in any ssh argv or in ssh's environment.
 Only processes under the fixture's own tmux server are inspected. Prints one JSON line.
@@ -50,8 +52,8 @@ socket_path = store / 'managed.sock'
 outputs = []
 
 
-def cx(*args, stdin=None):
-    r = subprocess.run([BINARY, *args], env=env, input=stdin, capture_output=True, timeout=60,
+def cx(*args, stdin=None, run_env=None):
+    r = subprocess.run([BINARY, *args], env=run_env or env, input=stdin, capture_output=True, timeout=60,
                        start_new_session=True)
     outputs.append(r.stdout + r.stderr)
     assert r.returncode == 0, (args, r.stderr[-600:])
@@ -73,11 +75,21 @@ def expose(on):
     path.write_text(json.dumps(index))
 
 
-def new(key, device=None):
+def new(key, device=None, run_env=None):
     args = ['new', '--directory', str(home), '--key', key, '--name', key]
     if device:
         args += ['--device', device]
-    return json.loads(cx(*args))
+    return json.loads(cx(*args, run_env=run_env))
+
+
+def inside(pane):
+    """A cx typed into `pane`: its whole environment, the canaries included. The pane itself gets HOME and state
+    from the tmux user service (the real ones), so those, PATH, SHELL and the backend are the fixture's: a cx run in a
+    fixture pane must never reach the real state or the real managed server."""
+    nested = dict(pane, **{k: env[k] for k in ('HOME', 'XDG_STATE_HOME', 'TMUX_TMPDIR', 'PATH', 'SHELL',
+                                                'CX_SECRETS_BACKEND', 'XDG_RUNTIME_DIR') if k in env})
+    assert nested['HOME'] == str(home) and nested['XDG_STATE_HOME'] == str(state)
+    return nested
 
 
 def pane_env(session):
@@ -236,8 +248,19 @@ try:
         e = pane_env(s)
         assert not any(leaks(v.encode()) for v in e.values()), f'{s["name"]} got a secret'
         assert 'ANTHROPIC_API_KEY' not in e and 'FIXTURE_TOKEN' not in e
+    # cx run inside the exposed session (an agent's or the user's `cx new`, the viewer) has the values in its own
+    # environment: they stay out of tmux's argv and server environment, and its sessions get them only through
+    # the switch, never by inheritance.
+    nested_off = new('sx-nested-off', run_env=inside(got))
+    e = pane_env(nested_off)
+    assert not any(leaks(v.encode()) for v in e.values()), 'a session started from the exposed one inherited it'
+    expose(True)
+    nested_on = new('sx-nested-on', run_env=inside(got))
+    assert pane_env(nested_on).get('ANTHROPIC_API_KEY') == CANARY, 'exposed from inside a session too'
+    expose(False)
     files = check_nowhere_but_the_session()
     checks = dict(exposed_in_new_session=True, absent_when_off=True, existing_session_unaffected=True,
+                  cx_inside_exposed_session=True,
                   tmux_argv_logged=len(log.read_text().splitlines()), files_scanned=files)
     if SSH:
         expose(True)

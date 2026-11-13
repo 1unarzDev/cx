@@ -122,7 +122,7 @@ fn hub_moves_never_refresh_and_keep_the_session_by_identity() {
     while rx.try_recv().is_ok() {}
     draw(&a, 120, 40);
     let id = a.selected_session().map(|(_, s)| s.id);
-    a.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    a.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     assert!(a.hub_device.is_some());
     assert!(rx.try_recv().is_err(), "moving on the map did I/O (P17)");
     assert!(
@@ -1357,8 +1357,8 @@ fn the_hub_tiles_are_a_grid_the_arrows_walk() {
     assert!(a.pending_attach.is_some() || a.attach_check.is_some());
 }
 
-/// In the map the arrows move to the nearest node that way (here the relay sits
-/// above this device), and Down past the map's last node enters the tiles.
+/// In the map the arrows move to the nearest node that way (here the lone peer sits
+/// right of this device), and Down past the map's last node enters the tiles.
 #[test]
 fn the_map_arrows_move_between_nodes_by_place() {
     let (mut a, _rx) = queued_app();
@@ -1380,11 +1380,16 @@ fn the_map_arrows_move_between_nodes_by_place() {
         .filter(|(r, x)| x.starts_with("device:") && *r != home)
         .map(|(r, _)| *r)
         .collect();
-    assert!(others.iter().all(|r| r.bottom() <= home.y), "{others:?}");
-    a.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    // A lone peer sits beside the root on the orbit's right half.
+    assert!(others.iter().all(|r| r.x >= home.right()), "{others:?}");
+    a.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     draw(&a, 190, 50);
-    assert!(here(&a).bottom() <= home.y && !a.hub_sessions);
-    press(&mut a, 'j');
+    assert!(here(&a).x >= home.right() && !a.hub_sessions);
+    press(&mut a, 'h');
+    draw(&a, 190, 50);
+    assert_eq!(here(&a), home);
+    // Up has nowhere to go (nothing moves); down leaves the map for the tiles.
+    a.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     draw(&a, 190, 50);
     assert_eq!(here(&a), home);
     a.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));

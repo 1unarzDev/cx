@@ -8,6 +8,7 @@ mod markdown_links;
 mod markdown_math;
 mod markdown_tables;
 mod mesh;
+mod metrics;
 mod model;
 mod network;
 mod orphans;
@@ -460,6 +461,7 @@ fn info() -> Result<serde_json::Value> {
     caps.push("peer-bootstrap-v1");
     caps.push("peer-authorize-v1");
     caps.push("adopt-session-v1");
+    caps.push("metrics-v1");
     let relay = adoption::reptyr();
     if relay.is_ok() {
         caps.push("adopt-reptyr-v1");
@@ -603,6 +605,7 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
         Operation::PaneInput { ref id, ref hex } => sessions::pane_input(id, hex),
         Operation::PaneClose { ref id } => sessions::pane_close(id),
         Operation::Network => network::observe(),
+        Operation::Metrics => Ok(metrics::read_all()),
         Operation::NetworkCandidates => network::candidates(),
         Operation::ProbeCandidate { address, interface } => {
             network::probe_candidate(&address, interface.as_deref())

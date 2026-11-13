@@ -130,6 +130,22 @@ impl App {
             && self.edge_views.is_empty()
             && self.work.iter().all(|w| w.sessions.is_empty())
     }
+    /// The device the hub's map draws selected, when the map is on screen with the keys
+    /// (the animation clock follows it).
+    pub(super) fn map_selection(&self) -> Option<String> {
+        let map = self.view == View::Network
+            && !self.hub_sessions
+            && !self.onboarding()
+            && !self.help
+            && self.invite.is_none()
+            && self.edge.is_none()
+            && !self.peek;
+        map.then(|| {
+            self.hub_device
+                .clone()
+                .unwrap_or_else(|| dev_id(self.local_index()))
+        })
+    }
     // ------------------------------------------------------------------ navigation
 
     /// The hub, with the network zone and this device selected (`` ` ``, Esc Esc, `cx`).
@@ -137,6 +153,11 @@ impl App {
         self.close_screens();
         self.input = None;
         self.help = false;
+        // Already on the hub: back to this device (the map's home).
+        if self.view == View::Network && self.device == 0 {
+            self.hub_device = None;
+            self.hub_sessions = false;
+        }
         if self.view != View::Network {
             self.view = View::Network;
             self.reload_edges();
@@ -186,6 +207,17 @@ impl App {
     pub(super) fn reload_edges(&mut self) {
         if let Ok(graph) = crate::edges::graph() {
             self.edge_views = graph;
+        }
+        // Each device's route (its jump hops), read from the same local state.
+        for (d, device) in self.devices.iter().enumerate() {
+            self.network_jump_routes.insert(
+                d,
+                device
+                    .target
+                    .as_deref()
+                    .map(|target| store::route(target).ok())
+                    .unwrap_or_else(|| Some(Vec::new())),
+            );
         }
     }
     /// The hub's sessions in tile order (what needs you first).
@@ -259,6 +291,20 @@ impl App {
         } else {
             "session:"
         };
+        // The map works its moves out from what it drew (`views::mission::spatial`).
+        let dir = match (dx.signum(), dy.signum()) {
+            (-1, _) => 0,
+            (1, _) => 1,
+            (_, -1) => 2,
+            _ => 3,
+        };
+        let planned = graph
+            .then(|| {
+                let moves = self.moves.borrow();
+                let m = moves.iter().find(|(id, _)| *id == current)?;
+                Some(m.1[dir].clone())
+            })
+            .flatten();
         // (A device's own node in its LINKS is where they start, not a stop.)
         let own = (self.view == View::Work && self.device > 0)
             .then(|| format!("device:{}", dev_id(self.device - 1)));
@@ -287,7 +333,11 @@ impl App {
             self.arrows.pop();
             from
         } else {
-            let Some(to) = toward(&items, &current, dx, dy).map(str::to_string) else {
+            let next = match planned {
+                Some(planned) => planned,
+                None => toward(&items, &current, dx, dy).map(str::to_string),
+            };
+            let Some(to) = next else {
                 return Some(false);
             };
             if self.arrows.len() >= 64 {

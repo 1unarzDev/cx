@@ -55,13 +55,12 @@ pub struct LabDevice {
     pub core: bool,
 }
 
-// The app fills no mesh membership or LAN evidence yet (STATUS.md); until then only the
-// lab fixtures build these.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MeshBackend {
     CloudflareWarp,
     SshOverlay,
+    /// Adopted read-only (`tailscale status`).
+    Tailscale,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -74,7 +73,6 @@ pub struct LabMesh {
     pub detail: String,
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // Mesh, Lan: see MeshBackend.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EdgeKind {
     /// Plain SSH over a routed network.
@@ -354,7 +352,11 @@ impl LabState {
             "small" => Some(small()),
             "typical" => Some(typical()),
             "large" => Some(large()),
-            _ => None,
+            "mirror" => Some(mirror()),
+            _ => {
+                let n: usize = name.strip_prefix("nebula-")?.parse().ok()?;
+                (n <= 25).then(|| nebula(n))
+            }
         }
     }
 }

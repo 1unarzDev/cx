@@ -56,6 +56,11 @@ class Pty:
     def write(self, data):
         os.write(self.master, data)
 
+    def resize(self, cols, rows):
+        """Resize the PTY (the kernel signals SIGWINCH to the program) and the screen."""
+        fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
+        self.screen.resize(rows, cols)
+
     def text(self):
         return '\n'.join(self.screen.display)
 
@@ -80,6 +85,29 @@ class Pty:
             os.close(self.master)
             os.close(self.slave)
         return result
+
+
+def metrics_fixture(root, busy=0, total=1000, cores=8, mem_kb=(8 << 20, 5 << 20), load=(0.5, 0.4, 0.3),
+                    uptime=2 * 86400 + 3 * 3600, temp=None, os_release='ID=debian\nVERSION_ID="12"\n'):
+    """A /proc and /sys tree for CX_METRICS_ROOT (src/metrics.rs). Written as given and left
+    alone it is frozen: cpu reads 0% and nothing the hub shows changes, so an idle screen stays
+    idle with metrics on. `temp` None: no thermal sensor at all."""
+    root = pathlib.Path(root)
+    for d in ('proc', 'etc', 'sys/class/thermal'):
+        (root / d).mkdir(parents=True, exist_ok=True)
+    stat = f'cpu  {busy} 0 0 {total - busy} 0 0 0 0 0 0\n'
+    stat += ''.join(f'cpu{i} 1 0 0 1 0 0 0 0 0 0\n' for i in range(cores))
+    (root / 'proc/stat').write_text(stat)
+    (root / 'proc/meminfo').write_text(f'MemTotal: {mem_kb[0]} kB\nMemFree: 1 kB\nMemAvailable: {mem_kb[1]} kB\n')
+    (root / 'proc/loadavg').write_text(' '.join(f'{v:.2f}' for v in load) + ' 1/100 1\n')
+    (root / 'proc/uptime').write_text(f'{uptime}.00 0.00\n')
+    (root / 'etc/os-release').write_text(os_release)
+    zone = root / 'sys/class/thermal/thermal_zone0'
+    if temp is not None:
+        zone.mkdir(parents=True, exist_ok=True)
+        (zone / 'type').write_text('x86_pkg_temp\n')
+        (zone / 'temp').write_text(f'{int(temp * 1000)}\n')
+    return root
 
 
 # pyte color names -> palette indices (lab_png's dump format: None, 0..255 or "#rrggbb").

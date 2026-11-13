@@ -18,12 +18,12 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
 };
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 
 /// What the map highlights.
 #[derive(Clone, Copy)]
 pub(super) enum Sel<'a> {
-    /// A device; `true` when the map has keyboard focus.
+    /// A device; `true` when the map has keyboard focus (a device's LINKS zone).
     Node(&'a str, bool),
     /// One link (the edge editor): drawn bright, everything else fades.
     Edge(&'a str),
@@ -43,12 +43,12 @@ enum Mode {
     Name,
 }
 
-struct Node<'a> {
-    d: &'a LabDevice,
-    hop: u8,
+pub(super) struct Node<'a> {
+    pub(super) d: &'a LabDevice,
+    pub(super) hop: u8,
     /// The link to its parent (None for devices with no routed link).
-    up: Option<&'a LabEdge>,
-    parent: Option<usize>,
+    pub(super) up: Option<&'a LabEdge>,
+    pub(super) parent: Option<usize>,
     /// Right of the root (1) or left (-1).
     side: i32,
     label: Rect,
@@ -178,7 +178,7 @@ pub(super) fn policy(cx: &Cx, e: &LabEdge, from_left: bool, short: bool) -> Stri
     }
 }
 
-fn closed(e: &LabEdge) -> bool {
+pub(super) fn closed(e: &LabEdge) -> bool {
     e.forward == Access::Denied && e.reverse == Access::Denied
 }
 
@@ -206,7 +206,7 @@ fn pattern(e: &LabEdge) -> Pat {
 
 /// Spanning tree from `root` over routed links, breadth first, up to `depth` hops.
 /// On the hub (depth 3) devices with no routed link join the first column unlinked.
-fn tree<'a>(cx: &Cx<'a>, root: &str, depth: usize) -> Vec<Node<'a>> {
+pub(super) fn tree<'a>(cx: &Cx<'a>, root: &str, depth: usize) -> Vec<Node<'a>> {
     let s = cx.s;
     let idx = |id: &str| s.devices.iter().position(|d| d.id == id).unwrap_or(0);
     let group = |id: &str| {
@@ -274,7 +274,7 @@ fn tree<'a>(cx: &Cx<'a>, root: &str, depth: usize) -> Vec<Node<'a>> {
 }
 
 /// The name, with a keycap in front when the hotkey letter is not in it.
-fn has_letter(d: &LabDevice) -> Option<usize> {
+pub(super) fn has_letter(d: &LabDevice) -> Option<usize> {
     d.name
         .chars()
         .position(|c| c.eq_ignore_ascii_case(&d.hotkey))
@@ -890,27 +890,6 @@ pub(super) fn height(cx: &Cx, band: Rect, root: &str, depth: usize, sel: Sel) ->
 /// The most rows a hub map uses.
 pub(super) const MAX_H: u16 = 27;
 
-/// Device ids in selection order: the root first (launch focus, so `⏎` opens this
-/// device), then hop by hop, clockwise from the top.
-pub(super) fn order(cx: &Cx, band: Rect) -> Vec<String> {
-    let root = cx.s.viewer.as_str();
-    let p = plan(cx, band, root, 3, cx.touch(), Sel::Node("", false));
-    let c = centre(p.pill);
-    let clock = |r: Rect| {
-        let q = centre(r);
-        (((q.1 - c.1) * 2.0).atan2(q.0 - c.0) + PI / 2.0).rem_euclid(TAU)
-    };
-    let mut v: Vec<&Node> = p.nodes.iter().filter(|n| n.shown).collect();
-    v.sort_by(|a, b| {
-        (a.hop, clock(a.label))
-            .partial_cmp(&(b.hop, clock(b.label)))
-            .unwrap()
-    });
-    std::iter::once(root.to_string())
-        .chain(v.into_iter().map(|n| n.d.id.clone()))
-        .collect()
-}
-
 /// One row of the phone's device tree.
 pub(super) struct TreeRow<'a> {
     pub d: &'a LabDevice,
@@ -1204,13 +1183,6 @@ fn arrow_at(cx: &Cx, pts: &[(i32, i32)], t: f32, toward_end: bool) -> &'static s
         (_, true, _, false) => ">",
         (_, false, _, false) => "<",
     }
-}
-
-fn centre(r: Rect) -> (f32, f32) {
-    (
-        f32::from(r.x) + f32::from(r.width) / 2.0,
-        f32::from(r.y) + 0.5,
-    )
 }
 
 // ------------------------------------------------------------------------- draw
@@ -1731,7 +1703,7 @@ fn node(cx: &Cx, buf: &mut Buffer, p: &Plan, n: &Node, pick: Option<bool>, keys:
     }
 }
 
-fn name_w(cx: &Cx, d: &LabDevice, nmax: usize, keys: bool) -> u16 {
+pub(super) fn name_w(cx: &Cx, d: &LabDevice, nmax: usize, keys: bool) -> u16 {
     let nm = fit(&d.name, nmax, cx.uni());
     let at = has_letter(d).filter(|&i| i + 1 < nm.chars().count() || nm == d.name);
     super::width(&nm, cx.uni())

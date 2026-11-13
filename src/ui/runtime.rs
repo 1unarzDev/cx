@@ -310,6 +310,8 @@ pub(super) enum Wake {
     Reply(Box<Reply>),
     /// A pushed helper event: the SSH target (None for this host) and `{kind, ...}`.
     Event(Option<String>, Value),
+    /// Meshes and lan candidates, observed off the UI thread (`vitals::observe_topology`).
+    Topology(Vec<super::vitals::Mesh>, Option<Value>),
 }
 impl From<Reply> for Wake {
     fn from(reply: Reply) -> Self {
@@ -472,6 +474,9 @@ pub(super) fn loop_wait(app: &App, now: Instant, frame_wait: Option<Duration>) -
     }
     if let Some(frame_wait) = frame_wait {
         wait = wait.min(frame_wait);
+    }
+    if let Some(next) = app.motion.wait(now) {
+        wait = wait.min(next);
     }
     for deadline in [app.press_deadline()].into_iter().flatten() {
         wait = wait.min(deadline.saturating_duration_since(now));
@@ -1288,6 +1293,7 @@ fn queued_input(
             Wake::Event(target, event) => {
                 app.watch_event(target, event);
             }
+            Wake::Topology(meshes, lan) => app.topology(meshes, lan),
         }
     }
     while carried.is_empty() && event::poll(Duration::ZERO)? {
@@ -1327,6 +1333,21 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             let _ = events.send(Wake::Event(target, event));
         }
     }));
+    // Meshes and the lan: at start, then every five minutes, never on the UI thread.
+    let meshes_tx = wake_tx.clone();
+    let meshes_stopping = stopping.clone();
+    thread::spawn(move || loop {
+        let (meshes, lan) = super::vitals::observe_topology();
+        if meshes_tx.send(Wake::Topology(meshes, lan)).is_err() {
+            return;
+        }
+        for _ in 0..300 {
+            if meshes_stopping.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+            thread::sleep(Duration::from_secs(1));
+        }
+    });
     let (core_tx, core_rx) = mpsc::channel();
     let core_stopping = stopping.clone();
     thread::spawn(move || {
@@ -1345,6 +1366,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     });
     let mut last_inventory_check = Instant::now();
     let mut app = App::new(devices, tx);
+    app.motion = super::motion::Clock::for_terminal();
     load_cache(&mut app);
     app.pins = store::session_pins().unwrap_or_default();
     if let Ok(Some(cache)) =
@@ -1397,6 +1419,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     let mut last_session_refresh = Instant::now();
     let mut last_containers = Instant::now();
     let mut last_jobs = Instant::now();
+    let mut last_vitals = Instant::now() - super::vitals::EVERY;
     let mut last_transfer_frame = Instant::now();
     let mut notice_was_animating = false;
     // A persistent askpass broker lets `sudo` while moving a terminal prompt
@@ -1850,6 +1873,10 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             prewarmed = focus;
         }
         let now = Instant::now();
+        // The map's transition: started by a new selection, drawn until it settles.
+        let sel = app.map_selection();
+        app.motion.track(sel.as_deref(), now);
+        dirty |= app.motion.animating(now);
         dirty |= app.tick_press(now);
         dirty |= app.files_tick(now);
         // Coalesce bursts (key repeat, reply floods) to at most ~60 fps.
@@ -1897,6 +1924,10 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                         let (redraw, cached) = app.watch_event(target, event);
                         dirty |= redraw;
                         cache_changed |= cached;
+                    }
+                    Wake::Topology(meshes, lan) => {
+                        app.topology(meshes, lan);
+                        dirty = true;
                     }
                 }
             }
@@ -1995,6 +2026,12 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 }
             }
             last_session_refresh = Instant::now();
+        }
+        if last_vitals.elapsed() >= super::vitals::EVERY
+            || (app.vitals_due() && last_vitals.elapsed() >= super::vitals::SOON)
+        {
+            app.poll_vitals();
+            last_vitals = Instant::now();
         }
         // Session and container caches are reconciled even while browsing files.
         // Bounded fleet refresh; idle does not continuously redraw.

@@ -47,9 +47,11 @@ mod keys;
 #[cfg(test)]
 mod lab;
 mod launch;
+mod motion;
 mod screens;
 mod viewmodel;
 mod views;
+mod vitals;
 pub use runtime::{run, run_restored};
 
 use anyhow::{Context, Result};
@@ -617,6 +619,12 @@ struct App {
     neighbor_evidence: HashMap<(usize, String, Option<String>), Value>,
     neighbor_budget: usize,
     network_add_target: Option<(usize, String)>,
+    /// Live vitals and link samples by device id (memory only; `vitals.rs`).
+    vitals: HashMap<String, vitals::Vitals>,
+    /// Mesh membership, observed off the UI thread and rarely (`vitals::observe_meshes`).
+    meshes: Vec<vitals::Mesh>,
+    /// When each device (by id) last answered, kept across restarts in the navigation cache.
+    seen: HashMap<String, u64>,
     pending_add_via: Option<Device>,
     pending_edit: Option<usize>,
     clipboard: Option<Clipboard>,
@@ -659,6 +667,10 @@ struct App {
     hub_order: std::cell::RefCell<Vec<String>>,
     /// Where the last frame drew each map node and session tile (`views::mission::Drawn::nav`).
     nav: std::cell::RefCell<Vec<(Rect, String)>>,
+    /// The map's arrow moves the last frame worked out (`views::mission::Drawn::moves`).
+    moves: std::cell::RefCell<Vec<(String, [Option<String>; 4])>>,
+    /// The hub map's animation clock (`motion`).
+    motion: motion::Clock,
     /// Device letters (`hotkeys::assign`), by device id.
     hotkeys: std::cell::RefCell<BTreeMap<String, char>>,
     /// `␣`: the selected session's peek.
@@ -804,6 +816,9 @@ impl App {
             neighbor_evidence: HashMap::new(),
             neighbor_budget: 32,
             network_add_target: None,
+            vitals: HashMap::new(),
+            meshes: Vec::new(),
+            seen: HashMap::new(),
             pending_add_via: None,
             pending_edit: None,
             clipboard: None,
@@ -838,6 +853,8 @@ impl App {
             device_link: None,
             hub_order: Default::default(),
             nav: Default::default(),
+            moves: Default::default(),
+            motion: Default::default(),
             hotkeys: Default::default(),
             peek: false,
             stop_armed: None,

@@ -46,7 +46,7 @@ while [ $# -gt 0 ]; do
 done
 
 # name|requirements|arguments (BIN = target/debug/cx). Requirements are
-# space-separated: pyte, pillow, fish, poppler, sshd, docker, node. A name
+# space-separated: pyte, pillow, fish, poppler, sshd, docker, node, userns. A name
 # ending in .mjs runs with node; every other name is tests/NAME.py.
 CORE=(
     "command_panel_live||BIN"
@@ -60,6 +60,7 @@ CORE=(
     "grid_keys_pty|pyte|BIN"
     "chooser_arrows_pty|pyte|BIN"
     "map_grid_pty|pyte|BIN"
+    "hub_motion_pty|pyte|BIN"
     "container_discovery_fixtures||BIN"
     "container_session_reconcile_live||BIN"
     "session_activity_timestamp_live||BIN"
@@ -122,6 +123,7 @@ SSH=(
     "enrollment_auth_pty|sshd pyte|BIN"
     "enrollment_ssh|sshd|."
     "robot_enrollment|sshd|"
+    "hub_matrix|userns pyte pillow|BIN --jobs 3"
 )
 DOCKER=(
     "containers_live|docker|BIN"
@@ -215,6 +217,7 @@ have() {
     sshd) [ -x /usr/sbin/sshd ] || [ -x /usr/bin/sshd ] || command -v sshd >/dev/null 2>&1 ;;
     docker) docker info >/dev/null 2>&1 ;;
     node) node -e 'require("node:sqlite")' >/dev/null 2>&1 ;;
+    userns) unshare -UrnmCpfu --mount-proc true >/dev/null 2>&1 ;;
     *) return 1 ;;
     esac
 }

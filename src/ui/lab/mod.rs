@@ -403,19 +403,27 @@ mod review_tests {
         );
     }
 
-    /// First run: the viewer alone, no braille rings or beads (rejected 2026-11-10),
-    /// so nothing touches its label at any size.
+    /// First run: the viewer alone in the middle of its quiet dotted orbits (round-67,
+    /// asked back 2026-11-12), and no dot within two cells of its name on its row.
     #[test]
-    fn onboarding_draws_no_braille_orbit() {
+    fn onboarding_draws_quiet_orbits_clear_of_the_name() {
         let s = state::typical();
-        for (w, h) in [(40, 20), (120, 40), (200, 60)] {
+        for (w, h) in [(40, 20), (80, 24), (120, 40), (200, 60)] {
             let (t, _) = draw(LabView::Onboarding, &s, w, h);
+            let dots = t
+                .chars()
+                .filter(|c| ('\u{2801}'..='\u{28ff}').contains(c))
+                .count();
+            assert!(dots > 8, "{w}x{h}: no orbit\n{t}");
+            let row = t.lines().find(|l| l.contains("◉ tranquility")).unwrap();
+            let chars: Vec<char> = row.chars().collect();
+            let at = row.chars().position(|c| c == '◉').unwrap();
+            let end = at + "◉ tranquility".chars().count();
+            let near = &chars[at.saturating_sub(2)..(end + 2).min(chars.len())];
             assert!(
-                !t.chars()
-                    .any(|c| ('\u{2800}'..='\u{28ff}').contains(&c) || c == '◌'),
-                "{w}x{h}:\n{t}"
+                !near.iter().any(|c| ('\u{2800}'..='\u{28ff}').contains(c)),
+                "{w}x{h}: a dot touches the name: {row}"
             );
-            assert!(t.contains("tranquility"));
         }
     }
 }
@@ -491,6 +499,10 @@ mod size_fuzz {
             x.screen.clear();
         }
         v.push(("empty-previews".into(), blank));
+        // The hub's nebula: a mid-size and a full network (both fold clusters).
+        for n in [10, 25] {
+            v.push((format!("nebula-{n}"), state::nebula(n)));
+        }
         v
     }
 
@@ -730,6 +742,322 @@ mod curves {
                             view.slug()
                         );
                     }
+                }
+            }
+        }
+    }
+}
+#[cfg(test)]
+mod nebula_tests {
+    //! The hub's nebula: mirror-drawn halves, folding clusters, and arrow moves that
+    //! reverse, reach every device and never go against their key.
+    use super::*;
+    use std::collections::{BTreeSet, VecDeque};
+
+    const SIZES: [(u16, u16); 4] = [(80, 24), (95, 50), (120, 40), (190, 50)];
+
+    fn fixtures() -> Vec<LabState> {
+        let mut v: Vec<LabState> = [1, 3, 5, 7, 10, 15, 25]
+            .iter()
+            .map(|n| LabState::fixture(&format!("nebula-{n}")).unwrap())
+            .collect();
+        v.extend(FIXTURES.iter().map(|f| LabState::fixture(f).unwrap()));
+        v
+    }
+
+    fn map_caps(selected: usize) -> LabCaps {
+        LabCaps {
+            focus: Some(Pane::Graph),
+            selected,
+            ..LabCaps::default()
+        }
+    }
+
+    fn drawn(s: &LabState, sel: usize, w: u16, h: u16) -> (Buffer, mission::Drawn) {
+        let area = Rect::new(0, 0, w, h);
+        let mut buf = Buffer::empty(area);
+        let d = mission::render(&LabView::Hub, s, &map_caps(sel), area, &mut buf);
+        (buf, d)
+    }
+
+    fn centre(r: Rect) -> (f32, f32) {
+        (
+            f32::from(r.x) + f32::from(r.width) / 2.0,
+            f32::from(r.y) + f32::from(r.height) / 2.0,
+        )
+    }
+
+    /// Braille dots mirrored left to right.
+    fn flip(c: char) -> char {
+        let b = c as u32 - 0x2800;
+        let pairs = [(0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80)];
+        let mut o = 0;
+        for (l, r) in pairs {
+            if b & l != 0 {
+                o |= r;
+            }
+            if b & r != 0 {
+                o |= l;
+            }
+        }
+        char::from_u32(0x2800 + o).unwrap()
+    }
+
+    /// A network that is its own mirror draws as one: every braille dot of its links,
+    /// rings and halo has its mirror twin, and every node sits where its twin's
+    /// mirror is.
+    /// Live devices with no vitals and no measured link yet (the app's first seconds, or
+    /// an older helper) draw at every size: an empty evidence row has no width.
+    #[test]
+    fn live_devices_without_evidence_draw() {
+        let mut s = LabState::fixture("nebula-10").unwrap();
+        for d in &mut s.devices {
+            d.metrics = None;
+        }
+        for e in &mut s.edges {
+            e.rtt_ms = None;
+        }
+        for (w, h) in [(40, 20), (60, 30), (80, 24), (95, 50), (120, 40), (190, 50)] {
+            drawn(&s, 0, w, h);
+        }
+    }
+
+    #[test]
+    fn a_symmetric_network_draws_as_a_mirror_image() {
+        let s = LabState::fixture("mirror").unwrap();
+        for (w, h) in [(120, 40), (190, 50), (95, 50), (160, 44)] {
+            let (buf, d) = drawn(&s, 0, w, h);
+            let rects: Vec<(Rect, String)> = d
+                .nav
+                .iter()
+                .filter(|t| t.action.starts_with("device:"))
+                .map(|t| (t.area, t.action.clone()))
+                .collect();
+            let root = rects
+                .iter()
+                .find(|(_, a)| *a == format!("device:{}", s.viewer))
+                .unwrap()
+                .0;
+            let a = 2 * i32::from(root.x) + i32::from(root.width);
+            let rows = rects
+                .iter()
+                .map(|(r, _)| r.y)
+                .min()
+                .unwrap()
+                .saturating_sub(2)
+                ..rects.iter().map(|(r, _)| r.bottom()).max().unwrap() + 2;
+            let mut dots = 0;
+            for y in rows.clone() {
+                for x in 0..w {
+                    let c = buf[(x, y)].symbol().chars().next().unwrap_or(' ');
+                    if !('\u{2801}'..='\u{28ff}').contains(&c) {
+                        continue;
+                    }
+                    dots += 1;
+                    let mx = a - 1 - i32::from(x);
+                    assert!(
+                        mx >= 0 && mx < i32::from(w),
+                        "{w}x{h}: ({x},{y}) has no twin"
+                    );
+                    let twin = buf[(mx as u16, y)].symbol().chars().next().unwrap_or(' ');
+                    assert_eq!(
+                        twin,
+                        flip(c),
+                        "{w}x{h}: ({x},{y}) {c} against ({mx},{y}) {twin}"
+                    );
+                }
+            }
+            assert!(dots > 20, "{w}x{h}: {dots} dots");
+            for (r, act) in &rects {
+                let m = Rect::new(
+                    (a - i32::from(r.x) - i32::from(r.width)) as u16,
+                    r.y,
+                    r.width,
+                    r.height,
+                );
+                assert!(
+                    rects.iter().any(|(q, _)| *q == m),
+                    "{w}x{h}: {act} at {r:?} has no mirror twin at {m:?}"
+                );
+            }
+        }
+    }
+
+    /// In every frame: a move never goes against its key; going back and forth settles
+    /// (back from where a move lands leads to a node that moves there again, the very
+    /// node it came from when the two are paired); every node drawn is reached from
+    /// the root.
+    #[test]
+    fn moves_reverse_reach_everything_and_never_invert() {
+        for s in fixtures() {
+            let order = mission::by_attention(&s).len(); // (warm the fixture)
+            let _ = order;
+            for (w, h) in SIZES {
+                let n = s.devices.len();
+                for sel in 0..n {
+                    let (_, d) = drawn(&s, sel, w, h);
+                    if d.moves.is_empty() {
+                        continue;
+                    }
+                    let at = |id: &str| {
+                        d.nav
+                            .iter()
+                            .find(|t| t.action == id)
+                            .map(|t| centre(t.area))
+                            .unwrap()
+                    };
+                    let mv = |id: &str, k: usize| {
+                        d.moves
+                            .iter()
+                            .find(|(x, _)| x == id)
+                            .and_then(|(_, m)| m[k].clone())
+                    };
+                    let dirs = [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)];
+                    for (id, m) in &d.moves {
+                        for (k, to) in m.iter().enumerate() {
+                            let Some(to) = to else { continue };
+                            let (p, q) = (at(id), at(to));
+                            let along = (q.0 - p.0) * dirs[k].0 + (q.1 - p.1) * dirs[k].1;
+                            assert!(
+                                along > 0.0,
+                                "{} {w}x{h} sel {sel}: {id} key {k} goes back to {to}",
+                                s.fixture
+                            );
+                            let back = mv(to, k ^ 1).unwrap_or_else(|| {
+                                panic!("{} {w}x{h}: no way back from {to}", s.fixture)
+                            });
+                            assert_eq!(
+                                mv(&back, k).as_deref(),
+                                Some(to.as_str()),
+                                "{} {w}x{h} sel {sel}: {id} -{k}-> {to} -back-> {back}",
+                                s.fixture
+                            );
+                        }
+                    }
+                    let root = format!("device:{}", s.viewer);
+                    let mut seen = BTreeSet::from([root.clone()]);
+                    let mut q = VecDeque::from([root]);
+                    while let Some(x) = q.pop_front() {
+                        for k in 0..4 {
+                            if let Some(y) = mv(&x, k) {
+                                if seen.insert(y.clone()) {
+                                    q.push_back(y);
+                                }
+                            }
+                        }
+                    }
+                    for (id, _) in &d.moves {
+                        assert!(
+                            seen.contains(id),
+                            "{} {w}x{h} sel {sel}: {id} unreachable",
+                            s.fixture
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Walking the arrows from this device reaches every device, folded ones too (a
+    /// folded cluster's node opens it on a member, whose cluster then blooms): nothing
+    /// is skipped silently.
+    #[test]
+    fn the_arrows_reach_every_device() {
+        for s in fixtures() {
+            for (w, h) in SIZES {
+                let (_, d0) = drawn(&s, 0, w, h);
+                if d0.moves.is_empty() {
+                    continue;
+                }
+                let order = d0.order.clone();
+                let idx = |id: &str| order.iter().position(|x| x == id).unwrap();
+                let mut seen = BTreeSet::from([s.viewer.clone()]);
+                let mut q = VecDeque::from([s.viewer.clone()]);
+                while let Some(x) = q.pop_front() {
+                    let (_, d) = drawn(&s, idx(&x), w, h);
+                    let me = format!("device:{x}");
+                    let m = d.moves.iter().find(|(id, _)| *id == me);
+                    let m = m.unwrap_or_else(|| panic!("{} {w}x{h}: {x} not drawn", s.fixture));
+                    for y in m.1.iter().flatten() {
+                        let y = y.trim_start_matches("device:").to_string();
+                        if seen.insert(y.clone()) {
+                            q.push_back(y);
+                        }
+                    }
+                }
+                let all: BTreeSet<String> = s.devices.iter().map(|d| d.id.clone()).collect();
+                let missed: Vec<&String> = all.difference(&seen).collect();
+                assert!(
+                    missed.is_empty(),
+                    "{} {w}x{h}: never reached {missed:?} from {:?}",
+                    s.fixture,
+                    d0.moves
+                );
+            }
+        }
+    }
+
+    /// A big network folds every cluster but the selection's into one node with its
+    /// count; selecting into a cluster blooms it (its devices drawn by name).
+    #[test]
+    fn clusters_fold_with_a_count_and_bloom_on_focus() {
+        let s = LabState::fixture("nebula-25").unwrap();
+        let (buf, d) = drawn(&s, 0, 120, 40);
+        let t = dump::text(&buf);
+        assert!(
+            t.lines()
+                .any(|l| l.contains("+") && l.contains("cloudflare-warp")),
+            "{t}"
+        );
+        let order = d.order.clone();
+        let inno = order.iter().position(|x| x == "innovation").unwrap();
+        let (buf, _) = drawn(&s, inno, 120, 40);
+        let t = dump::text(&buf);
+        assert!(t.contains("innovation"), "{t}");
+        // Every letter stays a key: a folded cluster lists its members' letters.
+        let (buf, _) = drawn(&s, 0, 190, 50);
+        let t = dump::text(&buf);
+        for d in s.devices.iter().skip(1) {
+            assert!(
+                t.contains(&d.name)
+                    || t.contains(&format!(" {} ", d.hotkey))
+                    || t.contains(&format!("{} ", d.hotkey)),
+                "{} hidden:\n{t}",
+                d.name
+            );
+        }
+    }
+
+    /// Mid-glide frames draw (and never panic) at every fixture and size, and a settled
+    /// frame draws the same as no motion at all.
+    #[test]
+    fn transitions_draw_and_settle() {
+        for s in fixtures() {
+            for (w, h) in SIZES {
+                let n = s.devices.len().min(6);
+                for sel in 0..n {
+                    for from in 0..n {
+                        for t in [0, 300, 700] {
+                            let caps = LabCaps {
+                                motion: crate::ui::views::Motion {
+                                    from: Some(from as u16),
+                                    t,
+                                },
+                                ..map_caps(sel)
+                            };
+                            let _ = render_frame(&LabView::Hub, &s, &caps, w, h);
+                        }
+                    }
+                    let settled = LabCaps {
+                        motion: crate::ui::views::Motion {
+                            from: Some(0),
+                            t: 1000,
+                        },
+                        ..map_caps(sel)
+                    };
+                    let (a, _) = render_frame(&LabView::Hub, &s, &settled, w, h);
+                    let (b, _) = render_frame(&LabView::Hub, &s, &map_caps(sel), w, h);
+                    assert_eq!(a, b, "{} {w}x{h} sel {sel}", s.fixture);
                 }
             }
         }

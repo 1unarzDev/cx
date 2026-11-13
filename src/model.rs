@@ -344,6 +344,9 @@ pub enum Operation {
     },
     Network,
     NetworkCandidates,
+    /// This host's vitals (capability `metrics-v1`): cpu jiffies, memory, temperature,
+    /// load, cores, uptime, disk, os and arch, from /proc and /sys reads only.
+    Metrics,
     ProbeCandidate {
         address: String,
         interface: Option<String>,

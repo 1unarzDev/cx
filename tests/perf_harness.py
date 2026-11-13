@@ -17,7 +17,8 @@ Scenarios (all times in milliseconds):
                    Enter (native attach) -> prompt visible, Ctrl+\\ -> cx UI back.
   mouse_motion     pure pointer motion (no buttons) over the Sessions and Files lists: bytes
                    and write bursts per motion event, against an idle baseline window.
-  idle             5 s idle in Files and Sessions: CPU seconds and bytes/s written.
+  idle             5 s idle in Files, Sessions and the hub (after an arrow move and its
+                   transition): CPU seconds and bytes/s written.
   instant_<side>[_polling]
                    Instant-sessions targets, local or over a loopback sshd (warm master),
                    on the tmux control path or forced polling (CX_TMUX_CONTROL=0): select ->
@@ -117,7 +118,10 @@ class Env:
                         # The bench PTY answers neither OSC 11 nor DA1, so the background
                         # probe would wait out its 100 ms on every start (real terminals
                         # answer DA1 within milliseconds).
-                        CX_THEME='dark')
+                        CX_THEME='dark',
+                        # Vitals on, from a frozen /proc tree: nothing they show changes, so
+                        # an idle screen must still write nothing (older binaries ignore it).
+                        CX_METRICS_ROOT=str(pty_lib.metrics_fixture(self.root / 'metrics', temp=47.0)))
         for key in ('TMUX', 'TMUX_PANE', 'NO_COLOR', 'CX_ASCII'):
             self.env.pop(key, None)
         self.marker = f'HOME={self.root}\0'.encode()
@@ -671,6 +675,35 @@ def scenario_idle(binary, seconds=5.0):
             result.setdefault('sessions', {})['viewer'] = viewer.close()
     finally:
         result.setdefault('sessions', {})['cleanup'] = env.cleanup()
+    # The hub's map after an arrow move: its transition draws, then nothing at all.
+    env = Env(binary)
+    try:
+        fake = env.root / 'fakebin'
+        fake.mkdir()
+        (fake / 'ssh').write_text('#!/bin/sh\nexit 255\n')
+        (fake / 'ssh').chmod(0o700)
+        env.env['PATH'] = f"{fake}:{env.env.get('PATH', '/usr/bin:/bin')}"
+        peers = ['alder', 'birch', 'cedar']
+        devices = [dict(id='local', name='home-box', target=None, account='perf', host='home-box',
+                        status='unknown', observed_at=0)]
+        devices += [dict(id=p, name=p, target=f'{p}-fixture', account='perf', host=p,
+                         status='unknown', observed_at=0) for p in peers]
+        (env.state / 'devices.json').write_text(json.dumps(devices))
+        viewer = Viewer.__new__(Viewer)
+        viewer.open(env, dict(device_ids=['local', *peers], device=0, focus='Workspace', view='Network',
+                              browser=None))
+        try:
+            viewer.wait(lambda: all(p in viewer.text() for p in peers), what='hub peers')
+            viewer.quiesce(1.0)
+            viewer.pty.write(b'\x1b[C')
+            # (Selecting an offline peer may raise and later clear its own notice: wait
+            # until every change has played out.)
+            viewer.quiesce(2.0, timeout=20.0)
+            result['hub'] = idle_probe(viewer, env, seconds)
+        finally:
+            result.setdefault('hub', {})['viewer'] = viewer.close()
+    finally:
+        result.setdefault('hub', {})['cleanup'] = env.cleanup()
     return result
 
 

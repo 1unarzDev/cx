@@ -8,7 +8,7 @@ pub mod caps;
 pub mod mission;
 pub mod state;
 
-pub use caps::{ColorLevel, LabCaps, Pane, Theme, Tok};
+pub use caps::{ColorLevel, LabCaps, Motion, Pane, Theme, Tok};
 pub use state::*;
 
 use ratatui::{layout::Rect, text::Line};

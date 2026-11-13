@@ -17,7 +17,9 @@ use ratatui::{
 use std::cell::RefCell;
 
 mod hub;
+mod nebula;
 mod orbit;
+mod spatial;
 mod tiles;
 mod views;
 
@@ -29,6 +31,9 @@ pub struct Drawn {
     /// Each map node (`device:<id>`) and session tile (`session:<d>:<id>`) where it was
     /// drawn, so the arrows move between them as they sit on screen.
     pub nav: Vec<LabTarget>,
+    /// Where each arrow (left, right, up, down) moves from a map node (`device:<id>`),
+    /// worked out by the map from what it drew (see `nebula`); empty off the map.
+    pub moves: Vec<(String, [Option<String>; 4])>,
 }
 
 /// The production entry point: one draw that also returns the frame's targets.
@@ -45,6 +50,7 @@ pub fn render(
         targets: cx.hits.into_inner(),
         order: cx.order.into_inner(),
         nav: cx.nav.into_inner(),
+        moves: cx.moves.into_inner(),
     }
 }
 
@@ -104,6 +110,8 @@ pub(super) struct Cx<'a> {
     pub order: RefCell<Vec<String>>,
     /// Where each navigable item was drawn (see `Drawn::nav`).
     nav: RefCell<Vec<LabTarget>>,
+    /// The map's arrow moves (see `Drawn::moves`).
+    moves: RefCell<Vec<(String, [Option<String>; 4])>>,
 }
 
 impl<'a> Cx<'a> {
@@ -115,6 +123,7 @@ impl<'a> Cx<'a> {
             hits: RefCell::new(Vec::new()),
             order: RefCell::new(Vec::new()),
             nav: RefCell::new(Vec::new()),
+            moves: RefCell::new(Vec::new()),
         }
     }
 
@@ -289,6 +298,11 @@ impl<'a> Cx<'a> {
     /// Record a navigable item's place (a node or a tile; see `Drawn::nav`).
     pub fn nav(&self, r: Rect, action: String) {
         self.nav.borrow_mut().push(LabTarget { area: r, action });
+    }
+
+    /// The map's arrow moves for this frame.
+    pub fn set_moves(&self, m: Vec<(String, [Option<String>; 4])>) {
+        *self.moves.borrow_mut() = m;
     }
 
     /// Number of targets recorded so far (see `unclash`).

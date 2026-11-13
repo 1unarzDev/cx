@@ -2,7 +2,7 @@
 //! one row of live session thumbnails (what needs you first) and the alert ticker that
 //! pairs each problem with the keys that fix it. Phones get the indented device tree
 //! (relays above the devices reached through them).
-use super::{fit, orbit, tiles, views, Cx, Size};
+use super::{fit, nebula, orbit, tiles, views, Cx, Size};
 use crate::ui::views::{caps::Pane, Access, LabDevice, NoticeKind, SessionState, Tok};
 use ratatui::{buffer::Buffer, layout::Rect, style::Modifier};
 
@@ -54,7 +54,7 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // (The top row stays blank, as air under the top bar: no header strip. A device's
     // meshes show quietly in its vitals strip.)
     let band = Rect::new(r.x, r.y + 2, r.width, band_h.saturating_sub(2));
-    let ids = orbit::order(cx, band);
+    let ids = nebula::order(cx, band);
     cx.order.borrow_mut().clone_from(&ids);
     let sel_id = if on_sess && !list.is_empty() {
         list[cx.c.selected % list.len()].device.clone()
@@ -68,7 +68,7 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // where the screen is tall, else the blank row the band already keeps. With room
     // for two, a second row of tiles shows the rest of the sessions and the ghost
     // (only when each row keeps ten rows, so a tile still shows enough of its screen).
-    let gh = orbit::drawn_h(cx, band, orbit::Sel::Node("", false));
+    let gh = nebula::height(cx, band);
     let air = if sz >= Size::M && r.height >= 30 {
         2
     } else {
@@ -101,14 +101,7 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         let pad = u16::from(gh == 1);
         Rect::new(band.x, r.y + 1 + above - pad, band.width, gh.max(3))
     };
-    orbit::draw(
-        cx,
-        buf,
-        band,
-        &cx.s.viewer,
-        3,
-        orbit::Sel::Node(&sel_id, on_graph),
-    );
+    nebula::draw(cx, buf, band, &sel_id, on_graph);
     if let Some(d) = cx.s.device(&sel_id) {
         vitals(
             cx,

@@ -44,7 +44,7 @@ for shell in sys.argv[2:] or ['/bin/bash']:
             time.sleep(.2); read()
             assert b'Run command here' not in output, 'command remains in Actions'
             send(b'\x1b'); time.sleep(.2); read()
-            send(b'n'); wait('New session'); wait('Shell')
+            send(b'T'); wait('New session'); wait('Shell')  # yazi's n is find-next: T
             send(b'\x1b'); time.sleep(.2); read()
             # A command runs in a floating panel; CX is never suspended. The
             # markers use printf format strings so the panel OUTPUT differs from

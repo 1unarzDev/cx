@@ -1630,6 +1630,7 @@ impl App {
             mode: e.mode,
             mark,
             found: Vec::new(),
+            found_pos: None,
         };
         // Current folder, scrolled with yazi's scrolloff (5).
         let all = browser_entries(b);
@@ -1655,6 +1656,7 @@ impl App {
                             .iter()
                             .filter_map(|&p| starts.get(p).map(|&(at, c)| (at, at + c.len_utf8())))
                             .collect();
+                        r.found_pos = Some((k, m.len()));
                     }
                 }
                 r
@@ -1753,7 +1755,11 @@ impl App {
             cursor,
             len,
             progress: self.yazi_progress(),
-            message: None,
+            // The send-to flow's destination (the earlier popup, kept): Enter pastes.
+            message: (self.destination_active && self.clipboard.is_some()).then(|| {
+                let n = self.clipboard.as_ref().map_or(0, |c| c.entries.len());
+                format!("⏎ transfer here ({n}) · Esc cancels")
+            }),
         };
         v.which = if self.yz.pending.is_empty() {
             Vec::new()

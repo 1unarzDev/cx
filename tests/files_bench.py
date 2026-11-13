@@ -535,23 +535,28 @@ class Viewer(ph.Viewer):
 
     def rows(self, letter=None):
         # The list only: the revamp's inline peek beside it can show a folder's children.
-        if self.yazi():
-            return [m for line in self.columns()[1] for m in ROW.finditer(line)
+        display = self.screen.display
+        if self.yazi(display):
+            return [m for line in self.columns(display)[1] for m in ROW.finditer(line)
                     if letter is None or m.group(1) == letter]
-        hub = self.hub_layout()
+        hub = self.hub_layout(display)
+        work = display if hub else [line[21:] for line in display]
 
         def listed(line):
             if hub:
                 return line[:50]
             borders = [i for i, c in enumerate(line) if c in '│┃']
             return line[:borders[1]] if len(borders) > 1 else line
-        return [m for line in self.work() for m in ROW.finditer(listed(line))
+        return [m for line in work for m in ROW.finditer(listed(line))
                 if letter is None or m.group(1) == letter]
 
     def has_row(self, name):
-        if self.yazi():
-            return any(re.search(r'(?:^|\s)' + re.escape(name) + r'(?:\s|$)', line) for line in self.columns()[1])
-        return any(re.search(r'(?:▸ |\s)' + re.escape(name) + r'/?(?:\s|$)', line) for line in self.work()[1:-1])
+        display = self.screen.display
+        if self.yazi(display):
+            return any(re.search(r'(?:^|\s)' + re.escape(name) + r'(?:\s|$)', line)
+                       for line in self.columns(display)[1])
+        work = display if self.hub_layout(display) else [line[21:] for line in display]
+        return any(re.search(r'(?:▸ |\s)' + re.escape(name) + r'/?(?:\s|$)', line) for line in work[1:-1])
 
     def write_at(self, data):
         t0 = time.monotonic()

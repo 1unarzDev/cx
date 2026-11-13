@@ -37,6 +37,8 @@ pub(crate) struct Row {
     pub mark: Mark,
     /// Byte ranges of `name` to highlight (find).
     pub found: Vec<(usize, usize)>,
+    /// On the hovered match: its place among the matches (yazi's `[i/n]`).
+    pub found_pos: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -624,7 +626,21 @@ fn column(
             }
             x = p.put(x, y, inner_end, &name[last..], style);
         }
-        let _ = x;
+        if let Some((i, n)) = row.found_pos.filter(|_| hovered) {
+            let tag = format!(
+                "  [{}/{}]",
+                i + 1,
+                if n >= 100 {
+                    "99+".into()
+                } else {
+                    n.to_string()
+                }
+            );
+            let lm_start = inner_end.saturating_sub(lm_w as u16 + u16::from(lm_w > 0));
+            if x + width(&tag) as u16 <= lm_start {
+                p.put(x, y, lm_start, &tag, style.patch(t.find_position));
+            }
+        }
         if lm_w > 0 {
             let mut lx = inner_end - lm_w as u16;
             for (s, kind) in &lm {

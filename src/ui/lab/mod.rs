@@ -691,6 +691,22 @@ mod nebula_tests {
     /// A network that is its own mirror draws as one: every braille dot of its links,
     /// rings and halo has its mirror twin, and every node sits where its twin's
     /// mirror is.
+    /// Live devices with no vitals and no measured link yet (the app's first seconds, or
+    /// an older helper) draw at every size: an empty evidence row has no width.
+    #[test]
+    fn live_devices_without_evidence_draw() {
+        let mut s = LabState::fixture("nebula-10").unwrap();
+        for d in &mut s.devices {
+            d.metrics = None;
+        }
+        for e in &mut s.edges {
+            e.rtt_ms = None;
+        }
+        for (w, h) in [(40, 20), (60, 30), (80, 24), (95, 50), (120, 40), (190, 50)] {
+            drawn(&s, 0, w, h);
+        }
+    }
+
     #[test]
     fn a_symmetric_network_draws_as_a_mirror_image() {
         let s = LabState::fixture("mirror").unwrap();

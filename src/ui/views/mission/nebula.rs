@@ -629,6 +629,8 @@ fn ev_w(cx: &Cx, v: &[(String, Style)]) -> i32 {
         .map(|(t, _)| i32::from(super::width(t, cx.uni())) + 1)
         .sum::<i32>()
         .saturating_sub(1)
+        // (No evidence at all is no width, not -1: a live device before its first vitals.)
+        .max(0)
 }
 
 /// The quiet row under a device: activity sparkline, cpu and the latency of its link

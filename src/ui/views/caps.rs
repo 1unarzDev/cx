@@ -66,12 +66,6 @@ pub enum Tok {
     Muted,
     Faint,
     Accent,
-    /// Selected row in the focused pane (background).
-    AccentBg,
-    /// Selected row in an unfocused pane (background).
-    SelectDimBg,
-    /// A second, stronger surface tint (background).
-    Surface2,
     Ok,
     Warn,
     Err,
@@ -83,12 +77,6 @@ pub enum Tok {
     Codex,
     Shell,
     Id(u8),
-}
-
-impl Tok {
-    pub fn is_bg(self) -> bool {
-        matches!(self, Tok::AccentBg | Tok::SelectDimBg | Tok::Surface2)
-    }
 }
 
 type Rgb = (u8, u8, u8);
@@ -108,14 +96,11 @@ fn row(t: Tok) -> Option<Row> {
         Tok::Muted => shared(T::Muted),
         Tok::Faint => shared(T::Faint),
         Tok::Accent => shared(T::Accent),
-        Tok::AccentBg => shared(T::AccentBg),
-        Tok::SelectDimBg => shared(T::SelectDimBg),
         Tok::Ok => shared(T::Ok),
         Tok::Warn => shared(T::Warn),
         Tok::Err => shared(T::Err),
         Tok::Info => shared(T::Info),
         Tok::Id(n) => shared(T::Id(n)),
-        Tok::Surface2 => Some(((0x23, 0x28, 0x30), (0xe6, 0xe9, 0xed), 235, 254, None)),
         Tok::Mesh => Some((
             (0xc4, 0x9c, 0xf0),
             (0x70, 0x48, 0xc0),
@@ -171,19 +156,10 @@ impl LabCaps {
         }
     }
 
-    /// A ready style for a token: foreground for text tokens, background for surface
-    /// tokens, with the spec's NO_COLOR / 16-color attribute substitutes applied.
+    /// A ready style for a token (foreground), with the spec's NO_COLOR / 16-color attribute substitutes applied.
     pub fn tok(&self, t: Tok) -> Style {
         let c = self.color(t);
         let mut s = Style::default();
-        if t.is_bg() {
-            match c {
-                Some(c) => s = s.bg(c),
-                None if matches!(t, Tok::AccentBg) => s = s.add_modifier(Modifier::REVERSED),
-                None => {}
-            }
-            return s;
-        }
         if let Some(c) = c {
             s = s.fg(c);
         }

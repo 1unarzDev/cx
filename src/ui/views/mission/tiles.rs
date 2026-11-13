@@ -12,18 +12,6 @@ use ratatui::{
 /// Some(true) = selected in the focused zone.
 pub(super) type Pick = Option<bool>;
 
-pub(super) fn tile_bg(cx: &Cx, pick: Pick) -> Style {
-    // Without tints the bar alone marks the selection (never a reversed block).
-    if !cx.has_surface() {
-        return Style::default();
-    }
-    match pick {
-        Some(true) => cx.st(Tok::AccentBg),
-        Some(false) => cx.st(Tok::SelectDimBg),
-        None => cx.surface(),
-    }
-}
-
 /// Selection edge for tiles: an accent bar on the left (works in every tier).
 fn pick_bar(cx: &Cx, buf: &mut Buffer, r: Rect, pick: Pick) {
     if let Some(f) = pick {
@@ -403,12 +391,7 @@ pub(super) fn session_row(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pi
         return;
     }
     let ask = x.state == crate::ui::views::SessionState::AwaitingInput;
-    let bg = match pick {
-        Some(_) => tile_bg(cx, pick),
-        None if ask => cx.wash(Tok::Warn, 0.12),
-        None => cx.surface(),
-    };
-    cx.fill(buf, r, bg);
+    cx.fill(buf, r, Style::default());
     // Column 0 is the focus bar only; what needs you says so by its tint and `◆`.
     if pick.is_some() {
         pick_bar(cx, buf, r, pick);
@@ -480,7 +463,7 @@ pub(super) fn thumb_with(
     if r.width < 12 || r.height < 3 {
         return;
     }
-    cx.fill(buf, r, tile_bg(cx, pick));
+    cx.fill(buf, r, Style::default());
     pick_bar(cx, buf, r, pick);
     let d = cx.s.device(&x.device);
     let left = r.x + 1 + u16::from(pick.is_some());
@@ -532,15 +515,7 @@ pub(super) fn thumb_with(
         right.saturating_sub(left),
         r.height.saturating_sub(2),
     );
-    let base = if cx.dark() {
-        (0x0c, 0x0e, 0x11)
-    } else {
-        (0xff, 0xff, 0xff)
-    };
     if body.height > 0 {
-        if cx.has_surface() {
-            cx.fill(buf, body, cx.rgb_bg(base));
-        }
         let text = Rect::new(
             body.x + 1,
             body.y,

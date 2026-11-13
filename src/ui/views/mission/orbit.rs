@@ -1491,7 +1491,6 @@ pub(super) fn draw_with(
         };
         style(tok, l.lit, pattern(l.e))
     };
-    wash(cx, buf, &p, root, band, fade_all);
     for y in 0..band.height {
         for x in 0..band.width {
             let i = usize::from(y) * usize::from(band.width) + usize::from(x);
@@ -1620,44 +1619,6 @@ pub(super) fn draw_with(
     cx.unclash(mark, matches!(sel, Sel::Node(..)));
 }
 
-/// A mesh the root is not in, drawn as one group: a quiet wash of its hue behind its
-/// members, where they sit together (no other label inside it). The root's own meshes
-/// are its lines' hues.
-fn wash(cx: &Cx, buf: &mut Buffer, p: &Plan, root: &str, band: Rect, faded: bool) {
-    if !cx.tc() {
-        return;
-    }
-    for m in
-        cx.s.meshes
-            .iter()
-            .filter(|m| !m.members.iter().any(|x| x == root))
-    {
-        let inside = |n: &&Node| n.shown && m.members.contains(&n.d.id);
-        let mut it = p.nodes.iter().filter(inside).map(|n| n.label);
-        let Some(first) = it.next() else { continue };
-        let (bb, count) = it.fold((first, 1), |(a, k), r| (a.union(r), k + 1));
-        // Two cells of air either side of the members' labels, on their own rows only
-        // (no slab wider than the group it marks).
-        let x0 = bb.x.saturating_sub(2).max(band.x);
-        let bb = Rect::new(x0, bb.y, bb.right() + 2 - x0, bb.height).intersection(band);
-        let other = p
-            .nodes
-            .iter()
-            .any(|n| n.shown && !inside(&n) && n.label.intersects(bb));
-        if count < 2 || other || p.pill.intersects(bb) {
-            continue;
-        }
-        // (Fainter still where the map is scenery, as in the edge editor.)
-        let a = if cx.dark() { 0.07 } else { 0.06 } * if faded { 0.5 } else { 1.0 };
-        let st = cx.wash(mesh_tok(cx, &m.id), a);
-        for y in bb.top()..bb.bottom() {
-            for x in bb.left()..bb.right() {
-                buf[(x, y)].set_style(st);
-            }
-        }
-    }
-}
-
 /// A device's name with its hotkey letter underlined in the accent (letters are keys);
 /// where letters are not keys the name is entirely plain (no letter stands out, so
 /// nothing suggests a key that does something else there). Returns columns written.
@@ -1715,9 +1676,6 @@ fn node(cx: &Cx, buf: &mut Buffer, p: &Plan, n: &Node, pick: Option<bool>, keys:
         // node is a faint keycap, never a bare letter.
         let st = if !fade {
             cx.chip_style(cx.s.hue(&d.id))
-        } else if cx.has_surface() {
-            cx.rgb_bg(super::mix(cx.bg0(), cx.rgb(Tok::Faint), 0.55))
-                .patch(cx.ink(Tok::Muted, 0.9))
         } else {
             cx.ink(Tok::Muted, 0.6)
         };

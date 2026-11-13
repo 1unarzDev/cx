@@ -234,11 +234,6 @@ impl<'a> Cx<'a> {
             }
         }
     }
-    /// Background tint: none. Terminals are often transparent, and a painted cell reads
-    /// as a slab over the wallpaper: hierarchy is ink, weight, rules and glyphs.
-    pub fn wash(&self, _t: Tok, _a: f32) -> Style {
-        Style::default()
-    }
     pub fn rgb_fg(&self, c: Rgb) -> Style {
         match self.col(c) {
             Some(c) => Style::default().fg(c),
@@ -250,13 +245,6 @@ impl<'a> Cx<'a> {
             Some(c) => Style::default().bg(c),
             None => Style::default(),
         }
-    }
-    /// Panels and tiles have no surface of their own (see `wash`).
-    pub fn surface(&self) -> Style {
-        Style::default()
-    }
-    pub fn has_surface(&self) -> bool {
-        false
     }
 
     /// Value 0..1 to a calm ok → warn → err ramp.
@@ -400,15 +388,6 @@ impl<'a> Cx<'a> {
         self.hits.borrow_mut().clear();
     }
 
-    /// The focused selection's tint (`accent.bg`); nothing without tints, where the bar
-    /// and a bold accent name carry the selection (never a reversed block).
-    pub fn sel_bg(&self) -> Style {
-        if self.has_surface() {
-            self.st(Tok::AccentBg)
-        } else {
-            Style::default()
-        }
-    }
     /// The selection bar down the left of `h` rows: `▌` (ASCII `>` on the first row and
     /// `|` below, so a column of `>` never reads as shell prompts).
     pub fn bar(&self, buf: &mut Buffer, x: u16, y: u16, h: u16, st: Style) {

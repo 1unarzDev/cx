@@ -16,10 +16,6 @@ pub(super) enum Tok {
     Faint,
     /// Focus border, focused title chip, cursor bar.
     Accent,
-    /// Selected row in the focused panel (background).
-    AccentBg,
-    /// Selected row in an unfocused panel (background).
-    SelectDimBg,
     Ok,
     Warn,
     Err,
@@ -79,9 +75,6 @@ pub(super) fn spec(t: Tok) -> Row {
         Tok::Muted => row(0x8b93a1, 0x5c6470, (246, 241), Some(Color::DarkGray)),
         Tok::Faint => row(0x4a515c, 0xc3c8d0, (239, 251), Some(Color::DarkGray)),
         Tok::Accent => row(0x6cc4d6, 0x0b7285, (80, 30), Some(Color::Cyan)),
-        // 16-color selections use REVERSED instead of a background.
-        Tok::AccentBg => row(0x1d3a42, 0xd3eef3, (23, 195), None),
-        Tok::SelectDimBg => row(0x262b33, 0xeceff3, (236, 255), None),
         // Light ok/warn are darker than the draft table so they reach 4.5:1 on #f0f0f0.
         Tok::Ok => row(0x8fcf9d, 0x237a35, (114, 28), Some(Color::Green)),
         Tok::Warn => row(0xe3c275, 0x8f5b00, (179, 130), Some(Color::Yellow)),
@@ -625,14 +618,12 @@ mod tests {
             ..Caps::default()
         }
     }
-    const ALL: [Tok; 11] = [
+    const ALL: [Tok; 9] = [
         Tok::Code,
         Tok::Match,
         Tok::Muted,
         Tok::Faint,
         Tok::Accent,
-        Tok::AccentBg,
-        Tok::SelectDimBg,
         Tok::Ok,
         Tok::Warn,
         Tok::Err,

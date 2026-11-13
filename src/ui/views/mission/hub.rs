@@ -180,19 +180,14 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
 /// keys that act on it from the hub (a letter, then a verb).
 /// `ghost`: the session grid shows the `new on` tile, so the strip leaves new out.
 fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
-    let bg = if cx.has_surface() {
-        cx.surface()
-    } else {
-        ratatui::style::Style::default()
-    };
-    cx.fill(buf, r, bg);
+    cx.fill(buf, r, ratatui::style::Style::default());
     // No bar: column 0 is the focus bar only, and the strip is neither focused nor a
     // selection (it mirrors the map's).
     let right = r.right().saturating_sub(1);
     // (Text on the column every zone label and the ticker start on.)
     let y = r.y;
     let mut x = r.x + 1;
-    let nst = cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD).patch(bg);
+    let nst = cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD);
     x += orbit::name(cx, buf, x, y, d, 20, nst, true) + 2;
     let path = orbit::route(cx, &d.id);
     let via = if d.id == cx.s.viewer {
@@ -217,8 +212,7 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
         cx.st(Tok::Muted)
     } else {
         cx.ink(Tok::Err, 0.9)
-    }
-    .patch(bg);
+    };
     x += cx.put(buf, x, y, right.saturating_sub(x), &via, vst) + 2;
     if cx.size() >= Size::M {
         let who = format!("{} {} {}@{}", d.os, cx.g("·", "-"), d.account, d.host);
@@ -230,7 +224,7 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
             y,
             right.saturating_sub(x + 30),
             &fit(&who, 44, cx.uni()),
-            cx.ink(Tok::Muted, 0.7).patch(bg),
+            cx.ink(Tok::Muted, 0.7),
         ) + 2;
     }
     // Keys: the device's letter, then what it leads to, as two visible steps (the `c`
@@ -282,11 +276,11 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
     let y = r.y + 1;
     let mut x = r.x + 1;
     let stop = right.saturating_sub(kw);
-    let lab = cx.ink(Tok::Muted, 0.75).patch(bg);
+    let lab = cx.ink(Tok::Muted, 0.75);
     if let Some(m) = d.metrics.as_ref().filter(|_| up) {
         x += cx.put(buf, x, y, 4, "cpu ", lab);
         let v: Vec<Option<f32>> = m.cpu_hist.iter().map(|v| Some(*v)).collect();
-        tiles::spark(cx, buf, x, y, 16, &v, cx.spark_heat(m.cpu).patch(bg));
+        tiles::spark(cx, buf, x, y, 16, &v, cx.spark_heat(m.cpu));
         x += 17;
         x += cx.put(
             buf,
@@ -294,11 +288,11 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
             y,
             5,
             &format!("{:.0}%", m.cpu * 100.0),
-            cx.ink(Tok::Fg, 0.9).patch(bg),
+            cx.ink(Tok::Fg, 0.9),
         ) + 2;
         if x + 24 < stop {
             x += cx.put(buf, x, y, 4, "mem ", lab);
-            tiles::gauge(cx, buf, x, y, 8, m.mem, cx.heat(m.mem).patch(bg));
+            tiles::gauge(cx, buf, x, y, 8, m.mem, cx.heat(m.mem));
             x += 9;
             x += cx.put(
                 buf,
@@ -306,7 +300,7 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
                 y,
                 14,
                 &format!("{:.0}% of {:.0}G", m.mem * 100.0, m.mem_total_gb),
-                cx.ink(Tok::Fg, 0.9).patch(bg),
+                cx.ink(Tok::Fg, 0.9),
             ) + 2;
         }
         if let Some(t) = m.temp_c.filter(|_| x + 5 < stop) {
@@ -317,7 +311,7 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
                 y,
                 4,
                 &format!("{t:.0}{}", cx.g("°", "C")),
-                cx.heat(hv).patch(bg),
+                cx.heat(hv),
             ) + 2;
         }
         if x + 10 < stop {
@@ -331,11 +325,7 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
             stop.saturating_sub(x),
             &d.evidence,
             // Evidence without live figures: red only when the device is down.
-            if up {
-                lab
-            } else {
-                cx.ink(Tok::Err, 0.85).patch(bg)
-            },
+            if up { lab } else { cx.ink(Tok::Err, 0.85) },
         ) + 2;
     }
     for m in &d.meshes {
@@ -347,14 +337,7 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
         if x + w + 2 > stop {
             break;
         }
-        x += cx.put(
-            buf,
-            x,
-            y,
-            w,
-            &t,
-            cx.ink(orbit::mesh_tok(cx, m), 0.95).patch(bg),
-        ) + 2;
+        x += cx.put(buf, x, y, w, &t, cx.ink(orbit::mesh_tok(cx, m), 0.95)) + 2;
     }
     cx.hit(
         Rect::new(r.x, r.y, stop.saturating_sub(r.x), r.height),
@@ -558,10 +541,9 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
 
 fn phone_alert(cx: &Cx, buf: &mut Buffer, r: Rect, a: &Alert, kw: u16) {
     let (g, text, tok, keys, verb, act) = a;
-    let bg = cx.wash(*tok, 0.12);
-    cx.fill(buf, r, bg);
+    cx.fill(buf, r, ratatui::style::Style::default());
     let mut x = r.x + 1;
-    x += cx.put(buf, x, r.y, 2, g, cx.st(*tok).patch(bg)) + 1;
+    x += cx.put(buf, x, r.y, 2, g, cx.st(*tok)) + 1;
     let room = r.right().saturating_sub(x + kw + 2);
     // `◆` already says "needs you": those words go before the title is cut.
     let text = if super::width(text, cx.uni()) > room {
@@ -575,7 +557,7 @@ fn phone_alert(cx: &Cx, buf: &mut Buffer, r: Rect, a: &Alert, kw: u16) {
         r.y,
         room,
         &fit(&text, usize::from(room), cx.uni()),
-        cx.ink(Tok::Fg, 0.92).patch(bg),
+        cx.ink(Tok::Fg, 0.92),
     );
     let kx = r.right().saturating_sub(kw + 1);
     cx.chips(buf, kx, r.y, r.right(), &[(keys, verb, act)]);
@@ -587,18 +569,13 @@ fn phone_alert(cx: &Cx, buf: &mut Buffer, r: Rect, a: &Alert, kw: u16) {
 /// sighting; with two rows its cpu trend and temperature underneath.
 fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
     let d = t.d;
-    let bg = if sel && cx.has_surface() {
-        cx.st(Tok::AccentBg)
-    } else {
-        ratatui::style::Style::default()
-    };
-    cx.fill(buf, r, bg);
+    cx.fill(buf, r, ratatui::style::Style::default());
     if sel {
         cx.bar(buf, r.x, r.y, r.height, cx.st(Tok::Accent));
     }
     let right = r.right().saturating_sub(1);
     let mut x = r.x + 2;
-    let gst = |tok: Tok| cx.ink(tok, 0.85).patch(bg);
+    let gst = |tok: Tok| cx.ink(tok, 0.85);
     for &more in &t.guides {
         cx.put(
             buf,
@@ -642,7 +619,7 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
         let st = cx
             .ink(Tok::Id(cx.s.hue(&d.id)), 1.0)
             .add_modifier(Modifier::BOLD);
-        cx.put(buf, x, r.y, 3, &k, st.patch(bg));
+        cx.put(buf, x, r.y, 3, &k, st);
     }
     x += 4;
     let up = cx.up(d);
@@ -652,8 +629,7 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
         cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD)
     } else {
         cx.st(Tok::Muted)
-    }
-    .patch(bg);
+    };
     let meta = cx.meta(d);
     let (g, sst) = cx.status(d.status);
     let tail = super::width(&meta, cx.uni()) + 3;
@@ -667,35 +643,20 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
         nst,
     );
     let mut tx = right.saturating_sub(tail) + 1;
-    tx += cx.put(buf, tx, r.y, 1, g, sst.patch(bg)) + 1;
+    tx += cx.put(buf, tx, r.y, 1, g, sst) + 1;
     let mst = if up {
         cx.st(Tok::Muted)
     } else {
         cx.ink(Tok::Err, 0.85)
     };
-    cx.put(
-        buf,
-        tx,
-        r.y,
-        super::width(&meta, cx.uni()),
-        &meta,
-        mst.patch(bg),
-    );
+    cx.put(buf, tx, r.y, super::width(&meta, cx.uni()), &meta, mst);
     if r.height > 1 {
         let ex = x;
         if let Some(m) = d.metrics.as_ref().filter(|_| up) {
             let v: Vec<Option<f32>> = m.cpu_hist.iter().map(|v| Some(*v)).collect();
             let sw = right.saturating_sub(ex + 12).min(12);
             // One neutral tone: only a hot device's figure takes a colour.
-            tiles::spark(
-                cx,
-                buf,
-                ex,
-                r.y + 1,
-                sw,
-                &v,
-                cx.ink(Tok::Muted, 0.6).patch(bg),
-            );
+            tiles::spark(cx, buf, ex, r.y + 1, sw, &v, cx.ink(Tok::Muted, 0.6));
             let t = match m.temp_c {
                 Some(t) => format!("{:.0}% {t:.0}{}", m.cpu * 100.0, cx.g("°", "C")),
                 None => format!("{:.0}%", m.cpu * 100.0),
@@ -706,8 +667,7 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
                 r.y + 1,
                 10,
                 &t,
-                cx.st(if m.cpu >= 0.85 { Tok::Warn } else { Tok::Muted })
-                    .patch(bg),
+                cx.st(if m.cpu >= 0.85 { Tok::Warn } else { Tok::Muted }),
             );
         } else {
             cx.put(
@@ -716,7 +676,7 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
                 r.y + 1,
                 right.saturating_sub(ex),
                 &fit(&d.evidence, usize::from(right.saturating_sub(ex)), cx.uni()),
-                cx.ink(Tok::Muted, 0.8).patch(bg),
+                cx.ink(Tok::Muted, 0.8),
             );
         }
     }

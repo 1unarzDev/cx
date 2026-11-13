@@ -636,7 +636,7 @@ pub(super) fn thumbs_grid(
             }
             None => new_tile(cx, buf, tr, ghost, false, true),
         }
-        if !cx.has_surface() && ci + 1 < in_row && i + 1 < n {
+        if ci + 1 < in_row && i + 1 < n {
             cx.vsep(buf, tr.right(), tr.y, th);
         }
     }
@@ -712,7 +712,7 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
                 }
                 None => new_tile(cx, buf, tr, Some(d), list.is_empty(), false),
             }
-            if !cx.has_surface() && ci + 1 < cols && i + 1 < tiles_n as usize {
+            if ci + 1 < cols && i + 1 < tiles_n as usize {
                 cx.vsep(buf, tr.right(), tr.y, th);
             }
         }
@@ -1032,15 +1032,7 @@ fn new_tile(cx: &Cx, buf: &mut Buffer, r: Rect, d: Option<&LabDevice>, picked: b
         _ => 2,
     };
     // The cell's full height, so the grid keeps one rhythm; the content sits centred.
-    cx.fill(
-        buf,
-        r,
-        if picked {
-            cx.sel_bg()
-        } else {
-            Style::default()
-        },
-    );
+    cx.fill(buf, r, Style::default());
     let faint = if picked {
         cx.st(Tok::Accent)
     } else {
@@ -1180,8 +1172,7 @@ fn device_sessions_rows(
 fn stop_confirm(cx: &Cx, buf: &mut Buffer, tr: Rect, x: &LabSession) {
     let y = tr.bottom().saturating_sub(1);
     let row = Rect::new(tr.x + 1, y, tr.width.saturating_sub(1), 1);
-    let bg = cx.wash(Tok::Err, 0.22);
-    cx.fill(buf, row, bg);
+    cx.fill(buf, row, Style::default());
     let keys = "⌫";
     let tail = "again to stop, any key keeps it";
     let kw = cx.key_w(keys);
@@ -1196,7 +1187,7 @@ fn stop_confirm(cx: &Cx, buf: &mut Buffer, tr: Rect, x: &LabSession) {
         y,
         room,
         &fit(&q, room as usize, cx.uni()),
-        cx.st(Tok::Err).add_modifier(Modifier::BOLD).patch(bg),
+        cx.st(Tok::Err).add_modifier(Modifier::BOLD),
     );
     let k0 = xx;
     xx += cx.keycap(buf, xx, y, kw, keys, cx.key_style()) + 1;
@@ -1207,7 +1198,7 @@ fn stop_confirm(cx: &Cx, buf: &mut Buffer, tr: Rect, x: &LabSession) {
         y,
         row.right().saturating_sub(xx + 1),
         &fit(tail, row.right().saturating_sub(xx + 1) as usize, cx.uni()),
-        cx.ink(Tok::Fg, 0.85).patch(bg),
+        cx.ink(Tok::Fg, 0.85),
     );
 }
 
@@ -1301,14 +1292,6 @@ fn peek(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession) {
         avail
     };
     let scr = Rect::new(main.x, main.y + 2, main.width, scr_h);
-    if cx.has_surface() {
-        let base = if cx.dark() {
-            (0x0c, 0x0e, 0x11)
-        } else {
-            (0xff, 0xff, 0xff)
-        };
-        cx.fill(buf, scr, cx.rgb_bg(base));
-    }
     let inner = inset(scr, 2, 1);
     // The screen itself: the app scrolls it and types into it on a tap.
     cx.hit(inner, "peek-screen");
@@ -1386,7 +1369,7 @@ fn peek(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession) {
             tiles_r.height,
         );
         tiles::thumb(cx, buf, tr, o, None);
-        if !cx.has_surface() && i + 1 < usize::from(n) {
+        if i + 1 < usize::from(n) {
             cx.vsep(buf, tr.right(), tr.y, tr.height);
         }
     }
@@ -1491,12 +1474,7 @@ fn attached(cx: &Cx, buf: &mut Buffer, x: &LabSession) {
         }
     }
     let y = a.y;
-    let bar = if cx.has_surface() {
-        cx.st(Tok::Surface2)
-    } else {
-        Style::default()
-    };
-    cx.fill(buf, Rect::new(a.x, y, a.width, 1), bar);
+    cx.fill(buf, Rect::new(a.x, y, a.width, 1), Style::default());
     // On phones (touch, under 70 columns) `⏏` is dropped (phone fonts draw it as a
     // wide emoji) and the chord shortens, so the title keeps its room.
     let chip = if cx.touch() {
@@ -1515,18 +1493,18 @@ fn attached(cx: &Cx, buf: &mut Buffer, x: &LabSession) {
         y,
         2,
         "cx",
-        cx.st(Tok::Accent).add_modifier(Modifier::BOLD).patch(bar),
+        cx.st(Tok::Accent).add_modifier(Modifier::BOLD),
     );
     cx.hit(Rect::new(a.x, y, 3, 1), "hub");
     let sep = cx.g(" › ", " / ");
-    bx += cx.put(buf, bx, y, 3, sep, cx.ink(Tok::Faint, 1.0).patch(bar));
+    bx += cx.put(buf, bx, y, 3, sep, cx.ink(Tok::Faint, 1.0));
     // `cx › innovation › i a refactor transport`: the session's address sits before
     // its title exactly as on its tile (one address everywhere); phones drop the name.
     if let Some(d) = cx.s.device(&x.device).filter(|_| a.width >= 60) {
         let x0 = bx;
-        bx += cx.put(buf, bx, y, 20, &d.name, cx.ink(Tok::Fg, 0.9).patch(bar));
+        bx += cx.put(buf, bx, y, 20, &d.name, cx.ink(Tok::Fg, 0.9));
         cx.hit(Rect::new(x0, y, bx - x0, 1), format!("device:{}", d.id));
-        bx += cx.put(buf, bx, y, 3, sep, cx.ink(Tok::Faint, 1.0).patch(bar));
+        bx += cx.put(buf, bx, y, 3, sep, cx.ink(Tok::Faint, 1.0));
     }
     bx += tiles::addr(cx, buf, bx, y, x) + 1;
     let (g, word, sst) = cx.sstate(x);
@@ -1543,9 +1521,9 @@ fn attached(cx: &Cx, buf: &mut Buffer, x: &LabSession) {
         y,
         room,
         &fit(&x.title, room as usize, cx.uni()),
-        cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD).patch(bar),
+        cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD),
     ) + 2;
-    bx += cx.put(buf, bx, y, sw, &state, sst.patch(bar));
+    bx += cx.put(buf, bx, y, sw, &state, sst);
     // Wide screens keep one live fact on the bar: how long it has run, who else is in.
     if a.width >= 120 && (x.age_secs > 0 || x.clients > 0) {
         let fact = format!(
@@ -1557,7 +1535,7 @@ fn attached(cx: &Cx, buf: &mut Buffer, x: &LabSession) {
         );
         let fw = super::width(&fact, cx.uni());
         if bx + fw + 4 < dx {
-            cx.put_r(buf, dx - 2, y, &fact, cx.st(Tok::Muted).patch(bar));
+            cx.put_r(buf, dx - 2, y, &fact, cx.st(Tok::Muted));
         }
     }
     cx.put(buf, dx, y, cw, chip, cx.key_style());
@@ -1611,7 +1589,7 @@ fn files(cx: &Cx, buf: &mut Buffer, r: Rect) {
         let picked = i == sel;
         let row = Rect::new(list.x, y, list.width, 1);
         if picked {
-            cx.fill(buf, row, cx.sel_bg());
+            cx.fill(buf, row, Style::default());
             cx.put(buf, list.x, y, 1, cx.g("▌", ">"), cx.st(Tok::Accent));
         }
         let mut x = list.x + 1;
@@ -1863,9 +1841,6 @@ fn file_preview(cx: &Cx, buf: &mut Buffer, r: Rect, full: bool) {
     );
     // The preview surface: a tap target, and where the app draws its real preview.
     cx.hit(body, "preview-body");
-    if cx.has_surface() {
-        cx.fill(buf, body, cx.surface());
-    }
     let gw = 5u16;
     let mut in_code = false;
     for (i, l) in p.text.lines().take(body.height as usize).enumerate() {
@@ -2043,38 +2018,34 @@ fn send_to(cx: &Cx, buf: &mut Buffer, a: Rect) {
 }
 
 fn panel(cx: &Cx, buf: &mut Buffer, r: Rect) {
-    if cx.has_surface() {
-        cx.fill(buf, r, cx.st(Tok::Surface2));
+    cx.fill(buf, r, Style::default());
+    let st = cx.st(Tok::Accent);
+    let w = r.width.saturating_sub(2) as usize;
+    let (tl, tr, bl, br, h, v) = if cx.uni() {
+        ("╭", "╮", "╰", "╯", "─", "│")
     } else {
-        cx.fill(buf, r, Style::default());
-        let st = cx.st(Tok::Accent);
-        let w = r.width.saturating_sub(2) as usize;
-        let (tl, tr, bl, br, h, v) = if cx.uni() {
-            ("╭", "╮", "╰", "╯", "─", "│")
-        } else {
-            // ASCII sides are blank: `|` is only the focus bar's continuation.
-            ("-", "-", "-", "-", "-", " ")
-        };
-        cx.put(
-            buf,
-            r.x,
-            r.y,
-            r.width,
-            &format!("{tl}{}{tr}", h.repeat(w)),
-            st,
-        );
-        cx.put(
-            buf,
-            r.x,
-            r.bottom() - 1,
-            r.width,
-            &format!("{bl}{}{br}", h.repeat(w)),
-            st,
-        );
-        for y in r.y + 1..r.bottom() - 1 {
-            cx.put(buf, r.x, y, 1, v, st);
-            cx.put(buf, r.right() - 1, y, 1, v, st);
-        }
+        // ASCII sides are blank: `|` is only the focus bar's continuation.
+        ("-", "-", "-", "-", "-", " ")
+    };
+    cx.put(
+        buf,
+        r.x,
+        r.y,
+        r.width,
+        &format!("{tl}{}{tr}", h.repeat(w)),
+        st,
+    );
+    cx.put(
+        buf,
+        r.x,
+        r.bottom() - 1,
+        r.width,
+        &format!("{bl}{}{br}", h.repeat(w)),
+        st,
+    );
+    for y in r.y + 1..r.bottom() - 1 {
+        cx.put(buf, r.x, y, 1, v, st);
+        cx.put(buf, r.right() - 1, y, 1, v, st);
     }
 }
 
@@ -2338,7 +2309,7 @@ pub(super) fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str, cursor: usize
         }
         let row = Rect::new(inner.x.saturating_sub(1), yy, inner.width + 2, 1);
         if i == sel {
-            cx.fill(buf, row, cx.sel_bg());
+            cx.fill(buf, row, Style::default());
             cx.put(buf, row.x, yy, 1, cx.g("▌", ">"), cx.st(Tok::Accent));
         }
         // The keys are keycaps, as everywhere (the row's device letter in its hue), so
@@ -2399,7 +2370,7 @@ fn secrets(cx: &Cx, buf: &mut Buffer, r: Rect) {
         let y = top + u16::from(!compact);
         let picked = i == cx.c.selected % cx.s.secrets.len().max(1);
         let missing = s.masked.is_none();
-        cx.fill(buf, card, if picked { cx.sel_bg() } else { cx.surface() });
+        cx.fill(buf, card, Style::default());
         if picked {
             cx.bar(buf, card.x, card.y, card.height, cx.st(Tok::Accent));
         }
@@ -2524,7 +2495,7 @@ fn secrets(cx: &Cx, buf: &mut Buffer, r: Rect) {
     if let Some(e) = &cx.s.secret_entry {
         let y = top.min(r.bottom().saturating_sub(2));
         let rect = Rect::new(x0, y, w, r.bottom().saturating_sub(y).min(2));
-        cx.fill(buf, rect, cx.sel_bg());
+        cx.fill(buf, rect, Style::default());
         cx.bar(buf, rect.x, rect.y, rect.height, cx.st(Tok::Accent));
         let (label, shown) = if e.naming {
             ("name", e.name.clone())
@@ -2862,15 +2833,7 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
         cx.size() >= Size::M && cx.uni() && gw + 3 <= tw && r.bottom().saturating_sub(y) >= 16;
     if big {
         let st = cx.ink(Tok::Accent, 1.0);
-        let st = if cx.has_surface() {
-            cx.st(Tok::Surface2).patch(st)
-        } else {
-            st
-        };
         let tint = Rect::new(tx, y, gw + 3, 5);
-        if cx.has_surface() {
-            cx.fill(buf, tint, st);
-        }
         big_text(cx, buf, tx + 2, y + 1, &inv.code, st);
         cx.hit(tint, "copy-code");
         y += 6;
@@ -2892,24 +2855,10 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let text = format!("  {spaced}  ");
     let cw = super::width(&text, cx.uni());
     let st = cx.ink(Tok::Accent, 1.0).add_modifier(Modifier::BOLD);
-    let st = if cx.has_surface() {
-        cx.st(Tok::Surface2).patch(st)
-    } else {
-        st
-    };
-    // With room, the surface is three rows tall, so the code is the page's largest mark.
-    let tall = cx.has_surface() && r.height >= 24;
     if !big {
-        if tall {
-            cx.fill(buf, Rect::new(tx, y, cw, 3), st);
-            y += 1;
-        }
         let x = tx + cx.put(buf, tx, y, cw, &text, st);
-        cx.hit(
-            Rect::new(tx, y - u16::from(tall), x - tx, 1 + 2 * u16::from(tall)),
-            "copy-code",
-        );
-        y += if tall { 3 } else { 2 };
+        cx.hit(Rect::new(tx, y, x - tx, 1), "copy-code");
+        y += 2;
     }
     if y < r.bottom() {
         cx.put(
@@ -2933,9 +2882,6 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
             parts[2] = fit(&format!("{}{}", parts[2], "…"), cw, cx.uni());
         }
         let block = Rect::new(tx, y, tw, parts.len() as u16);
-        if cx.has_surface() {
-            cx.fill(buf, block, cx.surface());
-        }
         for (i, part) in parts.iter().enumerate() {
             cx.put(buf, tx + 1, y + i as u16, cw as u16, part, cx.st(Tok::Lan));
         }

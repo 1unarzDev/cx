@@ -487,13 +487,19 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
         .get(cx.c.selected % ids.len().max(1))
         .copied()
         .unwrap_or_default();
+    let toks = nebula::letter_toks(cx);
     let mut y = r.y + 1;
     for t in rows.iter().take(usize::from(shown)) {
+        let tok = toks
+            .iter()
+            .find(|(id, _)| *id == t.d.id)
+            .map_or(Tok::Fg, |e| e.1);
         tree_row(
             cx,
             buf,
             Rect::new(r.x, y, r.width, row_h),
             t,
+            tok,
             t.d.id == sel_id,
         );
         y += row_h;
@@ -584,8 +590,9 @@ fn phone_alert(cx: &Cx, buf: &mut Buffer, r: Rect, a: &Alert, kw: u16) {
 
 /// One device in the phone tree: branch guides in the hue of the link to its parent
 /// (dotted where only a password is allowed), its letter, name, and rtt or last
-/// sighting; with two rows its cpu trend and temperature underneath.
-fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
+/// sighting; with two rows its cpu trend and temperature underneath. `tok` is the
+/// letter's group hue, as on the map.
+fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, tok: Tok, sel: bool) {
     let d = t.d;
     let bg = if sel && cx.has_surface() {
         cx.st(Tok::AccentBg)
@@ -634,14 +641,12 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
         }
         x += 2;
     }
-    // The letter in its hue; the selected row gets the keycap.
+    // The letter in its group's hue; the selected row gets the keycap.
+    let st = cx.ink(tok, 1.0).add_modifier(Modifier::BOLD);
     if sel {
-        cx.dchip(buf, x, r.y, d, false);
+        cx.keycap(buf, x, r.y, 3, &d.hotkey.to_string(), st);
     } else {
         let k = format!(" {} ", d.hotkey);
-        let st = cx
-            .ink(Tok::Id(cx.s.hue(&d.id)), 1.0)
-            .add_modifier(Modifier::BOLD);
         cx.put(buf, x, r.y, 3, &k, st.patch(bg));
     }
     x += 4;

@@ -714,6 +714,17 @@ fn letter_tok(cl: &Cl) -> Tok {
     }
 }
 
+/// Each device's letter hue as the map draws it (its cluster's tone), by device id;
+/// this device is absent (the plain foreground, as for an ungrouped one).
+pub(super) fn letter_toks(cx: &Cx) -> Vec<(String, Tok)> {
+    let mut nodes = nodes_of(orbit::tree(cx, &cx.s.viewer, 3));
+    let cls = cluster(cx, &mut nodes);
+    nodes
+        .iter()
+        .map(|n| (n.d.id.clone(), letter_tok(&cls[n.cl])))
+        .collect()
+}
+
 /// The most member letters a folded cluster shows, on either half; the rest are in
 /// its `+N` count (and a step away once it blooms).
 const ROW_MAX: usize = 8;
@@ -729,17 +740,11 @@ fn row_members(cx: &Cx, cl: &Cl, nodes: &[N]) -> Vec<(usize, bool)> {
 }
 
 /// The letter row's cells left to right, one apart: the up letters in the cluster's
-/// hue, one extra space, then the down and never-seen ones in a faint shade of the
-/// same hue. The left half mirrors the block, not the order: every part still reads
-/// alphabetically left to right, and the faint part sits outermost on both halves.
-/// A cell of `None` text is the extra space. Each letter carries the member it names.
-fn letter_segs(
-    cx: &Cx,
-    cl: &Cl,
-    nodes: &[N],
-    a: f32,
-    left: bool,
-) -> Vec<(Option<String>, Style, Option<usize>)> {
+/// hue, then the down and never-seen ones in the neutral dim ink of an offline
+/// device. The left half mirrors the block, not the order: every part still reads
+/// alphabetically left to right, and the dim part sits outermost on both halves.
+/// Each letter carries the member it names.
+fn letter_segs(cx: &Cx, cl: &Cl, nodes: &[N], a: f32, left: bool) -> Vec<(String, Style, usize)> {
     let v = row_members(cx, cl, nodes);
     let ups = v.iter().filter(|&&(_, up)| up).count();
     let cell = |i: usize, (m, up): (usize, bool)| {
@@ -749,9 +754,9 @@ fn letter_segs(
             0.0
         };
         (
-            Some(nodes[m].d.hotkey.to_string()),
+            nodes[m].d.hotkey.to_string(),
             letter_ink(cx, cl, up, t, a),
-            Some(m),
+            m,
         )
     };
     let up: Vec<_> = v[..ups]
@@ -764,11 +769,10 @@ fn letter_segs(
         .enumerate()
         .map(|(i, &c)| cell(i, c))
         .collect();
-    let gap = (!up.is_empty() && !down.is_empty()).then(|| (None, Style::default(), None));
     if left {
-        down.into_iter().chain(gap).chain(up).collect()
+        down.into_iter().chain(up).collect()
     } else {
-        up.into_iter().chain(gap).chain(down).collect()
+        up.into_iter().chain(down).collect()
     }
 }
 
@@ -776,28 +780,30 @@ fn letter_segs(
 fn letter_w(cx: &Cx, cl: &Cl, nodes: &[N]) -> u16 {
     letter_segs(cx, cl, nodes, 1.0, false)
         .iter()
-        .map(|(t, ..)| t.as_ref().map_or(0, |t| super::width(t, cx.uni())) + 1)
+        .map(|(t, ..)| super::width(t, cx.uni()) + 1)
         .sum::<u16>()
         .saturating_sub(1)
 }
 
-/// A member letter's ink: one hue at two strengths. Up members in the cluster's tone
-/// at full strength (in truecolor drifting a few percent lighter along the row, `t`
-/// from 0 to 1), down and never-seen ones in a faint shade of the same hue (dim in 16
-/// colours), never the neutral ink the orbit dust is drawn in.
+/// A member letter's ink. Up members in the cluster's tone (in truecolor drifting a
+/// few percent lighter along the row, `t` from 0 to 1); down and never-seen ones in
+/// the neutral dim grey an offline device's name has, with no hue.
 fn letter_ink(cx: &Cx, cl: &Cl, up: bool, t: f32, a: f32) -> Style {
-    let tok = letter_tok(cl);
     if !up {
-        // (Light needs a little more ink to stay legible; 16 colours dim it.)
-        let k = if cx.tc() && !cx.dark() { 0.62 } else { 0.5 };
-        return cx.ink(tok, k * a);
+        return off_ink(cx, a);
     }
+    let tok = letter_tok(cl);
     if cx.tc() {
         let c = super::mix(cx.rgb(tok), cx.fg0(), 0.06 * t);
         cx.rgb_fg(super::mix(cx.bg0(), c, a))
     } else {
         cx.ink(tok, a)
     }
+}
+
+/// An offline device's ink: its name on the map, its letter in a folded row.
+fn off_ink(cx: &Cx, a: f32) -> Style {
+    cx.ink(Tok::Muted, 0.75 * a)
 }
 
 fn cl_count(cl: &Cl) -> String {
@@ -1730,13 +1736,7 @@ fn label(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It, r: R, pick: Option<bool>,
             if p.mode == Mode::Key {
                 // The same ink its letter has in its folded cluster's row.
                 let tok = p.cls.get(p.nodes[i].cl).map_or(Tok::Fg, letter_tok);
-                let ta = if up {
-                    a
-                } else if cx.tc() && !cx.dark() {
-                    0.62 * a
-                } else {
-                    0.5 * a
-                };
+                let (tok, ta) = if up { (tok, a) } else { (Tok::Muted, 0.75 * a) };
                 let st =
                     faded(cx, tok, ta, sel_k).add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
                 let (lx, gx) = if left { (x + w - 1, x) } else { (x, x + 1) };
@@ -1803,18 +1803,15 @@ fn label(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It, r: R, pick: Option<bool>,
                     x + 2
                 };
                 for (t, st, m) in letter_segs(cx, cl, &p.nodes, a, left) {
-                    if let Some(t) = t {
-                        let tw = super::width(&t, cx.uni());
-                        cells.push((xx, t, st, m));
-                        xx += tw;
-                    }
-                    xx += 1;
+                    let tw = super::width(&t, cx.uni());
+                    cells.push((xx, t, st, m));
+                    xx += tw + 1;
                 }
             }
             let hover = cells
                 .iter()
-                .find(|(xx, _, _, m)| m.is_some() && cx.c.hover == Some((*xx, y + 1)))
-                .and_then(|c| c.3);
+                .find(|(xx, ..)| cx.c.hover == Some((*xx, y + 1)))
+                .map(|c| c.3);
             let nw = super::width(&nm, cx.uni());
             let cw = super::width(&count, cx.uni());
             // The title stays put; a pointed-at member's name (and its rtt or age where
@@ -1861,7 +1858,7 @@ fn label(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It, r: R, pick: Option<bool>,
             // Its members' letters (keys that open it on them): one hue at two
             // strengths, the pointed-at one bold and underlined in the accent.
             for (xx, t, mut st, m) in cells {
-                if m.is_some() && m == hover {
+                if Some(m) == hover {
                     st = cx
                         .st(Tok::Accent)
                         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);

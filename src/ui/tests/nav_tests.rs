@@ -1208,7 +1208,8 @@ fn the_ticker_names_the_device_and_a_short_reason() {
     assert_eq!(n.device.as_deref(), Some("1"));
 }
 
-/// A device keeps its identity hue when another device is removed.
+/// A device keeps its identity hue (its id's hash) when another device is removed;
+/// only one bumped aside by a collision with the removed one moves back to its own.
 #[test]
 fn a_device_keeps_its_hue_when_another_leaves() {
     let mut a = viewmodel::tests::hub_app();
@@ -1221,10 +1222,12 @@ fn a_device_keeps_its_hue_when_another_leaves() {
             .unwrap()
             .hue
     };
-    let nas = hue(&a, "nas");
+    let local = hue(&a, "tranquility");
+    assert_eq!(local, crate::ui::theme::swatch_index("local"));
     a.devices.remove(1);
     a.work.remove(1);
-    assert_eq!(hue(&a, "nas"), nas);
+    assert_eq!(hue(&a, "tranquility"), local);
+    assert_eq!(hue(&a, "nas"), crate::ui::theme::swatch_index("nas"));
 }
 
 /// The design's tokens are the theme's: one light `ok`/`warn` (4.5:1 on #f0f0f0), and

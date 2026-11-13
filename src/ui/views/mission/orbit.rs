@@ -85,7 +85,7 @@ pub(super) fn mesh_tok(cx: &Cx, id: &str) -> Tok {
 /// accent, in 16 colours too: violet, blue, amber, then pink (magenta, bright blue,
 /// yellow, bright magenta), round again after four.
 pub(super) fn mesh_tok_at(i: usize) -> Tok {
-    [Tok::Mesh, Tok::Id(5), Tok::Id(1), Tok::Id(7)][i % 4]
+    [Tok::Mesh, Tok::Id(3), Tok::Amber, Tok::Id(5)][i % 4]
 }
 
 /// A link's hue: its mesh, teal for lan, neutral for direct ssh, red when down.

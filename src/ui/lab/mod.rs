@@ -500,6 +500,10 @@ mod size_fuzz {
             x.screen.clear();
         }
         v.push(("empty-previews".into(), blank));
+        // The hub's nebula: a mid-size and a full network (both fold clusters).
+        for n in [10, 25] {
+            v.push((format!("nebula-{n}"), state::nebula(n)));
+        }
         v
     }
 

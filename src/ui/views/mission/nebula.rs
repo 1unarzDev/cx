@@ -1640,6 +1640,7 @@ fn label(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It, r: R, pick: Option<bool>,
 /// orbits, a few empty seats on the outer one waiting for the devices it will reach.
 /// Nothing touches its name; ASCII keeps the name alone.
 pub(super) fn welcome(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
+    let r = r.intersection(cx.area).intersection(buf.area);
     let nw = super::width(&d.name, cx.uni()) + 2;
     if r.width < nw + 4 || r.height == 0 {
         return;

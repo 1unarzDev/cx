@@ -9,8 +9,8 @@ A private HOME with four managed shells; the viewer runs on a 190x50 PTY.
     `␣` peeks the focused tile and Enter attaches it (a tmux client appears).
   * Palette (`/`): Down, Ctrl+N and Ctrl+P move the drawn selection; Left moves the
     text cursor, so typing lands where it is.
-  * File search (`f`, then `/`): Down moves to the next match, Left/Right move the
-    cursor in the query; then Shift+H returns to the hub.
+  * File search (`f`, then yazi's `/`): Down moves to the next match, Left/Right move
+    the cursor in the query; then Shift+H returns to the hub.
 Before v0.2.2 the palette drew the hub's selection, never its own (the arrows changed
 nothing visible), and the tiles only moved in a line.
 """
@@ -159,14 +159,15 @@ def main():
         press(letter.group(1).encode(), lambda: 'SESSIONS' in text() and 'LINKS' in text() or 'new' in text(),
               'the device did not open')
         press(b'f', lambda: 'work-0' in text(), 'files did not open')
-        press(b'/', lambda: 'Search' in text(), 'file search did not open')
+        # yazi's find (`/`): the hovered match carries [i/n]; Down/Ctrl+N/Up step it.
+        press(b'/', lambda: 'Find next:' in text(), 'file search did not open')
         viewer.write(b'work')
-        settle(lambda: re.search(r'Search · 1/4', text()), 'four matches for "work"')
-        press(DOWN, lambda: re.search(r'Search · 2/4', text()), 'Down did not move to the next match')
-        press(b'\x0e', lambda: re.search(r'Search · 3/4', text()), 'Ctrl+N did not move to the next match')
-        press(UP, lambda: re.search(r'Search · 2/4', text()), 'Up did not move to the previous match')
+        settle(lambda: '[1/4]' in text(), 'four matches for "work"')
+        press(DOWN, lambda: '[2/4]' in text(), 'Down did not move to the next match')
+        press(b'\x0e', lambda: '[3/4]' in text(), 'Ctrl+N did not move to the next match')
+        press(UP, lambda: '[2/4]' in text(), 'Up did not move to the previous match')
         viewer.write(LEFT * 4 + b'x')
-        settle(lambda: '/  xwork' in viewer.screen.display[-1], 'Left did not move the search cursor')
+        settle(lambda: 'xwork' in text(), 'Left did not move the search cursor')
         # Shift+H is the hub from Files (v0.2.2; a 65% keyboard has no backtick).
         viewer.write(b'\x1b')  # Esc ends the search (its matches stay highlighted)
         viewer.read(.3)

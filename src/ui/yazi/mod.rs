@@ -510,10 +510,7 @@ impl App {
         let pre = prepends()
             .iter()
             .map(|(on, _, desc)| (on.as_slice(), desc.as_str()));
-        let map = keymap()
-            .iter()
-            .map(|b| (b.on, b.desc))
-            .map(|(on, d)| (on, d));
+        let map = keymap().iter().map(|b| (b.on, b.desc));
         let mut out = Vec::new();
         let mut push = |on: &[&str], desc: &str| {
             if on.len() > seq.len() && on.iter().zip(seq).all(|(a, b)| a == b) {

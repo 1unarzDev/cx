@@ -1128,9 +1128,8 @@ pub(crate) fn render(v: &View, t: &Theme, look: Look, area: Rect, buf: &mut Buff
         v.linemode,
         v.now,
     );
-    match &v.preview {
-        Some(Preview::Folder(c)) => column(&mut p, t, vr, c, Which::Preview, v.linemode, v.now),
-        _ => {}
+    if let Some(Preview::Folder(c)) = &v.preview {
+        column(&mut p, t, vr, c, Which::Preview, v.linemode, v.now);
     }
     status(&mut p, t, status_r, &v.status);
     d

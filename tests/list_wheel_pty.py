@@ -59,8 +59,10 @@ for view in ['Files','Work']:
    for index in range(2,7):
     send(f'\x1b[<65;40;{current()[1]+1}M'.encode());assert current()[0]==ordered[index],(view,index,current())
    send(f'\x1b[<64;40;{current()[1]+1}M'.encode());assert current()[0]==ordered[5]
-   send(b'\x1b[B');assert current()[0]==ordered[6]
-   send(b'\x1b[A');assert current()[0]==ordered[5]
+   # The keys step too: Down/Up in a list; in a device's grid Right/Left (Down is the
+   # tile below there).
+   send(b'\x1b[B' if view=='Files' else b'\x1b[C');assert current()[0]==ordered[6],(view,current())
+   send(b'\x1b[A' if view=='Files' else b'\x1b[D');assert current()[0]==ordered[5],(view,current())
    if view=='Files':
     # Search stays inline and highlights file00..file09. The wheel must cross
     # the last match into adjacent nonmatches, rather than wrapping to file00.

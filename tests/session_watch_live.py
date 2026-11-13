@@ -143,11 +143,11 @@ def cycles(binary, count):
     try:
         def native():
             return ('detach' in fixture.viewer.screen.display[-1] and '╭ Devices' not in fixture.text()
-                    and 'NETWORK' not in fixture.text() and 'SESSIONS' not in fixture.text())
+                    and 'cx › network' not in fixture.text() and 'SESSIONS' not in fixture.text())
 
         def ui_back():
-            # Detach lands on the hub (its NETWORK zone), the old layout on its Devices box.
-            return '╭ Devices' in fixture.text() or 'NETWORK' in fixture.text()
+            # Detach lands on the hub (its crumb), the old layout on its Devices box.
+            return '╭ Devices' in fixture.text() or 'cx › network' in fixture.text()
         failures = 0
         for _ in range(count):
             attached, _ = fixture.viewer.measure(ph.ATTACH_KEY, native, timeout=10)

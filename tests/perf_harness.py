@@ -497,17 +497,17 @@ def scenario_sessions(binary, cycles):
 
             def native():
                 return ('detach' in viewer.screen.display[-1] and '╭ Devices' not in viewer.text()
-                        and 'NETWORK' not in viewer.text() and '$' in viewer.text())
+                        and 'cx › network' not in viewer.text() and '$' in viewer.text())
 
             def ui_back():
-                return '╭ Devices' in viewer.text() or 'NETWORK' in viewer.text()
+                return '╭ Devices' in viewer.text() or 'cx › network' in viewer.text()
 
             def inline_key():
                 if not hub:
                     return INLINE_KEY
                 # Peek the selected session (from the hub after a detach), then tap its prompt.
-                if 'NETWORK' in viewer.text():
-                    viewer.measure(b' ', lambda: 'NETWORK' not in viewer.text(), timeout=TIMEOUT)
+                if 'cx › network' in viewer.text():
+                    viewer.measure(b' ', lambda: 'cx › network' not in viewer.text(), timeout=TIMEOUT)
                     viewer.quiesce(.1)
                 y = min(y for y, line in enumerate(viewer.screen.display) if '$' in line and y > 1)
                 x = viewer.screen.display[y].index('$')
@@ -841,7 +841,7 @@ def instant_hub(viewer, cycles, marker):
         return '⏏ detach' in viewer.text() or 'typing into the session' in viewer.text()
 
     def native():
-        return ('detach' in viewer.screen.display[-1] and 'NETWORK' not in viewer.text()
+        return ('detach' in viewer.screen.display[-1] and 'cx › network' not in viewer.text()
                 and '$' in viewer.text() and not peek())
 
     def tap_prompt():
@@ -865,7 +865,7 @@ def instant_hub(viewer, cycles, marker):
         viewer.quiesce(.15)
         attach.add(viewer.measure(ATTACH_KEY, native, timeout=TIMEOUT))
         viewer.quiesce(.15)
-        ret.add(viewer.measure(DETACH_KEY, lambda: 'NETWORK' in viewer.text(), timeout=TIMEOUT))
+        ret.add(viewer.measure(DETACH_KEY, lambda: 'cx › network' in viewer.text(), timeout=TIMEOUT))
         viewer.quiesce(.3)
         # Back to the device's tiles for the next cycle.
         viewer.measure(b'\x1b', lambda: True, timeout=1)

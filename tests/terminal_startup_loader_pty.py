@@ -71,7 +71,7 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-loader-') as tmp:
     try:
         # The hub (or, with only this device, its welcome; Esc is plain SSH), then this
         # device's Files (Enter, `f`), where `n` opens the chooser.
-        wait(lambda:'NETWORK' in text() or 'welcome' in text()); read(.4)
+        wait(lambda:'cx › network' in text() or 'welcome' in text()); read(.4)
         os.write(master,b'\x1b'); read(.5)
         os.write(master,b'\r'); read(.5)
         os.write(master,b'f'); wait(lambda:'FILES' in text()); read(.4)
@@ -90,7 +90,7 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-loader-') as tmp:
         # cx's last frame: the primary screen, with a prior attach's "[detached]"
         # teardown text, is never shown before tmux repaints.
         assert b'\x1b[?1049l' not in raw, 'handoff showed the primary screen'
-        os.write(master,b'\x1c'); wait(lambda:'NETWORK' in text())
+        os.write(master,b'\x1c'); wait(lambda:'cx › network' in text())
         os.write(master,b'\x03');proc.wait(timeout=5)
         assert termios.tcgetattr(slave)==before
     finally:

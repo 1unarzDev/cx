@@ -49,9 +49,9 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-directory-') as temporary:
         # The start view is the hub; this device's Files (Enter, then `f`) are the
         # launch folder.
         deadline = time.monotonic()+10
-        while time.monotonic()<deadline and 'NETWORK' not in '\n'.join(screen.display):
+        while time.monotonic()<deadline and 'cx › network' not in '\n'.join(screen.display):
             read()
-        assert 'NETWORK' in '\n'.join(screen.display), 'the hub is not the start view'
+        assert 'cx › network' in '\n'.join(screen.display), 'the hub is not the start view'
         os.write(master, b'\r')
         read(.4)
         os.write(master, b'f')

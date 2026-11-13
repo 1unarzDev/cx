@@ -20,6 +20,11 @@ import perf_harness as ph  # noqa: E402
 import files_bench as fb  # noqa: E402
 
 
+def on_hub(text):
+    """The hub, by its crumb: `cx › network` or, with its tiles focused, `cx › sessions`."""
+    return 'cx › network' in text or 'cx › sessions' in text
+
+
 def control_clients(home):
     """Pids of tmux control clients on this fixture's managed socket."""
     socket = str(home / 'state/cx/managed.sock')
@@ -143,11 +148,11 @@ def cycles(binary, count):
     try:
         def native():
             return ('detach' in fixture.viewer.screen.display[-1] and '╭ Devices' not in fixture.text()
-                    and 'cx › network' not in fixture.text() and 'SESSIONS' not in fixture.text())
+                    and not on_hub(fixture.text()) and 'SESSIONS' not in fixture.text())
 
         def ui_back():
             # Detach lands on the hub (its crumb), the old layout on its Devices box.
-            return '╭ Devices' in fixture.text() or 'cx › network' in fixture.text()
+            return '╭ Devices' in fixture.text() or on_hub(fixture.text())
         failures = 0
         for _ in range(count):
             attached, _ = fixture.viewer.measure(ph.ATTACH_KEY, native, timeout=10)

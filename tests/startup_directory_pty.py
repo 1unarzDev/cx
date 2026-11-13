@@ -3,6 +3,11 @@
 import fcntl, json, os, pathlib, pty, select, struct, subprocess, sys, tempfile, termios, time
 import pyte
 
+
+def on_hub(text):
+    """The hub, by its crumb: `cx › network` or, with its tiles focused, `cx › sessions`."""
+    return 'cx › network' in text or 'cx › sessions' in text
+
 binary = str(pathlib.Path(sys.argv[1]).resolve())
 with tempfile.TemporaryDirectory(prefix='cx-startup-directory-') as temporary:
     root = pathlib.Path(temporary)
@@ -49,9 +54,9 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-directory-') as temporary:
         # The start view is the hub; this device's Files (Enter, then `f`) are the
         # launch folder.
         deadline = time.monotonic()+10
-        while time.monotonic()<deadline and 'cx › network' not in '\n'.join(screen.display):
+        while time.monotonic()<deadline and not on_hub('\n'.join(screen.display)):
             read()
-        assert 'cx › network' in '\n'.join(screen.display), 'the hub is not the start view'
+        assert on_hub('\n'.join(screen.display)), 'the hub is not the start view'
         os.write(master, b'\r')
         read(.4)
         os.write(master, b'f')

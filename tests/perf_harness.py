@@ -95,6 +95,11 @@ def cpu_ticks(pid):
         return 0
 
 
+def on_hub(text):
+    """The hub, by its crumb: `cx › network` or, with its tiles focused, `cx › sessions`."""
+    return 'cx › network' in text or 'cx › sessions' in text
+
+
 class Env:
     """A private cx home. Tracks every pid observed carrying its HOME for cleanup checks."""
 
@@ -497,17 +502,17 @@ def scenario_sessions(binary, cycles):
 
             def native():
                 return ('detach' in viewer.screen.display[-1] and '╭ Devices' not in viewer.text()
-                        and 'cx › network' not in viewer.text() and '$' in viewer.text())
+                        and not on_hub(viewer.text()) and '$' in viewer.text())
 
             def ui_back():
-                return '╭ Devices' in viewer.text() or 'cx › network' in viewer.text()
+                return '╭ Devices' in viewer.text() or on_hub(viewer.text())
 
             def inline_key():
                 if not hub:
                     return INLINE_KEY
                 # Peek the selected session (from the hub after a detach), then tap its prompt.
-                if 'cx › network' in viewer.text():
-                    viewer.measure(b' ', lambda: 'cx › network' not in viewer.text(), timeout=TIMEOUT)
+                if on_hub(viewer.text()):
+                    viewer.measure(b' ', lambda: not on_hub(viewer.text()), timeout=TIMEOUT)
                     viewer.quiesce(.1)
                 y = min(y for y, line in enumerate(viewer.screen.display) if '$' in line and y > 1)
                 x = viewer.screen.display[y].index('$')
@@ -705,6 +710,7 @@ def remote_fixture(binary, tag, polling, rtt_ms):
         f'{k}={shlex.quote(v)}' for k, v in remote.items()) + ' ' + shlex.quote(binary)
     (ssh.tools / 'ssh').write_text(f'''#!{sys.executable} -I
 import os,re,sys
+
 args=sys.argv[1:]
 while '-F' in args:
     i=args.index('-F');del args[i:i+2]
@@ -841,7 +847,7 @@ def instant_hub(viewer, cycles, marker):
         return '⏏ detach' in viewer.text() or 'typing into the session' in viewer.text()
 
     def native():
-        return ('detach' in viewer.screen.display[-1] and 'cx › network' not in viewer.text()
+        return ('detach' in viewer.screen.display[-1] and not on_hub(viewer.text())
                 and '$' in viewer.text() and not peek())
 
     def tap_prompt():
@@ -865,7 +871,7 @@ def instant_hub(viewer, cycles, marker):
         viewer.quiesce(.15)
         attach.add(viewer.measure(ATTACH_KEY, native, timeout=TIMEOUT))
         viewer.quiesce(.15)
-        ret.add(viewer.measure(DETACH_KEY, lambda: 'cx › network' in viewer.text(), timeout=TIMEOUT))
+        ret.add(viewer.measure(DETACH_KEY, lambda: on_hub(viewer.text()), timeout=TIMEOUT))
         viewer.quiesce(.3)
         # Back to the device's tiles for the next cycle.
         viewer.measure(b'\x1b', lambda: True, timeout=1)

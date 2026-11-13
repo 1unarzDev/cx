@@ -685,6 +685,13 @@ def scenario_firstframe(binary, fx, side, device_index, ssh, tag, res, run):
     if not shutil.which('yazi'):
         res.notes.append('firstframe: yazi not installed') if run == 0 else None
         return
+    if ssh:
+        # cx's ssh is the fixture's Python wrapper (yazi's is ssh itself): its start-up is
+        # in every cx connect and in none of yazi's. A refused command measures just that.
+        for _ in range(3):
+            t0 = time.monotonic()
+            subprocess.run([str(ssh.tools / 'ssh'), 'fixture', 'true'], capture_output=True, timeout=10)
+            res.add(f'{side}.firstframe.ssh_wrapper_ms', ms(t0, time.monotonic()))
     for n in [x for x in (1000, 100000) if x in fx.sizes]:
         folder = fx.dirs[n] / 'big'
         for tool in ('yazi', 'cx'):
@@ -1209,6 +1216,10 @@ def markdown(report):
                 if present(b):
                     out.append(f'| {side} | {n} | ' + ' | '.join(
                         cell(f'{b}.{tool}.{temp}_ms') for tool in ('yazi', 'cx') for temp in ('cold', 'warm')) + ' |')
+        if present('remote.firstframe.ssh_wrapper'):
+            out.append(f"\ncx's remote connects include the fixture's ssh wrapper start-up "
+                       f"({cell('remote.firstframe.ssh_wrapper_ms')}); yazi's do not. "
+                       'cx warm paints the folder\'s last listing before the connect finishes.')
         out.append('')
     out += ['## Directory open (Enter -> ...)', '',
             '| Side | Entries | Case | First rows | Usable (j moves) | Full count | Final count |',

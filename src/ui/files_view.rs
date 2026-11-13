@@ -439,6 +439,28 @@ impl App {
             }
         }
     }
+    /// A browser handed over without rows (a restart into Files) paints the folder's
+    /// last listing (kept in memory or persisted) at once; the refresh reconciles it.
+    pub(super) fn fill_browser_from_cache(&mut self) {
+        let Some(b) = self.browser.as_ref().filter(|b| b.entries.is_empty()) else {
+            return;
+        };
+        let key = (
+            b.device,
+            b.path.clone(),
+            browser_scope_key(b.container.as_ref()),
+        );
+        let Some(cached) = self.browser_cache.remove(&key) else {
+            return;
+        };
+        let b = self.browser.as_mut().unwrap();
+        b.entries = cached.entries;
+        b.display_path = cached.display_path;
+        b.parent = cached.parent.or(b.parent.take());
+        if let Some(path) = &b.restore_selection {
+            b.selected = browser_entries(b).position_of(path).unwrap_or(0);
+        }
+    }
     pub(super) fn refresh_browser(&mut self) {
         self.generation += 1;
         if let Some(b) = self.browser.as_mut() {

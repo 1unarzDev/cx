@@ -1408,6 +1408,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         }
     }
     if restore.is_some() && app.view == View::Files {
+        app.fill_browser_from_cache();
         app.refresh_browser();
         if let Some(b) = app.browser.as_ref() {
             let (d, path) = (b.device, b.path.clone());

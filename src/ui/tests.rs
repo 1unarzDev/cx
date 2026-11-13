@@ -7062,3 +7062,22 @@ fn yazi_hover_markdown_is_source_and_code_is_cropped() {
     assert_eq!(first, "# Fixture project");
     a.browser.as_mut().unwrap().peek = Some(Box::new(peek));
 }
+
+#[test]
+fn restart_into_files_paints_the_folders_last_listing_before_the_reply() {
+    let (mut a, rx) = file_app();
+    // The listing from before (a persisted navigation cache restores into browser_cache).
+    let listed = a.browser.take().unwrap();
+    a.browser_cache
+        .insert((0, "/files".into(), String::new()), listed);
+    let mut handed = Browser::new(0, "/files".into());
+    handed.restore_selection = Some("/files/beta.txt".into());
+    a.browser = Some(handed);
+    a.fill_browser_from_cache();
+    a.refresh_browser();
+    let b = a.browser.as_ref().unwrap();
+    assert_eq!(b.entries.len(), 4, "rows painted from the last listing");
+    assert_eq!(browser_entries(b).get(b.selected).unwrap().name, "beta.txt");
+    assert!(b.loading, "and refreshed in place");
+    assert!(matches!(rx.try_recv().unwrap().op, Operation::List { path } if path == "/files"));
+}

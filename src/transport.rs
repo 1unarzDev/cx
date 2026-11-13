@@ -588,10 +588,28 @@ impl Drop for Connection {
 }
 impl Connection {
     fn open(target: &str) -> Result<Self> {
-        // Join (or start) the route's shared master, waiting only briefly so
-        // the operation's own timeout still covers a direct handshake. A
-        // typed failure is the same evidence a direct BatchMode attempt gives.
-        let master = ensure_master(target, CHANNEL_MASTER_WAIT);
+        Self::open_waiting(target, CHANNEL_MASTER_WAIT)
+    }
+    /// Join (or start) the route's shared master, waiting at most `wait` so
+    /// the operation's own timeout still covers a direct handshake. A typed
+    /// failure is the same evidence a direct BatchMode attempt gives. Files
+    /// reads pass zero: a cold first listing connects directly in parallel
+    /// with the starting master (one handshake, as `ssh host` pays), and later
+    /// channels join the master.
+    fn open_waiting(target: &str, wait: std::time::Duration) -> Result<Self> {
+        let master = if wait.is_zero() {
+            // No local `-O check` on the request path: the channel joins a live
+            // master by itself (ControlMaster=no) or connects directly.
+            let owned = target.to_owned();
+            let _ = std::thread::Builder::new()
+                .name("cx-ssh-prewarm".into())
+                .spawn(move || {
+                    ensure_master(&owned, std::time::Duration::ZERO);
+                });
+            MasterState::Unavailable
+        } else {
+            ensure_master(target, wait)
+        };
         if let MasterState::Failed(failure) = master {
             return Err(failure.into());
         }
@@ -806,7 +824,12 @@ fn request_once(d: &Device, op: Operation, hover: bool) -> Result<serde_json::Va
         *slot = None;
     }
     if slot.is_none() {
-        *slot = Some(Connection::open(target)?);
+        let wait = if channel_class(&op) == Channel::Files {
+            std::time::Duration::ZERO
+        } else {
+            CHANNEL_MASTER_WAIT
+        };
+        *slot = Some(Connection::open_waiting(target, wait)?);
     }
     let response_timeout = if channel_class(&op) == Channel::Interactive {
         3

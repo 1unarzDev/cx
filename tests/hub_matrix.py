@@ -70,8 +70,9 @@ def nebula(n, sessions):
 
 def configs():
     four = [('local', s) for s in STATES]
-    out = [nebula(1, []), nebula(3, four), nebula(5, four),
-           nebula(7, four + [('innovation', 'needs you'), ('innovation', 'idle')]),
+    welcome = dict(nebula(1, []), name='welcome', lab=None)
+    out = [welcome, nebula(1, [('local', 'idle')]), nebula(3, four), nebula(5, four),
+           nebula(7, four + [('innovation', 'working'), ('innovation', 'idle')]),
            nebula(10, four), nebula(15, four[:2]), nebula(25, four)]
     long5 = dict(name='long-5', lab=None, meshes=0, temp=None, sessions=four + four,
                  devices=[dict(name=nm, state='down' if i == 3 else 'up', mesh=None, lan=i == 1,
@@ -420,33 +421,31 @@ def capture_config(binary, cfg, tiers, sizes, out, lab):
 # ---------------------------------------------------------------------------- checks
 
 def strip_row(lines):
-    """The vitals strip: the last row naming this device (the map's root names it first)."""
-    rows = [y for y, l in enumerate(lines) if 'tranquility' in l]
-    return rows[-1] if len(rows) >= 2 else None
+    """The selected device's strip under the map (this device's says `this device`)."""
+    return next((y for y, l in enumerate(lines) if 'this device' in l), None)
+
+
+def name_re(name, k=None):
+    """A device name as drawn: whole, or its first k letters cut with an ellipsis; ascii marks
+    the hotkey letter as `(x)`."""
+    part = ''.join(f'(?:\\({re.escape(c)}\\)|{re.escape(c)})' for c in name[:k])
+    return re.compile(part + ('(?:…|~|\\.\\.)' if k else '(?![\\w-])'))
 
 
 def labels(lines, names, band):
-    """Where each device's label starts in the map band: its whole name, else a prefix cut
-    with an ellipsis. Returns {name: (row, col, end)}."""
+    """Where each device's label starts in the map band. Returns {name: (row, col, end)};
+    labels never share a cell (a name an overlap garbled is simply not found)."""
     found = {}
     for name in sorted(names, key=len, reverse=True):
         for y in range(band):
-            line = lines[y]
-            at = line.find(name)
-            if at < 0:
-                for k in range(len(name) - 1, 3, -1):
-                    m = re.search(re.escape(name[:k]) + '(…|~|\\.\\.)', line)
-                    if m:
-                        at = m.start()
-                        end = m.end()
-                        break
-                else:
-                    continue
-            else:
-                end = at + len(name)
-            if any(y == r and at < e and s < end for r, s, e in found.values()):
+            hit = None
+            for k in [None] + list(range(len(name) - 1, 3, -1)):
+                hit = name_re(name, k).search(lines[y])
+                if hit:
+                    break
+            if not hit or any(y == r and hit.start() < e and s < hit.end() for r, s, e in found.values()):
                 continue
-            found[name] = (y, at, end)
+            found[name] = (y, hit.start(), hit.end())
             break
     return found
 
@@ -459,16 +458,33 @@ def lab_dump(lab, cfg, tier, size):
 
 
 def cell_text(dump):
-    return ['' .join(c[0] or ' ' for c in row) for row in dump['cells']]
+    return [''.join(c[0] or ' ' for c in row) for row in dump['cells']]
 
 
-def color_of(dump, word):
-    for row in dump['cells']:
-        line = ''.join(c[0] or ' ' for c in row)
-        at = line.find(word)
-        if at >= 0:
-            return row[at][1]
-    return None
+def hexcolor(c):
+    """A dump colour as #rrggbb: palette indices through xterm's table (as pyte reads them)."""
+    if isinstance(c, int):
+        from pyte.graphics import FG_BG_256
+        return '#' + FG_BG_256[c]
+    return c
+
+
+# A badge is its glyph, a space and the state (`badge` in src/ui/views/mission/mod.rs).
+BADGE = {True: re.compile('[◆●○] (needs you|working|running|idle)\\b'),
+         False: re.compile('(?:\\^ needs you|  (working|running)|- idle)\\b')}
+
+
+def badges(cells, top, uni=True):
+    """{state: colour} of each session badge below row `top`."""
+    out = {}
+    for row in cells[top:]:
+        for m in BADGE[uni].finditer(''.join(c[0] or ' ' for c in row)):
+            if m.lastindex is None:
+                out.setdefault('needs you' if '^' in m.group(0) else 'idle',
+                               hexcolor(row[m.start() + 2][1]))
+                continue
+            out.setdefault(m.group(1), hexcolor(row[m.start(1)][1]))
+    return out
 
 
 def check(cfg, tier, size, text, dump, alive, lab):
@@ -478,84 +494,119 @@ def check(cfg, tier, size, text, dump, alive, lab):
     if not alive or 'panicked' in text:
         return ['viewer died or panicked']
     names = ['tranquility'] + [d['name'] for d in cfg['devices']]
+    welcome = len(names) == 1 and not cfg['sessions']
     strip = strip_row(lines)
     band = strip if strip is not None else max(rows - 3, 1)
     found = labels(lines, names, band)
-    # Overlap: two labels on one row never share a cell (labels() only keeps disjoint ones,
-    # so a name lost to an overlap shows up below as missing).
+    tree = any('├─' in l or '|-' in l or '`-' in l for l in lines[:band])
+    # Every device is on the map, or counted by its folded cluster (`+N`), or (tiny sizes)
+    # down to its letter.
     folded = sum(int(n) for n in re.findall(r'\+(\d+)', '\n'.join(lines[:band])))
     missing = [n for n in names if n not in found]
-    letters = len(re.findall(r'(?<![\w@])[a-z](?![\w])', '\n'.join(lines[:band])))
-    if missing and len(missing) > folded and letters < len(missing):
+    letters = len(re.findall(r'(?<![\w@(])[a-z](?![\w)])', '\n'.join(lines[:band])))
+    # (A transient notice may cover part of the map for its few seconds.)
+    notice = any('Error ─' in l or 'Error -' in l for l in lines)
+    if not welcome and not notice and missing and len(missing) > folded and letters < len(missing):
         fails.append(f'devices neither shown nor counted: {missing[:4]}')
     bg = sum(1 for row in dump['cells'] for c in row if c[2] is not None or c[3] & 64)
     if bg:
         fails.append(f'{bg} cells with a background')
     uni = tier != 'ascii'
-    # The strip's second row: cpu sparkline and %, mem, temperature, uptime.
+    lab_d = lab_dump(lab, cfg, tier, size)
+    lab_lines = cell_text(lab_d) if lab_d else None
+    lstrip = strip_row(lab_lines) if lab_d else None
+    # The strip's second row: cpu sparkline and %, mem, temperature (only with a sensor),
+    # uptime. It is there whenever the lab draws it (else on the larger screens).
     vitals = lines[strip + 1] if strip is not None and strip + 1 < rows else ''
+    lab_vitals = lab_lines[lstrip + 1] if lab_d and lstrip is not None and lstrip + 1 < rows else ''
+    expect = 'cpu' in lab_vitals if lab_d else (not welcome and strip is not None and cols >= 120
+                                                 and rows >= 40)
+    if expect and 'cpu' not in vitals:
+        fails.append('no vitals row in the strip')
     if 'cpu' in vitals:
-        if not re.search(r'\d+%', vitals) or 'mem' not in vitals and cols >= 95:
-            fails.append('vitals row lacks cpu % or mem')
+        if not re.search(r'\d+%', vitals):
+            fails.append('vitals row lacks the cpu %')
         if uni and not SPARK & set(vitals):
             fails.append('no cpu sparkline in the strip')
-        if cols >= 95 and not re.search(r'\d+% of \d+G', vitals):
+        mem = re.search(r'\d+% of \d+G', vitals)
+        if 'of' in lab_vitals and not mem or not lab_d and cols >= 120 and not mem:
             fails.append('no "N% of NG" memory figure')
         temp = re.search(r'\d+(°|C\b)', vitals)
         if cfg['temp'] is None and temp:
             fails.append('a temperature shown for a device without a sensor')
         if cfg['temp'] is not None and cols >= 120 and not temp:
             fails.append('no temperature though the device has a sensor')
-        if re.search(r'(--|\?|n/a)\s*°', vitals):
-            fails.append('a blank temperature placeholder')
+        if re.search(r'(--|\?|n/a)\s*(°|C\b)|\s{4,}up ', vitals):
+            fails.append('a blank where the temperature would be')
         if cols >= 120 and not re.search(r'up \d+d \d+h', vitals):
             fails.append('no uptime')
-    elif cols >= 95 and rows >= 40:
-        fails.append('no vitals row in the strip')
-    remote_up = [d for d in cfg['devices'] if d['state'] == 'up']
+    # Remote vitals on the map: wherever the lab shows them (else whenever a live remote's
+    # label is up), with curves.
+    remote_up = [d['name'] for d in cfg['devices'] if d['state'] == 'up']
     mapped = '\n'.join(lines[:band])
-    if remote_up and cols >= 120:
-        if not re.search(r'\d+(\.\d+)?ms', mapped):
-            fails.append('no link rtt on the map')
-        if uni and not SPARK & set(mapped):
-            fails.append('no sparkline on the map')
-        if uni and len(BRAILLE.findall(mapped)) < 4:
-            fails.append('no curves drawn')
-    lab_d = lab_dump(lab, cfg, tier, size)
-    if lab_d is not None and len(names) > 1:
-        lab_lines = cell_text(lab_d)
-        lstrip = strip_row(lab_lines)
+    lab_mapped = '\n'.join(lab_lines[:lstrip or rows]) if lab_d else ''
+    shown_up = [n for n in remote_up if n in found] and not tree
+    if tree:
+        # The phone tree trades its vitals rows for the ticker and sessions: only its
+        # order is compared below.
+        lab_mapped = ''
+    rtt = re.compile(r'\d+(\.\d+)?ms')
+    if (rtt.search(lab_mapped) if lab_d else shown_up and cols >= 120) and not rtt.search(mapped):
+        fails.append('no link rtt on the map')
+    if uni and (SPARK & set(lab_mapped) if lab_d else shown_up and cols >= 120) \
+            and not SPARK & set(mapped):
+        fails.append('no sparkline on the map')
+    if uni and remote_up and not tree:
+        curves = len(BRAILLE.findall(mapped))
+        lab_curves = len(BRAILLE.findall(lab_mapped))
+        if curves < 4 or lab_curves > 20 and curves < 0.5 * lab_curves:
+            fails.append(f'curves: {curves} braille cells (the lab draws {lab_curves})')
+    # Structure: labels where the lab puts them (the phone tree: in the lab's order).
+    if lab_d and len(names) > 1:
         lab_found = labels(lab_lines, names, lstrip if lstrip is not None else max(rows - 3, 1))
-        both = [n for n in names if n in found and n in lab_found]
-        near = [n for n in both if abs(found[n][0] - lab_found[n][0]) <= 2
-                and abs(found[n][1] - lab_found[n][1]) <= 4]
-        if len(lab_found) >= 2 and len(near) < 0.8 * len(lab_found):
-            far = [(n, found.get(n, '-')[:2], lab_found[n][:2]) for n in lab_found if n not in near]
-            fails.append(f'labels away from the lab ({len(near)}/{len(lab_found)}): {far[:3]}')
-        if uni and remote_up:
-            lab_curves = len(BRAILLE.findall('\n'.join(lab_lines[:lstrip or rows])))
-            curves = len(BRAILLE.findall(mapped))
-            if lab_curves > 20 and curves < 0.5 * lab_curves:
-                fails.append(f'curves: {curves} braille cells, the lab draws {lab_curves}')
-    # Session badges: the right word, each state its own colour (the lab's where it has it).
-    below = '\n'.join(lines[(strip or 0) + 1:])
+        if tree:
+            order = sorted(found, key=lambda n: found[n][:2])
+            lab_order = sorted(lab_found, key=lambda n: lab_found[n][:2])
+            if [n for n in order if n in lab_found] != [n for n in lab_order if n in found]:
+                fails.append(f'tree order differs from the lab: {order[:5]} vs {lab_order[:5]}')
+        else:
+            near = [n for n in lab_found if n in found and abs(found[n][0] - lab_found[n][0]) <= 2
+                    and abs(found[n][1] - lab_found[n][1]) <= 4]
+            if len(lab_found) >= 2 and len(near) < 0.8 * len(lab_found):
+                far = [(n, found.get(n, '-')[:2], lab_found[n][:2]) for n in lab_found if n not in near]
+                fails.append(f'labels away from the lab ({len(near)}/{len(lab_found)}): {far[:3]}')
+    # Sessions: the right badge for each real state, each in its own colour, the lab's.
     want = [s for s in STATES if s in {s for _, s in cfg['sessions']}]
-    shown = [s for s in want if s in below]
-    if want and rows >= 30 and cols >= 80 and 'needs you' in want and 'needs you' not in below:
+    hues = badges(dump['cells'], (strip or 0) + 1, uni)
+    if 'needs you' in want and rows >= 30 and cols >= 80 and 'needs you' not in hues:
         fails.append('the session that needs you has no badge')
-    if cols >= 190 and rows >= 50 and len(want) >= 2 and len(shown) < 2:
-        fails.append(f'session states shown: {shown} of {want}')
-    hues = {}
-    for s in shown:
-        hues[s] = color_of(dict(cells=dump['cells'][(strip or 0) + 1:]), s)
+    if cols >= 190 and rows >= 50 and len(want) >= 2 and len(hues) < 2:
+        fails.append(f'session states shown: {sorted(hues)} of {want}')
+    if set(hues) - set(want):
+        fails.append(f'states no session is in: {sorted(set(hues) - set(want))}')
     if tier != 'ascii' and len(set(hues.values())) < len(hues):
         fails.append(f'session states share a colour: {hues}')
-    if lab_d is not None and tier != 'ascii':
-        for s, hue in hues.items():
-            lab_hue = color_of(lab_d, s)
-            if lab_hue is not None and lab_hue != hue:
-                fails.append(f'"{s}" is {hue}, the lab draws {lab_hue}')
+    if lab_d and tier != 'ascii':
+        lab_hues = badges(lab_d['cells'], (lstrip or 0) + 1, uni)
+        for st, hue in hues.items():
+            if st in lab_hues and lab_hues[st] != hue:
+                fails.append(f'"{st}" is {hue}, the lab draws {lab_hues[st]}')
     return fails
+
+
+def recheck(out, lab):
+    """Run the checks again over a finished run's captures."""
+    results = []
+    for p in sorted(out.glob('*__*__*.txt')):
+        name, tier, size = p.stem.split('__')
+        cfg = configs().get(name)
+        if cfg is None:
+            continue
+        w, h = (int(v) for v in size.split('x'))
+        fails = check(cfg, tier, (w, h), p.read_text(), json.loads(p.with_suffix('.json').read_text()),
+                      True, lab)
+        results.append(dict(config=name, tier=tier, size=size, ok=not fails, fails=fails))
+    return results
 
 
 # ---------------------------------------------------------------------------- lab + sheets
@@ -604,6 +655,7 @@ def main():
     ap.add_argument('--run', default=time.strftime('%Y%m%d-%H%M%S'))
     ap.add_argument('--lab', help='lab dumps already captured (default: capture them now)')
     ap.add_argument('--no-lab', action='store_true')
+    ap.add_argument('--recheck', action='store_true', help="check the run's captures again (no viewer)")
     a = ap.parse_args()
     binary = str(pathlib.Path(a.binary).resolve())
     sizes = [tuple(int(v) for v in s.split('x')) for s in a.sizes.split(',')]
@@ -611,6 +663,9 @@ def main():
     all_cfg = configs()
     chosen = [all_cfg[n] for n in a.configs.split(',')]
     out = pathlib.Path.home() / '.cache/cx-hub-matrix' / a.run
+    if a.recheck:
+        lab = None if a.no_lab else a.lab or str(out / 'lab')
+        report(out, recheck(out, lab), sizes, tiers, [c['name'] for c in chosen])
     if os.environ.get('CX_HUB_MATRIX_NS') != '1':
         out.mkdir(parents=True, exist_ok=True)
         lab = None
@@ -625,12 +680,17 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, a.jobs)) as pool:
         for res in pool.map(lambda c: capture_config(binary, c, tiers, sizes, out, lab), chosen):
             results.extend(res)
+    report(out, results, sizes, tiers, [c['name'] for c in chosen])
+
+
+def report(out, results, sizes, tiers, names):
+    """results.json, the contact sheets and a pass/fail line per config; exits."""
     (out / 'results.json').write_text(json.dumps(results, indent=1))
-    paths = sheets(out, results, sizes, tiers, [c['name'] for c in chosen])
+    paths = sheets(out, results, sizes, tiers, names)
     bad = [r for r in results if not r['ok']]
-    for c in chosen:
-        mine = [r for r in results if r['config'] == c['name']]
-        print(f"{'PASS' if all(r['ok'] for r in mine) else 'FAIL'} {c['name']}: "
+    for name in names:
+        mine = [r for r in results if r['config'] == name]
+        print(f"{'PASS' if all(r['ok'] for r in mine) else 'FAIL'} {name}: "
               f"{sum(r['ok'] for r in mine)}/{len(mine)}")
     for r in bad[:40]:
         print(f"  {r['config']} {r['tier']} {r['size']}: {'; '.join(r['fails'])}")

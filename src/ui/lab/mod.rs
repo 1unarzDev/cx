@@ -318,3 +318,195 @@ mod review_tests {
         }
     }
 }
+#[cfg(test)]
+mod size_fuzz {
+    //! Every production view, for realistic fixtures, at every terminal size from 20x5
+    //! to 250x80 (half terminals, phones, tall and narrow): drawing never panics.
+    use super::*;
+
+    /// The fixture with only its first `n` devices (and what still refers to them).
+    fn first(n: usize) -> LabState {
+        let mut s = state::typical();
+        s.devices.truncate(n);
+        let ids: Vec<String> = s.devices.iter().map(|d| d.id.clone()).collect();
+        let has = |id: &String| ids.contains(id);
+        s.edges.retain(|e| has(&e.from) && has(&e.to));
+        s.sessions.retain(|x| has(&x.device));
+        for m in &mut s.meshes {
+            m.members.retain(|id| has(id));
+        }
+        s.notifications
+            .retain(|n| n.device.as_ref().is_none_or(|d| has(d)));
+        s
+    }
+
+    pub(crate) fn fixtures() -> Vec<(String, LabState)> {
+        let mut v: Vec<(String, LabState)> =
+            (0..=7).map(|n| (format!("{n}-devices"), first(n))).collect();
+        let mut down = state::typical();
+        for (i, d) in down.devices.iter_mut().enumerate().skip(1) {
+            d.status = if i % 2 == 0 {
+                DeviceStatus::Down
+            } else {
+                DeviceStatus::Unknown
+            };
+            d.metrics = None;
+            // (Never seen: no sighting at all.)
+            d.observed_secs = u32::MAX;
+        }
+        for e in &mut down.edges {
+            e.up = false;
+            e.rtt_ms = None;
+        }
+        v.push(("unreachable".into(), down));
+        let mut flat = state::typical();
+        flat.meshes.clear();
+        for d in &mut flat.devices {
+            d.meshes.clear();
+        }
+        for e in &mut flat.edges {
+            if matches!(e.kind, EdgeKind::Mesh(_)) {
+                e.kind = EdgeKind::Direct;
+            }
+        }
+        v.push(("no-meshes".into(), flat));
+        let mut long = state::typical();
+        for d in &mut long.devices {
+            d.name = format!("{}-with-a-very-long-descriptive-hostname-0123456789", d.name);
+            d.account = "a-very-long-account-name-for-this-machine".into();
+        }
+        for x in &mut long.sessions {
+            x.title = format!("{} and a title that goes on and on past any tile", x.title);
+            x.cwd = format!("~/{}", "deeply/nested/folder/".repeat(8));
+        }
+        v.push(("long-names".into(), long));
+        v.push(("many-sessions".into(), state::large()));
+        let mut blank = state::typical();
+        for x in &mut blank.sessions {
+            x.screen.clear();
+        }
+        v.push(("empty-previews".into(), blank));
+        v
+    }
+
+    fn views(s: &LabState) -> Vec<(LabView, Option<Pane>)> {
+        let mut v: Vec<(LabView, Option<Pane>)> =
+            LabView::defaults(s).into_iter().map(|v| (v, None)).collect();
+        let session = s.sessions.first().map(|x| x.id.clone()).unwrap_or_default();
+        let device = s.devices.last().map(|d| d.id.clone()).unwrap_or_default();
+        v.extend([
+            (LabView::Hub, Some(Pane::Sessions)),
+            (LabView::Hub, Some(Pane::Graph)),
+            (LabView::DeviceFocus(device.clone()), Some(Pane::Sessions)),
+            (LabView::DeviceFocus(device), Some(Pane::Custom("stop"))),
+            (LabView::SessionPeek(session), Some(Pane::Custom("peek"))),
+            (LabView::Files, Some(Pane::Dialog)),
+        ]);
+        v
+    }
+
+    fn sizes() -> Vec<(u16, u16)> {
+        let ws = (20..=140).chain((150..=250).step_by(10));
+        ws.flat_map(|w| (5..=60).chain([70, 80]).map(move |h| (w, h)))
+            .collect()
+    }
+
+    thread_local! {
+        static WHERE: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    }
+
+    /// Every view, fixture and tier over `sizes`; each panic site with its first case
+    /// and count.
+    fn sweep(sizes: &[(u16, u16)]) -> Vec<String> {
+        let caps = [LabCaps::default(), LabCaps::from_variant("ascii").unwrap()];
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|info| {
+            let at = info.location().map(|l| l.to_string()).unwrap_or_default();
+            let what = info
+                .payload()
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| info.payload().downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_default();
+            WHERE.with(|w| *w.borrow_mut() = format!("{at} {what}"));
+        }));
+        let cases = fixtures();
+        let fails = std::sync::Mutex::new(std::collections::BTreeMap::<String, (usize, String)>::new());
+        std::thread::scope(|sc| {
+            for chunk in cases.chunks(cases.len().div_ceil(4)) {
+                let (fails, caps) = (&fails, &caps);
+                sc.spawn(move || {
+                    for (name, s) in chunk {
+                        for (v, focus) in views(s) {
+                            for (ci, c) in caps.iter().enumerate() {
+                                for &(w, h) in sizes {
+                                    let c = LabCaps {
+                                        focus,
+                                        selected: usize::from(w) % 5,
+                                        ..*c
+                                    };
+                                    let drew = std::panic::catch_unwind(
+                                        std::panic::AssertUnwindSafe(|| {
+                                            let area = Rect::new(0, 0, w, h);
+                                            let mut buf = Buffer::empty(area);
+                                            mission::render(&v, s, &c, area, &mut buf);
+                                            mission::render_palette(s, &c, area, &mut buf, "in");
+                                        }),
+                                    );
+                                    if drew.is_err() {
+                                        let at = WHERE.with(|w| w.borrow().clone());
+                                        let mut f = fails.lock().unwrap();
+                                        let e = f.entry(at).or_insert((0, String::new()));
+                                        e.0 += 1;
+                                        if e.1.is_empty() {
+                                            e.1 = format!(
+                                                "{name} {} {focus:?} {w}x{h} ascii={}",
+                                                v.slug(),
+                                                ci == 1
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        std::panic::set_hook(prev);
+        fails
+            .into_inner()
+            .unwrap()
+            .into_iter()
+            .map(|(at, (n, first))| format!("{at}: {n}x, first {first}"))
+            .collect()
+    }
+
+    fn check(fails: Vec<String>) {
+        assert!(
+            fails.is_empty(),
+            "{} panic sites: {:#?}",
+            fails.len(),
+            fails
+        );
+    }
+
+    /// The suite's share: every view and fixture at the widths and heights where the
+    /// layouts change (phone, touch, size classes, half terminals).
+    #[test]
+    fn every_view_renders_across_sizes() {
+        let ws = [20, 21, 40, 59, 60, 69, 70, 80, 95, 99, 100, 120, 159, 160, 190, 250];
+        let hs = [5, 6, 7, 15, 16, 20, 28, 36, 48, 50];
+        let sizes: Vec<(u16, u16)> = ws.iter().flat_map(|&w| hs.map(|h| (w, h))).collect();
+        check(sweep(&sizes));
+    }
+
+    /// The whole matrix: 20x5 to 250x80, every width to 140 and every height to 60.
+    /// Run it with overflow checks in an optimised build, e.g.
+    /// `CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS=true cargo test --release -- --ignored size_fuzz`.
+    #[test]
+    #[ignore]
+    fn every_view_renders_at_every_size() {
+        check(sweep(&sizes()));
+    }
+}

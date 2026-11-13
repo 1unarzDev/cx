@@ -40,7 +40,8 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let th = r
         .height
         .saturating_sub(fixed + orbit_min)
-        .clamp(th_min.min(r.height), need.clamp(th_min, th_max));
+        .min(need.min(th_max).max(th_min))
+        .max(th_min.min(r.height));
     let band_h = r.height.saturating_sub(fixed + th);
     // Past its natural height the map stops growing (its rings are capped): the rows go
     // to the thumbnails, up to what their screens hold.
@@ -89,8 +90,8 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     } else {
         cols
     };
-    let grid_h = rows * th + rows - 1;
-    let mut y = band.bottom() + 1 + band_th - grid_h;
+    let grid_h = (rows * th + rows).saturating_sub(1);
+    let mut y = (band.bottom() + 1 + band_th).saturating_sub(grid_h);
     // The map sits centred in the rows above the vitals strip.
     // (Counting the row of mesh wash above the map where rows are airy.)
     let lift = u16::from(sz >= Size::M);
@@ -149,7 +150,7 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     }
     if hidden > 0 {
         cx.put_r(buf, right, y, &hint, cx.st(Tok::Muted));
-        cx.hit(Rect::new(right - hw, y, hw, 1), "palette:sessions");
+        cx.hit(Rect::new(right.saturating_sub(hw), y, hw, 1), "palette:sessions");
     }
     y += 1;
     let grid = Rect::new(r.x + 1, y, r.width.saturating_sub(2), grid_h);
@@ -525,7 +526,10 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
     legend(cx, buf, r.x + 2 + lw + 1, r.y, right);
     let ids: Vec<&str> = rows.iter().map(|t| t.d.id.as_str()).collect();
     *cx.order.borrow_mut() = ids.iter().map(|s| s.to_string()).collect();
-    let sel_id = ids[cx.c.selected % ids.len().max(1)];
+    let sel_id = ids
+        .get(cx.c.selected % ids.len().max(1))
+        .copied()
+        .unwrap_or_default();
     let mut y = r.y + 2;
     for t in rows.iter().take(usize::from(shown)) {
         tree_row(
@@ -600,7 +604,7 @@ fn phone_alert(cx: &Cx, buf: &mut Buffer, r: Rect, a: &Alert, kw: u16) {
     );
     let kx = r.right().saturating_sub(kw + 1);
     cx.chips(buf, kx, r.y, r.right(), &[(keys, verb, act)]);
-    cx.hit(Rect::new(r.x, r.y, kx - r.x, 1), act.clone());
+    cx.hit(Rect::new(r.x, r.y, kx.saturating_sub(r.x), 1), act.clone());
 }
 
 /// One device in the phone tree: branch guides in the hue of the link to its parent

@@ -831,7 +831,9 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     let info = info.trim_start_matches(" · ").to_string();
     // The identity block takes the width it needs; metrics get the rest.
     let left_w = if cx.size() >= Size::M {
-        (super::width(&info, cx.uni()) + 1).clamp(32, r.width * 11 / 20)
+        (super::width(&info, cx.uni()) + 1)
+            .min(r.width * 11 / 20)
+            .max(32.min(r.width))
     } else {
         r.width
     };
@@ -1360,7 +1362,7 @@ fn peek(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession) {
         false,
     );
     cx.put_r(buf, strip.right(), strip.y, &hint, cx.st(Tok::Muted));
-    let tiles_r = Rect::new(strip.x, strip.y + 1, strip.width, strip.height - 1);
+    let tiles_r = Rect::new(strip.x, strip.y + 1, strip.width, strip.height.saturating_sub(1));
     let gap = 2;
     let n = (others.len() as u16)
         .min((tiles_r.width + gap) / (28 + gap))
@@ -1999,7 +2001,7 @@ fn send_to(cx: &Cx, buf: &mut Buffer, a: Rect) {
     let h = (gh + 5).min(a.height);
     let r = Rect::new(a.x, a.bottom().saturating_sub(h), a.width, h);
     cx.clear_hits();
-    cx.hit(Rect::new(a.x, a.y, a.width, r.y - a.y), "back");
+    cx.hit(Rect::new(a.x, a.y, a.width, r.y.saturating_sub(a.y)), "back");
     panel(cx, buf, r);
     let mut x = r.x + 2;
     let y = r.y + 1;
@@ -2187,7 +2189,7 @@ pub(super) fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
         // the margins would read as stray glyphs at this size).
         cx.fill(
             buf,
-            Rect::new(a.x, a.y + 1, a.width, a.height - 1),
+            Rect::new(a.x, a.y + 1, a.width, a.height.saturating_sub(1)),
             Style::default(),
         );
         // The sheet ends a row above the screen's last, where its chips sit as on
@@ -2195,7 +2197,7 @@ pub(super) fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
         Rect::new(a.x, a.y + 1, a.width, a.height.saturating_sub(2))
     } else {
         Rect::new(
-            a.x + (a.width - w) / 2,
+            a.x + a.width.saturating_sub(w) / 2,
             a.y + 1 + (a.height.saturating_sub(h + 2)) / 3,
             w,
             h,
@@ -2568,7 +2570,7 @@ fn secrets(cx: &Cx, buf: &mut Buffer, r: Rect) {
 
 fn onboarding(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let w = r.width.saturating_sub(4).min(72);
-    let x0 = r.x + (r.width - w) / 2;
+    let x0 = r.x + r.width.saturating_sub(w) / 2;
     let small = r.height < 24 || cx.size() == Size::Xs;
     let mut y = r.y
         + if small {
@@ -2726,7 +2728,7 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
         // The QR and the text column centre as one group, the column as wide as its
         // longest line (the one-liner).
         let col = (inv.oneliner.chars().count() as u16 + 2).clamp(40, 62);
-        let total = qw + 4 + col.min(r.width - qw - 6);
+        let total = qw + 4 + col.min(r.width.saturating_sub(qw + 6));
         let x0 = r.x + (r.width.saturating_sub(total)) / 2;
         let qy = r.y + (r.height.saturating_sub(qh)) / 2;
         (x0, qy, x0 + qw + 4, qy + 1, total - qw - 4)
@@ -2737,7 +2739,7 @@ fn join(cx: &Cx, buf: &mut Buffer, r: Rect) {
         let col = (inv.oneliner.chars().count() as u16 + 2)
             .max(40)
             .min(r.width.saturating_sub(4));
-        let tx = r.x + (r.width - col) / 2;
+        let tx = r.x + r.width.saturating_sub(col) / 2;
         (x0, r.y, tx, r.y + qh + 1, col)
     };
     // QR in half blocks with a light quiet zone, always dark-on-light.
@@ -3072,7 +3074,7 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
     }
     .min(r.height);
     let col = r.width.saturating_sub(4).min(110);
-    let cx0 = r.x + (r.width - col) / 2;
+    let cx0 = r.x + r.width.saturating_sub(col) / 2;
     let avail = r.height.saturating_sub(sheet_h + 4);
     let gh = if cx.touch() || avail < 3 {
         avail.min(3)
@@ -3353,7 +3355,7 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
         };
         cx.put(buf, tx, base, room as u16, &t, cx.st(Tok::Muted));
         if tile_h > 0 && base + tile_h < inner.bottom() + 1 {
-            let tr = Rect::new(inner.x, base + 2, inner.width, tile_h - 1);
+            let tr = Rect::new(inner.x, base + 2, inner.width, tile_h.saturating_sub(1));
             tiles::thumb_with(cx, buf, tr, crossing[0], None, false);
         }
     }
@@ -3608,7 +3610,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
         .width
         .saturating_sub(if wide { 4 } else { 2 })
         .min(if cx.size() >= Size::M { 78 } else { 68 });
-    let x0 = r.x + (r.width - w) / 2;
+    let x0 = r.x + r.width.saturating_sub(w) / 2;
     let right = x0 + w;
     let ix = x0 + u16::from(wide);
     // The intent column as wide as its longest word and a gap.

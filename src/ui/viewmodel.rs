@@ -176,11 +176,17 @@ fn status(app: &App, d: usize) -> (DeviceStatus, String, u32) {
     };
     let listed = || {
         let n = w.sessions.len();
-        format!(
-            "{n} session{} listed {}s ago",
-            if n == 1 { "" } else { "s" },
-            age
-        )
+        // Within the refresh's own minute it says "just now": a seconds counter would
+        // redraw an idle screen every second.
+        let when = if age < 60 {
+            "just now".to_string()
+        } else {
+            format!(
+                "{} ago",
+                super::views::fmt::age(u32::try_from(age).unwrap_or(u32::MAX - 1))
+            )
+        };
+        format!("{n} session{} listed {when}", if n == 1 { "" } else { "s" })
     };
     if let Some(e) = &w.error {
         return (DeviceStatus::Down, safe_label(e), secs);

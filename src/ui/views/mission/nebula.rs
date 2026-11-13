@@ -201,6 +201,47 @@ fn cluster<'a>(cx: &Cx<'a>, nodes: &mut [N<'a>]) -> Vec<Cl> {
         nodes[i].cl = at;
         cls[at].members.push(i);
     }
+    // A cluster heavier than all the others together splits in two (its first hops
+    // halved, each with its own devices), so the orbit stays balanced either side.
+    let total: usize = cls.iter().map(|c| c.members.len()).sum();
+    if let Some(big) = (0..cls.len()).max_by_key(|&c| cls[c].members.len()) {
+        let top_of = |mut t: usize| {
+            while let Some(p) = nodes[t].parent {
+                t = p;
+            }
+            t
+        };
+        let tops: Vec<usize> = cls[big]
+            .members
+            .iter()
+            .copied()
+            .filter(|&m| nodes[m].parent.is_none())
+            .collect();
+        let size = cls[big].members.len();
+        if tops.len() >= 3 && size > total - size + 1 {
+            let moved: Vec<usize> = tops[tops.len().div_ceil(2)..].to_vec();
+            let (go, stay): (Vec<usize>, Vec<usize>) = cls[big]
+                .members
+                .iter()
+                .partition(|&&m| moved.contains(&top_of(m)));
+            cls[big].members = stay;
+            let at = cls.len();
+            for &m in &go {
+                nodes[m].cl = at;
+            }
+            cls.push(Cl {
+                key: format!("{}~2", cls[big].key),
+                name: cls[big].name.clone(),
+                tok: cls[big].tok,
+                members: go,
+                side: 1,
+                open: true,
+                phi: 0.0,
+                dot: (0, 0),
+                lab: R::default(),
+            });
+        }
+    }
     // Sides by size (stable whatever is selected): the heaviest cluster right, each
     // next one on the lighter side.
     let mut by: Vec<usize> = (0..cls.len()).collect();

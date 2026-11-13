@@ -153,6 +153,11 @@ impl App {
         self.close_screens();
         self.input = None;
         self.help = false;
+        // Already on the hub: back to this device (the map's home).
+        if self.view == View::Network && self.device == 0 {
+            self.hub_device = None;
+            self.hub_sessions = false;
+        }
         if self.view != View::Network {
             self.view = View::Network;
             self.reload_edges();
@@ -236,9 +241,11 @@ impl App {
             Some(false) => {}
         }
         let other = self.view == View::Network && (dy > 0) != self.hub_sessions && dy != 0;
+        // On the map nothing that way is nothing: no jump along an order.
+        let map = self.view == View::Network && !self.hub_sessions;
         if other {
             self.toggle_zone();
-        } else if dx != 0 || self.view != View::Network {
+        } else if (dx != 0 && !map) || self.view != View::Network {
             self.screen_move((dx + dy) as isize);
         }
     }

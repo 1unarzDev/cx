@@ -431,18 +431,27 @@ impl App {
         if let Some(offset) = value["next_offset"].as_u64() {
             if let Some(b) = &self.browser {
                 if b.entries.len() < LISTING_CAP && offset <= MAX_LIST_OFFSET {
-                    self.send(
-                        b.device,
-                        Operation::ListPage {
-                            path: b.path.clone(),
-                            offset,
-                            limit: if ordered {
-                                FIRST_PAGE_LIMIT as u32
-                            } else {
-                                1000
+                    // The lane worker pipelines every page after the first (one request
+                    // here); remote pages a little under the first page, so each fits its
+                    // byte budget and none of a pipelined batch is wasted.
+                    if listing_offset == 0 {
+                        let first = value["entries"].as_array().map_or(0, Vec::len);
+                        let limit = if ordered && self.devices[b.device].target.is_none() {
+                            FIRST_PAGE_LIMIT as u32
+                        } else if ordered {
+                            (first * 9 / 10).clamp(100, FIRST_PAGE_LIMIT) as u32
+                        } else {
+                            1000
+                        };
+                        self.send(
+                            b.device,
+                            Operation::ListPage {
+                                path: b.path.clone(),
+                                offset,
+                                limit,
                             },
-                        },
-                    );
+                        );
+                    }
                     if let Some(b) = &mut self.browser {
                         b.loading = true;
                     }

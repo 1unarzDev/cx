@@ -1147,6 +1147,71 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
                         queue = changed.wait(queue).unwrap();
                     }
                 };
+                if let (
+                    false,
+                    Operation::ListPage {
+                        path,
+                        offset,
+                        limit,
+                    },
+                ) = (task.hover, &task.op)
+                {
+                    // A long listing: pages pipelined a batch at a time; the rest goes back
+                    // in the queue, so other reads of this device interleave between batches.
+                    // A listing of another folder since then stops it.
+                    let superseded = |queue: &Queue| {
+                        queue.tasks.iter().any(|t| {
+                            t.device == task.device
+                                && !t.hover
+                                && t.generation > task.generation
+                                && t.generation != super::WARM_GENERATION
+                                && matches!(&t.op, Operation::List { path: p } | Operation::ListPage { path: p, .. } if p != path)
+                        })
+                    };
+                    let mut delivered = true;
+                    let more = transport::list_pages(
+                        &task.execution,
+                        path,
+                        *offset,
+                        *limit,
+                        |op, result| {
+                            delivered = replies
+                                .send(W::from(Reply {
+                                    device_id: Some(task.execution.id.clone()),
+                                    execution_target: Some(task.execution.target.clone()),
+                                    preview: None,
+                                    device: task.device,
+                                    op,
+                                    generation: task.generation,
+                                    result,
+                                }))
+                                .is_ok();
+                            delivered && !superseded(&lock.lock().unwrap())
+                        },
+                    );
+                    let mut queue = lock.lock().unwrap();
+                    queue.busy.remove(&host);
+                    if let Some((offset, limit)) = more.filter(|_| delivered && !superseded(&queue))
+                    {
+                        queue.tasks.push_back(Task {
+                            device: task.device,
+                            execution: task.execution.clone(),
+                            op: Operation::ListPage {
+                                path: path.clone(),
+                                offset,
+                                limit,
+                            },
+                            generation: task.generation,
+                            hover: false,
+                        });
+                    }
+                    changed.notify_all();
+                    drop(queue);
+                    if !delivered {
+                        return;
+                    }
+                    continue;
+                }
                 let result = if task.hover {
                     transport::request_hover(&task.execution, task.op.clone())
                 } else {

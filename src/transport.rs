@@ -785,6 +785,153 @@ pub fn request_hover(d: &Device, op: Operation) -> Result<serde_json::Value> {
     let hover = channel_class(&op) == Channel::Files;
     request_once(d, op, hover)
 }
+/// Continuation pages a long listing still needs, at most this many per call.
+pub const PAGE_BATCH: usize = 8;
+/// A long listing's continuation pages from `offset`: up to `PAGE_BATCH` `ListPage`
+/// requests pipelined on the device's Files channel (one round trip for the batch,
+/// not one per page). `page` gets each reply in order and returns false to stop.
+/// A page that ends early (its byte budget) replans from its `next_offset` with that
+/// page's size; replies already in flight past it are read and dropped. Returns
+/// where the listing continues (offset and page size), when it does.
+pub fn list_pages(
+    d: &Device,
+    path: &str,
+    mut offset: u64,
+    mut limit: u32,
+    mut page: impl FnMut(Operation, Result<serde_json::Value>) -> bool,
+) -> Option<(u64, u32)> {
+    let op = |offset, limit| Operation::ListPage {
+        path: path.to_owned(),
+        offset,
+        limit,
+    };
+    let next = |value: &serde_json::Value| {
+        value["next_offset"]
+            .as_u64()
+            .filter(|_| value["restart"].as_bool() != Some(true))
+    };
+    let Some(target) = &d.target else {
+        for _ in 0..PAGE_BATCH {
+            let result = crate::dispatch(op(offset, limit));
+            let after = result.as_ref().ok().and_then(next);
+            if !page(op(offset, limit), result) {
+                return None;
+            }
+            offset = after?;
+        }
+        return Some((offset, limit));
+    };
+    let pipelined = (|| -> Result<Option<(u64, u32)>> {
+        if !valid_target(target) {
+            bail!("invalid SSH target")
+        }
+        crate::edges::guard(d)?;
+        let entry = CONNECTIONS
+            .lock()
+            .map_err(|_| anyhow!("transport lock unavailable"))?
+            .entry(channel_key(Channel::Files, target))
+            .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(None)))
+            .clone();
+        let mut slot = entry
+            .lock()
+            .map_err(|_| anyhow!("connection lock unavailable"))?;
+        let route = crate::store::route(target)?;
+        if slot
+            .as_mut()
+            .is_some_and(|c| c.route != route || !matches!(c.child.try_wait(), Ok(None)))
+        {
+            *slot = None;
+        }
+        if slot.is_none() {
+            // A new helper has no snapshot: its first reply says `restart`.
+            *slot = Some(Connection::open_waiting(target, std::time::Duration::ZERO)?);
+        }
+        let conn = slot.as_mut().context("helper channel unavailable")?;
+        let mut sent = std::collections::VecDeque::new();
+        for k in 0..PAGE_BATCH as u64 {
+            let at = offset + k * u64::from(limit);
+            if at > crate::files::MAX_LIST_OFFSET {
+                break;
+            }
+            let id = format!(
+                "{}-{}",
+                std::process::id(),
+                NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            );
+            let req = Request {
+                version: 1,
+                id: id.clone(),
+                op: op(at, limit),
+            };
+            if let Err(error) = frame(&mut conn.input, &req) {
+                let reason = conn.failure_reason();
+                *slot = None;
+                return Err(error).context(reason);
+            }
+            sent.push_back((at, id));
+        }
+        let mut wanted = Some(offset);
+        let mut stopped = false;
+        while let Some((at, id)) = sent.pop_front() {
+            let response = match conn
+                .replies
+                .recv_timeout(std::time::Duration::from_secs(15))
+            {
+                Ok(Ok(r)) if r.version == 1 && r.id == id => r,
+                Ok(Err(e)) => {
+                    let reason = conn.failure_reason();
+                    *slot = None;
+                    return Err(e).context(reason);
+                }
+                Ok(Ok(_)) => {
+                    *slot = None;
+                    bail!("incompatible or mismatched helper response")
+                }
+                Err(_) => {
+                    *slot = None;
+                    return Err(ConnectionFailure::Timeout.into());
+                }
+            };
+            if stopped || wanted != Some(at) {
+                // Past an early end, the end of the listing, or a stop: read and dropped.
+                continue;
+            }
+            let result = match response.error {
+                Some(e) => Err(anyhow!("{e}")),
+                None => response
+                    .result
+                    .ok_or_else(|| anyhow!("empty helper response")),
+            };
+            wanted = result.as_ref().ok().and_then(next);
+            let sent_op = op(at, limit);
+            match wanted {
+                Some(after) if after != at + u64::from(limit) => {
+                    // The byte budget ended this page early: plan from it, at its size.
+                    limit = u32::try_from(after.saturating_sub(at))
+                        .unwrap_or(limit)
+                        .clamp(1, limit);
+                    stopped = true;
+                }
+                Some(_) => {}
+                None => stopped = true,
+            }
+            if let Some(after) = wanted {
+                offset = after;
+            }
+            if !page(sent_op, result) {
+                return Ok(None);
+            }
+        }
+        Ok(wanted.map(|_| (offset, limit)))
+    })();
+    match pipelined {
+        Ok(next) => next,
+        Err(error) => {
+            page(op(offset, limit), Err(error));
+            None
+        }
+    }
+}
 fn request_once(d: &Device, op: Operation, hover: bool) -> Result<serde_json::Value> {
     let Some(target) = &d.target else {
         return crate::dispatch(op);
@@ -1687,6 +1834,35 @@ mod tests {
             ..crate::store::local_device()
         };
         assert!(!prewarm(&invalid));
+    }
+    #[test]
+    fn continuation_pages_arrive_contiguous_and_in_order() {
+        let d = tempfile::tempdir().unwrap();
+        for i in 0..5000 {
+            std::fs::write(d.path().join(format!("{i:05}{}", "n".repeat(200))), b"").unwrap();
+        }
+        let path = crate::files::encode_path(d.path());
+        let first = crate::dispatch(Operation::List { path: path.clone() }).unwrap();
+        let mut seen = first["entries"].as_array().unwrap().len() as u64;
+        let mut next = first["next_offset"].as_u64().map(|o| (o, 4000));
+        assert!(next.is_some(), "byte budget split the listing");
+        while let Some((offset, limit)) = next {
+            next = list_pages(
+                &crate::store::local_device(),
+                &path,
+                offset,
+                limit,
+                |op, page| {
+                    let Operation::ListPage { offset, .. } = op else {
+                        panic!("a page")
+                    };
+                    assert_eq!(offset, seen, "pages follow each other");
+                    seen += page.unwrap()["entries"].as_array().unwrap().len() as u64;
+                    true
+                },
+            );
+        }
+        assert_eq!(seen, 5000);
     }
     #[test]
     fn bounded_frames() {

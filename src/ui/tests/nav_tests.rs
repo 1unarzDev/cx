@@ -1675,3 +1675,37 @@ fn every_overlay_renders_at_every_size() {
     let fails = sweep_app(&sizes);
     assert!(fails.is_empty(), "{} panic sites: {fails:#?}", fails.len());
 }
+
+/// A highlighted folder shows its own entries where a file's preview goes (yazi's third
+/// column), and says when it is empty.
+#[test]
+fn a_highlighted_folder_previews_its_entries() {
+    let (mut a, _rx) = file_app();
+    let entry = |name: &str, kind: &str| Entry {
+        name: name.into(),
+        path: format!("/files/docs/{name}"),
+        kind: kind.into(),
+        size: 3,
+        identity: None,
+        hidden: false,
+        rename_name: None,
+        modified: None,
+    };
+    let mut child = Browser::new(0, "/files/docs".into());
+    child.entries = vec![entry("guides", "directory"), entry("inner-note.md", "file")].into();
+    a.browser.as_mut().unwrap().peek = Some(Box::new(child));
+    let text = draw(&a, 190, 50);
+    assert!(
+        text.contains("guides/") && text.contains("inner-note.md"),
+        "{text}"
+    );
+    let b = a.browser.as_mut().unwrap();
+    b.peek.as_mut().unwrap().entries = Vec::new().into();
+    assert!(draw(&a, 190, 50).contains("empty folder"));
+    // Still listing: nothing claims the folder is empty.
+    b_loading(&mut a);
+    assert!(!draw(&a, 190, 50).contains("empty folder"));
+}
+fn b_loading(a: &mut App) {
+    a.browser.as_mut().unwrap().peek.as_mut().unwrap().loading = true;
+}

@@ -339,6 +339,7 @@ fn files_fixture(device: &str) -> LabFiles {
         preview_path: "src/transport.rs".into(),
         offset: 0,
         total: 0,
+        folder: None,
     }
 }
 

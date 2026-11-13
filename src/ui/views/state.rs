@@ -221,6 +221,9 @@ pub struct LabFiles {
     /// listing, and the listing's length (fixtures: 0 and entries.len()).
     pub offset: usize,
     pub total: usize,
+    /// The highlighted folder's own entries (shown where a file's preview goes, as in
+    /// yazi); None when a file is highlighted or the folder is not listed yet.
+    pub folder: Option<Vec<FileNode>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

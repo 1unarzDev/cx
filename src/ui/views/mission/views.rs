@@ -1850,7 +1850,50 @@ fn files(cx: &Cx, buf: &mut Buffer, r: Rect) {
             r.right().saturating_sub(list.right() + 4),
             r.height,
         );
-        file_preview(cx, buf, pv, false);
+        match &f.folder {
+            Some(items) if cx.s.preview().is_none() => folder_preview(cx, buf, pv, items),
+            _ => file_preview(cx, buf, pv, false),
+        }
+    }
+}
+
+/// A highlighted folder's entries where a file's preview goes (yazi's third column):
+/// folders first in their colour, then files, as many as the column holds.
+fn folder_preview(cx: &Cx, buf: &mut Buffer, r: Rect, items: &[crate::ui::views::FileNode]) {
+    if items.is_empty() {
+        cx.put(
+            buf,
+            r.x,
+            r.y + 1,
+            r.width,
+            "empty folder",
+            cx.st(Tok::Muted),
+        );
+        return;
+    }
+    let rows = usize::from(r.height.saturating_sub(1));
+    for (i, e) in items.iter().take(rows).enumerate() {
+        let y = r.y + 1 + i as u16;
+        let (name, st) = match e.kind {
+            FileKind::Dir => (format!("{}/", e.name), cx.st(Tok::Dir)),
+            FileKind::Symlink => (e.name.clone(), cx.st(Tok::Info)),
+            FileKind::File => (e.name.clone(), cx.ink(Tok::Fg, 0.85)),
+        };
+        let more = items.len() > rows && i + 1 == rows;
+        let name = if more {
+            format!("+{} more", items.len() - rows + 1)
+        } else {
+            name
+        };
+        let st = if more { cx.st(Tok::Muted) } else { st };
+        cx.put(
+            buf,
+            r.x,
+            y,
+            r.width,
+            &fit(&name, r.width as usize, cx.uni()),
+            st,
+        );
     }
 }
 

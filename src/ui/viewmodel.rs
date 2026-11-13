@@ -431,6 +431,7 @@ fn files(app: &App) -> LabFiles {
             preview_path: String::new(),
             offset: 0,
             total: 0,
+            folder: None,
         };
     };
     let now = transport::now() as i64;
@@ -439,23 +440,24 @@ fn files(app: &App) -> LabFiles {
     // 20,000-entry folder costs the same per frame as a small one.
     let offset = b.selected.saturating_sub(WINDOW);
     let end = (b.selected + WINDOW).min(rows.len());
+    let node = |e: &Entry| FileNode {
+        name: safe_label(&e.name),
+        depth: 0,
+        kind: match e.kind.as_str() {
+            "directory" => FileKind::Dir,
+            "symlink" => FileKind::Symlink,
+            _ => FileKind::File,
+        },
+        size: e.size,
+        modified_secs: e
+            .modified
+            .map_or(0, |m| (now - m).clamp(0, i64::from(u32::MAX)) as u32),
+        expanded: false,
+        git: None,
+    };
     let entries = (offset..end)
         .filter_map(|i| rows.get(i))
-        .map(|e| FileNode {
-            name: safe_label(&e.name),
-            depth: 0,
-            kind: match e.kind.as_str() {
-                "directory" => FileKind::Dir,
-                "symlink" => FileKind::Symlink,
-                _ => FileKind::File,
-            },
-            size: e.size,
-            modified_secs: e
-                .modified
-                .map_or(0, |m| (now - m).clamp(0, i64::from(u32::MAX)) as u32),
-            expanded: false,
-            git: None,
-        })
+        .map(|e| node(e))
         .collect();
     // The preview the screen shows: the open one, else the inline peek. Only its path, kind,
     // line count and first screenful are given; the real preview renderer draws its body.
@@ -477,6 +479,18 @@ fn files(app: &App) -> LabFiles {
         offset,
         total: rows.len(),
         previews: shown.map(lab_preview).into_iter().collect(),
+        // A highlighted folder's listing, once it has one (the peek of a directory).
+        folder: b
+            .peek
+            .as_deref()
+            .filter(|p| b.preview.is_none() && p.preview.is_none() && !p.loading)
+            .map(|p| {
+                super::browser_entries(p)
+                    .iter()
+                    .take(200)
+                    .map(|e| node(e))
+                    .collect()
+            }),
         preview_path: if b.preview.is_some() {
             let path = b.preview_path.as_deref().unwrap_or("");
             safe_label(path.rsplit('/').next().unwrap_or(""))

@@ -29,7 +29,7 @@ pub(super) enum Tok {
 }
 
 /// Number of identity hues.
-pub(super) const SWATCHES: u8 = 8;
+pub(super) const SWATCHES: u8 = 6;
 
 type Rgb = (u8, u8, u8);
 /// One token row: truecolor dark/light, xterm-256 dark/light, 16-color.
@@ -51,16 +51,14 @@ const fn row(dark: u32, light: u32, x256: (u8, u8), ansi: Option<Color>) -> Row 
     }
 }
 
-/// Identity hues: OKLCH L 0.74 / C 0.10 (dark) and L 0.47 / C 0.11 (light),
-/// hue 25..340 in 8 steps; every one reaches 4.5:1 on #282c34 and #f0f0f0.
-/// The 16-color column is the nearest ANSI hue of each swatch (red, yellow,
-/// green, cyan, bright cyan, bright blue, magenta, bright magenta), so a device
-/// keeps the same hue family at every depth. It uses the same eight ANSI slots
-/// as the spec's rotation except bright blue for plain blue, which fails
-/// contrast on dark backgrounds (P9).
-const IDS: [Row; 8] = [
-    row(0xe3928b, 0x8e3e3a, (174, 131), Some(Color::Red)),
-    row(0xd3a062, 0x814d00, (179, 130), Some(Color::Yellow)),
+/// Identity hues: OKLCH L 0.74 / C 0.10 (dark) and L 0.47 / C 0.11 (light), six
+/// calm steps from sage to pink; every one reaches 4.5:1 on #282c34 and #f0f0f0.
+/// None is red, orange or yellow, so a device's letter never reads as an error or a
+/// warning. The 16-color column is the nearest ANSI hue of each swatch (green, cyan,
+/// bright cyan, bright blue, magenta, bright magenta), six distinct slots, so a device
+/// keeps the same hue family at every depth (bright blue: plain blue fails contrast
+/// on dark backgrounds, P9).
+const IDS: [Row; SWATCHES as usize] = [
     row(0xa3b46b, 0x536304, (143, 64), Some(Color::Green)),
     row(0x68bf9b, 0x006d4b, (79, 29), Some(Color::Cyan)),
     row(0x51bcce, 0x006a7d, (74, 30), Some(Color::LightCyan)),
@@ -746,7 +744,7 @@ mod tests {
         let ansi: BTreeSet<_> = IDS.iter().map(|r| format!("{:?}", r.ansi)).collect();
         assert_eq!(
             (dark.len(), x256.len(), x256l.len(), ansi.len()),
-            (8, 8, 8, 8)
+            (6, 6, 6, 6)
         );
         assert_eq!(swatch_index("laptop"), swatch_index("laptop"));
         let spread: BTreeSet<_> = [
@@ -952,8 +950,6 @@ mod tests {
     fn identity_hues_keep_their_family_at_16_colors() {
         // The truecolor hue angle must fall in the ANSI hue's range.
         let range = |c: Color| match c {
-            Color::Red => (-30.0, 30.0),
-            Color::Yellow => (25.0, 70.0),
             Color::Green => (60.0, 150.0),
             Color::Cyan | Color::LightCyan => (145.0, 210.0),
             Color::LightBlue => (195.0, 250.0),

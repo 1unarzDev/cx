@@ -87,7 +87,7 @@ impl Default for LabCaps {
     }
 }
 
-/// Semantic tokens. `Id(n)` is the per-device identity hue (0..8).
+/// Semantic tokens. `Id(n)` is the per-device identity hue (0..6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tok {
     Fg,
@@ -99,6 +99,8 @@ pub enum Tok {
     Err,
     Info,
     Mesh,
+    /// The third mesh's hue (a group colour, never a device's).
+    Amber,
     Lan,
     Dir,
     Claude,
@@ -135,6 +137,13 @@ fn row(t: Tok) -> Option<Row> {
             177,
             97,
             Some(Color::Magenta),
+        )),
+        Tok::Amber => Some((
+            (0xd3, 0xa0, 0x62),
+            (0x81, 0x4d, 0x00),
+            179,
+            130,
+            Some(Color::Yellow),
         )),
         Tok::Lan => Some((
             (0x7f, 0xc9, 0xb4),

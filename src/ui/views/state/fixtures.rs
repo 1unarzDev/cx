@@ -789,7 +789,7 @@ pub fn typical() -> LabState {
     sessions[0].clients = 1;
     sessions[1].unread = true;
     for (i, d) in devices.iter_mut().enumerate() {
-        d.hue = (i % 8) as u8;
+        d.hue = (i % crate::ui::theme::SWATCHES as usize) as u8;
     }
     LabState {
         fixture: "typical",
@@ -938,7 +938,7 @@ pub fn large() -> LabState {
         if name.starts_with("pixel") || name.starts_with("ipad") {
             d.account = "u0_a231".into();
         }
-        d.hue = (s.devices.len() % 8) as u8;
+        d.hue = (s.devices.len() % crate::ui::theme::SWATCHES as usize) as u8;
         s.devices.push(d);
         let via = if i % 4 == 1 {
             EdgeKind::Jump("creation".into())
@@ -1154,7 +1154,7 @@ pub fn nebula(n: usize) -> LabState {
             &[mesh],
             i < 3,
         );
-        d.hue = ((i + 1) % 8) as u8;
+        d.hue = ((i + 1) % crate::ui::theme::SWATCHES as usize) as u8;
         // Every fourth device past the first few is reached through the one before it.
         let relay = (i >= 4 && i % 4 == 3).then(|| NAMES[i - 1]);
         let kind = if i % 5 == 2 {

@@ -110,6 +110,7 @@ def local_flows():
             r.key(b'\x1b')
             check('visual_exit', ' NOR ' in r.status(), r.status())
             # The c which-key panel, then cc copies the hovered path through OSC 52.
+            r.key(b'gg')
             r.key(b'c')
             text = r.text()
             check('which_c', 'Copy file path' in text and 'Copy directory path' in text, text[-600:])
@@ -199,12 +200,19 @@ def ssh_flow():
     tag = uuid.uuid4().hex
     ssh = fb.LoopbackSSH(BINARY, tag)
     env = fb.BenchEnv(BINARY, tag, ssh)
+    # The transfer worker normally starts as a systemd user unit, which would not see
+    # this fixture's ssh wrapper (PATH): a stand-in runs it detached with this
+    # environment instead (tagged, so cleanup finds it).
+    shim = env.root / 'shim'
+    shim.mkdir()
+    (shim / 'systemd-run').write_text('#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done; shift\n'
+                                      'setsid "$@" </dev/null >/dev/null 2>&1 &\nexit 0\n')
+    (shim / 'systemd-run').chmod(0o700)
+    env.env['PATH'] = f"{shim}{os.pathsep}{env.env['PATH']}"
     try:
         project = tree(env.root)
         dest = env.root / 'dest'
         dest.mkdir()
-        # The remote's last folder is `dest` (its helper runs as this account).
-        state = json.loads((env.state / 'devices.json').read_text())
         r = Raw(env, project, project / 'notes.txt', ids=env.device_ids)
         try:
             r.settle(1.0)
@@ -224,11 +232,10 @@ def ssh_flow():
             while not (dest / 'notes.txt').exists() and time.monotonic() < deadline:
                 r.settle(.3)
             check('cross_device_paste', (dest / 'notes.txt').exists() and
-                  (dest / 'notes.txt').read_text() == 'notes\n')
+                  (dest / 'notes.txt').read_text() == 'notes\n', r.text())
             r.key(b"''", .5)
             r.wait(lambda: 'fixture' not in r.lines()[0], "'' back", 10)
             results['back_with_quote_quote'] = True
-            del state
         finally:
             r.close()
     finally:
@@ -248,5 +255,6 @@ def main():
 try:
     main()
 except AssertionError as e:
+    print(str(e), file=sys.stderr)
     print(json.dumps(dict(result='FAIL', error=str(e)[:800], **results)))
     sys.exit(1)

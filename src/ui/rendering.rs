@@ -75,6 +75,10 @@ fn render_yazi(
         u32::from(d.preview.width) * u32::from(cw),
         u32::from(d.preview.height) * u32::from(ch),
     ));
+    app.yz.screen_px.set((
+        u32::from(area.width) * u32::from(cw),
+        u32::from(area.height) * u32::from(ch),
+    ));
     if let Some(b) = app.browser.as_ref() {
         b.peek_shown
             .set(d.preview.width >= 8 && d.preview.height >= 2);

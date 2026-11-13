@@ -268,7 +268,9 @@ impl App {
             {
                 self.apply_listing(reply.device, &value, listing_offset)
             }
-            Operation::Preview { ref path } | Operation::PreviewPage { ref path, .. }
+            Operation::Preview { ref path }
+            | Operation::PreviewPage { ref path, .. }
+            | Operation::PreviewImage { ref path, .. }
                 if reply.generation == self.generation
                     && self
                         .browser
@@ -598,7 +600,10 @@ impl App {
                         peek.preview_revision = peek.preview_revision.wrapping_add(1);
                     }
                 }
-                self.open_waiting_preview(reply.device, path);
+                if !boxed {
+                    // (A fitted thumbnail never stands in for the opened preview.)
+                    self.open_waiting_preview(reply.device, path);
+                }
                 true
             }
             Operation::ReadChunk { path, offset, .. } => {

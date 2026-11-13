@@ -450,6 +450,8 @@ pub(super) struct Yazi {
     pub warm: BTreeSet<usize>,
     /// The preview column in pixels at the last draw (fitted image previews).
     pub preview_px: std::cell::Cell<(u32, u32)>,
+    /// The whole screen in pixels at the last draw (an opened image is fitted to it).
+    pub screen_px: std::cell::Cell<(u32, u32)>,
     /// The preview column in cells at the last draw (native image placement).
     pub preview_rect: std::cell::Cell<Rect>,
 }

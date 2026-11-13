@@ -718,6 +718,29 @@ def scenario_nav(binary, fx, side, device_index, ssh, tag, res, run):
             res.add(f'{base}.hover_preview_warm_ms', ms(t0, t))
         finally:
             res.details.setdefault('viewer_close', []).append(viewer.close())
+        # Hover onto a 1920x1080 image: the preview column's first bitmap (half-blocks in
+        # this PTY; the helper fits the image to the column first).
+        png, jpg = fx.files['png'], fx.files['jpeg']
+        viewer = open_viewer(env, device_index, jpg['path'].parent, jpg['path'],
+                             lambda v: v.selected() == jpg['path'].name)
+        try:
+            def blocks():
+                return viewer.yazi() and sum(line.count('▀') + line.count('▄')
+                                             for line in viewer.columns()[2]) >= 100
+            def cells():
+                w = viewer.screen.columns
+                x0, rows = w * 5 // 8, range(1, viewer.screen.lines - 1)
+                return tuple((viewer.screen.buffer[y][x].fg, viewer.screen.buffer[y][x].bg)
+                             for y in rows for x in range(x0, w, 7))
+            viewer.until(blocks, timeout=30, what='first image preview')
+            viewer.quiesce(.3, 3)
+            before = cells()
+            t0 = viewer.write_at(b'j')
+            viewer.until(lambda: viewer.selected() == png['path'].name, what='hover png')
+            t = viewer.until(lambda: blocks() and cells() != before, timeout=30, what='hover image preview')
+            res.add(f'{base}.hover_image_ms', ms(t0, t))
+        finally:
+            res.details.setdefault('viewer_close', []).append(viewer.close())
         if device_index:
             # `'` + letter: from the local device to this remote one (cold), back (seen),
             # and to the remote again (seen).
@@ -770,7 +793,7 @@ def dir_open(viewer, letter, expected, res, prefix):
                             what=f'{prefix} j moves')
     res.add(f'{prefix}.usable_ms', ms(t0, t_usable))
     res.add(f'{prefix}.j_after_first_rows_ms', ms(t_j, t_usable))
-    want = min(expected, UI_CAP if viewer.hub_layout() else OLD_UI_CAP)
+    want = min(expected, UI_CAP if viewer.hub_layout() or viewer.yazi() else OLD_UI_CAP)
     t_full = viewer.until(lambda: not viewer.loading() and (viewer.count() or 0) >= want,
                           timeout=FULL_TIMEOUT, what=f'{prefix} full count')
     res.add(f'{prefix}.full_count_ms', ms(t0, t_full))
@@ -1237,7 +1260,7 @@ def main():
         sides = [(n, i) for n, i in [('local', 0)] + ([('remote', 1)] if ssh else []) if n in wanted]
         if args.files:
             keep = set(args.files.split(','))
-            fx.files = {k: v for k, v in fx.files.items() if k in keep or k in ('src_5m', 'md_2m', 'src_200k')}
+            fx.files = {k: v for k, v in fx.files.items() if k in keep or k in ('src_5m', 'md_2m', 'src_200k', 'png', 'jpeg')}
             fx.preview_keys = [k for k in fx.files if k in keep]
         for run in range(args.runs):
             for side, index in sides:

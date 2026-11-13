@@ -1520,6 +1520,28 @@ impl App {
                 return;
             }
         }
+        // An image opens fitted to the whole screen (decoded and scaled on the helper),
+        // not waiting for the column-sized thumbnail the peek may be reading.
+        let (sw, sh) = self.yz.screen_px.get();
+        let image = yazi::openers::mime(path.rsplit('/').next().unwrap_or(""), false)
+            .starts_with("image/")
+            && !path.to_ascii_lowercase().ends_with(".svg")
+            && sw > 0
+            && self.browser.as_ref().is_some_and(|b| b.container.is_none());
+        if image {
+            let op = Operation::PreviewImage {
+                path,
+                width: sw,
+                height: sh,
+            };
+            if !self.send(device, op) {
+                if let Some(b) = &mut self.browser {
+                    b.preview_pending_page = None;
+                    b.preview = Some("Preview queue busy · Escape and retry".into());
+                }
+            }
+            return;
+        }
         // The peek is still reading this file (a PDF page takes seconds): its reply
         // opens the preview instead of a second read queued behind it.
         if self

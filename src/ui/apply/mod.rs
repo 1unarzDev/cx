@@ -393,6 +393,7 @@ impl App {
                 | Operation::ListPage { .. }
                 | Operation::Preview { .. }
                 | Operation::PreviewPage { .. }
+                | Operation::PreviewImage { .. }
                 | Operation::Mkdir { .. }
                 | Operation::Rename { .. }
                 | Operation::Remove { .. }

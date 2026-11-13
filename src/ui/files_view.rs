@@ -138,8 +138,10 @@ impl App {
             }
             if cached.is_none() && !b.prefetch.contains(&entry.path) {
                 let path = entry.path.clone();
-                let sent = !b.loading
-                    && b.prefetch.len() < 4
+                // Also while the folder itself is still loading (a first page, or the
+                // last listing painted from memory): the hover channel is its own, so an
+                // Enter straight after opening is served by this reply.
+                let sent = b.prefetch.len() < 4
                     && self.send_hover(device, Operation::List { path: path.clone() });
                 if let Some(b) = self.browser.as_mut() {
                     if sent {

@@ -2062,7 +2062,7 @@ fn moving_to_client_only_host_drops_unavailable_launch_profile() {
     a.launch_provider = Some("codex".into());
     a.providers
         .insert(1, (vec!["shell".into()], transport::now()));
-    press(&mut a, 'T');
+    press(&mut a, '!');
     assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(1, path)) if path == "/server/files"));
     assert!(a.launch_provider.is_none());
     assert!(rx.try_recv().is_err());
@@ -2478,7 +2478,7 @@ fn new_session_from_all_explicitly_selects_execution_provider_directory() {
     let list = rx.try_recv().unwrap();
     assert!(matches!(list.op, Operation::List { .. }));
     a.browser.as_mut().unwrap().path = "/projects/test".into();
-    press(&mut a, 'T');
+    press(&mut a, '!');
     assert!(matches!(a.dialog, Some(Dialog::SessionChooser(..))));
     press(&mut a, 'x');
     assert!(matches!(a.dialog, Some(Dialog::SessionPicker(..))));

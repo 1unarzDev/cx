@@ -325,12 +325,11 @@ impl App {
             }
             Action::Hidden => {
                 if let Some(b) = &mut self.browser {
-                    let path = browser_entries(b).get(b.selected).map(|e| e.path.clone());
+                    // yazi keeps the cursor's row, not the file: hidden folders sort
+                    // first, so from the top `.` lands on the first of them.
                     b.show_hidden = !b.show_hidden;
                     b.visual_anchor = None;
-                    b.selected = path
-                        .and_then(|p| browser_entries(b).iter().position(|e| e.path == p))
-                        .unwrap_or(0);
+                    b.selected = b.selected.min(browser_entries(b).len().saturating_sub(1));
                 }
             }
             Action::Filter => {

@@ -7013,16 +7013,22 @@ fn yazi_ctrl_c_closes_a_tab_and_dash_stays_in_files() {
     assert_eq!(a.yz.tabs.len(), 1);
     assert!(!a.quit && a.view == View::Files);
     // yazi's `-`, `_`, Ctrl+- and `+`-free keys never reach cx's globals in Files.
-    for k in ['-', '_', 'A', 'H', 'L'] {
+    for k in ['-', '_', 'A', 'L'] {
         press(&mut a, k);
         assert_eq!(a.view, View::Files, "{k}");
     }
     a.key(KeyEvent::new(KeyCode::Char('-'), KeyModifiers::CONTROL));
+    // Legacy terminals send Ctrl+- as 0x1f, which crossterm reads as Ctrl+7.
+    a.key(KeyEvent::new(KeyCode::Char('7'), KeyModifiers::CONTROL));
     a.key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
     assert!(!a.quit && a.view == View::Files);
     // On the last tab Ctrl+C quits, as in yazi.
     a.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     assert!(a.quit);
+    // H is cx's hub key (Shift+H, decision 2026-11-12); yazi's back is Alt+Left.
+    let (mut a, _rx) = file_app();
+    press(&mut a, 'H');
+    assert_eq!(a.view, View::Network);
 }
 
 #[test]
@@ -7080,4 +7086,28 @@ fn restart_into_files_paints_the_folders_last_listing_before_the_reply() {
     assert_eq!(browser_entries(b).get(b.selected).unwrap().name, "beta.txt");
     assert!(b.loading, "and refreshed in place");
     assert!(matches!(rx.try_recv().unwrap().op, Operation::List { path } if path == "/files"));
+}
+
+#[test]
+fn hidden_toggle_keeps_the_cursor_row_as_yazi_does() {
+    let (mut a, _rx) = file_app();
+    let b = a.browser.as_mut().unwrap();
+    b.entries.insert(
+        0,
+        Entry {
+            name: ".dot".into(),
+            path: "/files/.dot".into(),
+            kind: "directory".into(),
+            size: 0,
+            identity: None,
+            hidden: true,
+            rename_name: None,
+            modified: None,
+            mode: None,
+        },
+    );
+    b.selected = 0; // alpha.txt, the first visible row
+    a.execute(Action::Hidden);
+    let b = a.browser.as_ref().unwrap();
+    assert_eq!(browser_entries(b).get(b.selected).unwrap().name, ".dot");
 }

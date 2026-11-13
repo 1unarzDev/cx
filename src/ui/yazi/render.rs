@@ -118,7 +118,8 @@ pub(crate) enum Popup {
         list: Vec<String>,
     },
     Help {
-        rows: Vec<(String, String)>,
+        /// (key, desc, not in cx): rows cx does not do are dimmed, as in which-key.
+        rows: Vec<(String, String, bool)>,
         selected: usize,
         filter: String,
     },
@@ -143,7 +144,8 @@ pub(crate) struct View {
     pub current: Column,
     pub preview: Option<Preview>,
     pub status: Status,
-    pub which: Vec<(String, String)>,
+    /// (key, desc, not in cx) of the pending chord.
+    pub which: Vec<(String, String, bool)>,
     pub popup: Option<Popup>,
     pub linemode: Linemode,
     /// Today as unix seconds (relative day labels), for deterministic fixtures.
@@ -598,8 +600,12 @@ fn column(
         };
         let lm_w: usize = lm.iter().map(|(s, _)| width(s)).sum();
         let room = inner_end.saturating_sub(x) as usize;
-        // Names keep at least 12 cells; a narrower column drops the linemode.
-        let lm_w = if lm_w + 13 <= room { lm_w } else { 0 };
+        // Names win over decoration: a row whose name would be cut drops its linemode.
+        let lm_w = if width(&row.name) + lm_w < room {
+            lm_w
+        } else {
+            0
+        };
         let name_room = room.saturating_sub(if lm_w > 0 { lm_w + 1 } else { 0 });
         let mut name = ellipsis(&row.name, name_room, !row.dir, look.unicode);
         if name != row.name && !row.dir && row.name.contains('.') && x > x0 + 1 {
@@ -676,8 +682,9 @@ fn column(
                 p.put(inner_end, y, x1, " ", style);
             }
         }
-        // Markers: a solid bar on the column's left edge (the rail cell for the
-        // current folder), foreground only.
+        // Markers: yazi's one-cell bar on the column's left edge (the rail cell for
+        // the current folder). Foreground only (transparent terminal): a left half
+        // block, so contiguous rows join into one bar that stays clear of the text.
         let marker = match row.mark {
             Mark::None => None,
             Mark::Selected => Some(t.marker_selected),
@@ -686,7 +693,7 @@ fn column(
         };
         if let (Some(c), true) = (marker, which != Which::Preview) {
             let mx = list.x.saturating_sub(1);
-            let glyph = if look.unicode { "█" } else { "|" };
+            let glyph = if look.unicode { "▌" } else { "|" };
             let ms = if look.color {
                 Style::default().fg(c)
             } else {
@@ -835,7 +842,7 @@ fn status(p: &mut Pen, t: &Theme, r: Rect, s: &Status) {
     }
 }
 
-fn which_key(p: &mut Pen, t: &Theme, area: Rect, bottom: u16, items: &[(String, String)]) {
+fn which_key(p: &mut Pen, t: &Theme, area: Rect, bottom: u16, items: &[(String, String, bool)]) {
     if items.is_empty() || area.width < 8 {
         return;
     }
@@ -850,7 +857,7 @@ fn which_key(p: &mut Pen, t: &Theme, area: Rect, bottom: u16, items: &[(String, 
     let inner = Rect::new(r.x + 1, r.y + 1, r.width.saturating_sub(2), h - 2);
     let iw = u32::from(inner.width);
     let start = |c: usize| inner.x + ((iw * c as u32 * 2 + cols as u32) / (2 * cols as u32)) as u16;
-    for (k, (key, desc)) in items.iter().enumerate() {
+    for (k, (key, desc, absent)) in items.iter().enumerate() {
         let (row, col) = ((k / cols) as u16, k % cols);
         if row >= inner.height {
             break;
@@ -867,7 +874,12 @@ fn which_key(p: &mut Pen, t: &Theme, area: Rect, bottom: u16, items: &[(String, 
         };
         let sep = if p.look.unicode { sep } else { " - ".into() };
         x = p.put(x, y, x1, &sep, t.which_sep_style);
-        p.put(x, y, x1, desc, t.which_desc);
+        let style = if *absent {
+            t.which_desc.add_modifier(Modifier::DIM)
+        } else {
+            t.which_desc
+        };
+        p.put(x, y, x1, desc, style);
     }
 }
 
@@ -988,11 +1000,13 @@ fn popup(
             p.put(end, r.y + 2, end + 1, rr, t.help_border);
             let body = r.height.saturating_sub(4) as usize;
             let first = selected.saturating_sub(body.saturating_sub(1));
-            for (i, (key, desc)) in rows.iter().enumerate().skip(first).take(body) {
+            for (i, (key, desc, absent)) in rows.iter().enumerate().skip(first).take(body) {
                 let y = r.y + 3 + (i - first) as u16;
                 let hov = i == *selected;
                 let base = if hov {
                     t.help_hovered
+                } else if *absent {
+                    Style::default().add_modifier(Modifier::DIM)
                 } else {
                     Style::default()
                 };
@@ -1106,6 +1120,13 @@ pub(crate) fn render(v: &View, t: &Theme, look: Look, area: Rect, buf: &mut Buff
     } else {
         cr
     };
+    // yazi's preview leaves the screen's last column unused (text, folders, images).
+    let vr = Rect::new(
+        vr.x,
+        vr.y,
+        vr.width.saturating_sub(u16::from(vr.width >= 2)),
+        vr.height,
+    );
     d.preview = vr;
     d.current = current_list;
     d.parent = parent_list;
@@ -1234,7 +1255,7 @@ mod tests {
                 list: vec!["a".into(); 30],
             }),
             Some(Popup::Help {
-                rows: vec![("<C-u>".into(), "Move".into()); 200],
+                rows: vec![("<C-u>".into(), "Move".into(), true); 200],
                 selected: 150,
                 filter: "m".into(),
             }),
@@ -1272,7 +1293,7 @@ mod tests {
                     ..Status::default()
                 },
                 which: if i % 2 == 0 {
-                    vec![("c".into(), "Copy file path".into()); 7]
+                    vec![("c".into(), "Copy file path".into(), i % 4 == 0); 7]
                 } else {
                     Vec::new()
                 },

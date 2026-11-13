@@ -980,7 +980,7 @@ fn help_is_the_table_of_the_screen_below() {
     press(&mut a, '~');
     let text = draw(&a, 120, 40);
     assert!(
-        text.contains("mgr.help") && text.contains("Close Files"),
+        text.contains("mgr.help") && text.contains("Quit Files") && !text.contains("not in cx"),
         "{text}"
     );
 }

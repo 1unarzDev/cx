@@ -75,6 +75,10 @@ pub(super) enum Y {
     TabSwap(isize),
     Tasks,
     Help,
+    /// `H`: cx's hub key (decision 2026-11-12); yazi's back is Alt+Left.
+    Hub,
+    /// `Q`: quit cx (yazi's quit without its cwd-file).
+    QuitAll,
     /// `'`: the device panel (handled before the table).
     Devices,
     /// A user prepend that runs a local shell command (`%s` = the chosen files).
@@ -87,6 +91,13 @@ pub(super) enum Y {
     SendTo,
     /// cx's own: a new agent or shell session in this folder.
     NewSession,
+}
+
+impl Y {
+    /// A binding cx does not do (help and which-key dim it).
+    fn absent(&self) -> bool {
+        matches!(self, Y::NotInCx(_) | Y::Unsupported(_))
+    }
 }
 
 pub(super) struct Bind {
@@ -119,8 +130,8 @@ pub(super) fn keymap() -> &'static [Bind] {
                 Escape,
                 "Exit visual mode, clear selection, or cancel search"
             ),
-            b!(["q"], Quit, "Close Files"),
-            b!(["Q"], Quit, "Close Files"),
+            b!(["q"], Quit, "Quit Files"),
+            b!(["Q"], QuitAll, "Quit the process"),
             b!(
                 ["<C-c>"],
                 CloseTab,
@@ -129,7 +140,7 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(
                 ["<C-z>"],
                 NotInCx("Suspend is not in cx · Ctrl+\\ detaches"),
-                "Suspend the process (not in cx)"
+                "Suspend the process"
             ),
             b!(["k"], Arrow(-1), "Previous file"),
             b!(["j"], Arrow(1), "Next file"),
@@ -151,16 +162,8 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(["l"], Enter, "Enter the child directory"),
             b!(["<Left>"], Leave, "Back to the parent directory"),
             b!(["<Right>"], Enter, "Enter the child directory"),
-            b!(
-                ["H"],
-                NotInCx("Shift+H is cx's hub key · history is Alt+← / Alt+→"),
-                "Back to previous directory: Alt+← in cx (H is the hub key)"
-            ),
-            b!(
-                ["L"],
-                NotInCx("History is Alt+← / Alt+→ in cx"),
-                "Forward to next directory: Alt+→ in cx"
-            ),
+            b!(["H"], Hub, "The hub (cx's Shift+H; history back is Alt+←)"),
+            b!(["L"], Forward, "Forward to next directory"),
             b!(["<A-Left>"], Back, "Back to previous directory"),
             b!(["<A-Right>"], Forward, "Forward to next directory"),
             b!(["<Space>"], Toggle, "Toggle the current selection state"),
@@ -181,11 +184,7 @@ pub(super) fn keymap() -> &'static [Bind] {
             ),
             b!(["y"], Yank, "Yank selected files (copy)"),
             b!(["x"], Cut, "Yank selected files (cut)"),
-            b!(
-                ["p"],
-                Paste(false),
-                "Paste yanked files (here, from any device)"
-            ),
+            b!(["p"], Paste(false), "Paste yanked files"),
             b!(
                 ["P"],
                 Paste(true),
@@ -194,17 +193,17 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(
                 ["-"],
                 NotInCx("Symlinks are not in cx"),
-                "Symlink the absolute path of yanked files (not in cx)"
+                "Symlink the absolute path of yanked files"
             ),
             b!(
                 ["_"],
                 NotInCx("Symlinks are not in cx"),
-                "Symlink the relative path of yanked files (not in cx)"
+                "Symlink the relative path of yanked files"
             ),
             b!(
                 ["<C-->"],
                 NotInCx("Hardlinks are not in cx"),
-                "Hardlink yanked files (not in cx)"
+                "Hardlink yanked files"
             ),
             b!(["Y"], Unyank, "Cancel the yank status"),
             b!(["X"], Unyank, "Cancel the yank status"),
@@ -214,7 +213,7 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(
                 ["A"],
                 NotInCx("Bulk create is not in cx · a creates one at a time"),
-                "Bulk create files (not in cx)"
+                "Bulk create files"
             ),
             b!(["r"], Rename, "Rename selected file(s)"),
             b!([";"], Shell(false), "Run a shell command"),
@@ -242,7 +241,7 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(
                 ["m", "b"],
                 NotInCx("Birth time is not in cx · m m shows mtime"),
-                "Linemode: btime (not in cx)"
+                "Linemode: btime"
             ),
             b!(
                 ["m", "m"],
@@ -252,7 +251,7 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(
                 ["m", "o"],
                 NotInCx("Owner is not in cx · m p shows permissions"),
-                "Linemode: owner (not in cx)"
+                "Linemode: owner"
             ),
             b!(
                 ["m", "n"],
@@ -287,13 +286,13 @@ pub(super) fn keymap() -> &'static [Bind] {
             ),
             b!(
                 [",", "b"],
-                Sort("mtime", false),
-                "Sort by birth time (cx: modified time)"
+                NotInCx("Birth time is not in cx · ,m sorts by modified time"),
+                "Sort by birth time"
             ),
             b!(
                 [",", "B"],
-                Sort("mtime", true),
-                "Sort by birth time (reverse; cx: modified time)"
+                NotInCx("Birth time is not in cx · ,M sorts by modified time"),
+                "Sort by birth time (reverse)"
             ),
             b!([",", "e"], Sort("extension", false), "Sort by extension"),
             b!(
@@ -366,24 +365,27 @@ fn prepends() -> &'static [(Vec<String>, Y, String)] {
         theme()
             .prepends
             .iter()
-            .map(|(on, run, desc)| {
-                let run = run.trim();
-                let y = if run == "open --interactive" {
-                    Y::OpenInteractive
-                } else if let Some(cmd) = run.strip_prefix("shell") {
-                    let cmd = cmd.trim();
-                    let block = cmd.starts_with("--block");
-                    let cmd = cmd.trim_start_matches("--block").trim();
-                    let cmd = cmd.strip_prefix("--").unwrap_or(cmd).trim();
-                    let cmd = cmd.trim_matches(|c| c == '\'' || c == '"');
-                    Y::LocalShell(cmd.to_owned(), block)
-                } else {
-                    Y::Unsupported(desc.clone())
-                };
-                (on.clone(), y, desc.clone())
-            })
+            .map(|(on, run, desc)| (on.clone(), prepend_run(run, desc), desc.clone()))
             .collect()
     })
+}
+
+/// What a user prepend's `run` does in cx: `open --interactive`, a local `shell`
+/// command, or (a yazi plugin) a notice.
+fn prepend_run(run: &str, desc: &str) -> Y {
+    let run = run.trim();
+    if run == "open --interactive" {
+        Y::OpenInteractive
+    } else if let Some(cmd) = run.strip_prefix("shell") {
+        let cmd = cmd.trim();
+        let block = cmd.starts_with("--block");
+        let cmd = cmd.trim_start_matches("--block").trim();
+        let cmd = cmd.strip_prefix("--").unwrap_or(cmd).trim();
+        let cmd = cmd.trim_matches(|c| c == '\'' || c == '"');
+        Y::LocalShell(cmd.to_owned(), block)
+    } else {
+        Y::Unsupported(desc.to_owned())
+    }
 }
 
 /// A key in yazi's notation (`j`, `<C-u>`, `<Space>`, `<A-Left>`).
@@ -406,6 +408,8 @@ pub(super) fn key_name(k: &KeyEvent) -> Option<String> {
     };
     Some(match k.code {
         KeyCode::Char(' ') if !ctrl && !alt => "<Space>".into(),
+        // Legacy terminals send Ctrl+- as 0x1f, which crossterm reads as Ctrl+7.
+        KeyCode::Char('7') if ctrl && !alt => "<C-->".into(),
         KeyCode::Char(c) if ctrl || alt => {
             let mut p = String::new();
             if ctrl {
@@ -528,10 +532,10 @@ impl App {
         browser_entries(b).get(b.selected).cloned()
     }
 
-    fn chord_candidates(&self, seq: &[String]) -> Vec<(String, String)> {
+    fn chord_candidates(&self, seq: &[String]) -> Vec<(String, String, bool)> {
         if seq.first().map(String::as_str) == Some("'") && seq.len() == 1 {
             let letters = self.hotkeys();
-            let mut out: Vec<(String, String)> = self
+            let mut out: Vec<(String, String, bool)> = self
                 .devices
                 .iter()
                 .enumerate()
@@ -545,6 +549,7 @@ impl App {
                             safe_label(&d.name),
                             if here { " (here)" } else { "" }
                         ),
+                        false,
                     ))
                 })
                 .collect();
@@ -553,32 +558,32 @@ impl App {
                 if let Some(dev) = self.devices.get(*d) {
                     out.insert(
                         0,
-                        ("'".into(), format!("Back to {}", safe_label(&dev.name))),
+                        (
+                            "'".into(),
+                            format!("Back to {}", safe_label(&dev.name)),
+                            false,
+                        ),
                     );
                 }
             }
             return out;
         }
         let mut seen = BTreeSet::new();
-        let pre = prepends()
-            .iter()
-            .map(|(on, _, desc)| (on.as_slice(), desc.as_str()));
-        let map = keymap().iter().map(|b| (b.on, b.desc));
         let mut out = Vec::new();
-        let mut push = |on: &[&str], desc: &str| {
+        let mut push = |on: &[&str], desc: &str, run: &Y| {
             if on.len() > seq.len() && on.iter().zip(seq).all(|(a, b)| a == b) {
                 let next = on[seq.len()].to_string();
                 if seen.insert(next.clone()) {
-                    out.push((next, desc.to_string()));
+                    out.push((next, desc.to_string(), run.absent()));
                 }
             }
         };
-        for (on, desc) in pre {
+        for (on, run, desc) in prepends() {
             let on: Vec<&str> = on.iter().map(String::as_str).collect();
-            push(&on, desc);
+            push(&on, desc, run);
         }
-        for (on, desc) in map {
-            push(on, desc);
+        for b in keymap() {
+            push(b.on, b.desc, &b.run);
         }
         out
     }
@@ -754,13 +759,17 @@ impl App {
     }
 
     /// Help rows: user prepends first, then the keymap, filtered.
-    pub(super) fn yazi_help_rows(&self, filter: &str) -> Vec<(String, String)> {
+    pub(super) fn yazi_help_rows(&self, filter: &str) -> Vec<(String, String, bool)> {
         let f = filter.to_lowercase();
         prepends()
             .iter()
-            .map(|(on, _, desc)| (on.concat(), desc.clone()))
-            .chain(keymap().iter().map(|b| (b.on.concat(), b.desc.to_string())))
-            .filter(|(k, d)| {
+            .map(|(on, run, desc)| (on.concat(), desc.clone(), run.absent()))
+            .chain(
+                keymap()
+                    .iter()
+                    .map(|b| (b.on.concat(), b.desc.to_string(), b.run.absent())),
+            )
+            .filter(|(k, d, _)| {
                 f.is_empty() || k.to_lowercase().contains(&f) || d.to_lowercase().contains(&f)
             })
             .collect()
@@ -803,6 +812,8 @@ impl App {
                 }
             }
             Quit => self.back(),
+            QuitAll => self.request_quit(),
+            Hub => self.go_hub(),
             CloseTab => {
                 if self.yz.tabs.len() > 1 {
                     self.yz.tabs.remove(self.yz.tab);
@@ -2190,6 +2201,51 @@ pub(super) mod openers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The user's keymap.toml prepends (a fixture copy) resolve to what cx runs.
+    #[test]
+    fn user_prepends_resolve_and_fill_the_selected_paths() {
+        let keymap = super::toml::parse(
+            r#"
+[[mgr.prepend_keymap]]
+on = [ "M" ]
+run = "plugin mount"
+desc = "Mount manager"
+
+[[mgr.prepend_keymap]]
+on = [ "<C-n>" ]
+run = 'shell -- dragon-drop -x -i -T %s'
+desc = "Drag selected files with dragon-drop"
+
+[[mgr.prepend_keymap]]
+on = [ "<C-o>" ]
+run = "open --interactive"
+desc = "Choose an application"
+"#,
+        );
+        let prepends = theme::Theme::from_docs(&super::toml::parse(""), Some(&keymap)).prepends;
+        let runs: Vec<(String, Y)> = prepends
+            .iter()
+            .map(|(on, run, desc)| (on.concat(), prepend_run(run, desc)))
+            .collect();
+        assert_eq!(
+            runs,
+            vec![
+                ("M".into(), Y::Unsupported("Mount manager".into())),
+                (
+                    "<C-n>".into(),
+                    Y::LocalShell("dragon-drop -x -i -T %s".into(), false)
+                ),
+                ("<C-o>".into(), Y::OpenInteractive),
+            ]
+        );
+        let Y::LocalShell(cmd, _) = &runs[1].1 else {
+            unreachable!()
+        };
+        let filled = openers::fill(cmd, &["/a b/c.png".into(), "/d.txt".into()], "/");
+        assert_eq!(filled, "dragon-drop -x -i -T '/a b/c.png' '/d.txt'");
+        assert!(Y::Unsupported(String::new()).absent() && !Y::OpenInteractive.absent());
+    }
 
     #[test]
     fn scrolloff_keeps_five_rows_around_the_cursor() {

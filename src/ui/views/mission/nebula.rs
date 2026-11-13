@@ -671,6 +671,16 @@ fn dev_w(cx: &Cx, d: &LabDevice, up: Option<&LabEdge>, mode: Mode, nmax: usize) 
     }
 }
 
+/// The one tone of a cluster's member letters: its mesh colour, or the plain
+/// foreground for an uncoloured (muted) cluster, so down members still read dimmer.
+fn letter_tok(cl: &Cl) -> Tok {
+    if matches!(cl.tok, Tok::Muted) {
+        Tok::Fg
+    } else {
+        cl.tok
+    }
+}
+
 fn cl_count(cl: &Cl) -> String {
     format!("+{}", cl.members.len())
 }
@@ -1645,7 +1655,8 @@ fn label(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It, r: R, pick: Option<bool>,
                 cx.put(buf, x + 3 + nw, y, cw, &count, cst);
             }
             if p.mode == Mode::Full && r.h > 1 {
-                // Its members' letters (keys that open it on them), downs counted.
+                // Its members' letters (keys that open it on them) in the cluster's one
+                // tone, down and never-seen ones dim, the pointed-at one in the accent.
                 let mut segs: Vec<(String, Style)> = cl
                     .members
                     .iter()
@@ -1653,9 +1664,9 @@ fn label(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It, r: R, pick: Option<bool>,
                     .map(|&m| {
                         let d = p.nodes[m].d;
                         let st = if cx.up(d) {
-                            cx.ink(Tok::Id(cx.s.hue(&d.id)), 0.9 * a)
+                            cx.ink(letter_tok(cl), 0.8 * a)
                         } else {
-                            cx.ink(Tok::Muted, 0.6 * a)
+                            cx.ink(Tok::Muted, 0.5 * a)
                         };
                         (d.hotkey.to_string(), st)
                     })
@@ -1663,13 +1674,19 @@ fn label(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It, r: R, pick: Option<bool>,
                 if cl.members.iter().any(|&m| !cx.up(p.nodes[m].d)) {
                     segs.push((cx.g("✕", "!").into(), cx.ink(Tok::Err, 0.8 * a)));
                 }
+                let letters = segs.len().min(cl.members.len().min(8));
                 let ew = ev_w(cx, &segs) as u16;
                 let mut xx = if left {
                     (x + w).saturating_sub(2 + ew)
                 } else {
                     x + 2
                 };
-                for (t, st) in segs {
+                for (k, (t, st)) in segs.into_iter().enumerate() {
+                    let st = if k < letters && cx.c.hover == Some((xx, y + 1)) {
+                        cx.st(Tok::Accent).add_modifier(Modifier::BOLD)
+                    } else {
+                        st
+                    };
                     xx += cx.put(buf, xx, y + 1, 2, &t, st) + 1;
                 }
             }
@@ -1760,9 +1777,9 @@ fn brief(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It) {
     match it.kind {
         Kind::Dev(_) => {
             let Some(d) = it.d else { return };
-            let st = cx
-                .ink(Tok::Id(cx.s.hue(&d.id)), a)
-                .add_modifier(Modifier::BOLD);
+            // A blooming or folding member keeps its cluster's one tone.
+            let tok = p.cls.get(it.group).map_or(Tok::Fg, letter_tok);
+            let st = cx.ink(tok, a).add_modifier(Modifier::BOLD);
             let (g, _) = cx.status(d.status);
             let lx = if it.side < 0 { x - 1 } else { x + 1 };
             cx.put(buf, x, y, 1, g, cx.ink(Tok::Muted, a));

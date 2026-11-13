@@ -752,6 +752,56 @@ mod nebula_tests {
         }
     }
 
+    /// A folded cluster's member letters wear one calm tone: its up members share a
+    /// colour and its down ones one dimmer colour, never a colour per letter.
+    #[test]
+    fn folded_member_letters_share_one_tone() {
+        let mut rows = 0;
+        for f in ["large", "nebula-25", "nebula-15"] {
+            let s = LabState::fixture(f).unwrap();
+            for (w, h) in [(120, 40), (190, 50), (95, 50)] {
+                let (buf, _) = drawn(&s, 0, w, h);
+                for y in 0..h - 1 {
+                    for x in 0..w {
+                        if buf[(x, y)].symbol() != "◍" {
+                            continue;
+                        }
+                        let right = x + 2 < w
+                            && buf[(x + 2, y)]
+                                .symbol()
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || c == '-');
+                        let mut fgs = BTreeSet::new();
+                        let (mut cx, mut gap, mut n) = (x as i32, 0, 0);
+                        while gap < 3 && cx >= 0 && cx < i32::from(w) {
+                            let c = &buf[(cx as u16, y + 1)];
+                            let sym = c.symbol();
+                            if sym.len() == 1 && sym.chars().all(|c| c.is_ascii_lowercase()) {
+                                fgs.insert(format!("{:?}", c.fg));
+                                n += 1;
+                                gap = 0;
+                            } else if sym == " " {
+                                gap += 1;
+                            } else if n > 0 && sym != "✕" {
+                                break;
+                            }
+                            cx += if right { 1 } else { -1 };
+                        }
+                        if n >= 3 {
+                            rows += 1;
+                            assert!(
+                                fgs.len() <= 2,
+                                "{f} {w}x{h}: fold at ({x},{y}) letters in {} colours",
+                                fgs.len()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(rows > 5, "only {rows} folded rows seen");
+    }
+
     /// In every frame: a move never goes against its key; going back and forth settles
     /// (back from where a move lands leads to a node that moves there again, the very
     /// node it came from when the two are paired); every node drawn is reached from

@@ -1064,7 +1064,8 @@ impl Grid {
     }
 }
 
-/// The line glyph for a cell's joins. ASCII: `-` `|`, rounded corners `.` above and `'`
+/// The line glyph for a cell's joins: rounded corners, and a junction drawn as its
+/// trunk. ASCII: `-` `|`, rounded corners `.` above and `'`
 /// below, a junction its trunk's `|` or `-` (`+` is the invite key); a password run is
 /// `.` and `:`; a quiet line is drawn plain (its ends say why).
 fn line_ch(b: u8, pat: Pat, uni: bool) -> char {
@@ -1090,11 +1091,11 @@ fn line_ch(b: u8, pat: Pat, uni: bool) -> char {
             x if x == DN | LT => '╮',
             x if x == UP | RT => '╰',
             x if x == UP | LT => '╯',
-            x if x == UP | DN | RT => '├',
-            x if x == UP | DN | LT => '┤',
-            x if x == LT | RT | DN => '┬',
-            x if x == LT | RT | UP => '┴',
-            _ => '┼',
+            // A junction is its trunk's own line (no tee's square shoulder), as in
+            // ASCII; only a true crossing is `┼`.
+            x if x == UP | DN | LT | RT => '┼',
+            x if x & (UP | DN) == UP | DN => '│',
+            _ => '─',
         }
     } else {
         match (pat, flat, tall) {

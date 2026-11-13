@@ -689,3 +689,46 @@ mod map_moves {
         }
     }
 }
+#[cfg(test)]
+mod curves {
+    //! Links are curves with rounded joins at every fleet size: no square corner or
+    //! tee of an orthogonal tree anywhere on the hub, a device or the link editor.
+    use super::*;
+
+    #[test]
+    fn links_never_draw_square_corners() {
+        for s in [state::typical(), state::large()] {
+            let device = s.devices[1].id.clone();
+            let edge = s.edges[0].id.clone();
+            for view in [
+                LabView::Hub,
+                LabView::DeviceFocus(device.clone()),
+                LabView::EdgeEditor(edge.clone()),
+            ] {
+                for variant in ["dark-truecolor", "dark-16"] {
+                    for (w, h) in [(80, 48), (120, 40), (190, 50)] {
+                        let caps = LabCaps::from_variant(variant).unwrap();
+                        let (buf, _) = render_frame(&view, &s, &caps, w, h);
+                        let bad: String = buf
+                            .content
+                            .iter()
+                            .map(|c| c.symbol())
+                            .filter(|c| ["┌", "┐", "└", "┘", "├", "┤", "┬", "┴"].contains(c))
+                            .collect();
+                        let text: String = buf
+                            .content
+                            .chunks(usize::from(w))
+                            .map(|r| r.iter().map(|c| c.symbol()).collect::<String>() + "\n")
+                            .collect();
+                        assert!(
+                            bad.is_empty(),
+                            "{} {} {variant} {w}x{h}: {bad}\n{text}",
+                            s.fixture,
+                            view.slug()
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

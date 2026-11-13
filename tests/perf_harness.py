@@ -113,7 +113,10 @@ class Env:
                         # The bench PTY answers neither OSC 11 nor DA1, so the background
                         # probe would wait out its 100 ms on every start (real terminals
                         # answer DA1 within milliseconds).
-                        CX_THEME='dark')
+                        CX_THEME='dark',
+                        # Vitals on, from a frozen /proc tree: nothing they show changes, so
+                        # an idle screen must still write nothing (older binaries ignore it).
+                        CX_METRICS_ROOT=str(pty_lib.metrics_fixture(self.root / 'metrics', temp=47.0)))
         for key in ('TMUX', 'TMUX_PANE', 'NO_COLOR', 'CX_ASCII'):
             self.env.pop(key, None)
         self.marker = f'HOME={self.root}\0'.encode()

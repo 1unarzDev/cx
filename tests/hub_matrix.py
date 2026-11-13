@@ -10,7 +10,7 @@ Isolation: the whole run is inside a private user, pid, uts, mount, cgroup and n
 is the fixture lan, loopback carries a fake Cloudflare mesh Worker, and no packet leaves.
 Every device has its own HOME (tmux server, sessions, vitals from a CX_METRICS_ROOT tree).
 `ssh` on PATH runs `cx helper` under that HOME (CX_SSH_MULTIPLEX=0), refuses for a down
-device and hangs for one never reached; `tailscale` prints a fixture tailnet; ssh-overlay
+device and times out (6 s, as ConnectTimeout) for one never reached; `tailscale` prints a fixture tailnet; ssh-overlay
 pairs are pinned peers in the viewer's state; the WARP mesh is a config whose Worker answers
 on loopback. Sessions are real tmux panes: a shell at its prompt (idle), a shell in a loop
 (running), and a copy of bash named claude whose native record says waiting or working
@@ -117,7 +117,9 @@ if d is None or d['mode'] == 'down':
     sys.stderr.write('ssh: connect to host %s port 22: Connection refused\n' % target.split('@')[-1])
     sys.exit(255)
 if d['mode'] == 'hang':
-    time.sleep(3600)
+    # What ssh does with ConnectTimeout=6 against a host that never answers.
+    time.sleep(6)
+    sys.stderr.write('ssh: connect to host %s port 22: Connection timed out\n' % target.split('@')[-1])
     sys.exit(255)
 env = dict(os.environ, HOME=d['home'], XDG_STATE_HOME=d['home'] + '/state', TMUX_TMPDIR=d['home'],
            CX_METRICS_ROOT=d['proc'], XDG_RUNTIME_DIR=d['home'] + '/run')
@@ -372,10 +374,9 @@ def settle(pty, quiet=0.3, limit=6.0):
 
 
 def ready(fleet, text):
-    """Every live part has landed: this device's vitals, a remote's latency, the sessions."""
+    """This device's vitals and the session that needs you have landed (the remotes' vitals
+    follow within two samples: the caller waits those out)."""
     if '% of' not in text:
-        return False
-    if any(d['state'] == 'up' for d in fleet.cfg['devices']) and 'ms' not in text:
         return False
     return 'needs you' in text or 'needs you' not in [s for _, s in fleet.cfg['sessions']]
 
@@ -392,8 +393,8 @@ def capture_config(binary, cfg, tiers, sizes, out, lab):
                     end = time.monotonic() + 40
                     while time.monotonic() < end and not ready(fleet, pty.text()):
                         pty.read(0.2)
-                    # Two more vitals samples: sparklines with a few points.
-                    deadline = time.monotonic() + 4.5
+                    # Every device's first samples, and a few sparkline points.
+                    deadline = time.monotonic() + 6
                     while time.monotonic() < deadline:
                         pty.read(0.1)
                     for cols, rows in sizes:

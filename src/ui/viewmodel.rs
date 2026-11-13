@@ -506,7 +506,11 @@ fn sessions(app: &App) -> Vec<LabSession> {
                 cwd: if s.directory.is_empty() {
                     "? folder".into()
                 } else {
-                    safe_label(&s.directory)
+                    safe_label(&tilde(
+                        &s.directory,
+                        &s.account,
+                        app.devices[d].target.is_none(),
+                    ))
                 },
                 command: safe_label(&s.provider),
                 last_activity_secs: s.idle_seconds.unwrap_or(0).min(u64::from(u32::MAX)) as u32,
@@ -523,6 +527,26 @@ fn sessions(app: &App) -> Vec<LabSession> {
         }
     }
     out
+}
+
+/// A session's folder with its home as `~`: this host's $HOME, or the account's usual
+/// home on any host (`/home/<account>`, `/Users/<account>`, `/root`).
+fn tilde(dir: &str, account: &str, local: bool) -> String {
+    let home = std::env::var("HOME").ok().filter(|_| local);
+    let homes = [
+        home,
+        Some(format!("/home/{account}")),
+        Some(format!("/Users/{account}")),
+        (account == "root").then(|| "/root".to_string()),
+    ];
+    for h in homes.into_iter().flatten().filter(|h| h.len() > 1) {
+        if let Some(rest) = dir.strip_prefix(h.trim_end_matches('/')) {
+            if rest.is_empty() || rest.starts_with('/') {
+                return format!("~{rest}");
+            }
+        }
+    }
+    dir.to_string()
 }
 
 /// Rows on either side of the selection the Files view is given.
@@ -821,6 +845,16 @@ pub(super) mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn session_folders_show_home_as_a_tilde() {
+        assert_eq!(tilde("/home/ana/cx", "ana", false), "~/cx");
+        assert_eq!(tilde("/home/ana", "ana", false), "~");
+        assert_eq!(tilde("/home/anabel/cx", "ana", false), "/home/anabel/cx");
+        assert_eq!(tilde("/Users/ana/x", "ana", false), "~/x");
+        assert_eq!(tilde("/root/x", "root", false), "~/x");
+        assert_eq!(tilde("/srv/x", "ana", false), "/srv/x");
     }
 
     #[test]

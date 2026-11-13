@@ -3873,6 +3873,23 @@ fn pdf_scroll_requests_the_next_page() {
     );
 }
 #[test]
+fn half_block_fallback_averages_instead_of_sampling() {
+    // A black/white 1-pixel checkerboard at a quarter size is even grey, not speckle.
+    let (w, h) = (8usize, 8usize);
+    let mut bytes = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            let v = if (x + y) % 2 == 0 { 255 } else { 0 };
+            bytes.extend_from_slice(&[v, v, v, 255]);
+        }
+    }
+    let lines = raster_lines(w, h, &bytes, Rect::new(0, 0, 4, 2));
+    for span in lines.iter().flat_map(|l| &l.spans) {
+        assert_eq!(span.style.fg, Some(Color::Rgb(127, 127, 127)), "{span:?}");
+        assert_eq!(span.style.bg, Some(Color::Rgb(127, 127, 127)), "{span:?}");
+    }
+}
+#[test]
 fn rich_preview_rejects_bad_images_and_keeps_transparent_pixels_default() {
     use base64::Engine;
     let valid = serde_json::json!({"kind":"image","title":"PNG 2x2", "image":{"width":2,"height":2,"rgba":base64::engine::general_purpose::STANDARD.encode([255u8,0,0,255,0,0,0,0,0,255,0,255,0,0,255,255])}});

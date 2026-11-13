@@ -434,12 +434,34 @@ pub(super) fn raster_lines(w: usize, h: usize, bytes: &[u8], area: Rect) -> Vec<
     let scale = (available_w as f64 / w as f64).min(available_h as f64 / h as f64);
     let width = ((w as f64 * scale).floor() as usize).max(1);
     let height = ((h as f64 * scale).floor() as usize).max(1);
+    // Each half-block pixel is the average of the source pixels it covers (box filter),
+    // not one sampled pixel: gradients and photos stay smooth instead of speckled.
     let pixel = |x: usize, y: usize| -> Option<Color> {
         if y >= height {
             return None;
         }
-        let at = ((y * h / height) * w + x * w / width) * 4;
-        (bytes[at + 3] >= 128).then_some(Color::Rgb(bytes[at], bytes[at + 1], bytes[at + 2]))
+        let (x0, x1) = (x * w / width, ((x + 1) * w / width).max(x * w / width + 1));
+        let (y0, y1) = (
+            y * h / height,
+            ((y + 1) * h / height).max(y * h / height + 1),
+        );
+        let (mut sum, mut alpha, mut n) = ([0u64; 3], 0u64, 0u64);
+        for sy in y0..y1.min(h) {
+            for sx in x0..x1.min(w) {
+                let at = (sy * w + sx) * 4;
+                let a = u64::from(bytes[at + 3]);
+                for c in 0..3 {
+                    sum[c] += u64::from(bytes[at + c]) * a;
+                }
+                alpha += a;
+                n += 1;
+            }
+        }
+        if n == 0 || alpha * 2 < n * 255 {
+            return None;
+        }
+        let c = |i: usize| (sum[i] / alpha) as u8;
+        Some(Color::Rgb(c(0), c(1), c(2)))
     };
     (0..height.div_ceil(2))
         .map(|row| {

@@ -50,10 +50,16 @@ of the `tmux new-session` client do not reach the pane, and `set-environment` or
 the server, where `show-environment` prints it and every later pane inherits it. So the pane's command is
 `cx secrets get --dir STATE VAR=NAME… --exec -- <the launcher>`: that cx reads the values from the store itself and
 `exec`s the launcher with them in its environment, the same pid tmux started. tmux, the pane's start command and
-`/proc/PID/cmdline` see only names. Before starting it, the launching cx reads each exposed value once, so a locked
-keyring or a missing value is reported as the launch's error instead of a session that exits at once. `--dir` names
-the state directory of the launching cx, because the managed tmux server runs as its own user service, whose
-environment may differ.
+`/proc/PID/cmdline` see only names. Before starting it, the launching cx reads each exposed value once, so a value
+that is missing, or a keyring locked for the launching cx, is reported as the launch's error. The pane's cx reads the
+keyring again from the tmux service's environment; if that one cannot reach it (no session bus or `secret-tool`
+there), the session exits at once with that error. `--dir` names the state directory of the launching cx, because
+the managed tmux server runs as its own user service, whose environment may differ.
+
+The pane also gets `CX_SESSION_SECRETS`, the exposed variables' names. cx copies the Anthropic variables of whoever
+starts a session into tmux's server environment (so Claude sessions follow a changed login); a cx run inside an
+exposed session (the viewer, `cx new`, an agent) leaves the ones that list names untouched, so an exposed
+`ANTHROPIC_API_KEY` stays in that session and never reaches tmux's argv, its environment or later sessions.
 
 Inside the session the values are ordinary environment variables: every program started there inherits them, and the
 same user can read them from `/proc/PID/environ`, as with `--exec`. Expose only what you would type into that shell.

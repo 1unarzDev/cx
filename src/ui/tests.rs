@@ -4688,6 +4688,15 @@ fn unreachable_notices_are_once_per_device_until_successful_contact() {
         assert!(app.notice.is_empty());
     }
     assert!(app.container_errors.contains_key(&1));
+    // A Files listing of a device the ticker already names: no toast repeating it.
+    app.apply(failure(
+        Operation::List {
+            path: "/files".into(),
+        },
+        1,
+        app.generation,
+    ));
+    assert!(app.notice.is_empty(), "{}", app.notice);
     app.apply(failure(Operation::Sessions, 0, app.generation));
     assert!(app.notice.is_empty());
     app.apply(Reply {

@@ -147,13 +147,21 @@ impl App {
             .devices
             .get(reply.device)
             .is_some_and(|_| !self.background_checks_enabled(reply.device));
+        // A device the ticker already names as unreachable (its listing failed) gets no
+        // toast repeating it; Files says so in its empty column. A file action's own
+        // failure still reports.
+        let ticker_says = !file_action
+            && self
+                .work
+                .get(reply.device)
+                .is_some_and(|w| w.error.is_some());
         let notify_error = if reply.result.is_ok() {
             if reply.generation == self.generation {
                 self.unavailable_notified
                     .remove(&self.devices[reply.device].id);
             }
             true
-        } else if connection_failure && (passive_connection_check || known_down) {
+        } else if connection_failure && (passive_connection_check || known_down || ticker_says) {
             // The device's status mark is the passive reachability signal.
             false
         } else if connection_failure {

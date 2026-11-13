@@ -749,7 +749,7 @@ fn notices(app: &App) -> Vec<LabNotice> {
 
 /// A failure's reason for the ticker: without the `account@host: ` prefixes (the
 /// ticker names the device) or the advice after ` · ` (its key chip is the advice).
-fn reason(e: &str) -> &str {
+pub(super) fn reason(e: &str) -> &str {
     let mut r = e.split(" · ").next().unwrap_or(e);
     while let Some((head, rest)) = r.split_once(": ") {
         if !head.contains('@') || head.contains(' ') {

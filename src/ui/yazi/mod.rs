@@ -1801,6 +1801,9 @@ impl App {
                     }
                 };
                 (since.elapsed() >= LOADING_QUIET).then(|| "Loading...".into())
+            } else if let Some(e) = self.work.get(device).and_then(|w| w.error.as_deref()) {
+                // Unreachable (the hub's ticker says so too): not "No items".
+                Some(super::viewmodel::reason(e).to_string())
             } else {
                 Some("No items".into())
             },

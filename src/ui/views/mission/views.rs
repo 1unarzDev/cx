@@ -698,17 +698,9 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
             .height
             .saturating_sub(if fan_want > 0 { fan_want + 4 } else { 0 })
             .saturating_sub(2);
-        // The tiles are as tall as their screens' text (a taller tile only adds blank
-        // rows); the rows they leave go to the LINKS star below.
-        let text_h = list
-            .iter()
-            .map(|x| tiles::used_lines(x) as u16 + 2)
-            .max()
-            .unwrap_or(5);
-        let th = ((room + 1) / rows.max(1))
-            .saturating_sub(1)
-            .min(text_h)
-            .max(5);
+        // The tiles take the rows the LINKS star leaves, up to a tall screen (the same
+        // size whether or not the screen has arrived).
+        let th = ((room + 1) / rows.max(1)).saturating_sub(1).min(22).max(5);
         let mut bottom = main.y;
         for i in 0..tiles_n as usize {
             let (ci, ri) = (i as u16 % cols, i as u16 / cols);
@@ -1167,7 +1159,7 @@ fn device_sessions_rows(
             break;
         }
         let h = if i == sel && spare >= 2 {
-            (2 + spare).min(tiles::tail_rows(x) as u16 + 2)
+            (2 + spare).min(16)
         } else {
             2
         };

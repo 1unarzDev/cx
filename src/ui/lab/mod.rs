@@ -324,16 +324,17 @@ mod review_tests {
         assert!(!t.contains("tranquility"), "{t}");
     }
 
-    /// A device's session tile is as tall as its screen's text: the `new` row follows
-    /// it, with no band of blank rows inside the tile.
+    /// A device's session tile is a large screen (v0.2.2: fewer, bigger previews): it
+    /// takes the rows the links leave, shows its whole text, and the `new` row follows.
     #[test]
-    fn a_session_tile_is_no_taller_than_its_text() {
+    fn a_device_session_tile_is_a_large_screen() {
         let s = state::typical();
         let (t, _) = draw(LabView::DeviceFocus("innovation".into()), &s, 200, 60);
         let rows: Vec<&str> = t.lines().collect();
+        let title = rows.iter().position(|r| r.contains("refactor transport")).unwrap();
         let text_end = rows.iter().position(|r| r.contains("Refactoring")).unwrap();
         let ghost = rows.iter().position(|r| r.contains(" new ")).unwrap();
-        assert!(ghost - text_end <= 3, "{t}");
+        assert!(title < text_end && text_end < ghost && ghost - title >= 16, "{t}");
     }
 
     /// First run: the viewer alone, no braille rings or beads (rejected 2026-11-10),

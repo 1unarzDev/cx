@@ -166,16 +166,6 @@ pub(super) fn used_lines(x: &LabSession) -> usize {
         .map_or(0, |i| i + 1)
 }
 
-/// Rows a thumbnail needs to show its whole screen tail: the non-blank lines up to the
-/// last informative one (a taller tile would only add blank rows).
-pub(super) fn tail_rows(x: &LabSession) -> usize {
-    let lines = ansi_lines(&x.screen, x.screen_cols);
-    lines[..used_lines(x)]
-        .iter()
-        .filter(|l| !text(l).trim().is_empty())
-        .count()
-}
-
 /// The screen's last informative lines, cropped, ending above trailing chrome (input
 /// boxes, key hints). Returns the source line range shown.
 pub(super) fn screen_text(

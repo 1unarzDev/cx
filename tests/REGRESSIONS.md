@@ -110,6 +110,7 @@ Guard notation:
 | VALIDATION / `f91242a` | A stalled relay-version or capability check froze adoption | wrapper descendants kept pipes open | rust:relay_version_preflight_is_bounded, rust:relay_version_does_not_wait_for_wrapper_descendants, rust:relay_version_bounds_output_and_requires_success |
 | misc | Bounded subprocesses | | rust:bounded_process_timeout_cleans_descendant_and_reader_threads, rust:stalled_terminfo_is_bounded_and_reaped, rust:bash_monitor_mode_is_disabled_for_noninteractive_probe_work |
 | `8c110ec` v0.1.77 | A terminal that ended during a move left an intent record | the record was written before the move succeeded | py:adopt_stress_live [local] (needs a ptrace sandbox) |
+| v0.2.2 | 64 `attach-guard-*` files piled up in the state dir | the guard lived until the attach ended, and a process that dies without unwinding (the closed-terminal watchdog's `_exit`, SIGHUP over ssh) never removed it; no sweep | rust:checked_attach_requires_guard_success_and_preserves_external_config ("a passed guard must not outlive its check") **NEW**, rust:startup_sweep_removes_only_stale_unowned_attach_leftovers **NEW** |
 
 ## 5. Focus, navigation and context
 
@@ -134,6 +135,10 @@ Guard notation:
 | `c60e1a2`, `4513f8d` | The single-direction marker was clipped on long names | marker after the name | rust:device_access_marker_and_toggle_guard_are_clear |
 | `d57031d`, `53a7122` v0.1.43–45 | Notices never expired when idle; repeated outage notices | no idle timer; no per-device dedupe | rust:notices_expire_and_repeated_messages_restart_the_timeout, rust:unreachable_notices_are_once_per_device_until_successful_contact, py:notification_timeout_pty, py:unreachable_notice_pty [local] |
 | `d53fa86` | Passive reachability failures raised error notices | passive failures were treated as actionable | rust:stale_errors_and_quiet_neighbor_checks_do_not_consume_the_first_device_notice |
+| v0.2.2 | cx would not open in half terminals (80x48, 95x50): `hub.rs:43 min > max. min = 7, max = 6` | the tile height's floor (7 at h ≥ 36) passed its cap (6 below 100 columns) inside `clamp`; the phone hub indexed an empty device list | rust:every_view_renders_across_sizes **NEW** (suite), rust:every_view_renders_at_every_size [ignored, the full 20x5..250x80 matrix] **NEW** |
+| v0.2.2 | Hub thumbnails stayed blank (title, `idle 0s`, folder, empty rows) | only the selected session was ever captured; a tile drew a frame remembered from an earlier selection | py:hub_thumbnails_pty [ci] **NEW** (red on v0.2.1) |
+| v0.2.2 | A never-seen device read `✕ 20770d` | its age was counted from `fetched == 0` (the epoch) | rust:a_never_seen_device_shows_no_age **NEW** |
+| v0.2.2 | Chrome painted cell backgrounds over transparent terminals | tints, reversed keycaps and surfaces | rust:chrome_paints_no_background **NEW**, rust:ascii_capability_renders_no_unicode_and_keeps_focus_cues |
 
 ## 6. SSH routes, neighbours and transport
 

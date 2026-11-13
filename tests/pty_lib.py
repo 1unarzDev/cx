@@ -6,7 +6,7 @@ files_bench). One pyte screen model; PNGs go through lab_png.py, the single rend
 
 Needs pyte (and Pillow for PNGs).
 """
-import codecs, fcntl, json, os, pathlib, pty, select, struct, subprocess, sys, termios
+import codecs, fcntl, json, os, pathlib, pty, select, struct, subprocess, sys, termios, time
 
 import pyte
 
@@ -80,6 +80,11 @@ class Pty:
             data = os.read(self.master, 1 << 16)
         except OSError:
             return None
+        # When the bytes reached the terminal, before pyte parses them: parsing a 4 KB
+        # chunk takes pyte about 1.5 ms, which no real terminal spends, and timing after
+        # it measured each binary's escape sequences (+0.3 ms on a Files Enter frame
+        # whose bytes arrived as early as v0.2.2's).
+        self.arrived = time.monotonic()
         for trigger, reply in ANSWERS:
             if trigger in data:
                 os.write(self.master, reply)

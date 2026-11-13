@@ -200,7 +200,7 @@ class Viewer:
         data = self.pty.read(timeout)
         if data is None:
             return False
-        now = time.monotonic()
+        now = self.pty.arrived
         self.chunks.append((now, len(data)))
         self.total += len(data)
         for mode, action in re.findall(rb'\x1b\[\?(100[0-6]|1015)([hl])', data):

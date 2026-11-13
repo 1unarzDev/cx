@@ -19,6 +19,10 @@ mod edges {
         Ok(())
     }
 }
+/// (main.rs's `self_exe`: this fixture binary is never replaced while it runs.)
+fn self_exe() -> anyhow::Result<std::path::PathBuf> {
+    Ok(std::env::current_exe()?)
+}
 static MUTATE_SOURCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static MUTATE_DESTINATION: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);

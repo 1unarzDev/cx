@@ -81,6 +81,7 @@ base64="0.22"
     (harness/'src/main.rs').write_text(modules + r'''
 use anyhow::{bail,Result};
 use std::{process::{Command,Stdio},os::unix::process::CommandExt,fs};
+fn self_exe()->Result<std::path::PathBuf>{Ok(std::env::current_exe()?)}
 fn main()->Result<()> {
  if auth::is_askpass_client(){std::process::exit(if auth::askpass_client().is_ok(){0}else{1});}
  let mut keys=0; let mut trust=0;

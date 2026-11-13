@@ -1177,7 +1177,7 @@ fn enroll_target(target: &str, _minimal: bool) -> Result<()> {
     let binary = if let Some(artifact) = &enrollment {
         artifact.path()
     } else {
-        std::env::current_exe()?
+        self_exe()?
     };
     let bytes = std::fs::read(binary)?;
     let mut c = transport::ssh(target, true)?;
@@ -1501,7 +1501,7 @@ fn run() -> Result<()> {
                     (
                         "current",
                         format!("cx {} is current", version),
-                        Some(std::env::current_exe()?),
+                        Some(self_exe()?),
                     )
                 }
                 update::CheckOutcome::Offline => (
@@ -1906,6 +1906,25 @@ fn run() -> Result<()> {
         }
     }
 }
+/// This cx's executable, for handing to another process or re-executing it. After an
+/// update renamed a new binary over this one, /proc/self/exe reads "<path> (deleted)":
+/// the new binary at that install path is used then (a regular executable owned by this
+/// user or root), else the original path.
+fn self_exe() -> Result<std::path::PathBuf> {
+    let exe = std::env::current_exe()?;
+    Ok(replaced_exe(&exe).unwrap_or(exe))
+}
+fn replaced_exe(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
+    if exe.exists() {
+        return None;
+    }
+    let path = exe.as_os_str().as_bytes().strip_suffix(b" (deleted)")?;
+    let path = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(path));
+    let m = std::fs::metadata(&path).ok()?;
+    let owner = m.uid() == unsafe { libc::geteuid() } || m.uid() == 0;
+    (m.is_file() && m.mode() & 0o111 != 0 && owner).then_some(path)
+}
 fn main() {
     if auth::is_askpass_client() {
         std::process::exit(if auth::askpass_client().is_ok() { 0 } else { 1 });
@@ -1913,6 +1932,33 @@ fn main() {
     if let Err(e) = run() {
         eprintln!("cx: {e:#}");
         std::process::exit(1)
+    }
+}
+
+#[cfg(test)]
+mod self_exe_tests {
+    use super::replaced_exe;
+    use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn a_replaced_binary_resolves_to_the_new_file_at_its_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let cx = dir.path().join("cx");
+        let deleted = dir.path().join("cx (deleted)");
+        // Nothing at the install path: keep the original.
+        assert_eq!(replaced_exe(&deleted), None);
+        std::fs::write(&cx, b"new").unwrap();
+        std::fs::set_permissions(&cx, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(replaced_exe(&deleted), None, "not executable");
+        std::fs::set_permissions(&cx, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(replaced_exe(&deleted), Some(cx.clone()));
+        // A path that exists or carries no suffix is used as it is.
+        assert_eq!(replaced_exe(&cx), None);
+        std::fs::write(&deleted, b"literal").unwrap();
+        assert_eq!(replaced_exe(&deleted), None);
+        // A directory is not a binary.
+        let dir_deleted = dir.path().join("sub (deleted)");
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        assert_eq!(replaced_exe(&dir_deleted), None);
     }
 }
 

@@ -8,7 +8,10 @@ with tempfile.TemporaryDirectory(prefix='cx-session-chooser-') as tmp:
  state=root/'state/cx';state.mkdir(parents=True);name='viewer-restart-123-789.json'
  snapshot=dict(schema=1,expires_at=int(time.time())+300,device_ids=['local'],device=1,focus='Devices',view='Work',selected=0,side_selected=0,search='',browser=None,other_browser=None,destination_active=False,conflict=2,launch_provider=None,clipboard=None,submitted={})
  path=state/name;path.write_text(json.dumps(snapshot));path.chmod(0o600)
- env=dict(os.environ,HOME=tmp,XDG_STATE_HOME=str(root/'state'),SHELL='/bin/bash',TERM='xterm-256color');env.pop('TMUX',None);env.pop('TMUX_PANE',None)
+ # No agent here: stand-ins that fail shadow any claude/codex installed on this machine.
+ (root/'bin').mkdir()
+ for agent in ('claude','codex'):(root/'bin'/agent).write_text('#!/bin/sh\nexit 1\n');(root/'bin'/agent).chmod(0o700)
+ env=dict(os.environ,HOME=tmp,XDG_STATE_HOME=str(root/'state'),SHELL='/bin/bash',TERM='xterm-256color',PATH=str(root/'bin')+os.pathsep+os.environ['PATH']);env.pop('TMUX',None);env.pop('TMUX_PANE',None)
  master,slave=pty.openpty();before=termios.tcgetattr(slave);fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,100,0,0))
  def tty():os.setsid();fcntl.ioctl(slave,termios.TIOCSCTTY,0)
  proc=subprocess.Popen([binary,'restart',name],env=env,stdin=slave,stdout=slave,stderr=slave,preexec_fn=tty)
@@ -29,7 +32,8 @@ with tempfile.TemporaryDirectory(prefix='cx-session-chooser-') as tmp:
  try:
   # The device's screen; its files (home), where `n` opens the chooser.
   read(1);send(b'f');read(1);send(b'n');wait(lambda:'[n] Shell' in text())
-  assert '[c] Claude' not in text() and '[x] Codex' not in text() and '[d] Devcontainer' not in text()
+  # (Devcontainer is offered once this device's capabilities arrive: containers-v1.)
+  assert '[c] Claude' not in text() and '[x] Codex' not in text(), text()
   assert not sessions(),'n created a session before a profile choice'
   def selected(label):
    for y,line in enumerate(screen.display):

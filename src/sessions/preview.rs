@@ -241,7 +241,7 @@ pub fn session_pane_input(
     );
     let mut guard = AttachGuard::new()?;
     request.guard = Some(guard.token.clone());
-    let predicate = attach_predicate(&std::env::current_exe()?, &attach_payload(&request)?)?;
+    let predicate = attach_predicate(&crate::self_exe()?, &attach_payload(&request)?)?;
     // `send-keys -H` (raw bytes) needs tmux 3.0; checked once per process.
     static HEX: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let keys = if *HEX.get_or_init(|| tmux_at_least(3, 0)) {

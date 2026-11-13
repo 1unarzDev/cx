@@ -129,7 +129,7 @@ pub fn configure(command: &mut Command) -> Result<bool> {
         };
         command
             .env("LC_ALL", "C")
-            .env("SSH_ASKPASS", std::env::current_exe()?)
+            .env("SSH_ASKPASS", crate::self_exe()?)
             .env("SSH_ASKPASS_REQUIRE", "force")
             .env("DISPLAY", "cx-askpass")
             .env(CLIENT_ENV, "1")
@@ -157,7 +157,7 @@ pub fn askpass_env() -> Option<Vec<(String, String)>> {
                 std::env::var(NONCE_ENV).ok()?,
             ))
         })?;
-    let cx = std::env::current_exe().ok()?.to_str()?.to_owned();
+    let cx = crate::self_exe().ok()?.to_str()?.to_owned();
     Some(vec![
         ("SUDO_ASKPASS".into(), cx.clone()),
         ("SSH_ASKPASS".into(), cx),

@@ -789,7 +789,7 @@ fn ensure_helper(scope: &ContainerScope) -> Result<String> {
     let mut c = exec(scope, false)?;
     // Positional args only. Refuse symlinks/foreign directories and stage with noclobber.
     c.args(["/bin/sh","-c",r#"set -eu; umask 077; dir=$1; dest=$2; test ! -L "$dir"; if test ! -d "$dir"; then mkdir -m 700 "$dir"; fi; test "$(stat -c %u "$dir")" = "$(id -u)"; stage="$dest.new-$$"; trap 'rm -f "$stage"' EXIT HUP INT TERM; set -C; cat > "$stage"; chmod 700 "$stage"; "$stage" --version >/dev/null; mv -f "$stage" "$dest""#,"cx-tool",parent,&path]);
-    bounded(c,Some(fs::File::open(std::env::current_exe()?)?),45,65536).context("Container tooling could not be installed. An executable, writable /tmp and /bin/sh are required")?;
+    bounded(c,Some(fs::File::open(crate::self_exe()?)?),45,65536).context("Container tooling could not be installed. An executable, writable /tmp and /bin/sh are required")?;
     check(scope)?;
     let mut c = exec(scope, false)?;
     c.args([&path, "--version"]);

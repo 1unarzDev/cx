@@ -423,7 +423,7 @@ pub fn start(spec: &TransferSpec) -> Result<Value> {
     if cancellation.try_exists()? {
         fs::remove_file(cancellation)?;
     }
-    let executable = std::env::current_exe()?;
+    let executable = crate::self_exe()?;
     let queued = Job {
         cut: spec.cut,
         key: spec.key.clone(),

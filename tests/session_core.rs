@@ -26,6 +26,10 @@ mod edges {
     }
 }
 use model::CreateSession;
+/// (main.rs's `self_exe`: this fixture binary is never replaced while it runs.)
+fn self_exe() -> anyhow::Result<std::path::PathBuf> {
+    Ok(std::env::current_exe()?)
+}
 use std::process::Command;
 
 #[test]

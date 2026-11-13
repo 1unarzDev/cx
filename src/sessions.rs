@@ -1220,7 +1220,13 @@ fn origin(terminal: &crate::adoption::Terminal) -> crate::model::ExternalOrigin 
     }
 }
 fn external_terminals() -> Vec<crate::adoption::Terminal> {
-    let mut executables: Vec<_> = std::env::current_exe().into_iter().collect();
+    // This install, and its replaced copies other viewers may still run after an update.
+    let mut executables = vec![];
+    if let Ok(exe) = crate::self_exe() {
+        let mut replaced = exe.clone().into_os_string();
+        replaced.push(" (deleted)");
+        executables.extend([exe, replaced.into()]);
+    }
     executables.extend(crate::adoption::relay_executables());
     // Exclude the viewer's own terminal and every ancestor's session, so the
     // terminal that launched CX never appears even across a session boundary.
@@ -1977,7 +1983,18 @@ end
 
 fn bounded_provider_check(mut command: Command, timeout: Duration) -> bool {
     use std::os::unix::process::CommandExt;
-    command.process_group(0);
+    // A session of its own (so also a group of its own, signalled below) and no
+    // controlling terminal: an interactive bash or sh started from a terminal-run cx
+    // otherwise takes that terminal for job control from a background group and is
+    // stopped by SIGTTOU until the timeout. SAFETY: setsid is async-signal-safe.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     let Ok(mut child) = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -2619,7 +2636,7 @@ fn create_with_permissions(
     if let Some(scope) = container {
         let payload = container_run_payload(scope, request, yolo)?;
         launcher = vec![
-            std::env::current_exe()?.to_str().context("cx path")?.into(),
+            crate::self_exe()?.to_str().context("cx path")?.into(),
             "container-run".into(),
             payload,
         ];
@@ -3327,7 +3344,7 @@ pub fn native_attach_checked(payload: &str) -> Result<()> {
             exit_copy_mode(&request.session.id);
         }
     }
-    let executable = std::env::current_exe()?;
+    let executable = crate::self_exe()?;
     let predicate = attach_predicate(&executable, &predicate_payload)?;
     // All interpolated target components are validated numeric values. The
     // guard runs on this connection's server; never reconnect after checking it.
@@ -3672,7 +3689,7 @@ pub fn run_command(device: &Device, request: &RunCommand) -> Result<()> {
         command.arg(format!("~/.local/bin/cx native-command '{}'", payload));
         command
     } else {
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = Command::new(crate::self_exe()?);
         command.args(["native-command", &payload]);
         command
     };

@@ -634,6 +634,7 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
 }
 fn helper() -> Result<()> {
     use std::io::BufRead;
+    sessions::SERVING_HELPER.store(true, std::sync::atomic::Ordering::Relaxed);
     let mut input = BufReader::new(std::io::stdin().lock());
     // Watch events are written from the watch thread; every frame takes the
     // stdout lock, so frames never interleave.

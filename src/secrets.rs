@@ -322,7 +322,18 @@ fn validate_env_var(var: &str) -> Result<()> {
 impl Secrets {
     /// The store in cx's state dir, with the keyring as `CX_SECRETS_BACKEND` (auto | file) allows.
     pub fn open() -> Result<Secrets> {
-        let dir = crate::store::ensure()?;
+        Secrets::open_in(crate::store::ensure()?)
+    }
+
+    /// [`Secrets::open`] for the store in `dir`, which must be a private directory of this user.
+    pub fn open_in(dir: PathBuf) -> Result<Secrets> {
+        use std::os::unix::fs::MetadataExt;
+        let m = fs::symlink_metadata(&dir).with_context(|| format!("{}", dir.display()))?;
+        ensure!(
+            m.is_dir() && m.uid() == unsafe { libc::geteuid() } && m.mode() & 0o077 == 0,
+            "{} is not a private cx state directory",
+            dir.display()
+        );
         let file_only = match std::env::var("CX_SECRETS_BACKEND").as_deref() {
             Ok("file") => true,
             Ok("auto") | Ok("") | Err(_) => false,
@@ -637,6 +648,10 @@ pub enum Cli {
         /// Run the command after `--` with the secrets as environment variables.
         #[arg(long, requires = "command")]
         exec: bool,
+        /// The state directory holding the store: a session's launcher names the one its viewer used, since the
+        /// tmux server's environment may name another.
+        #[arg(long, hide = true)]
+        dir: Option<PathBuf>,
         #[arg(last = true)]
         command: Vec<String>,
     },
@@ -875,7 +890,10 @@ fn migrate(secrets: &Secrets, delete_plaintext: bool) -> Result<()> {
 }
 
 pub fn run_cli(command: Cli) -> Result<()> {
-    let secrets = Secrets::open()?;
+    let secrets = match &command {
+        Cli::Get { dir: Some(dir), .. } => Secrets::open_in(dir.clone())?,
+        _ => Secrets::open()?,
+    };
     match command {
         Cli::List { json } => {
             let all = secrets.list()?;
@@ -916,6 +934,7 @@ pub fn run_cli(command: Cli) -> Result<()> {
             fd,
             exec,
             command,
+            ..
         } => {
             if let Some(fd) = fd {
                 ensure!(names.len() == 1, "--fd writes exactly one secret");
@@ -1509,36 +1528,59 @@ esac
         assert!(!s.meta("anthropic.api_key").unwrap().unwrap().expose);
         assert!(s.session_specs().unwrap().is_empty());
         // The index stays byte-compatible for secrets nobody exposed.
-        assert!(!fs::read_to_string(dir.join(INDEX)).unwrap().contains("expose"));
+        assert!(!fs::read_to_string(dir.join(INDEX))
+            .unwrap()
+            .contains("expose"));
 
         s.set_exposure("anthropic.api_key", true, None).unwrap();
-        assert_eq!(s.session_specs().unwrap(), ["ANTHROPIC_API_KEY=anthropic.api_key"]);
+        assert_eq!(
+            s.session_specs().unwrap(),
+            ["ANTHROPIC_API_KEY=anthropic.api_key"]
+        );
         // Rotating the value keeps the choice; a custom variable is kept, and the default is not stored.
         s.set("anthropic.api_key", "rotated").unwrap();
         assert!(s.meta("anthropic.api_key").unwrap().unwrap().expose);
-        let m = s.set_exposure("robot.wifi", true, Some("WIFI_PASS")).unwrap();
+        let m = s
+            .set_exposure("robot.wifi", true, Some("WIFI_PASS"))
+            .unwrap();
         assert_eq!(m.env.as_deref(), Some("WIFI_PASS"));
-        let m = s.set_exposure("anthropic.api_key", true, Some("ANTHROPIC_API_KEY")).unwrap();
+        let m = s
+            .set_exposure("anthropic.api_key", true, Some("ANTHROPIC_API_KEY"))
+            .unwrap();
         assert_eq!(m.env, None);
         assert_eq!(
             s.session_specs().unwrap(),
-            ["ANTHROPIC_API_KEY=anthropic.api_key", "WIFI_PASS=robot.wifi"]
+            [
+                "ANTHROPIC_API_KEY=anthropic.api_key",
+                "WIFI_PASS=robot.wifi"
+            ]
         );
         // The specs are what `cx secrets get --exec` takes.
         let mut cmd = std::process::Command::new("true");
         let specs = s.session_specs().unwrap();
         let specs: Vec<&str> = specs.iter().map(String::as_str).collect();
-        assert_eq!(s.inject(&specs, &mut cmd).unwrap(), ["ANTHROPIC_API_KEY", "WIFI_PASS"]);
+        assert_eq!(
+            s.inject(&specs, &mut cmd).unwrap(),
+            ["ANTHROPIC_API_KEY", "WIFI_PASS"]
+        );
 
         // One variable per exposed secret, never a CX_ one, always a valid name.
-        assert!(s.set_exposure("robot.wifi", true, Some("ANTHROPIC_API_KEY")).is_err());
-        assert!(s.set_exposure("robot.wifi", true, Some("CX_MANAGED_SOCKET")).is_err());
+        assert!(s
+            .set_exposure("robot.wifi", true, Some("ANTHROPIC_API_KEY"))
+            .is_err());
+        assert!(s
+            .set_exposure("robot.wifi", true, Some("CX_MANAGED_SOCKET"))
+            .is_err());
         assert!(s.set_exposure("robot.wifi", true, Some("1X")).is_err());
         assert!(s.set_exposure("missing", true, None).is_err());
-        assert_eq!(s.meta("robot.wifi").unwrap().unwrap().env.as_deref(), Some("WIFI_PASS"));
+        assert_eq!(
+            s.meta("robot.wifi").unwrap().unwrap().env.as_deref(),
+            Some("WIFI_PASS")
+        );
 
         s.set_exposure("anthropic.api_key", false, None).unwrap();
-        s.set_exposure("robot.wifi", false, Some("WIFI_PASS")).unwrap();
+        s.set_exposure("robot.wifi", false, Some("WIFI_PASS"))
+            .unwrap();
         assert!(s.session_specs().unwrap().is_empty());
         let index = fs::read_to_string(dir.join(INDEX)).unwrap();
         assert!(!index.contains(CANARY) && !index.contains("rotated"));
@@ -1552,6 +1594,9 @@ esac
         s.set_exposure("anthropic.api_key", true, None).unwrap();
         fs::write(dir.join(STORE), "{}").unwrap();
         let err = format!("{:#}", s.session_specs().unwrap_err());
-        assert!(err.contains("exposed to sessions") && !err.contains(CANARY), "{err}");
+        assert!(
+            err.contains("exposed to sessions") && !err.contains(CANARY),
+            "{err}"
+        );
     }
 }

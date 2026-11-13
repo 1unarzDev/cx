@@ -20,6 +20,11 @@ use std::{
     time::Duration,
 };
 
+/// Set by `cx helper`: sessions it creates were asked for by a viewer on another device (or over SSH), so they
+/// never get this device's exposed secrets.
+pub static SERVING_HELPER: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 fn state() -> Result<PathBuf> {
     let root = crate::store::ensure()?;
     fs::create_dir_all(&root)?;
@@ -2578,6 +2583,14 @@ fn create_with_permissions(
     if container.is_none() && request.provider == "codex" && codex_supports_no_daemon(&shell) {
         agent_command.push_str(" --no-daemon --config 'tui.terminal_title=[\"thread-name\"]'");
     }
+    // Secrets marked "expose to sessions" go only to sessions this device's own viewer or CLI starts, never one a
+    // helper starts for another device, and not into containers.
+    let exposed =
+        if container.is_none() && !SERVING_HELPER.load(std::sync::atomic::Ordering::Relaxed) {
+            crate::secrets::Secrets::open()?.session_specs()?
+        } else {
+            Vec::new()
+        };
     ensure_server()?;
     refresh_provider_environment()?;
     let (host, account, boot_id) = identity();
@@ -2650,6 +2663,21 @@ fn create_with_permissions(
             "container-run".into(),
             payload,
         ];
+    }
+    // `cx secrets get --dir STATE VAR=NAME... --exec --` reads the values in the pane and execs the launcher with them in its
+    // environment: argv and tmux (options, environment) only ever see names, and the server keeps nothing.
+    if !exposed.is_empty() {
+        let mut wrapped = vec![
+            crate::self_exe()?.to_str().context("cx path")?.into(),
+            "secrets".into(),
+            "get".into(),
+            "--dir".into(),
+            root.to_str().context("state path is not UTF-8")?.into(),
+        ];
+        wrapped.extend(exposed);
+        wrapped.extend(["--exec".into(), "--".into()]);
+        wrapped.append(&mut launcher);
+        launcher = wrapped;
     }
     let title_tracking = container.is_none()
         && request.provider == "codex"

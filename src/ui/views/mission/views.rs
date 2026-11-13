@@ -76,6 +76,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                 if n > 0 {
                     items.push((slots.as_str(), "attach", "attach"));
                     if cx.size() >= Size::M {
+                        items.push((cx.g("←↑↓→", "hjkl"), "move", ""));
                         items.push(("␣", "peek", "peek"));
                     }
                 }
@@ -2573,11 +2574,10 @@ fn secrets(cx: &Cx, buf: &mut Buffer, r: Rect) {
         }
         return;
     }
-    // Any other secret takes the next free slot key.
-    let n = cx.s.secrets.len();
-    if let (Some(k), true) = (SLOTS.get(n), top < r.bottom()) {
+    // A new secret: `h`, as the footer says (the slot keys set the ones listed).
+    if top < r.bottom() {
         let x = x0 + 2;
-        let kw = cx.keycap(buf, x, top, 3, &k.to_string(), cx.key_style());
+        let kw = cx.keycap(buf, x, top, 3, "h", cx.key_style());
         let t = cx.put(
             buf,
             x + kw + 1,
@@ -3503,11 +3503,12 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                     (
                         k("h j k l"),
                         if wide {
-                            "between tiles, as they sit (or the arrows)"
+                            "tiles or links, by place (or the arrows)"
                         } else {
                             "between tiles"
                         },
                     ),
+                    (k("tab"), "tiles / links"),
                     (k("esc"), "back"),
                     (k("-"), "last session"),
                 ],
@@ -3578,7 +3579,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                     (
                         k("h j k l"),
                         if wide {
-                            "between nodes or tiles, as they sit (or the arrows)"
+                            "nodes or tiles, by place (or the arrows)"
                         } else {
                             "between nodes/tiles"
                         },

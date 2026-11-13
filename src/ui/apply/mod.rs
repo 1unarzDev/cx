@@ -122,9 +122,16 @@ impl App {
             .as_ref()
             .err()
             .is_some_and(transport::is_connection_failure);
+        // Background requests: a device that does not answer them is the hub ticker's
+        // (`▲ name: Device unreachable over SSH  r retry`), never also a toast over it.
         let passive_connection_check = matches!(
             reply.op,
             Operation::Info
+                | Operation::Watch { .. }
+                | Operation::SessionPreview { .. }
+                | Operation::Jobs
+                | Operation::TransferJobs
+                | Operation::PeerIdentity
                 | Operation::Sessions
                 | Operation::Network
                 | Operation::NetworkCandidates

@@ -360,7 +360,7 @@ pub(super) fn preview_lines_tagged(text: &str, kind: &str, tagged: bool) -> Vec<
                 }
                 if let Some(fence) = openings.get(&index) {
                     return Line::from(vec![
-                        Span::styled(if ascii() { "+-- " } else { "┌─ " }, muted()),
+                        Span::styled(if ascii() { "+-- " } else { "╭─ " }, muted()),
                         Span::styled(
                             if fence.language.is_empty() {
                                 "code".into()
@@ -372,7 +372,7 @@ pub(super) fn preview_lines_tagged(text: &str, kind: &str, tagged: bool) -> Vec<
                     ]);
                 }
                 if closings.contains(&index) {
-                    return Line::from(Span::styled(if ascii() { "+--" } else { "└─" }, muted()));
+                    return Line::from(Span::styled(if ascii() { "+--" } else { "╰─" }, muted()));
                 }
                 let hashes = line.chars().take_while(|c| *c == '#').count();
                 if (1..=6).contains(&hashes) && line.as_bytes().get(hashes) == Some(&b' ') {

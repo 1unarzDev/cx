@@ -4641,6 +4641,14 @@ fn unreachable_notices_are_once_per_device_until_successful_contact() {
         Operation::Sessions,
         Operation::Network,
         Operation::Containers,
+        // (Background requests too: the hub ticker reports the device, no toast.)
+        Operation::Watch {
+            sessions: true,
+            pane: None,
+        },
+        Operation::Jobs,
+        Operation::TransferJobs,
+        Operation::PeerIdentity,
     ] {
         app.apply(failure(op, 1, app.generation));
         assert!(app.notice.is_empty());

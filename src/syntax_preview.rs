@@ -22,7 +22,8 @@ fn palette(color: TokenColor) -> Color {
         (163, 190, 140) => Color::Green,
         (191, 97, 106) => Color::Red,
         (235, 203, 139) | (208, 135, 112) => Color::Yellow,
-        (143, 161, 179) => Color::Blue,
+        // (Bright blue: plain ANSI blue is near unreadable on dark terminals.)
+        (143, 161, 179) => Color::LightBlue,
         (150, 181, 180) => Color::Cyan,
         (101, 115, 126) => Color::DarkGray,
         _ => Color::Reset,

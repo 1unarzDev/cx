@@ -162,6 +162,7 @@ pub(super) fn screen_text(
     r: Rect,
     x: &LabSession,
     color: bool,
+    bottom: bool,
 ) -> (usize, usize) {
     let lines = ansi_lines(&x.screen, x.screen_cols);
     let used = used_lines(x);
@@ -188,8 +189,15 @@ pub(super) fn screen_text(
     } else {
         0
     };
+    // `bottom`: anchored like a live terminal, so a short screen (a fresh prompt) sits
+    // on a tile's caption, not at the top of an empty card.
+    let top = if bottom {
+        r.y + r.height.saturating_sub(pick.len() as u16)
+    } else {
+        r.y
+    };
     for (row, &i) in pick.iter().enumerate() {
-        let y = r.y + row as u16;
+        let y = top + row as u16;
         let mut xx = r.x;
         let mut skip = indent;
         for sp in &lines[i].spans {
@@ -522,7 +530,7 @@ pub(super) fn thumb_with(
             body.width.saturating_sub(2),
             body.height,
         );
-        screen_text(cx, buf, text, x, cx.c.has_color());
+        screen_text(cx, buf, text, x, cx.c.has_color(), true);
     }
     // Caption: provider, folder, activity and age.
     let fy = r.bottom() - 1;

@@ -2013,7 +2013,8 @@ fn bounded_provider_check(mut command: Command, timeout: Duration) -> bool {
     else {
         return false;
     };
-    let deadline = std::time::Instant::now() + timeout;
+    let started = std::time::Instant::now();
+    let deadline = started + timeout;
     // Observe exit without reaping: the zombie pins the owned group ID until
     // descendants have been terminated, preventing a recycled-PID signal race.
     let completed = loop {
@@ -2038,7 +2039,14 @@ fn bounded_provider_check(mut command: Command, timeout: Duration) -> bool {
         if std::time::Instant::now() >= deadline {
             break false;
         }
-        thread::sleep(Duration::from_millis(10));
+        // Fine steps first: a version probe ends within a few ms, and a server start
+        // asks three (10 ms steps made `cx new` wait 10 ms on each).
+        let step = if started.elapsed() < Duration::from_millis(50) {
+            1
+        } else {
+            10
+        };
+        thread::sleep(Duration::from_millis(step));
     };
     unsafe {
         libc::kill(-(child.id() as i32), libc::SIGKILL);

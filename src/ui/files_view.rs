@@ -96,12 +96,10 @@ impl App {
             b.settle = None;
             return false;
         };
-        match &b.settle {
-            Some((path, _, _)) if *path == entry.path => {}
-            _ => {
-                b.settle = Some((entry.path.clone(), now, false));
-                return false;
-            }
+        if b.settle.as_ref().is_none_or(|(path, _, _)| *path != entry.path) {
+            // A new hover: its prefetch starts in this same pass (before the frame that
+            // shows the move), so a preview kept in memory is in that frame.
+            b.settle = Some((entry.path.clone(), now, false));
         }
         let (_, since, done) = b.settle.as_ref().unwrap();
         if *done || now.duration_since(*since) < PREFETCH_DELAY {
@@ -153,11 +151,30 @@ impl App {
                 .as_ref()
                 .is_none_or(|p| p.preview_path.as_ref() != Some(&entry.path));
             if wanted {
-                let mut child = b
-                    .peek
-                    .take()
-                    .filter(|p| p.preview.is_some() && p.path != entry.path)
-                    .unwrap_or_else(|| Box::new(Browser::new(device, b.path.clone())));
+                // Keep the finished preview just left (keyed by the file's identity, so
+                // a changed file reads again), and reuse one kept for this file.
+                if let Some(old) = b.peek.take() {
+                    if let (Some(path), true) = (
+                        old.preview_path.clone(),
+                        old.preview.is_some() && old.preview_pending_page.is_none(),
+                    ) {
+                        let identity = old.entries.first().and_then(|e| e.identity.clone());
+                        b.peek_cache.retain(|(p, _, _)| *p != path);
+                        if b.peek_cache.len() >= 16 {
+                            b.peek_cache.remove(0);
+                        }
+                        b.peek_cache.push((path, identity, old));
+                    }
+                }
+                if let Some(i) = b
+                    .peek_cache
+                    .iter()
+                    .position(|(p, id, _)| *p == entry.path && *id == entry.identity)
+                {
+                    b.peek = Some(b.peek_cache.remove(i).2);
+                    return true;
+                }
+                let mut child = Box::new(Browser::new(device, b.path.clone()));
                 child.path = b.path.clone();
                 child.entries = vec![entry.clone()].into();
                 child.preview_path = Some(entry.path.clone());
@@ -321,6 +338,7 @@ impl App {
         path: String,
         scope: Option<ContainerScope>,
     ) {
+        let entering = self.view != View::Files;
         self.device = device + 1;
         let show_hidden = self
             .browser
@@ -375,6 +393,13 @@ impl App {
             None => self.refresh_browser(),
         }
         self.prefetch_parent();
+        if let Some(b) = self.browser.as_ref() {
+            let (d, path) = (b.device, b.path.clone());
+            self.yazi_warm_hover(d, path);
+        }
+        if entering {
+            self.yazi_warm_devices();
+        }
         self.check_providers(device);
     }
     pub(super) fn select_file_device(&mut self) {

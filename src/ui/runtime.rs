@@ -454,6 +454,15 @@ const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
 const SYNC_END: &[u8] = b"\x1b[?2026l";
 /// At most one frame per this interval (~60 fps); bursts are coalesced.
 pub(super) const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+/// Files paints a reply that lands just after a key's frame without waiting out the
+/// 60 fps budget (a local listing or preview arrives in a few milliseconds).
+fn frame_interval(app: &App) -> Duration {
+    if app.view == View::Files {
+        FRAME_INTERVAL / 4
+    } else {
+        FRAME_INTERVAL
+    }
+}
 /// How long the event loop may block before its next pass. Input, replies
 /// and helper events wake it at once; this covers only timers.
 pub(super) fn loop_wait(app: &App, now: Instant, frame_wait: Option<Duration>) -> Duration {
@@ -1026,7 +1035,10 @@ pub(super) fn start_update_check(tx: &mpsc::Sender<UpdateEvent>, force: bool) {
         let _ = tx.send(UpdateEvent::Checked(force, result));
     });
 }
-// Four workers permit independent hosts to progress while preserving FIFO per SSH target.
+// Eight workers permit independent hosts and lanes to progress while preserving FIFO per
+// lane. A device has up to seven lanes (metadata, capabilities, bulk, interactive, panel,
+// files, hover), and opening a lane's helper channel blocks its worker for a handshake:
+// with fewer workers a Files read waited on another lane's channel setup.
 // Both the incoming channel and scheduler backlog are bounded. Sleeping workers use a
 // condition variable, so an idle fleet causes no polling or redraw loop.
 pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
@@ -1062,6 +1074,7 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
         match &task.execution.target {
             Some(target) if panel => format!("panel:{target}"),
             Some(target) if bulk => format!("bulk:{target}"),
+            Some(target) if files && task.hover => format!("files-hover:{target}"),
             Some(target) if files => format!("files:{target}"),
             Some(target) => target.clone(),
             None if panel => "<local-command>".into(),
@@ -1106,7 +1119,7 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
         lock.lock().unwrap().closed = true;
         changed.notify_all();
     });
-    for _ in 0..4 {
+    for _ in 0..8 {
         let shared = shared.clone();
         let replies = replies.clone();
         thread::spawn(move || {
@@ -1132,7 +1145,11 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
                         queue = changed.wait(queue).unwrap();
                     }
                 };
-                let result = transport::request(&task.execution, task.op.clone());
+                let result = if task.hover {
+                    transport::request_hover(&task.execution, task.op.clone())
+                } else {
+                    transport::request(&task.execution, task.op.clone())
+                };
                 let preview = if matches!(
                     match &task.op {
                         Operation::ContainerFiles { operation, .. } => operation.as_ref(),
@@ -1369,6 +1386,11 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     }
     if restore.is_some() && app.view == View::Files {
         app.refresh_browser();
+        if let Some(b) = app.browser.as_ref() {
+            let (d, path) = (b.device, b.path.clone());
+            app.yazi_warm_hover(d, path);
+        }
+        app.yazi_warm_devices();
     }
     if restore.is_none() {
         // The start view is the hub; Files of this device open in the launch folder.
@@ -1891,9 +1913,10 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         if dirty {
             let since = last_draw.elapsed();
             let grace = app.live_frame_grace();
+            let interval = frame_interval(&app);
             if let Some(grace) = grace {
-                frame_wait = Some(grace.max(FRAME_INTERVAL.saturating_sub(since)));
-            } else if since >= FRAME_INTERVAL {
+                frame_wait = Some(grace.max(interval.saturating_sub(since)));
+            } else if since >= interval {
                 // A pass that wrote nothing (a key with no visible effect)
                 // does not delay the next frame, such as its echo.
                 if screen
@@ -1903,7 +1926,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 }
                 dirty = false;
             } else {
-                frame_wait = Some(FRAME_INTERVAL - since);
+                frame_wait = Some(interval - since);
             }
         }
         let batch = if !carried.is_empty() {

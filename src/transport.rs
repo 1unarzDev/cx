@@ -759,9 +759,15 @@ static CONNECTIONS: std::sync::LazyLock<
 static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// One framed metadata channel per endpoint, separate from native PTY traffic.
 pub fn request(d: &Device, op: Operation) -> Result<serde_json::Value> {
-    retry_observation(&op, || request_once(d, op.clone()))
+    retry_observation(&op, || request_once(d, op.clone(), false))
 }
-fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
+/// A Files prefetch of the hovered entry: its own helper channel, so a parent-folder
+/// prefetch or a page of a long listing never delays what the cursor is on.
+pub fn request_hover(d: &Device, op: Operation) -> Result<serde_json::Value> {
+    let hover = channel_class(&op) == Channel::Files;
+    request_once(d, op, hover)
+}
+fn request_once(d: &Device, op: Operation, hover: bool) -> Result<serde_json::Value> {
     let Some(target) = &d.target else {
         return crate::dispatch(op);
     };
@@ -775,7 +781,12 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
         let mut all = CONNECTIONS
             .lock()
             .map_err(|_| anyhow!("transport lock unavailable"))?;
-        all.entry(channel_key(channel_class(&op), target))
+        let key = if hover {
+            format!("files-hover:{target}")
+        } else {
+            channel_key(channel_class(&op), target)
+        };
+        all.entry(key)
             .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(None)))
             .clone()
     };
@@ -1294,7 +1305,9 @@ fn invalidate_metadata(target: &str) -> Result<()> {
             .map_err(|_| anyhow!("transport lock unavailable"))?;
         CHANNELS
             .iter()
-            .filter_map(|class| all.get(&channel_key(*class, target)).cloned())
+            .map(|class| channel_key(*class, target))
+            .chain([format!("files-hover:{target}")])
+            .filter_map(|key| all.get(&key).cloned())
             .collect()
     };
     for entry in entries {

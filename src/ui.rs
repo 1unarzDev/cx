@@ -324,6 +324,10 @@ struct Browser {
     /// Streaming state for text previews larger than the helper's first window.
     #[serde(skip)]
     stream: Option<PreviewStream>,
+    /// Hover previews of files just left, as (path, identity, preview): moving back
+    /// paints from memory.
+    #[serde(skip)]
+    peek_cache: Vec<(String, Option<String>, Box<Browser>)>,
     /// When the listing cache last served or stored this folder (LRU eviction).
     #[serde(skip)]
     used: u64,
@@ -373,6 +377,7 @@ impl Browser {
             peek_value: None,
             peek_inflight: Vec::new(),
             stream: None,
+            peek_cache: Vec::new(),
             used: 0,
             offset: std::cell::Cell::new(0),
         }
@@ -1113,14 +1118,22 @@ impl App {
     fn send_hover(&self, device: usize, op: Operation) -> bool {
         self.send_task(device, self.scoped_file_operation(device, op), true)
     }
+    /// A read that only warms a helper channel and the listing cache: generation 0, so
+    /// its reply (or failure) never touches the visible folder or raises a notice.
+    fn send_warm(&self, device: usize, op: Operation, hover: bool) -> bool {
+        self.send_generation(device, op, hover, 0)
+    }
     fn send_task(&self, device: usize, op: Operation, hover: bool) -> bool {
+        self.send_generation(device, op, hover, self.generation)
+    }
+    fn send_generation(&self, device: usize, op: Operation, hover: bool, generation: u64) -> bool {
         let sent = self
             .tx
             .try_send(Task {
                 device,
                 execution: self.devices[device].clone(),
                 op,
-                generation: self.generation,
+                generation,
                 hover,
             })
             .is_ok();

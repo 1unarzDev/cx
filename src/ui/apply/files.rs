@@ -334,6 +334,10 @@ impl App {
     /// Merge one listing page into the current browser. Pages in the helper's order are
     /// appended without re-sorting; derived caches extend incrementally.
     fn apply_listing(&mut self, device: usize, value: &Value, listing_offset: u64) {
+        // Another device's listing (a warm-up on entering Files) only fed the cache.
+        if self.browser.as_ref().is_none_or(|b| b.device != device) {
+            return;
+        }
         let ordered = value["order"].as_str() == Some(LIST_ORDER);
         if value["restart"] == true {
             // The helper no longer holds this listing's snapshot: list again from the top

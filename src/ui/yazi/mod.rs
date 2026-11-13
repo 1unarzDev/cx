@@ -362,6 +362,8 @@ pub(super) struct Yazi {
     pub search: Option<bool>,
     /// Rows of the current list at the last draw (page moves).
     pub rows: std::cell::Cell<usize>,
+    /// Devices whose hover channel has been opened.
+    pub warm: BTreeSet<usize>,
 }
 
 fn quote(s: &str) -> String {
@@ -999,9 +1001,60 @@ impl App {
         let path = path
             .or_else(|| self.file_locations.get(&d).cloned())
             .unwrap_or_else(|| "~".into());
+        let path = self.cached_folder(d, &path).unwrap_or(path);
         self.yazi_sync_tab();
         self.open_host_browser(d, path);
         self.yazi_sync_tab();
+    }
+
+    /// On entering Files: list every other reachable device's last folder in the
+    /// background, so its helper channel is warm and `'` + its letter paints from memory.
+    pub(super) fn yazi_warm_devices(&mut self) {
+        let here = self.browser.as_ref().map(|b| b.device);
+        for d in 0..self.devices.len() {
+            // Not a device whose last check failed (no stray connection attempts).
+            if Some(d) == here || self.work.get(d).is_some_and(|w| w.error.is_some()) {
+                continue;
+            }
+            let path = self
+                .file_locations
+                .get(&d)
+                .cloned()
+                .unwrap_or_else(|| "~".into());
+            if self.cached_folder(d, &path).is_none() {
+                self.send_warm(d, Operation::List { path: path.clone() }, false);
+            }
+            self.yazi_warm_hover(d, path);
+        }
+    }
+    /// Open device `d`'s hover channel (one per device, in parallel with its listing):
+    /// a first hover read must not pay for the channel's SSH session and helper start.
+    pub(super) fn yazi_warm_hover(&mut self, d: usize, path: String) {
+        if self.devices[d].target.is_none() || !self.yz.warm.insert(d) {
+            return;
+        }
+        // The parent when the path names it (it is the next thing the parent column wants).
+        let target = path
+            .strip_prefix('/')
+            .and_then(|_| path.trim_end_matches('/').rsplit_once('/'))
+            .map(|(p, _)| if p.is_empty() { "/".to_owned() } else { p.to_owned() })
+            .unwrap_or(path);
+        self.send_warm(d, Operation::List { path: target }, true);
+    }
+    /// The cache key of device `d`'s folder `path` (`~` matches the home it listed).
+    fn cached_folder(&self, d: usize, path: &str) -> Option<String> {
+        let scope = browser_scope_key(None);
+        if self.browser_cache.contains_key(&(d, path.to_owned(), scope.clone())) {
+            return Some(path.to_owned());
+        }
+        (path == "~")
+            .then(|| {
+                self.browser_cache
+                    .iter()
+                    .find(|((dev, _, s), b)| *dev == d && *s == scope && b.display_path == "~")
+                    .map(|((_, p, _), _)| p.clone())
+            })
+            .flatten()
     }
 
     /// Apply the chosen `,` sort to the loaded rows (pages arriving later re-sort).
@@ -1522,7 +1575,11 @@ impl App {
                     }
                     None => Preview::Empty,
                 });
-            } else if b.peek.as_ref().is_some_and(|p| p.preview.is_some()) {
+            } else if b
+                .peek
+                .as_ref()
+                .is_some_and(|p| p.preview.is_some() && p.preview_path.as_ref() == Some(&e.path))
+            {
                 v.preview = Some(Preview::Body);
             }
         }

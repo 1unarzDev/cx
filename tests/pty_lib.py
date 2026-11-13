@@ -90,6 +90,7 @@ class Pty:
 # pyte color names -> palette indices (lab_png's dump format: None, 0..255 or "#rrggbb").
 NAMED = {name: i for i, name in enumerate(['black', 'red', 'green', 'brown', 'blue', 'magenta', 'cyan', 'white'])}
 NAMED['yellow'] = 3
+PALETTE16 = {hexa: i for i, hexa in enumerate(pyte.graphics.FG_BG_256[:16])}
 
 
 def color(name):
@@ -100,7 +101,10 @@ def color(name):
     if base in NAMED:
         return NAMED[base] + (8 if bright else 0)
     if len(name) == 6:
-        return '#' + name
+        # `38;5;n` for n < 16 is a palette slot like SGR 30-37/90-97 (crossterm writes
+        # it so); pyte turns it into xterm's hex, which would paint a fixed colour.
+        slot = PALETTE16.get(name)
+        return slot if slot is not None else '#' + name
     return None
 
 

@@ -105,7 +105,7 @@ fn hub_moves_never_refresh_and_keep_the_session_by_identity() {
     while rx.try_recv().is_ok() {}
     draw(&a, 120, 40);
     let id = a.selected_session().map(|(_, s)| s.id);
-    a.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    a.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     assert!(a.hub_device.is_some());
     assert!(rx.try_recv().is_err(), "moving on the map did I/O (P17)");
     assert!(
@@ -1707,4 +1707,77 @@ fn a_highlighted_folder_previews_its_entries() {
 }
 fn b_loading(a: &mut App) {
     a.browser.as_mut().unwrap().peek.as_mut().unwrap().loading = true;
+}
+
+/// Every map move is undone by the opposite arrow, and a run of moves by the opposite
+/// run (Down Down, then Up Up), from every node of maps of four to eight nodes.
+#[test]
+fn the_opposite_arrow_undoes_each_map_move() {
+    for n in 3..=7 {
+        undo_map_moves(n);
+    }
+}
+fn undo_map_moves(others: usize) {
+    crate::store::isolate_test_state();
+    let (tx, _rx) = mpsc::sync_channel(64);
+    let mut devices = app().devices;
+    let names = ["north", "east", "south", "west", "relay", "robot", "nas"];
+    for &name in &names[..others] {
+        let mut d = devices[0].clone();
+        d.id = name.into();
+        d.name = name.into();
+        d.target = Some(format!("{name}.invalid"));
+        devices.push(d);
+    }
+    let mut a = App::new(devices, tx);
+    a.go_hub();
+    let node = |a: &App| a.hub_device.clone().unwrap_or_else(|| viewmodel::dev_id(0));
+    let dirs = [KeyCode::Up, KeyCode::Down, KeyCode::Left, KeyCode::Right];
+    let opposite = |k: KeyCode| match k {
+        KeyCode::Up => KeyCode::Down,
+        KeyCode::Down => KeyCode::Up,
+        KeyCode::Left => KeyCode::Right,
+        _ => KeyCode::Left,
+    };
+    for (w, h) in [(80, 48), (120, 40), (190, 50)] {
+        for start in 0..a.devices.len() {
+            for first in dirs {
+                for second in dirs {
+                    a.go_hub();
+                    a.hub_device = Some(viewmodel::dev_id(start));
+                    draw(&a, w, h);
+                    let mut path = vec![node(&a)];
+                    let mut keys = Vec::new();
+                    for k in [first, second] {
+                        a.key(KeyEvent::new(k, KeyModifiers::NONE));
+                        draw(&a, w, h);
+                        if a.hub_sessions {
+                            // Down past the map is the tiles; Up from them, the map again.
+                            a.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+                            draw(&a, w, h);
+                            assert!(!a.hub_sessions);
+                            assert_eq!(node(&a), *path.last().unwrap());
+                            break;
+                        }
+                        if node(&a) == *path.last().unwrap() {
+                            continue; // (Nothing that way: it stays put.)
+                        }
+                        path.push(node(&a));
+                        keys.push(k);
+                    }
+                    for k in keys.iter().rev() {
+                        let expected = path[path.len() - 2].clone();
+                        a.key(KeyEvent::new(opposite(*k), KeyModifiers::NONE));
+                        draw(&a, w, h);
+                        path.pop();
+                        assert_eq!(
+                            node(&a),
+                            expected,
+                            "{others} others {w}x{h} from {start}: {first:?} {second:?} not undone"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

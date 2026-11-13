@@ -7,8 +7,9 @@ usage: map_grid_pty.py BINARY
 A private HOME: this device (`home`) with six managed shells and four devices that never
 answer (`.invalid` targets: north, east, south, west), on a 190x50 PTY.
   * Hub map (focused at startup on `home`): Right reaches a node right of home, Left
-    returns to home, Left again a node left of it, Right home again; Down a node below
-    it, Up home. The vitals strip names the selected node.
+    returns to home, Left again a node left of it, Right home again. From home, each
+    arrow (once and twice) lands within ±63° of its direction and the opposite arrows
+    walk back to home. The vitals strip names the selected node.
   * A device's grid (its letter): six tiles in a 3x2 grid. Right/Left/Down/Up and
     `l h j k` move the `▌` focus one tile the way they point; Up from the top row stays
     put; Down from the bottom row focuses LINKS, and Tab returns to the tiles.
@@ -88,18 +89,35 @@ def main():
             assert side(where(node)), f'{key!r} reached {node} at {where(node)}, home at {home}'
             press(back, lambda: picked() == 'home', f'{back!r} did not return from {node} to home')
             steps += 2
-        # Down reaches a node below, Up from there one above it (straight above a lower
-        # corner sits the upper one, not home), and Left/Right lead home again.
-        press(DOWN, lambda: picked() != 'home', 'Down left home nowhere')
-        low = picked()
-        assert where(low)[0] > home[0], f'Down reached {low} at {where(low)}, home at {home}'
-        press(UP, lambda: picked() != low, f'Up did not leave {low}')
-        high = picked()
-        assert where(high)[0] < where(low)[0], f'Up from {low} reached {high}'
-        steps += 2
-        toward = RIGHT if where(high)[1] < home[1] else LEFT
-        press(toward, lambda: picked() == 'home', f'{toward!r} from {high} did not reach home')
-        steps += 1
+        # Every arrow from home lands within its ±63° cone and the opposite arrow comes
+        # back; a run (two of a kind) is undone by the opposite run.
+        def cone(a, b, key):
+            dx = 2 * (b[1] - a[1])  # a cell is about twice as tall as wide
+            dy = 4 * (b[0] - a[0])
+            along, side = {UP: (-dy, dx), DOWN: (dy, dx), LEFT: (-dx, dy), RIGHT: (dx, dy)}[key]
+            return along > 0 and abs(side) <= 2 * along
+        back = {UP: DOWN, DOWN: UP, LEFT: RIGHT, RIGHT: LEFT}
+        for key in (UP, DOWN, LEFT, RIGHT):
+            path = ['home']
+            for _ in range(2):
+                before = picked()
+                viewer.write(key)
+                viewer.read(.3)
+                if 'cx › sessions' in text():  # Down past the map: the tiles; Up returns
+                    press(UP, lambda: 'cx › network' in text(), 'Up from the tiles did not reach the map')
+                    break
+                if picked() in (before, None):
+                    break
+                assert cone(where(before), where(picked()), key), \
+                    f'{key!r} from {before} at {where(before)} reached {picked()} at {where(picked())}'
+                path.append(picked())
+                steps += 1
+            while len(path) > 1:
+                gone = path.pop()
+                press(back[key], lambda: picked() == path[-1],
+                      f'{back[key]!r} from {gone} did not return to {path[-1]}')
+                steps += 1
+        assert picked() == 'home'
 
         # -------------------------------------------------------- a device's grid
         letter = re.search(r'\s(\w)\s+then', text())

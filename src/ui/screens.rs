@@ -216,8 +216,11 @@ impl App {
     fn arrow_once(&mut self, dx: i32, dy: i32) {
         match self.spatial(dx, dy) {
             Some(true) => return,
-            // Not drawn (no frame yet, or scrolled off): along the order.
-            None if self.device_link.is_none() => return self.screen_move((dx + dy) as isize),
+            // Not drawn (no frame yet, or scrolled off): along the order. (With no
+            // session at all, only the zones remain.)
+            None if self.device_link.is_none() && self.selected_session().is_some() => {
+                return self.screen_move((dx + dy) as isize)
+            }
             _ => {}
         }
         if self.view == View::Work {
@@ -230,10 +233,11 @@ impl App {
             }
             return;
         }
+        // (On the map, nothing that way stays put: no jump along the order.)
         let other = self.view == View::Network && (dy > 0) != self.hub_sessions && dy != 0;
         if other {
             self.toggle_zone();
-        } else if dx != 0 || self.view != View::Network {
+        } else if self.view != View::Network || (dx != 0 && self.hub_sessions) {
             self.screen_move((dx + dy) as isize);
         }
     }
@@ -266,41 +270,31 @@ impl App {
             .cloned()
             .collect();
         let from = nav.iter().find(|(_, a)| *a == current).map(|(r, _)| *r)?;
-        // Centres in half cells; an item counts when it lies past the selection's edge
-        // that way, scored by distance with the sideways offset weighed double.
-        let centre = |r: Rect| {
-            (
-                2 * i32::from(r.x) + i32::from(r.width),
-                2 * i32::from(r.y) + i32::from(r.height),
-            )
-        };
-        let (fx, fy) = centre(from);
-        let best = nav
+        let items: Vec<(Rect, &str)> = nav
             .iter()
-            .filter(|(r, a)| a.starts_with(kind) && *a != current && *r != from)
-            .filter_map(|(r, a)| {
-                let (x, y) = centre(*r);
-                let (along, side) = if dx != 0 {
-                    let past = if dx > 0 {
-                        r.x >= from.right()
-                    } else {
-                        r.right() <= from.x
-                    };
-                    (past.then_some((x - fx).abs())?, (y - fy).abs())
-                } else {
-                    let past = if dy > 0 {
-                        r.y >= from.bottom()
-                    } else {
-                        r.bottom() <= from.y
-                    };
-                    (past.then_some((y - fy).abs())?, (x - fx).abs())
-                };
-                Some((along + 2 * side, a.clone()))
-            })
-            .min_by_key(|(score, _)| *score)
-            .map(|(_, a)| a);
-        let Some(to) = best else {
-            return Some(false);
+            .filter(|(r, a)| a.starts_with(kind) && (*a == current || *r != from))
+            .map(|(r, a)| (*r, a.as_str()))
+            .collect();
+        // The opposite of the last move goes back where it came from (and the one before
+        // it, in turn); a selection moved some other way starts afresh.
+        if self.arrows.last().is_some_and(|(_, to, ..)| *to != current) {
+            self.arrows.clear();
+        }
+        let back = self.arrows.last().and_then(|(from, _, bx, by)| {
+            ((*bx, *by) == (-dx, -dy) && items.iter().any(|(_, a)| a == from)).then(|| from.clone())
+        });
+        let to = if let Some(from) = back {
+            self.arrows.pop();
+            from
+        } else {
+            let Some(to) = toward(&items, &current, dx, dy).map(str::to_string) else {
+                return Some(false);
+            };
+            if self.arrows.len() >= 64 {
+                self.arrows.remove(0);
+            }
+            self.arrows.push((current, to.clone(), dx, dy));
+            to
         };
         let mut parts = to.splitn(3, ':').skip(1);
         match (parts.next(), parts.next()) {
@@ -1444,4 +1438,57 @@ fn key_arrow(code: KeyCode) -> (i32, i32) {
         KeyCode::Up => (0, -1),
         _ => (0, 1),
     }
+}
+
+/// The item `dx`/`dy` of `current` among drawn `items` (the arrows' spatial pick):
+/// within a ±45° cone (widened to ±63° only if empty), scored by
+/// distance with the sideways offset weighed double; of those, the nearest whose own
+/// opposite move returns to `current` wins, so every move can be undone.
+pub(super) fn toward<'a>(
+    items: &[(Rect, &'a str)],
+    current: &str,
+    dx: i32,
+    dy: i32,
+) -> Option<&'a str> {
+    let ranked = |from: &str, dx: i32, dy: i32| -> Vec<&'a str> {
+        // Centres in visual units: a cell is about twice as tall as it is wide.
+        let centre = |r: Rect| {
+            (
+                2 * i32::from(r.x) + i32::from(r.width),
+                2 * (2 * i32::from(r.y) + i32::from(r.height)),
+            )
+        };
+        let Some(&(at, _)) = items.iter().find(|(_, a)| *a == from) else {
+            return Vec::new();
+        };
+        let (fx, fy) = centre(at);
+        let scored: Vec<(i32, i32, &'a str)> = items
+            .iter()
+            .filter(|(_, a)| *a != from)
+            .filter_map(|&(r, a)| {
+                let (x, y) = centre(r);
+                let along = (x - fx) * dx + (y - fy) * dy;
+                let side = ((x - fx) * dy - (y - fy) * dx).abs();
+                (along > 0).then_some((along, side, a))
+            })
+            .collect();
+        for widen in [1, 2] {
+            let mut cone: Vec<(i32, &'a str)> = scored
+                .iter()
+                .filter(|(along, side, _)| *side <= along.saturating_mul(widen))
+                .map(|(along, side, a)| (along + 2 * side, *a))
+                .collect();
+            if !cone.is_empty() {
+                cone.sort_by_key(|(score, _)| *score);
+                return cone.into_iter().map(|(_, a)| a).collect();
+            }
+        }
+        Vec::new()
+    };
+    let options = ranked(current, dx, dy);
+    options
+        .iter()
+        .find(|a| ranked(a, -dx, -dy).first() == Some(&current))
+        .or(options.first())
+        .copied()
 }

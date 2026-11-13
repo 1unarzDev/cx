@@ -620,3 +620,72 @@ mod size_fuzz {
         check(sweep(&sizes()));
     }
 }
+#[cfg(test)]
+mod map_moves {
+    //! The map's arrows over the 1-25 device layouts: every node reachable and no move
+    //! more than ±63° off the pressed direction. (The opposite arrow undoes a move by
+    //! the app's own memory of it: a radial layout has no stateless undo; see
+    //! `the_opposite_arrow_undoes_each_map_move`.)
+    use super::*;
+    use crate::ui::screens::toward;
+
+    #[test]
+    fn map_arrows_reach_every_node_within_the_cone() {
+        let full = state::large();
+        for n in [1, 3, 5, 7, 10, 15, 20, 25] {
+            let mut s = full.clone();
+            s.devices.truncate(n);
+            let ids: Vec<String> = s.devices.iter().map(|d| d.id.clone()).collect();
+            s.edges
+                .retain(|e| ids.contains(&e.from) && ids.contains(&e.to));
+            s.sessions.retain(|x| ids.contains(&x.device));
+            for (w, h) in [(80, 48), (120, 40), (190, 50)] {
+                let caps = LabCaps {
+                    focus: Some(Pane::Graph),
+                    ..LabCaps::default()
+                };
+                let area = Rect::new(0, 0, w, h);
+                let mut buf = Buffer::empty(area);
+                let drawn = mission::render(&LabView::Hub, &s, &caps, area, &mut buf);
+                let items: Vec<(Rect, &str)> = drawn
+                    .nav
+                    .iter()
+                    .filter(|t| t.action.starts_with("device:"))
+                    .map(|t| (t.area, t.action.as_str()))
+                    .collect();
+                let case = format!("{n} devices {w}x{h}");
+                let centre = |a: &str| {
+                    let r = items.iter().find(|(_, x)| *x == a).unwrap().0;
+                    (
+                        2 * i32::from(r.x) + i32::from(r.width),
+                        2 * (2 * i32::from(r.y) + i32::from(r.height)),
+                    )
+                };
+                let Some(&(_, start)) = items.first() else {
+                    continue;
+                };
+                let mut seen = vec![start];
+                let mut queue = vec![start];
+                while let Some(a) = queue.pop() {
+                    for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                        let Some(b) = toward(&items, a, dx, dy) else {
+                            continue;
+                        };
+                        let ((ax, ay), (bx, by)) = (centre(a), centre(b));
+                        let along = (bx - ax) * dx + (by - ay) * dy;
+                        let side = ((bx - ax) * dy - (by - ay) * dx).abs();
+                        assert!(
+                            along > 0 && side <= 2 * along,
+                            "{case}: {a} {dx},{dy} -> {b} is off the cone"
+                        );
+                        if !seen.contains(&b) {
+                            seen.push(b);
+                            queue.push(b);
+                        }
+                    }
+                }
+                assert_eq!(seen.len(), items.len(), "{case}: unreachable nodes");
+            }
+        }
+    }
+}

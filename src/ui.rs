@@ -551,6 +551,8 @@ struct App {
     text: String,
     palette_selected: usize,
     navigation: navigation::State,
+    /// The arrow moves so far (from, to, dx, dy): the opposite arrows undo them in turn.
+    arrows: Vec<(String, String, i32, i32)>,
     device_filter: String,
     job_filter: String,
     /// The committed filter text captured when a filter edit begins, so Esc can
@@ -742,6 +744,7 @@ impl App {
             job_filter: String::new(),
             filter_restore: None,
             navigation: navigation::State::default(),
+            arrows: Vec::new(),
             help: false,
             help_scroll: 0,
             notice: String::new(),

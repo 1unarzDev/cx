@@ -1101,7 +1101,11 @@ fn file_device_selection_retargets_only_the_focused_location() {
 fn transfer_shortcut_captures_selection_and_opens_destination_picker() {
     let (mut a, _rx) = file_app();
     press(&mut a, ' ');
-    press(&mut a, 't');
+    // `e`: the send-to sheet (yazi leaves e unbound); a device letter then sends.
+    press(&mut a, 'e');
+    assert!(a.send_pick);
+    a.send_pick = false;
+    a.execute(Action::TransferTo);
     assert!(matches!(
         a.dialog,
         Some(Dialog::Device(ChooseDevice::Destination))
@@ -1116,7 +1120,8 @@ fn transfer_shortcut_captures_selection_and_opens_destination_picker() {
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     a.view = View::Files;
     a.focus = Focus::Workspace;
-    press(&mut a, 'T');
+    // yazi's `w` (tasks) lists the transfers.
+    press(&mut a, 'w');
     assert!(matches!(a.dialog, Some(Dialog::Jobs)));
 }
 #[test]
@@ -1311,7 +1316,9 @@ fn transfer_filter_and_counted_detail_navigation_preserve_job_identity() {
 #[test]
 fn yazi_motion_counts_and_delete_yes_no_do_not_leak_into_inputs() {
     let (mut a, rx) = file_app();
+    // yazi has no counts: digits switch tabs (there is one, so nothing moves).
     press(&mut a, '2');
+    press(&mut a, 'j');
     press(&mut a, 'j');
     assert_eq!(a.browser.as_ref().unwrap().selected, 2);
     press(&mut a, 'g');
@@ -1324,9 +1331,10 @@ fn yazi_motion_counts_and_delete_yes_no_do_not_leak_into_inputs() {
     assert!(a.dialog.is_none() && rx.try_recv().is_err());
     press(&mut a, 'd');
     press(&mut a, 'y');
+    // `d` trashes; `D` deletes for good.
     assert!(matches!(
         rx.try_recv().unwrap().op,
-        Operation::Remove { .. }
+        Operation::Trash { .. }
     ));
     press(&mut a, 'f');
     press(&mut a, '5');
@@ -1379,14 +1387,17 @@ fn hidden_and_filter_do_not_lose_selected_paths_or_turn_text_into_actions() {
 }
 #[test]
 fn delete_defaults_to_cancel_and_uses_captured_identity() {
+    // yazi's confirm: `n` (or any key but y/Enter) cancels; the identity is the one
+    // captured when D was pressed.
     let (mut a, rx) = file_app();
-    press(&mut a, 'd');
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    press(&mut a, 'D');
+    let text = draw_text(&a);
+    assert!(text.contains("Permanently delete 1 selected file?"), "{text}");
+    press(&mut a, 'n');
     assert!(rx.try_recv().is_err());
-    press(&mut a, 'd');
+    press(&mut a, 'D');
     a.browser.as_mut().unwrap().entries[0].identity = Some("replacement".into());
-    press(&mut a, 'j');
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    press(&mut a, 'y');
     assert!(
         matches!(rx.try_recv().unwrap().op, Operation::Remove { path, expected_identity: Some(id) }
             if path == "/files/alpha.txt" && id == "identity-alpha.txt")
@@ -1418,7 +1429,7 @@ fn copy_batch_stays_in_folder_and_paste_is_nonmodal_and_serialized() {
     let (mut a, rx) = file_app();
     press(&mut a, ' ');
     press(&mut a, ' ');
-    press(&mut a, 'c');
+    press(&mut a, 'y');
     assert!(a.dialog.is_none());
     assert_eq!(a.clipboard.as_ref().unwrap().entries.len(), 2);
     a.browser.as_mut().unwrap().path = "/destination".into();
@@ -1432,7 +1443,8 @@ fn copy_batch_stays_in_folder_and_paste_is_nonmodal_and_serialized() {
     assert_eq!(spec.destination_path, "/destination");
     assert_eq!(spec.conflict, "rename");
     assert_eq!(a.file_queue.len(), 1);
-    assert!(a.transfer_drawer && a.dialog.is_none());
+    // Progress shows in the status line (yazi's), not a drawer or dialog.
+    assert!(!a.transfer_drawer && a.dialog.is_none());
     a.apply(Reply {
         device_id: None,
         execution_target: None,
@@ -1632,28 +1644,20 @@ fn recursive_delete_warning_is_visible_and_detail_scrolling_cannot_confirm() {
     b.entries[0].kind = "directory".into();
     b.marked
         .extend(["/files/alpha.txt".into(), "/files/beta.txt".into()]);
-    press(&mut a, 'd');
-    let text = capture_app(&a, 48);
+    // yazi's confirm, with cx's warning when a folder is in it; only y/Enter confirm.
+    press(&mut a, 'D');
+    let text = capture_app(&a, 120);
     assert!(
         text.contains("No undo")
             && text.contains("folders include their contents.")
-            && text.contains("Cancel")
+            && text.contains("(N)o"),
+        "{text}"
     );
-    assert!(!text
-        .lines()
-        .skip(21)
-        .collect::<String>()
-        .contains("Copy / cut"));
     a.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    press(&mut a, 'j');
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(a.dialog.is_some() && !a.dialog_detail_focus && rx.try_recv().is_err());
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(a.dialog.is_none() && rx.try_recv().is_err());
-    press(&mut a, 'd');
-    a.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(a.yz.popup.is_none() && rx.try_recv().is_err());
+    press(&mut a, 'D');
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(a.dialog.is_none() && !a.dialog_detail_focus && rx.try_recv().is_err());
+    assert!(a.yz.popup.is_none() && rx.try_recv().is_err());
 }
 #[test]
 fn changing_session_labels_preserves_row_order_and_selection() {
@@ -2040,7 +2044,8 @@ fn new_shortcut_chooses_profile_and_preserves_focused_folder() {
     a.browser = Some(Browser::new(1, "/projects/robot".into()));
     a.device = 1;
     a.focus = Focus::Workspace;
-    press(&mut a, 'n');
+    // `T` (yazi's n is find-next): a new session in this folder.
+    press(&mut a, 'T');
     assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(1,path)) if path == "/projects/robot"));
     assert!(rx.try_recv().is_err());
     // `n` is Shell everywhere: the device screen's verb and the chooser's choice (`n` `n` = new shell).
@@ -2057,7 +2062,7 @@ fn moving_to_client_only_host_drops_unavailable_launch_profile() {
     a.launch_provider = Some("codex".into());
     a.providers
         .insert(1, (vec!["shell".into()], transport::now()));
-    press(&mut a, 'n');
+    press(&mut a, 'T');
     assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(1, path)) if path == "/server/files"));
     assert!(a.launch_provider.is_none());
     assert!(rx.try_recv().is_err());
@@ -2473,7 +2478,7 @@ fn new_session_from_all_explicitly_selects_execution_provider_directory() {
     let list = rx.try_recv().unwrap();
     assert!(matches!(list.op, Operation::List { .. }));
     a.browser.as_mut().unwrap().path = "/projects/test".into();
-    press(&mut a, 'n');
+    press(&mut a, 'T');
     assert!(matches!(a.dialog, Some(Dialog::SessionChooser(..))));
     press(&mut a, 'x');
     assert!(matches!(a.dialog, Some(Dialog::SessionPicker(..))));
@@ -3027,10 +3032,10 @@ fn fuzzy_search_is_live_and_selection_survives_arrow_keys() {
         .buffer()
         .content
         .iter()
-        .skip(80 * 18)
         .map(|c| c.symbol())
         .collect::<String>();
-    assert!(bottom.contains("Search"));
+    // yazi's find box (top centre).
+    assert!(bottom.contains("Find next:"));
     assert!(bottom.contains("rcb"));
 }
 #[test]
@@ -5806,9 +5811,10 @@ fn session_hover_selects_rendered_row_without_opening() {
                 .contains("beta.txt")
         })
         .expect("second row rendered");
+    // The current column (yazi's 1:4:3: x20-99 at 160 columns).
     let at = |kind| MouseEvent {
         kind,
-        column: 6,
+        column: 30,
         row: y,
         modifiers: KeyModifiers::NONE,
     };

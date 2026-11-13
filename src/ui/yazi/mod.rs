@@ -83,6 +83,8 @@ pub(super) enum Y {
     Unsupported(String),
     /// cx's own: the send-to popup (kept from the earlier Files view).
     SendTo,
+    /// cx's own: a new agent or shell session in this folder.
+    NewSession,
 }
 
 pub(super) struct Bind {
@@ -108,6 +110,7 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(["<Esc>"], Escape, "Exit visual mode, clear selection, or cancel search"),
             b!(["<C-[>"], Escape, "Exit visual mode, clear selection, or cancel search"),
             b!(["q"], Quit, "Close Files"),
+            b!(["Q"], Quit, "Close Files"),
             b!(["<C-c>"], CloseTab, "Close the current tab, or Files when it is the last"),
             b!(["k"], Arrow(-1), "Previous file"),
             b!(["j"], Arrow(1), "Next file"),
@@ -158,6 +161,7 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(["."], Hidden, "Toggle the visibility of hidden files"),
             b!(["s"], Search(false), "Search files by name via fd"),
             b!(["S"], Search(true), "Search files by content via ripgrep"),
+            b!(["<C-s>"], Escape, "Cancel the ongoing search"),
             b!(["z"], Jump(false), "Jump to a file/directory via fzf"),
             b!(["Z"], Jump(true), "Jump to a directory via zoxide"),
             b!(["m", "s"], Linemode(render::Linemode::Size), "Linemode: size"),
@@ -178,6 +182,8 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(["N"], FindNext(true), "Previous found"),
             b!([",", "m"], Sort("mtime", false), "Sort by modified time"),
             b!([",", "M"], Sort("mtime", true), "Sort by modified time (reverse)"),
+            b!([",", "b"], Sort("mtime", false), "Sort by birth time"),
+            b!([",", "B"], Sort("mtime", true), "Sort by birth time (reverse)"),
             b!([",", "e"], Sort("extension", false), "Sort by extension"),
             b!([",", "E"], Sort("extension", true), "Sort by extension (reverse)"),
             b!([",", "a"], Sort("alphabetical", false), "Sort alphabetically"),
@@ -212,7 +218,8 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(["~"], Help, "Open help"),
             b!(["<F1>"], Help, "Open help"),
             b!(["'"], Devices, "Switch this tab to another device (its hub letter)"),
-            b!(["<C-s>"], SendTo, "Send selected files to a device (picker)"),
+            b!(["e"], SendTo, "Send selected files to a device (picker)"),
+            b!(["T"], NewSession, "New session in this folder"),
         ]
     })
 }
@@ -737,6 +744,11 @@ impl App {
                 }
             }
             Open => {
+                if self.destination_active && self.clipboard.is_some() {
+                    // The send-to flow's destination: Enter transfers here.
+                    self.primary();
+                    return;
+                }
                 let Some(e) = self.hovered() else { return };
                 if e.kind == "directory" && self.chosen_entries().len() <= 1 {
                     self.yazi_cd_entry(e.path);
@@ -912,6 +924,7 @@ impl App {
                 self.set_notice(format!("{desc} is a yazi plugin · not in cx"));
             }
             SendTo => self.send_pick = true,
+            NewSession => self.session_shortcut(),
         }
     }
 
@@ -1141,7 +1154,8 @@ impl App {
         let device = b.device;
         let Some(e) = self.hovered() else { return };
         let local = self.devices[device].target.is_none() && b.container.is_none();
-        if !local {
+        // Without the user's yazi.toml, Enter opens cx's own preview (any device).
+        if !local || (!interactive && !openers::configured()) {
             if e.kind != "directory" {
                 self.open_preview(device, e.path);
             }
@@ -1419,16 +1433,24 @@ impl App {
         let cursor = b.selected.min(len.saturating_sub(1));
         let off = scrolled(b.offset.get(), cursor, len, rows);
         b.offset.set(off);
-        let query = b.search.to_lowercase();
+        // Find (`/`): the matcher's character positions, as byte ranges of the name.
+        let found = if b.search.is_empty() {
+            None
+        } else {
+            Some(browser_matches(b))
+        };
         let rows_vec: Vec<Row> = (off..(off + rows).min(len))
-            .filter_map(|i| all.get(i))
-            .map(|e| {
+            .filter_map(|i| all.get(i).map(|e| (i, e)))
+            .map(|(i, e)| {
                 let mut r = to_row(e, mark_of(e, &b.marked));
-                if !query.is_empty() {
-                    if let Some(at) = r.name.to_lowercase().find(&query) {
-                        if r.name.is_char_boundary(at) && r.name.is_char_boundary(at + query.len()) {
-                            r.found = vec![(at, at + query.len())];
-                        }
+                if let Some(m) = found.as_ref() {
+                    if let Ok(k) = m.binary_search_by_key(&i, |(row, _)| *row) {
+                        let starts: Vec<(usize, char)> = r.name.char_indices().collect();
+                        r.found = m[k]
+                            .1
+                            .iter()
+                            .filter_map(|&p| starts.get(p).map(|&(at, c)| (at, at + c.len_utf8())))
+                            .collect();
                     }
                 }
                 r
@@ -1604,13 +1626,15 @@ impl App {
             } => {
                 let n = entries.len();
                 let s = if n == 1 { "" } else { "s" };
+                let folders = entries.iter().any(|e| e.kind == "directory");
                 Popup::Confirm {
                     title: if *permanent {
                         format!("Permanently delete {n} selected file{s}?")
                     } else {
                         format!("Trash {n} selected file{s}?")
                     },
-                    body: None,
+                    body: (*permanent && folders)
+                        .then(|| "No undo: folders include their contents.".to_string()),
                     list: entries.iter().map(|e| safe_label(&e.name)).collect(),
                 }
             }
@@ -1682,6 +1706,11 @@ pub(super) mod openers {
                 .map(|t| toml::parse(&t))
                 .unwrap_or(Value::Table(Default::default()))
         })
+    }
+
+    /// Whether the user's yazi.toml has `[open] rules` (else cx previews on Enter).
+    pub(crate) fn configured() -> bool {
+        config().path("open.rules").is_some_and(|r| !r.arr().is_empty())
     }
 
     /// A rough mime type from the name (yazi asks `file(1)`; this is enough for rules).

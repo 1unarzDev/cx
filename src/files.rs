@@ -2066,8 +2066,12 @@ mod tests {
         let old_time = started.elapsed();
         ui_sort(&mut old);
         let started = std::time::Instant::now();
-        let (new, requests) = all_pages(d.path(), || list(d.path()).unwrap(), 1000);
+        let (mut new, requests) = all_pages(d.path(), || list(d.path()).unwrap(), 1000);
         let new_time = started.elapsed();
+        // Listings now carry permission bits (the old pages did not).
+        for e in &mut new {
+            assert!(e.as_object_mut().unwrap().remove("mode").is_some());
+        }
         eprintln!(
             "20002-entry listing: old {old_time:?} (21 requests), new {new_time:?} ({requests} requests)"
         );

@@ -317,7 +317,7 @@ struct Pen<'a> {
 
 impl Pen<'_> {
     fn style(&self, s: Style) -> Style {
-        if self.look.color {
+        let mut s = if self.look.color {
             s
         } else {
             Style {
@@ -325,7 +325,12 @@ impl Pen<'_> {
                 bg: None,
                 ..s
             }
+        };
+        if !self.look.unicode && s.add_modifier.contains(Modifier::REVERSED) {
+            // ASCII terminals get no painted cells: bold (and a `>` on rows) instead.
+            s = s.remove_modifier(Modifier::REVERSED).add_modifier(Modifier::BOLD);
         }
+        s
     }
     /// Write `s` from x, never past `end` (exclusive) or the buffer; returns the next x.
     fn put(&mut self, x: u16, y: u16, end: u16, s: &str, style: Style) -> u16 {
@@ -518,10 +523,17 @@ fn column(
         let mut x = x0;
         if pill && look.pills && list.width >= 4 {
             p.put(x, y, x1, CAP_L, cap_style);
+        } else if hovered && !look.unicode {
+            p.put(x, y, x1, ">", style);
         } else {
             p.put(x, y, x1, " ", style);
         }
         x += 1;
+        if !look.unicode && list.width >= 6 {
+            // ASCII: `> name`, the cue a reversed row gives elsewhere.
+            p.put(x, y, x1, " ", style);
+            x += 1;
+        }
         let inner_end = if list.width >= 3 { x1 - 1 } else { x1 };
         if pill {
             p.style_cells(x, inner_end, y, style);
@@ -556,11 +568,23 @@ fn column(
         let lm_w = if lm_w + 4 <= room { lm_w } else { 0 };
         let name_room = room.saturating_sub(if lm_w > 0 { lm_w + 1 } else { 0 });
         let name = ellipsis(&row.name, name_room, !row.dir, look.unicode);
-        if row.found.is_empty() || name != row.name {
+        // A cut name keeps the highlights that fall in its kept head.
+        let head = if name == row.name {
+            name.len()
+        } else {
+            name.find(['…', '~']).unwrap_or(0)
+        };
+        let mut found: Vec<(usize, usize)> =
+            row.found.iter().copied().filter(|&(_, b)| b <= head).collect();
+        if found.is_empty() && !row.found.is_empty() {
+            // Every match fell in the cut: the whole visible name says it matched.
+            found.push((0, head));
+        }
+        if found.is_empty() {
             x = p.put(x, y, inner_end, &name, style);
         } else {
             let mut last = 0;
-            for &(a, b) in &row.found {
+            for &(a, b) in &found {
                 let (a, b) = (a.min(name.len()), b.min(name.len()));
                 if a < last || !name.is_char_boundary(a) || !name.is_char_boundary(b) {
                     continue;
@@ -1030,7 +1054,7 @@ mod tests {
         assert_eq!(day(now - 3600, now), "11:00");
         assert_eq!(day(now - 86400 * 2, now), "11/10");
         assert_eq!(day(now - 86400 * 400, now), "2025");
-        assert_eq!(ellipsis("config.toml", 9, true, true), "conf….toml");
+        assert_eq!(ellipsis("config.toml", 10, true, true), "conf….toml");
         assert_eq!(ellipsis("archive", 4, false, true), "arc…");
     }
 

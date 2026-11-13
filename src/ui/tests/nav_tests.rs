@@ -975,24 +975,30 @@ fn help_is_the_table_of_the_screen_below() {
     let text = draw(&a, 120, 40);
     assert!(text.contains("IN A DEVICE"), "{text}");
     assert!(text.contains("b E X") && text.contains("w p t"), "{text}");
+    // Files is yazi's: `~` opens its help, the keymap with the user's prepends first.
     let (mut a, _rx) = file_app();
-    press(&mut a, '?');
+    press(&mut a, '~');
     let text = draw(&a, 120, 40);
     assert!(
-        text.contains("IN FILES") && text.contains("up a folder"),
+        text.contains("mgr.help") && text.contains("Close Files"),
         "{text}"
     );
 }
 
-/// Files' `y` copies the selected path to the clipboard; `c` stays the transfer copy.
+/// Files' `c` opens the which-key panel and `cc` copies the path (OSC 52); `y` yanks
+/// for a paste (a transfer when pasted on another device).
 #[test]
-fn files_y_copies_the_path() {
+fn files_cc_copies_the_path_and_y_yanks() {
     let (mut a, _rx) = file_app();
-    press(&mut a, 'y');
+    press(&mut a, 'c');
+    let text = draw(&a, 120, 40);
+    assert!(text.contains("Copy file path") && text.contains("Copy directory path"), "{text}");
+    press(&mut a, 'c');
     assert_eq!(a.copy_out.take().as_deref(), Some("/files/alpha.txt"));
     assert!(a.clipboard.is_none(), "no transfer copy");
-    press(&mut a, 'c');
+    press(&mut a, 'y');
     assert!(a.clipboard.is_some());
+    assert!(a.copy_out.is_none());
 }
 
 /// An `e` that is not followed by a device letter is dropped, and that key does what

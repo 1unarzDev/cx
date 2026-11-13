@@ -104,12 +104,13 @@ impl P<'_> {
         self.i += 1;
         let mut out = Vec::new();
         while let Some(c) = self.peek() {
+            if c == b'\n' {
+                // Unterminated: the next line is read on its own.
+                return None;
+            }
             self.i += 1;
             if c == quote {
                 return Some(String::from_utf8_lossy(&out).into_owned());
-            }
-            if c == b'\n' {
-                return None;
             }
             if c == b'\\' && quote == b'"' {
                 let e = self.peek()?;

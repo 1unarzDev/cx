@@ -67,8 +67,6 @@ pub enum Tok {
     AccentBg,
     /// Selected row in an unfocused pane (background).
     SelectDimBg,
-    /// Raised surface tint used instead of borders (background).
-    Surface,
     /// A second, stronger surface tint (background).
     Surface2,
     Ok,
@@ -88,7 +86,7 @@ impl Tok {
     pub fn is_bg(self) -> bool {
         matches!(
             self,
-            Tok::AccentBg | Tok::SelectDimBg | Tok::Surface | Tok::Surface2
+            Tok::AccentBg | Tok::SelectDimBg | Tok::Surface2
         )
     }
 }
@@ -117,7 +115,6 @@ fn row(t: Tok) -> Option<Row> {
         Tok::Err => shared(T::Err),
         Tok::Info => shared(T::Info),
         Tok::Id(n) => shared(T::Id(n)),
-        Tok::Surface => Some(((0x1b, 0x1f, 0x25), (0xf3, 0xf4, 0xf6), 234, 255, None)),
         Tok::Surface2 => Some(((0x23, 0x28, 0x30), (0xe6, 0xe9, 0xed), 235, 254, None)),
         Tok::Mesh => Some((
             (0xc4, 0x9c, 0xf0),

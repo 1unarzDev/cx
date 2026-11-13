@@ -209,14 +209,10 @@ impl<'a> Cx<'a> {
             }
         }
     }
-    /// Background tint: token blended into the background. Nothing below 256 colors.
-    pub fn wash(&self, t: Tok, a: f32) -> Style {
-        if self.tc() {
-            let c = mix(self.bg0(), self.rgb(t), a);
-            Style::default().bg(self.col(c).unwrap_or(Color::Reset))
-        } else {
-            Style::default()
-        }
+    /// Background tint: none. Terminals are often transparent, and a painted cell reads
+    /// as a slab over the wallpaper: hierarchy is ink, weight, rules and glyphs.
+    pub fn wash(&self, _t: Tok, _a: f32) -> Style {
+        Style::default()
     }
     pub fn rgb_fg(&self, c: Rgb) -> Style {
         match self.col(c) {
@@ -230,11 +226,12 @@ impl<'a> Cx<'a> {
             None => Style::default(),
         }
     }
+    /// Panels and tiles have no surface of their own (see `wash`).
     pub fn surface(&self) -> Style {
-        self.st(Tok::Surface)
+        Style::default()
     }
     pub fn has_surface(&self) -> bool {
-        self.tc()
+        false
     }
 
     /// Value 0..1 to a calm ok → warn → err ramp.
@@ -360,7 +357,8 @@ impl<'a> Cx<'a> {
         if covered {
             let keep: Vec<LabTarget> = v.drain(from..).filter(|t| ok(t.area)).collect();
             v.extend(keep);
-        } else {
+        } else if cfg!(test) {
+            // (The lab's lint; the app's stderr is the screen.)
             for t in v[from..].iter().filter(|t| !ok(t.area)) {
                 eprintln!("lint touch target {} under 3x7", t.action);
             }
@@ -479,47 +477,14 @@ impl<'a> Cx<'a> {
             self.put(buf, x, y, 3, &format!(" {k} "), st)
         }
     }
+    /// A device letter: bold in the device's hue, no cell behind it.
     pub fn chip_style(&self, hue: u8) -> Style {
-        match self.c.color {
-            ColorLevel::None => Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
-            ColorLevel::C16 => Style::default()
-                .bg(self.c.color(Tok::Id(hue)).unwrap_or(Color::Reset))
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-            _ => {
-                let bg = self.rgb(Tok::Id(hue));
-                let fg = if self.dark() {
-                    self.bg0()
-                } else {
-                    (0xff, 0xff, 0xff)
-                };
-                self.rgb_bg(bg)
-                    .patch(self.rgb_fg(fg))
-                    .add_modifier(Modifier::BOLD)
-            }
-        }
+        self.st(Tok::Id(hue)).add_modifier(Modifier::BOLD)
     }
-    /// Neutral keycap for verbs (` ⏎ `, ` n `).
+    /// Neutral keycap for verbs (` enter `, ` n `): the letter in bold accent ink, no
+    /// cell behind it (the label beside it is muted, so the key leads).
     pub fn key_style(&self) -> Style {
-        match self.c.color {
-            ColorLevel::None => Style::default().add_modifier(Modifier::REVERSED),
-            // A brightblack cell, so keys are coloured cells in every tier (on a light
-            // background a white-gray cell with black text: white on brightblack is
-            // too faint there).
-            ColorLevel::C16 if self.dark() => Style::default()
-                .bg(Color::DarkGray)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-            ColorLevel::C16 => Style::default()
-                .bg(Color::Gray)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-            // A step above the sheet surface, so keys stay cells on panels too.
-            _ => self
-                .rgb_bg(mix(self.rgb(Tok::Surface2), self.rgb(Tok::Fg), 0.1))
-                .patch(self.ink(Tok::Fg, 1.0))
-                .add_modifier(Modifier::BOLD),
-        }
+        self.st(Tok::Accent).add_modifier(Modifier::BOLD)
     }
 
     pub fn status(&self, s: DeviceStatus) -> (&'static str, Style) {

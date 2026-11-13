@@ -2412,22 +2412,10 @@ fn secrets(cx: &Cx, buf: &mut Buffer, r: Rect) {
         }
         let vx = ix + 4;
         if let Some(t) = button {
-            // A solid accent button with a background-coloured label (legible on a
-            // tinted card in both themes).
+            // The one call to action: bold, underlined accent ink (no cell behind it).
             let st = cx
-                .rgb_bg(cx.rgb(Tok::Accent))
-                .patch(cx.rgb_fg(cx.bg0()))
-                .add_modifier(Modifier::BOLD);
-            // 16 colours: a cyan cell with black text, like the root capsule, so the one
-            // call to action never reads as a plain gray keycap.
-            let st = match cx.c.color {
-                _ if cx.has_surface() => st,
-                crate::ui::views::ColorLevel::C16 => Style::default()
-                    .bg(ratatui::style::Color::Cyan)
-                    .fg(ratatui::style::Color::Black)
-                    .add_modifier(Modifier::BOLD),
-                _ => cx.key_style(),
-            };
+                .st(Tok::Accent)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
             let n = cx.put_r(buf, right, y, &t, st);
             cx.hit(
                 Rect::new(right - n, y, n, 1),
@@ -2628,22 +2616,10 @@ fn onboarding(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // Primary action.
     let btn = format!("  {}  Connect Cloudflare  ", cx.ret());
     let bw = super::width(&btn, cx.uni());
-    let bst = if cx.c.has_color() {
-        Style::default()
-            .bg(cx
-                .c
-                .color(Tok::Accent)
-                .unwrap_or(ratatui::style::Color::Reset))
-            .fg(ratatui::style::Color::Black)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
-    };
-    let bst = if cx.tc() {
-        bst.fg(cx.col(cx.bg0()).unwrap_or(ratatui::style::Color::Black))
-    } else {
-        bst
-    };
+    // The primary action: bold, underlined accent ink, no cell behind it.
+    let bst = cx
+        .st(Tok::Accent)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
     cx.put(buf, x0, y, bw, &btn, bst);
     cx.hit(Rect::new(x0, y, bw, 1), "connect-cloudflare");
     // The button's note sits beside it when it fits whole, else on a muted row under
@@ -3235,28 +3211,22 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
             } else {
                 k.to_string()
             };
-            // Every segment has one shape: keycap, a blank cell, the word.
-            let text = format!(" {k}  {label} ");
+            // Every segment has one shape: keycap, a blank cell, the word; the chosen one
+            // sits in brackets, in its colour, bold and underlined (no cell behind it).
+            let text = if on {
+                format!("[{k}  {label}]")
+            } else {
+                format!(" {k}  {label} ")
+            };
             let st = if on {
-                if cx.c.has_color() {
-                    let tok = match val {
-                        Access::Key => Tok::Ok,
-                        Access::Password => Tok::Warn,
-                        Access::Denied => Tok::Err,
-                    };
-                    cx.wash(tok, 0.3)
-                        .patch(cx.st(tok))
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
-                }
+                let tok = match val {
+                    Access::Key => Tok::Ok,
+                    Access::Password => Tok::Warn,
+                    Access::Denied => Tok::Err,
+                };
+                cx.st(tok).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
             } else {
                 cx.ink(Tok::Fg, 0.6)
-            };
-            let st = if on && !cx.has_surface() && cx.c.has_color() {
-                st.add_modifier(Modifier::REVERSED)
-            } else {
-                st
             };
             let n = cx.put(buf, lx, ly, inner.right().saturating_sub(lx), &text, st);
             if !on && n >= 3 {

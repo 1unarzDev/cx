@@ -146,6 +146,7 @@ Guard notation:
 | v0.2.2 | A fresh shell on a loaded host could read `recent: env`; shell_labels_live flaked in the full run | panes start as `exec env … shell`, and a listing in that window recorded `env`; the test typed before Fish drew its prompt | rust:shell_labels_never_include_arguments_or_terminal_controls (`env`), py:shell_labels_live (waits for the prompt) |
 | v0.2.2 | Key pills could paint outside their rounded caps | (new: the only sanctioned background) | rust:pills_are_the_only_background_and_always_capped **NEW** |
 | v0.2.2 | Left closed the new-session chooser (its choices sit in a row) and the agent step | an explicit "Left is back" rule in `dialog_key` dismissed the popup | rust:arrows_move_in_popups_and_only_esc_closes_them **NEW**, py:chooser_arrows_pty **NEW** (red on v0.2.1) |
+| v0.2.2 | The hub key `` ` `` has no key of its own on a 65% keyboard | (user feedback) | rust:hub_letters_open_devices_and_shift_h_returns_from_anywhere, py:grid_keys_pty (Shift+H from Files) |
 
 ## 6. SSH routes, neighbours and transport
 

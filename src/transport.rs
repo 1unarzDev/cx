@@ -1016,8 +1016,8 @@ fn request_once(d: &Device, op: Operation, hover: bool) -> Result<serde_json::Va
         15
     };
     let is_info = matches!(&op, Operation::Info);
-    // A metrics sample is a ~1 ms read on the helper: its round trip on the open bulk
-    // channel is the link's latency, measured without extra traffic.
+    // A metrics sample is a ~1 ms read on the helper: its round trip on the open
+    // capabilities channel is the link's latency, measured without extra traffic.
     let timed = matches!(&op, Operation::Metrics).then(std::time::Instant::now);
     let mut result = exchange(&mut slot, op, response_timeout);
     if let (Some(start), Ok(serde_json::Value::Object(m))) = (timed, result.as_mut()) {
@@ -1063,8 +1063,10 @@ fn channel_key(class: Channel, target: &str) -> String {
 pub(crate) enum Channel {
     /// Screens, keystrokes and the watch: never queued behind anything else.
     Interactive,
+    /// Info, and the hub's 2 s vitals: never ahead of a select, keystroke or attach, and
+    /// never behind a container burst or a transfer.
     Capabilities,
-    /// Containers, transfers and the hub vitals: work that must not delay sessions.
+    /// Containers and transfers: long bursts that must not delay sessions.
     Bulk,
     /// File browsing reads (listings, previews): what the user waits on in Files,
     /// never queued behind a container burst or a transfer's chunks.
@@ -1082,7 +1084,7 @@ pub(crate) fn channel_class(op: &Operation) -> Channel {
         | Operation::CapturePane { .. }
         | Operation::PaneInput { .. }
         | Operation::PaneClose { .. } => Channel::Interactive,
-        Operation::Info => Channel::Capabilities,
+        Operation::Info | Operation::Metrics => Channel::Capabilities,
         Operation::Containers
         | Operation::ContainerInspect { .. }
         | Operation::ContainerFiles { .. }
@@ -1093,9 +1095,7 @@ pub(crate) fn channel_class(op: &Operation) -> Channel {
         | Operation::ReceiveFinalize { .. }
         | Operation::ReceiveSymlink { .. }
         | Operation::Jobs
-        | Operation::TransferJobs
-        // The hub's 2 s vitals: never ahead of a select, keystroke or attach.
-        | Operation::Metrics => Channel::Bulk,
+        | Operation::TransferJobs => Channel::Bulk,
         Operation::List { .. }
         | Operation::ListPage { .. }
         | Operation::Preview { .. }
@@ -2239,8 +2239,9 @@ mod tests {
         };
         assert_eq!(channel_class(&watch), Channel::Interactive);
         assert_eq!(channel_class(&Operation::Containers), Channel::Bulk);
-        // The hub's periodic vitals never queue ahead of a select or an attach.
-        assert_eq!(channel_class(&Operation::Metrics), Channel::Bulk);
+        // The hub's periodic vitals queue neither ahead of a select or an attach nor
+        // behind a container listing or a transfer.
+        assert_eq!(channel_class(&Operation::Metrics), Channel::Capabilities);
         assert_eq!(
             channel_class(&Operation::List { path: "/".into() }),
             Channel::Files

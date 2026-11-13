@@ -1274,7 +1274,7 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
         // File browsing reads have their own lane and helper channel too: a listing
         // never waits for a container burst, a transfer or the startup inventory.
         let files = class == transport::Channel::Files;
-        if matches!(task.op, Operation::Info) {
+        if class == transport::Channel::Capabilities {
             return format!(
                 "capabilities:{}",
                 task.execution.target.as_deref().unwrap_or("<local>")

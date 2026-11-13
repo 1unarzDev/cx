@@ -7086,6 +7086,30 @@ fn yazi_semicolon_panel_closes_on_success_and_colon_stays() {
 }
 
 #[test]
+fn yazi_narrow_linemode_keeps_the_size_and_drops_the_bar_first() {
+    let (mut a, _rx) = file_app();
+    a.browser.as_mut().unwrap().entries[1].size = 4096;
+    let row = |out: &str| {
+        out.lines()
+            .find(|l| l.contains("gamma.txt"))
+            .unwrap_or("")
+            .to_owned()
+    };
+    // 120 cols: the bar and the size.
+    let wide = row(&capture_app(&a, 120));
+    assert!(wide.contains('━') && wide.contains("15B"), "{wide}");
+    // 80 cols (a 40-cell current column): the size, no bar, a gap before it.
+    let mid = row(&capture_app(&a, 80));
+    assert!(
+        !mid.contains('━') && mid.contains("gamma.txt ") && mid.contains("15B"),
+        "{mid}"
+    );
+    // 40 cols: yazi's none.
+    let narrow = row(&capture_app(&a, 40));
+    assert!(!narrow.contains('━') && !narrow.contains("15B"), "{narrow}");
+}
+
+#[test]
 fn yazi_visual_range_is_not_counted_in_the_header() {
     let (mut a, _rx) = file_app();
     press(&mut a, 'v');

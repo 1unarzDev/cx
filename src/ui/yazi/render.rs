@@ -442,7 +442,7 @@ fn linemode(
     size_max: u64,
     now: i64,
     unicode: bool,
-    compact: bool,
+    room: usize,
 ) -> Vec<(String, u8)> {
     // (text, kind): 0 plain, 1 bar filled, 2 bar empty.
     match mode {
@@ -462,6 +462,19 @@ fn linemode(
             .mode
             .map(|m| vec![(perm_string(m, row.dir, row.link), 0)])
             .unwrap_or_default(),
+        // Narrow columns drop the bar first (a bar with no number reads as noise), then
+        // everything (yazi's `none`).
+        Linemode::Bar if room < 24 => Vec::new(),
+        Linemode::Bar if room < 48 => {
+            let mut out = Vec::new();
+            if !row.dir {
+                out.push((format!("{:>5}", readable_size(row.size)), 0));
+                if let Some(m) = row.modified {
+                    out.push((format!(" {:>5}", day(m, now)), 3));
+                }
+            }
+            out
+        }
         Linemode::Bar => {
             let mut out = Vec::new();
             if !row.dir {
@@ -487,10 +500,7 @@ fn linemode(
                 let used = halves.div_ceil(2);
                 out.push((bar, 1));
                 out.push((empty.repeat(cells - used), 2));
-                // A narrow column keeps the bar and the day (the status line has the size).
-                if !compact {
-                    out.push((format!(" {:>5}", readable_size(row.size)), 0));
-                }
+                out.push((format!(" {:>5}", readable_size(row.size)), 0));
             }
             // Folders stay icon + name, as in yazi's default linemode.
             if let Some(m) = row.modified.filter(|_| !row.dir) {
@@ -595,7 +605,7 @@ fn column(
         // The linemode (current column only), right-aligned before the padding.
         let lm = if which == Which::Current {
             let room = inner_end.saturating_sub(x) as usize;
-            linemode(row, mode, col.size_max, now, look.unicode, room < 48)
+            linemode(row, mode, col.size_max, now, look.unicode, room)
         } else {
             Vec::new()
         };

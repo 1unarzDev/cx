@@ -130,6 +130,22 @@ impl App {
             && self.edge_views.is_empty()
             && self.work.iter().all(|w| w.sessions.is_empty())
     }
+    /// The device the hub's map draws selected, when the map is on screen with the keys
+    /// (the animation clock follows it).
+    pub(super) fn map_selection(&self) -> Option<String> {
+        let map = self.view == View::Network
+            && !self.hub_sessions
+            && !self.onboarding()
+            && !self.help
+            && self.invite.is_none()
+            && self.edge.is_none()
+            && !self.peek;
+        map.then(|| {
+            self.hub_device
+                .clone()
+                .unwrap_or_else(|| dev_id(self.local_index()))
+        })
+    }
     // ------------------------------------------------------------------ navigation
 
     /// The hub, with the network zone and this device selected (`` ` ``, Esc Esc, `cx`).
@@ -238,6 +254,23 @@ impl App {
             format!("session:{d}:{}", workspaces::runtime_key(&s))
         };
         let kind = if graph { "device:" } else { "session:" };
+        // The map works its moves out from what it drew (`views::mission::spatial`).
+        if graph {
+            let moves = self.moves.borrow();
+            if let Some((_, m)) = moves.iter().find(|(id, _)| *id == current) {
+                let dir = match (dx.signum(), dy.signum()) {
+                    (-1, _) => 0,
+                    (1, _) => 1,
+                    (_, -1) => 2,
+                    _ => 3,
+                };
+                let Some(to) = m[dir].as_deref() else {
+                    return Some(false);
+                };
+                self.hub_device = to.strip_prefix("device:").map(str::to_string);
+                return Some(true);
+            }
+        }
         let nav = self.nav.borrow().clone();
         let from = nav.iter().find(|(_, a)| *a == current).map(|(r, _)| *r)?;
         // Centres in half cells; an item counts when it lies past the selection's edge

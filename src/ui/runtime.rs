@@ -473,6 +473,9 @@ pub(super) fn loop_wait(app: &App, now: Instant, frame_wait: Option<Duration>) -
     if let Some(frame_wait) = frame_wait {
         wait = wait.min(frame_wait);
     }
+    if let Some(next) = app.motion.wait(now) {
+        wait = wait.min(next);
+    }
     for deadline in [app.press_deadline()].into_iter().flatten() {
         wait = wait.min(deadline.saturating_duration_since(now));
     }
@@ -1345,6 +1348,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     });
     let mut last_inventory_check = Instant::now();
     let mut app = App::new(devices, tx);
+    app.motion = super::motion::Clock::for_terminal();
     load_cache(&mut app);
     app.pins = store::session_pins().unwrap_or_default();
     if let Ok(Some(cache)) =
@@ -1850,6 +1854,10 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             prewarmed = focus;
         }
         let now = Instant::now();
+        // The map's transition: started by a new selection, drawn until it settles.
+        let sel = app.map_selection();
+        app.motion.track(sel.as_deref(), now);
+        dirty |= app.motion.animating(now);
         dirty |= app.tick_press(now);
         dirty |= app.files_tick(now);
         // Coalesce bursts (key repeat, reply floods) to at most ~60 fps.

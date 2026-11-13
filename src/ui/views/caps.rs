@@ -42,6 +42,33 @@ pub struct LabCaps {
     pub frame: u32,
     /// Key chips as rounded pills (powerline caps the terminal draws; see ui::caps).
     pub pills: bool,
+    /// The hub map's transition in progress (`ui::motion`); settled by default.
+    pub motion: Motion,
+}
+
+/// A map transition the view draws part-way: the highlight gliding from the previous
+/// selection, clusters blooming and folding, nodes fading. The app's clock sets it
+/// only while something changes; the state itself is always final (input never waits).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Motion {
+    /// The selection the highlight leaves (index into `LabState::devices`).
+    pub from: Option<u16>,
+    /// Progress in thousandths, already eased (1000 or no `from`: settled).
+    pub t: u16,
+}
+
+impl Motion {
+    /// Progress 0..=1 (1 when nothing moves).
+    pub fn at(&self) -> f32 {
+        if self.from.is_none() {
+            1.0
+        } else {
+            f32::from(self.t.min(1000)) / 1000.0
+        }
+    }
+    pub fn moving(&self) -> bool {
+        self.from.is_some() && self.t < 1000
+    }
 }
 
 impl Default for LabCaps {
@@ -55,6 +82,7 @@ impl Default for LabCaps {
             hover: None,
             frame: 0,
             pills: false,
+            motion: Motion::default(),
         }
     }
 }

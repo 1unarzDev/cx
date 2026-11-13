@@ -53,6 +53,11 @@ impl From<&App> for ViewModel {
             palette: (app.input == Some(Input::Palette)).then(|| palette(app)),
         };
         let view = screen(app, &state, &mut caps);
+        if view == LabView::Hub && caps.focus == Some(Pane::Graph) {
+            caps.motion = app.motion.motion(std::time::Instant::now(), |id| {
+                state.devices.iter().position(|d| d.id == id)
+            });
+        }
         ViewModel {
             view,
             palette: (app.input == Some(Input::Palette)).then(|| app.text.clone()),

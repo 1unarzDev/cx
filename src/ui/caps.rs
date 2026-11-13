@@ -310,7 +310,8 @@ fn query_osc11(limit: Duration) -> Option<Background> {
     if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } != 0 {
         return None;
     }
-    let deadline = Instant::now() + limit;
+    let started = Instant::now();
+    let deadline = started + limit;
     let mut reply = Vec::new();
     let mut answered = false;
     if std::io::Write::write_all(&mut tty, b"\x1b]11;?\x07\x1b[c").is_ok() {
@@ -338,6 +339,8 @@ fn query_osc11(limit: Duration) -> Option<Background> {
             }
             if da1_complete(&reply) {
                 answered = true;
+                let ms = started.elapsed().as_millis().min(u128::from(u32::MAX - 1)) as u32;
+                TERMINAL_RTT_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
                 break;
             }
         }
@@ -346,11 +349,24 @@ fn query_osc11(limit: Duration) -> Option<Background> {
         libc::tcsetattr(fd, libc::TCSANOW, &saved);
     }
     if !answered {
+        // (No reply within the limit: at least that slow.)
+        let ms = limit.as_millis().min(u128::from(u32::MAX - 2)) as u32 + 1;
+        TERMINAL_RTT_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
         if let Ok(mut guard) = STRAY_REPLY.lock() {
             *guard = Some((Instant::now() + STRAY_WINDOW, false, 0));
         }
     }
     osc11_reply_background(&reply)
+}
+
+/// The terminal's round trip as the startup query measured it (u32::MAX: unknown).
+static TERMINAL_RTT_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// The terminal's measured round trip in milliseconds, when the startup query was
+/// answered (a terminal reached over a slow link answers late).
+pub(crate) fn terminal_rtt_ms() -> Option<u32> {
+    let v = TERMINAL_RTT_MS.load(std::sync::atomic::Ordering::Relaxed);
+    (v != u32::MAX).then_some(v)
 }
 
 /// True once `bytes` holds a complete DA1 reply (`ESC [ ? ... c`).

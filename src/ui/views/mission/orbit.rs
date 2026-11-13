@@ -18,13 +18,11 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
 };
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 
 /// What the map highlights.
 #[derive(Clone, Copy)]
 pub(super) enum Sel<'a> {
-    /// A device; `true` when the map has keyboard focus.
-    Node(&'a str, bool),
     /// One link (the edge editor): drawn bright, everything else fades.
     Edge(&'a str),
     /// Every link of the root lit; letters are plain labels (inside a device, letters
@@ -43,12 +41,12 @@ enum Mode {
     Name,
 }
 
-struct Node<'a> {
-    d: &'a LabDevice,
-    hop: u8,
+pub(super) struct Node<'a> {
+    pub(super) d: &'a LabDevice,
+    pub(super) hop: u8,
     /// The link to its parent (None for devices with no routed link).
-    up: Option<&'a LabEdge>,
-    parent: Option<usize>,
+    pub(super) up: Option<&'a LabEdge>,
+    pub(super) parent: Option<usize>,
     /// Right of the root (1) or left (-1).
     side: i32,
     label: Rect,
@@ -178,7 +176,7 @@ pub(super) fn policy(cx: &Cx, e: &LabEdge, from_left: bool, short: bool) -> Stri
     }
 }
 
-fn closed(e: &LabEdge) -> bool {
+pub(super) fn closed(e: &LabEdge) -> bool {
     e.forward == Access::Denied && e.reverse == Access::Denied
 }
 
@@ -206,7 +204,7 @@ fn pattern(e: &LabEdge) -> Pat {
 
 /// Spanning tree from `root` over routed links, breadth first, up to `depth` hops.
 /// On the hub (depth 3) devices with no routed link join the first column unlinked.
-fn tree<'a>(cx: &Cx<'a>, root: &str, depth: usize) -> Vec<Node<'a>> {
+pub(super) fn tree<'a>(cx: &Cx<'a>, root: &str, depth: usize) -> Vec<Node<'a>> {
     let s = cx.s;
     let idx = |id: &str| s.devices.iter().position(|d| d.id == id).unwrap_or(0);
     let group = |id: &str| {
@@ -274,7 +272,7 @@ fn tree<'a>(cx: &Cx<'a>, root: &str, depth: usize) -> Vec<Node<'a>> {
 }
 
 /// The name, with a keycap in front when the hotkey letter is not in it.
-fn has_letter(d: &LabDevice) -> Option<usize> {
+pub(super) fn has_letter(d: &LabDevice) -> Option<usize> {
     d.name
         .chars()
         .position(|c| c.eq_ignore_ascii_case(&d.hotkey))
@@ -308,7 +306,7 @@ fn plan<'a>(
     keys_only: bool,
     sel: Sel,
 ) -> Plan<'a> {
-    let keys = matches!(sel, Sel::Node(..) | Sel::Targets);
+    let keys = matches!(sel, Sel::Targets);
     // The ladder, richest first: the drawing takes the most air its area allows (rows
     // three apart only with whole names, then two, then one), then shorter names, then
     // bare keycaps. Within each, the orbit's arc before a flat column, and the widest
@@ -890,27 +888,6 @@ pub(super) fn height(cx: &Cx, band: Rect, root: &str, depth: usize, sel: Sel) ->
 /// The most rows a hub map uses.
 pub(super) const MAX_H: u16 = 27;
 
-/// Device ids in selection order: the root first (launch focus, so `⏎` opens this
-/// device), then hop by hop, clockwise from the top.
-pub(super) fn order(cx: &Cx, band: Rect) -> Vec<String> {
-    let root = cx.s.viewer.as_str();
-    let p = plan(cx, band, root, 3, cx.touch(), Sel::Node("", false));
-    let c = centre(p.pill);
-    let clock = |r: Rect| {
-        let q = centre(r);
-        (((q.1 - c.1) * 2.0).atan2(q.0 - c.0) + PI / 2.0).rem_euclid(TAU)
-    };
-    let mut v: Vec<&Node> = p.nodes.iter().filter(|n| n.shown).collect();
-    v.sort_by(|a, b| {
-        (a.hop, clock(a.label))
-            .partial_cmp(&(b.hop, clock(b.label)))
-            .unwrap()
-    });
-    std::iter::once(root.to_string())
-        .chain(v.into_iter().map(|n| n.d.id.clone()))
-        .collect()
-}
-
 /// One row of the phone's device tree.
 pub(super) struct TreeRow<'a> {
     pub d: &'a LabDevice,
@@ -1205,13 +1182,6 @@ fn arrow_at(cx: &Cx, pts: &[(i32, i32)], t: f32, toward_end: bool) -> &'static s
     }
 }
 
-fn centre(r: Rect) -> (f32, f32) {
-    (
-        f32::from(r.x) + f32::from(r.width) / 2.0,
-        f32::from(r.y) + 0.5,
-    )
-}
-
 // ------------------------------------------------------------------------- draw
 
 /// Draw the network seen from `root` (columns up to `depth` hops) into `band`. Phones
@@ -1251,20 +1221,6 @@ pub(super) fn draw_with(
     }
     let p = plan(cx, band, root, depth, keys_only, sel);
     let mark = cx.hit_mark();
-    let idx = |id: &str| p.nodes.iter().position(|n| n.d.id == id);
-    // The selection's route back to the root lights up.
-    let mut route: Vec<usize> = Vec::new();
-    if let Sel::Node(id, _) = sel {
-        let mut cur = idx(id);
-        while let Some(i) = cur {
-            route.push(i);
-            cur = p.nodes[i].parent;
-        }
-    }
-    let sel_id = match sel {
-        Sel::Node(id, _) => Some(id),
-        _ => None,
-    };
     let fade_all = matches!(sel, Sel::Edge(_));
 
     // Links: each device hangs from its relay (or the root) by stub, trunk and branch.
@@ -1294,7 +1250,7 @@ pub(super) fn draw_with(
             i32::from(m.label.right()) + 2
         }
     };
-    for (k, n) in p.nodes.iter().enumerate() {
+    for n in p.nodes.iter() {
         let (Some(e), true) = (n.up, n.shown) else {
             continue;
         };
@@ -1308,7 +1264,6 @@ pub(super) fn draw_with(
         };
         let s = n.side;
         let lit = match sel {
-            Sel::Node(id, _) => route.contains(&k) || id == pid,
             Sel::Edge(id) => e.id == id,
             Sel::Root | Sel::Targets => n.parent.is_none(),
         };
@@ -1576,10 +1531,8 @@ pub(super) fn draw_with(
         }
     }
     // Nodes. Letters are keys on the hub and in the send-to picker only.
-    let keys = matches!(sel, Sel::Node(..) | Sel::Targets);
+    let keys = matches!(sel, Sel::Targets);
     for n in p.nodes.iter().filter(|n| n.shown) {
-        let hot = sel_id == Some(n.d.id.as_str());
-        let focus = matches!(sel, Sel::Node(_, true));
         let edge_end = match sel {
             Sel::Edge(id) => {
                 cx.s.edge(id)
@@ -1587,28 +1540,9 @@ pub(super) fn draw_with(
             }
             _ => false,
         };
-        node(
-            cx,
-            buf,
-            &p,
-            n,
-            hot.then_some(focus),
-            keys,
-            fade_all && !edge_end,
-        );
+        node(cx, buf, &p, n, None, keys, fade_all && !edge_end);
     }
-    pill(
-        cx,
-        buf,
-        &p,
-        root,
-        match sel {
-            Sel::Node(id, f) if id == root => Some(f),
-            _ => None,
-        },
-        keys,
-        fade_all,
-    );
+    pill(cx, buf, &p, root, None, keys, fade_all);
     if p.hidden > 0 {
         let t = format!("+{} more", p.hidden);
         let w = super::width(&t, cx.uni());
@@ -1617,7 +1551,7 @@ pub(super) fn draw_with(
         cx.put(buf, x, y, w, &t, cx.st(Tok::Muted));
         cx.hit(Rect::new(x, y, w, 1), "palette:devices");
     }
-    cx.unclash(mark, matches!(sel, Sel::Node(..)));
+    cx.unclash(mark, false);
 }
 
 /// A mesh the root is not in, drawn as one group: a quiet wash of its hue behind its
@@ -1772,7 +1706,7 @@ fn node(cx: &Cx, buf: &mut Buffer, p: &Plan, n: &Node, pick: Option<bool>, keys:
     }
 }
 
-fn name_w(cx: &Cx, d: &LabDevice, nmax: usize, keys: bool) -> u16 {
+pub(super) fn name_w(cx: &Cx, d: &LabDevice, nmax: usize, keys: bool) -> u16 {
     let nm = fit(&d.name, nmax, cx.uni());
     let at = has_letter(d).filter(|&i| i + 1 < nm.chars().count() || nm == d.name);
     super::width(&nm, cx.uni())

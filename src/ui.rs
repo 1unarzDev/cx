@@ -47,6 +47,7 @@ mod keys;
 #[cfg(test)]
 mod lab;
 mod launch;
+mod motion;
 mod screens;
 mod viewmodel;
 mod views;
@@ -652,6 +653,10 @@ struct App {
     hub_order: std::cell::RefCell<Vec<String>>,
     /// Where the last frame drew each map node and session tile (`views::mission::Drawn::nav`).
     nav: std::cell::RefCell<Vec<(Rect, String)>>,
+    /// The map's arrow moves the last frame worked out (`views::mission::Drawn::moves`).
+    moves: std::cell::RefCell<Vec<(String, [Option<String>; 4])>>,
+    /// The hub map's animation clock (`motion`).
+    motion: motion::Clock,
     /// Device letters (`hotkeys::assign`), by device id.
     hotkeys: std::cell::RefCell<BTreeMap<String, char>>,
     /// `␣`: the selected session's peek.
@@ -828,6 +833,8 @@ impl App {
             hub_sessions: false,
             hub_order: Default::default(),
             nav: Default::default(),
+            moves: Default::default(),
+            motion: Default::default(),
             hotkeys: Default::default(),
             peek: false,
             stop_armed: None,

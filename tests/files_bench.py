@@ -33,6 +33,7 @@ import statistics, subprocess, sys, tempfile, time, uuid
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import perf_harness as ph  # noqa: E402  (PTY plumbing, Env cleanup, fixture text)
+import pty_lib  # noqa: E402
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent
@@ -553,7 +554,8 @@ class Viewer(ph.Viewer):
     def has_row(self, name):
         display = self.screen.display
         if self.yazi(display):
-            return any(re.search(r'(?:^|\s)' + re.escape(name) + r'(?:\s|$)', line)
+            # The hovered row reads `▌name` without the pill caps (`>` in ASCII).
+            return any(re.search(r'(?:^|[\s▌>])' + re.escape(name) + r'(?:\s|$)', line)
                        for line in self.columns(display)[1])
         work = display if self.hub_layout(display) else [line[21:] for line in display]
         return any(re.search(r'(?:▸ |\s)' + re.escape(name) + r'/?(?:\s|$)', line) for line in work[1:-1])
@@ -661,6 +663,64 @@ def scenario_startup(binary, fx, side, device_index, ssh, tag, res, run):
             res.notes.append(f'run {run} {side} startup {what}: {error}')
         finally:
             res.details.setdefault('cleanup', []).append(env.cleanup())
+
+
+def full_frame(screen, letter):
+    """A complete Files frame: header, the current column's rows and the status line
+    (yazi's layout, which cx's Files clones), and no Loading text."""
+    display = screen.display
+    if not re.match(r'^\W?\s*(?:NOR|SEL|UNS) ', display[-1]) or not display[0].strip():
+        return False
+    w = len(display[0])
+    current = [line[w // 8:w * 5 // 8] for line in display[1:-1]]
+    return any(f'{letter}-000000' in line for line in current) and 'Loading' not in ''.join(current)
+
+
+def scenario_firstframe(binary, fx, side, device_index, ssh, tag, res, run):
+    """Spawn -> first complete frame (header, columns with rows, status line) for yazi and cx
+    on the same folder, cold then warm (a second spawn right after). Remote: yazi runs on
+    the fixture host over `ssh -tt` (what "yazi over SSH" means); cx runs here and lists
+    the folder through its helper. Both pay the SSH connect. yazi runs with a private
+    HOME (its built-in config), never the user's."""
+    if not shutil.which('yazi'):
+        res.notes.append('firstframe: yazi not installed') if run == 0 else None
+        return
+    for n in [x for x in (1000, 100000) if x in fx.sizes]:
+        folder = fx.dirs[n] / 'big'
+        for tool in ('yazi', 'cx'):
+            env = BenchEnv(binary, tag, ssh)
+            try:
+                for temp in ('cold', 'warm'):
+                    t0 = time.monotonic()
+                    if tool == 'cx':
+                        v = Viewer(env, device_index, folder, None)
+                        screen, read = v.screen, v._read
+                        closer = v.close
+                    else:
+                        cmd = f'exec env HOME={shlex.quote(str(env.root))} TERM=xterm-256color yazi {shlex.quote(str(folder))}'
+                        argv = ([shutil.which('ssh'), '-tt', '-F', str(ssh.root / 'client.conf'), 'fixture', cmd]
+                                if ssh else ['sh', '-c', cmd])
+                        pty_ = pty_lib.Pty(argv, env.env, env.root, ph.COLS, ph.ROWS)
+                        screen = pty_.screen
+
+                        def read(timeout, pty_=pty_):
+                            return pty_.read(timeout) is not None
+                        closer = lambda pty_=pty_: pty_.close(quit_key=b'q')  # noqa: E731
+                    t = None
+                    end = t0 + 30
+                    try:
+                        while time.monotonic() < end:
+                            if read(min(.5, end - time.monotonic())) and full_frame(screen, 'b'):
+                                t = time.monotonic()
+                                break
+                    finally:
+                        closer()
+                    if t is None:
+                        res.notes.append(f'run {run} {side} firstframe {tool} {n} {temp}: no full frame in 30 s')
+                    else:
+                        res.add(f'{side}.firstframe.{n}.{tool}.{temp}_ms', ms(t0, t))
+            finally:
+                res.details.setdefault('cleanup', []).append(env.cleanup())
 
 
 # ---------------------------------------------------------------------------
@@ -1140,6 +1200,16 @@ def markdown(report):
             out.append(f"| {side} | {cell(side + '.startup.viewer_ready_ms')} | "
                        f"{cell(side + '.startup.preview_src_2k_first_paint_ms')} | {cell(d + '_ms') if d else '-'} |")
         out.append('')
+    if present('local.firstframe') or present('remote.firstframe'):
+        out += ['## Spawn -> first complete frame, yazi vs cx (remote: `ssh -tt host yazi` vs cx here)', '',
+                '| Side | Entries | yazi cold | yazi warm | cx cold | cx warm |', '|---|---|---|---|---|---|']
+        for side in sides:
+            for n in report['sizes']:
+                b = f'{side}.firstframe.{n}'
+                if present(b):
+                    out.append(f'| {side} | {n} | ' + ' | '.join(
+                        cell(f'{b}.{tool}.{temp}_ms') for tool in ('yazi', 'cx') for temp in ('cold', 'warm')) + ' |')
+        out.append('')
     out += ['## Directory open (Enter -> ...)', '',
             '| Side | Entries | Case | First rows | Usable (j moves) | Full count | Final count |',
             '|---|---|---|---|---|---|---|']
@@ -1221,7 +1291,7 @@ def main():
     parser.add_argument('--label', default='run')
     parser.add_argument('--rtt', type=float, default=0.0, help='added round-trip ms for --remote (relay)')
     parser.add_argument('--oplog', help='diagnostic: log remote helper ops (names, sizes, helper ms) to FILE')
-    parser.add_argument('--only', default='', help='comma list of startup,dirs,deep,previews,scroll,helper')
+    parser.add_argument('--only', default='', help='comma list of startup,dirs,deep,previews,scroll,helper,nav,firstframe')
     parser.add_argument('--files', default='', help='comma list of preview fixture keys (default all)')
     parser.add_argument('--sides', default='local,remote', help='comma list: local,remote')
     parser.add_argument('--sizes', default=','.join(map(str, SIZES)))
@@ -1235,7 +1305,7 @@ def main():
     for key in ('TMUX', 'TMUX_PANE'):
         os.environ.pop(key, None)
     only = {s for s in args.only.split(',') if s} or {'startup', 'dirs', 'deep', 'previews', 'scroll', 'helper',
-                                                      'nav'}
+                                                      'nav', 'firstframe'}
     sizes = tuple(int(s) for s in args.sizes.split(',') if s)
     tag = uuid.uuid4().hex
     res = Results()
@@ -1287,6 +1357,8 @@ def main():
                     scenario_previews(binary, fx, side, index, remote, tag, res, run, line_maps)
                 if 'scroll' in only:
                     scenario_scroll(binary, fx, side, index, remote, tag, res, run)
+                if 'firstframe' in only:
+                    scenario_firstframe(binary, fx, side, index, remote, tag, res, run)
                 if 'nav' in only:
                     scenario_nav(binary, fx, side, index, remote, tag, res, run)
                 print(f'run {run + 1}/{args.runs} {side} done at {time.monotonic() - started:.0f}s', file=sys.stderr)

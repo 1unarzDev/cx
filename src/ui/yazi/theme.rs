@@ -295,7 +295,7 @@ impl Theme {
         Theme {
             from_user: false,
             overall: Style::default(),
-            cwd: fg(Color::Indexed(6)),
+            cwd: fg(Color::Cyan),
             find_keyword: fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD | Modifier::ITALIC | Modifier::UNDERLINED),
             find_position: fg(Color::Magenta).add_modifier(Modifier::BOLD | Modifier::ITALIC),
@@ -308,9 +308,9 @@ impl Theme {
             count_selected: fg(Color::LightYellow),
             border: fg(Color::DarkGray),
             border_symbol: "│".into(),
-            tab_active: fg(Color::Indexed(4)).add_modifier(Modifier::BOLD | Modifier::REVERSED),
-            tab_inactive: fg(Color::Indexed(4)),
-            normal: mode(Color::Indexed(4)),
+            tab_active: fg(Color::Blue).add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            tab_inactive: fg(Color::Blue),
+            normal: mode(Color::Blue),
             select: mode(Color::Red),
             unset: mode(Color::Red),
             hovered: rev,
@@ -321,35 +321,35 @@ impl Theme {
             perm_type: fg(Color::Green),
             perm_read: fg(Color::Yellow),
             perm_write: fg(Color::Red),
-            perm_exec: fg(Color::Indexed(6)),
+            perm_exec: fg(Color::Cyan),
             progress: fg(Color::Green),
             progress_error: fg(Color::Red),
-            which_border: fg(Color::Indexed(4)),
+            which_border: fg(Color::Blue),
             which_cols: 3,
             which_cand: fg(Color::LightCyan),
             which_rest: fg(Color::DarkGray),
             which_desc: fg(Color::LightMagenta),
             which_sep: "  ".into(),
             which_sep_style: fg(Color::DarkGray),
-            confirm_border: fg(Color::Indexed(4)),
-            confirm_title: fg(Color::Indexed(4)),
+            confirm_border: fg(Color::Blue),
+            confirm_title: fg(Color::Blue),
             confirm_body: Style::default(),
             btn_yes: rev,
             btn_no: Style::default(),
             btn_labels: ("  [Y]es  ".into(), "  (N)o  ".into()),
-            input_border: fg(Color::Indexed(4)),
+            input_border: fg(Color::Blue),
             input_title: Style::default(),
             input_value: Style::default(),
-            help_border: fg(Color::Indexed(4)),
-            help_on: fg(Color::Indexed(6)),
+            help_border: fg(Color::Blue),
+            help_on: fg(Color::Cyan),
             help_hovered: rev.add_modifier(Modifier::BOLD),
             filetype: [
                 (None, Some("image"), None, fg(Color::Yellow)),
                 (None, Some("media"), None, fg(Color::Magenta)),
                 (None, Some("archive"), None, fg(Color::Red)),
-                (None, Some("document"), None, fg(Color::Indexed(6))),
+                (None, Some("document"), None, fg(Color::Cyan)),
                 (Some("*"), None, Some(Is::Exec), fg(Color::Green)),
-                (Some("*/"), None, None, fg(Color::Indexed(4))),
+                (Some("*/"), None, None, fg(Color::Blue)),
             ]
             .into_iter()
             .map(|(url, mime, is, style)| FileRule {
@@ -677,6 +677,6 @@ conds = [
             dir: true,
             ..Facts::default()
         };
-        assert_eq!(t.file_style("x", &dir).fg, Some(Color::Indexed(4)));
+        assert_eq!(t.file_style("x", &dir).fg, Some(Color::Blue));
     }
 }

@@ -1862,3 +1862,31 @@ fn arrows_move_in_popups_and_only_esc_closes_them() {
     arrow(&mut a, KeyCode::Left);
     assert!(matches!(a.dialog, Some(Dialog::Peer(1))) && a.dialog_selected == 3);
 }
+/// The find palette and the link editor are rounded overlays (`╭╮╰╯`), like every other
+/// frame: never a square corner, at phone, half and full sizes.
+#[test]
+fn the_palette_and_the_link_editor_have_rounded_corners() {
+    let mut a = viewmodel::tests::hub_app();
+    let square = ['┌', '┐', '└', '┘'];
+    for (w, h) in [
+        (40u16, 20u16),
+        (80, 24),
+        (80, 48),
+        (95, 50),
+        (120, 40),
+        (190, 50),
+    ] {
+        a.go_hub();
+        a.open_palette("");
+        let t = draw(&a, w, h);
+        assert!(t.contains('╭') && t.contains('╯'), "palette {w}x{h}:\n{t}");
+        assert!(!t.contains(square), "palette {w}x{h}:\n{t}");
+        a.input = None;
+        a.text.clear();
+        a.view_action("edge:1-2");
+        let t = draw(&a, w, h);
+        assert!(a.edge.is_some() && t.contains('╭'), "link {w}x{h}:\n{t}");
+        assert!(!t.contains(square), "link {w}x{h}:\n{t}");
+        a.edge = None;
+    }
+}

@@ -1,8 +1,9 @@
 //! What the hub shows live about each device beyond its sessions, all in memory:
 //! - vitals: `Operation::Metrics` every 2 s for the devices on screen (helpers with
 //!   `metrics-v1`; older ones show none), cpu from successive jiffies samples;
-//! - link: the round trip of each metrics request on the warm channel (transport adds
-//!   `rtt_ms`), a failed one counting as lost; no traffic of its own;
+//! - link: the round trip of each metrics request on the bulk channel, never the
+//!   interactive one (transport adds `rtt_ms`), a failed one counting as lost; no
+//!   traffic of its own;
 //! - topology: mesh membership from the mesh backends and the lan neighbour table,
 //!   observed off the UI thread every few minutes (`observe_topology`), never blocking.
 use super::views::{self, MeshBackend};

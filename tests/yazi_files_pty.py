@@ -160,6 +160,34 @@ def local_flows():
         env.cleanup()
 
 
+def bitmap_size(name, raw):
+    """The pixel size of the bitmap a protocol sent: kitty's PNG (IHDR), sixel's raster
+    attributes, iTerm2's decoded file."""
+    import base64
+    import struct as st
+    if 'kitty' in name:
+        data = raw.replace(b'\x1b\x1b', b'\x1b')
+        chunks, on = [], False
+        for keys, payload in re.findall(rb'\x1b_G([^;\x1b]*);([A-Za-z0-9+/=]*)\x1b\\', data):
+            if b'a=T' in keys and b'f=100' in keys:
+                chunks, on = [], True
+            if on:
+                chunks.append(payload)
+                if b'm=0' in keys:
+                    break
+        png = base64.b64decode(b''.join(chunks)) if chunks else b''
+        return st.unpack('>II', png[16:24]) if png[:8] == b'\x89PNG\r\n\x1a\n' else None
+    if 'sixel' in name:
+        m = re.search(rb'\x1bP[0-9;]*q"1;1;(\d+);(\d+)', raw)
+        return (int(m.group(1)), int(m.group(2))) if m else None
+    m = re.search(rb'\x1b\]1337;File=[^:]*:([A-Za-z0-9+/=]+)', raw)
+    if not m:
+        return None
+    from PIL import Image
+    import io
+    return Image.open(io.BytesIO(base64.b64decode(m.group(1)))).size
+
+
 def image_flows():
     """Escape sequences of each protocol for a hovered image (preview column), picked from
     the environment or from the terminal's answers to the startup probe."""
@@ -217,12 +245,32 @@ def image_flows():
                 deadline = time.monotonic() + 8
                 while time.monotonic() < deadline and not re.search(pattern, bytes(r.raw)):
                     r.settle(.2)
+                r.settle(.5)
                 raw = bytes(r.raw)
                 ok = re.search(pattern, raw) is not None
                 if 'kitty' in name:
                     # Placeholder cells draw it (they also survive tmux).
                     ok = ok and '\U0010EEEE'.encode() in raw
                 check(f'image_{name}', ok, raw[-300:])
+                # Sharp: the bitmap sent is the preview's pixel box (10x20 px cells here),
+                # fitted to the 640x480 photo: no upscaling, no thumbnail stretched.
+                size = bitmap_size(name, raw)
+                cols = len(r.lines()[0]) * 3 // 8 - 1
+                rows = len(r.lines()) - 2
+                box = (cols * 10, rows * 20)
+                fit = min(box[0] / 640, box[1] / 480, 1)
+                want = (int(640 * fit), int(480 * fit))
+                check(f'image_{name}_pixels', size is not None and abs(size[0] - want[0]) <= 10
+                      and abs(size[1] - want[1]) <= 20, (size, want))
+                results[f'image_{name}_px'] = list(size) if size else None
+                # Leaving the image (h: the parent) erases it: no placeholder left on the
+                # screen (kitty), the occupied cells cleared (sixel, iTerm2).
+                mark = len(r.raw)
+                r.key(b'h', .6)
+                after = bytes(r.raw[mark:])
+                gone = ('\U0010EEEE' not in r.text() if 'kitty' in name
+                        else re.search(rb'\x1b7(?:\x1b\[\d+;\d+H\x1b\[\d+X)+\x1b8', after) is not None)
+                check(f'image_{name}_erased', gone, after[-300:])
             finally:
                 r.close()
         finally:

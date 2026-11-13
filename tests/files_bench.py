@@ -698,23 +698,25 @@ def scenario_nav(binary, fx, side, device_index, ssh, tag, res, run):
             res.add(f'{base}.enter_after_hover_ms', ms(t0, t))
         finally:
             res.details.setdefault('viewer_close', []).append(viewer.close())
-        # Hover previews of text files: cold, then moving back (kept in memory).
-        two, other = fx.files['src_2k'], fx.files['src_200k']
-        viewer = open_viewer(env, device_index, other['path'].parent, other['path'],
-                             lambda v: v.selected() == other['path'].name)
+        # Hover previews of text files: cold, then moving back (kept in memory). Two
+        # files with distinct first lines (the preview just left stays, dimmed, meanwhile).
+        pair = fx.root / 'hover'
+        pair.mkdir(exist_ok=True)
+        first, second = pair / 'a-first.rs', pair / 'b-second.rs'
+        first.write_text('// alpha hover probe\n' + source_text(4096))
+        second.write_text('// bravo hover probe\n' + source_text(4096))
+        viewer = open_viewer(env, device_index, pair, first, lambda v: v.selected() == first.name)
         try:
-            viewer.until(lambda: preview_has(viewer, other['probe']), timeout=30, what='first hover preview')
+            viewer.until(lambda: preview_has(viewer, 'alpha hover probe'), timeout=30, what='first hover preview')
             viewer.quiesce(.3, 3)
-            down = b'j' if sorted([two['path'].name.lower(), other['path'].name.lower()])[0] == other['path'].name.lower() else b'k'
-            back = b'k' if down == b'j' else b'j'
-            t0 = viewer.write_at(down)
-            viewer.until(lambda: viewer.selected() == two['path'].name, what='hover src_2k')
-            t = viewer.until(lambda: preview_has(viewer, two['probe']), timeout=30, what='hover preview cold')
+            t0 = viewer.write_at(b'j')
+            viewer.until(lambda: viewer.selected() == second.name, what='hover second')
+            t = viewer.until(lambda: preview_has(viewer, 'bravo hover probe'), timeout=30, what='hover preview cold')
             res.add(f'{base}.hover_preview_cold_ms', ms(t0, t))
             viewer.quiesce(.3, 3)
-            t0 = viewer.write_at(back)
-            viewer.until(lambda: viewer.selected() == other['path'].name, what='hover back')
-            t = viewer.until(lambda: preview_has(viewer, other['probe']), timeout=30, what='hover preview warm')
+            t0 = viewer.write_at(b'k')
+            viewer.until(lambda: viewer.selected() == first.name, what='hover back')
+            t = viewer.until(lambda: preview_has(viewer, 'alpha hover probe'), timeout=30, what='hover preview warm')
             res.add(f'{base}.hover_preview_warm_ms', ms(t0, t))
         finally:
             res.details.setdefault('viewer_close', []).append(viewer.close())
@@ -1260,7 +1262,7 @@ def main():
         sides = [(n, i) for n, i in [('local', 0)] + ([('remote', 1)] if ssh else []) if n in wanted]
         if args.files:
             keep = set(args.files.split(','))
-            fx.files = {k: v for k, v in fx.files.items() if k in keep or k in ('src_5m', 'md_2m', 'src_200k', 'png', 'jpeg')}
+            fx.files = {k: v for k, v in fx.files.items() if k in keep or k in ('src_5m', 'md_2m', 'src_200k', 'src_2k', 'png', 'jpeg')}
             fx.preview_keys = [k for k in fx.files if k in keep]
         for run in range(args.runs):
             for side, index in sides:

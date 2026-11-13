@@ -81,6 +81,8 @@ impl App {
     /// prefetch a folder highlighted for 150 ms, load the inline peek of a highlighted
     /// file, and keep a streaming preview fed. Returns true when a redraw is needed.
     pub(super) fn files_tick(&mut self, now: Instant) -> bool {
+        // What the previous pass queued (the runtime flushes after each frame).
+        self.flush_hover();
         if self.view != View::Files {
             return false;
         }

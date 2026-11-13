@@ -1951,6 +1951,8 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 frame_wait = Some(interval - since);
             }
         }
+        // Hover prefetches queued for this frame leave once it is out.
+        app.flush_hover();
         let batch = if !carried.is_empty() {
             std::mem::take(&mut carried)
         } else {

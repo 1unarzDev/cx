@@ -1529,6 +1529,23 @@ impl App {
             && sw > 0
             && self.browser.as_ref().is_some_and(|b| b.container.is_none());
         if image {
+            // The column's thumbnail shows at once; the screen-sized one replaces it.
+            if let Some(b) = self.browser.as_mut() {
+                let thumb = b
+                    .peek
+                    .as_deref()
+                    .filter(|p| {
+                        p.preview_path.as_deref() == Some(path.as_str())
+                            && p.preview_pending_page.is_none()
+                            && p.preview_rich.as_ref().is_some_and(|r| r.raster.is_some())
+                    })
+                    .map(|p| (p.preview.clone(), p.preview_rich.clone()));
+                if let Some((text, rich)) = thumb {
+                    b.preview = text;
+                    b.preview_rich = rich;
+                    b.preview_revision = b.preview_revision.wrapping_add(1);
+                }
+            }
             let op = Operation::PreviewImage {
                 path,
                 width: sw,

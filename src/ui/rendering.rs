@@ -98,9 +98,16 @@ fn render_yazi(
             if let Some((_, _, p)) = b.peek_cache.last() {
                 if let Some(text) = p.preview.as_deref() {
                     render_preview_body(frame, d.preview, p, text, None);
-                    frame
-                        .buffer_mut()
-                        .set_style(d.preview, Style::default().add_modifier(Modifier::DIM));
+                    // Dim what is drawn, not the blank cells (a smaller frame).
+                    let buf = frame.buffer_mut();
+                    for y in d.preview.top()..d.preview.bottom() {
+                        for x in d.preview.left()..d.preview.right() {
+                            let cell = &mut buf[(x, y)];
+                            if cell.symbol() != " " {
+                                cell.modifier.insert(Modifier::DIM);
+                            }
+                        }
+                    }
                 }
             }
         }

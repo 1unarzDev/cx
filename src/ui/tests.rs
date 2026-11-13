@@ -6619,6 +6619,7 @@ fn superseded_peek_reply_is_a_cancellation_not_content() {
         .contains("unavailable")));
     assert!(!draw(&a).contains("Preview unavailable"));
     a.files_tick(Instant::now() + Duration::from_millis(200));
+    a.flush_hover(); // hover prefetches leave after the frame
     let again = peek_requests(&rx);
     assert_eq!(again.len(), 1, "cancelled peek is requested again");
     // (b) Enter waits for the in-flight peek read; when that read comes back
@@ -6840,6 +6841,7 @@ fn folder_prefetch_caches_valid_replies_and_stays_bounded() {
     list_reply(&mut a, &path, generation, Ok(Value::Null));
     assert!(a.browser_cache.is_empty());
     a.files_tick(std::time::Instant::now() + std::time::Duration::from_millis(400));
+    a.flush_hover(); // hover prefetches leave after the frame
     let again = listed(&rx);
     assert_eq!(again, vec![(path.clone(), a.generation)]);
     // A failure is dropped silently: no cache entry, no notice, no "Empty folder".
@@ -6867,6 +6869,7 @@ fn folder_prefetch_caches_valid_replies_and_stays_bounded() {
         .keys()
         .any(|(_, path, _)| path == "/files/dir1"));
     a.files_tick(std::time::Instant::now() + std::time::Duration::from_millis(400));
+    a.flush_hover(); // hover prefetches leave after the frame
     assert_eq!(listed(&rx), vec![("/files/dir5".into(), a.generation)]);
 }
 

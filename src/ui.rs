@@ -718,6 +718,9 @@ struct App {
     /// Where the open file preview was drawn (native images go there).
     preview_rect: std::cell::Cell<Option<Rect>>,
     tx: mpsc::SyncSender<Task>,
+    /// Hover prefetches wait here until the frame showing the move is out
+    /// (`flush_hover`), so the move never waits on their dispatch.
+    hover_outbox: std::cell::RefCell<Vec<Task>>,
 }
 impl App {
     fn set_notice(&mut self, message: String) {
@@ -885,6 +888,7 @@ impl App {
             onboarding_dismissed: false,
             preview_rect: std::cell::Cell::new(None),
             tx,
+            hover_outbox: std::cell::RefCell::new(Vec::new()),
         };
         if let Ok(message) = std::env::var("CX_STARTUP_NOTICE") {
             app.set_notice_as(NoticeKind::Info, safe_text(&message));
@@ -1122,6 +1126,14 @@ impl App {
     fn send(&self, device: usize, op: Operation) -> bool {
         self.send_explicit(device, self.scoped_file_operation(device, op))
     }
+    /// Dispatch the queued hover prefetches (after a frame, or at the next Files tick).
+    fn flush_hover(&self) {
+        for task in self.hover_outbox.borrow_mut().drain(..) {
+            if self.tx.try_send(task).is_ok() {
+                self.pending_requests.set(self.pending_requests.get() + 1);
+            }
+        }
+    }
     fn send_explicit(&self, device: usize, op: Operation) -> bool {
         self.send_task(device, op, false)
     }
@@ -1139,16 +1151,18 @@ impl App {
         self.send_generation(device, op, hover, self.generation)
     }
     fn send_generation(&self, device: usize, op: Operation, hover: bool, generation: u64) -> bool {
-        let sent = self
-            .tx
-            .try_send(Task {
-                device,
-                execution: self.devices[device].clone(),
-                op,
-                generation,
-                hover,
-            })
-            .is_ok();
+        let task = Task {
+            device,
+            execution: self.devices[device].clone(),
+            op,
+            generation,
+            hover,
+        };
+        if hover {
+            self.hover_outbox.borrow_mut().push(task);
+            return true;
+        }
+        let sent = self.tx.try_send(task).is_ok();
         if sent {
             self.pending_requests.set(self.pending_requests.get() + 1);
         }

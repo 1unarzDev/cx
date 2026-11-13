@@ -820,7 +820,16 @@ fn request_once(d: &Device, op: Operation) -> Result<serde_json::Value> {
         15
     };
     let is_info = matches!(&op, Operation::Info);
-    let result = exchange(&mut slot, op, response_timeout);
+    // A metrics sample is a ~1 ms read on the helper: its round trip on the warm channel
+    // is the link's latency, measured without extra traffic.
+    let timed = matches!(&op, Operation::Metrics).then(std::time::Instant::now);
+    let mut result = exchange(&mut slot, op, response_timeout);
+    if let (Some(start), Ok(serde_json::Value::Object(m))) = (timed, result.as_mut()) {
+        m.insert(
+            "rtt_ms".into(),
+            serde_json::json!(start.elapsed().as_secs_f64() * 1000.0),
+        );
+    }
     if result.is_ok() && slot.as_ref().is_some_and(|c| c.shared) {
         if let Some(mut m) = masters() {
             let until = std::time::Instant::now() + ANSWERED_FOR;
@@ -872,7 +881,8 @@ pub(crate) fn channel_class(op: &Operation) -> Channel {
         | Operation::Watch { .. }
         | Operation::CapturePane { .. }
         | Operation::PaneInput { .. }
-        | Operation::PaneClose { .. } => Channel::Interactive,
+        | Operation::PaneClose { .. }
+        | Operation::Metrics => Channel::Interactive,
         Operation::Info => Channel::Capabilities,
         Operation::Containers
         | Operation::ContainerInspect { .. }

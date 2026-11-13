@@ -51,6 +51,7 @@ mod motion;
 mod screens;
 mod viewmodel;
 mod views;
+mod vitals;
 pub use runtime::{run, run_restored};
 
 use anyhow::{Context, Result};
@@ -613,6 +614,12 @@ struct App {
     neighbor_evidence: HashMap<(usize, String, Option<String>), Value>,
     neighbor_budget: usize,
     network_add_target: Option<(usize, String)>,
+    /// Live vitals and link samples by device id (memory only; `vitals.rs`).
+    vitals: HashMap<String, vitals::Vitals>,
+    /// Mesh membership, observed off the UI thread and rarely (`vitals::observe_meshes`).
+    meshes: Vec<vitals::Mesh>,
+    /// When each device (by id) last answered, kept across restarts in the navigation cache.
+    seen: HashMap<String, u64>,
     pending_add_via: Option<Device>,
     pending_edit: Option<usize>,
     clipboard: Option<Clipboard>,
@@ -800,6 +807,9 @@ impl App {
             neighbor_evidence: HashMap::new(),
             neighbor_budget: 32,
             network_add_target: None,
+            vitals: HashMap::new(),
+            meshes: Vec::new(),
+            seen: HashMap::new(),
             pending_add_via: None,
             pending_edit: None,
             clipboard: None,

@@ -207,6 +207,17 @@ impl App {
         if let Ok(graph) = crate::edges::graph() {
             self.edge_views = graph;
         }
+        // Each device's route (its jump hops), read from the same local state.
+        for (d, device) in self.devices.iter().enumerate() {
+            self.network_jump_routes.insert(
+                d,
+                device
+                    .target
+                    .as_deref()
+                    .map(|target| store::route(target).ok())
+                    .unwrap_or_else(|| Some(Vec::new())),
+            );
+        }
     }
     /// The hub's sessions in tile order (what needs you first).
     fn hub_sessions_order(&self) -> Vec<(usize, String)> {

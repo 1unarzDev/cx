@@ -75,6 +75,10 @@ impl App {
             self.apply_session_preview(reply);
             return;
         }
+        if matches!(reply.op, Operation::Metrics) {
+            self.vitals_replied(reply.device, reply.result);
+            return;
+        }
         if reply.generation < self.device_generation_floor {
             return;
         }

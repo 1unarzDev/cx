@@ -5,9 +5,9 @@
 use super::actions::PaletteTarget;
 use super::views::{
     Access, ColorLevel, DeviceStatus, EdgeKind, FileKind, FileNode, LabCaps, LabDevice, LabEdge,
-    LabFiles, LabInvite, LabNotice, LabPreview, LabSecret, LabSecretEntry, LabSession, LabState,
-    LabTransfer, LabView, NoticeKind, PaletteRow, Pane, PreviewKind, Provider, SessionState, Theme,
-    NEVER_SEEN,
+    LabFiles, LabInvite, LabMesh, LabNeighbor, LabNotice, LabPreview, LabSecret, LabSecretEntry,
+    LabSession, LabState, LabTransfer, LabView, NoticeKind, PaletteRow, Pane, PreviewKind,
+    Provider, SessionState, Theme, NEVER_SEEN,
 };
 use super::*;
 
@@ -32,13 +32,14 @@ impl From<&App> for ViewModel {
     fn from(app: &App) -> Self {
         let mut caps = terminal_caps();
         caps.frame = app.transfer_frame as u32;
+        let devices = devices(app);
         let state = LabState {
             fixture: "app",
             viewer: dev_id(app.local_index()),
-            devices: devices(app),
-            meshes: Vec::new(),
-            edges: edges(app),
-            neighbors: Vec::new(),
+            meshes: meshes(app, &devices),
+            edges: edges(app, &devices),
+            neighbors: neighbors(app),
+            devices,
             sessions: sessions(app),
             files: files(app),
             secrets: secrets(app),
@@ -168,11 +169,15 @@ fn screen(app: &App, state: &LabState, caps: &mut LabCaps) -> LabView {
 fn status(app: &App, d: usize) -> (DeviceStatus, String, u32) {
     let w = &app.work[d];
     let age = transport::now().saturating_sub(w.fetched);
-    // Never listed: no sighting to age (an age from the epoch read as `20770d`).
-    let secs = if w.fetched == 0 {
+    // The last sighting: this run's listing, else one from an earlier run.
+    let last = w
+        .fetched
+        .max(app.seen.get(&app.devices[d].id).copied().unwrap_or(0));
+    // Never seen: no sighting to age (an age from the epoch read as `20770d`).
+    let secs = if last == 0 {
         NEVER_SEEN
     } else {
-        u32::try_from(age).unwrap_or(u32::MAX - 1)
+        u32::try_from(transport::now().saturating_sub(last)).unwrap_or(u32::MAX - 1)
     };
     let listed = || {
         let n = w.sessions.len();
@@ -202,7 +207,7 @@ fn status(app: &App, d: usize) -> (DeviceStatus, String, u32) {
         } else {
             DeviceStatus::Unknown
         };
-        return (status, word.into(), NEVER_SEEN);
+        return (status, word.into(), secs);
     }
     if app.devices[d].target.is_none() {
         return (DeviceStatus::Local, listed(), secs);
@@ -236,21 +241,91 @@ fn devices(app: &App) -> Vec<LabDevice> {
             if d.target.is_some() && app.device_policy(i).access == store::AccessMode::Directed {
                 evidence.push_str(" · single-direction");
             }
+            let vitals = app.vitals.get(&d.id);
+            // The link as measured: last round trip, its jitter and any loss.
+            if let Some((Some(ms), _, loss, jitter)) = vitals.map(|v| v.link()) {
+                evidence.push_str(&format!(" · {ms:.0}ms"));
+                if let Some(j) = jitter {
+                    evidence.push_str(&format!(" ±{j:.0}"));
+                }
+                if loss > 0.0 {
+                    evidence.push_str(&format!(" · {:.0}% lost", loss * 100.0));
+                }
+            }
             LabDevice {
                 id: dev_id(i),
                 name: safe_label(&d.name),
                 hotkey: letters.get(&d.id).copied().unwrap_or(' '),
                 hue: hue(&d.id),
-                os: String::new(),
+                os: vitals.map(|v| v.os()).unwrap_or_default(),
                 account: safe_label(&d.account),
                 host: safe_label(&d.host),
                 status,
                 evidence,
                 observed_secs,
-                metrics: None,
-                meshes: Vec::new(),
+                // Live figures only while the device answers.
+                metrics: vitals
+                    .filter(|_| status != DeviceStatus::Down)
+                    .and_then(|v| v.metrics()),
+                meshes: app
+                    .meshes
+                    .iter()
+                    .filter(|m| {
+                        m.members
+                            .iter()
+                            .any(|x| vitals::member_device(&app.devices, x) == Some(i))
+                    })
+                    .map(|m| m.id.clone())
+                    .collect(),
                 joined_via: None,
                 core: app.device_policy(i).access == store::AccessMode::Core,
+            }
+        })
+        .collect()
+}
+
+/// The meshes with a device of ours in them, members as view-model ids.
+fn meshes(app: &App, devices: &[LabDevice]) -> Vec<LabMesh> {
+    app.meshes
+        .iter()
+        .filter_map(|m| {
+            let members: Vec<String> = devices
+                .iter()
+                .filter(|d| d.meshes.contains(&m.id))
+                .map(|d| d.id.clone())
+                .collect();
+            (!members.is_empty()).then(|| LabMesh {
+                id: m.id.clone(),
+                name: safe_label(&m.name),
+                backend: m.backend,
+                healthy: true,
+                detail: format!("{} of {} members here", members.len(), m.members.len()),
+                members,
+            })
+        })
+        .collect()
+}
+
+/// This host's lan neighbours that are not enrolled devices (recent observations only).
+fn neighbors(app: &App) -> Vec<LabNeighbor> {
+    let local = app.local_index();
+    let now = transport::now();
+    app.network_candidates()
+        .into_iter()
+        .filter(|c| c["_device"].as_u64() == Some(local as u64))
+        .filter(|c| app.known_neighbor(c).is_none())
+        .take(64)
+        .map(|c| {
+            let addr = safe_label(c["address"].as_str().unwrap_or(""));
+            LabNeighbor {
+                seen_from: dev_id(local),
+                name: c["hostname"].as_str().map_or(addr.clone(), safe_label),
+                addr,
+                vendor: String::new(),
+                ssh_open: network_view::neighbor_ssh(&c, now) == "port open",
+                seen_secs: now
+                    .saturating_sub(c["_snapshot"].as_u64().unwrap_or(now))
+                    .min(u64::from(u32::MAX)) as u32,
             }
         })
         .collect()
@@ -266,9 +341,10 @@ fn access(a: crate::edges::Access) -> Access {
 
 /// The stored edge graph (`edges::graph`, loaded by the controller), by device index. A
 /// link this device reaches through an enrolled relay (its route's last hop) is a jump
-/// through that relay. Meshes and rtt are not carried yet (STATUS.md).
-fn edges(app: &App) -> Vec<LabEdge> {
+/// through that relay; the others ride a mesh or the lan when there is evidence of it.
+fn edges(app: &App, devices: &[LabDevice]) -> Vec<LabEdge> {
     let local = app.local_index();
+    let member_of: Vec<&Vec<String>> = devices.iter().map(|d| &d.meshes).collect();
     let index = |id: &str| {
         if id == crate::edges::LOCAL {
             Some(local)
@@ -296,17 +372,46 @@ fn edges(app: &App) -> Vec<LabEdge> {
                         .iter()
                         .position(|d| d.target.as_deref() == Some(hop.as_str()))
                 });
+            let mine = [a, b].contains(&local);
+            // The network the link rides, by evidence: a jump through a relay; an SSH
+            // address that is a mesh's overlay address; the lan; mesh membership.
+            let kind = match relay {
+                Some(j) => EdgeKind::Jump(dev_id(j)),
+                None if !mine => EdgeKind::Direct,
+                None => match vitals::mesh_route(&app.meshes, &app.devices[far]) {
+                    Some(m) => EdgeKind::Mesh(app.meshes[m].id.clone()),
+                    None if vitals::on_lan(app.network.get(&local), &app.devices[far]) => {
+                        EdgeKind::Lan
+                    }
+                    None => member_of
+                        .get(far)
+                        .and_then(|m| m.first())
+                        .map_or(EdgeKind::Direct, |m| EdgeKind::Mesh(m.clone())),
+                },
+            };
+            // Round trips are measured from here: the viewer's own links carry them,
+            // a jump's last leg the part beyond its relay.
+            let link = |d: usize| app.vitals.get(&app.devices[d].id).map(|v| v.link());
+            let (mut rtt_ms, rtt_hist, loss) = match link(far).filter(|_| mine) {
+                Some((ms, hist, loss, _)) => (ms, hist, loss),
+                None => (None, Vec::new(), 0.0),
+            };
+            if let (Some(j), Some(ms)) = (relay, rtt_ms) {
+                if let Some((Some(first), ..)) = link(j) {
+                    rtt_ms = Some((ms - first).max(0.1));
+                }
+            }
             Some(LabEdge {
                 id: format!("{a}-{b}"),
                 from: dev_id(a),
                 to: dev_id(b),
-                kind: relay.map_or(EdgeKind::Direct, |j| EdgeKind::Jump(dev_id(j))),
+                kind,
                 forward: access(e.forward.access),
                 reverse: access(e.reverse.access),
                 up: up(a, b),
-                rtt_ms: None,
-                rtt_hist: Vec::new(),
-                loss: 0.0,
+                rtt_ms,
+                rtt_hist,
+                loss,
             })
         })
         .collect();

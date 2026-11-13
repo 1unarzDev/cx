@@ -311,8 +311,13 @@ impl NavigationCache {
                         clean
                     })
                     .collect();
+                // The device's last sighting rides in its record (the hub ages it).
+                let mut device = device.clone();
+                device.observed_at = app.work[d]
+                    .fetched
+                    .max(app.seen.get(&device.id).copied().unwrap_or(0));
                 DeviceCache {
-                    device: device.clone(),
+                    device,
                     sessions: app.work[d]
                         .sessions
                         .iter()
@@ -349,6 +354,10 @@ impl NavigationCache {
             };
             if cached.sessions.len() <= 512 {
                 app.work[d].sessions = cached.sessions;
+            }
+            if cached.device.observed_at > 0 {
+                app.seen
+                    .insert(app.devices[d].id.clone(), cached.device.observed_at);
             }
             for mut b in cached.browsers.into_iter().take(24) {
                 if b.entries.len() > 2048 {

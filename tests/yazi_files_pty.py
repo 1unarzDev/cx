@@ -105,8 +105,10 @@ def local_flows():
             r.key(b'gg')
             r.key(b'vjj')
             check('visual_sel', ' SEL ' in r.status(), r.status())
-            check('visual_count', r.lines()[0].rstrip().endswith('3'), r.lines()[0])
+            # yazi counts committed selections only: no count for the live range.
+            check('visual_count', not r.lines()[0].rstrip().endswith('3'), r.lines()[0])
             r.key(b'\x1b')
+            check('visual_commit', r.lines()[0].rstrip().endswith('3'), r.lines()[0])
             r.key(b'\x1b')
             check('visual_exit', ' NOR ' in r.status(), r.status())
             # The c which-key panel, then cc copies the hovered path through OSC 52.

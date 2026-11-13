@@ -124,7 +124,7 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(
                 ["<C-c>"],
                 CloseTab,
-                "Close the current tab, or Files when it is the last"
+                "Close the current tab, or quit if it's last"
             ),
             b!(
                 ["<C-z>"],
@@ -809,7 +809,8 @@ impl App {
                     self.yz.tab = self.yz.tab.min(self.yz.tabs.len() - 1);
                     self.yazi_show_tab();
                 } else {
-                    self.back();
+                    // yazi's: Ctrl+C on the last tab quits (cx's Ctrl+C everywhere else).
+                    self.request_quit();
                 }
             }
             Arrow(n) => self.move_selection(n),

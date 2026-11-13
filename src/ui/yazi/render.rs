@@ -598,7 +598,8 @@ fn column(
         };
         let lm_w: usize = lm.iter().map(|(s, _)| width(s)).sum();
         let room = inner_end.saturating_sub(x) as usize;
-        let lm_w = if lm_w + 4 <= room { lm_w } else { 0 };
+        // Names keep at least 12 cells; a narrower column drops the linemode.
+        let lm_w = if lm_w + 13 <= room { lm_w } else { 0 };
         let name_room = room.saturating_sub(if lm_w > 0 { lm_w + 1 } else { 0 });
         let mut name = ellipsis(&row.name, name_room, !row.dir, look.unicode);
         if name != row.name && !row.dir && row.name.contains('.') && x > x0 + 1 {

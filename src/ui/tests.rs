@@ -7020,6 +7020,9 @@ fn yazi_ctrl_c_closes_a_tab_and_dash_stays_in_files() {
     a.key(KeyEvent::new(KeyCode::Char('-'), KeyModifiers::CONTROL));
     a.key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
     assert!(!a.quit && a.view == View::Files);
+    // On the last tab Ctrl+C quits, as in yazi.
+    a.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert!(a.quit);
 }
 
 #[test]

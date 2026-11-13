@@ -52,13 +52,14 @@ pub fn render_palette(
     area: Rect,
     buf: &mut Buffer,
     query: &str,
+    cursor: usize,
 ) -> Vec<LabTarget> {
     let cx = Cx::new(state, caps, area);
     if area.width < 20 || area.height < 6 {
         return Vec::new();
     }
     cx.dim(buf, area);
-    views::palette(&cx, buf, area, query);
+    views::palette(&cx, buf, area, query, cursor);
     cx.hits.into_inner()
 }
 

@@ -4541,6 +4541,7 @@ fn notification_types_follow_results_and_typed_inputs_keep_ownership() {
     assert_eq!(app.notice_kind, NoticeKind::Error);
     app.input = Some(Input::Search);
     app.text = "folder".into();
+    app.rename_cursor = app.text.len();
     app.set_notice_as(NoticeKind::Warning, "Still searching".into());
     press(&mut app, 'd');
     assert_eq!(app.text, "folderd");

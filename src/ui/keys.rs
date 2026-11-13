@@ -149,6 +149,7 @@ impl App {
                 } else {
                     self.search.clone()
                 };
+                self.rename_cursor = self.text.len();
             }
             Cmd::New => self.session_shortcut(),
             Cmd::Jobs => self.execute(Action::Jobs),
@@ -236,6 +237,7 @@ impl App {
                 if self.text_preview_active() {
                     self.input = Some(Input::PreviewSearch);
                     self.text = self.browser.as_ref().unwrap().preview_find.query.clone();
+                    self.rename_cursor = self.text.len();
                 } else {
                     self.set_notice(
                         if self

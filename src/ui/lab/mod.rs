@@ -558,7 +558,7 @@ mod size_fuzz {
                                             let area = Rect::new(0, 0, w, h);
                                             let mut buf = Buffer::empty(area);
                                             mission::render(&v, s, &c, area, &mut buf);
-                                            mission::render_palette(s, &c, area, &mut buf, "in");
+                                            mission::render_palette(s, &c, area, &mut buf, "in", 2);
                                         }),
                                     );
                                     if drew.is_err() {

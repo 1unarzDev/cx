@@ -136,9 +136,23 @@ fn render_frame(
     }
     if let Some(query) = &vm.palette {
         hitmap::begin();
-        for t in
-            views::mission::render_palette(&vm.state, &vm.caps, area, frame.buffer_mut(), query)
-        {
+        // The sheet's selection is the palette's own, not the screen's beneath it.
+        let mut caps = vm.caps;
+        caps.selected = app.palette_selected;
+        let cursor = app
+            .text
+            .get(..app.rename_cursor)
+            .unwrap_or(&app.text)
+            .chars()
+            .count();
+        for t in views::mission::render_palette(
+            &vm.state,
+            &caps,
+            area,
+            frame.buffer_mut(),
+            query,
+            cursor,
+        ) {
             hitmap::register_action(t.area, &t.action, &files);
         }
     }
@@ -1195,7 +1209,15 @@ fn find_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
         );
     }
     if typing.is_some() {
-        frame.set_cursor_position((row.x + 4 + width.min(row.width.saturating_sub(5)), row.y));
+        // The text cursor where Left/Right left it.
+        let at = Span::raw(safe_label(
+            app.text.get(..app.rename_cursor).unwrap_or(&app.text),
+        ))
+        .width() as u16;
+        frame.set_cursor_position((
+            row.x + 4 + at.min(width).min(row.width.saturating_sub(5)),
+            row.y,
+        ));
     }
 }
 /// Typing into a peeked session: the footer says how to leave (Ctrl+\, Esc Esc,

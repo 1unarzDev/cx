@@ -343,6 +343,7 @@ impl App {
                 // Remember the committed filter so Esc cancels back to it.
                 self.filter_restore = Some(self.text.clone());
                 self.input = Some(Input::Filter);
+                self.rename_cursor = self.text.len();
             }
             Action::Select => {
                 self.finish_visual();

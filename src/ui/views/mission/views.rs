@@ -220,7 +220,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
             super::hub::hub(cx, buf, body);
             footer(cx, buf, foot, hub_keys(cx));
             cx.dim(buf, a);
-            palette(cx, buf, a, q);
+            palette(cx, buf, a, q, q.chars().count());
         }
         LabView::Secrets => {
             top(cx, buf, &[Crumb::Text("secrets".into())], true);
@@ -2078,7 +2078,7 @@ fn panel(cx: &Cx, buf: &mut Buffer, r: Rect) {
     }
 }
 
-pub(super) fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
+pub(super) fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str, cursor: usize) {
     let ql = q.to_lowercase();
     // (group, description spans, the keys from the hub, action, the row's device).
     type Row<'r> = (
@@ -2241,25 +2241,31 @@ pub(super) fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
         "/ ",
         cx.st(Tok::Accent).add_modifier(Modifier::BOLD),
     );
-    // A query longer than the field shows its end, where the typing is.
+    // A query longer than the field shows its end, where the typing is (or as much
+    // before the cursor as fits, when the cursor is further left).
     let room = usize::from(inner.width.saturating_sub(4));
     let n = q.chars().count();
-    let shown: String = if n > room && room > 1 {
-        std::iter::once('…')
-            .chain(q.chars().skip(n + 1 - room))
-            .collect()
+    let cursor = cursor.min(n);
+    let start = if n > room && room > 1 {
+        (n + 1 - room).min(cursor)
     } else {
-        q.to_string()
+        0
     };
+    let mark = if start > 0 { "…" } else { "" };
+    let before: String = q.chars().skip(start).take(cursor - start).collect();
+    let after: String = q.chars().skip(cursor).collect();
+    let qst = cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD);
+    let end = inner.right().saturating_sub(1);
     x += cx.put(
         buf,
         x,
         y,
-        inner.width.saturating_sub(4),
-        &shown,
-        cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD),
+        end.saturating_sub(x),
+        &format!("{mark}{before}"),
+        qst,
     );
-    cx.put(buf, x, y, 1, cx.g("▏", "_"), cx.st(Tok::Accent));
+    x += cx.put(buf, x, y, 1, cx.g("▏", "_"), cx.st(Tok::Accent));
+    cx.put(buf, x, y, end.saturating_sub(x), &after, qst);
     // The last row teaches the palette's own keys.
     // (Phones pin it to the screen's last row, like every phone footer.)
     let hint_y = if cx.touch() {
@@ -2290,7 +2296,21 @@ pub(super) fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
     let airy = inner.height + 2 >= want - 2;
     let mut last_group = String::new();
     let sel = cx.c.selected % rows.len().max(1);
-    for (i, (group, spans, key, act, dev)) in rows.iter().enumerate() {
+    // The rows scroll with the selection: the first shown row is the earliest one from
+    // which the selection still fits above the `+N more` line (its group label first).
+    let lines = |from: usize, to: usize| -> u16 {
+        let mut n = 0u16;
+        for i in from..=to {
+            let head = i == from || rows[i].0 != rows[i - 1].0;
+            n += 1 + u16::from(head) + u16::from(head && i > from && airy);
+        }
+        n
+    };
+    let cap = inner.bottom().saturating_sub(yy + 1);
+    let first = (0..=sel)
+        .find(|&f| rows.is_empty() || lines(f, sel) <= cap)
+        .unwrap_or(sel);
+    for (i, (group, spans, key, act, dev)) in rows.iter().enumerate().skip(first) {
         let head = u16::from(*group != last_group);
         let rest = rows.len() - i;
         // Rows cut by the height cap say so on the last line, never silently.
@@ -2301,7 +2321,7 @@ pub(super) fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
             }
             break;
         }
-        if head > 0 && i > 0 && airy {
+        if head > 0 && i > first && airy {
             yy += 1;
         }
         if head > 0 {

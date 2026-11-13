@@ -8,6 +8,21 @@ impl App {
             self.rename_cursor = self.text.len();
         }
         let before_text = self.text.clone();
+        // Ctrl+N / Ctrl+P move the list as Down / Up do (readline and every picker).
+        let key = match key.code {
+            KeyCode::Char(c @ ('n' | 'p')) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                KeyEvent::new(
+                    if c == 'n' { KeyCode::Down } else { KeyCode::Up },
+                    KeyModifiers::NONE,
+                )
+            }
+            _ => key,
+        };
+        // Fields whose text has a movable cursor (the rest append at the end).
+        let edits = matches!(
+            mode,
+            Input::Rename | Input::Palette | Input::Search | Input::Filter | Input::PreviewSearch
+        );
         match key.code {
             KeyCode::Esc => {
                 // Cancelling a filter edit reverts the live filter to what it
@@ -28,7 +43,7 @@ impl App {
                 self.pending_edit = None;
             }
             KeyCode::Backspace => {
-                if matches!(mode, Input::Rename | Input::Palette) {
+                if edits {
                     if let Some((at, _)) = self.text[..self.rename_cursor].char_indices().last() {
                         self.text.replace_range(at..self.rename_cursor, "");
                         self.rename_cursor = at;
@@ -42,26 +57,28 @@ impl App {
                 self.text.clear();
                 self.rename_cursor = 0;
             }
-            KeyCode::Left if matches!(mode, Input::Rename | Input::Palette) => {
+            KeyCode::Left if edits => {
                 self.rename_cursor = self.text[..self.rename_cursor]
                     .char_indices()
                     .last()
                     .map(|(at, _)| at)
                     .unwrap_or(0);
             }
-            KeyCode::Right if matches!(mode, Input::Rename | Input::Palette) => {
+            KeyCode::Right if edits => {
                 if let Some(c) = self.text[self.rename_cursor..].chars().next() {
                     self.rename_cursor += c.len_utf8();
                 }
             }
-            KeyCode::Home if matches!(mode, Input::Rename | Input::Palette) => {
+            KeyCode::Home if edits => {
                 // In run mode Home means the start of the command.
-                self.rename_cursor = self.text.len() - self.palette_run_command().len()
+                self.rename_cursor = if self.palette_run_mode() {
+                    self.text.len() - self.palette_run_command().len()
+                } else {
+                    0
+                }
             }
-            KeyCode::End if matches!(mode, Input::Rename | Input::Palette) => {
-                self.rename_cursor = self.text.len()
-            }
-            KeyCode::Delete if matches!(mode, Input::Rename | Input::Palette) => {
+            KeyCode::End if edits => self.rename_cursor = self.text.len(),
+            KeyCode::Delete if edits => {
                 if let Some(c) = self.text[self.rename_cursor..].chars().next() {
                     self.text
                         .replace_range(self.rename_cursor..self.rename_cursor + c.len_utf8(), "");
@@ -74,7 +91,7 @@ impl App {
             {
                 let limit = if self.palette_run_mode() { 8192 } else { 256 };
                 if self.text.len() + c.len_utf8() <= limit {
-                    if matches!(mode, Input::Rename | Input::Palette) {
+                    if edits {
                         self.text.insert(self.rename_cursor, c);
                         self.rename_cursor += c.len_utf8();
                     } else {

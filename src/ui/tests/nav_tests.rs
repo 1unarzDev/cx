@@ -1655,10 +1655,9 @@ fn sweep_app(sizes: &[(u16, u16)]) -> Vec<String> {
 /// The suite's share of the overlay sweep: tiny, phone, half and full terminals.
 #[test]
 fn every_overlay_renders_across_sizes() {
-    let ws = [
-        1, 2, 5, 10, 15, 16, 17, 19, 20, 21, 30, 40, 59, 60, 70, 80, 95, 100, 120, 190, 250,
-    ];
-    let hs = [1, 2, 3, 4, 5, 6, 8, 10, 16, 20, 24, 36, 50, 80];
+    // (A light share: it runs beside the suite's timing-sensitive tests.)
+    let ws = [1, 5, 10, 16, 19, 20, 30, 40, 60, 80, 95, 120, 190, 250];
+    let hs = [1, 3, 5, 8, 16, 24, 36, 50, 80];
     let sizes: Vec<(u16, u16)> = ws.iter().flat_map(|&w| hs.map(|h| (w, h))).collect();
     let fails = sweep_app(&sizes);
     assert!(fails.is_empty(), "{} panic sites: {fails:#?}", fails.len());

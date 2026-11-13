@@ -711,8 +711,8 @@ mod tests {
         assert_eq!(choose(None, Some(Graphics::Sixel)), Some(Graphics::Sixel));
         assert_eq!(choose(None, None), None);
     }
-    /// What tmux 3.8 hands the pane (an isolated tmux server
-    /// an isolated server attached from a pty playing the outer terminal): its own 16t
+    /// What tmux 3.8 hands the pane (measured with an isolated server attached from a
+    /// pty playing the outer terminal): its own 16t
     /// and DA1, then the outer terminal's answers to the wrapped queries.
     #[test]
     fn tmux_probe_reads_the_outer_terminal() {

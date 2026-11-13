@@ -370,7 +370,7 @@ mod size_fuzz {
             m.members.retain(|id| has(id));
         }
         s.notifications
-            .retain(|n| n.device.as_ref().is_none_or(|d| has(d)));
+            .retain(|n| n.device.as_ref().is_none_or(has));
         s
     }
 

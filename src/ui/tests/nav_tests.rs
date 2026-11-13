@@ -1470,3 +1470,208 @@ fn keys_are_labelled_with_one_glyph_set() {
         assert!(footer.contains(k), "{k}: {footer}");
     }
 }
+
+/// The App's own overlays (command panel, New session, dialogs, menus, find, transfer
+/// and typing bars, containers, the toast, the file preview body, the palette) over
+/// each view, drawn through `render` at every size from 1x1. Panic sites with their
+/// first case.
+fn sweep_app(sizes: &[(u16, u16)]) -> Vec<String> {
+    type Setup = fn(&mut App);
+    let overlays: &[(&str, Setup)] = &[
+        ("hub", |a| a.go_hub()),
+        ("device", |a| a.open_device(1)),
+        ("help", |a| a.help = true),
+        ("command-panel", |a| {
+            a.command_panel = Some(CommandPanel {
+                device: 0,
+                id: "run".into(),
+                cols: 80,
+                rows: 24,
+                lines: (0..40)
+                    .map(|i| format!("\x1b[32mline {i}\x1b[0m {}", "x".repeat(i * 3)))
+                    .collect(),
+                alive: true,
+                status: None,
+                inflight: false,
+                last_poll: std::time::Instant::now(),
+                label: "echo a long command label that runs".into(),
+            })
+        }),
+        ("command-panel-empty", |a| {
+            a.command_panel = Some(CommandPanel {
+                device: 1,
+                id: "run".into(),
+                cols: 80,
+                rows: 24,
+                lines: vec![],
+                alive: false,
+                status: Some(1),
+                inflight: true,
+                last_poll: std::time::Instant::now(),
+                label: "echo hi".into(),
+            })
+        }),
+        ("creating", |a| a.creating = true),
+        ("toast", |a| {
+            a.set_notice_as(
+                NoticeKind::Error,
+                "laptop: Device unreachable over SSH ".repeat(4),
+            )
+        }),
+        ("palette-run", |a| {
+            a.input = Some(Input::Palette);
+            a.text = "run: echo hi".into();
+            a.rename_cursor = a.text.len();
+        }),
+        ("rename", |a| {
+            a.input = Some(Input::Rename);
+            a.text = "a-very-long-name-".repeat(5);
+            a.rename_cursor = a.text.len();
+        }),
+        ("add", |a| {
+            a.input = Some(Input::Add);
+            a.text = "user@host".into();
+        }),
+        ("mkdir", |a| a.input = Some(Input::Mkdir)),
+        ("peer", |a| a.dialog = Some(Dialog::Peer(1))),
+        ("jobs", |a| a.dialog = Some(Dialog::Jobs)),
+        ("provider", |a| a.dialog = Some(Dialog::Provider(1, None))),
+        ("chooser", |a| {
+            a.dialog = Some(Dialog::SessionChooser(0, "~".into()))
+        }),
+        ("remove", |a| a.dialog = Some(Dialog::RemoveDevice(1))),
+        ("edit", |a| a.dialog = Some(Dialog::EditDevice(1))),
+        ("reset", |a| a.dialog = Some(Dialog::Reset)),
+        ("exit", |a| a.dialog = Some(Dialog::PendingExit(3))),
+        ("devices", |a| {
+            a.dialog = Some(Dialog::Device(ChooseDevice::Files))
+        }),
+        ("menu", |a| {
+            a.context_menu = Some(hitmap::ContextMenu {
+                items: keymap::context_menu(a),
+                selected: 0,
+                anchor: (3, 3),
+            })
+        }),
+        ("containers", |a| a.view = View::Containers),
+        ("secrets", |a| a.view = View::Secrets),
+        ("typing", |a| {
+            a.session_preview.focused =
+                Some((a.devices[0].clone(), disposable_shell(), "cx".into()))
+        }),
+        ("files", |a| a.view = View::Files),
+        ("files-find", |a| {
+            a.view = View::Files;
+            a.input = Some(Input::Search);
+            a.text = "alp".into();
+            a.rename_cursor = 3;
+        }),
+        ("files-filter", |a| {
+            a.view = View::Files;
+            a.input = Some(Input::Filter);
+        }),
+        ("files-preview", |a| {
+            a.view = View::Files;
+            let text = "# Title\n\n```rust\nfn main() {}\n```\n- one two three four five six\n";
+            let b = a.browser.as_mut().unwrap();
+            b.preview_path = Some("/files/alpha.md".into());
+            b.preview = Some(text.into());
+            b.preview_rich = Some(RichPreview::from_value(
+                &serde_json::json!({"kind":"markdown","text":text}),
+            ));
+        }),
+        ("files-transfer", |a| {
+            a.view = View::Files;
+            let entries = a.browser.as_ref().unwrap().entries[..1].to_vec();
+            a.clipboard = Some(Clipboard {
+                container: None,
+                id: "fixture".into(),
+                device: 1,
+                entries,
+                cut: true,
+                source_label: "fixture".into(),
+            });
+            a.destination_active = true;
+        }),
+    ];
+    let ascii = caps::Caps {
+        unicode: false,
+        ..caps::Caps::default()
+    };
+    let prev = std::panic::take_hook();
+    thread_local! {
+        static AT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    }
+    std::panic::set_hook(Box::new(|info| {
+        // The first frame in cx's own source (a ratatui index panic names ratatui).
+        let trace = std::backtrace::Backtrace::force_capture().to_string();
+        let ours = trace
+            .lines()
+            .find(|l| l.contains("at ./src/") && !l.contains("/tests"))
+            .map(|l| l.trim().to_string());
+        let at = info.location().map(|l| l.to_string()).unwrap_or_default();
+        AT.with(|w| *w.borrow_mut() = ours.map_or(at.clone(), |o| format!("{o} ({at})")));
+    }));
+    let mut fails = std::collections::BTreeMap::<String, (usize, String)>::new();
+    for (name, setup) in overlays {
+        let (mut a, _rx) = file_app();
+        sessions(&mut a, 0, 5);
+        sessions(&mut a, 1, 3);
+        setup(&mut a);
+        for tier in [caps::Caps::default(), ascii] {
+            for &(w, h) in sizes {
+                let drew = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    caps::with_caps(tier, || {
+                        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+                        t.draw(|f| render(f, &a)).unwrap();
+                    })
+                }));
+                if let Err(e) = drew {
+                    let what = e
+                        .downcast_ref::<String>()
+                        .cloned()
+                        .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                        .unwrap_or_default();
+                    let at = AT.with(|w| w.borrow().clone());
+                    let what: String = what.chars().take(60).collect();
+                    let f = fails
+                        .entry(format!("{at} {what}"))
+                        .or_insert((0, String::new()));
+                    f.0 += 1;
+                    if f.1.is_empty() {
+                        f.1 = format!("{name} {w}x{h} unicode={}", tier.unicode);
+                    }
+                }
+            }
+        }
+    }
+    std::panic::set_hook(prev);
+    fails
+        .into_iter()
+        .map(|(what, (n, first))| format!("{what}: {n}x, first {first}"))
+        .collect()
+}
+
+/// The suite's share of the overlay sweep: tiny, phone, half and full terminals.
+#[test]
+fn every_overlay_renders_across_sizes() {
+    let ws = [
+        1, 2, 5, 10, 15, 16, 17, 19, 20, 21, 30, 40, 59, 60, 70, 80, 95, 100, 120, 190, 250,
+    ];
+    let hs = [1, 2, 3, 4, 5, 6, 8, 10, 16, 20, 24, 36, 50, 80];
+    let sizes: Vec<(u16, u16)> = ws.iter().flat_map(|&w| hs.map(|h| (w, h))).collect();
+    let fails = sweep_app(&sizes);
+    assert!(fails.is_empty(), "{} panic sites: {fails:#?}", fails.len());
+}
+
+/// The whole overlay matrix: 1x1 to 250x80, every width to 140 and every height to 60.
+#[test]
+#[ignore]
+fn every_overlay_renders_at_every_size() {
+    let ws = (1..=140).chain((150..=250).step_by(10));
+    let sizes: Vec<(u16, u16)> = ws
+        .flat_map(|w| (1..=60).chain([70, 80]).map(move |h| (w, h)))
+        .collect();
+    let fails = sweep_app(&sizes);
+    assert!(fails.is_empty(), "{} panic sites: {fails:#?}", fails.len());
+}

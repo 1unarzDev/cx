@@ -347,7 +347,7 @@ pub(super) fn render_context_menu(frame: &mut Frame<'_>, app: &App, area: Rect) 
     } else {
         menu.anchor.1.saturating_sub(height)
     };
-    let rect = Rect::new(x, y, width, height);
+    let rect = Rect::new(x, y, width, height).intersection(area);
     frame.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)

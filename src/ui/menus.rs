@@ -111,7 +111,7 @@ pub(super) fn render_session_chooser(
     );
     frame.render_widget(
         Paragraph::new(detail).wrap(Wrap { trim: false }),
-        Rect::new(inner.x, inner.y, inner.width, 3),
+        Rect::new(inner.x, inner.y, inner.width, 3).intersection(inner),
     );
     for (i, choice) in choices.iter().enumerate() {
         let column = (i % columns) as u16;
@@ -122,7 +122,8 @@ pub(super) fn render_session_chooser(
             inner.y + 3 + (i / columns) as u16 * 3,
             (end - start).saturating_sub(1),
             3,
-        );
+        )
+        .intersection(inner);
         let available = match dialog {
             Dialog::SessionChooser(d, _) => app.provider_choices(*d).contains(&choice.provider),
             _ => true,
@@ -172,7 +173,7 @@ pub(super) fn render_session_chooser(
     };
     frame.render_widget(
         Paragraph::new(help).style(muted()),
-        Rect::new(inner.x, inner.y + 3 + (rows as u16) * 3, inner.width, 1),
+        Rect::new(inner.x, inner.y + 3 + (rows as u16) * 3, inner.width, 1).intersection(inner),
     );
 }
 

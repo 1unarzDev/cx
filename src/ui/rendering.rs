@@ -804,7 +804,8 @@ fn render_command_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let inner_w = content_w
         .max(title.chars().count())
         .max(hint.chars().count())
-        .clamp(16, area.width.saturating_sub(4) as usize) as u16;
+        .max(16)
+        .min(area.width.saturating_sub(4) as usize) as u16;
     let inner_h = (body_rows + 1).min(area.height.saturating_sub(4));
     let rect = popup(area, inner_w + 4, inner_h + 2);
     frame.render_widget(Clear, rect);

@@ -51,7 +51,7 @@ impl Target for Files<'_> {
                         .unwrap_or(10000);
                     let current = b.preview_requested_page.max(1);
                     let requested =
-                        (i64::from(current) + delta as i64).clamp(1, i64::from(max)) as u32;
+                        (i64::from(current) + delta as i64).clamp(1, i64::from(max.max(1))) as u32;
                     if requested != current {
                         b.preview_requested_page = requested;
                         self.app.start_pdf_page_request();

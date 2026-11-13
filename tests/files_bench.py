@@ -676,6 +676,12 @@ def full_frame(screen, letter):
     return any(f'{letter}-000000' in line for line in current) and 'Loading' not in ''.join(current)
 
 
+def chrome_frame(screen):
+    """Files chrome: the status line's mode pill and a header."""
+    display = screen.display
+    return bool(re.match(r'^\W?\s*(?:NOR|SEL|UNS) ', display[-1])) and bool(display[0].strip())
+
+
 def scenario_firstframe(binary, fx, side, device_index, ssh, tag, res, run):
     """Spawn -> first complete frame (header, columns with rows, status line) for yazi and cx
     on the same folder, cold then warm (a second spawn right after). Remote: yazi runs on
@@ -713,15 +719,26 @@ def scenario_firstframe(binary, fx, side, device_index, ssh, tag, res, run):
                         def read(timeout, pty_=pty_):
                             return pty_.read(timeout) is not None
                         closer = lambda pty_=pty_: pty_.close(quit_key=b'q')  # noqa: E731
-                    t = None
+                    t = chrome = None
+                    loading = False
                     end = t0 + 30
                     try:
                         while time.monotonic() < end:
-                            if read(min(.5, end - time.monotonic())) and full_frame(screen, 'b'):
+                            if not read(min(.5, end - time.monotonic())):
+                                continue
+                            if chrome is None and chrome_frame(screen):
+                                chrome = time.monotonic()
+                            loading = loading or 'Loading' in '\n'.join(screen.display[1:-1])
+                            if full_frame(screen, 'b'):
                                 t = time.monotonic()
                                 break
                     finally:
                         closer()
+                    if chrome is not None:
+                        # The header and status line (the columns may still be empty).
+                        res.add(f'{side}.firstframe.{n}.{tool}.{temp}_chrome_ms', ms(t0, chrome))
+                    if loading:
+                        res.notes.append(f'run {run} {side} firstframe {tool} {n} {temp}: a Loading frame')
                     if t is None:
                         res.notes.append(f'run {run} {side} firstframe {tool} {n} {temp}: no full frame in 30 s')
                     else:
@@ -1216,6 +1233,16 @@ def markdown(report):
                 if present(b):
                     out.append(f'| {side} | {n} | ' + ' | '.join(
                         cell(f'{b}.{tool}.{temp}_ms') for tool in ('yazi', 'cx') for temp in ('cold', 'warm')) + ' |')
+        if any(k.endswith('_chrome_ms') for k in m):
+            out += ['', 'Spawn -> first chrome (header and status line; columns may be empty):', '',
+                    '| Side | Entries | yazi cold | yazi warm | cx cold | cx warm |', '|---|---|---|---|---|---|']
+            for side in sides:
+                for n in report['sizes']:
+                    b = f'{side}.firstframe.{n}'
+                    if present(b):
+                        out.append(f'| {side} | {n} | ' + ' | '.join(
+                            cell(f'{b}.{tool}.{temp}_chrome_ms') for tool in ('yazi', 'cx')
+                            for temp in ('cold', 'warm')) + ' |')
         if present('remote.firstframe.ssh_wrapper'):
             out.append(f"\ncx's remote connects include the fixture's ssh wrapper start-up "
                        f"({cell('remote.firstframe.ssh_wrapper_ms')}); yazi's do not. "

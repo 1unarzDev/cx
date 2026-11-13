@@ -224,8 +224,21 @@ impl App {
             return None;
         }
         let b = self.browser.as_ref()?;
-        let (_, since, done) = b.settle.as_ref()?;
-        (!done).then(|| PREFETCH_DELAY.saturating_sub(now.duration_since(*since)))
+        // An unlisted folder's quiet empty column turns into "Loading..." on time.
+        let loading = self
+            .yz
+            .loading_since
+            .get()
+            .filter(|_| b.loading && b.entries.is_empty())
+            .map(|(_, _, at)| super::yazi::LOADING_QUIET.saturating_sub(now.duration_since(at)))
+            .filter(|left| !left.is_zero());
+        let settle = b.settle.as_ref().and_then(|(_, since, done)| {
+            (!done).then(|| PREFETCH_DELAY.saturating_sub(now.duration_since(*since)))
+        });
+        match (loading, settle) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
     pub(super) fn chosen_entries(&self) -> Vec<Entry> {
         let Some(b) = &self.browser else {

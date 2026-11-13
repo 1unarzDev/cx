@@ -514,6 +514,20 @@ pub(super) struct Yazi {
     pub preview_rect: std::cell::Cell<Rect>,
     /// `;`: the next command panel closes itself when its command exits 0.
     pub shell_quiet: bool,
+    /// The folder whose first listing is on its way, and since when: its column stays
+    /// empty (no "Loading..." flash on a normal connect) until LOADING_QUIET passes.
+    pub loading_since: std::cell::Cell<Option<(usize, u64, std::time::Instant)>>,
+}
+
+/// How long an unlisted folder shows an empty column before "Loading...": a remote
+/// connect plus first reply (~250 ms over SSH) never flashes it; a stalled link says so.
+pub(super) const LOADING_QUIET: std::time::Duration = std::time::Duration::from_millis(1000);
+
+fn path_key(device: usize, path: &str) -> (usize, u64) {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut h);
+    (device, h.finish())
 }
 
 fn quote(s: &str) -> String {
@@ -1764,13 +1778,22 @@ impl App {
             .collect();
         v.current = Column {
             hovered: (len > 0).then(|| cursor - off),
-            empty: (len == 0).then(|| {
-                if b.loading && b.entries.is_empty() {
-                    "Loading...".into()
-                } else {
-                    "No items".into()
-                }
-            }),
+            empty: if len > 0 {
+                None
+            } else if b.loading && b.entries.is_empty() {
+                let key = path_key(device, &b.path);
+                let since = match self.yz.loading_since.get() {
+                    Some((d, p, at)) if (d, p) == key => at,
+                    _ => {
+                        let now = std::time::Instant::now();
+                        self.yz.loading_since.set(Some((key.0, key.1, now)));
+                        now
+                    }
+                };
+                (since.elapsed() >= LOADING_QUIET).then(|| "Loading...".into())
+            } else {
+                Some("No items".into())
+            },
             size_max: b.entries.iter().map(|e| e.size).max().unwrap_or(0),
             rows: rows_vec,
         };

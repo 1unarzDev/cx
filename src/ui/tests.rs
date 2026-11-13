@@ -7127,6 +7127,26 @@ fn yazi_narrow_linemode_keeps_the_size_and_drops_the_bar_first() {
 }
 
 #[test]
+fn yazi_unlisted_folder_is_quiet_before_loading_shows() {
+    let (mut a, _rx) = file_app();
+    let b = a.browser.as_mut().unwrap();
+    b.entries.clear();
+    b.loading = true;
+    // The first frames: header, status line, an empty column (no "Loading..." flash).
+    let out = capture_app(&a, 80);
+    assert!(!out.contains("Loading"), "{out}");
+    assert!(out.contains("NOR"), "{out}");
+    assert!(a
+        .files_due(Instant::now())
+        .is_some_and(|d| d <= yazi::LOADING_QUIET));
+    // A stalled link says so after LOADING_QUIET.
+    let (d, p, _) = a.yz.loading_since.get().unwrap();
+    a.yz.loading_since
+        .set(Some((d, p, Instant::now() - yazi::LOADING_QUIET)));
+    assert!(capture_app(&a, 80).contains("Loading..."));
+}
+
+#[test]
 fn yazi_visual_range_is_not_counted_in_the_header() {
     let (mut a, _rx) = file_app();
     press(&mut a, 'v');

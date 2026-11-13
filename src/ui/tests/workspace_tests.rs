@@ -309,6 +309,35 @@ fn persistent_navigation_cache_is_instant_scoped_and_not_mutation_authority() {
 }
 
 #[test]
+fn a_big_folder_persists_its_head_and_size() {
+    let (mut a, _) = file_app();
+    let b = a.browser.as_mut().unwrap();
+    let one = b.entries[0].clone();
+    b.entries = (0..100_000)
+        .map(|i| Entry {
+            name: format!("f{i:06}"),
+            path: format!("/files/f{i:06}"),
+            ..one.clone()
+        })
+        .collect();
+    b.selected = 50_000;
+    let bytes = serde_json::to_vec(&workspaces::NavigationCache::snapshot(&a)).unwrap();
+    assert!(bytes.len() < 256 * 1024, "{} bytes", bytes.len());
+    let (mut b, rx) = queued_app();
+    let cache: workspaces::NavigationCache = serde_json::from_slice(&bytes).unwrap();
+    cache.restore(&mut b);
+    b.open_host_browser(0, "/files".into());
+    let browser = b.browser.as_ref().unwrap();
+    // The first screens paint at once; the listing request still goes out.
+    assert_eq!(browser.entries.len(), 256);
+    assert_eq!(browser.total, Some(100_000));
+    assert!(browser.loading);
+    assert!(rx
+        .try_iter()
+        .any(|t| matches!(t.op, Operation::List { .. })));
+}
+
+#[test]
 fn scheduler_supersedes_navigation_without_discarding_mutations() {
     let (a, _) = queued_app();
     let make = |generation, op| Task {

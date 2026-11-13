@@ -308,8 +308,9 @@ struct Browser {
     /// Derived listing caches (visible rows, lowercase names, search matches).
     #[serde(skip)]
     index: std::cell::RefCell<ViewIndex>,
-    /// Entries the helper reported for the whole directory (`total`), when known.
-    #[serde(skip)]
+    /// Entries the helper reported for the whole directory (`total`), when known
+    /// (persisted with a big folder's head).
+    #[serde(default)]
     total: Option<u64>,
     /// Child folders whose first listing page is being prefetched.
     #[serde(skip)]

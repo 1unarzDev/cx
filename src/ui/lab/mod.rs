@@ -403,19 +403,28 @@ mod review_tests {
         );
     }
 
-    /// First run: the viewer alone, no braille rings or beads (rejected 2026-11-10),
-    /// so nothing touches its label at any size.
+    /// First run: the viewer alone in the middle of its quiet dotted orbits (round-67,
+    /// asked back 2026-11-12), and no dot within two cells of its name on its row.
     #[test]
-    fn onboarding_draws_no_braille_orbit() {
+    fn onboarding_draws_quiet_orbits_clear_of_the_name() {
         let s = state::typical();
-        for (w, h) in [(40, 20), (120, 40), (200, 60)] {
+        for (w, h) in [(40, 20), (80, 24), (120, 40), (200, 60)] {
             let (t, _) = draw(LabView::Onboarding, &s, w, h);
-            assert!(
-                !t.chars()
-                    .any(|c| ('\u{2800}'..='\u{28ff}').contains(&c) || c == '◌'),
-                "{w}x{h}:\n{t}"
-            );
-            assert!(t.contains("tranquility"));
+            let dots = t
+                .chars()
+                .filter(|c| ('\u{2801}'..='\u{28ff}').contains(c))
+                .count();
+            assert!(dots > 8, "{w}x{h}: no orbit\n{t}");
+            let row = t.lines().find(|l| l.contains("◉ tranquility")).unwrap();
+            let chars: Vec<char> = row.chars().collect();
+            let at = row.chars().position(|c| c == '◉').unwrap();
+            let end = at + "◉ tranquility".chars().count();
+            for x in at.saturating_sub(2)..(end + 2).min(chars.len()) {
+                assert!(
+                    !('\u{2800}'..='\u{28ff}').contains(&chars[x]),
+                    "{w}x{h}: a dot touches the name: {row}"
+                );
+            }
         }
     }
 }

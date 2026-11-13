@@ -1621,3 +1621,69 @@ fn label(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It, r: R, pick: Option<bool>,
         }
     }
 }
+
+/// The welcome page's picture: this device alone in the middle of two quiet dotted
+/// orbits, a few empty seats on the outer one waiting for the devices it will reach.
+/// Nothing touches its name; ASCII keeps the name alone.
+pub(super) fn welcome(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
+    let nw = super::width(&d.name, cx.uni()) + 2;
+    if r.width < nw + 4 || r.height == 0 {
+        return;
+    }
+    let x = r.x + (r.width - nw) / 2;
+    let y = r.y + r.height / 2;
+    cx.put(buf, x, y, 1, cx.g("◉", "@"), cx.st(Tok::Accent));
+    cx.put(
+        buf,
+        x + 2,
+        y,
+        nw - 2,
+        &d.name,
+        cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD),
+    );
+    if !cx.uni() || r.height < 3 {
+        return;
+    }
+    let a = 2 * i32::from(x) + i32::from(nw);
+    let mut cv = Canvas::new(r, a);
+    cv.block(R {
+        x: i32::from(x) - 2,
+        y: i32::from(y),
+        w: i32::from(nw) + 4,
+        h: 1,
+    });
+    let c = (a as f32 / 2.0, f32::from(y) + 0.5);
+    let ry = (f32::from(r.height) / 2.0 - 0.6).max(1.0);
+    let half = f32::from(nw) / 2.0;
+    let rx = (f32::from(r.width) / 2.0 - 2.0).min(30.0).max(half + 4.0);
+    let faint = cx.ink(Tok::Faint, if cx.dark() { 0.9 } else { 1.0 });
+    // A short picture keeps the inner orbit alone.
+    let tall = r.height >= 7;
+    let inner = ((rx * 0.5).max(half + 3.0), (ry * 0.42).max(1.1));
+    let rings: Vec<((f32, f32), Pat)> = if tall {
+        vec![(inner, Pat::Dots), ((rx, ry), Pat::Sparse)]
+    } else {
+        vec![((half + 4.0, 1.2), Pat::Sparse)]
+    };
+    for ((ex, ey), pat) in rings {
+        let pts = half_ellipse(c, ex, ey);
+        for side in [1, -1] {
+            cv.stroke(&pts, side, pat, faint, 1);
+        }
+    }
+    cv.flush(cx, buf);
+    if !tall {
+        return;
+    }
+    // Empty seats on the outer orbit, mirrored.
+    for phi in [0.95f32, 2.2] {
+        let p = (c.0 + rx * phi.sin(), c.1 - ry * phi.cos());
+        for side in [1, -1] {
+            let q = if side < 0 { (a as f32 - p.0, p.1) } else { p };
+            let (sx, sy) = (q.0.floor() as i32, q.1.floor() as i32);
+            if cv.free(sx, sy) {
+                cx.put(buf, sx as u16, sy as u16, 1, "○", cx.ink(Tok::Muted, 0.6));
+            }
+        }
+    }
+}

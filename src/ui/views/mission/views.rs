@@ -2627,25 +2627,12 @@ fn onboarding(cx: &Cx, buf: &mut Buffer, r: Rect) {
         y += 1;
     }
     y += 1;
-    // Illustration: this device alone, as the hub's root (no ring: an empty orbit
-    // is the room around it).
+    // Illustration: this device alone at the middle of its quiet orbits (the hub's
+    // root, before anything joins it).
     let ill_h: u16 = if small { 5 } else { 9 };
     let ill = Rect::new(x0, y, w, ill_h);
     if let Some(d) = cx.s.device(&cx.s.viewer) {
-        let mid = ill.y + ill.height / 2;
-        // The hub's root: `◉ name` in bold, no background.
-        let pw = super::width(&d.name, cx.uni()) + 2;
-        let px = ill.x + (ill.width.saturating_sub(pw)) / 2;
-        cx.put(
-            buf,
-            px,
-            mid,
-            1,
-            cx.status(d.status).0,
-            cx.status(d.status).1,
-        );
-        let nst = cx.ink(Tok::Fg, 1.0).add_modifier(Modifier::BOLD);
-        cx.put(buf, px + 2, mid, pw - 2, &d.name, nst);
+        super::nebula::welcome(cx, buf, ill, d);
     }
     y += ill_h + 1;
     // Primary action.

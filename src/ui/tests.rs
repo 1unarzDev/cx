@@ -5952,15 +5952,25 @@ fn only_the_overlay_looks_focused_while_it_owns_input() {
         t.backend().buffer().clone()
     };
     let bars = |b: &ratatui::buffer::Buffer| b.content.iter().filter(|c| c.symbol() == "▍").count();
+    // The focused zone label's cell, found on the hub without overlays (the palette
+    // has a `SESSIONS` heading of its own).
+    let at = std::cell::Cell::new(None);
     let label = |b: &ratatui::buffer::Buffer| {
-        (0..b.area.height)
-            .flat_map(|y| (0..b.area.width).map(move |x| (x, y)))
-            .find(|&(x, y)| b[(x, y)].symbol() == "N" && b[(x + 1, y)].symbol() == "E")
-            .map(|(x, y)| b[(x, y)].clone())
-            .unwrap()
+        let (x, y) = at.get().unwrap_or_else(|| {
+            let p = (0..b.area.height)
+                .flat_map(|y| (0..b.area.width).map(move |x| (x, y)))
+                .find(|&(x, y)| b[(x, y)].symbol() == "S" && b[(x + 1, y)].symbol() == "E")
+                .unwrap();
+            at.set(Some(p));
+            p
+        });
+        b[(x, y)].clone()
     };
     let (mut a, _) = queued_app();
+    a.work[0].sessions.push(disposable_shell());
     a.go_hub();
+    // The tiles' `SESSIONS` label is the focused zone's (the map has no header).
+    a.hub_sessions = true;
     let base = draw(&a);
     assert_eq!(bars(&base), 1, "one focused zone without overlays");
     assert!(label(&base).modifier.contains(Modifier::BOLD));

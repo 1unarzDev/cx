@@ -269,6 +269,66 @@ mod review_tests {
         }
     }
 
+    /// With rounded caps (kitty, ghostty, wezterm, `CX_NERD_FONT=1`) key chips are pills:
+    /// the only cells with a background, and each between its two caps. Phones, 16
+    /// colours and ASCII still paint nothing.
+    #[test]
+    fn pills_are_the_only_background_and_always_capped() {
+        use crate::ui::views::mission::{PILL_L, PILL_R};
+        let mut s = state::typical();
+        // (A session's own screen may paint backgrounds: not chrome.)
+        for x in &mut s.sessions {
+            x.screen.clear();
+        }
+        for variant in [
+            "dark-truecolor",
+            "light-truecolor",
+            "dark-256",
+            "dark-16",
+            "ascii",
+        ] {
+            let base = LabCaps {
+                pills: true,
+                ..LabCaps::from_variant(variant).unwrap()
+            };
+            let mut pills = 0;
+            for v in LabView::defaults(&s)
+                .into_iter()
+                .filter(|v| *v != LabView::JoinCode)
+            {
+                for (w, h) in [(40, 20), (120, 40), (190, 50)] {
+                    let (buf, _) = render_frame(&v, &s, &base, w, h);
+                    for y in 0..h {
+                        let mut open = false;
+                        for x in 0..w {
+                            let c = &buf[(x, y)];
+                            match c.symbol() {
+                                PILL_L => {
+                                    open = true;
+                                    pills += 1;
+                                }
+                                PILL_R => open = false,
+                                _ => assert!(
+                                    open || c.bg == ratatui::style::Color::Reset,
+                                    "{} {variant} {w}x{h}: ({x},{y}) painted outside a pill",
+                                    v.slug()
+                                ),
+                            }
+                            assert!(
+                                !open || (w >= 70 && base.unicode && variant != "dark-16"),
+                                "{} {variant} {w}x{h}: a pill at ({x},{y})",
+                                v.slug()
+                            );
+                        }
+                        assert!(!open, "{} {variant} {w}x{h}: row {y} unclosed", v.slug());
+                    }
+                }
+            }
+            let want = matches!(variant, "dark-truecolor" | "light-truecolor" | "dark-256");
+            assert_eq!(pills > 0, want, "{variant}: {pills} pills");
+        }
+    }
+
     /// A device that was never seen says so, not an age counted from the epoch
     /// (`✕ 20770d`).
     #[test]
@@ -331,10 +391,16 @@ mod review_tests {
         let s = state::typical();
         let (t, _) = draw(LabView::DeviceFocus("innovation".into()), &s, 200, 60);
         let rows: Vec<&str> = t.lines().collect();
-        let title = rows.iter().position(|r| r.contains("refactor transport")).unwrap();
+        let title = rows
+            .iter()
+            .position(|r| r.contains("refactor transport"))
+            .unwrap();
         let text_end = rows.iter().position(|r| r.contains("Refactoring")).unwrap();
         let ghost = rows.iter().position(|r| r.contains(" new ")).unwrap();
-        assert!(title < text_end && text_end < ghost && ghost - title >= 16, "{t}");
+        assert!(
+            title < text_end && text_end < ghost && ghost - title >= 16,
+            "{t}"
+        );
     }
 
     /// First run: the viewer alone, no braille rings or beads (rejected 2026-11-10),

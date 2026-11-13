@@ -260,6 +260,12 @@ class Painter:
             rect(0, 0, max(1, round(cw * n / 8)), h)
         elif ch == '▐':
             rect(cw // 2, 0, cw, h)
+        elif ch in '\ue0b4\ue0b6':  # powerline rounded caps, drawn as kitty does
+            # (a half disc filling the cell's height, flat side on the pill)
+            if ch == '\ue0b4':
+                d.pieslice((x0 - cw, y0, x0 + cw - 1, y0 + h - 1), 270, 90, fill=fg)
+            else:
+                d.pieslice((x0, y0, x0 + 2 * cw - 1, y0 + h - 1), 90, 270, fill=fg)
         elif ch in '░▒▓':
             t = {'░': 0.25, '▒': 0.5, '▓': 0.75}[ch]
             d.rectangle((x0, y0, x0 + cw - 1, y0 + h - 1), fill=mix(bg, fg, t))

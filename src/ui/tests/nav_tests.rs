@@ -403,8 +403,9 @@ fn phone_hub_is_the_device_tree_with_a_wrapping_footer() {
     let text = draw(&a, 40, 20);
     let lines: Vec<_> = text.lines().collect();
     assert!(lines[0].contains("cx"), "{text}");
+    // (No `NETWORK` header strip: the tree starts under the top bar.)
     assert!(
-        text.contains("NETWORK") && text.contains("laptop"),
+        !text.contains("NETWORK") && text.contains("laptop"),
         "{text}"
     );
     // Phone keys are words: `ret`, never a missing glyph.
@@ -549,15 +550,15 @@ fn palette_fits_its_results_aligns_details_and_dims_the_backdrop() {
     }
     assert!(text.contains("SESSIONS"), "{text}");
     assert!(!text.contains("more ↓"), "nothing cut: {text}");
-    // The backdrop is faded: the hub's focused label loses its weight.
-    let hub_label = base.lines().position(|l| l.contains("NETWORK")).unwrap() as u16;
-    let x = base
-        .lines()
-        .nth(hub_label as usize)
-        .unwrap()
-        .find("NETWORK")
-        .unwrap() as u16;
-    assert!(!buffer[(x, hub_label)].modifier.contains(Modifier::BOLD));
+    // The backdrop is faded: the top bar's bold `cx` loses its weight.
+    let x = base.lines().next().unwrap().find("cx").unwrap() as u16;
+    let mut plain = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    a.input = None;
+    plain.draw(|f| render(f, &a)).unwrap();
+    assert!(plain.backend().buffer()[(x, 0)]
+        .modifier
+        .contains(Modifier::BOLD));
+    assert!(!buffer[(x, 0)].modifier.contains(Modifier::BOLD));
 }
 
 #[test]

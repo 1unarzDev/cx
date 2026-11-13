@@ -73,6 +73,7 @@ pub(super) fn terminal_caps() -> LabCaps {
             caps::ColorDepth::None => ColorLevel::None,
         },
         unicode: c.unicode,
+        pills: c.pills,
         theme: match c.background {
             caps::Background::Dark => Theme::Dark,
             caps::Background::Light => Theme::Light,
@@ -714,6 +715,7 @@ pub(super) mod tests {
         for name in ["tranquility", "innovation", "nas"] {
             assert!(t.contains(name), "{name} missing:\n{t}");
         }
-        assert!(t.contains("NETWORK"), "{t}");
+        // (No `NETWORK lan` header strip over the map.)
+        assert!(!t.contains("NETWORK"), "{t}");
     }
 }

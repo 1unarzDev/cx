@@ -85,6 +85,10 @@ pub(super) enum Size {
 /// are reached by the arrows, `Tab` or `/`.
 pub const SLOTS: [char; 4] = ['a', 's', 'd', 'g'];
 
+/// A pill's rounded caps (powerline extra symbols, drawn by kitty, ghostty and wezterm).
+pub const PILL_L: &str = "\u{e0b6}";
+pub const PILL_R: &str = "\u{e0b4}";
+
 /// Render context: fixture, capabilities and the tap targets recorded while drawing.
 pub(super) struct Cx<'a> {
     pub s: &'a LabState,
@@ -141,10 +145,23 @@ impl<'a> Cx<'a> {
     pub fn g(&self, u: &'static str, a: &'static str) -> &'static str {
         self.c.glyph(u, a)
     }
-    /// The Enter key's label, a word in every tier (`⏎` drew as an odd icon in many
-    /// fonts), the same at every size.
+    /// The Enter key's label (`ret` in ASCII).
     pub fn ret(&self) -> &'static str {
-        "enter"
+        self.key_label("⏎")
+    }
+    /// A key's label, one set everywhere (footer, help, chips, palette): `␣ ⏎ ⌫`, and
+    /// in ASCII the words `spc ret bksp`.
+    pub fn key_label<'k>(&self, k: &'k str) -> &'k str {
+        if self.uni() {
+            return k;
+        }
+        match k {
+            "␣" => "spc",
+            "⏎" => "ret",
+            "⌫" => "bksp",
+            "↑↓" => "up/dn",
+            other => other,
+        }
     }
     pub fn st(&self, t: Tok) -> Style {
         // 16 colours: brightblack is the background in some palettes (Solarized Dark's
@@ -453,10 +470,12 @@ impl<'a> Cx<'a> {
                     let fg = to_rgb(c.fg).unwrap_or(self.fg0());
                     // One level for every ink (names, strokes, tile text, bold or screen-authored).
                     c.fg = self.col(mix(bg0, fg, 0.17)).unwrap_or(Color::Reset);
-                    c.bg = match to_rgb(c.bg) {
-                        Some(b) => self.col(mix(bg0, b, 0.2)).unwrap_or(Color::Reset),
-                        None => Color::Reset,
-                    };
+                    // No cell behind a backdrop (a dimmed pill or diff line would be a
+                    // slab over a transparent terminal), and a pill's caps go with it.
+                    c.bg = Color::Reset;
+                    if matches!(c.symbol(), PILL_L | PILL_R) {
+                        c.set_symbol(" ");
+                    }
                     c.modifier = Modifier::empty();
                 } else {
                     // No blending: clear the backdrop rather than let it bleed around
@@ -474,14 +493,43 @@ impl<'a> Cx<'a> {
         if narrow {
             self.put(buf, x, y, 1, &k, st)
         } else {
-            self.put(buf, x, y, 3, &format!(" {k} "), st)
+            self.keycap(buf, x, y, 3, &k, st)
+        }
+    }
+    /// Key chips as pills: where the terminal draws rounded powerline caps (ui::caps),
+    /// in 256 colours or more, and not on a phone.
+    pub fn pills(&self) -> bool {
+        self.c.pills && self.uni() && self.tc() && !self.touch()
+    }
+    /// A keycap ` k ` (the key's width + 2), its label from `key_label`: bold `st` ink
+    /// with nothing behind it; or, with `pills`, a pill in yazi's style: the rounded
+    /// caps in the key's colour and the key on that colour. A pill is the only cell
+    /// background cx's chrome paints, and only between its two caps (the caps' own
+    /// cells stay transparent around the round).
+    pub fn keycap(&self, buf: &mut Buffer, x: u16, y: u16, max: u16, k: &str, st: Style) -> u16 {
+        let k = self.key_label(k);
+        let w = width(k, self.uni()) + 2;
+        match st
+            .fg
+            .filter(|_| self.pills() && w <= max.min(buf.area.right().saturating_sub(x)))
+        {
+            Some(c) => {
+                let on = self.col(self.bg0()).unwrap_or(Color::Reset);
+                let cap = Style::default().fg(c);
+                self.put(buf, x, y, 1, PILL_L, cap);
+                let kst = Style::default().fg(on).bg(c).add_modifier(Modifier::BOLD);
+                self.put(buf, x + 1, y, w - 2, k, kst);
+                self.put(buf, x + w - 1, y, 1, PILL_R, cap);
+                w
+            }
+            None => self.put(buf, x, y, max, &format!(" {k} "), st),
         }
     }
     /// A device letter: bold in the device's hue, no cell behind it.
     pub fn chip_style(&self, hue: u8) -> Style {
         self.st(Tok::Id(hue)).add_modifier(Modifier::BOLD)
     }
-    /// Neutral keycap for verbs (` enter `, ` n `): the letter in bold accent ink, no
+    /// Neutral keycap for verbs (` ⏎ `, ` n `): the letter in bold accent ink, no
     /// cell behind it (the label beside it is muted, so the key leads).
     pub fn key_style(&self) -> Style {
         self.st(Tok::Accent).add_modifier(Modifier::BOLD)
@@ -621,7 +669,7 @@ impl<'a> Cx<'a> {
         if k.contains('@') {
             k.split(' ').count() as u16 * 3
         } else {
-            width(k, self.uni()) + 2
+            width(self.key_label(k), self.uni()) + 2
         }
     }
     /// A row of key chips (` ⏎ open  ␣ peek `); records taps. Returns end x. A key
@@ -670,10 +718,10 @@ impl<'a> Cx<'a> {
                         }
                         None => (t, self.key_style()),
                     };
-                    cx += self.put(buf, cx, y, 3, &format!(" {c} "), st);
+                    cx += self.keycap(buf, cx, y, 3, c, st);
                 }
             } else {
-                cx += self.put(buf, cx, y, kw, &format!(" {k} "), self.key_style());
+                cx += self.keycap(buf, cx, y, kw, k, self.key_style());
             }
             if lw > 0 {
                 cx += 1;

@@ -393,7 +393,7 @@ pub(super) fn addr(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, s: &LabSession) ->
         w += cx.dchip(buf, x, y, d, false);
     }
     let k = cx.slot(s).unwrap_or(' ');
-    w + cx.put(buf, x + w, y, 3, &format!(" {k} "), cx.key_style())
+    w + cx.keycap(buf, x + w, y, 3, &k.to_string(), cx.key_style())
 }
 
 /// A session as a two-row thumb target (phones): its address, title and state, then the

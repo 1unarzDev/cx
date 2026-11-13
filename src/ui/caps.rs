@@ -43,6 +43,9 @@ pub(crate) struct Caps {
     /// Heuristic only; icons still need `CX_ICONS=1` ([`Caps::icons`]).
     pub nerd_font_likely: bool,
     pub icons: bool,
+    /// Key chips may be pills with rounded powerline caps (U+E0B6, U+E0B4): only where
+    /// the terminal draws those glyphs itself, or `CX_NERD_FONT=1` (`=0` turns it off).
+    pub pills: bool,
 }
 
 impl Default for Caps {
@@ -58,6 +61,7 @@ impl Default for Caps {
             hyperlinks: false,
             nerd_font_likely: false,
             icons: false,
+            pills: false,
         }
     }
 }
@@ -190,6 +194,21 @@ impl Caps {
             hyperlinks,
             nerd_font_likely: kitty || ghostty || wezterm,
             icons: get("CX_ICONS").as_deref() == Some("1"),
+            // Terminals that draw U+E0B4 and U+E0B6 themselves, whatever the font:
+            // - kitty: kitty/decorations.c maps both to `filled_D` (a half disc);
+            // - ghostty: src/font/sprite/draw/powerline.zig, `drawE0B4` and `drawE0B6`;
+            // - wezterm: wezterm-gui/src/customglyph.rs has `0xe0b4` and `0xe0b6` polys,
+            //   on by default (`custom_block_glyphs`, docs: "Powerline triangle, curve
+            //   and diagonal glyphs").
+            // foot draws only U+2500-259F, U+2800-28FF, U+1CD00-1CDE5 and U+1FB00-1FB9B
+            // itself (foot.ini(5), `box-drawings-uses-font-glyphs`), so the caps there
+            // depend on the font: `CX_NERD_FONT=1`. Inside tmux the outer terminal's
+            // variables are inherited and still name the terminal that draws.
+            pills: match get("CX_NERD_FONT").as_deref() {
+                Some("1") => true,
+                Some("0") => false,
+                _ => kitty || ghostty || wezterm,
+            },
         }
     }
 
@@ -863,7 +882,13 @@ mod tests {
         assert!(!detect(&[("TERM", "xterm-256color")]).hyperlinks);
 
         let kitty = detect(&[("TERM", "xterm-kitty")]);
-        assert!(kitty.nerd_font_likely && !kitty.icons);
+        assert!(kitty.nerd_font_likely && !kitty.icons && kitty.pills);
+        // Rounded key caps: drawn by kitty, ghostty and wezterm; foot needs the font.
+        assert!(detect(&[("TERM", "xterm-ghostty")]).pills);
+        assert!(detect(&[("TERM_PROGRAM", "WezTerm")]).pills);
+        assert!(!detect(&[("TERM", "foot")]).pills);
+        assert!(detect(&[("TERM", "foot"), ("CX_NERD_FONT", "1")]).pills);
+        assert!(!detect(&[("TERM", "xterm-kitty"), ("CX_NERD_FONT", "0")]).pills);
         assert!(detect(&[("CX_ICONS", "1")]).icons);
         assert!(!detect(&[("CX_ICONS", "yes")]).icons);
         // The summary is one bounded line without environment values.

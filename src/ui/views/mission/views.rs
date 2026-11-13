@@ -427,7 +427,7 @@ fn right_status(cx: &Cx, buf: &mut Buffer, y: u16) -> u16 {
     let mut x = a.right().saturating_sub(1);
     let mut used = 0u16;
     if cx.size() >= Size::S {
-        let w = cx.put_r(buf, x, y, " ? ", cx.key_style());
+        let w = cx.keycap(buf, x.saturating_sub(3), y, 3, "?", cx.key_style());
         cx.hit(Rect::new(x - w, y, w, 1), "help");
         x = x.saturating_sub(w + 2);
         used += w + 2;
@@ -452,15 +452,8 @@ fn footer(cx: &Cx, buf: &mut Buffer, r: Rect, items: Keys) {
     let items: Keys = items
         .into_iter()
         .map(|(k, l, a)| {
-            // Words where the symbol may be missing (ASCII, and phones, whose default
-            // fonts lack ⏎ ⌫); `␣` is always `spc` (it renders as a bare underscore).
-            let k = match k {
-                "␣" => "spc",
-                "⏎" => cx.ret(),
-                "⌫" => "bksp",
-                "↑↓" if !cx.uni() => "up/dn",
-                other => other,
-            };
+            // One label set everywhere (`␣ ⏎ ⌫`, words in ASCII).
+            let k = cx.key_label(k);
             // Labels stay whole (a phone footer wraps to a second row instead), so a
             // chip never loses the word that gives it meaning (`esc plain ssh`).
             (k, l, a)
@@ -1116,7 +1109,7 @@ fn new_tile(cx: &Cx, buf: &mut Buffer, r: Rect, d: Option<&LabDevice>, picked: b
     let mut ox = x;
     for (k, label, tok) in opts {
         // On the hub the option is an address: the device letter in its hue, then the verb.
-        let key = format!(" {k} ");
+        let key = k.to_string();
         let kw = 3 + if hub { 3 } else { 0 };
         if y >= r.bottom() - 1 || (!stacked && ox + kw + 8 > r.right()) {
             break;
@@ -1125,7 +1118,7 @@ fn new_tile(cx: &Cx, buf: &mut Buffer, r: Rect, d: Option<&LabDevice>, picked: b
         if hub {
             ox += cx.dchip(buf, ox, y, d, false);
         }
-        ox += cx.put(buf, ox, y, 3, &key, cx.key_style());
+        ox += cx.keycap(buf, ox, y, 3, &key, cx.key_style());
         ox += 1;
         ox += cx.put(buf, ox, y, 8, label, cx.st(tok));
         cx.hit(
@@ -1189,10 +1182,9 @@ fn stop_confirm(cx: &Cx, buf: &mut Buffer, tr: Rect, x: &LabSession) {
     let row = Rect::new(tr.x + 1, y, tr.width.saturating_sub(1), 1);
     let bg = cx.wash(Tok::Err, 0.22);
     cx.fill(buf, row, bg);
-    let del = "bksp";
-    let keys = format!(" {del} ");
+    let keys = "⌫";
     let tail = "again to stop, any key keeps it";
-    let kw = super::width(&keys, cx.uni());
+    let kw = cx.key_w(keys);
     let mut xx = row.x + 1;
     let q = format!("stop {}? ", x.title);
     let room = row
@@ -1207,7 +1199,7 @@ fn stop_confirm(cx: &Cx, buf: &mut Buffer, tr: Rect, x: &LabSession) {
         cx.st(Tok::Err).add_modifier(Modifier::BOLD).patch(bg),
     );
     let k0 = xx;
-    xx += cx.put(buf, xx, y, kw, &keys, cx.key_style()) + 1;
+    xx += cx.keycap(buf, xx, y, kw, keys, cx.key_style()) + 1;
     cx.hit(Rect::new(k0, y, kw, 1), "stop");
     cx.put(
         buf,
@@ -1747,7 +1739,7 @@ fn files(cx: &Cx, buf: &mut Buffer, r: Rect) {
             // Room for one target per row: `s send to`, then each with its rtt and relay.
             let mut y = sy;
             let mut x = list.x + 1;
-            x += cx.put(buf, x, y, 3, " s ", cx.key_style()) + 1;
+            x += cx.keycap(buf, x, y, 3, "s", cx.key_style()) + 1;
             cx.put(buf, x, y, 9, "send to", cx.st(Tok::Muted));
             y += 1;
             for (d, route) in &targets {
@@ -1806,7 +1798,7 @@ fn files(cx: &Cx, buf: &mut Buffer, r: Rect) {
             }
             // `s` is the key; the letters after it are what `s` then takes, drawn as
             // plain coloured text (here they are not keys on their own).
-            x += cx.put(buf, x, sy, 3, " s ", cx.key_style()) + 1;
+            x += cx.keycap(buf, x, sy, 3, "s", cx.key_style()) + 1;
             x += cx.put(buf, x, sy, 9, "send to ", cx.st(Tok::Muted));
             // Only devices a transfer can reach from here (closed links are skipped);
             // one reached through a relay is drawn in its hue but not bold.
@@ -2275,7 +2267,7 @@ pub(super) fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
     } else {
         inner.bottom().saturating_sub(1)
     };
-    let mv = if cx.uni() { "↑↓" } else { "up/dn" };
+    let mv = "↑↓";
     // (Phones tap a row, so their row keeps `esc close` in place of the arrows.)
     let chips: &[(&str, &str, &str)] = if cx.touch() {
         &[(cx.ret(), "go", "go"), ("esc", "close", "back")]
@@ -2354,7 +2346,7 @@ pub(super) fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str) {
                 Some(d) if k.len() == 1 && k.starts_with(d.hotkey) => {
                     cx.dchip(buf, kx, yy, d, false)
                 }
-                _ => cx.put(buf, kx, yy, 3, &format!(" {k} "), cx.key_style()),
+                _ => cx.keycap(buf, kx, yy, 3, k, cx.key_style()),
             };
         }
         cx.hit(row, act.clone());
@@ -2401,7 +2393,7 @@ fn secrets(cx: &Cx, buf: &mut Buffer, r: Rect) {
         // Each card has a home-row key, like session slots.
         let mut x = ix;
         if let Some(k) = SLOTS.get(i) {
-            x += cx.put(buf, x, y, 3, &format!(" {k} "), cx.key_style()) + 1;
+            x += cx.keycap(buf, x, y, 3, &k.to_string(), cx.key_style()) + 1;
         }
         x += cx.put(buf, x, y, 1, g, gst) + 1;
         // A missing card's button names the key that acts on it: `⏎` on the selected
@@ -2552,7 +2544,7 @@ fn secrets(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let n = cx.s.secrets.len();
     if let (Some(k), true) = (SLOTS.get(n), top < r.bottom()) {
         let x = x0 + 2;
-        let kw = cx.put(buf, x, top, 3, &format!(" {k} "), cx.key_style());
+        let kw = cx.keycap(buf, x, top, 3, &k.to_string(), cx.key_style());
         let t = cx.put(
             buf,
             x + kw + 1,
@@ -2712,7 +2704,7 @@ fn onboarding(cx: &Cx, buf: &mut Buffer, r: Rect) {
             break;
         }
         let mut x = x0;
-        x += cx.put(buf, x, y, 5, &format!(" {k} "), cx.key_style());
+        x += cx.keycap(buf, x, y, 5, k, cx.key_style());
         x += 1;
         x += cx.put(buf, x, y, 24, t, cx.ink(Tok::Fg, 0.9));
         cx.hit(Rect::new(x0, y, x - x0, 1), act);
@@ -3433,13 +3425,7 @@ fn wrap(s: &str, w: usize) -> Vec<String> {
 /// the map, and the `then` keys come after it, so `c` the device and `c` claude never
 /// read as one key. A calm list, a third of the way down, at every size.
 fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
-    let key = |k: &'static str| -> &'static str {
-        match k {
-            "⏎" => cx.ret(),
-            "⌫" => "bksp",
-            o => o,
-        }
-    };
+    let key = |k: &'static str| -> &'static str { cx.key_label(k) };
     let wide = r.width >= 60;
     let ctx = match cx.c.focus {
         Some(Pane::Custom("device")) => "IN A DEVICE",
@@ -3464,7 +3450,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                         },
                     ),
                     (k(key("⏎")), "attach the selection"),
-                    (k("spc"), "peek"),
+                    (k(key("␣")), "peek"),
                     (k(key("⌫")), "stop (press twice)"),
                     (k("w p t"), "watch / pin / its tasks"),
                 ],
@@ -3532,7 +3518,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
             (
                 "file",
                 vec![
-                    (k("spc"), "select"),
+                    (k(key("␣")), "select"),
                     (
                         k("s"),
                         if wide {
@@ -3583,7 +3569,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
             (
                 "act",
                 vec![
-                    (k("spc"), "peek"),
+                    (k(key("␣")), "peek"),
                     (
                         k("e"),
                         if wide {

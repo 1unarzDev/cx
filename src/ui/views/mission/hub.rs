@@ -16,9 +16,8 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let list = cx.by_attention();
     let right = r.right().saturating_sub(1);
 
-    // Bottom up: ticker, one row of thumbnails, the vitals strip; the NETWORK label
-    // (with the mesh legend on its rule) on top; the orbit takes the rest, and the
-    // rows it leaves empty go to the thumbnails.
+    // Bottom up: ticker, the thumbnails, the vitals strip; a blank row on top; the
+    // orbit takes the rest, and the rows it leaves empty go to the thumbnails.
     let tick_h = u16::from(!alerts(cx).is_empty());
     let vit_h: u16 = if sz >= Size::M { 2 } else { 1 };
     let (cols, th_min) = views::grid_shape(cx, r.width.saturating_sub(2), r.height);
@@ -30,7 +29,7 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         _ => 12,
     };
     let need = th_max;
-    let fixed = tick_h + 1 + vit_h + 1 + 1 + 1; // ticker, sessions label, vitals, network label, gaps
+    let fixed = tick_h + 1 + vit_h + 1 + 1 + 1; // ticker, sessions label, vitals, top row, gaps
                                                 // (Plus the band's blank row either side, and the air kept where the screen is tall.)
     let pad = if sz >= Size::M && r.height >= 30 {
         4
@@ -52,13 +51,8 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         .min(need.saturating_sub(th));
     let (band_h, th) = (band_h - give, th + give);
     let band_th = th;
-    let lx = cx.label(buf, r.x + 1, r.y, 16, "NETWORK", on_graph) + r.x + 1;
-    let lend = legend(cx, buf, lx + 2, r.y, right);
-    // A short stub of rule after the legend reads as debris: only a real run.
-    if right.saturating_sub(lend) >= 12 {
-        cx.rule(buf, lend + 1, right, r.y);
-    }
-    // (A blank row either side: the map never touches the legend or the vitals strip.)
+    // (The top row stays blank, as air under the top bar: no header strip. A device's
+    // meshes show quietly in its vitals strip.)
     let band = Rect::new(r.x, r.y + 2, r.width, band_h.saturating_sub(2));
     let ids = orbit::order(cx, band);
     cx.order.borrow_mut().clone_from(&ids);
@@ -180,46 +174,6 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
             Rect::new(r.x + 1, r.bottom() - 1, r.width.saturating_sub(2), 1),
         );
     }
-}
-
-/// One quiet line beside the NETWORK label: the meshes in their hue (members up) and
-/// lan's teal. The line grammar lives in help (`?`).
-fn legend(cx: &Cx, buf: &mut Buffer, mut x: u16, y: u16, right: u16) -> u16 {
-    let sep = if cx.size() >= Size::M { 3 } else { 2 };
-    let mut items: Vec<(String, Tok, Option<&crate::ui::views::LabMesh>)> =
-        cx.s.meshes
-            .iter()
-            .map(|m| {
-                let up = m
-                    .members
-                    .iter()
-                    .filter(|id| cx.s.device(id).is_some_and(|d| cx.up(d)))
-                    .count();
-                let text = if cx.size() >= Size::M {
-                    format!("{} {up}/{}", m.name, m.members.len())
-                } else {
-                    m.name.clone()
-                };
-                (text, orbit::mesh_tok(cx, &m.id), Some(m))
-            })
-            .collect();
-    items.push(("lan".into(), Tok::Lan, None));
-    for (t, tok, mesh) in &items {
-        let alert = mesh.is_some_and(|m| !m.healthy);
-        let w = super::width(t, cx.uni()) + if alert { 2 } else { 0 };
-        if x + w + 1 > right {
-            break;
-        }
-        let tw = cx.put(buf, x, y, w, t, cx.ink(*tok, 0.85));
-        if alert {
-            cx.put(buf, x + tw, y, 2, cx.g(" ▲", " ^"), cx.st(Tok::Warn));
-        }
-        if let Some(m) = mesh {
-            cx.hit(Rect::new(x, y, w, 1), format!("mesh:{}", m.id));
-        }
-        x += w + sep;
-    }
-    x
 }
 
 /// The selected device: identity, route with the rtt of every hop, live vitals and the
@@ -522,20 +476,18 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let n = rows.len() as u16;
     let al = alerts(cx);
     let tick_h = (al.len() as u16).min(2).min(r.height / 8);
-    // The label, a breathing row, the tree, a breathing row, the ticker.
-    let avail = r.height.saturating_sub(2 + tick_h + 1);
+    // A breathing row, the tree, a breathing row, the ticker.
+    let avail = r.height.saturating_sub(1 + tick_h + 1);
     // Two-row device rows when the height allows (a thumb-sized target with vitals).
     let row_h = if avail >= 2 * n { 2 } else { 1 };
     let shown = (avail / row_h).min(n);
-    let lw = cx.label(buf, r.x + 1, r.y, 16, "NETWORK", focus != Pane::Sessions);
-    legend(cx, buf, r.x + 2 + lw + 1, r.y, right);
     let ids: Vec<&str> = rows.iter().map(|t| t.d.id.as_str()).collect();
     *cx.order.borrow_mut() = ids.iter().map(|s| s.to_string()).collect();
     let sel_id = ids
         .get(cx.c.selected % ids.len().max(1))
         .copied()
         .unwrap_or_default();
-    let mut y = r.y + 2;
+    let mut y = r.y + 1;
     for t in rows.iter().take(usize::from(shown)) {
         tree_row(
             cx,

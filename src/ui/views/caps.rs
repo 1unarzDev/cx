@@ -40,6 +40,8 @@ pub struct LabCaps {
     pub hover: Option<(u16, u16)>,
     /// Animation frame counter (spinners, pulses); captures use 0 unless CX_LAB_FRAME is set.
     pub frame: u32,
+    /// Key chips as rounded pills (powerline caps the terminal draws; see ui::caps).
+    pub pills: bool,
 }
 
 impl Default for LabCaps {
@@ -52,6 +54,7 @@ impl Default for LabCaps {
             selected: 0,
             hover: None,
             frame: 0,
+            pills: false,
         }
     }
 }
@@ -237,6 +240,7 @@ impl LabCaps {
                     color_set = true
                 }
                 "ascii" => ascii = true,
+                "pills" => caps.pills = true,
                 "unicode" => caps.unicode = true,
                 _ => return None,
             }

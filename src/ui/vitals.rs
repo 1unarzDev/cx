@@ -13,6 +13,8 @@ use crate::mesh::Member;
 const HIST: usize = 32;
 /// How often the devices on screen are sampled.
 pub(super) const EVERY: Duration = Duration::from_secs(2);
+/// The next ask for a device still without a cpu reading (cpu needs two samples).
+pub(super) const SOON: Duration = Duration::from_millis(250);
 /// A sample older than this is no longer shown as live.
 const FRESH: u64 = 30;
 
@@ -46,26 +48,31 @@ pub(super) struct Mesh {
 }
 
 impl App {
-    /// Ask the devices on screen for a sample: every device on the hub, the open one on
-    /// its page; never one already asked, one whose listing failed or one whose helper
-    /// lacks `metrics-v1`, and never into a crowded queue.
-    pub(super) fn poll_vitals(&mut self) {
+    /// The devices to sample: every device on the hub, the open one on its page; never
+    /// one whose listing failed or whose helper lacks `metrics-v1`.
+    fn sampled(&self) -> Vec<usize> {
         if !matches!(self.view, View::Work | View::Network) {
-            return;
+            return Vec::new();
         }
-        for d in 0..self.devices.len().min(self.work.len()) {
-            let shown = self.device == 0 || self.device == d + 1;
-            let supported = self.devices[d].target.is_none()
-                || self
-                    .providers
-                    .get(&d)
-                    .is_some_and(|(caps, _)| caps.iter().any(|c| c == "metrics-v1"));
+        (0..self.devices.len().min(self.work.len()))
+            .filter(|&d| {
+                (self.device == 0 || self.device == d + 1)
+                    && self.work[d].error.is_none()
+                    && (self.devices[d].target.is_none()
+                        || self
+                            .providers
+                            .get(&d)
+                            .is_some_and(|(caps, _)| caps.iter().any(|c| c == "metrics-v1")))
+            })
+            .collect()
+    }
+
+    /// Ask the sampled devices for a sample: one request each at a time, never into a
+    /// crowded queue.
+    pub(super) fn poll_vitals(&mut self) {
+        for d in self.sampled() {
             let id = self.devices[d].id.clone();
-            if !shown
-                || !supported
-                || self.work[d].error.is_some()
-                || self.pending_requests.get() > 16
-                || self.vitals.get(&id).is_some_and(|v| v.inflight)
+            if self.pending_requests.get() > 16 || self.vitals.get(&id).is_some_and(|v| v.inflight)
             {
                 continue;
             }
@@ -73,6 +80,17 @@ impl App {
                 self.vitals.entry(id).or_default().inflight = true;
             }
         }
+    }
+
+    /// A sampled device was never asked (the queue was crowded) or has one sample and no
+    /// cpu reading yet: the next ask is due soon, not a full period later, so the figures
+    /// land within a moment of the hub opening. (A failed ask waits the full period.)
+    pub(super) fn vitals_due(&self) -> bool {
+        self.sampled().into_iter().any(|d| {
+            self.vitals
+                .get(&self.devices[d].id)
+                .is_none_or(|v| v.at > 0 && v.cpu.is_none() && !v.inflight)
+        })
     }
 
     /// The background observation landed: meshes, and this host's lan candidates as
@@ -489,7 +507,13 @@ mod tests {
             Vec::<usize>::new(),
             "one request in flight each"
         );
+        assert!(!a.vitals_due(), "both in flight");
+        a.vitals_replied(0, Ok(serde_json::json!({"cpu": [1, 10]})));
         a.vitals_replied(1, Err(anyhow::anyhow!("lost")));
+        assert!(a.vitals_due(), "one sample, no cpu yet");
+        a.vitals_replied(0, Ok(serde_json::json!({"cpu": [2, 20]})));
+        assert!(!a.vitals_due(), "a failed ask waits the full period");
+        assert_eq!(metrics(&rx), Vec::<usize>::new());
         a.view = View::Files;
         a.poll_vitals();
         assert_eq!(metrics(&rx), Vec::<usize>::new(), "nothing off the hub");

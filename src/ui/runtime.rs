@@ -2027,7 +2027,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             }
             last_session_refresh = Instant::now();
         }
-        if last_vitals.elapsed() >= super::vitals::EVERY {
+        if last_vitals.elapsed() >= super::vitals::EVERY
+            || (app.vitals_due() && last_vitals.elapsed() >= super::vitals::SOON)
+        {
             app.poll_vitals();
             last_vitals = Instant::now();
         }

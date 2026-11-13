@@ -96,11 +96,20 @@ fn raster_boxed(bytes: &[u8], (bw, bh): (u32, u32)) -> Result<(Value, String)> {
         bail!("image exceeds decoded preview limit");
     }
     // Never enlarge: a small image keeps its own pixels.
-    let mut img = reader.decode()?.thumbnail(w.min(bw), h.min(bh));
+    // A filtered resize (its support widens with the scale), not `thumbnail`'s sampling:
+    // thin lines and fine detail average out instead of turning into moiré.
+    let img = reader.decode()?;
+    let mut img = if w > bw || h > bh {
+        img.resize(bw, bh, image::imageops::FilterType::Triangle)
+    } else {
+        img
+    };
     let opaque = !img.color().has_alpha() || img.to_rgba8().pixels().all(|p| p[3] == 255);
     loop {
         let mut out = Cursor::new(Vec::new());
-        let key = if opaque {
+        // JPEG only for big boxes (bitmap terminals): at half-block size its chroma
+        // subsampling smears colour fringes across every few pixels, and PNG is small.
+        let key = if opaque && img.width() * img.height() > 65_536 {
             let rgb = image::DynamicImage::ImageRgb8(img.to_rgb8());
             image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85).encode_image(&rgb)?;
             "jpeg"

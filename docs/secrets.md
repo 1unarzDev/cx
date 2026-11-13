@@ -5,7 +5,8 @@ when one answers, else into a private file stored the way `ssh-keygen` stores an
 values) lets `cx secrets list` work without touching either backend; it is still read from disk on each call.
 
 The hub's keys screen (`K`) sets and rotates the same secrets in a masked entry; the value is never drawn or
-logged, and its buffer is wiped when the entry closes.
+logged, and its buffer is wiped when the entry closes. There `e` exposes the selected secret to new sessions and `v`
+names its variable ([Sessions](#sessions)).
 
 ```
 cx secrets list [--json]                     # metadata only
@@ -25,7 +26,37 @@ pipe (`token=$(cx secrets get x --fd 1)`) and is refused when it is a terminal.
 Names are 1-64 characters of `a-z 0-9 . _ -`. `get --exec` sets the name upper-cased with `.`/`-` as `_`
 (`robot.wifi` → `ROBOT_WIFI`) unless the spec says `VAR=NAME`, and refuses two specs that set one variable. The one
 name cx itself reads is `cloudflare.api_token`, which sets `CLOUDFLARE_API_TOKEN` and is passed to mesh.py by
-`cx mesh` and `cx claude`. cx never reads or rewrites provider credential files (Claude/Codex logins).
+`cx mesh` and `cx claude`. The same rule gives the conventional names for sessions: `anthropic.api_key` →
+`ANTHROPIC_API_KEY`, `openai.api_key` → `OPENAI_API_KEY`, `github.token` → `GITHUB_TOKEN`. cx never reads or rewrites provider credential files (Claude/Codex logins).
+
+## Sessions
+
+Each secret has an **expose to sessions** switch, off by default: `e` on its card in the keys screen turns it on or
+off, and the card then reads `used by new sessions as $VAR`. `v` edits that variable (empty restores the default
+above); it must be a valid name, not `CX_*` (cx sets those in sessions itself), and not one another exposed secret
+already sets. Both are stored in the index (`expose`, `env`), never with the value.
+
+A shell, Claude or Codex session that cx starts on this device afterwards, from its viewer or `cx new`, starts with
+every exposed secret in its environment. Sessions that already run keep theirs: turning a secret on or off, or
+rotating it, changes only sessions started later. What never gets them:
+
+- **Other devices.** A session cx starts on another device is created there by that device's `cx helper`; the request
+  carries no secret, and the helper never exposes its own device's secrets to it either (they are for sessions
+  started at that device). Copy a secret to another device with `cx secrets set` there.
+- **Containers**, command panels (`:`) and adopted terminals.
+
+How the value gets there: tmux has no way to hand one new pane an environment variable without keeping it. Variables
+of the `tmux new-session` client do not reach the pane, and `set-environment` or `new-session -e` store the value in
+the server, where `show-environment` prints it and every later pane inherits it. So the pane's command is
+`cx secrets get --dir STATE VAR=NAME… --exec -- <the launcher>`: that cx reads the values from the store itself and
+`exec`s the launcher with them in its environment, the same pid tmux started. tmux, the pane's start command and
+`/proc/PID/cmdline` see only names. Before starting it, the launching cx reads each exposed value once, so a locked
+keyring or a missing value is reported as the launch's error instead of a session that exits at once. `--dir` names
+the state directory of the launching cx, because the managed tmux server runs as its own user service, whose
+environment may differ.
+
+Inside the session the values are ordinary environment variables: every program started there inherits them, and the
+same user can read them from `/proc/PID/environ`, as with `--exec`. Expose only what you would type into that shell.
 
 ## Backends
 

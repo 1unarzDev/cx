@@ -2,6 +2,11 @@
 
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
+## Unreleased
+
+### Changes
+- **Secrets for agent sessions, opt-in.** In the keys screen (`K`), `e` exposes the selected secret to new sessions on this device (off by default) and `v` names its variable (`anthropic.api_key` → `ANTHROPIC_API_KEY` unless you change it). New shell, Claude and Codex sessions started here then have it in their environment; running sessions, other devices and containers never get it. The value never reaches argv, tmux's environment or options, logs or any file but the secrets store (docs/secrets.md).
+
 ## v0.2.2
 
 Fixes from using v0.2.1 every day: half terminals, transparent terminals, the network's lines, the session previews and moving around with the keyboard.

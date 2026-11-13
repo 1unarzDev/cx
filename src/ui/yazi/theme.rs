@@ -329,7 +329,7 @@ impl Theme {
             which_cand: fg(Color::LightCyan),
             which_rest: fg(Color::DarkGray),
             which_desc: fg(Color::LightMagenta),
-            which_sep: "  ".into(),
+            which_sep: " \u{ea9c} ".into(),
             which_sep_style: fg(Color::DarkGray),
             confirm_border: fg(Color::Blue),
             confirm_title: fg(Color::Blue),

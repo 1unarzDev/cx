@@ -27,6 +27,8 @@ pub(super) fn theme() -> &'static Theme {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Y {
     Escape,
+    /// `Ctrl+S`: stops a search; nothing otherwise.
+    CancelSearch,
     Quit,
     CloseTab,
     Arrow(isize),
@@ -89,7 +91,8 @@ pub(super) enum Y {
     NotInCx(&'static str),
     /// cx's own: the send-to popup (kept from the earlier Files view).
     SendTo,
-    /// cx's own: a new agent or shell session in this folder.
+    /// cx's own: a new agent or shell session in this folder (`!`, free in yazi; `T`
+    /// stays cx's transfers, as everywhere else).
     NewSession,
 }
 
@@ -225,7 +228,7 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(["."], Hidden, "Toggle the visibility of hidden files"),
             b!(["s"], Search(false), "Search files by name via fd"),
             b!(["S"], Search(true), "Search files by content via ripgrep"),
-            b!(["<C-s>"], Escape, "Cancel the ongoing search"),
+            b!(["<C-s>"], CancelSearch, "Cancel the ongoing search"),
             b!(["z"], Jump(false), "Jump to a file/directory via fzf"),
             b!(["Z"], Jump(true), "Jump to a directory via zoxide"),
             b!(
@@ -353,7 +356,7 @@ pub(super) fn keymap() -> &'static [Bind] {
                 "Switch this tab to another device (its hub letter)"
             ),
             b!(["e"], SendTo, "Send selected files to a device (picker)"),
-            b!(["T"], NewSession, "New session in this folder"),
+            b!(["!"], NewSession, "New session in this folder"),
         ]
     })
 }
@@ -509,6 +512,8 @@ pub(super) struct Yazi {
     pub screen_px: std::cell::Cell<(u32, u32)>,
     /// The preview column in cells at the last draw (native image placement).
     pub preview_rect: std::cell::Cell<Rect>,
+    /// `;`: the next command panel closes itself when its command exits 0.
+    pub shell_quiet: bool,
 }
 
 fn quote(s: &str) -> String {
@@ -632,6 +637,11 @@ impl App {
             return true;
         }
         if let Some(run) = Self::binding(&seq) {
+            // A yazi default cx does not do gives way to cx's global on that key (`-`
+            // re-attaches the last session).
+            if run.absent() && !chord && super::keymap::global_key(&key) {
+                return false;
+            }
             // A longer chord sharing this prefix waits (yazi has none for single keys).
             self.yazi_run(run);
             return true;
@@ -806,12 +816,28 @@ impl App {
                         b.search.clear();
                     } else if !b.filter.is_empty() {
                         b.filter.clear();
-                    } else {
-                        self.back();
+                    }
+                    // Nothing to clear: nothing happens (yazi's; q, Q and H leave).
+                }
+            }
+            CancelSearch => {
+                if let Some(b) = self.browser.as_mut() {
+                    if self.yz.find.is_some() || !b.search.is_empty() {
+                        self.yz.find = None;
+                        b.search.clear();
                     }
                 }
             }
-            Quit => self.back(),
+            Quit => {
+                // yazi's q leaves at once, whatever is selected.
+                if let Some(b) = self.browser.as_mut() {
+                    b.visual_anchor = None;
+                    b.visual_base.clear();
+                    b.loading = false;
+                }
+                self.view = View::Work;
+                self.generation += 1;
+            }
             QuitAll => self.request_quit(),
             Hub => self.go_hub(),
             CloseTab => {
@@ -964,7 +990,12 @@ impl App {
                 self.execute(Action::Mkdir);
             }
             Rename => self.execute(Action::Rename),
-            Shell(_) => self.execute(Action::Command),
+            Shell(block) => {
+                self.execute(Action::Command);
+                // `;` closes its panel when the command succeeds (yazi shows no output);
+                // `:` keeps it until Esc, as yazi blocks until the command finishes.
+                self.yz.shell_quiet = !block;
+            }
             Hidden => self.execute(Action::Hidden),
             Search(content) => {
                 self.yz.search = Some(content);
@@ -2300,6 +2331,43 @@ desc = "Choose an application"
                 i + 1
             );
         }
+    }
+
+    /// Every cx global key the yazi layer takes over in Files, and why. A new global
+    /// (or a new yazi row) on the same key fails here until it is listed.
+    #[test]
+    fn shadowed_cx_globals_are_intentional() {
+        let intended = [
+            (
+                "<Tab>",
+                "yazi's spot (cx's next panel has no panels in Files)",
+            ),
+            ("<Enter>", "open, the same verb"),
+            (
+                "<Esc>",
+                "clears visual/selection/find/filter; q, Q and H leave",
+            ),
+            (":", "the same command panel (blocking)"),
+            ("?", "find previous; help is ~ and F1"),
+            ("<F1>", "help, the same verb"),
+            ("<C-c>", "closes the tab, quits on the last one (yazi's)"),
+            ("/", "find; the palette stays Ctrl+P"),
+            ("K", "preview seek up (with J); secrets are on the hub"),
+        ];
+        let mut shadowed = Vec::new();
+        for (key, _) in super::super::keymap::global_keys() {
+            let Some(name) = key_name(&key) else {
+                continue;
+            };
+            if App::binding(std::slice::from_ref(&name)).is_some_and(|y| !y.absent()) {
+                shadowed.push(name);
+            }
+        }
+        shadowed.sort();
+        shadowed.dedup();
+        let mut want: Vec<String> = intended.iter().map(|(k, _)| k.to_string()).collect();
+        want.sort();
+        assert_eq!(shadowed, want);
     }
 
     #[test]

@@ -647,6 +647,34 @@ fn winner(app: &App, key: &KeyEvent) -> Option<&'static Binding> {
     }
     None
 }
+/// Whether a key is one of cx's global keys (any screen).
+pub(super) fn global_key(key: &KeyEvent) -> bool {
+    BINDINGS.iter().any(|b| {
+        b.ctx == Ctx::Global && b.cmd != Cmd::Motion && b.keys.iter().any(|k| k.matches(key))
+    })
+}
+
+/// Every key of cx's global bindings, as key events (the yazi layer's shadow test).
+#[cfg(test)]
+pub(super) fn global_keys() -> Vec<(KeyEvent, &'static str)> {
+    BINDINGS
+        .iter()
+        .filter(|b| b.ctx == Ctx::Global && b.cmd != Cmd::Motion)
+        .flat_map(|b| {
+            b.keys.iter().map(|k| {
+                let mut m = KeyModifiers::NONE;
+                if k.ctrl {
+                    m |= KeyModifiers::CONTROL;
+                }
+                if k.alt {
+                    m |= KeyModifiers::ALT;
+                }
+                (KeyEvent::new(k.code, m), b.help)
+            })
+        })
+        .collect()
+}
+
 /// The command a key runs in the current context, if any.
 pub(super) fn resolve(app: &App, key: &KeyEvent) -> Option<Cmd> {
     winner(app, key).map(|b| b.cmd)

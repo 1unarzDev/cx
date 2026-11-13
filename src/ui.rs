@@ -570,6 +570,8 @@ struct CommandPanel {
     last_poll: std::time::Instant,
     /// The command, for the panel title.
     label: String,
+    /// Close on a 0 exit (Files `;`, yazi's non-blocking shell).
+    quiet: bool,
 }
 struct App {
     session_preview: session_preview::Snapshot,

@@ -2044,8 +2044,8 @@ fn new_shortcut_chooses_profile_and_preserves_focused_folder() {
     a.browser = Some(Browser::new(1, "/projects/robot".into()));
     a.device = 1;
     a.focus = Focus::Workspace;
-    // `T` (yazi's n is find-next): a new session in this folder.
-    press(&mut a, 'T');
+    // `!` (yazi's n is find-next, T is cx's transfers): a new session in this folder.
+    press(&mut a, '!');
     assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(1,path)) if path == "/projects/robot"));
     assert!(rx.try_recv().is_err());
     // `n` is Shell everywhere: the device screen's verb and the chooser's choice (`n` `n` = new shell).
@@ -7012,8 +7012,9 @@ fn yazi_ctrl_c_closes_a_tab_and_dash_stays_in_files() {
     a.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     assert_eq!(a.yz.tabs.len(), 1);
     assert!(!a.quit && a.view == View::Files);
-    // yazi's `-`, `_`, Ctrl+- and `+`-free keys never reach cx's globals in Files.
-    for k in ['-', '_', 'A', 'L'] {
+    // yazi's `_`, Ctrl+- and `+`-free keys never reach cx's globals in Files (`-`
+    // does: yazi_unsupported_defaults_give_way_to_cx_globals).
+    for k in ['_', 'A', 'L'] {
         press(&mut a, k);
         assert_eq!(a.view, View::Files, "{k}");
     }
@@ -7029,6 +7030,59 @@ fn yazi_ctrl_c_closes_a_tab_and_dash_stays_in_files() {
     let (mut a, _rx) = file_app();
     press(&mut a, 'H');
     assert_eq!(a.view, View::Network);
+}
+
+#[test]
+fn yazi_esc_and_ctrl_s_with_nothing_to_clear_stay_in_files() {
+    let (mut a, _rx) = file_app();
+    let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+    let ctrl_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+    // Visual mode, then Esc twice "to be sure": the second Esc does nothing.
+    press(&mut a, 'v');
+    press(&mut a, 'j');
+    a.key(esc);
+    assert!(a.browser.as_ref().unwrap().visual_anchor.is_none());
+    a.key(esc);
+    a.key(esc);
+    assert_eq!(a.view, View::Files);
+    // Ctrl+S cancels a find, and only that: the selection stays, Files stays.
+    press(&mut a, ' ');
+    a.yz.find = Some(("x".into(), false));
+    a.key(ctrl_s);
+    assert!(a.yz.find.is_none());
+    assert!(!a.browser.as_ref().unwrap().marked.is_empty());
+    a.key(ctrl_s);
+    assert_eq!(a.view, View::Files);
+    assert!(!a.browser.as_ref().unwrap().marked.is_empty());
+    // q leaves at once, selection or not (yazi's quit).
+    press(&mut a, 'q');
+    assert_eq!(a.view, View::Work);
+}
+
+#[test]
+fn yazi_unsupported_defaults_give_way_to_cx_globals() {
+    // `-` (yazi: symlink, not in cx) is cx's re-attach-last everywhere, Files included.
+    let (mut a, _rx) = file_app();
+    let (mut b, _rx2) = file_app();
+    press(&mut a, '-');
+    b.run_cmd(keymap::Cmd::View("last"));
+    assert_eq!(a.view, b.view);
+    assert_eq!(a.notice, b.notice);
+    assert!(!a.notice.contains("Symlinks"), "{}", a.notice);
+    // T is cx's transfers in Files too (yazi leaves it unbound); `!` starts a session.
+    let (mut a, _rx) = file_app();
+    press(&mut a, 'T');
+    assert!(matches!(a.dialog, Some(Dialog::Jobs)));
+}
+
+#[test]
+fn yazi_semicolon_panel_closes_on_success_and_colon_stays() {
+    let (mut a, _rx) = file_app();
+    press(&mut a, ';');
+    assert!(a.yz.shell_quiet);
+    let (mut a, _rx) = file_app();
+    press(&mut a, ':');
+    assert!(!a.yz.shell_quiet);
 }
 
 #[test]

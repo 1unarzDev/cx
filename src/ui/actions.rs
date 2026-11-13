@@ -157,6 +157,7 @@ impl App {
             Action::Help => self.help = true,
             Action::Refresh => self.refresh(),
             Action::Command => {
+                self.yz.shell_quiet = false;
                 // Spec 6.6: `:` is the palette in run mode.
                 if let Some(target) = self.command_ready() {
                     self.command_target = Some(target);

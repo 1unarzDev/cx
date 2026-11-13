@@ -1142,3 +1142,87 @@ fn a_hub_tile_keeps_its_pushed_screen_after_the_selection_moves() {
         .collect();
     assert!(text.contains("PUSHED-SCREEN"), "the tile lost its frame");
 }
+
+#[test]
+fn drawn_tiles_keep_their_screens_past_the_frame_cap() {
+    // More sessions than remembered frames: only the drawn tiles are captured, and
+    // replies for other sessions never evict a drawn tile's screen.
+    let (mut a, rx) = queued_app();
+    let sessions: Vec<Session> = (0..40)
+        .map(|i| {
+            let mut s = identified_shell();
+            s.id = format!("cx-{i:064}");
+            if let Some(t) = s.terminal.as_mut() {
+                t.session_id = format!("${i}");
+                t.created = format!("{}", i + 1);
+            }
+            s
+        })
+        .collect();
+    a.work[0].sessions = sessions.clone();
+    a.work[0].fetched = transport::now();
+    a.providers
+        .get_mut(&0)
+        .unwrap()
+        .0
+        .push("session-preview-v1".into());
+    a.go_hub();
+    let _ = rx.try_iter().count();
+    let mut t = Terminal::new(TestBackend::new(190, 50)).unwrap();
+    t.draw(|f| render(f, &a)).unwrap();
+    let screen = |i: usize| format!("SCREEN-{i:02}");
+    let reply = |op: Operation| Reply {
+        device_id: Some("local".into()),
+        execution_target: Some(None),
+        preview: None,
+        device: 0,
+        op,
+        generation: super::session_preview::THUMB_GENERATION,
+        result: Ok(serde_json::json!({"lines": []})),
+    };
+    a.fetch_thumbnails();
+    let asked: Vec<Task> = rx.try_iter().collect();
+    assert!(
+        !asked.is_empty() && asked.len() < 40,
+        "asked {}",
+        asked.len()
+    );
+    let index = |op: &Operation| match op {
+        Operation::SessionPreview { session, .. } => {
+            sessions.iter().position(|s| s.id == session.id).unwrap()
+        }
+        _ => unreachable!(),
+    };
+    let drawn: Vec<usize> = asked.iter().map(|t| index(&t.op)).collect();
+    for task in asked {
+        let i = index(&task.op);
+        let mut r = reply(task.op);
+        r.result = Ok(serde_json::json!({"lines": [screen(i)], "cols": 80, "rows": 24}));
+        a.apply_session_preview(r);
+    }
+    // Every other session's screen arrives too (say, from an older viewer's round).
+    for (i, s) in sessions
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !drawn.contains(i))
+    {
+        let mut r = reply(Operation::SessionPreview {
+            session: s.clone(),
+            scrollback: false,
+            history_start: None,
+        });
+        r.result = Ok(serde_json::json!({"lines": [screen(i)], "cols": 80, "rows": 24}));
+        a.apply_session_preview(r);
+    }
+    t.draw(|f| render(f, &a)).unwrap();
+    let text: String = t
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    for i in drawn {
+        assert!(text.contains(&screen(i)), "tile {i} lost its screen");
+    }
+}

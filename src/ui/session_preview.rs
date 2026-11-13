@@ -1,5 +1,6 @@
 //! Selected-only live tmux screen, with explicitly focused and identity-bound input.
 use super::*;
+use std::collections::HashSet;
 #[derive(Default)]
 pub(super) struct Snapshot {
     key: Option<String>,
@@ -54,6 +55,26 @@ struct Remembered {
     line_start: u32,
 }
 const REMEMBERED_FRAMES: usize = 32;
+/// Remember `k`'s frame; at the cap, forget one frame whose tile is not drawn (else
+/// any other), so the tiles on screen keep theirs.
+fn remember(
+    frames: &mut HashMap<String, Remembered>,
+    drawn: &HashSet<String>,
+    k: String,
+    frame: Remembered,
+) {
+    if frames.len() >= REMEMBERED_FRAMES && !frames.contains_key(&k) {
+        let gone = frames
+            .keys()
+            .find(|f| !drawn.contains(*f))
+            .or_else(|| frames.keys().next())
+            .cloned();
+        if let Some(gone) = gone {
+            frames.remove(&gone);
+        }
+    }
+    frames.insert(k, frame);
+}
 /// The generation that marks a thumbnail capture: its reply fills `frames`, never the
 /// selected screen, and the queue never trades it for (or against) a preview poll.
 pub(super) const THUMB_GENERATION: u64 = u64::MAX;
@@ -283,12 +304,34 @@ impl App {
             && self.work[d].error.is_none()
             && self.session_status(d, s).starts_with('+')
     }
-    /// Tiles on the hub and in a device show every session's screen, not only the
-    /// selected one's: each previewable session is captured once at once (its last
-    /// frame stays in memory) and again every THUMB_EVERY while tiles are on screen.
+    /// The preview keys of the sessions whose tiles the last frame drew.
+    fn drawn_tiles(&self) -> HashSet<String> {
+        let nav = self.nav.borrow();
+        let drawn: HashSet<&str> = nav
+            .iter()
+            .filter_map(|(_, a)| a.strip_prefix("session:"))
+            .collect();
+        let mut keys = HashSet::new();
+        for d in 0..self.work.len().min(self.devices.len()) {
+            for s in &self.work[d].sessions {
+                let id = format!("{}:{}", viewmodel::dev_id(d), workspaces::runtime_key(s));
+                if drawn.contains(id.as_str()) {
+                    keys.insert(key(&self.devices[d], s));
+                }
+            }
+        }
+        keys
+    }
+    /// Tiles on the hub and in a device show their sessions' screens, not only the
+    /// selected one's: each drawn tile's session is captured at once (its last frame
+    /// stays in memory) and again every THUMB_EVERY while its tile is on screen.
     /// The selected session's live screen is never asked twice.
     pub(super) fn fetch_thumbnails(&mut self) {
         if !matches!(self.view, View::Work | View::Network) || self.pane_focused() {
+            return;
+        }
+        let drawn = self.drawn_tiles();
+        if drawn.is_empty() {
             return;
         }
         let now = Instant::now();
@@ -302,6 +345,7 @@ impl App {
                 let k = key(&self.devices[d], s);
                 let asked = self.session_preview.thumbs.get(&k);
                 if Some(&k) == live.as_ref()
+                    || !drawn.contains(&k)
                     || asked.is_some_and(|t| now.duration_since(*t) < THUMB_EVERY)
                     || !self.previewable(d, s)
                 {
@@ -376,11 +420,8 @@ impl App {
                 .map_or(num("history_rows").min(500), |_| num("history_total")),
             line_start: num("line_start"),
         };
-        let frames = &mut self.session_preview.frames;
-        if frames.len() >= REMEMBERED_FRAMES && !frames.contains_key(&k) {
-            frames.clear();
-        }
-        frames.insert(k, frame);
+        let drawn = self.drawn_tiles();
+        remember(&mut self.session_preview.frames, &drawn, k, frame);
     }
     pub(super) fn focus_session_pane(&mut self) -> bool {
         let Some((d, s)) = self.preview_selection() else {
@@ -655,11 +696,8 @@ impl App {
                 .clone()
                 .filter(|_| !previous.carried && previous.live && !previous.lines.is_empty())
             {
-                if previous.frames.len() >= REMEMBERED_FRAMES && !previous.frames.contains_key(&old)
-                {
-                    previous.frames.clear();
-                }
-                previous.frames.insert(old, Remembered::of(&previous));
+                let frame = Remembered::of(&previous);
+                remember(&mut previous.frames, &self.drawn_tiles(), old, frame);
             }
             let now = Instant::now();
             let burst = previous

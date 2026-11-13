@@ -991,6 +991,8 @@ struct It<'a> {
     bundle: Option<f32>,
     alpha: f32,
     ghost: bool,
+    /// Coming or going (drawn as its dot and letter until it lands).
+    moving: bool,
     group: usize,
 }
 
@@ -1008,6 +1010,7 @@ fn scene<'a>(p: &Plan<'a>, root: Option<&'a LabDevice>) -> Vec<It<'a>> {
         bundle: None,
         alpha: 1.0,
         ghost: false,
+        moving: false,
         group: usize::MAX,
     }];
     let cell = |side: i32, d: (i32, i32)| p.mirror(side, (d.0 as f32 + 0.5, d.1 as f32 + 0.5));
@@ -1042,6 +1045,7 @@ fn scene<'a>(p: &Plan<'a>, root: Option<&'a LabDevice>) -> Vec<It<'a>> {
             bundle: (n.parent.is_none() && tops > 1).then_some(cl.phi),
             alpha: 1.0,
             ghost: false,
+            moving: false,
             group: n.cl,
         });
     }
@@ -1060,6 +1064,7 @@ fn scene<'a>(p: &Plan<'a>, root: Option<&'a LabDevice>) -> Vec<It<'a>> {
             bundle: None,
             alpha: 1.0,
             ghost: false,
+            moving: false,
             group: c,
         });
     }
@@ -1097,6 +1102,8 @@ fn tween<'a>(prev: &[It<'a>], cur: Vec<It<'a>>, t: f32, pcls: &Plan, ccls: &Plan
             }
             None => it.alpha = t,
         }
+        // (A node that only shifts keeps its label; one coming or going is brief.)
+        it.moving = it.kind != Kind::Root && it.alpha < 1.0;
     }
     for g in prev.iter().filter(|g| find(&cur, &g.key).is_none()) {
         let to = fold_of(ccls, &g.key)
@@ -1106,6 +1113,7 @@ fn tween<'a>(prev: &[It<'a>], cur: Vec<It<'a>>, t: f32, pcls: &Plan, ccls: &Plan
         g.dot = lerp(g.dot, to, t);
         g.alpha = 1.0 - t;
         g.ghost = true;
+        g.moving = true;
         g.from = None;
         out.push(g);
     }
@@ -1371,8 +1379,7 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, sel: &str, focus: bool
             }
         }
     }
-    // Labels, then targets and moves.
-    let mut nav: Vec<(String, Rect, usize, P)> = Vec::new();
+    // Labels.
     for it in &items {
         let r = label_rect(it);
         let pick = (Some(it.key.as_str()) == Some(sel) && !it.ghost).then_some(focus);
@@ -1384,10 +1391,17 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, sel: &str, focus: bool
         } else {
             0.0
         };
-        label(cx, buf, &p, it, r, pick, fade);
-        if it.ghost || it.alpha < 0.5 {
+        if it.moving && t < 0.85 {
+            brief(cx, buf, &p, it);
             continue;
         }
+        label(cx, buf, &p, it, r, pick, fade);
+    }
+    let mut nav: Vec<(String, Rect, usize, P)> = Vec::new();
+    // Targets and moves from where everything lands: a key mid-glide acts on the
+    // final frame (input never waits for the animation).
+    for it in scene(&p, rootd) {
+        let r = label_rect(&it);
         let target = match it.kind {
             Kind::Root | Kind::Dev(_) => it.key.clone(),
             // A folded cluster opens on its first device.
@@ -1685,5 +1699,36 @@ pub(super) fn welcome(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
                 cx.put(buf, sx as u16, sy as u16, 1, "○", cx.ink(Tok::Muted, 0.6));
             }
         }
+    }
+}
+
+/// A node on its way: its dot and its letter only (a folding cluster: its mark), faded
+/// by how far it has come, so labels never smear across each other mid-flight.
+fn brief(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It) {
+    let (x, y) = (it.dot.0.floor(), it.dot.1.floor());
+    if x < f32::from(cx.area.x) + 1.0
+        || y < f32::from(cx.area.y)
+        || x + 2.0 >= f32::from(cx.area.right())
+        || y >= f32::from(cx.area.bottom())
+    {
+        return;
+    }
+    let (x, y) = (x as u16, y as u16);
+    let a = it.alpha.clamp(0.15, 1.0);
+    match it.kind {
+        Kind::Dev(_) => {
+            let Some(d) = it.d else { return };
+            let st = cx
+                .ink(Tok::Id(cx.s.hue(&d.id)), a)
+                .add_modifier(Modifier::BOLD);
+            let (g, _) = cx.status(d.status);
+            let lx = if it.side < 0 { x - 1 } else { x + 1 };
+            cx.put(buf, x, y, 1, g, cx.ink(Tok::Muted, a));
+            cx.put(buf, lx, y, 1, &d.hotkey.to_string(), st);
+        }
+        Kind::Fold(c) => {
+            cx.put(buf, x, y, 1, cx.g("◍", "*"), cx.ink(p.cls[c].tok, a));
+        }
+        Kind::Root => {}
     }
 }

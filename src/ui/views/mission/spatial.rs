@@ -73,6 +73,9 @@ fn reached(mv: &[[Option<usize>; 4]], start: usize, inside: &dyn Fn(usize) -> bo
 pub(super) fn moves(items: &[Item]) -> Vec<[Option<usize>; 4]> {
     let n = items.len();
     let mut mv = vec![[None; 4]; n];
+    if n == 0 {
+        return mv;
+    }
     for d in [RIGHT, DOWN] {
         let o = opposite(d);
         for cone in [45.0, 80.0] {

@@ -5,7 +5,7 @@
 # VIEWS: comma list (hub,device:innovation,session:refactor,files,file-preview,palette:inno,
 #        secrets,onboarding,join,edge:tranquility-innovation,help) or "all" (default).
 # Optional env: CX_LAB_SIZES, CX_LAB_VARIANTS, CX_LAB_FIXTURES (small,typical,large),
-#   CX_LAB_FOCUS, CX_LAB_SELECTED, CX_LAB_HOVER=x,y, CX_LAB_FRAME, CX_LAB_FONT, CX_LAB_FONT_PX,
+#   CX_LAB_FOCUS, CX_LAB_SELECTED, CX_LAB_MOTION=<from device>:<thousandths>, CX_LAB_HOVER=x,y, CX_LAB_FRAME, CX_LAB_FONT, CX_LAB_FONT_PX,
 #   CX_LAB_PALETTE=solarized (16-colour frames in Solarized Dark, brightblack = background).
 #   CX_LAB_PYTHON (default python3; it needs Pillow for the PNGs).
 # Prints the output directory (local-evidence/ui-lab/<concept>/round-N) on stdout.

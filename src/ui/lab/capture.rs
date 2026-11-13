@@ -88,6 +88,21 @@ fn lab_capture() {
             caps.selected = selected;
             caps.frame = frame;
             caps.hover = hover;
+            // CX_LAB_MOTION=<device id>:<thousandths>: a map transition part-way, from
+            // that device to the selection.
+            if let Some((from, t)) = env::var("CX_LAB_MOTION").ok().and_then(|v| {
+                let (f, t) = v.rsplit_once(':')?;
+                Some((f.to_string(), t.parse::<u16>().ok()?))
+            }) {
+                caps.motion = super::Motion {
+                    from: state
+                        .devices
+                        .iter()
+                        .position(|d| d.id == from)
+                        .map(|i| i as u16),
+                    t,
+                };
+            }
             for view in &views {
                 for &(w, h) in &sizes {
                     let (buf, targets) = render_frame(view, &state, &caps, w, h);

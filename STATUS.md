@@ -1,5 +1,28 @@
 # CX status
 
+## v0.2.2 release candidate (branch `revamp/base`; not tagged, pushed or deployed)
+- Fixes from daily use of v0.2.1 (CHANGELOG v0.2.2): half terminals (`hub.rs:43` clamp min > max; every view now renders at every size 20x5..250x80), blank hub thumbnails (only the selected session was captured), `✕ 20770d` for never-seen devices, leaked attach guards (removed after the check; startup sweep of stale unowned ones), transparent-friendly chrome (no cell backgrounds), curved links, bigger previews.
+- User feedback round 2 (all done): `␣ ⏎ ⌫` key labels (`spc ret bksp` in ASCII); yazi-style rounded key pills only where the terminal draws U+E0B4/E0B6 itself (kitty, ghostty, wezterm; foot needs `CX_NERD_FONT=1`), else bold keys with nothing behind; no `NETWORK lan` strip; the palette's arrows/Ctrl+N/P move the selection it draws (root cause: it drew the hub's `caps.selected`) with a text cursor in every find field; the hub and device grids and the map walk in 2D with arrows and `h j k l` (Tab still switches zones; a tap focuses a tile, a second tap attaches).
+- Gates (2026-11-12, at 59d86fe): fmt; clippy with no new warning kind vs 295020d (110 warning lines both; the one new `clamp-like pattern` was fixed with constant bounds); `cargo test --locked` 1021 passed / 0 failed / 4 ignored; the ignored full size matrix (`every_view_renders_at_every_size`, 20x5..250x80) passed in 2749 s; release build with no warnings; tests/run_regressions.sh --no-rust --with-ssh 66/66 (the first run failed 4: tests that found the hub by its removed NETWORK label, and list_wheel_pty's Down in a device grid; fixed in 59d86fe); the half-terminal repro against real device state at 10 sizes (80x48, 95x50, 40x20, 60x30, 100x24, 120x40, 190x50, 250x80, 20x5, 30x8): alive at each; captures dark, light, 16-colour, ASCII and pills at 40x20, 80x48, 95x50, 120x40, 190x50 (8 views, 200 PASS) in local-evidence/v022-captures/; orphans: one cx-perf tmux unit left by the first suite run's timed-out session_watch_live was stopped and its dir removed, `cx orphans` reports 0 stray.
+- A/B vs v0.2.1 (release builds, interleaved; perf_harness 3 runs, files_bench 3 x 2 runs, then focused reruns of every metric the pooled table flagged): no median regression.
+
+  | metric | v0.2.1 | v0.2.2 |
+  |---|---|---|
+  | select → screen (peek), local / SSH | 6.2 / 7.5 ms | 2.7 / 5.1 ms |
+  | keystroke echo, local / SSH | 1.4 / 1.7 ms | 1.6 / 1.9 ms |
+  | Enter → attached, local / SSH | 12.6 / 30.0 ms | 12.9 / 31.0 ms |
+  | detach → cx, local / SSH | 21.0 / 21.5 ms | 22.0 / 21.6 ms |
+  | `cx new` (12 interleaved) | 179.4 ms | 179.6 ms |
+  | first rows 1k / 20k / 100k (cold) | 3.7 / 3.7 / 3.7 ms | 3.7 / 4.2 / 3.7 ms (rerun 20k: 3.9 / 4.0) |
+  | 100k sibling folder | 48.5 ms | 50.6 ms |
+  | preview first paint src 5 MB / md 2 MB | 4.1 / 4.5 ms | 5.9 / 4.3 ms (rerun src: 5.6 / 4.9, bimodal 4/7 ms in both) |
+  | G on src 200 kB / 5 MB (rerun, 15 samples each) | 5.7 / 5.7 ms | 5.7 / 5.8 ms (p90 9.3 / 9.6 vs 5.9 / 6.1: a tail to watch) |
+  | preview scroll j, src 5 MB / md 2 MB | 7.8 / 3.7 ms | 7.6 / 3.6 ms |
+  | viewer start → ready | 21.8 ms | 22.1 ms |
+- Answered for the user: secrets reach agents only when asked for. cx injects nothing into claude/codex/shell sessions; `cx secrets get NAME --exec -- cmd` puts values into that one child's environment (`--fd N` writes one to a descriptor), values live in the OS keyring or the 0600 file, and cx itself reads only `cloudflare.api_token` (for mesh.py).
+- Not changed (decided): a device view has one navigable zone (its tiles, then the new-session row); its LINKS star is reached with `e` and a letter, not by Tab. Left/Right past a row's end step along the attention order (so hidden tiles stay reachable).
+- Open: the hub still shows an Error toast for an unreachable device beside the ticker that already names it (present since v0.2.0).
+
 ## v0.2.1 release candidate (branch `revamp/base`; not tagged, pushed or deployed)
 - Integrated the strict v0.2.0 review (159 confirmed issues) from fix/021-{tests,transport,mesh,sessions,files,views}, then fixed every recheck still broken: S8 (watch ids in replies and frames), V2 (`g` is a late device letter), F2 (markdown list rows skip the wrap pass), F15 (the bench, not cx: its screen readers rebuilt pyte's display per line), T3 (duplicate `portable` job; tests/workflow_keys.py), T9 (container chooser `[n]`).
 - Decisions applied: inline typing kept and escapable (Ctrl+\, Esc Esc, any tap outside the screen; concept-mission section 6); startup measured with `CX_THEME` set by the bench (OSC 11 probe unanswered in the bench PTY); palette Send Ctrl+\ works from the hub (selects the last session first if its screen is not live).

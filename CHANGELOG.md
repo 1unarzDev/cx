@@ -2,6 +2,26 @@
 
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
+## v0.2.2
+
+Fixes from using v0.2.1 every day: half terminals, transparent terminals, the network's lines, the session previews and moving around with the keyboard.
+
+### Fixes
+- **Half terminals.** cx no longer panics at 80x48, 95x50 and other narrow, tall sizes (`hub.rs:43 min > max`). Every view now renders at every size from 20x5 to 250x80, checked by a test over all of them with 0 to 7 devices, unreachable and never-seen devices, no meshes, long names, many sessions and empty previews.
+- **Session previews load.** Every tile on the hub and in a device shows its session's screen within one round trip (from memory once seen) and refreshes every 2 s. Before, only the selected session was ever captured, so the other tiles stayed blank.
+- **Never-seen devices** say `never seen` instead of an age counted from 1970 (`✕ 20770d`).
+- **Find moves with the arrows.** In the palette (`/`, Ctrl+P) the arrows, Ctrl+N and Ctrl+P move the selection you see, and the list scrolls to it; before, the sheet drew the hub's selection and never its own. Left and Right move the text cursor (Home and End too) in the palette, the file search and the list filter, and typing goes where it is.
+- **Attach guards no longer pile up** in the state directory. A guard is removed as soon as its check passes, so an attach whose terminal closes or whose ssh drops leaves nothing behind. On start, cx removes `attach-guard-*` files (and v0.2.0's `attach-ticket-<hex>` files) that are older than an hour and that no process holds open. It touches nothing else.
+
+### Changes
+- **Transparent-friendly.** cx paints no cell backgrounds in its own chrome: none behind chips, keycaps, the selection, tiles, strips, panels, buttons or mesh groups. A device letter is bold in its colour and a key is bold accent text. The selection is the `▌` bar with an accent name, and a button is bold, underlined accent text. Session screens keep the backgrounds their programs drew (diff lines, for example), with no panel around them. The invite's QR code keeps its black and white so it still scans.
+- **Curved connections.** On the hub, in a device and in the link editor, links that turn are smooth braille curves (out along one row, into the device along its own), not orthogonal trees with hard corners. Straight runs stay thin lines of the same weight. Password links are dashed along the curve, a one-way link's arrowhead follows the curve, and a closed link carries `⊘`. ASCII keeps the route with rounded `.` and `'` corners.
+- **A grid you can walk.** On the hub and in a device the arrows and `h j k l` move between session tiles as they sit on screen, and in the map between nodes. Down from the map enters the tiles and Up from their top row returns; Tab still switches. `⏎` attaches the focused tile and `␣` peeks it. A tap focuses a tile and a tap on the focused tile attaches it. Device letters work as before (`h j k l` stay a device's letter when one has it), and a count repeats a move (`3j`).
+- **Key labels.** Space is `␣`, Enter `⏎` and Backspace `⌫` everywhere: footer, help, chips and palette. ASCII says `spc`, `ret` and `bksp`.
+- **Key pills.** In kitty, ghostty and wezterm, which draw powerline glyphs themselves, a key is a small rounded pill in the style of yazi: the rounded caps in the key's colour and the key on it, and nothing painted outside the pill. Other terminals keep a bold coloured key with nothing behind it. `CX_NERD_FONT=1` turns pills on (foot with a Nerd Font, for example) and `CX_NERD_FONT=0` turns them off. Phones, 16 colours and ASCII never get pills.
+- **No `NETWORK lan` strip** over the hub's map. A device's meshes still show in its vitals strip.
+- **Bigger previews.** Tiles come two or three to a row, are as tall as the screen allows (up to 22 rows) and keep that size while their screen loads. The focused selection takes two shares of its row, so it is the large live screen. On a phone, the selected session's last lines show under its row.
+
 ## v0.2.1
 
 The strict review of v0.2.0, issue by issue: 159 confirmed findings, fixed or recorded in STATUS.md.

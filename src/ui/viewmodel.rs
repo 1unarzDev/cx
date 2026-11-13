@@ -7,6 +7,7 @@ use super::views::{
     Access, ColorLevel, DeviceStatus, EdgeKind, FileKind, FileNode, LabCaps, LabDevice, LabEdge,
     LabFiles, LabInvite, LabNotice, LabPreview, LabSecret, LabSecretEntry, LabSession, LabState,
     LabTransfer, LabView, NoticeKind, PaletteRow, Pane, PreviewKind, Provider, SessionState, Theme,
+    NEVER_SEEN,
 };
 use super::*;
 
@@ -161,7 +162,12 @@ fn screen(app: &App, state: &LabState, caps: &mut LabCaps) -> LabView {
 fn status(app: &App, d: usize) -> (DeviceStatus, String, u32) {
     let w = &app.work[d];
     let age = transport::now().saturating_sub(w.fetched);
-    let secs = u32::try_from(age).unwrap_or(u32::MAX);
+    // Never listed: no sighting to age (an age from the epoch read as `20770d`).
+    let secs = if w.fetched == 0 {
+        NEVER_SEEN
+    } else {
+        u32::try_from(age).unwrap_or(u32::MAX - 1)
+    };
     let listed = || {
         let n = w.sessions.len();
         format!(
@@ -184,7 +190,7 @@ fn status(app: &App, d: usize) -> (DeviceStatus, String, u32) {
         } else {
             DeviceStatus::Unknown
         };
-        return (status, word.into(), 0);
+        return (status, word.into(), NEVER_SEEN);
     }
     if app.devices[d].target.is_none() {
         return (DeviceStatus::Local, listed(), secs);

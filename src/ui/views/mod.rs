@@ -50,10 +50,14 @@ pub fn ansi_lines(screen: &[String], cols: u16) -> Vec<Line<'static>> {
     super::rendering::ansi_screen(screen, None, cols)
 }
 
+/// `LabDevice::observed_secs` of a device never seen (no sighting to age).
+pub const NEVER_SEEN: u32 = u32::MAX;
+
 /// Shared tiny helpers for concepts.
 pub mod fmt {
     pub fn age(secs: u32) -> String {
         match secs {
+            super::NEVER_SEEN => "never".into(),
             0..=59 => format!("{secs}s"),
             60..=3599 => format!("{}m", secs / 60),
             3600..=86399 => format!("{}h", secs / 3600),

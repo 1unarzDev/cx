@@ -694,7 +694,7 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
     } else {
         cx.ink(Tok::Err, 0.85)
     };
-    cx.put(buf, tx, r.y, 8, &meta, mst.patch(bg));
+    cx.put(buf, tx, r.y, super::width(&meta, cx.uni()), &meta, mst.patch(bg));
     if r.height > 1 {
         let ex = x;
         if let Some(m) = d.metrics.as_ref().filter(|_| up) {

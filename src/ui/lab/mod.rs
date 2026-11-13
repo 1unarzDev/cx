@@ -235,6 +235,20 @@ mod review_tests {
             .any(|t| t.action.starts_with("session:innovation:extra")));
     }
 
+    /// A device that was never seen says so, not an age counted from the epoch
+    /// (`✕ 20770d`).
+    #[test]
+    fn a_never_seen_device_shows_no_age() {
+        let mut s = state::typical();
+        let d = s.devices.iter_mut().find(|d| d.id == "nas").unwrap();
+        d.status = DeviceStatus::Down;
+        d.observed_secs = NEVER_SEEN;
+        let (t, _) = draw(LabView::Hub, &s, 40, 20);
+        let row = t.lines().find(|l| l.contains("nas")).expect("nas row");
+        assert!(row.contains("never seen") && !row.contains("d "), "{row}");
+        assert_eq!(fmt::age(NEVER_SEEN), "never");
+    }
+
     /// The ticker acts on the device its notice is about, not on a device whose name
     /// starts the text (`lab` and `lab-arm`).
     #[test]

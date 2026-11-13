@@ -544,6 +544,9 @@ impl<'a> Cx<'a> {
         if d.id == self.s.viewer {
             return "you".into();
         }
+        if d.observed_secs == crate::ui::views::NEVER_SEEN && d.status == DeviceStatus::Down {
+            return "never seen".into();
+        }
         if !matches!(d.status, DeviceStatus::Online | DeviceStatus::Stale) {
             return if d.status == DeviceStatus::Unknown {
                 "?".into()

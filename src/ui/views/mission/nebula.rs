@@ -492,7 +492,7 @@ fn layout<'a>(
             let mut lab = if f { cls[i].lab } else { nodes[i].lab };
             let dir = if lab.y < 0 { -1 } else { 1 };
             let mut tries = 0;
-            while taken.iter().any(|r| r.hits(&lab.pad(1))) && tries < 60 {
+            while taken.iter().any(|r| r.hits(&lab.pad(2))) && tries < 60 {
                 lab.y += dir;
                 tries += 1;
             }
@@ -803,6 +803,8 @@ impl Canvas {
     fn merge_clear(&mut self, o: &Canvas) {
         let w = i32::from(self.r.width);
         let h = i32::from(self.r.height);
+        // (Against the links alone: a dot merged here never keeps its neighbour out.)
+        let ours = self.bits.clone();
         for i in 0..self.bits.len() {
             if o.bits[i] == 0 {
                 continue;
@@ -811,7 +813,7 @@ impl Canvas {
             let near = (-1..=1).any(|dy| {
                 (-1..=1).any(|dx| {
                     let (nx, ny) = (x + dx, y + dy);
-                    nx >= 0 && ny >= 0 && nx < w && ny < h && self.bits[(ny * w + nx) as usize] != 0
+                    nx >= 0 && ny >= 0 && nx < w && ny < h && ours[(ny * w + nx) as usize] != 0
                 })
             });
             if !near {
@@ -1400,7 +1402,11 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, sel: &str, focus: bool
             Rect::new(rr.x.saturating_sub(1), rr.y, rr.width + 2, rr.height).intersection(cx.area);
         cx.nav(rr, format!("device:{target}"));
         cx.hit(rr, format!("device:{target}"));
-        nav.push((target, rr, it.group, it.dot));
+        let mid = (
+            f32::from(rr.x) + f32::from(rr.width) / 2.0,
+            f32::from(rr.y) + f32::from(rr.height) / 2.0,
+        );
+        nav.push((target, rr, it.group, mid));
     }
     if p.hidden > 0 {
         let t = format!("+{} more", p.hidden);

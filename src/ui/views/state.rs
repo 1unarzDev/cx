@@ -351,7 +351,11 @@ impl LabState {
             "small" => Some(small()),
             "typical" => Some(typical()),
             "large" => Some(large()),
-            _ => None,
+            "mirror" => Some(mirror()),
+            _ => {
+                let n: usize = name.strip_prefix("nebula-")?.parse().ok()?;
+                (n <= 25).then(|| nebula(n))
+            }
         }
     }
 }

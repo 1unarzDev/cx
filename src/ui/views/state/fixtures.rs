@@ -1057,3 +1057,208 @@ pub fn large() -> LabState {
     });
     s
 }
+
+/// The nebula fixtures: `n` devices in all (`nebula-1` .. `nebula-25`), this one first, over one
+/// to three meshes by size, mostly reached directly and some through a relay, a mix of
+/// online, stale, down and never-seen devices. Names and letters are stable.
+pub fn nebula(n: usize) -> LabState {
+    use DeviceStatus::*;
+    let mut s = typical();
+    // (Test-only fixtures: a name per size, for the lab's file names and messages.)
+    s.fixture = Box::leak(format!("nebula-{n}").into_boxed_str());
+    let meshes = match n {
+        0..=3 => 1,
+        4..=10 => 2,
+        _ => 3,
+    };
+    let ids = ["cloudflare-warp", "ssh-overlay", "tailnet"];
+    s.meshes = (0..meshes)
+        .map(|m| LabMesh {
+            id: ids[m].into(),
+            name: ids[m].into(),
+            backend: if m == 1 {
+                MeshBackend::SshOverlay
+            } else {
+                MeshBackend::CloudflareWarp
+            },
+            members: Vec::new(),
+            healthy: true,
+            detail: String::new(),
+        })
+        .collect();
+    const NAMES: [&str; 25] = [
+        "innovation",
+        "creation",
+        "nas",
+        "laptop-guest",
+        "blastoise-odroid",
+        "squirtle-jetson",
+        "render-farm-a",
+        "render-farm-b",
+        "pixel-9-termux",
+        "homeassistant",
+        "ci-runner-arm64",
+        "ci-runner-x86",
+        "drone-ground",
+        "lab-bench-scope",
+        "charmander-rpi5",
+        "bulbasaur-orin",
+        "studio-mac-mini",
+        "old-thinkpad",
+        "vps-fra1",
+        "ipad-blink",
+        "picker-robot-07",
+        "picker-robot-08",
+        "warehouse-cam",
+        "garage-door",
+        "media-box",
+    ];
+    // `t` is the viewer's; `e` the link verb; `h j k l` motion, given last.
+    let keys = "icnpbsrfxomwdgqzuyvajhkl";
+    let root = s.devices[0].clone();
+    s.devices = vec![root];
+    s.edges.clear();
+    for (i, name) in NAMES.iter().take(n.saturating_sub(1)).enumerate() {
+        let status = match i % 9 {
+            4 => Down,
+            7 => Unknown,
+            5 => Stale,
+            _ => Online,
+        };
+        let up = matches!(status, Online | Stale);
+        let mesh = ids[i % meshes];
+        let ms = 1.0 + (i as f32 * 11.7) % 70.0;
+        let mut d = dev(
+            name,
+            keys.chars().nth(i).unwrap_or('?'),
+            "debian 12",
+            status,
+            "",
+            if status == Unknown {
+                crate::ui::views::NEVER_SEEN
+            } else {
+                3 + 600 * i as u32
+            },
+            up.then(|| {
+                metrics(
+                    200 + i as u32,
+                    (i as f32 * 0.173) % 1.0,
+                    0.4,
+                    8.0,
+                    None,
+                    8,
+                    "2d",
+                )
+            }),
+            &[mesh],
+            i < 3,
+        );
+        d.hue = ((i + 1) % 8) as u8;
+        // Every fourth device past the first few is reached through the one before it.
+        let relay = (i >= 4 && i % 4 == 3).then(|| NAMES[i - 1]);
+        let kind = if i % 5 == 2 {
+            EdgeKind::Lan
+        } else {
+            EdgeKind::Mesh(mesh.into())
+        };
+        let (from, fwd, rev) = match relay {
+            Some(r) => (r, Access::Key, Access::Key),
+            None if i % 3 == 1 => ("tranquility", Access::Key, Access::Denied),
+            None if i % 7 == 6 => ("tranquility", Access::Password, Access::Password),
+            None => ("tranquility", Access::Key, Access::Key),
+        };
+        s.edges.push(edge(
+            from,
+            name,
+            kind,
+            fwd,
+            rev,
+            up,
+            up.then_some(ms),
+            rtt(300 + i as u32, ms, ms * 0.2, &[]),
+        ));
+        s.devices.push(d);
+    }
+    for m in &mut s.meshes {
+        m.members = s
+            .devices
+            .iter()
+            .filter(|d| d.meshes.contains(&m.id))
+            .map(|d| d.id.clone())
+            .collect();
+        m.detail = format!("{} members", m.members.len());
+    }
+    let has = |id: &String, s: &LabState| s.devices.iter().any(|d| &d.id == id);
+    let keep: Vec<LabSession> = s
+        .sessions
+        .iter()
+        .filter(|x| has(&x.device, &s))
+        .cloned()
+        .collect();
+    s.sessions = keep;
+    s.notifications.clear();
+    s.transfers.clear();
+    s
+}
+
+/// A network that is its own mirror: two meshes of the same shape and name lengths,
+/// the same evidence on both (the hub map must draw it as a mirror image).
+pub fn mirror() -> LabState {
+    let mut s = nebula(1);
+    s.fixture = "mirror";
+    s.meshes = ["alpha-net", "bravo-net"]
+        .iter()
+        .map(|m| LabMesh {
+            id: (*m).into(),
+            name: (*m).into(),
+            backend: MeshBackend::CloudflareWarp,
+            members: Vec::new(),
+            healthy: true,
+            detail: String::new(),
+        })
+        .collect();
+    // (Each letter inside its name, so twins take the same width.)
+    let mut keys = "alpbrv".chars();
+    for mesh in ["alpha-net", "bravo-net"] {
+        let p = &mesh[..5];
+        for (j, (name, relay)) in [("one", None), ("two", None), ("six", Some("two"))]
+            .into_iter()
+            .enumerate()
+        {
+            let id = format!("{p}-{name}");
+            let mut d = dev(
+                &id,
+                keys.next().unwrap(),
+                "debian 12",
+                DeviceStatus::Online,
+                "",
+                3,
+                Some(metrics(500 + j as u32, 0.3, 0.4, 8.0, None, 8, "2d")),
+                &[mesh],
+                false,
+            );
+            d.hue = j as u8;
+            s.devices.push(d);
+            let from = relay.map_or("tranquility".to_string(), |r| format!("{p}-{r}"));
+            s.edges.push(edge(
+                &from,
+                &id,
+                EdgeKind::Mesh(mesh.into()),
+                Access::Key,
+                Access::Key,
+                true,
+                Some(12.0),
+                rtt(600 + j as u32, 12.0, 1.0, &[]),
+            ));
+        }
+    }
+    for m in &mut s.meshes {
+        m.members = s
+            .devices
+            .iter()
+            .filter(|d| d.meshes.contains(&m.id))
+            .map(|d| d.id.clone())
+            .collect();
+    }
+    s
+}

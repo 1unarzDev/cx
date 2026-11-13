@@ -49,7 +49,27 @@ fn rank(items: &[Item], a: usize, b: usize, d: usize, cone: f32) -> Option<(bool
     Some((items[a].group != items[b].group, dist * (1.0 + 4.0 * angle)))
 }
 
-/// For every item, where each direction (`LEFT RIGHT UP DOWN`) moves.
+/// Items reachable from `start` through items `inside` allows.
+fn reached(mv: &[[Option<usize>; 4]], start: usize, inside: &dyn Fn(usize) -> bool) -> Vec<bool> {
+    let mut seen = vec![false; mv.len()];
+    let mut q = Vec::new();
+    if start < mv.len() {
+        seen[start] = true;
+        q.push(start);
+    }
+    while let Some(a) = q.pop() {
+        for &b in mv[a].iter().flatten() {
+            if !seen[b] && inside(b) {
+                seen[b] = true;
+                q.push(b);
+            }
+        }
+    }
+    seen
+}
+
+/// For every item, where each direction (`LEFT RIGHT UP DOWN`) moves. The first item
+/// is the root.
 pub(super) fn moves(items: &[Item]) -> Vec<[Option<usize>; 4]> {
     let n = items.len();
     let mut mv = vec![[None; 4]; n];
@@ -79,15 +99,20 @@ pub(super) fn moves(items: &[Item]) -> Vec<[Option<usize>; 4]> {
                     mv[b][o] = Some(a);
                 }
             }
-            // The rest: one way to the best item in the cone (either direction).
+            // The rest: one way to the best item in the cone (either direction), one
+            // whose way back is a pair where there is one, so back and forth settles.
+            let paired = mv.clone();
             for dir in [d, o] {
                 for a in 0..n {
                     if mv[a][dir].is_some() {
                         continue;
                     }
-                    let mut best: Option<((bool, f32), usize)> = None;
+                    let mut best: Option<((bool, bool, f32), usize)> = None;
                     for b in (0..n).filter(|&b| b != a) {
-                        if let Some(r) = rank(items, a, b, dir, cone) {
+                        if let Some((x, sc)) = rank(items, a, b, dir, cone) {
+                            let back =
+                                paired[b][opposite(dir)].is_some_and(|c| paired[c][dir] == Some(b));
+                            let r = (!back, x, sc);
                             if best.is_none_or(|(k, _)| r < k) {
                                 best = Some((r, b));
                             }
@@ -97,6 +122,69 @@ pub(super) fn moves(items: &[Item]) -> Vec<[Option<usize>; 4]> {
                 }
             }
         }
+    }
+    // Repairs, until all hold (a bounded number of rounds):
+    // * a move into an item whose way back is one way (it leads elsewhere, and that
+    //   elsewhere does not lead back) becomes a pair, so back and forth settles;
+    // * every item is reached from the root (the first item);
+    // * every item of a group (a bloomed cluster) is reached from the group's first
+    //   item without leaving the group, since leaving it folds it.
+    // A lost item is linked from a reached one through an empty key first, so no
+    // existing move changes; else it takes over the reached item's nearest key.
+    let groups: Vec<usize> = {
+        let mut g: Vec<usize> = Vec::new();
+        for (i, it) in items.iter().enumerate().skip(1) {
+            if !g.iter().any(|&j| items[j].group == it.group) {
+                g.push(i);
+            }
+        }
+        g
+    };
+    for _ in 0..4 * n + 4 {
+        let mut changed = false;
+        for a in 0..n {
+            for d in 0..4 {
+                let Some(b) = mv[a][d] else { continue };
+                let o = opposite(d);
+                if !mv[b][o].is_some_and(|c| mv[c][d] == Some(b)) {
+                    mv[b][o] = Some(a);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            continue;
+        }
+        let mut fix = None;
+        let starts = std::iter::once(0).chain(groups.iter().copied());
+        for start in starts {
+            let g = items[start].group;
+            let inside = |i: usize| start == 0 || items[i].group == g;
+            let seen = reached(&mv, start, &inside);
+            let lost: Vec<usize> = (0..n).filter(|&u| inside(u) && !seen[u]).collect();
+            if lost.is_empty() {
+                continue;
+            }
+            let mut best: Option<((bool, bool, f32), (usize, usize, usize))> = None;
+            for &u in &lost {
+                for a in (0..n).filter(|&a| seen[a]) {
+                    for d in 0..4 {
+                        if let Some((x, sc)) = rank(items, a, u, d, 80.0) {
+                            let r = (mv[a][d].is_some(), x, sc);
+                            if best.is_none_or(|(k, _)| r < k) {
+                                best = Some((r, (a, d, u)));
+                            }
+                        }
+                    }
+                }
+            }
+            fix = best.map(|(_, f)| f);
+            if fix.is_some() {
+                break;
+            }
+        }
+        let Some((a, d, u)) = fix else { break };
+        mv[a][d] = Some(u);
     }
     mv
 }

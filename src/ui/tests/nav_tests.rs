@@ -1776,6 +1776,8 @@ fn undo_map_moves(others: usize) {
         devices.push(d);
     }
     let mut a = App::new(devices, tx);
+    // (Sessions, so Down past the map lands on tiles and the arrows' memory meets them.)
+    sessions(&mut a, 0, 2);
     a.go_hub();
     let node = |a: &App| a.hub_device.clone().unwrap_or_else(|| viewmodel::dev_id(0));
     let dirs = [KeyCode::Up, KeyCode::Down, KeyCode::Left, KeyCode::Right];

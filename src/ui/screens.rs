@@ -322,8 +322,13 @@ impl App {
             .map(|(r, a)| (*r, a.as_str()))
             .collect();
         // The opposite of the last move goes back where it came from (and the one before
-        // it, in turn); a selection moved some other way starts afresh.
-        if self.arrows.last().is_some_and(|(_, to, ..)| *to != current) {
+        // it, in turn); a selection moved some other way starts afresh. (A visit to the
+        // other zone keeps it: Down into the tiles and Up again, then Up retraces.)
+        if self
+            .arrows
+            .last()
+            .is_some_and(|(_, to, ..)| *to != current && to.starts_with(kind))
+        {
             self.arrows.clear();
         }
         let back = self.arrows.last().and_then(|(from, _, bx, by)| {

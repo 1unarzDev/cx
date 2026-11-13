@@ -8,7 +8,7 @@ A private HOME: this device (`home`) with six managed shells and four devices th
 answer (`.invalid` targets: north, east, south, west), on a 190x50 PTY.
   * Hub map (focused at startup on `home`): Right reaches a node right of home, Left
     returns to home, Left again a node left of it, Right home again. From home, each
-    arrow (once and twice) lands within ±63° of its direction and the opposite arrows
+    arrow (once and twice) lands within ±80° of its direction (±45° first) and the opposite arrows
     walk back to home. The vitals strip names the selected node.
   * A device's grid (its letter): six tiles in a 3x2 grid. Right/Left/Down/Up and
     `l h j k` move the `▌` focus one tile the way they point; Up from the top row stays
@@ -95,7 +95,9 @@ def main():
             dx = 2 * (b[1] - a[1])  # a cell is about twice as tall as wide
             dy = 4 * (b[0] - a[0])
             along, side = {UP: (-dy, dx), DOWN: (dy, dx), LEFT: (-dx, dy), RIGHT: (dx, dy)}[key]
-            return along > 0 and abs(side) <= 2 * along
+            # The nebula's moves (views/mission/spatial.rs): ±45°, widened to ±80° only
+            # when that cone is empty, so a sparse map has no dead end.
+            return along > 0 and abs(side) <= 5.67 * along
         back = {UP: DOWN, DOWN: UP, LEFT: RIGHT, RIGHT: LEFT}
         for key in (UP, DOWN, LEFT, RIGHT):
             path = ['home']

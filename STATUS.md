@@ -91,13 +91,13 @@
 - Small preview first paints (src_2k, src_5m, unicode) are bimodal at about 4 and 7 ms in both builds; an 8-run re-check per side put src_5m 4.7 → 4.0, src_2k 4.4 → 5.7, unicode 4.0 → 4.9, txt_200k end 5.5 → 5.4, which is the mix of those two modes rather than a shift.
 - Deferred (decided, not bugs to chase now):
   - Old v0.2.0 `attach-ticket-<hex>` files (0 bytes) in the state dir are not swept.
-  - The hub view-model carries jump routes but no mesh membership, LAN evidence, link rtt or device metrics; production draws links as direct ssh or a jump, the mesh render paths run only in the lab.
+  - ~~The hub view-model carries jump routes but no mesh membership, LAN evidence, link rtt or device metrics~~ Closed in v0.3.0 (revamp/realdata): metrics-v1 helper op, 2 s vitals with cpu and rtt, link loss and jitter, mesh membership and LAN evidence observed off the UI thread; py:hub_matrix compares the real viewer and helpers with the lab.
   - The device screen's ` · single-direction` marker and LabDevice.core still come from the legacy posture, so they can disagree with recorded edges; whether `cx access --graph` should validate against edges::Snapshot is a design call.
   - Inside a device `g` is slot 4 (spec), so `gg` is not a motion there; `G` is.
   - Files `Y` stays "clear the transfer clipboard" (the spec defines no alternate copy in Files).
   - The invite's `R` and `+`-after-Esc paths have no unit test (they open a real listener); Esc is tested.
   - machine_id() is read in three places (MESH-8 part): sharing it would add indirection for a 5-line read. Invite expiry stays Instant-based (MESH-13 drift part, rejected).
-- Open: the hub still shows an Error toast for an unreachable device beside the ticker that already names it (capture startup-120x40; present in v0.2.0); capture_matrix flags the keys screen's "Cloudflare…" as a cut interface name (false positive).
+- Open: ~~the hub still shows an Error toast for an unreachable device beside the ticker that already names it~~ (closed in v0.3.0: no toast once the ticker names the device; Files says why in its empty column); capture_matrix flags the keys screen's "Cloudflare…" as a cut interface name (false positive).
 
 ## v0.2.0 release candidate (branch `revamp/base`; not tagged, pushed or deployed)
 - Integrated: the final Mission design (revamp/design-final), instant sessions (revamp/instant: helper Watch, one tmux control client per server, one wake channel, warm masters), hub tiles from in-memory frames and watch events, `+` opening a real ssh-overlay invite (code, `cx mesh pair` line, QR; closed on use, expiry, Esc or `R`), a masked set/rotate entry on the keys screen, `cx join`.

@@ -205,8 +205,8 @@ impl App {
                 if self.launch_provider.is_some() {
                     self.open_browser(d, "~".into());
                 } else {
-                    self.dialog_back =
-                        chooser.then(|| (Dialog::Device(ChooseDevice::New), self.dialog_selected));
+                    self.dialog_back = chooser
+                        .then_some((Dialog::Device(ChooseDevice::New), self.dialog_selected));
                     self.dialog = Some(Dialog::Provider(d, None));
                     self.dialog_selected = 0;
                 }

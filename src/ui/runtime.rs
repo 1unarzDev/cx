@@ -1,7 +1,6 @@
 //! Event loop and terminal ownership: Screen, input batching, task workers, auth prompts,
 //! self-restart state and update checks.
 use super::*;
-use ratatui::buffer::Buffer;
 
 pub(super) fn load_cache(app: &mut App) {
     let path = store::state_dir().join("ui-sessions.json");
@@ -610,49 +609,6 @@ impl FrameControl {
         stdout.flush()?;
         Ok(true)
     }
-    /// A frame that changes most of the screen (a view switch, a peek, the attach frame)
-    /// is shorter painted on a cleared screen than as a cell diff: keep whichever is
-    /// shorter. Only inside synchronized output, where the clear never shows alone.
-    fn shorten(&self, drawn: &Buffer) {
-        let mut state = self.state.borrow_mut();
-        let Some(frame) = state.frame.as_mut().filter(|_| self.sync) else {
-            return;
-        };
-        // A repaint sends at least a byte per visible cell: no use trying when the diff
-        // is already that short (most frames: a key's echo, a moved selection).
-        let shown = drawn
-            .content
-            .iter()
-            .filter(|c| **c != ratatui::buffer::Cell::EMPTY)
-            .count();
-        if frame.len() <= shown {
-            return;
-        }
-        let reset = frame_reset();
-        let (Some(at), Some(mut repainted)) = (find_last(frame, reset), repaint(drawn)) else {
-            return;
-        };
-        let tail = &frame[at + reset.len()..];
-        if repainted.len() + tail.len() < frame.len() {
-            repainted.extend_from_slice(tail);
-            *frame = repainted;
-        }
-    }
-}
-/// `drawn` painted on a cleared screen: Clear, then every non-blank cell (`encode`).
-/// None when a cell carries an inline image sequence, whose pixels a repaint would send
-/// again.
-pub(super) fn repaint(drawn: &Buffer) -> Option<Vec<u8>> {
-    let cells = Buffer::empty(drawn.area).diff(drawn);
-    if cells
-        .iter()
-        .any(|(_, _, cell)| cell.symbol().contains('\x1b'))
-    {
-        return None;
-    }
-    let mut out = b"\x1b[2J".to_vec();
-    encode(&mut out, cells).ok()?;
-    Some(out)
 }
 /// The terminal backend: crossterm's, except that cells are drawn by `encode`.
 pub(super) struct FrameBackend(CrosstermBackend<FrameWriter>);
@@ -935,10 +891,7 @@ impl Screen {
     /// Returns whether anything was written.
     fn draw(&mut self, render: impl FnOnce(&mut Frame<'_>)) -> Result<bool> {
         self.frames.begin();
-        let drawn = self
-            .terminal
-            .draw(render)
-            .map(|done| self.frames.shorten(done.buffer));
+        let drawn = self.terminal.draw(render);
         let committed = self.frames.commit();
         drawn?;
         Ok(committed?)

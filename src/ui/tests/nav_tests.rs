@@ -671,11 +671,6 @@ fn encoded_frames_show_exactly_the_buffer_in_fewer_bytes() {
         );
         screen.feed(&ours);
         screen.assert_shows(&after);
-        // The same frame painted on a cleared screen.
-        let mut cleared = Replay::new(area.width, area.height);
-        cleared.feed(&first);
-        cleared.feed(&repaint(&after).unwrap());
-        cleared.assert_shows(&after);
     }
     // A long blank run is erased in place, a jump along the row moves by column.
     let mut wide = Buffer::empty(area);

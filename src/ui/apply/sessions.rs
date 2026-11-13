@@ -46,6 +46,7 @@ impl App {
                                     "container-agents-v1",
                                     "pdf-pages-v1",
                                     "stable-update-v1",
+                                    "metrics-v1",
                                 ]
                                 .contains(p)
                             })

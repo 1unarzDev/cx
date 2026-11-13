@@ -449,6 +449,56 @@ mod tests {
         assert_eq!(uptime(3 * 3600 + 120), "3h 2m");
     }
 
+    /// Vitals are asked of the devices on screen whose helper says `metrics-v1` (an Info
+    /// reply keeps that capability), once at a time, and never of an older helper.
+    #[test]
+    fn only_helpers_with_metrics_are_sampled_once_at_a_time() {
+        crate::store::isolate_test_state();
+        let (tx, rx) = mpsc::sync_channel(64);
+        let mut a = App::new(
+            vec![
+                dev("local", None),
+                dev("new", Some("me@new")),
+                dev("old", Some("me@old")),
+            ],
+            tx,
+        );
+        a.view = View::Network;
+        for (d, caps) in [(1, vec!["metrics-v1"]), (2, vec!["watch-v1"])] {
+            a.apply(Reply {
+                device_id: None,
+                execution_target: None,
+                preview: None,
+                device: d,
+                op: Operation::Info,
+                generation: a.generation,
+                result: Ok(serde_json::json!({ "capabilities": caps })),
+            });
+        }
+        let metrics = |rx: &mpsc::Receiver<Task>| -> Vec<usize> {
+            rx.try_iter()
+                .filter(|t| matches!(t.op, Operation::Metrics))
+                .map(|t| t.device)
+                .collect()
+        };
+        a.poll_vitals();
+        assert_eq!(metrics(&rx), vec![0, 1]);
+        a.poll_vitals();
+        assert_eq!(
+            metrics(&rx),
+            Vec::<usize>::new(),
+            "one request in flight each"
+        );
+        a.vitals_replied(1, Err(anyhow::anyhow!("lost")));
+        a.view = View::Files;
+        a.poll_vitals();
+        assert_eq!(metrics(&rx), Vec::<usize>::new(), "nothing off the hub");
+        a.view = View::Work;
+        a.device = 2;
+        a.poll_vitals();
+        assert_eq!(metrics(&rx), vec![1], "only the open device");
+    }
+
     #[test]
     fn members_map_to_devices_by_address_then_name() {
         let devices = [

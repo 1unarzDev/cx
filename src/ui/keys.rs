@@ -94,6 +94,10 @@ impl App {
             self.input_key(key, mode);
             return;
         }
+        if self.yazi_active() && self.yazi_key(key) {
+            self.navigation.reset();
+            return;
+        }
         if self.screen_key(key) {
             self.navigation.reset();
             return;

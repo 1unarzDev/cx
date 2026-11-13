@@ -36,6 +36,10 @@ impl App {
                 }
                 self.input = None;
                 self.text.clear();
+                self.yz.creating = false;
+                self.yz.cd = false;
+                self.yz.search = None;
+                self.yz.renaming_tab = false;
                 self.rename_target = None;
                 self.command_target = None;
                 self.network_add_target = None;
@@ -165,6 +169,8 @@ impl App {
                     self.filter_restore = None;
                     self.input = None;
                 }
+                Input::Rename if self.yazi_rename_enter() => {}
+                Input::Mkdir if self.yazi_input_enter() => {}
                 Input::Rename => {
                     if !self.text.is_empty()
                         && self.text != "."

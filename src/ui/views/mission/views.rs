@@ -1990,7 +1990,7 @@ fn rust_line(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, room: u16, l: &str) {
 /// Send-to picker over the files view: a bottom sheet holding the schematic seen from
 /// the files' device, where pressing (or tapping) a device sends the file there; the
 /// transfer then shows as the packet on that link.
-fn send_to(cx: &Cx, buf: &mut Buffer, a: Rect) {
+pub(super) fn send_to(cx: &Cx, buf: &mut Buffer, a: Rect) {
     cx.dim(buf, a);
     // As tall as its map (up to two thirds of the screen, all but the crumb and footer
     // on a phone): a title row, a blank row,

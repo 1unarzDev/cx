@@ -373,10 +373,14 @@ impl App {
             }
             if !ordered {
                 b.entries.sort_by(|a, b| {
-                    (a.kind != "directory", a.name.as_str())
-                        .cmp(&(b.kind != "directory", b.name.as_str()))
+                    (a.kind != "directory", a.name.to_lowercase(), a.name.as_str()).cmp(&(
+                        b.kind != "directory",
+                        b.name.to_lowercase(),
+                        b.name.as_str(),
+                    ))
                 });
             }
+
             let last_page = value["next_offset"].is_null();
             if let Some(path) = &b.restore_selection {
                 b.selected = browser_entries(b).position_of(path).unwrap_or(0);
@@ -402,6 +406,9 @@ impl App {
             if listing_offset == 0 {
                 self.prefetch_parent();
             }
+        }
+        if self.yz.sort.is_some() {
+            self.yazi_sort();
         }
         if let Some(offset) = value["next_offset"].as_u64() {
             if let Some(b) = &self.browser {

@@ -963,6 +963,7 @@ pub(super) fn can_restart(app: &App) -> bool {
         && !app.creating
         && app.pending_attach.is_none()
         && app.pending_command.is_none()
+        && app.pending_jump.is_none()
         && app.pending_command_panel.is_none()
         && app.command_panel.is_none()
         && app.pending_add.is_none()
@@ -1714,6 +1715,34 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     NoticeKind::Error,
                     safe_text(&format!("Expand failed: {e:#}")),
                 );
+            }
+            dirty = true;
+        }
+        if let Some((zoxide, dir)) = app.pending_jump.take() {
+            // `z`/`Z`: fzf or zoxide owns the terminal; its answer is where Files goes.
+            cleanup_native_preview(&mut screen, &mut native_preview)?;
+            app.stop_watches();
+            screen.suspend(true)?;
+            let mut command = if zoxide {
+                let mut c = std::process::Command::new("zoxide");
+                c.args(["query", "-i"]);
+                c
+            } else {
+                std::process::Command::new("fzf")
+            };
+            let output = command
+                .current_dir(&dir)
+                .stdin(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::piped())
+                .output();
+            screen.resume()?;
+            last_interaction = Instant::now();
+            if let Some(out) = output.ok().filter(|o| o.status.success()) {
+                let picked = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+                if !picked.is_empty() {
+                    app.yazi_jump_to(&dir, &picked);
+                }
             }
             dirty = true;
         }

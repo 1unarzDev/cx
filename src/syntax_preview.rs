@@ -1,4 +1,5 @@
-//! Bundled, inert source highlighting. No file access or language process execution.
+//! Bundled, inert source highlighting. No language process execution; the only file
+//! read is the user's own yazi syntect theme (`use_theme`), once, when there is one.
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
@@ -15,6 +16,104 @@ use syntect::{
 
 static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
 static THEMES: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
+/// The user's yazi `syntect_theme` (a .tmTheme), when Files found one: previews then
+/// use its colours and font styles, as yazi does. Backgrounds are never painted.
+static USER_THEME: std::sync::OnceLock<syntect::highlighting::Theme> = std::sync::OnceLock::new();
+pub fn use_theme(path: &std::path::Path) {
+    if USER_THEME.get().is_some() {
+        return;
+    }
+    if std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() < 4 << 20) {
+        if let Some(theme) = std::fs::read_to_string(path).ok().and_then(|t| tm_theme(&t)) {
+            let _ = USER_THEME.set(theme);
+        }
+    }
+}
+/// The parts of a .tmTheme plist previews use: the default foreground and each rule's
+/// scope, foreground and fontStyle (a small reader: syntect's plist loader is not built in).
+fn tm_theme(text: &str) -> Option<syntect::highlighting::Theme> {
+    use std::str::FromStr;
+    use syntect::highlighting::{FontStyle, ScopeSelectors, StyleModifier, Theme, ThemeItem};
+    let color = |s: &str| -> Option<TokenColor> {
+        let h = s.trim().strip_prefix('#')?;
+        let v = u32::from_str_radix(h.get(..6)?, 16).ok()?;
+        Some(TokenColor {
+            r: (v >> 16) as u8,
+            g: (v >> 8) as u8,
+            b: v as u8,
+            a: 255,
+        })
+    };
+    // (key, string) pairs in document order.
+    let mut pairs = Vec::new();
+    let mut rest = text;
+    while let Some(k) = rest.find("<key>") {
+        let after = &rest[k + 5..];
+        let end = after.find("</key>")?;
+        let key = &after[..end];
+        let tail = &after[end + 6..];
+        let value = tail
+            .trim_start()
+            .strip_prefix("<string>")
+            .and_then(|v| v.find("</string>").map(|e| &v[..e]));
+        pairs.push((key, value));
+        rest = tail;
+    }
+    let mut theme = Theme::default();
+    let mut current: Option<(String, StyleModifier)> = None;
+    for (key, value) in pairs {
+        match (key, value) {
+            ("scope", Some(scope)) => {
+                if let Some((s, m)) = current.take() {
+                    if let Ok(sel) = ScopeSelectors::from_str(&s) {
+                        theme.scopes.push(ThemeItem { scope: sel, style: m });
+                    }
+                }
+                current = Some((scope.to_owned(), StyleModifier::default()));
+            }
+            ("foreground", Some(v)) => match current.as_mut() {
+                Some((_, m)) => m.foreground = color(v),
+                None => theme.settings.foreground = color(v),
+            },
+            ("fontStyle", Some(v)) => {
+                if let Some((_, m)) = current.as_mut() {
+                    let mut f = FontStyle::empty();
+                    for w in v.split_whitespace() {
+                        match w {
+                            "bold" => f |= FontStyle::BOLD,
+                            "italic" => f |= FontStyle::ITALIC,
+                            "underline" => f |= FontStyle::UNDERLINE,
+                            _ => {}
+                        }
+                    }
+                    m.font_style = Some(f);
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some((s, m)) = current.take() {
+        if let Ok(sel) = ScopeSelectors::from_str(&s) {
+            theme.scopes.push(ThemeItem { scope: sel, style: m });
+        }
+    }
+    (!theme.scopes.is_empty()).then_some(theme)
+}
+fn user_style(style: syntect::highlighting::Style) -> Style {
+    use syntect::highlighting::FontStyle;
+    let c = style.foreground;
+    let mut s = Style::default().fg(Color::Rgb(c.r, c.g, c.b));
+    if style.font_style.contains(FontStyle::BOLD) {
+        s = s.add_modifier(ratatui::style::Modifier::BOLD);
+    }
+    if style.font_style.contains(FontStyle::ITALIC) {
+        s = s.add_modifier(ratatui::style::Modifier::ITALIC);
+    }
+    if style.font_style.contains(FontStyle::UNDERLINE) {
+        s = s.add_modifier(ratatui::style::Modifier::UNDERLINED);
+    }
+    s
+}
 fn palette(color: TokenColor) -> Color {
     // Map trusted grammar theme roles onto the viewer's ANSI palette. Never set background.
     match (color.r, color.g, color.b) {
@@ -82,7 +181,8 @@ fn highlight_with_budget(
         })
         .or_else(|| syntaxes.find_syntax_by_first_line(text.lines().next().unwrap_or("")))
         .unwrap_or_else(|| syntaxes.find_syntax_plain_text());
-    let theme = &THEMES.themes["base16-ocean.dark"];
+    let user = USER_THEME.get();
+    let theme = user.unwrap_or(&THEMES.themes["base16-ocean.dark"]);
     let mut parser = match resume {
         Some((highlight, parse)) => HighlightLines::from_state(theme, highlight, parse),
         None => HighlightLines::new(syntax, theme),
@@ -109,7 +209,11 @@ fn highlight_with_budget(
                         .map(|(style, token)| {
                             Span::styled(
                                 token.trim_end_matches('\n').to_owned(),
-                                Style::default().fg(palette(style.foreground)),
+                                if user.is_some() {
+                                    user_style(style)
+                                } else {
+                                    Style::default().fg(palette(style.foreground))
+                                },
                             )
                         })
                         .collect::<Vec<_>>(),

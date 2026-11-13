@@ -116,7 +116,7 @@ impl App {
         });
         v
     }
-    fn device_for_letter(&self, c: char) -> Option<usize> {
+    pub(super) fn device_for_letter(&self, c: char) -> Option<usize> {
         let letters = self.hotkeys();
         self.devices
             .iter()

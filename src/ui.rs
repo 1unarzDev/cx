@@ -31,6 +31,7 @@ mod file_index;
 use file_index::{Entries, ViewIndex, VisibleRows};
 mod files_view;
 use files_view::*;
+mod yazi;
 mod network_view;
 use network_view::*;
 mod runtime;
@@ -639,6 +640,10 @@ struct App {
     attach_check: Option<(usize, Session, bool, u64)>,
     command_target: Option<(usize, String)>,
     pending_command: Option<(Device, RunCommand)>,
+    /// `z`/`Z` in Files: run fzf (false) or zoxide (true) here, from this folder.
+    pending_jump: Option<(bool, String)>,
+    /// The Files view's yazi state (tabs, chords, popups, sort, linemode).
+    yz: yazi::Yazi,
     pending_command_panel: Option<(usize, RunCommand)>,
     command_panel: Option<CommandPanel>,
     /// A command panel to attach full-screen on the next loop turn.
@@ -822,6 +827,8 @@ impl App {
             attach_check: None,
             command_target: None,
             pending_command: None,
+            pending_jump: None,
+            yz: yazi::Yazi::default(),
             pending_command_panel: None,
             command_panel: None,
             pending_panel_expand: None,

@@ -83,8 +83,12 @@ impl Target for Files<'_> {
                 let entries = super::browser_entries(b);
                 let start = anchor.min(b.selected);
                 let end = anchor.max(b.selected);
+                // `V` (yazi's unset mode) clears the range instead.
+                let unset = self.app.yz.unset;
                 for entry in entries.iter().skip(start).take(end - start + 1) {
-                    if b.marked.len() < 256 {
+                    if unset {
+                        b.marked.remove(&entry.path);
+                    } else if b.marked.len() < 4096 {
                         b.marked.insert(entry.path.clone());
                     }
                 }

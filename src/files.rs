@@ -34,6 +34,22 @@ pub fn display(text: &str) -> String {
         })
         .collect()
 }
+/// A path for display with this account's home shown as `~` (as yazi's header does).
+fn home_relative(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    match std::env::var_os("HOME").filter(|h| h.len() > 1) {
+        Some(home) => {
+            let home = home.to_string_lossy();
+            let home = home.trim_end_matches('/');
+            match text.strip_prefix(home) {
+                Some("") => "~".into(),
+                Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+                _ => text.into_owned(),
+            }
+        }
+        None => text.into_owned(),
+    }
+}
 pub(crate) fn encode_path(path: &Path) -> String {
     #[cfg(unix)]
     {
@@ -199,7 +215,8 @@ const SNAPSHOT_CACHE_ENTRIES: usize = 262_144;
 const SNAPSHOT_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 /// Order of `entries` across all pages: directories first, then display name, then raw name.
 /// This is the UI's own sort key, so a client that sees it may append pages without re-sorting.
-pub(crate) const LIST_ORDER: &str = "directories-first-name";
+/// Names compare case-insensitively first (yazi's default `sort_sensitive = false`).
+pub(crate) const LIST_ORDER: &str = "directories-first-name-nocase";
 
 /// Which directory a snapshot lists. Its times are not part of it: a continuation page
 /// comes from its first page's snapshot even after the directory changed, so the pages
@@ -213,6 +230,8 @@ struct SnapshotKey {
 struct SnapshotEntry {
     name: std::ffi::OsString,
     display: String,
+    /// `display` lowercased: the first sort key after directories.
+    fold: String,
     directory: bool,
 }
 struct Snapshot {
@@ -251,18 +270,27 @@ fn read_snapshot(key: SnapshotKey) -> Result<Snapshot> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => return Err(e.into()),
         };
+        let shown = display(&name.to_string_lossy());
         entries.push(SnapshotEntry {
-            display: display(&name.to_string_lossy()),
+            fold: shown.to_lowercase(),
+            display: shown,
             name,
             directory,
         });
     }
     entries.sort_unstable_by(|a, b| {
-        (!a.directory, a.display.as_str(), a.name.as_os_str()).cmp(&(
-            !b.directory,
-            b.display.as_str(),
-            b.name.as_os_str(),
-        ))
+        (
+            !a.directory,
+            a.fold.as_str(),
+            a.display.as_str(),
+            a.name.as_os_str(),
+        )
+            .cmp(&(
+                !b.directory,
+                b.fold.as_str(),
+                b.display.as_str(),
+                b.name.as_os_str(),
+            ))
     });
     Ok(Snapshot {
         key,
@@ -386,7 +414,7 @@ fn list_page(path: &Path, offset: u64, limit: u32) -> Result<Value> {
     }
     Ok(json!({
         "path":encode_path(&path),
-        "display_path":display(&path.to_string_lossy()),
+        "display_path":display(&home_relative(&path)),
         "parent":path.parent().map(encode_path),
         "next_offset":next_offset,
         "entries":entries,
@@ -2003,8 +2031,11 @@ mod tests {
     }
     fn ui_sort(entries: &mut [Value]) {
         entries.sort_by(|a, b| {
-            (a["kind"] != "directory", a["name"].as_str())
-                .cmp(&(b["kind"] != "directory", b["name"].as_str()))
+            let key = |e: &Value| {
+                let name = e["name"].as_str().unwrap_or("").to_owned();
+                (e["kind"] != "directory", name.to_lowercase(), name)
+            };
+            key(a).cmp(&key(b))
         });
     }
     #[test]

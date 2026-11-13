@@ -567,7 +567,17 @@ impl Theme {
             Some(toml::parse(&std::fs::read_to_string(path).ok()?))
         };
         match read("theme.toml") {
-            Some(theme) => Theme::from_docs(&theme, read("keymap.toml").as_ref()),
+            Some(theme) => {
+                if let Some(p) = theme.path("mgr.syntect_theme").and_then(Value::str) {
+                    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+                    let path = match (p.strip_prefix("~/"), home) {
+                        (Some(rest), Some(h)) => h.join(rest),
+                        _ => std::path::PathBuf::from(p),
+                    };
+                    crate::syntax_preview::use_theme(&path);
+                }
+                Theme::from_docs(&theme, read("keymap.toml").as_ref())
+            }
             None => {
                 let mut t = Theme::builtin();
                 if let Some(k) = read("keymap.toml") {

@@ -69,7 +69,6 @@ pub(crate) enum Preview {
     Folder(Column),
     /// The app draws the file preview (text, code, image) into the preview rect.
     Body,
-    Message(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -268,8 +267,24 @@ pub(crate) fn perm_string(mode: u32, dir: bool, link: bool) -> String {
     s
 }
 
-/// A modified day: `11/12` this year, else `2024`, and `HH:MM` today.
+/// Seconds east of UTC on this machine at `t` (the viewer's local time).
+fn utc_offset(t: i64) -> i64 {
+    if cfg!(test) {
+        return 0;
+    }
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let tt = t as libc::time_t;
+    if unsafe { libc::localtime_r(&tt, &mut tm) }.is_null() {
+        return 0;
+    }
+    tm.tm_gmtoff
+}
+/// A modified day in local time: `11/12` this year, else `2024`, and `HH:MM` today.
 pub(crate) fn day(secs: i64, now: i64) -> String {
+    let off = utc_offset(now);
+    day_utc(secs + off, now + off)
+}
+fn day_utc(secs: i64, now: i64) -> String {
     let (y, m, d) = civil(secs);
     let (ny, nm, nd) = civil(now);
     if (y, m, d) == (ny, nm, nd) {
@@ -427,21 +442,27 @@ fn linemode(row: &Row, mode: Linemode, size_max: u64, now: i64, unicode: bool) -
         Linemode::Bar => {
             let mut out = Vec::new();
             if !row.dir {
-                // A log-scaled bar: a 1 KB file next to a 1 GB one is still visible.
-                let cells = 5usize;
+                // A log-scaled bar (the earlier Files view's): a 1 KB file next to a
+                // 1 GB one is still visible; half cells end it.
+                let cells = 6usize;
                 let v = if size_max <= 1 || row.size == 0 {
                     0.0
                 } else {
                     ((row.size as f64).ln() / (size_max as f64).ln()).clamp(0.0, 1.0)
                 };
-                let filled = ((v * cells as f64).round() as usize).clamp(usize::from(row.size > 0), cells);
-                let (f, e) = if unicode { ("▰", "▱") } else { ("#", ".") };
-                out.push((f.repeat(filled), 1));
-                out.push((e.repeat(cells - filled), 2));
+                let halves = ((v * cells as f64 * 2.0).round() as usize).clamp(usize::from(row.size > 0), cells * 2);
+                let (full, half, empty) = if unicode { ("━", "╸", "━") } else { ("=", "-", "-") };
+                let mut bar = full.repeat(halves / 2);
+                if halves % 2 == 1 {
+                    bar.push_str(half);
+                }
+                let used = halves.div_ceil(2);
+                out.push((bar, 1));
+                out.push((empty.repeat(cells - used), 2));
                 out.push((format!(" {:>5}", readable_size(row.size)), 0));
             }
             if let Some(m) = row.modified {
-                out.push((format!(" {:>5}", day(m, now)), 0));
+                out.push((format!(" {:>5}", day(m, now)), 3));
             }
             out
         }
@@ -555,8 +576,9 @@ fn column(
             let mut lx = inner_end - lm_w as u16;
             for (s, kind) in &lm {
                 let st = match kind {
-                    1 if !hovered => style.patch(t.which_desc).remove_modifier(Modifier::BOLD),
-                    2 if !hovered => style.patch(t.which_rest),
+                    1 if !hovered => style.patch(t.which_cand),
+                    2 if !hovered => style.patch(t.which_rest).add_modifier(Modifier::DIM),
+                    3 if !hovered => style.patch(t.which_rest),
                     _ => style,
                 };
                 lx = p.put(lx, y, inner_end, s, st);
@@ -968,23 +990,27 @@ pub(crate) fn render(v: &View, t: &Theme, look: Look, area: Rect, buf: &mut Buff
     column(&mut p, t, current_list, &v.current, Which::Current, v.linemode, v.now);
     match &v.preview {
         Some(Preview::Folder(c)) => column(&mut p, t, vr, c, Which::Preview, v.linemode, v.now),
-        Some(Preview::Message(m)) => {
-            let y = vr.y + vr.height / 2;
-            let w = width(m) as u16;
-            p.put(vr.x + vr.width.saturating_sub(w) / 2, y, vr.right(), m, t.overall);
-        }
         _ => {}
     }
     status(&mut p, t, status_r, &v.status);
-    // Overlays.
-    let hovered_y = v.current.hovered.map(|i| current_list.y + i as u16);
+    d
+}
+
+/// The which-key panel and popups, drawn after the app's preview body.
+pub(crate) fn overlays(v: &View, t: &Theme, look: Look, area: Rect, buf: &mut Buffer, d: &mut Drawn) {
+    if area.width < 4 || area.height < 3 {
+        return;
+    }
+    let mut p = Pen { buf, look };
+    let status_y = area.bottom() - 1;
+    let hovered_y = v.current.hovered.map(|i| d.current.y + i as u16);
     if !v.which.is_empty() {
-        which_key(&mut p, t, area, status_r.y.saturating_sub(1), &v.which);
+        which_key(&mut p, t, area, status_y.saturating_sub(1), &v.which);
     }
     if let Some(pop) = &v.popup {
-        popup(&mut p, t, area, current_list, hovered_y, pop, &mut d);
+        let current = d.current;
+        popup(&mut p, t, area, current, hovered_y, pop, d);
     }
-    d
 }
 
 #[cfg(test)]

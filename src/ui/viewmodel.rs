@@ -484,9 +484,12 @@ fn files(app: &App) -> LabFiles {
             .peek
             .as_deref()
             .filter(|p| b.preview.is_none() && p.preview.is_none() && !p.loading)
+            // (Its first rows straight from the listing, which arrives in display order:
+            // no index of a 100k-entry folder just to show a column of it.)
             .map(|p| {
-                super::browser_entries(p)
+                p.entries
                     .iter()
+                    .filter(|e| p.show_hidden || !(e.hidden || e.name.starts_with('.')))
                     .take(200)
                     .map(&node)
                     .collect()

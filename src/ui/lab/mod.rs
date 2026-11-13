@@ -235,6 +235,40 @@ mod review_tests {
             .any(|t| t.action.starts_with("session:innovation:extra")));
     }
 
+    /// Transparent terminals: cx's own chrome paints no cell background in any tier
+    /// (session screens keep their programs' own; here they are empty, and the
+    /// invite's QR code keeps its modules).
+    #[test]
+    fn chrome_paints_no_background() {
+        let mut s = state::typical();
+        for x in &mut s.sessions {
+            x.screen.clear();
+        }
+        for variant in ["dark-truecolor", "light-truecolor", "dark-16", "ascii"] {
+            let base = LabCaps::from_variant(variant).unwrap();
+            for v in LabView::defaults(&s)
+                .into_iter()
+                .filter(|v| *v != LabView::JoinCode)
+            {
+                for focus in [None, Some(Pane::Sessions)] {
+                    let caps = LabCaps { focus, ..base };
+                    for (w, h) in [(40, 20), (120, 40), (190, 50)] {
+                        let (buf, _) = render_frame(&v, &s, &caps, w, h);
+                        let painted = buf.content.iter().position(|c| {
+                            c.bg != ratatui::style::Color::Reset
+                                || c.modifier.contains(ratatui::style::Modifier::REVERSED)
+                        });
+                        assert!(
+                            painted.is_none(),
+                            "{} {variant} {w}x{h}: cell {painted:?} has a background",
+                            v.slug()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// A device that was never seen says so, not an age counted from the epoch
     /// (`✕ 20770d`).
     #[test]

@@ -5919,12 +5919,17 @@ fn ascii_capability_renders_no_unicode_and_keeps_focus_cues() {
                     .join("\n");
                 assert!(text.is_ascii(), "{name} {w}x{h}:\n{text}");
                 // The focused zone is `[LABEL]` or its selection `>` / `[ ]` (ASCII), and
-                // keycaps are reversed cells.
+                // keycaps are bold letters: no cell is reversed (a reversed cell is a
+                // painted background on a transparent terminal).
                 assert!(
                     text.contains("> ") || text.contains('['),
                     "{name} {w}x{h}:\n{text}"
                 );
                 assert!(buffer
+                    .content
+                    .iter()
+                    .any(|c| c.modifier.contains(Modifier::BOLD)));
+                assert!(!buffer
                     .content
                     .iter()
                     .any(|c| c.modifier.contains(Modifier::REVERSED)));
@@ -5974,20 +5979,18 @@ fn only_the_overlay_looks_focused_while_it_owns_input() {
     assert_eq!(bars(&draw(&a)), 1);
 }
 
-/// 16 colors: the focused row of a dialog list is one uniform reversed chip.
+/// 16 colors: the focused row of a dialog list is bold accent ink with no cell behind
+/// it (terminals are often transparent); its bar marks it.
 #[test]
-fn ansi16_focused_row_is_uniform_and_keeps_its_bar() {
+fn ansi16_focused_row_paints_no_background() {
     let c = caps::Caps {
         color: caps::ColorDepth::Ansi16,
         ..caps::Caps::default()
     };
     let style = theme::selection_for(true, c);
-    assert!(style.add_modifier.contains(Modifier::REVERSED));
-    assert_eq!(
-        style.fg,
-        Some(Color::Reset),
-        "token colors do not leak into the bar"
-    );
+    assert!(style.add_modifier.contains(Modifier::BOLD));
+    assert!(!style.add_modifier.contains(Modifier::REVERSED));
+    assert_eq!(style.bg, None);
 }
 
 fn page(dir: &str, from: usize, to: usize, next: Option<usize>, total: usize) -> Value {

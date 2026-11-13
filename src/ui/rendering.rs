@@ -1202,7 +1202,7 @@ fn find_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
 /// or a tap anywhere outside the screen: this chip, the crumb, the hub).
 fn typing_bar(frame: &mut Frame<'_>, area: Rect) {
     let row = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
-    let key = Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    let key = accent().add_modifier(Modifier::BOLD);
     frame.render_widget(Clear, row);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -1226,7 +1226,7 @@ fn destination_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
         return;
     };
     let row = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
-    let key = Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    let key = accent().add_modifier(Modifier::BOLD);
     let n = c.entries.len();
     frame.render_widget(Clear, row);
     frame.render_widget(

@@ -178,19 +178,17 @@ pub(super) fn swatch_index(key: &str) -> u8 {
 /// marker carries it) for unfocused ones. The reversed row also resets the
 /// foreground, so token-colored cells (an accent state, a dim age) do not turn
 /// into colored blocks inside the bar: the row reads as one uniform chip.
+///
+/// v0.2.2: no background in any tier (terminals are often transparent, and a painted
+/// row reads as a slab): the focused row is bold accent ink (bold and underlined
+/// without colour), an unfocused one is plain (its bar marker carries it).
 pub(super) fn selection_for(focused: bool, caps: Caps) -> Style {
-    let t = if focused {
-        Tok::AccentBg
-    } else {
-        Tok::SelectDimBg
-    };
-    match token_color(t, caps) {
-        Some(bg) if focused => Style::default().bg(bg).add_modifier(Modifier::BOLD),
-        Some(bg) => Style::default().bg(bg),
-        None if focused => Style::default()
-            .fg(Color::Reset)
-            .add_modifier(Modifier::REVERSED | Modifier::BOLD),
-        None => Style::default(),
+    if !focused {
+        return Style::default();
+    }
+    match token_color(Tok::Accent, caps) {
+        Some(c) => Style::default().fg(c).add_modifier(Modifier::BOLD),
+        None => Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
     }
 }
 /// Selection style for a panel row; `focused` is downgraded while an overlay
@@ -469,7 +467,8 @@ pub(super) fn overlay_border() -> border::Set {
 /// otherwise. ASCII: `#=#` + `[ title ]` reversed vs `+-+`.
 pub(super) fn block_for(title: String, focused: bool, caps: Caps) -> Block<'static> {
     let (title, title_style, border_style) = if focused {
-        let chip = tok_for(Tok::Accent, caps).add_modifier(Modifier::REVERSED | Modifier::BOLD);
+        // (Bold underlined accent ink: a reversed chip is a painted cell.)
+        let chip = tok_for(Tok::Accent, caps).add_modifier(Modifier::UNDERLINED | Modifier::BOLD);
         let text = if caps.unicode {
             format!(" {title} ")
         } else {
@@ -690,15 +689,10 @@ mod tests {
             .contains(Modifier::BOLD));
         assert!(selection_for(true, none)
             .add_modifier
-            .contains(Modifier::REVERSED));
-        assert!(selection_for(true, at(Ansi16, Background::Dark))
-            .add_modifier
-            .contains(Modifier::REVERSED));
+            .contains(Modifier::BOLD | Modifier::UNDERLINED));
+        assert!(selection_for(true, at(Ansi16, Background::Dark)).bg.is_none());
         assert_eq!(selection_for(false, none), Style::default());
-        assert_eq!(
-            selection_for(true, at(TrueColor, Background::Dark)).bg,
-            Some(Color::Rgb(0x1d, 0x3a, 0x42))
-        );
+        assert_eq!(selection_for(true, at(TrueColor, Background::Dark)).bg, Option::<Color>::None);
     }
 
     fn luminance((r, g, b): Rgb) -> f64 {
@@ -800,11 +794,12 @@ mod tests {
         let chip = &buf[(2, 0)];
         assert_eq!(chip.symbol(), "F");
         assert!(
-            chip.modifier.contains(Modifier::REVERSED),
-            "title chip is reversed"
+            chip.modifier.contains(Modifier::UNDERLINED | Modifier::BOLD)
+                && !chip.modifier.contains(Modifier::REVERSED),
+            "title chip is bold underlined ink"
         );
         assert_eq!(chip.fg, Color::Rgb(0x6c, 0xc4, 0xd6));
-        assert_eq!(chip.bg, Color::Reset, "chips reverse instead of painting");
+        assert_eq!(chip.bg, Color::Reset, "chips never paint a background");
         assert_eq!(buf[(0, 1)].fg, Color::Rgb(0x6c, 0xc4, 0xd6));
 
         let (text, buf) = draw(dark, false);
@@ -816,20 +811,20 @@ mod tests {
         assert_eq!(buf[(2, 0)].fg, Color::Rgb(0x8b, 0x93, 0xa1));
         assert_eq!(buf[(0, 1)].fg, Color::Rgb(0x4a, 0x51, 0x5c));
 
-        // NO_COLOR keeps heavy border + reversed title.
+        // NO_COLOR keeps heavy border + bold underlined title.
         let mono = Caps {
             color: ColorDepth::None,
             ..dark
         };
         let (text, buf) = draw(mono, true);
         assert!(text.starts_with("┏ Files"));
-        assert!(buf[(2, 0)].modifier.contains(Modifier::REVERSED));
+        assert!(buf[(2, 0)].modifier.contains(Modifier::UNDERLINED));
         assert!(buf
             .content
             .iter()
             .all(|c| c.fg == Color::Reset && c.bg == Color::Reset));
 
-        // ASCII: `#=#` + `[ Files ]` reversed vs `+-+`, nothing outside ASCII.
+        // ASCII: `#=#` + `[ Files ]` underlined vs `+-+`, nothing outside ASCII.
         let ascii = Caps {
             unicode: false,
             color: ColorDepth::None,
@@ -840,7 +835,7 @@ mod tests {
             text.starts_with("#[ Files ]====") && text.contains("#\n#"),
             "{text}"
         );
-        assert!(buf[(3, 0)].modifier.contains(Modifier::REVERSED));
+        assert!(buf[(3, 0)].modifier.contains(Modifier::UNDERLINED));
         let (plain, _) = draw(ascii, false);
         assert!(
             plain.starts_with("+ Files ---") && plain.contains("+\n|"),
@@ -945,14 +940,14 @@ mod tests {
     }
 
     #[test]
-    fn no_color_selection_is_reversed_only_when_focused() {
+    fn no_color_selection_is_marked_only_when_focused() {
         let mono = Caps {
             color: ColorDepth::None,
             ..Caps::default()
         };
         assert!(selection_for(true, mono)
             .add_modifier
-            .contains(Modifier::REVERSED));
+            .contains(Modifier::UNDERLINED));
         assert_eq!(selection_for(false, mono), Style::default());
     }
 

@@ -44,16 +44,20 @@ impl App {
             dialog,
             Dialog::SessionChooser(..) | Dialog::ContainerProvider(..)
         );
-        // A left arrow is an explicit back action in the new-session menus. Keep
-        // it separate from list navigation so it never skips a provider choice.
-        if matches!(dialog, Dialog::SessionChooser(..) | Dialog::Provider(..))
+        // In the agent step Left goes back a step (to the device chooser or menu that
+        // opened it), never past it: only Esc closes a popup. (In the session chooser,
+        // a row of choices, Left and Right move.)
+        if matches!(dialog, Dialog::Provider(..))
             && !key
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
             && key.code == KeyCode::Left
         {
-            self.dialog = None;
-            self.dialog_detail_focus = false;
+            if let Some((back, selected)) = self.dialog_back.take() {
+                self.dialog = Some(back);
+                self.dialog_selected = selected;
+                self.dialog_detail_focus = false;
+            }
             return;
         }
         if let Some(motion) = self.navigation.read(key, 5, horizontal) {
@@ -554,6 +558,7 @@ impl App {
             }
             Dialog::Peer(d) => {
                 self.dialog = None;
+                self.dialog_back = Some((Dialog::Peer(d), self.dialog_selected));
                 match self.dialog_selected {
                     0 => {
                         self.device = d + 1;

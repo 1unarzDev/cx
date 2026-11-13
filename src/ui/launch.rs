@@ -172,7 +172,7 @@ impl App {
         }
     }
     pub(super) fn chosen_device(&mut self, d: usize, purpose: ChooseDevice) {
-        self.dialog = None;
+        let chooser = matches!(self.dialog.take(), Some(Dialog::Device(_)));
         match purpose {
             ChooseDevice::Work | ChooseDevice::Network => {
                 self.device = d + 1;
@@ -205,6 +205,8 @@ impl App {
                 if self.launch_provider.is_some() {
                     self.open_browser(d, "~".into());
                 } else {
+                    self.dialog_back =
+                        chooser.then(|| (Dialog::Device(ChooseDevice::New), self.dialog_selected));
                     self.dialog = Some(Dialog::Provider(d, None));
                     self.dialog_selected = 0;
                 }

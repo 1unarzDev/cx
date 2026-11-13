@@ -1802,3 +1802,63 @@ fn undo_map_moves(others: usize) {
         }
     }
 }
+
+/// Arrows never dismiss a popup: in the new-session chooser Left and Right move between
+/// its choices, in the agent step Left goes back to the step that opened it (the device
+/// chooser or the device menu), and only Esc closes either.
+#[test]
+fn arrows_move_in_popups_and_only_esc_closes_them() {
+    let (mut a, _rx) = queued_app();
+    let arrow = |a: &mut App, code| a.key(KeyEvent::new(code, KeyModifiers::NONE));
+    for dialog in [
+        Dialog::SessionChooser(0, "~".into()),
+        Dialog::Provider(1, None),
+        Dialog::Peer(1),
+        Dialog::Jobs,
+        Dialog::Device(ChooseDevice::New),
+        Dialog::RemoveDevice(1),
+        Dialog::EditDevice(1),
+        Dialog::Reset,
+        Dialog::PendingExit(1),
+    ] {
+        a.dialog = Some(dialog);
+        a.dialog_back = None;
+        for code in [KeyCode::Left, KeyCode::Right, KeyCode::Up, KeyCode::Down] {
+            arrow(&mut a, code);
+            assert!(a.dialog.is_some(), "{code:?} dismissed a popup");
+        }
+        arrow(&mut a, KeyCode::Esc);
+        assert!(a.dialog.is_none(), "Esc kept a popup open");
+    }
+    // The chooser's choices sit in a row: Right, then Left, moves along it.
+    a.dialog = Some(Dialog::SessionChooser(0, "~".into()));
+    a.dialog_selected = 0;
+    arrow(&mut a, KeyCode::Right);
+    assert_eq!(a.dialog_selected, 1);
+    arrow(&mut a, KeyCode::Left);
+    assert_eq!(a.dialog_selected, 0);
+    assert!(matches!(a.dialog, Some(Dialog::SessionChooser(..))));
+    // New session -> a device -> the agent step; Left returns to the device, selected.
+    a.dialog = None;
+    a.device = 0;
+    a.choose_device(ChooseDevice::New);
+    assert!(matches!(a.dialog, Some(Dialog::Device(ChooseDevice::New))));
+    let row = a
+        .device_choices(ChooseDevice::New)
+        .iter()
+        .position(|c| *c == Some(1))
+        .unwrap();
+    a.dialog_selected = row;
+    arrow(&mut a, KeyCode::Enter);
+    assert!(matches!(a.dialog, Some(Dialog::Provider(1, None))));
+    arrow(&mut a, KeyCode::Left);
+    assert!(matches!(a.dialog, Some(Dialog::Device(ChooseDevice::New))));
+    assert_eq!(a.dialog_selected, row);
+    // The device menu's agent row, likewise.
+    a.dialog = Some(Dialog::Peer(1));
+    a.dialog_selected = 3;
+    arrow(&mut a, KeyCode::Enter);
+    assert!(matches!(a.dialog, Some(Dialog::Provider(1, None))));
+    arrow(&mut a, KeyCode::Left);
+    assert!(matches!(a.dialog, Some(Dialog::Peer(1))) && a.dialog_selected == 3);
+}

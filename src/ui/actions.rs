@@ -177,6 +177,7 @@ impl App {
                             }
                         }
                         self.check_providers(device);
+                        self.dialog_back = None;
                         self.dialog = Some(Dialog::Provider(device, Some(path)));
                         self.dialog_selected = 0;
                         return;
@@ -192,6 +193,7 @@ impl App {
                             return;
                         }
                         self.check_providers(d);
+                        self.dialog_back = None;
                         self.dialog = Some(Dialog::Provider(
                             d,
                             (!session.directory.is_empty()).then_some(session.directory),

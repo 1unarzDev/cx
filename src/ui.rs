@@ -573,6 +573,9 @@ struct App {
     dialog: Option<Dialog>,
     dialog_selected: usize,
     dialog_detail_focus: bool,
+    /// The step before the agent step (the device chooser or the device menu) and its
+    /// selection: Left there goes back to it.
+    dialog_back: Option<(Dialog, usize)>,
     dialog_scroll: u16,
     dialog_scroll_max: std::cell::Cell<u16>,
     launch_provider: Option<String>,
@@ -759,6 +762,7 @@ impl App {
             dialog: None,
             dialog_selected: 0,
             dialog_detail_focus: false,
+            dialog_back: None,
             dialog_scroll: 0,
             dialog_scroll_max: std::cell::Cell::new(4096),
             launch_provider: None,

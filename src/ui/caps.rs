@@ -313,7 +313,14 @@ fn query_osc11(limit: Duration) -> Option<Background> {
     let deadline = Instant::now() + limit;
     let mut reply = Vec::new();
     let mut answered = false;
-    if std::io::Write::write_all(&mut tty, b"\x1b]11;?\x07\x1b[c").is_ok() {
+    // Between them, yazi's kitty graphics query (a 1x1 image never stored): kitty,
+    // ghostty and others answer `OK`; the DA1 reply's `4` says sixel (foot, xterm).
+    if std::io::Write::write_all(
+        &mut tty,
+        b"\x1b]11;?\x07\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c",
+    )
+    .is_ok()
+    {
         let mut chunk = [0u8; 256];
         while reply.len() < 1024 {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -345,6 +352,7 @@ fn query_osc11(limit: Duration) -> Option<Background> {
     unsafe {
         libc::tcsetattr(fd, libc::TCSANOW, &saved);
     }
+    crate::terminal_preview::note_probe(&reply);
     if !answered {
         if let Ok(mut guard) = STRAY_REPLY.lock() {
             *guard = Some((Instant::now() + STRAY_WINDOW, false, 0));

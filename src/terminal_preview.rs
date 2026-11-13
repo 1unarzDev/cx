@@ -367,12 +367,32 @@ fn tmux_outer_graphics() -> Option<Graphics> {
         None
     }
 }
+/// What the terminal answered at startup (the OSC 11 probe): None until then.
+static PROBED: std::sync::OnceLock<Option<Graphics>> = std::sync::OnceLock::new();
+/// Record the startup probe's reply (see `caps::query_osc11`).
+pub fn note_probe(reply: &[u8]) {
+    let _ = PROBED.set(probed_graphics(reply));
+}
+/// A kitty graphics `OK` to the query (id 31), else a DA1 reply listing `4` (sixel).
+fn probed_graphics(reply: &[u8]) -> Option<Graphics> {
+    if reply.windows(10).any(|w| w == b"\x1b_Gi=31;OK") {
+        return Some(Graphics::Kitty);
+    }
+    let start = reply.windows(3).position(|w| w == b"\x1b[?")? + 3;
+    let params = &reply[start..];
+    let end = params.iter().position(|b| *b == b'c')?;
+    String::from_utf8_lossy(&params[..end])
+        .split(';')
+        .any(|p| p == "4")
+        .then_some(Graphics::Sixel)
+}
 fn detect_graphics() -> Option<Graphics> {
     if std::env::var_os("NO_COLOR").is_some() || std::env::var_os("CX_ASCII").is_some() {
         return None;
     }
     if in_tmux() {
         // Kitty placeholders and iTerm2 images pass through tmux when it allows it.
+        // (The probe reached tmux, not the terminal outside it.)
         return tmux_outer_graphics().filter(|_| tmux_passthrough());
     }
     let term = std::env::var("TERM").unwrap_or_default();
@@ -381,7 +401,17 @@ fn detect_graphics() -> Option<Graphics> {
         .ok()
         .is_some_and(|v| v.parse::<u64>().is_ok_and(|n| n > 0));
     let ancestor = terminal_ancestor();
-    select_graphics(&term, &program, kitty_window, ancestor.as_deref())
+    let known = select_graphics(&term, &program, kitty_window, ancestor.as_deref());
+    choose(known, PROBED.get().copied().flatten())
+}
+/// The terminal's own answer wins for kitty graphics (WezTerm with it enabled, an SSH
+/// shell, Konsole); the environment names the rest; sixel from DA1 comes last.
+fn choose(known: Option<Graphics>, probed: Option<Graphics>) -> Option<Graphics> {
+    match (known, probed) {
+        (_, Some(Graphics::Kitty)) => Some(Graphics::Kitty),
+        (Some(g), _) => Some(g),
+        (None, probed) => probed,
+    }
 }
 fn select_graphics(
     term: &str,
@@ -451,6 +481,25 @@ fn cell_size() -> Option<(u16, u16)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn terminal_answers_choose_the_protocol() {
+        let kitty = b"\x1b]11;rgb:0000/0000/0000\x07\x1b_Gi=31;OK\x1b\\\x1b[?62;22c";
+        assert_eq!(probed_graphics(kitty), Some(Graphics::Kitty));
+        assert_eq!(probed_graphics(b"\x1b[?62;4;22c"), Some(Graphics::Sixel));
+        assert_eq!(probed_graphics(b"\x1b[?62;22;44c"), None);
+        assert_eq!(probed_graphics(b""), None);
+        // WezTerm with kitty graphics enabled; foot's sixel stays; nothing known: probe.
+        assert_eq!(
+            choose(Some(Graphics::Iterm2), Some(Graphics::Kitty)),
+            Some(Graphics::Kitty)
+        );
+        assert_eq!(
+            choose(Some(Graphics::Iterm2), Some(Graphics::Sixel)),
+            Some(Graphics::Iterm2)
+        );
+        assert_eq!(choose(None, Some(Graphics::Sixel)), Some(Graphics::Sixel));
+        assert_eq!(choose(None, None), None);
+    }
     #[test]
     fn known_identity_required_no_term_only_detection() {
         assert_eq!(select_graphics("foot", "", false, None), None);

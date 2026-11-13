@@ -587,7 +587,10 @@ def motion_phases(viewer, list_rows, selected_row, cols, events=40, spacing=.04)
 
 
 def list_rows(viewer, pattern):
-    lo = 0 if hub_layout(viewer) else 20
+    # (The hub, and yazi's Files from v0.3.0 (its status line opens on the mode pill),
+    # start their rows near the left edge.)
+    yazi = viewer.screen.display[-1].lstrip().startswith(('NOR', 'SEL', 'UNS'))
+    lo = 0 if hub_layout(viewer) or yazi else 20
     rows = [y + 1 for y, line in enumerate(viewer.screen.display) if re.search(pattern, line[lo:66])]
     selected = next((y + 1 for y, line in enumerate(viewer.screen.display)
                      if re.search(pattern, line[lo:66]) and ('›' in line[lo:66] or '▌' in line[lo:66] or '▸' in line[lo:24])), rows[0] if rows else 6)

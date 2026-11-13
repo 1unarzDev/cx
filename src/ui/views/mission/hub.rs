@@ -720,5 +720,6 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
             );
         }
     }
+    cx.nav(r, format!("device:{}", d.id));
     cx.hit(r, format!("device:{}", d.id));
 }

@@ -105,7 +105,7 @@ fn hub_moves_never_refresh_and_keep_the_session_by_identity() {
     while rx.try_recv().is_ok() {}
     draw(&a, 120, 40);
     let id = a.selected_session().map(|(_, s)| s.id);
-    a.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    a.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     assert!(a.hub_device.is_some());
     assert!(rx.try_recv().is_err(), "moving on the map did I/O (P17)");
     assert!(
@@ -187,10 +187,20 @@ fn nodes_tiles_and_chips_are_tap_targets_with_key_semantics() {
     draw(&a, 120, 40);
     click(&mut a, 0, 0, area);
     assert!(a.input.is_none());
-    // A session tile attaches, like its address.
+    // A tap focuses a session tile; a tap on the focused tile attaches it (as `⏎`).
     draw(&a, 120, 40);
-    let key = workspaces::runtime_key(&a.work[0].sessions[0]);
-    let tile = act(&format!("session:0:{key}"));
+    let key = workspaces::runtime_key(&a.work[0].sessions[1]);
+    let tile = act(&format!("tile:0:{key}"));
+    click(&mut a, tile.x + 2, tile.y + 1, area);
+    assert!(a.pending_attach.is_none() && a.attach_check.is_none());
+    assert!(a.hub_sessions);
+    assert_eq!(
+        a.selected_session()
+            .map(|(_, s)| workspaces::runtime_key(&s)),
+        Some(key.clone())
+    );
+    draw(&a, 120, 40);
+    let tile = act(&format!("tile:0:{key}"));
     click(&mut a, tile.x + 2, tile.y + 1, area);
     assert!(a.pending_attach.is_some() || a.attach_check.is_some());
 }
@@ -203,7 +213,7 @@ fn right_click_and_long_press_open_the_keymap_context_menu() {
     let area = Rect::new(0, 0, 120, 40);
     draw(&a, 120, 40);
     let key = workspaces::runtime_key(&a.work[0].sessions[2]);
-    let tile = act(&format!("session:0:{key}"));
+    let tile = act(&format!("tile:0:{key}"));
     a.mouse(
         MouseEvent {
             kind: MouseEventKind::Down(event::MouseButton::Right),
@@ -229,7 +239,7 @@ fn right_click_and_long_press_open_the_keymap_context_menu() {
     // Long press (touch): hold the tile past the threshold.
     draw(&a, 120, 40);
     let key = workspaces::runtime_key(&a.work[0].sessions[1]);
-    let tile = act(&format!("session:0:{key}"));
+    let tile = act(&format!("tile:0:{key}"));
     let down = MouseEvent {
         kind: MouseEventKind::Down(event::MouseButton::Left),
         column: tile.x + 2,
@@ -274,7 +284,7 @@ fn hover_and_motion_never_select_or_redraw() {
     a.open_device(0);
     draw(&a, 120, 40);
     let key = workspaces::runtime_key(&a.work[0].sessions[3]);
-    let tile = act(&format!("session:0:{key}"));
+    let tile = act(&format!("tile:0:{key}"));
     for kind in [MouseEventKind::Moved, MouseEventKind::Moved] {
         assert!(!a.mouse(
             MouseEvent {
@@ -1268,4 +1278,195 @@ fn a_routed_link_is_a_jump_through_its_relay() {
         .insert(2, Some(vec!["innovation".into()]));
     let vm = viewmodel::ViewModel::from(&a);
     assert_eq!(vm.state.edges[0].kind, views::EdgeKind::Jump("1".into()));
+}
+
+/// The rect a navigable item (`device:<id>`, `session:<d>:<key>`) was drawn at.
+fn nav_rect(a: &App, item: &str) -> Rect {
+    a.nav
+        .borrow()
+        .iter()
+        .find(|(_, x)| x == item)
+        .map(|(r, _)| *r)
+        .unwrap_or_else(|| panic!("{item} not drawn"))
+}
+fn selected_rect(a: &App) -> Rect {
+    let (d, s) = a.selected_session().unwrap();
+    nav_rect(a, &format!("session:{d}:{}", workspaces::runtime_key(&s)))
+}
+
+/// The hub's tiles are a grid the arrows and `h j k l` walk in 2D; Down from the map
+/// enters the tiles and Up from the top row returns to it.
+#[test]
+fn the_hub_tiles_are_a_grid_the_arrows_walk() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 5);
+    a.go_hub();
+    draw(&a, 190, 50);
+    a.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(a.hub_sessions);
+    draw(&a, 190, 50);
+    let start = selected_rect(&a);
+    for (key, check) in [
+        (
+            KeyCode::Down,
+            &(|r: Rect, s: Rect| r.y > s.y) as &dyn Fn(Rect, Rect) -> bool,
+        ),
+        (KeyCode::Right, &|r: Rect, s: Rect| r.x > s.x && r.y == s.y),
+        (KeyCode::Left, &|r: Rect, s: Rect| r.x < s.x && r.y == s.y),
+        (KeyCode::Up, &|r: Rect, s: Rect| r.y < s.y),
+    ] {
+        let before = selected_rect(&a);
+        a.key(KeyEvent::new(key, KeyModifiers::NONE));
+        draw(&a, 190, 50);
+        let after = selected_rect(&a);
+        assert!(check(after, before), "{key:?}: {before:?} -> {after:?}");
+    }
+    // Back on the first row: `k` (Up) leaves the tiles for the map, `j` returns.
+    assert_eq!(selected_rect(&a).y, start.y);
+    press(&mut a, 'k');
+    assert!(!a.hub_sessions, "up from the top row is the map");
+    press(&mut a, 'j');
+    assert!(a.hub_sessions, "down from the map is the tiles");
+    // `l` is Right; Enter attaches the focused tile; `␣` peeks it.
+    draw(&a, 190, 50);
+    let before = selected_rect(&a);
+    press(&mut a, 'l');
+    draw(&a, 190, 50);
+    assert!(selected_rect(&a).x > before.x);
+    press(&mut a, ' ');
+    assert!(a.peek);
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(a.pending_attach.is_some() || a.attach_check.is_some());
+}
+
+/// In the map the arrows move to the nearest node that way (here the relay sits
+/// above this device), and Down past the map's last node enters the tiles.
+#[test]
+fn the_map_arrows_move_between_nodes_by_place() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 2);
+    a.go_hub();
+    let here = |a: &App| {
+        let id = a
+            .hub_device
+            .clone()
+            .unwrap_or_else(|| viewmodel::dev_id(a.local_index()));
+        nav_rect(a, &format!("device:{id}"))
+    };
+    draw(&a, 190, 50);
+    let home = here(&a);
+    let others: Vec<Rect> = a
+        .nav
+        .borrow()
+        .iter()
+        .filter(|(r, x)| x.starts_with("device:") && *r != home)
+        .map(|(r, _)| *r)
+        .collect();
+    assert!(others.iter().all(|r| r.bottom() <= home.y), "{others:?}");
+    a.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    draw(&a, 190, 50);
+    assert!(here(&a).bottom() <= home.y && !a.hub_sessions);
+    press(&mut a, 'j');
+    draw(&a, 190, 50);
+    assert_eq!(here(&a), home);
+    a.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(a.hub_sessions, "down from the map's last node is the tiles");
+}
+
+/// In a device the tiles are a grid too; a tap focuses a tile.
+#[test]
+fn a_device_grid_walks_with_arrows_and_taps_focus() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 4);
+    a.open_device(0);
+    draw(&a, 190, 50);
+    let first = selected_rect(&a);
+    a.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    draw(&a, 190, 50);
+    let right = selected_rect(&a);
+    assert!(right.x > first.x && right.y == first.y);
+    press(&mut a, 'j');
+    draw(&a, 190, 50);
+    assert!(selected_rect(&a).y > right.y);
+    press(&mut a, 'k');
+    draw(&a, 190, 50);
+    assert_eq!(selected_rect(&a).y, first.y);
+}
+
+/// The palette's arrows and Ctrl+N/P move the drawn selection (and the list scrolls
+/// to it); Left/Right move the text cursor.
+#[test]
+fn palette_arrows_move_the_drawn_selection_and_the_cursor() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 3);
+    a.go_hub();
+    a.open_palette("");
+    let marked = |a: &App| -> String {
+        draw(a, 120, 40)
+            .lines()
+            .find(|l| l.contains("│▌"))
+            .unwrap_or_default()
+            .to_string()
+    };
+    let rows = a.palette_view();
+    assert!(marked(&a).contains(&rows[0].label));
+    a.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(a.palette_selected, 1);
+    assert!(marked(&a).contains(&rows[1].label), "{}", marked(&a));
+    a.key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+    assert!(marked(&a).contains(&rows[2].label));
+    a.key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+    assert_eq!(a.palette_selected, 1);
+    // Past what the sheet holds, the rows scroll with the selection.
+    let last = rows.len() - 1;
+    for _ in 0..last {
+        a.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    assert_eq!(a.palette_selected, last);
+    assert!(
+        marked(&a).contains(&rows[last].label),
+        "{}",
+        draw(&a, 120, 40)
+    );
+    // Left/Right move the cursor; typing goes where it is.
+    for c in "ab".chars() {
+        press(&mut a, c);
+    }
+    a.key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    press(&mut a, 'X');
+    assert_eq!(a.text, "aXb");
+    a.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    press(&mut a, 'Y');
+    assert_eq!(a.text, "aXbY");
+    assert!(draw(&a, 120, 40).contains("aXbY▏"));
+    a.key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+    press(&mut a, 'Z');
+    assert_eq!(a.text, "ZaXbY");
+    assert!(draw(&a, 120, 40).contains("Z▏aXbY"));
+}
+
+/// One key label set: `␣ ⏎ ⌫` in Unicode, `spc ret bksp` in ASCII.
+#[test]
+fn keys_are_labelled_with_one_glyph_set() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 2);
+    a.open_device(0);
+    let text = draw(&a, 190, 50);
+    let footer = text.lines().last().unwrap();
+    for k in ["⏎", "␣", "⌫"] {
+        assert!(footer.contains(k), "{k}: {footer}");
+    }
+    for word in ["spc", "bksp", "enter"] {
+        assert!(!footer.contains(word), "{word}: {footer}");
+    }
+    let ascii = caps::Caps {
+        unicode: false,
+        ..caps::Caps::default()
+    };
+    let text = caps::with_caps(ascii, || draw(&a, 190, 50));
+    let footer = text.lines().last().unwrap();
+    for k in ["ret", "spc", "bksp"] {
+        assert!(footer.contains(k), "{k}: {footer}");
+    }
 }

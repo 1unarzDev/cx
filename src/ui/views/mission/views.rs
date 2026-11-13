@@ -3512,7 +3512,14 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
             (
                 "move",
                 vec![
-                    (k("j k"), "step"),
+                    (
+                        k("h j k l"),
+                        if wide {
+                            "between tiles, as they sit (or the arrows)"
+                        } else {
+                            "between tiles"
+                        },
+                    ),
                     (k("esc"), "back"),
                     (k("-"), "last session"),
                 ],
@@ -3580,8 +3587,15 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
             (
                 "move",
                 vec![
-                    (k("j k"), "step"),
-                    (k("tab"), "next zone"),
+                    (
+                        k("h j k l"),
+                        if wide {
+                            "between nodes or tiles, as they sit (or the arrows)"
+                        } else {
+                            "between nodes/tiles"
+                        },
+                    ),
+                    (k("tab"), "map / tiles"),
                     (k(key("⏎")), "open"),
                     (k("-"), "last session"),
                 ],

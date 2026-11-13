@@ -430,7 +430,7 @@ fn tap_at(a: &mut App, column: u16, row: u16) {
 }
 
 #[test]
-fn tapping_a_session_tile_attaches_it_like_its_slot_key() {
+fn tapping_a_session_tile_focuses_it_then_attaches_it() {
     let (mut a, _) = queued_app();
     let mut second = identified_shell();
     second.id = "cx-second".into();
@@ -442,7 +442,13 @@ fn tapping_a_session_tile_attaches_it_like_its_slot_key() {
     let mut terminal = ratatui::Terminal::new(TestBackend::new(160, 30)).unwrap();
     terminal.draw(|f| render(f, &a)).unwrap();
     let key = workspaces::runtime_key(&a.work[0].sessions[1]);
-    let rect = view_target(&format!("session:0:{key}"));
+    // The first tap focuses the tile, a tap on the focused tile attaches it.
+    let rect = view_target(&format!("tile:0:{key}"));
+    tap_at(&mut a, rect.x + 4, rect.y + 1);
+    assert!(a.pending_attach.is_none());
+    assert_eq!(a.selected_session().unwrap().1.id, "cx-second");
+    terminal.draw(|f| render(f, &a)).unwrap();
+    let rect = view_target(&format!("tile:0:{key}"));
     tap_at(&mut a, rect.x + 4, rect.y + 1);
     assert!(matches!(&a.pending_attach, Some((0, s, false)) if s.id == "cx-second"));
 }

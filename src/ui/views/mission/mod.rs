@@ -26,6 +26,9 @@ mod views;
 pub struct Drawn {
     pub targets: Vec<LabTarget>,
     pub order: Vec<String>,
+    /// Each map node (`device:<id>`) and session tile (`session:<d>:<id>`) where it was
+    /// drawn, so the arrows move between them as they sit on screen.
+    pub nav: Vec<LabTarget>,
 }
 
 /// The production entry point: one draw that also returns the frame's targets.
@@ -41,6 +44,7 @@ pub fn render(
     Drawn {
         targets: cx.hits.into_inner(),
         order: cx.order.into_inner(),
+        nav: cx.nav.into_inner(),
     }
 }
 
@@ -98,6 +102,8 @@ pub(super) struct Cx<'a> {
     hits: RefCell<Vec<LabTarget>>,
     /// The hub's device order as drawn (see `Drawn`).
     pub order: RefCell<Vec<String>>,
+    /// Where each navigable item was drawn (see `Drawn::nav`).
+    nav: RefCell<Vec<LabTarget>>,
 }
 
 impl<'a> Cx<'a> {
@@ -108,6 +114,7 @@ impl<'a> Cx<'a> {
             area,
             hits: RefCell::new(Vec::new()),
             order: RefCell::new(Vec::new()),
+            nav: RefCell::new(Vec::new()),
         }
     }
 
@@ -289,6 +296,11 @@ impl<'a> Cx<'a> {
                 action: action.into(),
             });
         }
+    }
+
+    /// Record a navigable item's place (a node or a tile; see `Drawn::nav`).
+    pub fn nav(&self, r: Rect, action: String) {
+        self.nav.borrow_mut().push(LabTarget { area: r, action });
     }
 
     /// Number of targets recorded so far (see `unclash`).

@@ -650,6 +650,8 @@ struct App {
     hub_device: Option<String>,
     hub_sessions: bool,
     hub_order: std::cell::RefCell<Vec<String>>,
+    /// Where the last frame drew each map node and session tile (`views::mission::Drawn::nav`).
+    nav: std::cell::RefCell<Vec<(Rect, String)>>,
     /// Device letters (`hotkeys::assign`), by device id.
     hotkeys: std::cell::RefCell<BTreeMap<String, char>>,
     /// `␣`: the selected session's peek.
@@ -825,6 +827,7 @@ impl App {
             hub_device: None,
             hub_sessions: false,
             hub_order: Default::default(),
+            nav: Default::default(),
             hotkeys: Default::default(),
             peek: false,
             stop_armed: None,

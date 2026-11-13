@@ -203,6 +203,87 @@ impl App {
     fn select_session(&mut self, d: usize, key: String) {
         self.reconcile_session_selection(Some((d, key)));
     }
+    /// An arrow (or `h j k l`) in the hub's map or tiles, or in a device's tiles: the
+    /// nearest item the last frame drew that way, else along the zone's order (left and
+    /// right), else into the other zone (down from the map, up from the tiles).
+    /// A count repeats it (`3j`).
+    fn arrow(&mut self, dx: i32, dy: i32) {
+        for _ in 0..self.navigation.take_count().unwrap_or(1).min(64) {
+            self.arrow_once(dx, dy);
+        }
+    }
+    fn arrow_once(&mut self, dx: i32, dy: i32) {
+        match self.spatial(dx, dy) {
+            Some(true) => return,
+            // Not drawn (no frame yet, or scrolled off): along the order.
+            None => return self.screen_move((dx + dy) as isize),
+            Some(false) => {}
+        }
+        let other = self.view == View::Network && (dy > 0) != self.hub_sessions && dy != 0;
+        if other {
+            self.toggle_zone();
+        } else if dx != 0 || self.view != View::Network {
+            self.screen_move((dx + dy) as isize);
+        }
+    }
+    /// Move to the nearest drawn item in direction (`dx`, `dy`) of the selection's own:
+    /// whether one lay that way, None when the selection was not drawn.
+    fn spatial(&mut self, dx: i32, dy: i32) -> Option<bool> {
+        let graph = self.view == View::Network && !self.hub_sessions;
+        let current = if graph {
+            let d = self.hub_device.clone();
+            format!("device:{}", d.unwrap_or_else(|| dev_id(self.local_index())))
+        } else {
+            let (d, s) = self.selected_session()?;
+            format!("session:{d}:{}", workspaces::runtime_key(&s))
+        };
+        let kind = if graph { "device:" } else { "session:" };
+        let nav = self.nav.borrow().clone();
+        let from = nav.iter().find(|(_, a)| *a == current).map(|(r, _)| *r)?;
+        // Centres in half cells; an item counts when it lies past the selection's edge
+        // that way, scored by distance with the sideways offset weighed double.
+        let centre = |r: Rect| {
+            (
+                2 * i32::from(r.x) + i32::from(r.width),
+                2 * i32::from(r.y) + i32::from(r.height),
+            )
+        };
+        let (fx, fy) = centre(from);
+        let best = nav
+            .iter()
+            .filter(|(r, a)| a.starts_with(kind) && *a != current && *r != from)
+            .filter_map(|(r, a)| {
+                let (x, y) = centre(*r);
+                let (along, side) = if dx != 0 {
+                    let past = if dx > 0 {
+                        r.x >= from.right()
+                    } else {
+                        r.right() <= from.x
+                    };
+                    (past.then_some((x - fx).abs())?, (y - fy).abs())
+                } else {
+                    let past = if dy > 0 {
+                        r.y >= from.bottom()
+                    } else {
+                        r.bottom() <= from.y
+                    };
+                    (past.then_some((y - fy).abs())?, (x - fx).abs())
+                };
+                Some((along + 2 * side, a.clone()))
+            })
+            .min_by_key(|(score, _)| *score)
+            .map(|(_, a)| a);
+        let Some(to) = best else {
+            return Some(false);
+        };
+        let mut parts = to.splitn(3, ':').skip(1);
+        match (parts.next(), parts.next()) {
+            (Some(id), None) => self.hub_device = Some(id.to_string()),
+            (Some(d), Some(key)) => self.select_session(dev_index(d)?, key.to_string()),
+            _ => return None,
+        }
+        Some(true)
+    }
     /// Move within the focused zone (keys, wheel).
     pub(super) fn screen_move(&mut self, delta: isize) {
         match self.view {
@@ -822,17 +903,20 @@ impl App {
                 self.edge_pending = true;
                 true
             }
-            // (`j k` and the vertical arrows are list motion: counts, `gg`, `G`; `g` is
-            // a device's letter when one has it.)
-            KeyCode::Right => {
-                self.screen_move(1);
+            // The arrows and `h j k l` move on screen, in the map between nodes and in
+            // the tiles between tiles (a device's letter when one has it: `gg` and `G`
+            // stay first and last).
+            KeyCode::Char(c @ ('h' | 'j' | 'k' | 'l')) if self.device_for_letter(c).is_none() => {
+                let (dx, dy) = vim_arrow(c);
+                self.arrow(dx, dy);
                 true
             }
-            KeyCode::Left => {
-                self.screen_move(-1);
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+                let (dx, dy) = key_arrow(key.code);
+                self.arrow(dx, dy);
                 true
             }
-            KeyCode::Char('j' | 'k' | 'G') => false,
+            KeyCode::Char('G') => false,
             KeyCode::Char('g') if self.device_for_letter('g').is_none() => false,
             KeyCode::Char(c) if c.is_ascii_lowercase() => {
                 if let Some(d) = self.device_for_letter(c) {
@@ -890,12 +974,23 @@ impl App {
                 self.retry(d);
                 true
             }
-            KeyCode::Right | KeyCode::Tab => {
+            // Tiles, then the new-session row: Tab in order, arrows and `h j k l` on screen.
+            KeyCode::Tab => {
                 self.screen_move(1);
                 true
             }
-            KeyCode::Left | KeyCode::BackTab => {
+            KeyCode::BackTab => {
                 self.screen_move(-1);
+                true
+            }
+            KeyCode::Char(c @ ('h' | 'j' | 'k' | 'l')) => {
+                let (dx, dy) = vim_arrow(c);
+                self.arrow(dx, dy);
+                true
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+                let (dx, dy) = key_arrow(key.code);
+                self.arrow(dx, dy);
                 true
             }
             KeyCode::Enter => {
@@ -1097,7 +1192,7 @@ impl App {
                     self.hub_device = Some(d.to_string());
                 }
             }
-            (Some("session"), Some(d), Some(key)) => {
+            (Some("session" | "tile"), Some(d), Some(key)) => {
                 if let Some(d) = dev_index(d) {
                     if self.view == View::Network {
                         self.hub_sessions = true;
@@ -1138,6 +1233,23 @@ impl App {
                 if let Some(d) = dev_index(d) {
                     self.select_session(d, key.to_string());
                     self.attach_selected();
+                }
+            }
+            // A tile: a tap focuses it; a tap on the focused tile attaches (as `⏎`).
+            ("tile", Some(d), Some(key)) => {
+                if let Some(d) = dev_index(d) {
+                    let focused = (self.view != View::Network || self.hub_sessions)
+                        && self
+                            .selected_session()
+                            .is_some_and(|(sd, s)| sd == d && workspaces::runtime_key(&s) == key);
+                    if self.view == View::Network {
+                        self.hub_sessions = true;
+                    }
+                    if focused {
+                        self.attach_selected();
+                    } else {
+                        self.select_session(d, key.to_string());
+                    }
                 }
             }
             ("new", Some(d), Some(provider)) => {
@@ -1263,5 +1375,24 @@ impl App {
             _ => return false,
         }
         true
+    }
+}
+
+/// `h j k l` as a direction.
+fn vim_arrow(c: char) -> (i32, i32) {
+    match c {
+        'h' => (-1, 0),
+        'l' => (1, 0),
+        'k' => (0, -1),
+        _ => (0, 1),
+    }
+}
+/// An arrow key as a direction.
+fn key_arrow(code: KeyCode) -> (i32, i32) {
+    match code {
+        KeyCode::Left => (-1, 0),
+        KeyCode::Right => (1, 0),
+        KeyCode::Up => (0, -1),
+        _ => (0, 1),
     }
 }

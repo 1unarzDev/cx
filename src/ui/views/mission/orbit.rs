@@ -1784,6 +1784,7 @@ fn name_w(cx: &Cx, d: &LabDevice, nmax: usize, keys: bool) -> u16 {
 }
 
 fn hit_node(cx: &Cx, r: Rect, d: &LabDevice) {
+    cx.nav(r, format!("device:{}", d.id));
     // Thumb-sized on phones: at least three rows by seven columns.
     let r = if cx.touch() {
         let w = r.width.max(7);
@@ -1887,5 +1888,6 @@ fn pill(
     } else {
         r
     };
+    cx.nav(r, format!("device:{}", d.id));
     cx.hit(hit, format!("device:{}", d.id));
 }

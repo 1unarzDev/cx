@@ -139,6 +139,9 @@ Guard notation:
 | v0.2.2 | Hub thumbnails stayed blank (title, `idle 0s`, folder, empty rows) | only the selected session was ever captured; a tile drew a frame remembered from an earlier selection | py:hub_thumbnails_pty [ci] **NEW** (red on v0.2.1) |
 | v0.2.2 | A never-seen device read `✕ 20770d` | its age was counted from `fetched == 0` (the epoch) | rust:a_never_seen_device_shows_no_age **NEW** |
 | v0.2.2 | Chrome painted cell backgrounds over transparent terminals | tints, reversed keycaps and surfaces | rust:chrome_paints_no_background **NEW**, rust:ascii_capability_renders_no_unicode_and_keeps_focus_cues |
+| v0.2.2 | The arrows did not move the find/palette selection | the palette drew the hub's selection (`caps.selected`), never `palette_selected`, and did not scroll to it; Ctrl+N/P were unbound in inputs | rust:palette_arrows_move_the_drawn_selection_and_the_cursor **NEW**, py:grid_keys_pty [ci] **NEW** (red on v0.2.1) |
+| v0.2.2 | The session grid could not be walked (only a line: Left/Right, Tab) | moves were indexes into the attention order; nothing knew where tiles and nodes were drawn | rust:the_hub_tiles_are_a_grid_the_arrows_walk, rust:the_map_arrows_move_between_nodes_by_place, rust:a_device_grid_walks_with_arrows_and_taps_focus **NEW**, py:grid_keys_pty **NEW** |
+| v0.2.2 | Key pills could paint outside their rounded caps | (new: the only sanctioned background) | rust:pills_are_the_only_background_and_always_capped **NEW** |
 
 ## 6. SSH routes, neighbours and transport
 

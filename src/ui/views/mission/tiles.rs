@@ -457,7 +457,8 @@ pub(super) fn session_row(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pi
             cx.st(Tok::Muted),
         );
     }
-    cx.hit(r, format!("session:{}:{}", x.device, x.id));
+    cx.nav(r, format!("session:{}:{}", x.device, x.id));
+    cx.hit(r, format!("tile:{}:{}", x.device, x.id));
 }
 
 /// Session thumbnail: header (keys, title, state), the screen's live tail and a caption
@@ -583,6 +584,7 @@ pub(super) fn thumb_with(
         }
     }
     if let Some(d) = d {
-        cx.hit(r, format!("session:{}:{}", d.id, x.id));
+        cx.nav(r, format!("session:{}:{}", d.id, x.id));
+        cx.hit(r, format!("tile:{}:{}", d.id, x.id));
     }
 }

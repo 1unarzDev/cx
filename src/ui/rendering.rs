@@ -59,6 +59,7 @@ fn render_frame(
     if vm.view == views::LabView::Hub {
         *app.hub_order.borrow_mut() = drawn.order;
     }
+    *app.nav.borrow_mut() = drawn.nav.into_iter().map(|t| (t.area, t.action)).collect();
     // Phones keep a spacer row above their footer (views::mission::views::draw).
     let spare = u16::from(area.width < 70);
     let body = Rect::new(

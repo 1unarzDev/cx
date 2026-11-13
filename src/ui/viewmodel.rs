@@ -457,7 +457,7 @@ fn files(app: &App) -> LabFiles {
     };
     let entries = (offset..end)
         .filter_map(|i| rows.get(i))
-        .map(|e| node(e))
+        .map(&node)
         .collect();
     // The preview the screen shows: the open one, else the inline peek. Only its path, kind,
     // line count and first screenful are given; the real preview renderer draws its body.
@@ -488,7 +488,7 @@ fn files(app: &App) -> LabFiles {
                 super::browser_entries(p)
                     .iter()
                     .take(200)
-                    .map(|e| node(e))
+                    .map(&node)
                     .collect()
             }),
         preview_path: if b.preview.is_some() {

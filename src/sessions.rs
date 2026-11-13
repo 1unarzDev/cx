@@ -644,7 +644,9 @@ fn shell_command_label(command: &str) -> Option<String> {
         || !command
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
-        || ["fish", "bash", "zsh", "sh", "dash", "tmux", "cx"].contains(&command)
+        // (`env` is the launcher every pane starts as, `exec env … shell`: a listing
+        // while a loaded host still starts the shell must not label it `recent: env`.)
+        || ["fish", "bash", "zsh", "sh", "dash", "tmux", "cx", "env"].contains(&command)
     {
         return None;
     }
@@ -4792,6 +4794,7 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
         for name in [
             "bash",
             "fish",
+            "env",
             "curl -H secret",
             "TOKEN=secret",
             "evil\x1b[31m",

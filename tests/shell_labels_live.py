@@ -11,8 +11,15 @@ with tempfile.TemporaryDirectory(prefix='cx-fish-label-') as tmp:
   fresh=next(x for x in json.loads(subprocess.check_output([binary,'sessions'],env=env)) if x['id']==s['id'])
   assert fresh['name']=='New shell',fresh['name']
   assert s['name']=='New shell',s['name']
+  # Type only once Fish drew its prompt: keys sent while it still starts (a loaded
+  # host) run before its preexec hook exists, and the label never comes.
+  deadline=time.monotonic()+10
+  while not subprocess.run(['tmux','-S',sock,'capture-pane','-p','-t',s['id']],capture_output=True,text=True).stdout.strip():
+   assert time.monotonic()<deadline,'fish never drew its prompt'
+   time.sleep(.1)
+  time.sleep(.3)
   subprocess.check_call(['tmux','-S',sock,'send-keys','-t',s['id'],'echo synthetic-secret-label-test','Enter'],stdout=subprocess.DEVNULL)
-  deadline=time.monotonic()+4
+  deadline=time.monotonic()+8
   while time.monotonic()<deadline:
    records=json.loads(subprocess.check_output([binary,'sessions'],env=env));found=next(x for x in records if x['id']==s['id'])
    if found['name']=='last: echo':break

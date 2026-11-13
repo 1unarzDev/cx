@@ -555,7 +555,7 @@ class Viewer(ph.Viewer):
             # The open preview's PREVIEW label row (at the left edge; the inline peek
             # beside the list is not the opened preview); the surface runs to the footer.
             for y, line in enumerate(display):
-                if line[:12].lstrip(' ▍>').startswith('PREVIEW'):
+                if line[:12].lstrip(' ▍▌>').startswith('PREVIEW'):
                     return y, len(display) - 1, line.index('PREVIEW') - 2
             return None
         for y, line in enumerate(display):

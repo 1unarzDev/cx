@@ -75,7 +75,7 @@ def main():
                 last, since = order(), time.monotonic()
             viewer.read(.1)
         # Tiles: Tab focuses them.
-        press(b'\t', lambda: '▍SESSIONS' in text(), 'Tab did not focus the tiles')
+        press(b'\t', lambda: '▌SESSIONS' in text(), 'Tab did not focus the tiles')
         start = focused()
         assert start, f'no focused tile:\n{text()}'
         # Four tiles are a 2x2 grid; Tab focuses the first (top left). Each key below
@@ -103,13 +103,13 @@ def main():
         for _ in range(3):
             viewer.write(UP)
             viewer.read(.1)
-        settle(lambda: '▍SESSIONS' not in text(), 'Up from the top row stayed in the tiles')
-        press(DOWN, lambda: '▍SESSIONS' in text(), 'Down from the map did not enter the tiles')
+        settle(lambda: '▌SESSIONS' not in text(), 'Up from the top row stayed in the tiles')
+        press(DOWN, lambda: '▌SESSIONS' in text(), 'Down from the map did not enter the tiles')
         # ␣ peeks the focused tile, Esc returns, Enter attaches it.
         name = focused()[0]
         press(b' ', lambda: name in viewer.screen.display[0] and 'OTHERS' in text(),
               'space did not peek the focused tile')
-        press(b'\x1b', lambda: '▍SESSIONS' in text(), 'Esc did not leave the peek')
+        press(b'\x1b', lambda: '▌SESSIONS' in text(), 'Esc did not leave the peek')
         settle(lambda: focused() and focused()[0] == name, 'the focus moved')
         def attached():
             """Terminal clients of the managed server (cx's control-mode client aside)."""

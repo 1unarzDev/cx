@@ -609,7 +609,7 @@ impl<'a> Cx<'a> {
     }
 
     /// Small-caps section label (`NETWORK`, plain letters so it copies and reads aloud
-    /// as a word); an accent bar `▍` when focused (ASCII `[NETWORK]`: `>` is the
+    /// as a word); an accent bar `▌` when focused (the selection's own bar) (ASCII `[NETWORK]`: `>` is the
     /// selection mark only).
     pub fn label(
         &self,
@@ -622,7 +622,7 @@ impl<'a> Cx<'a> {
     ) -> u16 {
         let (bar, st) = if focused {
             (
-                self.g("▍", "  "),
+                self.g("▌", "  "),
                 self.st(Tok::Accent).add_modifier(Modifier::BOLD),
             )
         } else {

@@ -5960,7 +5960,20 @@ fn only_the_overlay_looks_focused_while_it_owns_input() {
         t.draw(|f| render(f, a)).unwrap();
         t.backend().buffer().clone()
     };
-    let bars = |b: &ratatui::buffer::Buffer| b.content.iter().filter(|c| c.symbol() == "▍").count();
+    // A focused zone label: its bar `▌` right before the label's capitals.
+    let bars = |b: &ratatui::buffer::Buffer| {
+        let w = usize::from(b.area.width);
+        (0..b.content.len().saturating_sub(1))
+            .filter(|&i| (i + 1) % w != 0)
+            .filter(|&i| b.content[i].symbol() == "▌")
+            .filter(|&i| {
+                b.content[i + 1]
+                    .symbol()
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase())
+            })
+            .count()
+    };
     // The focused zone label's cell, found on the hub without overlays (the palette
     // has a `SESSIONS` heading of its own).
     let at = std::cell::Cell::new(None);

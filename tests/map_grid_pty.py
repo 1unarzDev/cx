@@ -122,7 +122,7 @@ def main():
         # -------------------------------------------------------- a device's grid
         letter = re.search(r'\s(\w)\s+then', text())
         assert letter, f'no device letter on the vitals strip:\n{text()}'
-        press(letter.group(1).encode(), lambda: '▍SESSIONS' in text() and 'LINKS' in text(),
+        press(letter.group(1).encode(), lambda: '▌SESSIONS' in text() and 'LINKS' in text(),
               'the device did not open with its tiles focused')
 
         def focused():
@@ -164,12 +164,12 @@ def main():
         before = focused()
         viewer.write(UP)
         viewer.read(.4)
-        assert focused() == before and '▍SESSIONS' in text(), f'Up from the top row moved: {focused()}'
+        assert focused() == before and '▌SESSIONS' in text(), f'Up from the top row moved: {focused()}'
         # Down from the bottom row: LINKS. Tab: the tiles again, on the same tile.
         press(DOWN, lambda: focused() != before, 'Down did not reach the bottom row')
-        press(DOWN, lambda: '▍LINKS' in text(), 'Down from the bottom row did not focus LINKS')
-        press(b'\t', lambda: '▍SESSIONS' in text(), 'Tab did not return to the tiles')
-        press(b'\t', lambda: '▍LINKS' in text(), 'Tab did not focus LINKS')
+        press(DOWN, lambda: '▌LINKS' in text(), 'Down from the bottom row did not focus LINKS')
+        press(b'\t', lambda: '▌SESSIONS' in text(), 'Tab did not return to the tiles')
+        press(b'\t', lambda: '▌LINKS' in text(), 'Tab did not focus LINKS')
 
         # LINKS: Enter edits the selected link; another arrow, another link.
         def edited():
@@ -177,17 +177,17 @@ def main():
             return m and m.group(1)
         press(b'\r', edited, 'Enter on LINKS did not open a link')
         first = edited()
-        press(b'\x1b', lambda: '▍LINKS' in text(), 'Esc did not return to LINKS')
+        press(b'\x1b', lambda: '▌LINKS' in text(), 'Esc did not return to LINKS')
         targets = {first}
         for key in (LEFT, RIGHT, RIGHT):
             viewer.write(key)
             viewer.read(.3)
-            assert '▍LINKS' in text(), f'{key!r} left LINKS:\n{text()}'
+            assert '▌LINKS' in text(), f'{key!r} left LINKS:\n{text()}'
             press(b'\r', edited, 'Enter on LINKS did not open a link')
             targets.add(edited())
-            press(b'\x1b', lambda: '▍LINKS' in text(), 'Esc did not return to LINKS')
+            press(b'\x1b', lambda: '▌LINKS' in text(), 'Esc did not return to LINKS')
         assert len(targets) >= 2, f'the arrows never selected another link: {targets}'
-        press(b'\t', lambda: '▍SESSIONS' in text(), 'Tab did not return to the tiles')
+        press(b'\t', lambda: '▌SESSIONS' in text(), 'Tab did not return to the tiles')
 
         # A tap focuses the tile it lands on, and attaches nothing.
         def attached():

@@ -336,7 +336,7 @@ def preview_region(viewer, name):
     (the hub design: the open preview's PREVIEW label row, the surface to the footer)."""
     display = viewer.screen.display
     if hub_layout(viewer):
-        top = next((y for y, line in enumerate(display) if line[:12].lstrip(' ▍>').startswith('PREVIEW')), None)
+        top = next((y for y, line in enumerate(display) if line[:12].lstrip(' ▍▌>').startswith('PREVIEW')), None)
         return None if top is None else (top, len(display) - 1, 1)
     corners = '╭┏+#┌'
     top = next((y for y, line in enumerate(display)

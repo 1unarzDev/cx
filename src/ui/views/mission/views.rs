@@ -143,7 +143,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                 } else {
                     vec![
                         ("⏎", "attach", "attach"),
-                        (cx.g("t a…", "t a"), "jump", ""),
+                        ("t a s d", "jump", ""),
                         ("tab", "next", "peek-next"),
                         ("⌫", "stop", "stop"),
                         ("esc", "back", "back"),
@@ -914,18 +914,21 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         &fit(&ev, room as usize, cx.uni()),
         cx.st(Tok::Muted),
     );
+    // The rows below line up with the name's key letter (the chip's own padding).
+    let ix = (r.x + 1).min(r.right());
+    let iw = left_w.saturating_sub(1);
     let mut y = r.y + 1;
     cx.put(
         buf,
-        r.x,
+        ix,
         y,
-        left_w,
-        &fit(&info, left_w as usize, cx.uni()),
+        iw,
+        &fit(&info, iw as usize, cx.uni()),
         cx.ink(Tok::Fg, 0.75),
     );
     y += 1;
     if y < r.bottom() {
-        let mut mx = r.x;
+        let mut mx = ix;
         for (i, m) in
             cx.s.meshes
                 .iter()
@@ -937,7 +940,7 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
                 buf,
                 mx,
                 y,
-                left_w.saturating_sub(mx - r.x),
+                iw.saturating_sub(mx - ix),
                 &format!("{}{}  ", tiles::mesh_glyph(cx), m.name),
                 cx.st(tok),
             );
@@ -947,19 +950,12 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
                 buf,
                 mx,
                 y,
-                left_w.saturating_sub(mx - r.x),
+                iw.saturating_sub(mx - ix),
                 &format!("joined via {j}"),
                 cx.st(Tok::Muted),
             );
         } else if d.meshes.is_empty() {
-            cx.put(
-                buf,
-                mx,
-                y,
-                left_w,
-                "no mesh · direct ssh",
-                cx.st(Tok::Muted),
-            );
+            cx.put(buf, mx, y, iw, "no mesh · direct ssh", cx.st(Tok::Muted));
         }
     }
     // Metrics block.
@@ -969,14 +965,21 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         if r.height > 3 && d.status == DeviceStatus::Down {
             cx.put(
                 buf,
-                r.x,
+                ix,
                 r.y + 3,
-                r.width,
+                r.width.saturating_sub(1),
                 &format!("{} {}", cx.g("✕", "!"), d.evidence),
                 cx.st(Tok::Err),
             );
         } else if r.height > 3 && d.id == cx.s.viewer {
-            cx.put(buf, r.x, r.y + 3, r.width, &d.evidence, cx.st(Tok::Muted));
+            cx.put(
+                buf,
+                ix,
+                r.y + 3,
+                r.width.saturating_sub(1),
+                &d.evidence,
+                cx.st(Tok::Muted),
+            );
         }
         return;
     };
@@ -3278,20 +3281,15 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
                 k.to_string()
             };
             // Every segment has one shape: keycap, a blank cell, the word; the chosen one
-            // sits in brackets, in its colour, bold and underlined (no cell behind it).
-            let text = if on {
-                format!("[{k}  {label}]")
-            } else {
-                format!(" {k}  {label} ")
-            };
+            // is in its colour and bold (as a selected tile is), the others dim.
+            let text = format!(" {k}  {label} ");
             let st = if on {
                 let tok = match val {
                     Access::Key => Tok::Ok,
                     Access::Password => Tok::Warn,
                     Access::Denied => Tok::Err,
                 };
-                cx.st(tok)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                cx.st(tok).add_modifier(Modifier::BOLD)
             } else {
                 cx.ink(Tok::Fg, 0.6)
             };

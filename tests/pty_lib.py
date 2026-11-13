@@ -24,6 +24,9 @@ class Screen(pyte.Screen):
 
 
 CELL_PIXELS = None
+# (trigger, reply): the PTY answers a query once it shows up in the output (a terminal's
+# DA1 / kitty graphics / CSI 16 t answers for the startup probe). Empty: nothing answers.
+ANSWERS = []
 
 
 class Pty:
@@ -55,6 +58,9 @@ class Pty:
             data = os.read(self.master, 1 << 16)
         except OSError:
             return None
+        for trigger, reply in ANSWERS:
+            if trigger in data:
+                os.write(self.master, reply)
         self.stream.feed(self.decoder.decode(data))
         return data
 

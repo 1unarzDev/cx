@@ -4,7 +4,7 @@ with `cc` copying the path through OSC 52, yank/paste, filter, tabs, image escap
 sequences per graphics protocol and, with --ssh, the cross-device flow
 (y, ' + letter, p) over a disposable loopback sshd.
 
-usage: yazi_files_pty.py BINARY [--ssh]
+usage: yazi_files_pty.py BINARY [--ssh] [--only local|images|ssh]
 
 Private HOME/XDG state per viewer (perf_harness.Env), a fixture tree under it, no user
 config, tmux or SSH of the caller's. Prints one JSON line; exits non-zero on failure.
@@ -161,19 +161,42 @@ def local_flows():
 
 
 def image_flows():
-    """Escape sequences of each protocol for a hovered image (preview column)."""
+    """Escape sequences of each protocol for a hovered image (preview column), picked from
+    the environment or from the terminal's answers to the startup probe."""
+    kitty = rb'\x1b_Gq=2,i=\d+,a=T,U=1,f=100,m=[01];iVBORw0KGgo'
+    sixel = rb'(?<!tmux;\x1b)\x1bP[0-9;]*q'
+    da1 = b'\x1b[c'
+    probe = dict(CX_THEME=None, TERM='xterm-256color')
     cases = [
-        ('kitty', dict(TERM='xterm-kitty', KITTY_WINDOW_ID='1'), rb'\x1b_G[^\x1b]*U=1'),
-        ('iterm2', dict(TERM='xterm-256color', TERM_PROGRAM='WezTerm'), rb'\x1b\]1337;File='),
+        ('kitty', dict(TERM='xterm-kitty', KITTY_WINDOW_ID='1'), kitty, []),
+        ('iterm2', dict(TERM='xterm-256color', TERM_PROGRAM='WezTerm'), rb'\x1b\]1337;File=', []),
+        # The terminal's own answers (no environment names it).
+        ('kitty-probe', probe, kitty, [(da1, b'\x1b_Gi=31;OK\x1b\\\x1b[?62;22c')]),
+        ('sixel-probe', probe, sixel, [(da1, b'\x1b[?62;4;22c')]),
+        # No pixels in the pty size: the cell size comes from CSI 16 t.
+        ('kitty-16t', dict(probe, CELLS='none'), kitty,
+         [(da1, b'\x1b[6;20;10t\x1b_Gi=31;OK\x1b\\\x1b[?62;22c')]),
     ]
     tmux = shutil.which('tmux')
-    pty_lib.CELL_PIXELS = (10, 20)
-    for name, extra, pattern in cases + ([('kitty-tmux', None, rb'\x1bPtmux;\x1b\x1b_G')] if tmux else []):
+    if tmux:
+        cases += [
+            ('kitty-tmux', 'tmux', rb'\x1bPtmux;\x1b\x1b_Gq=2,i=\d+,a=T,U=1,f=100', []),
+            # Inside tmux the probe asks the outer terminal through passthrough: tmux's own
+            # DA1 first, then the outer answers (no KITTY_WINDOW_ID: nothing stale).
+            ('kitty-tmux-probe', 'tmux-probe', rb'\x1bPtmux;\x1b\x1b_Gq=2,i=\d+,a=T,U=1,f=100',
+             [(b'\x1bPtmux;\x1b\x1b[c', b'\x1b[?1;2c\x1b_Gi=31;OK\x1b\\\x1b[?62;22c')]),
+            # A tmux that draws sixel itself (its DA1 lists 4): sixel, not wrapped.
+            ('sixel-tmux-probe', 'tmux-probe', sixel,
+             [(b'\x1bPtmux;\x1b\x1b[c', b'\x1b[?1;2;4c\x1b[?62;4;22c')]),
+        ]
+    for name, extra, pattern, answers in cases:
         env = ph.Env(BINARY)
         server = None
+        pty_lib.CELL_PIXELS = (10, 20)
+        pty_lib.ANSWERS = answers
         try:
             project = tree(env.root)
-            if extra is None:
+            if extra in ('tmux', 'tmux-probe'):
                 # A private tmux server with passthrough, as cx's managed server sets it.
                 sock = env.root / 'tmux.sock'
                 subprocess.run(['tmux', '-S', str(sock), '-f', '/dev/null', 'new-session', '-d', '-s', 'x'],
@@ -181,16 +204,29 @@ def image_flows():
                 subprocess.run(['tmux', '-S', str(sock), 'set', '-g', 'allow-passthrough', 'on'], env=env.env,
                                check=True)
                 server = sock
-                extra = dict(TERM='tmux-256color', KITTY_WINDOW_ID='1', TMUX=f'{sock},1,0')
+                extra = (dict(TERM='tmux-256color', KITTY_WINDOW_ID='1', TMUX=f'{sock},1,0') if extra == 'tmux'
+                         else dict(probe, TERM='tmux-256color', TMUX=f'{sock},1,0'))
+            extra = dict(extra)
+            if extra.pop('CELLS', None) == 'none':
+                pty_lib.CELL_PIXELS = None
+            for k in [k for k, v in extra.items() if v is None]:
+                env.env.pop(k, None)
+                extra.pop(k)
             r = Raw(env, project / 'assets', project / 'assets' / 'photo.png', extra)
             try:
                 deadline = time.monotonic() + 8
                 while time.monotonic() < deadline and not re.search(pattern, bytes(r.raw)):
                     r.settle(.2)
-                check(f'image_{name}', re.search(pattern, bytes(r.raw)) is not None, bytes(r.raw)[-300:])
+                raw = bytes(r.raw)
+                ok = re.search(pattern, raw) is not None
+                if 'kitty' in name:
+                    # Placeholder cells draw it (they also survive tmux).
+                    ok = ok and '\U0010EEEE'.encode() in raw
+                check(f'image_{name}', ok, raw[-300:])
             finally:
                 r.close()
         finally:
+            pty_lib.ANSWERS = []
             if server:
                 subprocess.run(['tmux', '-S', str(server), 'kill-server'], env=env.env, capture_output=True)
             env.cleanup()
@@ -247,9 +283,12 @@ def ssh_flow():
 
 
 def main():
-    local_flows()
-    image_flows()
-    if SSH:
+    only = sys.argv[sys.argv.index('--only') + 1] if '--only' in sys.argv else None
+    if only in (None, 'local'):
+        local_flows()
+    if only in (None, 'images'):
+        image_flows()
+    if SSH and only in (None, 'ssh'):
         ssh_flow()
     print(json.dumps(dict(result='PASS', **results)))
 

@@ -331,12 +331,18 @@ run = 'shell -- dragon-drop -x -i -T %s'
             doc.path("app.overall.bg").and_then(Value::str),
             Some("#0d0e12")
         );
-        assert_eq!(doc.path("mgr.marker_symbol").and_then(Value::str), Some("│"));
+        assert_eq!(
+            doc.path("mgr.marker_symbol").and_then(Value::str),
+            Some("│")
+        );
         assert_eq!(doc.path("which.cols"), Some(&Value::Int(3)));
         assert_eq!(doc.path("confirm.btn_labels").unwrap().arr().len(), 2);
         let conds = doc.path("icon.conds").unwrap().arr();
         assert_eq!(conds.len(), 2);
-        assert_eq!(conds[1].get("if").and_then(Value::str), Some("dir & hovered"));
+        assert_eq!(
+            conds[1].get("if").and_then(Value::str),
+            Some("dir & hovered")
+        );
         let keys = doc.path("mgr.prepend_keymap").unwrap().arr();
         assert_eq!(keys.len(), 2);
         assert_eq!(

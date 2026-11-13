@@ -24,7 +24,10 @@ pub fn use_theme(path: &std::path::Path) {
         return;
     }
     if std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() < 4 << 20) {
-        if let Some(theme) = std::fs::read_to_string(path).ok().and_then(|t| tm_theme(&t)) {
+        if let Some(theme) = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|t| tm_theme(&t))
+        {
             let _ = USER_THEME.set(theme);
         }
     }
@@ -66,7 +69,10 @@ fn tm_theme(text: &str) -> Option<syntect::highlighting::Theme> {
             ("scope", Some(scope)) => {
                 if let Some((s, m)) = current.take() {
                     if let Ok(sel) = ScopeSelectors::from_str(&s) {
-                        theme.scopes.push(ThemeItem { scope: sel, style: m });
+                        theme.scopes.push(ThemeItem {
+                            scope: sel,
+                            style: m,
+                        });
                     }
                 }
                 current = Some((scope.to_owned(), StyleModifier::default()));
@@ -94,7 +100,10 @@ fn tm_theme(text: &str) -> Option<syntect::highlighting::Theme> {
     }
     if let Some((s, m)) = current.take() {
         if let Ok(sel) = ScopeSelectors::from_str(&s) {
-            theme.scopes.push(ThemeItem { scope: sel, style: m });
+            theme.scopes.push(ThemeItem {
+                scope: sel,
+                style: m,
+            });
         }
     }
     (!theme.scopes.is_empty()).then_some(theme)

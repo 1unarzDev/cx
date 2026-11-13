@@ -904,6 +904,7 @@ pub(crate) fn channel_class(op: &Operation) -> Channel {
         | Operation::ListPage { .. }
         | Operation::Preview { .. }
         | Operation::PreviewPage { .. }
+        | Operation::PreviewImage { .. }
         | Operation::ReadChunk { .. }
         | Operation::FileInfo { .. } => Channel::Files,
         _ => Channel::Metadata,

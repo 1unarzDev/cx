@@ -69,12 +69,22 @@ pub fn render_palette(
 }
 
 /// The send-to sheet alone, over the Files view the app drew (yazi's).
-pub fn render_send_to(state: &LabState, caps: &LabCaps, area: Rect, buf: &mut Buffer) -> Vec<LabTarget> {
+pub fn render_send_to(
+    state: &LabState,
+    caps: &LabCaps,
+    area: Rect,
+    buf: &mut Buffer,
+) -> Vec<LabTarget> {
     let cx = Cx::new(state, caps, area);
     if area.width < 20 || area.height < 6 {
         return Vec::new();
     }
-    let body = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(2));
+    let body = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(2),
+    );
     views::send_to(&cx, buf, body);
     cx.hits.into_inner()
 }

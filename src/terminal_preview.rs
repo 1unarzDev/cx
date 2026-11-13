@@ -3,7 +3,7 @@
 use image::{DynamicImage, RgbaImage};
 use ratatui::{layout::Rect, Frame};
 use ratatui_image::{
-    protocol::{kitty::Kitty, sixel::Sixel, Protocol},
+    protocol::{iterm2::Iterm2, kitty::Kitty, sixel::Sixel, Protocol},
     Image,
 };
 use std::{
@@ -16,12 +16,17 @@ const MAX_PIXELS: usize = 1280 * 960;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Graphics {
     Sixel,
+    /// Kitty graphics with unicode placeholders (they also work inside tmux).
     Kitty,
+    /// iTerm2 inline images (iTerm2, WezTerm).
+    Iterm2,
 }
 #[derive(Clone, Copy, Debug)]
 struct Capability {
     graphics: Graphics,
     cell: (u16, u16),
+    /// Inside tmux: sequences are wrapped for passthrough.
+    tmux: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Target {
@@ -59,10 +64,13 @@ pub struct NativePreview {
 impl NativePreview {
     pub fn detect() -> Self {
         let graphics_hint = detect_graphics();
-        let mut native = Self::new(
-            graphics_hint
-                .and_then(|graphics| cell_size().map(|cell| Capability { graphics, cell })),
-        );
+        let mut native = Self::new(graphics_hint.and_then(|graphics| {
+            cell_size().map(|cell| Capability {
+                graphics,
+                cell,
+                tmux: in_tmux(),
+            })
+        }));
         native.graphics_hint = graphics_hint;
         native
     }
@@ -86,9 +94,13 @@ impl NativePreview {
     pub fn prepare(&mut self, key: &str, width: u32, height: u32, rgba: &[u8], area: Rect) {
         // Foot initially reports 0x0 pixel geometry until compositor configure.
         // Nonblocking ioctl also observes font-size changes without consuming input.
-        let observed = self
-            .graphics_hint
-            .and_then(|graphics| cell_size().map(|cell| Capability { graphics, cell }));
+        let observed = self.graphics_hint.and_then(|graphics| {
+            cell_size().map(|cell| Capability {
+                graphics,
+                cell,
+                tmux: in_tmux(),
+            })
+        });
         if let (Some(old), Some(new)) = (self.capability, observed) {
             if old.cell != new.cell {
                 self.hide();
@@ -234,9 +246,13 @@ fn encode(
         image.height().div_ceil(u32::from(capability.cell.1)) as u16,
     );
     let id = next_id();
+    let tmux = capability.tmux;
     let protocol = match capability.graphics {
         Graphics::Kitty => {
-            Protocol::Kitty(Kitty::new(image, cell_area, id, false).map_err(|e| e.to_string())?)
+            Protocol::Kitty(Kitty::new(image, cell_area, id, tmux).map_err(|e| e.to_string())?)
+        }
+        Graphics::Iterm2 => {
+            Protocol::ITerm2(Iterm2::new(image, cell_area, tmux).map_err(|e| e.to_string())?)
         }
         // Sixel has no alpha channel. Avoid rendering a transparent source on an invented opaque
         // background; the existing half-block renderer preserves terminal defaults correctly.
@@ -244,7 +260,7 @@ fn encode(
             if image.to_rgba8().pixels().any(|p| p[3] != 255) {
                 return Err("transparent raster uses half-block fallback".into());
             }
-            Protocol::Sixel(Sixel::new(image, cell_area, false).map_err(|e| e.to_string())?)
+            Protocol::Sixel(Sixel::new(image, cell_area, tmux).map_err(|e| e.to_string())?)
         }
     };
     Ok((protocol, id))
@@ -267,8 +283,13 @@ fn next_id() -> u32 {
 }
 fn cleanup_visible<W: Write>(out: &mut W, visible: Visible) -> io::Result<()> {
     match visible.graphics {
+        Graphics::Kitty if in_tmux() => write!(
+            out,
+            "\x1bPtmux;\x1b\x1b_Ga=d,d=I,i={},q=2\x1b\x1b\\\x1b\\",
+            visible.id
+        ),
         Graphics::Kitty => write!(out, "\x1b_Ga=d,d=I,i={},q=2\x1b\\", visible.id),
-        Graphics::Sixel => {
+        Graphics::Sixel | Graphics::Iterm2 => {
             // Local occupied cells only; no global graphics erase and no scrollback clearing.
             write!(out, "\x1b7")?;
             for row in visible.area.y..visible.area.bottom() {
@@ -284,12 +305,75 @@ fn cleanup_visible<W: Write>(out: &mut W, visible: Visible) -> io::Result<()> {
         }
     }
 }
-fn detect_graphics() -> Option<Graphics> {
-    if std::env::var_os("NO_COLOR").is_some()
-        || std::env::var_os("CX_ASCII").is_some()
-        || std::env::var_os("TMUX").is_some()
-    {
+/// The cell size in pixels when this terminal draws bitmaps (else None: half-blocks).
+pub fn graphics_cell() -> Option<(u16, u16)> {
+    static GRAPHICS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*GRAPHICS.get_or_init(|| detect_graphics().is_some()) {
         return None;
+    }
+    cell_size()
+}
+fn in_tmux() -> bool {
+    std::env::var_os("TMUX").is_some_and(|t| !t.is_empty())
+}
+/// Whether the tmux this runs in passes escape sequences through (`allow-passthrough`,
+/// which cx's managed server sets; another server keeps its own choice). Read-only,
+/// bounded, asked once.
+fn tmux_passthrough() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let Ok(mut child) = std::process::Command::new("tmux")
+            .args(["show-options", "-gv", "allow-passthrough"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        else {
+            return false;
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(5))
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+            }
+        }
+        let mut out = String::new();
+        use std::io::Read;
+        let _ = child
+            .stdout
+            .take()
+            .map(|o| o.take(64).read_to_string(&mut out));
+        matches!(out.trim(), "on" | "all")
+    })
+}
+/// The terminal outside tmux, from what tmux leaves in the environment.
+fn tmux_outer_graphics() -> Option<Graphics> {
+    let var = |k: &str| std::env::var(k).unwrap_or_default();
+    if var("KITTY_WINDOW_ID").parse::<u64>().is_ok_and(|n| n > 0)
+        || !var("GHOSTTY_RESOURCES_DIR").is_empty()
+    {
+        Some(Graphics::Kitty)
+    } else if !var("WEZTERM_PANE").is_empty() || var("LC_TERMINAL") == "iTerm2" {
+        Some(Graphics::Iterm2)
+    } else {
+        None
+    }
+}
+fn detect_graphics() -> Option<Graphics> {
+    if std::env::var_os("NO_COLOR").is_some() || std::env::var_os("CX_ASCII").is_some() {
+        return None;
+    }
+    if in_tmux() {
+        // Kitty placeholders and iTerm2 images pass through tmux when it allows it.
+        return tmux_outer_graphics().filter(|_| tmux_passthrough());
     }
     let term = std::env::var("TERM").unwrap_or_default();
     let program = std::env::var("TERM_PROGRAM").unwrap_or_default();
@@ -310,6 +394,9 @@ fn select_graphics(
         ("xterm-kitty", _, _) if kitty_window => Some(Graphics::Kitty),
         ("xterm-kitty", _, Some("kitty")) => Some(Graphics::Kitty),
         (_, "ghostty", Some("ghostty")) => Some(Graphics::Kitty),
+        ("xterm-ghostty", _, Some("ghostty")) => Some(Graphics::Kitty),
+        (_, "WezTerm", _) => Some(Graphics::Iterm2),
+        (_, "iTerm.app", _) => Some(Graphics::Iterm2),
         _ => None,
     }
 }
@@ -413,6 +500,7 @@ mod tests {
                 Capability {
                     graphics,
                     cell: (8, 16),
+                    tmux: false,
                 },
                 16,
                 16,
@@ -430,6 +518,7 @@ mod tests {
         let mut preview = NativePreview::new(Some(Capability {
             graphics: Graphics::Kitty,
             cell: (8, 16),
+            tmux: false,
         }));
         let area = Rect::new(1, 1, 4, 4);
         let rgba = vec![255; 16 * 16 * 4];
@@ -459,7 +548,8 @@ mod tests {
         assert!(encode(
             Capability {
                 graphics: Graphics::Sixel,
-                cell: (8, 16)
+                cell: (8, 16),
+                tmux: false,
             },
             1,
             1,
@@ -473,6 +563,7 @@ mod tests {
         let mut preview = NativePreview::new(Some(Capability {
             graphics: Graphics::Sixel,
             cell: (8, 16),
+            tmux: false,
         }));
         preview.prepare("bad", 1281, 1, &[], Rect::new(0, 0, 1, 1));
         assert!(!preview.pending());
@@ -484,6 +575,7 @@ mod tests {
         let mut preview = NativePreview::new(Some(Capability {
             graphics: Graphics::Kitty,
             cell: (10, 20),
+            tmux: false,
         }));
         // Disable observations so this simulates a delayed completion after a font change.
         preview.graphics_hint = None;
@@ -502,6 +594,7 @@ mod tests {
                 Capability {
                     graphics: Graphics::Kitty,
                     cell: (8, 16),
+                    tmux: false,
                 },
                 16,
                 16,
@@ -519,6 +612,7 @@ mod tests {
         let mut preview = NativePreview::new(Some(Capability {
             graphics: Graphics::Sixel,
             cell: (8, 16),
+            tmux: false,
         }));
         let area = Rect::new(0, 0, 4, 4);
         preview.prepare("first", 16, 16, &vec![255; 16 * 16 * 4], area);

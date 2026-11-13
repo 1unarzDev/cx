@@ -377,11 +377,16 @@ impl App {
             }
             if !ordered {
                 b.entries.sort_by(|a, b| {
-                    (a.kind != "directory", a.name.to_lowercase(), a.name.as_str()).cmp(&(
-                        b.kind != "directory",
-                        b.name.to_lowercase(),
-                        b.name.as_str(),
-                    ))
+                    (
+                        a.kind != "directory",
+                        a.name.to_lowercase(),
+                        a.name.as_str(),
+                    )
+                        .cmp(&(
+                            b.kind != "directory",
+                            b.name.to_lowercase(),
+                            b.name.as_str(),
+                        ))
                 });
             }
 
@@ -451,6 +456,11 @@ impl App {
                 if let Ok(value) = &reply.result {
                     let (path, value) = (path.clone(), value.clone());
                     self.cache_listing(reply.device, &path, &value);
+                }
+                if reply.generation == WARM_GENERATION {
+                    // A warm-up read (`App::send_warm`): the cache was all it was for. It
+                    // must not settle a prefetch of the same folder still in flight.
+                    return true;
                 }
                 let Some(b) = self
                     .browser
@@ -523,7 +533,8 @@ impl App {
                 }
                 true
             }
-            Operation::Preview { path } => {
+            Operation::Preview { path } | Operation::PreviewImage { path, .. } => {
+                let boxed = matches!(reply.op, Operation::PreviewImage { .. });
                 let generation = reply.generation;
                 let Some(b) = self.browser.as_mut().filter(|b| b.device == reply.device) else {
                     return false;
@@ -566,7 +577,19 @@ impl App {
                 match std::mem::replace(&mut reply.result, Ok(Value::Null)) {
                     Ok(value) => {
                         apply_preview(peek, &path, 1, reply.preview.take(), &value);
-                        peek.peek_value = Some(value);
+                        // A fitted thumbnail is not the file's full preview (Enter reads).
+                        peek.peek_value = (!boxed).then_some(value);
+                    }
+                    Err(_) if boxed => {
+                        // A helper without fitted images: its plain preview instead.
+                        let device = reply.device;
+                        let generation = self.generation;
+                        if self.send_hover(device, Operation::Preview { path: path.clone() }) {
+                            if let Some(b) = self.browser.as_mut() {
+                                b.peek_inflight.push((path, generation));
+                            }
+                        }
+                        return true;
                     }
                     Err(e) => {
                         peek.preview_pending_page = None;

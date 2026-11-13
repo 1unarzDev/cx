@@ -236,6 +236,14 @@ pub enum Operation {
         path: String,
         page: u32,
     },
+    /// An image preview decoded and downscaled on the helper to the viewer's pixel box
+    /// (the preview area in pixels), sent as JPEG when opaque, else PNG: never the
+    /// original. Same reply shape as `Preview`. Older helpers reject the variant.
+    PreviewImage {
+        path: String,
+        width: u32,
+        height: u32,
+    },
     Mkdir {
         path: String,
     },

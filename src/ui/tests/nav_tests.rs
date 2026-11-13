@@ -992,7 +992,10 @@ fn files_cc_copies_the_path_and_y_yanks() {
     let (mut a, _rx) = file_app();
     press(&mut a, 'c');
     let text = draw(&a, 120, 40);
-    assert!(text.contains("Copy file path") && text.contains("Copy directory path"), "{text}");
+    assert!(
+        text.contains("Copy file path") && text.contains("Copy directory path"),
+        "{text}"
+    );
     press(&mut a, 'c');
     assert_eq!(a.copy_out.take().as_deref(), Some("/files/alpha.txt"));
     assert!(a.clipboard.is_none(), "no transfer copy");

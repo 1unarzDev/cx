@@ -229,7 +229,11 @@ fn ellipsis_left(s: &str, w: usize, unicode: bool) -> String {
         tail.push(c);
     }
     tail.reverse();
-    format!("{}{}", if unicode { "…" } else { "~" }, tail.into_iter().collect::<String>())
+    format!(
+        "{}{}",
+        if unicode { "…" } else { "~" },
+        tail.into_iter().collect::<String>()
+    )
 }
 
 /// yazi's `readable_size`: B K M G T, one decimal, `.0` dropped.
@@ -326,9 +330,12 @@ impl Pen<'_> {
                 ..s
             }
         };
-        if !self.look.unicode && s.add_modifier.contains(Modifier::REVERSED) {
-            // ASCII terminals get no painted cells: bold (and a `>` on rows) instead.
-            s = s.remove_modifier(Modifier::REVERSED).add_modifier(Modifier::BOLD);
+        if !self.look.pills && s.add_modifier.contains(Modifier::REVERSED) {
+            // Without rounded caps a reversed run is a hard-edged painted block on a
+            // transparent terminal: bold (and a bar or `>` on rows) instead.
+            s = s
+                .remove_modifier(Modifier::REVERSED)
+                .add_modifier(Modifier::BOLD);
         }
         s
     }
@@ -425,7 +432,13 @@ fn icon<'t>(t: &'t Theme, look: Look, f: &Facts) -> Option<(&'t str, Option<Colo
 }
 
 /// The linemode text right of a row in the current column.
-fn linemode(row: &Row, mode: Linemode, size_max: u64, now: i64, unicode: bool) -> Vec<(String, u8)> {
+fn linemode(
+    row: &Row,
+    mode: Linemode,
+    size_max: u64,
+    now: i64,
+    unicode: bool,
+) -> Vec<(String, u8)> {
     // (text, kind): 0 plain, 1 bar filled, 2 bar empty.
     match mode {
         Linemode::None => Vec::new(),
@@ -455,8 +468,13 @@ fn linemode(row: &Row, mode: Linemode, size_max: u64, now: i64, unicode: bool) -
                 } else {
                     ((row.size as f64).ln() / (size_max as f64).ln()).clamp(0.0, 1.0)
                 };
-                let halves = ((v * cells as f64 * 2.0).round() as usize).clamp(usize::from(row.size > 0), cells * 2);
-                let (full, half, empty) = if unicode { ("━", "╸", "━") } else { ("=", "-", "-") };
+                let halves = ((v * cells as f64 * 2.0).round() as usize)
+                    .clamp(usize::from(row.size > 0), cells * 2);
+                let (full, half, empty) = if unicode {
+                    ("━", "╸", "━")
+                } else {
+                    ("=", "-", "-")
+                };
                 let mut bar = full.repeat(halves / 2);
                 if halves % 2 == 1 {
                     bar.push_str(half);
@@ -516,15 +534,22 @@ fn column(
                 Which::Preview => t.preview_hovered,
             });
         }
-        let pill = hovered && style.add_modifier.contains(Modifier::REVERSED);
+        let reversed = hovered && style.add_modifier.contains(Modifier::REVERSED);
+        // A pill only with its rounded caps (and the room for them).
+        let pill = reversed && look.pills && list.width >= 4;
+        if reversed && !pill {
+            style = style
+                .remove_modifier(Modifier::REVERSED)
+                .add_modifier(Modifier::BOLD);
+        }
         // Padding: one cell each side; a pill's rounded caps when the terminal draws them.
         let (x0, x1) = (list.x, list.right());
         let cap_style = Style::default().fg(style.fg.unwrap_or(Color::Reset));
         let mut x = x0;
-        if pill && look.pills && list.width >= 4 {
+        if pill {
             p.put(x, y, x1, CAP_L, cap_style);
-        } else if hovered && !look.unicode {
-            p.put(x, y, x1, ">", style);
+        } else if reversed {
+            p.put(x, y, x1, if look.unicode { "▌" } else { ">" }, style);
         } else {
             p.put(x, y, x1, " ", style);
         }
@@ -541,7 +566,7 @@ fn column(
                 p.put(cx, y, cx + 1, " ", style);
             }
         }
-        if hovered && !pill {
+        if hovered && !reversed {
             // Underlined (preview) or other non-pill indicators span the whole row.
             p.style_cells(x0, x1, y, style);
         }
@@ -574,8 +599,12 @@ fn column(
         } else {
             name.find(['…', '~']).unwrap_or(0)
         };
-        let mut found: Vec<(usize, usize)> =
-            row.found.iter().copied().filter(|&(_, b)| b <= head).collect();
+        let mut found: Vec<(usize, usize)> = row
+            .found
+            .iter()
+            .copied()
+            .filter(|&(_, b)| b <= head)
+            .collect();
         if found.is_empty() && !row.found.is_empty() {
             // Every match fell in the cut: the whole visible name says it matched.
             found.push((0, head));
@@ -609,7 +638,7 @@ fn column(
             }
         }
         if list.width >= 3 {
-            if pill && look.pills {
+            if pill {
                 p.put(inner_end, y, x1, CAP_R, cap_style);
             } else {
                 p.put(inner_end, y, x1, " ", style);
@@ -659,11 +688,7 @@ fn status(p: &mut Pen, t: &Theme, r: Rect, s: &Status) {
     };
     p.style_cells(r.x, r.right(), r.y, t.status);
     // Right block first (it wins the room), then the left fills what is left.
-    let pos = format!(
-        " {:>2}/{:<2} ",
-        (s.cursor + 1).min(s.len),
-        s.len
-    );
+    let pos = format!(" {:>2}/{:<2} ", (s.cursor + 1).min(s.len), s.len);
     let percent = {
         let pc = if s.cursor != 0 && s.len != 0 {
             (s.cursor + 1) * 100 / s.len
@@ -703,7 +728,11 @@ fn status(p: &mut Pen, t: &Theme, r: Rect, s: &Status) {
             x = p.put(x, r.y, r.right(), &c.to_string(), st);
         }
     }
-    let end = if full { rx.saturating_sub(1) } else { r.right() };
+    let end = if full {
+        rx.saturating_sub(1)
+    } else {
+        r.right()
+    };
     let mut x = r.x;
     if caps {
         x = p.put(x, r.y, end, CAP_L, cap);
@@ -737,17 +766,37 @@ fn status(p: &mut Pen, t: &Theme, r: Rect, s: &Status) {
         .or_else(|| s.message.clone().map(|m| (m, None, t.status)));
     if let Some((text, frac, st)) = mid {
         let room = end.saturating_sub(x + 2);
-        let bar = if frac.is_some() && room >= 30 { 10u16 } else { 0 };
+        let bar = if frac.is_some() && room >= 30 {
+            10u16
+        } else {
+            0
+        };
         let tw = (width(&text) as u16).min(room.saturating_sub(bar + 1));
         if tw >= 4 {
             let start = end.saturating_sub(tw + bar + 2);
-            let mut cx = p.put(start, r.y, end, &ellipsis(&text, tw as usize, false, look.unicode), st);
+            let mut cx = p.put(
+                start,
+                r.y,
+                end,
+                &ellipsis(&text, tw as usize, false, look.unicode),
+                st,
+            );
             if let (Some(f), true) = (frac, bar > 0) {
                 cx += 1;
                 let filled = ((f.clamp(0.0, 1.0)) * f64::from(bar)).round() as u16;
-                let (a, b) = if look.unicode { ("━", "─") } else { ("=", "-") };
+                let (a, b) = if look.unicode {
+                    ("━", "─")
+                } else {
+                    ("=", "-")
+                };
                 for i in 0..bar {
-                    p.put(cx + i, r.y, end, if i < filled { a } else { b }, if i < filled { st } else { t.which_rest });
+                    p.put(
+                        cx + i,
+                        r.y,
+                        end,
+                        if i < filled { a } else { b },
+                        if i < filled { st } else { t.which_rest },
+                    );
                 }
             }
         }
@@ -790,7 +839,15 @@ fn which_key(p: &mut Pen, t: &Theme, area: Rect, bottom: u16, items: &[(String, 
     }
 }
 
-fn popup(p: &mut Pen, t: &Theme, area: Rect, current: Rect, hovered_y: Option<u16>, pop: &Popup, d: &mut Drawn) {
+fn popup(
+    p: &mut Pen,
+    t: &Theme,
+    area: Rect,
+    current: Rect,
+    hovered_y: Option<u16>,
+    pop: &Popup,
+    d: &mut Drawn,
+) {
     let u = p.look.unicode;
     match pop {
         Popup::Input {
@@ -849,7 +906,13 @@ fn popup(p: &mut Pen, t: &Theme, area: Rect, current: Rect, hovered_y: Option<u1
                 if y + 2 >= r.bottom() {
                     break;
                 }
-                p.put(r.x + 2, y, end, &ellipsis(item, (r.width - 4) as usize, true, u), t.confirm_body);
+                p.put(
+                    r.x + 2,
+                    y,
+                    end,
+                    &ellipsis(item, (r.width - 4) as usize, true, u),
+                    t.confirm_body,
+                );
                 y += 1;
             }
             let by = r.bottom() - 2;
@@ -881,7 +944,11 @@ fn popup(p: &mut Pen, t: &Theme, area: Rect, current: Rect, hovered_y: Option<u1
             if !filter.is_empty() {
                 d.cursor = Some(((r.x + 1 + width(filter) as u16).min(end - 1), r.y + 1));
             }
-            let (l, m, rr) = if u { ("├", "─", "┤") } else { ("+", "-", "+") };
+            let (l, m, rr) = if u {
+                ("├", "─", "┤")
+            } else {
+                ("+", "-", "+")
+            };
             p.put(r.x, r.y + 2, r.x + 1, l, t.help_border);
             for x in r.x + 1..end {
                 p.put(x, r.y + 2, x + 1, m, t.help_border);
@@ -892,11 +959,21 @@ fn popup(p: &mut Pen, t: &Theme, area: Rect, current: Rect, hovered_y: Option<u1
             for (i, (key, desc)) in rows.iter().enumerate().skip(first).take(body) {
                 let y = r.y + 3 + (i - first) as u16;
                 let hov = i == *selected;
-                let base = if hov { t.help_hovered } else { Style::default() };
+                let base = if hov {
+                    t.help_hovered
+                } else {
+                    Style::default()
+                };
                 if hov {
                     p.style_cells(r.x + 1, end, y, base);
                 }
-                let x = p.put(r.x + 1, y, end, key, base.patch(if hov { Style::default() } else { t.help_on }));
+                let x = p.put(
+                    r.x + 1,
+                    y,
+                    end,
+                    key,
+                    base.patch(if hov { Style::default() } else { t.help_on }),
+                );
                 let kx = (r.x + 21).max(x + 1);
                 p.put(kx, y, end, desc, base);
             }
@@ -908,7 +985,9 @@ fn popup(p: &mut Pen, t: &Theme, area: Rect, current: Rect, hovered_y: Option<u1
         } => {
             let w = 50.min(area.width);
             let h = (items.len() as u16 + 2).min(9).min(area.height);
-            let y = hovered_y.map_or(area.y + 2, |y| y + 1).min(area.bottom().saturating_sub(h));
+            let y = hovered_y
+                .map_or(area.y + 2, |y| y + 1)
+                .min(area.bottom().saturating_sub(h));
             let r = Rect::new(current.x.min(area.right().saturating_sub(w)), y, w, h);
             p.rounded(r, t.input_border, Some((title, t.input_title, false)));
             let end = r.right().saturating_sub(1);
@@ -987,7 +1066,12 @@ pub(crate) fn render(v: &View, t: &Theme, look: Look, area: Rect, buf: &mut Buff
     }
     let (pr, cr, vr) = columns(body);
     // Parent list: inset one cell on the left (yazi's).
-    let parent_list = Rect::new(pr.x + pr.width.min(1), pr.y, pr.width.saturating_sub(1), pr.height);
+    let parent_list = Rect::new(
+        pr.x + pr.width.min(1),
+        pr.y,
+        pr.width.saturating_sub(1),
+        pr.height,
+    );
     let rails = cr.width >= 3;
     let current_list = if rails {
         Rect::new(cr.x + 1, cr.y, cr.width - 2, cr.height)
@@ -1009,9 +1093,25 @@ pub(crate) fn render(v: &View, t: &Theme, look: Look, area: Rect, buf: &mut Buff
         }
     }
     if let Some(parent) = &v.parent {
-        column(&mut p, t, parent_list, parent, Which::Parent, v.linemode, v.now);
+        column(
+            &mut p,
+            t,
+            parent_list,
+            parent,
+            Which::Parent,
+            v.linemode,
+            v.now,
+        );
     }
-    column(&mut p, t, current_list, &v.current, Which::Current, v.linemode, v.now);
+    column(
+        &mut p,
+        t,
+        current_list,
+        &v.current,
+        Which::Current,
+        v.linemode,
+        v.now,
+    );
     match &v.preview {
         Some(Preview::Folder(c)) => column(&mut p, t, vr, c, Which::Preview, v.linemode, v.now),
         _ => {}
@@ -1021,7 +1121,14 @@ pub(crate) fn render(v: &View, t: &Theme, look: Look, area: Rect, buf: &mut Buff
 }
 
 /// The which-key panel and popups, drawn after the app's preview body.
-pub(crate) fn overlays(v: &View, t: &Theme, look: Look, area: Rect, buf: &mut Buffer, d: &mut Drawn) {
+pub(crate) fn overlays(
+    v: &View,
+    t: &Theme,
+    look: Look,
+    area: Rect,
+    buf: &mut Buffer,
+    d: &mut Drawn,
+) {
     if area.width < 4 || area.height < 3 {
         return;
     }
@@ -1056,6 +1163,121 @@ mod tests {
         assert_eq!(day(now - 86400 * 400, now), "2025");
         assert_eq!(ellipsis("config.toml", 10, true, true), "conf….toml");
         assert_eq!(ellipsis("archive", 4, false, true), "arc…");
+    }
+
+    /// Every overlay and linemode at every size from 1x1 to 250x80: no panic.
+    #[test]
+    fn renders_at_every_size_without_panicking() {
+        use super::super::theme::Theme;
+        let row = |name: &str, dir: bool, mark: Mark| Row {
+            name: name.into(),
+            dir,
+            size: 4096,
+            modified: Some(1_794_484_800),
+            mode: Some(0o755),
+            mark,
+            found: vec![(0, 1)],
+            ..Row::default()
+        };
+        let col = Column {
+            rows: vec![
+                row("assets", true, Mark::Selected),
+                row(
+                    "a-very-long-file-name-that-will-not-fit.toml",
+                    false,
+                    Mark::Copied,
+                ),
+                row("終わり.txt", false, Mark::Cut),
+            ],
+            hovered: Some(1),
+            empty: None,
+            size_max: 1 << 30,
+        };
+        let popups = [
+            None,
+            Some(Popup::Input {
+                title: "Filter:".into(),
+                value: "abc".into(),
+                cursor: 3,
+                anchor: Anchor::Hovered,
+            }),
+            Some(Popup::Confirm {
+                title: "Trash 3 selected files?".into(),
+                body: Some("No undo".into()),
+                list: vec!["a".into(); 30],
+            }),
+            Some(Popup::Help {
+                rows: vec![("<C-u>".into(), "Move".into()); 200],
+                selected: 150,
+                filter: "m".into(),
+            }),
+            Some(Popup::Pick {
+                title: "Open with:".into(),
+                items: vec!["nvim".into(); 12],
+                selected: 11,
+            }),
+        ];
+        let modes = [
+            Linemode::Bar,
+            Linemode::Size,
+            Linemode::Mtime,
+            Linemode::Permissions,
+            Linemode::None,
+        ];
+        let themes = [Theme::builtin()];
+        for (i, popup) in popups.iter().enumerate() {
+            let v = View {
+                cwd: "~/a/very/long/path/that/goes/on".into(),
+                flags: " (filter: x)".into(),
+                count: Some((3, Mark::Selected)),
+                tabs: vec!["a:one".into(), "b:two".into()],
+                tab: 1,
+                parent: Some(col.clone()),
+                current: col.clone(),
+                preview: Some(Preview::Folder(col.clone())),
+                status: Status {
+                    size: Some(5),
+                    name: "x".into(),
+                    perm: Some("drwxr-xr-x".into()),
+                    cursor: 1,
+                    len: 3,
+                    progress: Some(("Copying x".into(), Some(0.5), false)),
+                    ..Status::default()
+                },
+                which: if i % 2 == 0 {
+                    vec![("c".into(), "Copy file path".into()); 7]
+                } else {
+                    Vec::new()
+                },
+                popup: popup.clone(),
+                linemode: modes[i % modes.len()],
+                now: 1_794_484_800,
+            };
+            for unicode in [true, false] {
+                let look = Look {
+                    unicode,
+                    icons: unicode,
+                    pills: unicode,
+                    color: unicode,
+                };
+                // Every width with a few heights, and every height at a few widths.
+                let sizes = (1..=250u16)
+                    .flat_map(|w| [1, 3, 9, 24, 80].map(|h| (w, h)))
+                    .chain(
+                        [1u16, 20, 80]
+                            .into_iter()
+                            .flat_map(|w| (1..=80).map(move |h| (w, h))),
+                    );
+                for (w, h) in sizes {
+                    {
+                        let area = Rect::new(0, 0, w, h);
+                        let mut buf = Buffer::empty(area);
+                        let mut d = render(&v, &themes[0], look, area, &mut buf);
+                        overlays(&v, &themes[0], look, area, &mut buf, &mut d);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

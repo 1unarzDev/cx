@@ -403,6 +403,7 @@ pub(super) fn navigation_read(op: &Operation) -> bool {
         Operation::List { .. }
         | Operation::ListPage { .. }
         | Operation::Preview { .. }
+        | Operation::PreviewImage { .. }
         | Operation::PreviewPage { .. } => true,
         Operation::ContainerFiles { operation, .. } => navigation_read(operation),
         _ => false,
@@ -412,11 +413,15 @@ pub(super) fn navigation_read(op: &Operation) -> bool {
 /// Replies already reject old navigation generations. Discard those reads before
 /// they consume helper time, retaining mutation ordering and reply accounting.
 pub(super) fn superseded_reads(tasks: &mut VecDeque<Task>, incoming: &Task) -> Vec<Task> {
+    if incoming.generation == super::WARM_GENERATION {
+        return Vec::new();
+    }
     if incoming.hover {
         // A new hover outdates every queued hover prefetch of the same device.
-        let (dropped, kept): (VecDeque<Task>, VecDeque<Task>) = std::mem::take(tasks)
-            .into_iter()
-            .partition(|t| t.hover && t.device == incoming.device);
+        let (dropped, kept): (VecDeque<Task>, VecDeque<Task>) =
+            std::mem::take(tasks).into_iter().partition(|t| {
+                t.hover && t.device == incoming.device && t.generation != super::WARM_GENERATION
+            });
         *tasks = kept;
         return dropped.into();
     }

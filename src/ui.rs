@@ -31,8 +31,8 @@ mod file_index;
 use file_index::{Entries, ViewIndex, VisibleRows};
 mod files_view;
 use files_view::*;
-mod yazi;
 mod network_view;
+mod yazi;
 use network_view::*;
 mod runtime;
 pub(crate) use runtime::sweep_stale_restarts;
@@ -170,20 +170,29 @@ impl RichPreview {
             let image = value.get("image")?;
             let w = usize::try_from(image["width"].as_u64()?).ok()?;
             let h = usize::try_from(image["height"].as_u64()?).ok()?;
-            if let Some(encoded) = image["png"].as_str() {
+            let encoded = image["png"]
+                .as_str()
+                .map(|e| (e, image::ImageFormat::Png))
+                .or_else(|| {
+                    image["jpeg"]
+                        .as_str()
+                        .map(|e| (e, image::ImageFormat::Jpeg))
+                });
+            if let Some((encoded, format)) = encoded {
                 if w == 0 || h == 0 || w > 1280 || h > 960 || encoded.len() > 800_000 {
                     return None;
                 }
                 let png = base64::engine::general_purpose::STANDARD
                     .decode(encoded)
                     .ok()?;
-                if png.len() > 600_000 || !png.starts_with(b"\x89PNG\r\n\x1a\n") {
+                let magic = match format {
+                    image::ImageFormat::Png => png.starts_with(b"\x89PNG\r\n\x1a\n"),
+                    _ => png.starts_with(&[0xff, 0xd8, 0xff]),
+                };
+                if png.len() > 600_000 || !magic {
                     return None;
                 }
-                let mut reader = image::ImageReader::with_format(
-                    std::io::Cursor::new(png),
-                    image::ImageFormat::Png,
-                );
+                let mut reader = image::ImageReader::with_format(std::io::Cursor::new(png), format);
                 let mut limits = image::Limits::default();
                 limits.max_image_width = Some(1280);
                 limits.max_image_height = Some(960);
@@ -389,6 +398,9 @@ struct Cached {
     error: Option<String>,
     fetched: u64,
 }
+/// The generation of warm-up reads (`App::send_warm`): never current, never
+/// superseding or superseded.
+const WARM_GENERATION: u64 = u64::MAX - 1;
 struct Task {
     device: usize,
     execution: Device,
@@ -1118,10 +1130,10 @@ impl App {
     fn send_hover(&self, device: usize, op: Operation) -> bool {
         self.send_task(device, self.scoped_file_operation(device, op), true)
     }
-    /// A read that only warms a helper channel and the listing cache: generation 0, so
+    /// A read that only warms a helper channel and the listing cache: WARM_GENERATION, so
     /// its reply (or failure) never touches the visible folder or raises a notice.
     fn send_warm(&self, device: usize, op: Operation, hover: bool) -> bool {
-        self.send_generation(device, op, hover, 0)
+        self.send_generation(device, op, hover, WARM_GENERATION)
     }
     fn send_task(&self, device: usize, op: Operation, hover: bool) -> bool {
         self.send_generation(device, op, hover, self.generation)

@@ -23,13 +23,18 @@ class Screen(pyte.Screen):
         pass
 
 
+CELL_PIXELS = None
+
+
 class Pty:
     """One process on a private PTY of cols x rows (its controlling terminal), with a screen."""
 
     def __init__(self, argv, env, cwd, cols, rows):
         self.master, self.slave = pty.openpty()
         self.termios_before = termios.tcgetattr(self.slave)
-        fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
+        # CELL_PIXELS (w, h): report a pixel size too, as bitmap terminals do (TIOCGWINSZ).
+        px = (cols * CELL_PIXELS[0], rows * CELL_PIXELS[1]) if CELL_PIXELS else (0, 0)
+        fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, *px))
 
         def tty():
             os.setsid()

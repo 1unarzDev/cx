@@ -296,9 +296,8 @@ impl Theme {
             from_user: false,
             overall: Style::default(),
             cwd: fg(Color::Cyan),
-            find_keyword: fg(Color::Yellow).add_modifier(
-                Modifier::BOLD | Modifier::ITALIC | Modifier::UNDERLINED,
-            ),
+            find_keyword: fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD | Modifier::ITALIC | Modifier::UNDERLINED),
             find_position: fg(Color::Magenta).add_modifier(Modifier::BOLD | Modifier::ITALIC),
             symlink_target: Style::default().add_modifier(Modifier::ITALIC),
             marker_copied: Color::LightGreen,
@@ -465,7 +464,9 @@ impl Theme {
         if let Some(Value::Int(n)) = theme.path("which.cols") {
             t.which_cols = (*n).clamp(1, 3) as usize;
         }
-        if let [Value::Str(y), Value::Str(n)] = theme.path("confirm.btn_labels").map_or(&[][..], Value::arr) {
+        if let [Value::Str(y), Value::Str(n)] =
+            theme.path("confirm.btn_labels").map_or(&[][..], Value::arr)
+        {
             t.btn_labels = (y.clone(), n.clone());
         }
         for (mode, name) in [
@@ -474,7 +475,11 @@ impl Theme {
             (&mut t.unset, "unset"),
         ] {
             let main = theme.path(&format!("mode.{name}_main"));
-            if let Some(c) = main.and_then(|v| v.get("bg")).and_then(Value::str).and_then(color) {
+            if let Some(c) = main
+                .and_then(|v| v.get("bg"))
+                .and_then(Value::str)
+                .and_then(color)
+            {
                 mode.pill = c;
             }
             if let Some(s) = style(main, app_bg) {
@@ -528,13 +533,21 @@ impl Theme {
                 .filter_map(|row| {
                     let on = match row.get("on")? {
                         Value::Str(s) => vec![s.clone()],
-                        v => v.arr().iter().filter_map(|k| k.str().map(str::to_owned)).collect(),
+                        v => v
+                            .arr()
+                            .iter()
+                            .filter_map(|k| k.str().map(str::to_owned))
+                            .collect(),
                     };
                     let run = match row.get("run")? {
                         Value::Str(s) => s.clone(),
                         v => v.arr().first()?.str()?.to_owned(),
                     };
-                    let desc = row.get("desc").and_then(Value::str).unwrap_or(&run).to_owned();
+                    let desc = row
+                        .get("desc")
+                        .and_then(Value::str)
+                        .unwrap_or(&run)
+                        .to_owned();
                     Some((on, run, desc))
                 })
                 .collect();
@@ -551,7 +564,9 @@ impl Theme {
         let base = std::env::var_os("XDG_CONFIG_HOME")
             .filter(|d| !d.is_empty())
             .map(std::path::PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".config")))?;
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".config"))
+            })?;
         Some(base.join("yazi"))
     }
 
@@ -581,7 +596,8 @@ impl Theme {
             None => {
                 let mut t = Theme::builtin();
                 if let Some(k) = read("keymap.toml") {
-                    t.prepends = Theme::from_docs(&Value::Table(Default::default()), Some(&k)).prepends;
+                    t.prepends =
+                        Theme::from_docs(&Value::Table(Default::default()), Some(&k)).prepends;
                 }
                 t
             }
@@ -642,7 +658,13 @@ conds = [
     #[test]
     fn builtin_paints_no_backgrounds() {
         let t = Theme::builtin();
-        for s in [t.normal.alt, t.tab_inactive, t.status, t.hovered, t.count_selected] {
+        for s in [
+            t.normal.alt,
+            t.tab_inactive,
+            t.status,
+            t.hovered,
+            t.count_selected,
+        ] {
             assert_eq!(s.bg, None);
         }
         let png = Facts::default();

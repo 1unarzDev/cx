@@ -1078,12 +1078,14 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
             Some(target) if files => format!("files:{target}"),
             Some(target) => target.clone(),
             None if panel => "<local-command>".into(),
+            None if task.hover => "<local-hover>".into(),
             None if matches!(
                 task.op,
                 Operation::List { .. }
                     | Operation::ListPage { .. }
                     | Operation::Preview { .. }
                     | Operation::PreviewPage { .. }
+                    | Operation::PreviewImage { .. }
             ) =>
             {
                 "<local-files-read>".into()
@@ -1155,7 +1157,9 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
                         Operation::ContainerFiles { operation, .. } => operation.as_ref(),
                         other => other,
                     },
-                    Operation::Preview { .. } | Operation::PreviewPage { .. }
+                    Operation::Preview { .. }
+                        | Operation::PreviewPage { .. }
+                        | Operation::PreviewImage { .. }
                 ) {
                     // Plain text paints first; source highlighting follows below.
                     result.as_ref().ok().map(RichPreview::plain)
@@ -1207,7 +1211,9 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
     }
 }
 /// Geometry mirrors the existing workspace layout; no preview owns another location.
-pub(super) fn native_preview_area(app: &App, area: Rect) -> Option<Rect> {
+/// The browser whose image the terminal draws natively, and where: the opened
+/// preview, or the yazi view's preview column for a hovered image.
+fn native_source(app: &App, area: Rect) -> Option<(&Browser, Rect)> {
     if area.width < 36
         || area.height < 10
         || app.view != View::Files
@@ -1219,24 +1225,37 @@ pub(super) fn native_preview_area(app: &App, area: Rect) -> Option<Rect> {
         return None;
     }
     let browser = app.browser.as_ref()?;
-    browser.preview.as_ref()?;
-    let rich = browser.preview_rich.as_ref()?;
+    let (shown, rect) = if browser.preview.is_some() {
+        // Where the last frame drew the preview surface.
+        (browser, app.preview_rect.get()?)
+    } else {
+        // Overlays (which-key, popups, send-to) sit over the column: no bitmap then.
+        if !app.yz.pending.is_empty() || app.yz.popup.is_some() || app.send_pick {
+            return None;
+        }
+        let hovered = browser_entries(browser).get(browser.selected)?.path.clone();
+        let peek = browser
+            .peek
+            .as_deref()
+            .filter(|p| p.preview_path.as_deref() == Some(hovered.as_str()))?;
+        peek.preview.as_ref()?;
+        (peek, app.yz.preview_rect.get())
+    };
+    let rich = shown.preview_rich.as_ref()?;
     if !matches!(rich.kind.as_str(), "image" | "pdf") || rich.raster.is_none() {
         return None;
     }
-    // Where the last frame drew the preview surface.
-    let _ = area;
-    app.preview_rect
-        .get()
-        .filter(|r| r.width > 0 && r.height > 0)
+    (rect.width > 0 && rect.height > 0).then_some((shown, rect))
+}
+pub(super) fn native_preview_area(app: &App, area: Rect) -> Option<Rect> {
+    native_source(app, area).map(|(_, r)| r)
 }
 pub(super) fn prepare_native_preview(
     app: &App,
     area: Rect,
     native: &mut crate::terminal_preview::NativePreview,
 ) {
-    if let Some(area) = native_preview_area(app, area) {
-        let browser = app.browser.as_ref().unwrap();
+    if let Some((browser, area)) = native_source(app, area) {
         let (width, height, rgba) = browser
             .preview_rich
             .as_ref()
@@ -1246,8 +1265,11 @@ pub(super) fn prepare_native_preview(
             .unwrap();
         // Revision changes on every accepted response, even if title/path/dimensions match.
         let key = format!(
-            "{}:{}:{}",
-            app.generation, browser.device, browser.preview_revision
+            "{}:{}:{}:{}",
+            app.generation,
+            browser.device,
+            browser.preview_path.as_deref().unwrap_or(""),
+            browser.preview_revision
         );
         native.prepare(&key, *width as u32, *height as u32, rgba, area);
     } else {

@@ -96,7 +96,10 @@ impl App {
             b.settle = None;
             return false;
         };
-        if b.settle.as_ref().is_none_or(|(path, _, _)| *path != entry.path) {
+        if b.settle
+            .as_ref()
+            .is_none_or(|(path, _, _)| *path != entry.path)
+        {
             // A new hover: its prefetch starts in this same pass (before the frame that
             // shows the move), so a preview kept in memory is in that frame.
             b.settle = Some((entry.path.clone(), now, false));
@@ -182,12 +185,22 @@ impl App {
                 child.peek_value = None;
                 b.peek = Some(child);
                 let generation = self.generation;
-                if self.send_hover(
-                    device,
+                // Images come fitted to the preview's pixel box (decoded on the helper).
+                let image = yazi::openers::mime(&entry.name, false).starts_with("image/")
+                    && !entry.name.to_ascii_lowercase().ends_with(".svg");
+                let (bw, bh) = self.yz.preview_px.get();
+                let op = if image && bw > 0 && bh > 0 && b.container.is_none() {
+                    Operation::PreviewImage {
+                        path: entry.path.clone(),
+                        width: bw,
+                        height: bh,
+                    }
+                } else {
                     Operation::Preview {
                         path: entry.path.clone(),
-                    },
-                ) {
+                    }
+                };
+                if self.send_hover(device, op) {
                     if let Some(b) = self.browser.as_mut() {
                         if b.peek_inflight.len() >= 16 {
                             b.peek_inflight.remove(0);
@@ -664,7 +677,12 @@ impl App {
             return;
         }
         let device = b.device;
-        if self.send(device, Operation::List { path: parent.clone() }) {
+        if self.send(
+            device,
+            Operation::List {
+                path: parent.clone(),
+            },
+        ) {
             if let Some(b) = self.browser.as_mut() {
                 b.prefetch.insert(parent);
             }

@@ -78,7 +78,6 @@ pub enum Tok {
     Info,
     Mesh,
     Lan,
-    Dir,
     Claude,
     Codex,
     Shell,
@@ -129,13 +128,6 @@ fn row(t: Tok) -> Option<Row> {
             79,
             29,
             Some(Color::Cyan),
-        )),
-        Tok::Dir => Some((
-            (0x8f, 0xb7, 0xf0),
-            (0x1d, 0x4f, 0x91),
-            111,
-            25,
-            Some(Color::LightBlue),
         )),
         Tok::Claude => Some((
             (0xe0, 0xa3, 0x7a),
@@ -190,7 +182,7 @@ impl LabCaps {
         if self.color == ColorLevel::None {
             s = match t {
                 Tok::Muted | Tok::Faint => s.add_modifier(Modifier::DIM),
-                Tok::Accent | Tok::Err | Tok::Dir => s.add_modifier(Modifier::BOLD),
+                Tok::Accent | Tok::Err => s.add_modifier(Modifier::BOLD),
                 _ => s,
             };
         } else if self.color == ColorLevel::C16 && matches!(t, Tok::Faint) {

@@ -446,8 +446,6 @@ class BenchEnv(ph.Env):
         super().__init__(binary)
         self.tag = tag
         self.env['CX_FILES_BENCH'] = tag
-        if os.environ.get('CX_TRACE_CHANNELS'):
-            self.env['CX_TRACE_CHANNELS'] = os.environ['CX_TRACE_CHANNELS']
         self.env.pop('SSH_AUTH_SOCK', None)
         self.marker2 = f'CX_FILES_BENCH={tag}\0'.encode()
         local = dict(id='local', name=socket.gethostname(), target=None, account=os.environ.get('USER', ''),

@@ -1332,10 +1332,7 @@ fn yazi_motion_counts_and_delete_yes_no_do_not_leak_into_inputs() {
     press(&mut a, 'd');
     press(&mut a, 'y');
     // `d` trashes; `D` deletes for good.
-    assert!(matches!(
-        rx.try_recv().unwrap().op,
-        Operation::Trash { .. }
-    ));
+    assert!(matches!(rx.try_recv().unwrap().op, Operation::Trash { .. }));
     press(&mut a, 'f');
     press(&mut a, '5');
     press(&mut a, 'j');
@@ -1392,7 +1389,10 @@ fn delete_defaults_to_cancel_and_uses_captured_identity() {
     let (mut a, rx) = file_app();
     press(&mut a, 'D');
     let text = draw_text(&a);
-    assert!(text.contains("Permanently delete 1 selected file?"), "{text}");
+    assert!(
+        text.contains("Permanently delete 1 selected file?"),
+        "{text}"
+    );
     press(&mut a, 'n');
     assert!(rx.try_recv().is_err());
     press(&mut a, 'D');

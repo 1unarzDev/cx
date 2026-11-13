@@ -67,18 +67,36 @@ fn render_yazi(
         color: !no_color(),
     };
     let mut d = yazi::render::render(&v, t, look, area, frame.buffer_mut());
+    app.yz.preview_rect.set(d.preview);
+    // The pixel box a fitted image preview is asked for: the cells times the cell size
+    // where the terminal draws bitmaps, else two half-block pixels per cell row.
+    let (cw, ch) = crate::terminal_preview::graphics_cell().unwrap_or((1, 2));
+    app.yz.preview_px.set((
+        u32::from(d.preview.width) * u32::from(cw),
+        u32::from(d.preview.height) * u32::from(ch),
+    ));
     if let Some(b) = app.browser.as_ref() {
-        b.peek_shown.set(d.preview.width >= 8 && d.preview.height >= 2);
+        b.peek_shown
+            .set(d.preview.width >= 8 && d.preview.height >= 2);
         if matches!(v.preview, Some(yazi::render::Preview::Body)) {
             if let Some(p) = b.peek.as_deref() {
                 if let Some(text) = p.preview.as_deref() {
                     render_preview_body(frame, d.preview, p, text, native);
-                    // The previous file's preview stays, dimmed, until the new one lands.
-                    if p.preview_pending_page.is_some() {
-                        frame
-                            .buffer_mut()
-                            .set_style(d.preview, Style::default().add_modifier(Modifier::DIM));
-                    }
+                }
+            }
+        } else if v.preview.is_none()
+            && b.peek
+                .as_deref()
+                .is_some_and(|p| p.preview_pending_page.is_some())
+        {
+            // A file's preview on its way: the one just left stays, dimmed, meanwhile
+            // (over SSH that is a round trip without a blank column).
+            if let Some((_, _, p)) = b.peek_cache.last() {
+                if let Some(text) = p.preview.as_deref() {
+                    render_preview_body(frame, d.preview, p, text, None);
+                    frame
+                        .buffer_mut()
+                        .set_style(d.preview, Style::default().add_modifier(Modifier::DIM));
                 }
             }
         }

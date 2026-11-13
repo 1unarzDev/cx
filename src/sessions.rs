@@ -2084,6 +2084,11 @@ fn managed_config() -> String {
         "set -g default-terminal 'tmux-256color'",
         &format!("set -g default-terminal '{terminal}'"),
     );
+    if tmux_at_least(3, 3) {
+        // Bitmaps (kitty placeholders, iTerm2, sixel) from cx and agents inside a managed
+        // pane reach the terminal; this server only, never the user's own tmux.
+        config.push_str("\nset -g allow-passthrough on\n");
+    }
     let supports_terminal_color = tmux_at_least(3, 4);
     if !supports_terminal_color && !tmux_at_least(3, 0) {
         config = without_status_mouse(&config);

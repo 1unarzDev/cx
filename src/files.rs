@@ -108,6 +108,14 @@ pub fn handle(op: &Operation) -> Result<Value> {
             limit,
         } => list_page(&decode_path(path)?, *offset, *limit),
         Operation::Preview { path } => preview(&decode_path(path)?),
+        Operation::PreviewImage {
+            path,
+            width,
+            height,
+        } => {
+            let path = decode_path(path)?;
+            file_preview::render_boxed(&path, open_read(&path)?, (*width, *height))
+        }
         Operation::PreviewPage { path, page } => {
             let path = decode_path(path)?;
             file_preview::render_page(&path, open_read(&path)?, *page)

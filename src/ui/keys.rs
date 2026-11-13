@@ -226,16 +226,6 @@ impl App {
                     }
                 }
             }
-            Cmd::ClearClipboard => {
-                self.clipboard = None;
-                self.set_notice("Clipboard cleared · files unchanged".into());
-            }
-            Cmd::ClearMarks => {
-                self.finish_visual();
-                if let Some(b) = &mut self.browser {
-                    b.marked.clear();
-                }
-            }
             Cmd::PreviewLinks => self.show_preview_links(),
             Cmd::PreviewSearch => {
                 if self.text_preview_active() {

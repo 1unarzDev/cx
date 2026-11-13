@@ -107,11 +107,23 @@ pub(super) fn keymap() -> &'static [Bind] {
     static MAP: std::sync::OnceLock<Vec<Bind>> = std::sync::OnceLock::new();
     MAP.get_or_init(|| {
         vec![
-            b!(["<Esc>"], Escape, "Exit visual mode, clear selection, or cancel search"),
-            b!(["<C-[>"], Escape, "Exit visual mode, clear selection, or cancel search"),
+            b!(
+                ["<Esc>"],
+                Escape,
+                "Exit visual mode, clear selection, or cancel search"
+            ),
+            b!(
+                ["<C-[>"],
+                Escape,
+                "Exit visual mode, clear selection, or cancel search"
+            ),
             b!(["q"], Quit, "Close Files"),
             b!(["Q"], Quit, "Close Files"),
-            b!(["<C-c>"], CloseTab, "Close the current tab, or Files when it is the last"),
+            b!(
+                ["<C-c>"],
+                CloseTab,
+                "Close the current tab, or Files when it is the last"
+            ),
             b!(["k"], Arrow(-1), "Previous file"),
             b!(["j"], Arrow(1), "Next file"),
             b!(["<Up>"], Arrow(-1), "Previous file"),
@@ -145,11 +157,23 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(["o"], Open, "Open selected files"),
             b!(["O"], OpenInteractive, "Open selected files interactively"),
             b!(["<Enter>"], Open, "Open selected files"),
-            b!(["<S-Enter>"], OpenInteractive, "Open selected files interactively"),
+            b!(
+                ["<S-Enter>"],
+                OpenInteractive,
+                "Open selected files interactively"
+            ),
             b!(["y"], Yank, "Yank selected files (copy)"),
             b!(["x"], Cut, "Yank selected files (cut)"),
-            b!(["p"], Paste(false), "Paste yanked files (here, from any device)"),
-            b!(["P"], Paste(true), "Paste yanked files (overwrite if the destination exists)"),
+            b!(
+                ["p"],
+                Paste(false),
+                "Paste yanked files (here, from any device)"
+            ),
+            b!(
+                ["P"],
+                Paste(true),
+                "Paste yanked files (overwrite if the destination exists)"
+            ),
             b!(["Y"], Unyank, "Cancel the yank status"),
             b!(["X"], Unyank, "Cancel the yank status"),
             b!(["d"], Trash, "Trash selected files"),
@@ -157,46 +181,102 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(["a"], Create, "Create a file (ends with / for directories)"),
             b!(["r"], Rename, "Rename selected file(s)"),
             b!([";"], Shell(false), "Run a shell command"),
-            b!([":"], Shell(true), "Run a shell command (block until finishes)"),
+            b!(
+                [":"],
+                Shell(true),
+                "Run a shell command (block until finishes)"
+            ),
             b!(["."], Hidden, "Toggle the visibility of hidden files"),
             b!(["s"], Search(false), "Search files by name via fd"),
             b!(["S"], Search(true), "Search files by content via ripgrep"),
             b!(["<C-s>"], Escape, "Cancel the ongoing search"),
             b!(["z"], Jump(false), "Jump to a file/directory via fzf"),
             b!(["Z"], Jump(true), "Jump to a directory via zoxide"),
-            b!(["m", "s"], Linemode(render::Linemode::Size), "Linemode: size"),
-            b!(["m", "p"], Linemode(render::Linemode::Permissions), "Linemode: permissions"),
-            b!(["m", "m"], Linemode(render::Linemode::Mtime), "Linemode: mtime"),
-            b!(["m", "b"], Linemode(render::Linemode::Bar), "Linemode: size bar and day"),
-            b!(["m", "n"], Linemode(render::Linemode::None), "Linemode: none"),
+            b!(
+                ["m", "s"],
+                Linemode(render::Linemode::Size),
+                "Linemode: size"
+            ),
+            b!(
+                ["m", "p"],
+                Linemode(render::Linemode::Permissions),
+                "Linemode: permissions"
+            ),
+            b!(
+                ["m", "m"],
+                Linemode(render::Linemode::Mtime),
+                "Linemode: mtime"
+            ),
+            b!(
+                ["m", "b"],
+                Linemode(render::Linemode::Bar),
+                "Linemode: size bar and day"
+            ),
+            b!(
+                ["m", "n"],
+                Linemode(render::Linemode::None),
+                "Linemode: none"
+            ),
             b!(["c", "c"], Copy("path"), "Copy file path"),
             b!(["c", "C"], Copy("url"), "Copy file URL"),
             b!(["c", "d"], Copy("dirpath"), "Copy directory path"),
             b!(["c", "D"], Copy("dirurl"), "Copy directory URL"),
             b!(["c", "f"], Copy("filename"), "Copy filename"),
-            b!(["c", "n"], Copy("name_without_ext"), "Copy filename without extension"),
+            b!(
+                ["c", "n"],
+                Copy("name_without_ext"),
+                "Copy filename without extension"
+            ),
             b!(["f"], Filter, "Filter files"),
             b!(["/"], Find(false), "Find next file"),
             b!(["?"], Find(true), "Find previous file"),
             b!(["n"], FindNext(false), "Next found"),
             b!(["N"], FindNext(true), "Previous found"),
             b!([",", "m"], Sort("mtime", false), "Sort by modified time"),
-            b!([",", "M"], Sort("mtime", true), "Sort by modified time (reverse)"),
+            b!(
+                [",", "M"],
+                Sort("mtime", true),
+                "Sort by modified time (reverse)"
+            ),
             b!([",", "b"], Sort("mtime", false), "Sort by birth time"),
-            b!([",", "B"], Sort("mtime", true), "Sort by birth time (reverse)"),
+            b!(
+                [",", "B"],
+                Sort("mtime", true),
+                "Sort by birth time (reverse)"
+            ),
             b!([",", "e"], Sort("extension", false), "Sort by extension"),
-            b!([",", "E"], Sort("extension", true), "Sort by extension (reverse)"),
-            b!([",", "a"], Sort("alphabetical", false), "Sort alphabetically"),
-            b!([",", "A"], Sort("alphabetical", true), "Sort alphabetically (reverse)"),
+            b!(
+                [",", "E"],
+                Sort("extension", true),
+                "Sort by extension (reverse)"
+            ),
+            b!(
+                [",", "a"],
+                Sort("alphabetical", false),
+                "Sort alphabetically"
+            ),
+            b!(
+                [",", "A"],
+                Sort("alphabetical", true),
+                "Sort alphabetically (reverse)"
+            ),
             b!([",", "n"], Sort("natural", false), "Sort naturally"),
-            b!([",", "N"], Sort("natural", true), "Sort naturally (reverse)"),
+            b!(
+                [",", "N"],
+                Sort("natural", true),
+                "Sort naturally (reverse)"
+            ),
             b!([",", "s"], Sort("size", false), "Sort by size"),
             b!([",", "S"], Sort("size", true), "Sort by size (reverse)"),
             b!([",", "r"], Sort("random", false), "Sort randomly"),
             b!(["g", "h"], Goto("~"), "Go home"),
             b!(["g", "c"], Goto("~/.config"), "Go to ~/.config"),
             b!(["g", "d"], Goto("~/Downloads"), "Go to ~/Downloads"),
-            b!(["g", "t"], Goto("~/.local/share/Trash/files"), "Go to trash bin"),
+            b!(
+                ["g", "t"],
+                Goto("~/.local/share/Trash/files"),
+                "Go to trash bin"
+            ),
             b!(["g", "<Space>"], GotoInteractive, "Jump interactively"),
             b!(["g", "f"], Follow, "Follow hovered symlink"),
             b!(["t", "t"], TabNew, "Create a new tab with CWD"),
@@ -217,7 +297,11 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(["w"], Tasks, "Show task manager (transfers)"),
             b!(["~"], Help, "Open help"),
             b!(["<F1>"], Help, "Open help"),
-            b!(["'"], Devices, "Switch this tab to another device (its hub letter)"),
+            b!(
+                ["'"],
+                Devices,
+                "Switch this tab to another device (its hub letter)"
+            ),
             b!(["e"], SendTo, "Send selected files to a device (picker)"),
             b!(["T"], NewSession, "New session in this folder"),
         ]
@@ -364,6 +448,10 @@ pub(super) struct Yazi {
     pub rows: std::cell::Cell<usize>,
     /// Devices whose hover channel has been opened.
     pub warm: BTreeSet<usize>,
+    /// The preview column in pixels at the last draw (fitted image previews).
+    pub preview_px: std::cell::Cell<(u32, u32)>,
+    /// The preview column in cells at the last draw (native image placement).
+    pub preview_rect: std::cell::Cell<Rect>,
 }
 
 fn quote(s: &str) -> String {
@@ -410,7 +498,10 @@ impl App {
             out.sort();
             if let Some((d, _)) = &self.yz.previous {
                 if let Some(dev) = self.devices.get(*d) {
-                    out.insert(0, ("'".into(), format!("Back to {}", safe_label(&dev.name))));
+                    out.insert(
+                        0,
+                        ("'".into(), format!("Back to {}", safe_label(&dev.name))),
+                    );
                 }
             }
             return out;
@@ -557,7 +648,9 @@ impl App {
                     KeyCode::Char('/') => typing = true,
                     KeyCode::Char('j') | KeyCode::Down => sel += 1,
                     KeyCode::Char('k') | KeyCode::Up => sel = sel.saturating_sub(1),
-                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => sel += 10,
+                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        sel += 10
+                    }
                     KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         sel = sel.saturating_sub(10)
                     }
@@ -616,12 +709,10 @@ impl App {
         prepends()
             .iter()
             .map(|(on, _, desc)| (on.concat(), desc.clone()))
-            .chain(
-                keymap()
-                    .iter()
-                    .map(|b| (b.on.concat(), b.desc.to_string())),
-            )
-            .filter(|(k, d)| f.is_empty() || k.to_lowercase().contains(&f) || d.to_lowercase().contains(&f))
+            .chain(keymap().iter().map(|b| (b.on.concat(), b.desc.to_string())))
+            .filter(|(k, d)| {
+                f.is_empty() || k.to_lowercase().contains(&f) || d.to_lowercase().contains(&f)
+            })
             .collect()
     }
 
@@ -785,7 +876,9 @@ impl App {
             }
             Trash | Delete => {
                 let entries = self.chosen_entries();
-                let Some(b) = self.browser.as_ref() else { return };
+                let Some(b) = self.browser.as_ref() else {
+                    return;
+                };
                 if entries.is_empty() {
                     return;
                 }
@@ -818,17 +911,27 @@ impl App {
                 self.rename_cursor = 0;
             }
             Jump(zoxide) => {
-                let local = self.browser.as_ref().is_some_and(|b| self.devices[b.device].target.is_none());
+                let local = self
+                    .browser
+                    .as_ref()
+                    .is_some_and(|b| self.devices[b.device].target.is_none());
                 if !local {
                     self.set_notice("z and Z jump on this device only · ' switches devices".into());
                     return;
                 }
                 let tool = if zoxide { "zoxide" } else { "fzf" };
                 if !command_exists(tool) {
-                    self.set_notice_as(NoticeKind::Warning, format!("{tool} is not installed here"));
+                    self.set_notice_as(
+                        NoticeKind::Warning,
+                        format!("{tool} is not installed here"),
+                    );
                     return;
                 }
-                let dir = self.browser.as_ref().map(|b| b.path.clone()).unwrap_or_default();
+                let dir = self
+                    .browser
+                    .as_ref()
+                    .map(|b| b.path.clone())
+                    .unwrap_or_default();
                 self.pending_jump = Some((zoxide, dir));
             }
             Linemode(m) => self.yz.linemode = m,
@@ -856,7 +959,11 @@ impl App {
             GotoInteractive => {
                 self.yz.cd = true;
                 self.input = Some(Input::Mkdir);
-                self.text = self.browser.as_ref().map(|b| b.display_path.clone()).unwrap_or_default();
+                self.text = self
+                    .browser
+                    .as_ref()
+                    .map(|b| b.display_path.clone())
+                    .unwrap_or_default();
                 self.rename_cursor = self.text.len();
             }
             Follow => {
@@ -869,7 +976,9 @@ impl App {
                 self.yazi_sync_tab();
                 if self.yz.tabs.len() < 9 {
                     let t = self.yz.tabs[self.yz.tab].clone();
-                    self.yz.tabs.insert(self.yz.tab + 1, Tab { name: None, ..t });
+                    self.yz
+                        .tabs
+                        .insert(self.yz.tab + 1, Tab { name: None, ..t });
                     self.yz.tab += 1;
                 }
             }
@@ -912,12 +1021,18 @@ impl App {
             }
             Devices => {}
             LocalShell(cmd, block) => {
-                let local = self.browser.as_ref().is_some_and(|b| self.devices[b.device].target.is_none());
+                let local = self
+                    .browser
+                    .as_ref()
+                    .is_some_and(|b| self.devices[b.device].target.is_none());
                 let program = cmd.split_whitespace().next().unwrap_or("").to_owned();
                 if !local {
                     self.set_notice(format!("{program} runs on this device only"));
                 } else if !command_exists(&program) {
-                    self.set_notice_as(NoticeKind::Warning, format!("{program} is not installed here"));
+                    self.set_notice_as(
+                        NoticeKind::Warning,
+                        format!("{program} is not installed here"),
+                    );
                 } else {
                     self.run_opener(cmd, block);
                 }
@@ -1037,14 +1152,23 @@ impl App {
         let target = path
             .strip_prefix('/')
             .and_then(|_| path.trim_end_matches('/').rsplit_once('/'))
-            .map(|(p, _)| if p.is_empty() { "/".to_owned() } else { p.to_owned() })
+            .map(|(p, _)| {
+                if p.is_empty() {
+                    "/".to_owned()
+                } else {
+                    p.to_owned()
+                }
+            })
             .unwrap_or(path);
         self.send_warm(d, Operation::List { path: target }, true);
     }
     /// The cache key of device `d`'s folder `path` (`~` matches the home it listed).
     fn cached_folder(&self, d: usize, path: &str) -> Option<String> {
         let scope = browser_scope_key(None);
-        if self.browser_cache.contains_key(&(d, path.to_owned(), scope.clone())) {
+        if self
+            .browser_cache
+            .contains_key(&(d, path.to_owned(), scope.clone()))
+        {
             return Some(path.to_owned());
         }
         (path == "~")
@@ -1060,7 +1184,9 @@ impl App {
     /// Apply the chosen `,` sort to the loaded rows (pages arriving later re-sort).
     pub(super) fn yazi_sort(&mut self) {
         let Some(sort) = self.yz.sort else { return };
-        let Some(b) = self.browser.as_mut() else { return };
+        let Some(b) = self.browser.as_mut() else {
+            return;
+        };
         let keep = browser_entries(b).get(b.selected).map(|e| e.path.clone());
         let natural = |s: &str| -> Vec<(u8, u128, String)> {
             // Digit runs compare as numbers.
@@ -1096,8 +1222,14 @@ impl App {
                 "mtime" => x.modified.cmp(&y.modified),
                 "size" => x.size.cmp(&y.size),
                 "extension" => {
-                    let ext = |n: &str| n.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
-                    ext(&x.name).cmp(&ext(&y.name)).then_with(|| x.name.to_lowercase().cmp(&y.name.to_lowercase()))
+                    let ext = |n: &str| {
+                        n.rsplit_once('.')
+                            .map(|(_, e)| e.to_lowercase())
+                            .unwrap_or_default()
+                    };
+                    ext(&x.name)
+                        .cmp(&ext(&y.name))
+                        .then_with(|| x.name.to_lowercase().cmp(&y.name.to_lowercase()))
                 }
                 "natural" => natural(&x.name).cmp(&natural(&y.name)),
                 "random" => {
@@ -1117,7 +1249,9 @@ impl App {
 
     /// `c` + c/C/d/D/f/n: copy through OSC 52 (works over SSH and inside tmux).
     fn yazi_copy(&mut self, what: &str) {
-        let Some(b) = self.browser.as_ref() else { return };
+        let Some(b) = self.browser.as_ref() else {
+            return;
+        };
         let chosen = self.chosen_entries();
         let decode = |p: &str| {
             crate::files::decode_path(p)
@@ -1203,7 +1337,9 @@ impl App {
     /// Enter / o on a file. Locally the user's yazi.toml `[open] rules` decide (the
     /// first opener, or a chooser); on another device the file opens in cx's preview.
     fn yazi_open(&mut self, interactive: bool) {
-        let Some(b) = self.browser.as_ref() else { return };
+        let Some(b) = self.browser.as_ref() else {
+            return;
+        };
         let device = b.device;
         let Some(e) = self.hovered() else { return };
         let local = self.devices[device].target.is_none() && b.container.is_none();
@@ -1280,7 +1416,9 @@ impl App {
                     // Reaped off the UI thread; the program outlives cx if it must.
                     thread::spawn(move || child.wait());
                 }
-                Err(e) => self.set_notice_as(NoticeKind::Error, safe_text(&format!("Open failed: {e}"))),
+                Err(e) => {
+                    self.set_notice_as(NoticeKind::Error, safe_text(&format!("Open failed: {e}")))
+                }
             }
         }
     }
@@ -1291,7 +1429,10 @@ impl App {
             self.yz.cd = false;
             self.input = None;
             let path = std::mem::take(&mut self.text);
-            if let (false, Some(d)) = (path.trim().is_empty(), self.browser.as_ref().map(|b| b.device)) {
+            if let (false, Some(d)) = (
+                path.trim().is_empty(),
+                self.browser.as_ref().map(|b| b.device),
+            ) {
                 self.yazi_cd(d, path.trim().to_owned());
             }
             return true;
@@ -1325,8 +1466,16 @@ impl App {
             let name = self.text.clone();
             let dir = name.ends_with('/');
             let name = name.trim_end_matches('/');
-            if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
-                self.set_notice_as(NoticeKind::Warning, "Enter one name (end it with / for a directory)".into());
+            if name.is_empty()
+                || name == "."
+                || name == ".."
+                || name.contains('/')
+                || name.contains('\0')
+            {
+                self.set_notice_as(
+                    NoticeKind::Warning,
+                    "Enter one name (end it with / for a directory)".into(),
+                );
                 return true;
             }
             self.input = None;
@@ -1392,10 +1541,12 @@ impl App {
         let scope = browser_scope_key(b.container.as_ref());
         v.cwd = safe_label(&b.display_path);
         if !b.filter.is_empty() {
-            v.flags.push_str(&format!(" (filter: {})", safe_label(&b.filter)));
+            v.flags
+                .push_str(&format!(" (filter: {})", safe_label(&b.filter)));
         }
         if !b.search.is_empty() {
-            v.flags.push_str(&format!(" (find: {})", safe_label(&b.search)));
+            v.flags
+                .push_str(&format!(" (find: {})", safe_label(&b.search)));
         }
         if self.devices.len() > 1 {
             // Which device this is: its hub letter and name, after the path.
@@ -1523,7 +1674,10 @@ impl App {
         };
         // Parent column, from the listing cache.
         if let Some(parent) = b.parent.as_ref() {
-            if let Some(pb) = self.browser_cache.get(&(device, parent.clone(), scope.clone())) {
+            if let Some(pb) = self
+                .browser_cache
+                .get(&(device, parent.clone(), scope.clone()))
+            {
                 let prow = browser_entries(pb);
                 let here = prow.position_of(&b.path);
                 let hov = here.unwrap_or(0);
@@ -1615,10 +1769,16 @@ impl App {
         let running: Vec<&Value> = rows
             .iter()
             .map(|(_, j)| j)
-            .filter(|j| matches!(j["status"].as_str(), Some("queued" | "running" | "submitting")))
+            .filter(|j| {
+                matches!(
+                    j["status"].as_str(),
+                    Some("queued" | "running" | "submitting")
+                )
+            })
             .collect();
         if running.is_empty() {
-            return (!self.pending_transfers.is_empty()).then(|| ("Starting transfer".into(), None, false));
+            return (!self.pending_transfers.is_empty())
+                .then(|| ("Starting transfer".into(), None, false));
         }
         let (done, total) = running.iter().fold((0u64, 0u64), |(d, t), j| {
             (
@@ -1636,7 +1796,11 @@ impl App {
         } else {
             format!("{verb} {} items", running.len())
         };
-        Some((label, (total > 0).then(|| done as f64 / total as f64), false))
+        Some((
+            label,
+            (total > 0).then(|| done as f64 / total as f64),
+            false,
+        ))
     }
 
     fn yazi_popup_view(&self) -> Option<Popup> {
@@ -1734,9 +1898,8 @@ fn command_exists(program: &str) -> bool {
     if program.is_empty() || program.contains('/') {
         return !program.is_empty() && std::path::Path::new(program).is_file();
     }
-    std::env::var_os("PATH").is_some_and(|paths| {
-        std::env::split_paths(&paths).any(|dir| dir.join(program).is_file())
-    })
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
 }
 
 /// The user's `[opener]` and `[open] rules` from yazi.toml (else yazi's defaults).
@@ -1767,7 +1930,9 @@ pub(super) mod openers {
 
     /// Whether the user's yazi.toml has `[open] rules` (else cx previews on Enter).
     pub(crate) fn configured() -> bool {
-        config().path("open.rules").is_some_and(|r| !r.arr().is_empty())
+        config()
+            .path("open.rules")
+            .is_some_and(|r| !r.arr().is_empty())
     }
 
     /// A rough mime type from the name (yazi asks `file(1)`; this is enough for rules).
@@ -1775,9 +1940,14 @@ pub(super) mod openers {
         if dir {
             return "inode/directory".into();
         }
-        let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+        let ext = name
+            .rsplit_once('.')
+            .map(|(_, e)| e.to_ascii_lowercase())
+            .unwrap_or_default();
         match ext.as_str() {
-            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "avif" | "tiff" => format!("image/{ext}"),
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "avif" | "tiff" => {
+                format!("image/{ext}")
+            }
             "svg" => "image/svg+xml".into(),
             "mp3" | "flac" | "ogg" | "wav" | "m4a" => format!("audio/{ext}"),
             "mp4" | "mkv" | "webm" | "mov" | "avi" => format!("video/{ext}"),
@@ -1806,7 +1976,9 @@ pub(super) mod openers {
                 let (pre, rest) = pattern.split_at(open);
                 let alts = &rest[1..close - open];
                 let post = &rest[close - open + 1..];
-                return alts.split(',').any(|a| glob(&format!("{pre}{a}{post}"), text));
+                return alts
+                    .split(',')
+                    .any(|a| glob(&format!("{pre}{a}{post}"), text));
             }
         }
         fn star(p: &[u8], t: &[u8]) -> bool {
@@ -1826,10 +1998,29 @@ pub(super) mod openers {
             desc: desc.into(),
         };
         vec![
-            ("mime", "text/*", vec![o("${EDITOR:-vi} %s", true, "$EDITOR")]),
-            ("mime", "inode/directory", vec![o("${EDITOR:-vi} %s", true, "$EDITOR")]),
-            ("mime", "application/{json,javascript,xml,x-shellscript}", vec![o("${EDITOR:-vi} %s", true, "$EDITOR")]),
-            ("url", "*", vec![o("xdg-open %s1", false, "Open"), o("${EDITOR:-vi} %s", true, "$EDITOR")]),
+            (
+                "mime",
+                "text/*",
+                vec![o("${EDITOR:-vi} %s", true, "$EDITOR")],
+            ),
+            (
+                "mime",
+                "inode/directory",
+                vec![o("${EDITOR:-vi} %s", true, "$EDITOR")],
+            ),
+            (
+                "mime",
+                "application/{json,javascript,xml,x-shellscript}",
+                vec![o("${EDITOR:-vi} %s", true, "$EDITOR")],
+            ),
+            (
+                "url",
+                "*",
+                vec![
+                    o("xdg-open %s1", false, "Open"),
+                    o("${EDITOR:-vi} %s", true, "$EDITOR"),
+                ],
+            ),
         ]
     }
 
@@ -1842,23 +2033,26 @@ pub(super) mod openers {
                 .map(Value::arr)
                 .unwrap_or(&[])
                 .iter()
-                .filter(|o| o.get("for").and_then(Value::str).is_none_or(|f| f == "unix" || f == "linux"))
+                .filter(|o| {
+                    o.get("for")
+                        .and_then(Value::str)
+                        .is_none_or(|f| f == "unix" || f == "linux")
+                })
                 .filter_map(|o| {
                     Some(Opener {
                         run: o.get("run")?.str()?.to_owned(),
                         block: o.get("block") == Some(&Value::Bool(true)),
-                        desc: o
-                            .get("desc")
-                            .and_then(Value::str)
-                            .unwrap_or(key)
-                            .to_owned(),
+                        desc: o.get("desc").and_then(Value::str).unwrap_or(key).to_owned(),
                     })
                 })
                 .collect()
         };
         let rules = cfg.path("open.rules").map(Value::arr).unwrap_or(&[]);
         for rule in rules {
-            let hit = match (rule.get("mime").and_then(Value::str), rule.get("url").and_then(Value::str)) {
+            let hit = match (
+                rule.get("mime").and_then(Value::str),
+                rule.get("url").and_then(Value::str),
+            ) {
                 (Some(m), _) => glob(m, &mime),
                 (_, Some(u)) => glob(u, name) || (u == "*/" && dir),
                 _ => false,
@@ -1877,14 +2071,24 @@ pub(super) mod openers {
         }
         defaults()
             .into_iter()
-            .find(|(kind, pat, _)| if *kind == "mime" { glob(pat, &mime) } else { glob(pat, name) })
+            .find(|(kind, pat, _)| {
+                if *kind == "mime" {
+                    glob(pat, &mime)
+                } else {
+                    glob(pat, name)
+                }
+            })
             .map(|(_, _, o)| o)
             .unwrap_or_default()
     }
 
     /// `%s` all paths, `%s1` the first, `%d1` its directory (shell-quoted).
     pub(crate) fn fill(run: &str, paths: &[String], dir: &str) -> String {
-        let all = paths.iter().map(|p| super::quote(p)).collect::<Vec<_>>().join(" ");
+        let all = paths
+            .iter()
+            .map(|p| super::quote(p))
+            .collect::<Vec<_>>()
+            .join(" ");
         let first = paths.first().map(|p| super::quote(p)).unwrap_or_default();
         let d1 = paths
             .first()
@@ -1902,13 +2106,19 @@ pub(super) mod openers {
         use super::*;
         #[test]
         fn globs_and_fill() {
-            assert!(glob("application/{json,javascript,xml,x-shellscript}", "application/json"));
+            assert!(glob(
+                "application/{json,javascript,xml,x-shellscript}",
+                "application/json"
+            ));
             assert!(glob("text/*", "text/plain"));
             assert!(glob("*.md", "README.md"));
             assert!(!glob("*.md", "README.txt"));
             let s = fill("nvim %s", &["/a b/c".into(), "/d".into()], "/");
             assert_eq!(s, "nvim '/a b/c' '/d'");
-            assert_eq!(fill("xdg-open %d1", &["/x/y.png".into()], "/"), "xdg-open '/x'");
+            assert_eq!(
+                fill("xdg-open %d1", &["/x/y.png".into()], "/"),
+                "xdg-open '/x'"
+            );
         }
     }
 }
@@ -1940,10 +2150,25 @@ mod tests {
     #[test]
     fn key_names_follow_yazi() {
         let k = |c, m| KeyEvent::new(c, m);
-        assert_eq!(key_name(&k(KeyCode::Char('u'), KeyModifiers::CONTROL)).unwrap(), "<C-u>");
-        assert_eq!(key_name(&k(KeyCode::Char(' '), KeyModifiers::NONE)).unwrap(), "<Space>");
-        assert_eq!(key_name(&k(KeyCode::Char('G'), KeyModifiers::SHIFT)).unwrap(), "G");
-        assert_eq!(key_name(&k(KeyCode::Left, KeyModifiers::ALT)).unwrap(), "<A-Left>");
-        assert_eq!(key_name(&k(KeyCode::Enter, KeyModifiers::SHIFT)).unwrap(), "<S-Enter>");
+        assert_eq!(
+            key_name(&k(KeyCode::Char('u'), KeyModifiers::CONTROL)).unwrap(),
+            "<C-u>"
+        );
+        assert_eq!(
+            key_name(&k(KeyCode::Char(' '), KeyModifiers::NONE)).unwrap(),
+            "<Space>"
+        );
+        assert_eq!(
+            key_name(&k(KeyCode::Char('G'), KeyModifiers::SHIFT)).unwrap(),
+            "G"
+        );
+        assert_eq!(
+            key_name(&k(KeyCode::Left, KeyModifiers::ALT)).unwrap(),
+            "<A-Left>"
+        );
+        assert_eq!(
+            key_name(&k(KeyCode::Enter, KeyModifiers::SHIFT)).unwrap(),
+            "<S-Enter>"
+        );
     }
 }

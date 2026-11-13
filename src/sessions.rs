@@ -2103,11 +2103,6 @@ fn managed_config() -> String {
         "set -g default-terminal 'tmux-256color'",
         &format!("set -g default-terminal '{terminal}'"),
     );
-    if tmux_at_least(3, 3) {
-        // Bitmaps (kitty placeholders, iTerm2, sixel) from cx and agents inside a managed
-        // pane reach the terminal; this server only, never the user's own tmux.
-        config.push_str("\nset -g allow-passthrough on\n");
-    }
     let supports_terminal_color = tmux_at_least(3, 4);
     if !supports_terminal_color && !tmux_at_least(3, 0) {
         config = without_status_mouse(&config);
@@ -2172,6 +2167,16 @@ case "$major:$minor" in *[!0-9:]*|:*|*:) exit 1;; esac
         .arg(major.to_string())
         .arg(minor.to_string());
     bounded_provider_check(version, Duration::from_millis(200))
+}
+/// Settings a managed server takes only when it starts (`-f`), never sourced into a
+/// running one: an update or attach must leave live panes' server as it was.
+fn start_config(mut config: String) -> String {
+    if tmux_at_least(3, 3) {
+        // Bitmaps (kitty placeholders, iTerm2, sixel) from cx and agents inside a managed
+        // pane reach the terminal; this server only, never the user's own tmux.
+        config.push_str("\nset -g allow-passthrough on\n");
+    }
+    config
 }
 pub fn configure_managed() -> Result<()> {
     let conf = state()?.join("tmux.conf");
@@ -2274,7 +2279,7 @@ fn ensure_server() -> Result<()> {
     }
     let root = state()?;
     let conf = root.join("tmux.conf");
-    fs::write(&conf, managed_config())?;
+    fs::write(&conf, start_config(managed_config()))?;
     fs::set_permissions(&conf, fs::Permissions::from_mode(0o600))?;
     let sock = socket()?;
     // A foreground tmux server in its own user service cannot inherit the metadata service cgroup.
@@ -3979,6 +3984,21 @@ fn stopped_command_choice(fd: i32, pid: libc::pid_t) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A running server is re-sourced on update and attach: that config must carry no
+    /// setting a v0.2.2 server lacks (compat_021 compares options and keys). Passthrough
+    /// for image previews is a start-only setting.
+    #[test]
+    fn passthrough_is_set_only_when_a_server_starts() {
+        let sourced = managed_config();
+        assert!(!sourced.contains("allow-passthrough"));
+        let started = start_config(sourced.clone());
+        assert!(started.starts_with(&sourced));
+        assert_eq!(
+            started.contains("set -g allow-passthrough on"),
+            tmux_at_least(3, 3)
+        );
+    }
 
     #[test]
     fn container_launcher_preserves_native_history_picker_intent() {

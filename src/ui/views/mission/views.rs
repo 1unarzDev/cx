@@ -143,7 +143,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                 } else {
                     vec![
                         ("⏎", "attach", "attach"),
-                        ("t a…", "jump", ""),
+                        (cx.g("t a…", "t a"), "jump", ""),
                         ("tab", "next", "peek-next"),
                         ("⌫", "stop", "stop"),
                         ("esc", "back", "back"),

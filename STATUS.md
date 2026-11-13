@@ -1,5 +1,22 @@
 # CX status
 
+## Files as a yazi clone (branch `revamp/files-yazi`; not integrated)
+- Round 7 (critique fixes): every row of yazi 26's `[mgr]` keymap resolves in yazi's order (test `yazi_default_keymap_parity` against a checked-in copy). Keys cx does not do answer with a notice and never fall through to cx globals: `<C-z>`, `-`, `_`, `<C-->`, `A`, `m b`, `m o`. `H`/`L` point to Alt+←/→, because Shift+H is the hub key (decision 2026-11-12). Ctrl+C closes a tab, and on the last tab it quits. A live visual range is not counted in the header. Markdown hovers show highlighted source and code is cropped, not wrapped. Names keep their extension, as yazi does. The hovered help desc uses the indicator colour.
+- Not cx bugs: the "60B/100B" folder sizes came from the capture fixture on tmpfs, where `st_size` is 60B; cx shows `4K` on ext4 as yazi does. The stray blue cells in r4 04-hover-image came from the PTY harness decoding each read separately: a split `▀` became three U+FFFD. Both harnesses are fixed.
+- Conscious deviations: the size bar and the modified day stay the default linemode (user: "I do like that little file size bar … along with the day"). They are files-only, the size number is dropped in narrow columns, and `m n` turns them off while `m d` brings them back. `,b`/`,B` sort by mtime (no btime in the listing schema). Opened (Enter) markdown previews stay laid out; only the hover column shows source.
+- Spawn -> first complete frame (files_bench `firstframe`, 120x40, rtt 20 relay, medians of two interleaved A/B pairs of 2 runs each; load 15-21 on 20 CPUs):
+
+  | | yazi | cx |
+  |---|---|---|
+  | local, 1k entries | 31.7 / 31.8 ms | 18.6 / 12.8 ms |
+  | local, 100k entries | 377 / 278 ms | 104 / 67 ms |
+  | remote, 1k entries (`ssh -tt host yazi`) | 233 / 227 ms | 322 / 282 ms |
+  | remote, 100k entries | 605 / 468 ms | 400 / 327 ms |
+
+- A/B against the revamp/base release (e953eb9), files_bench, 2 x 2 runs, `--remote --rtt 20`: 87 and 125 metrics improved, and one regression is in both pairs. `local.scroll.src_5m.j.settled_ms` p95 went 55 -> 65 ms in the opened preview, while its median improved (16.6 -> 16.0 and 13.9 -> 7.7 ms). Remote startup, Enter -> rows went 310 -> 35 ms, and the deep tree is now measured: 2.8 ms per Enter hop and 2.4 ms per parent hop, local and remote. Every other flagged regression shows up in one pair only, together with the filesystem floor (`fs.list` +19%), so it is load.
+- Where the remote 1k gap goes: on this host a direct `ssh host true` takes 218 ms. cx first starts a master (179 ms), then joins it (53 ms for `true`), then makes the List round trip (20 ms). yazi pays a single connect. Closing the gap needs a transport change, which root owns: open the first helper channel directly in parallel with the master, then move later channels onto the master. Showing the last listing before the connect would also need a persisted per-device listing cache in `store`.
+- Unresolved: real-terminal image checks (kitty, ghostty, foot, wezterm; pyte cannot show graphics). `grid_keys_pty` fails on the hub tiles; that test is not in Files code and base has moved since (e953eb9). The `twenty_thousand_entry_listing` 1 s bound flakes under load 20 but passes alone.
+
 ## v0.2.1 release candidate (branch `revamp/base`; not tagged, pushed or deployed)
 - Integrated the strict v0.2.0 review (159 confirmed issues) from fix/021-{tests,transport,mesh,sessions,files,views}, then fixed every recheck still broken: S8 (watch ids in replies and frames), V2 (`g` is a late device letter), F2 (markdown list rows skip the wrap pass), F15 (the bench, not cx: its screen readers rebuilt pyte's display per line), T3 (duplicate `portable` job; tests/workflow_keys.py), T9 (container chooser `[n]`).
 - Decisions applied: inline typing kept and escapable (Ctrl+\, Esc Esc, any tap outside the screen; concept-mission section 6); startup measured with `CX_THEME` set by the bench (OSC 11 probe unanswered in the bench PTY); palette Send Ctrl+\ works from the hub (selects the last session first if its screen is not live).

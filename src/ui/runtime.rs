@@ -1247,7 +1247,9 @@ fn apply_reply(app: &mut App, reply: Reply) -> (bool, bool) {
         return (app.watch_replied(reply), false);
     }
     // An identical live capture changes nothing on screen: skip the frame.
-    let preview = matches!(reply.op, Operation::SessionPreview { .. });
+    // (A thumbnail capture always lands in a tile.)
+    let preview = matches!(reply.op, Operation::SessionPreview { .. })
+        && reply.generation != super::session_preview::THUMB_GENERATION;
     let revision = app.session_preview_revision();
     let cached = matches!(
         reply.op,
@@ -1835,6 +1837,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         screen.mouse_capture(true)?;
         dirty |= app.refresh_session_preview();
         app.sync_watches();
+        app.fetch_thumbnails();
         // Warm the master of the device the selection points at (hover/focus).
         let focus = app
             .selected_session()

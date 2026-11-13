@@ -39,6 +39,8 @@ pub(super) struct Snapshot {
     frames: HashMap<String, Remembered>,
     /// Per device id: its helper watch (pushed list and selected screen).
     watches: HashMap<String, Watched>,
+    /// Thumbnail captures by key: when the last was asked for (see `fetch_thumbnails`).
+    thumbs: HashMap<String, Instant>,
 }
 /// A remembered screen, shown dimmed the moment its session is selected.
 #[derive(Clone)]
@@ -52,6 +54,11 @@ struct Remembered {
     line_start: u32,
 }
 const REMEMBERED_FRAMES: usize = 32;
+/// The generation that marks a thumbnail capture: its reply fills `frames`, never the
+/// selected screen, and the queue never trades it for (or against) a preview poll.
+pub(super) const THUMB_GENERATION: u64 = u64::MAX;
+/// How often a visible tile's screen is captured again.
+const THUMB_EVERY: Duration = Duration::from_secs(2);
 #[derive(Default)]
 struct Watched {
     target: Option<String>,
@@ -262,16 +269,118 @@ impl App {
         {
             return None;
         }
-        self.selected_session().filter(|(d, s)| {
-            !outside_tmux(s)
-                && s.terminal.is_some()
-                && self.providers.get(d).is_none_or(|(caps, _)| {
-                    caps.iter()
-                        .any(|c| c == "session-preview-v1" || c == "live-session-pane-v1")
+        self.selected_session()
+            .filter(|(d, s)| self.previewable(*d, s))
+    }
+    /// A tmux session on a device that answers, whose helper captures screens.
+    fn previewable(&self, d: usize, s: &Session) -> bool {
+        !outside_tmux(s)
+            && s.terminal.is_some()
+            && self.providers.get(&d).is_none_or(|(caps, _)| {
+                caps.iter()
+                    .any(|c| c == "session-preview-v1" || c == "live-session-pane-v1")
+            })
+            && self.work[d].error.is_none()
+            && self.session_status(d, s).starts_with('+')
+    }
+    /// Tiles on the hub and in a device show every session's screen, not only the
+    /// selected one's: each previewable session is captured once at once (its last
+    /// frame stays in memory) and again every THUMB_EVERY while tiles are on screen.
+    /// The selected session's live screen is never asked twice.
+    pub(super) fn fetch_thumbnails(&mut self) {
+        if !matches!(self.view, View::Work | View::Network) || self.pane_focused() {
+            return;
+        }
+        let now = Instant::now();
+        let live = self.session_preview.key.clone();
+        let mut due = Vec::new();
+        for d in 0..self.work.len().min(self.devices.len()) {
+            if !self.background_checks_enabled(d) {
+                continue;
+            }
+            for s in self.slot_sessions(d) {
+                let k = key(&self.devices[d], s);
+                let asked = self.session_preview.thumbs.get(&k);
+                if Some(&k) == live.as_ref()
+                    || asked.is_some_and(|t| now.duration_since(*t) < THUMB_EVERY)
+                    || !self.previewable(d, s)
+                {
+                    continue;
+                }
+                due.push((d, s.clone(), k));
+            }
+        }
+        for (d, session, k) in due.into_iter().take(16) {
+            let sent = self
+                .tx
+                .try_send(Task {
+                    device: d,
+                    execution: self.devices[d].clone(),
+                    op: Operation::SessionPreview {
+                        session,
+                        scrollback: false,
+                        history_start: None,
+                    },
+                    generation: THUMB_GENERATION,
                 })
-                && self.work[*d].error.is_none()
-                && self.session_status(*d, s).starts_with('+')
-        })
+                .is_ok();
+            if !sent {
+                break;
+            }
+            self.pending_requests.set(self.pending_requests.get() + 1);
+            self.session_preview.thumbs.insert(k, now);
+        }
+    }
+    /// A thumbnail capture: its session's remembered frame (the tile draws it).
+    fn apply_thumbnail(&mut self, reply: Reply) {
+        let Operation::SessionPreview { session, .. } = &reply.op else {
+            return;
+        };
+        let Ok(value) = reply.result else {
+            return;
+        };
+        let k = key(&self.devices[reply.device], session);
+        // (The selected session's own live screen is newer than any thumbnail.)
+        if self.session_preview.key.as_ref() == Some(&k) {
+            return;
+        }
+        let mut lines = Vec::new();
+        let mut budget = 64 * 1024;
+        for line in value
+            .get("styled_lines")
+            .unwrap_or(&value["lines"])
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(400)
+            .filter_map(|v| v.as_str())
+        {
+            if line.len() > budget {
+                break;
+            }
+            budget -= line.len();
+            lines.push(line.to_owned());
+        }
+        let num = |name: &str| value[name].as_u64().unwrap_or(0).min(u64::from(u32::MAX)) as u32;
+        let frame = Remembered {
+            lines,
+            cols: value["cols"].as_u64().unwrap_or(0).min(1000) as u16,
+            rows: value["rows"].as_u64().unwrap_or(0).min(300) as u16,
+            palette8: palette8(&value),
+            cursor: (
+                value["cursor_x"].as_u64().unwrap_or(0).min(65535) as u16,
+                value["cursor_y"].as_u64().unwrap_or(0).min(65535) as u16,
+            ),
+            history_total: value
+                .get("history_total")
+                .map_or(num("history_rows").min(500), |_| num("history_total")),
+            line_start: num("line_start"),
+        };
+        let frames = &mut self.session_preview.frames;
+        if frames.len() >= REMEMBERED_FRAMES && !frames.contains_key(&k) {
+            frames.clear();
+        }
+        frames.insert(k, frame);
     }
     pub(super) fn focus_session_pane(&mut self) -> bool {
         let Some((d, s)) = self.preview_selection() else {
@@ -569,6 +678,7 @@ impl App {
             let p = &mut self.session_preview;
             p.frames = std::mem::take(&mut previous.frames);
             p.watches = std::mem::take(&mut previous.watches);
+            p.thumbs = std::mem::take(&mut previous.thumbs);
             if let Some(frame) = shown.filter(|f| !f.lines.is_empty()) {
                 p.carried = true;
                 p.lines = frame.lines;
@@ -633,6 +743,9 @@ impl App {
         changed
     }
     pub(super) fn apply_session_preview(&mut self, reply: Reply) {
+        if reply.generation == THUMB_GENERATION {
+            return self.apply_thumbnail(reply);
+        }
         let Operation::SessionPreview {
             session,
             scrollback,
@@ -671,14 +784,7 @@ impl App {
                     self.session_preview.focused = None;
                 }
                 self.session_preview.pane = pane;
-                self.session_preview.palette8 = value["palette8"].as_str().and_then(|s| {
-                    let hex = s.strip_prefix('#')?;
-                    if hex.len() != 6 {
-                        return None;
-                    }
-                    let rgb = u32::from_str_radix(hex, 16).ok()?;
-                    Some(Color::Rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8))
-                });
+                self.session_preview.palette8 = palette8(&value);
                 self.session_preview.live = value["live"].as_bool() == Some(true);
                 if !self.session_preview.live {
                     self.session_preview.focused = None;
@@ -774,6 +880,7 @@ impl App {
         let previous = std::mem::take(&mut self.session_preview);
         self.session_preview.frames = previous.frames;
         self.session_preview.watches = previous.watches;
+        self.session_preview.thumbs = previous.thumbs;
         self.session_preview.serial = previous.serial.wrapping_add(1);
     }
     /// This host runs this binary in-process; a remote helper says so in Info.
@@ -1071,6 +1178,15 @@ pub(super) fn render_attach_frame(frame: &mut Frame<'_>, app: &App, area: Rect) 
     let end = (start + rows).min(lines.len());
     let screen = Rect::new(area.x, area.y, p.cols.min(area.width), rows as u16);
     frame.render_widget(Paragraph::new(lines[start..end].to_vec()), screen);
+}
+/// The pane's colour 8 as the helper reports it (`#rrggbb`).
+fn palette8(value: &Value) -> Option<Color> {
+    let hex = value["palette8"].as_str()?.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let rgb = u32::from_str_radix(hex, 16).ok()?;
+    Some(Color::Rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8))
 }
 fn fingerprint(p: &Snapshot) -> u64 {
     use std::hash::{Hash, Hasher};

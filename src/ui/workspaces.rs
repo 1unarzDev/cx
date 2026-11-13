@@ -413,7 +413,9 @@ pub(super) fn navigation_read(op: &Operation) -> bool {
 /// they consume helper time, retaining mutation ordering and reply accounting.
 pub(super) fn superseded_reads(tasks: &mut VecDeque<Task>, incoming: &Task) -> Vec<Task> {
     let preview = matches!(incoming.op, Operation::SessionPreview { .. });
-    if !preview && !navigation_read(&incoming.op) {
+    // Thumbnail captures (one per tile) neither replace nor are replaced by a poll.
+    let thumb = |t: &Task| t.generation == super::session_preview::THUMB_GENERATION;
+    if (!preview && !navigation_read(&incoming.op)) || thumb(incoming) {
         return Vec::new();
     }
     let mut discarded = Vec::new();
@@ -424,7 +426,7 @@ pub(super) fn superseded_reads(tasks: &mut VecDeque<Task>, incoming: &Task) -> V
         } else {
             navigation_read(&task.op)
         };
-        if task.generation < incoming.generation && same_kind {
+        if task.generation < incoming.generation && same_kind && !thumb(&task) {
             discarded.push(task);
         } else {
             retained.push_back(task);

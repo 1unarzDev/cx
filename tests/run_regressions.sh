@@ -56,6 +56,7 @@ CORE=(
     "terminal_startup_readiness_live||BIN"
     "session_runtime_live||BIN"
     "session_watch_live|pyte|BIN"
+    "hub_thumbnails_pty|pyte|BIN"
     "container_discovery_fixtures||BIN"
     "container_session_reconcile_live||BIN"
     "session_activity_timestamp_live||BIN"

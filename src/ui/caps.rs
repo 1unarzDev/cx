@@ -349,6 +349,9 @@ fn query_osc11(limit: Duration) -> Option<Background> {
             }
         }
     }
+    // A terminal that does not know APC prints the query's body: erase that line
+    // (the line under the shell prompt, blank when cx starts).
+    let _ = std::io::Write::write_all(&mut tty, b"\r\x1b[2K");
     unsafe {
         libc::tcsetattr(fd, libc::TCSANOW, &saved);
     }

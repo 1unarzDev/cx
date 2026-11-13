@@ -233,6 +233,7 @@ Guard notation:
 | `36cd089`, `7fba202` v0.1.3–4 | Ctrl+C/Ctrl+Z and builtins misbehaved in POSIX shell profiles | | py:native_command_pty [ci] (also CX_TEST_SHELL=/bin/sh) |
 | `20a3737` v0.1.85 | Stale "Connection closed" text showed on session handoff | LeaveAlternateScreen restored the old primary buffer | py:terminal_startup_loader_pty [ci] (raw `\e[?1049l\e[2J`) |
 | `2acff83` v0.1.11 | OSC 52 copies never reached the viewer | | py:clipboard_pty [ci] |
+| v0.3.0 | Files `h`, the hub peek and Enter -> attached were slower than in v0.2.2 | each frame's bytes: an absolute cursor move per gap, spaces for every erased cell, and a cell diff even where a cleared repaint is far shorter (the attach frame); the 2 s vitals shared the interactive lane with select and attach | **NEW** rust:encoded_frames_show_exactly_the_buffer_in_fewer_bytes, rust:interactive_work_never_shares_a_channel_with_bulk_work, files_bench + perf_harness A/B against v0.2.2 |
 
 ## Test-infrastructure regressions (fixture or CI only)
 

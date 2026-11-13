@@ -1,6 +1,7 @@
 //! Event loop and terminal ownership: Screen, input batching, task workers, auth prompts,
 //! self-restart state and update checks.
 use super::*;
+use ratatui::buffer::Buffer;
 
 pub(super) fn load_cache(app: &mut App) {
     let path = store::state_dir().join("ui-sessions.json");
@@ -609,6 +610,206 @@ impl FrameControl {
         stdout.flush()?;
         Ok(true)
     }
+    /// A frame that changes most of the screen (a view switch, a peek, the attach frame)
+    /// is shorter painted on a cleared screen than as a cell diff: keep whichever is
+    /// shorter. Only inside synchronized output, where the clear never shows alone.
+    fn shorten(&self, drawn: &Buffer) {
+        let mut state = self.state.borrow_mut();
+        let Some(frame) = state.frame.as_mut().filter(|_| self.sync) else {
+            return;
+        };
+        // A repaint sends at least a byte per visible cell: no use trying when the diff
+        // is already that short (most frames: a key's echo, a moved selection).
+        let shown = drawn
+            .content
+            .iter()
+            .filter(|c| **c != ratatui::buffer::Cell::EMPTY)
+            .count();
+        if frame.len() <= shown {
+            return;
+        }
+        let reset = frame_reset();
+        let (Some(at), Some(mut repainted)) = (find_last(frame, reset), repaint(drawn)) else {
+            return;
+        };
+        let tail = &frame[at + reset.len()..];
+        if repainted.len() + tail.len() < frame.len() {
+            repainted.extend_from_slice(tail);
+            *frame = repainted;
+        }
+    }
+}
+/// `drawn` painted on a cleared screen: Clear, then every non-blank cell (`encode`).
+/// None when a cell carries an inline image sequence, whose pixels a repaint would send
+/// again.
+pub(super) fn repaint(drawn: &Buffer) -> Option<Vec<u8>> {
+    let cells = Buffer::empty(drawn.area).diff(drawn);
+    if cells
+        .iter()
+        .any(|(_, _, cell)| cell.symbol().contains('\x1b'))
+    {
+        return None;
+    }
+    let mut out = b"\x1b[2J".to_vec();
+    encode(&mut out, cells).ok()?;
+    Some(out)
+}
+/// The terminal backend: crossterm's, except that cells are drawn by `encode`.
+pub(super) struct FrameBackend(CrosstermBackend<FrameWriter>);
+impl io::Write for FrameBackend {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.write(buf)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        io::Write::flush(&mut self.0)
+    }
+}
+impl ratatui::backend::Backend for FrameBackend {
+    fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+    {
+        encode(&mut self.0, content.collect())
+    }
+    fn append_lines(&mut self, n: u16) -> io::Result<()> {
+        self.0.append_lines(n)
+    }
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        self.0.hide_cursor()
+    }
+    fn show_cursor(&mut self) -> io::Result<()> {
+        self.0.show_cursor()
+    }
+    fn get_cursor_position(&mut self) -> io::Result<ratatui::layout::Position> {
+        self.0.get_cursor_position()
+    }
+    fn set_cursor_position<P: Into<ratatui::layout::Position>>(
+        &mut self,
+        position: P,
+    ) -> io::Result<()> {
+        self.0.set_cursor_position(position)
+    }
+    fn clear(&mut self) -> io::Result<()> {
+        self.0.clear()
+    }
+    fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> io::Result<()> {
+        self.0.clear_region(clear_type)
+    }
+    fn size(&self) -> io::Result<ratatui::layout::Size> {
+        self.0.size()
+    }
+    fn window_size(&mut self) -> io::Result<ratatui::backend::WindowSize> {
+        self.0.window_size()
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        ratatui::backend::Backend::flush(&mut self.0)
+    }
+}
+/// Cells as ratatui's crossterm backend draws them, in fewer bytes: a jump along the
+/// row moves by column only (CHA), a run of blank cells is erased in place (ECH) when
+/// that is shorter than spaces, and a colour change sends only the colour that changed.
+/// Ends with the backend's reset (`frame_reset`), as ratatui's does.
+pub(super) fn encode(
+    w: &mut impl io::Write,
+    cells: Vec<(u16, u16, &ratatui::buffer::Cell)>,
+) -> io::Result<()> {
+    use crossterm::style::{
+        Attribute, Color as C, SetAttribute, SetBackgroundColor, SetColors, SetForegroundColor,
+        SetUnderlineColor,
+    };
+    let (mut fg, mut bg, mut underline) = (Color::Reset, Color::Reset, Color::Reset);
+    let mut modifier = Modifier::empty();
+    // Where the cursor is: one cell past the last one printed (ratatui's own step; a wide
+    // symbol's next cell is never adjacent in a diff), or where an erase left it.
+    let mut cursor = None;
+    let mut i = 0;
+    while let Some(&(x, y, cell)) = cells.get(i) {
+        match cursor {
+            Some(at) if at == (x, y) => {}
+            Some((_, row)) if row == y => write!(w, "\x1b[{}G", x + 1)?,
+            _ => crossterm::queue!(w, crossterm::cursor::MoveTo(x, y))?,
+        }
+        // Blank cells look erased only on the default background without attributes.
+        let blank = |c: &ratatui::buffer::Cell| {
+            c.symbol() == " " && c.bg == Color::Reset && c.modifier.is_empty()
+        };
+        let run = cells[i..]
+            .iter()
+            .zip(x..)
+            .take_while(|((cx, cy, c), want)| *cy == y && cx == want && blank(c))
+            .count();
+        if run > 0 && bg == Color::Reset && modifier.is_empty() {
+            let end = x + run as u16;
+            let erase = format!("\x1b[{run}X");
+            let resume = match cells.get(i + run) {
+                Some(&(nx, ny, _)) if (nx, ny) == (end, y) => format!("\x1b[{}G", end + 1).len(),
+                _ => 0,
+            };
+            if erase.len() + resume < run {
+                w.write_all(erase.as_bytes())?;
+                cursor = Some((x, y));
+                i += run;
+                continue;
+            }
+        }
+        if cell.modifier != modifier {
+            let removed = modifier - cell.modifier;
+            let mut added = cell.modifier - modifier;
+            for (gone, attribute) in [
+                (Modifier::REVERSED, Attribute::NoReverse),
+                (Modifier::BOLD | Modifier::DIM, Attribute::NormalIntensity),
+                (Modifier::ITALIC, Attribute::NoItalic),
+                (Modifier::UNDERLINED, Attribute::NoUnderline),
+                (Modifier::CROSSED_OUT, Attribute::NotCrossedOut),
+                (
+                    Modifier::SLOW_BLINK | Modifier::RAPID_BLINK,
+                    Attribute::NoBlink,
+                ),
+            ] {
+                if removed.intersects(gone) {
+                    crossterm::queue!(w, SetAttribute(attribute))?;
+                    // Normal intensity ends bold and dim alike: the kept one comes back.
+                    added |= cell.modifier & gone;
+                }
+            }
+            for (new, attribute) in [
+                (Modifier::REVERSED, Attribute::Reverse),
+                (Modifier::BOLD, Attribute::Bold),
+                (Modifier::ITALIC, Attribute::Italic),
+                (Modifier::UNDERLINED, Attribute::Underlined),
+                (Modifier::DIM, Attribute::Dim),
+                (Modifier::CROSSED_OUT, Attribute::CrossedOut),
+                (Modifier::SLOW_BLINK, Attribute::SlowBlink),
+                (Modifier::RAPID_BLINK, Attribute::RapidBlink),
+            ] {
+                if added.contains(new) {
+                    crossterm::queue!(w, SetAttribute(attribute))?;
+                }
+            }
+            modifier = cell.modifier;
+        }
+        match (cell.fg != fg, cell.bg != bg) {
+            (true, true) => crossterm::queue!(
+                w,
+                SetColors(crossterm::style::Colors::new(
+                    cell.fg.into(),
+                    cell.bg.into()
+                ))
+            )?,
+            (true, false) => crossterm::queue!(w, SetForegroundColor(cell.fg.into()))?,
+            (false, true) => crossterm::queue!(w, SetBackgroundColor(cell.bg.into()))?,
+            (false, false) => {}
+        }
+        (fg, bg) = (cell.fg, cell.bg);
+        if cell.underline_color != underline {
+            crossterm::queue!(w, SetUnderlineColor(C::from(cell.underline_color)))?;
+            underline = cell.underline_color;
+        }
+        w.write_all(cell.symbol().as_bytes())?;
+        cursor = Some((x + 1, y));
+        i += 1;
+    }
+    w.write_all(frame_reset())
 }
 /// OSC 52: put `text` on the system clipboard (tmux passes it on with `set-clipboard on`).
 fn osc52(text: &str) -> Vec<u8> {
@@ -633,7 +834,7 @@ fn frame_writer() -> (FrameWriter, FrameControl) {
     )
 }
 pub(super) struct Screen {
-    terminal: Terminal<CrosstermBackend<FrameWriter>>,
+    terminal: Terminal<FrameBackend>,
     frames: FrameControl,
     active: bool,
     mouse: bool,
@@ -647,7 +848,7 @@ impl Screen {
             return Err(e.into());
         }
         let (writer, frames) = frame_writer();
-        let terminal = match Terminal::new(CrosstermBackend::new(writer)) {
+        let terminal = match Terminal::new(FrameBackend(CrosstermBackend::new(writer))) {
             Ok(t) => t,
             Err(e) => {
                 let _ = terminal::disable_raw_mode();
@@ -734,7 +935,10 @@ impl Screen {
     /// Returns whether anything was written.
     fn draw(&mut self, render: impl FnOnce(&mut Frame<'_>)) -> Result<bool> {
         self.frames.begin();
-        let drawn = self.terminal.draw(render);
+        let drawn = self
+            .terminal
+            .draw(render)
+            .map(|done| self.frames.shorten(done.buffer));
         let committed = self.frames.commit();
         drawn?;
         Ok(committed?)

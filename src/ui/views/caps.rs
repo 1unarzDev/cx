@@ -84,10 +84,7 @@ pub enum Tok {
 
 impl Tok {
     pub fn is_bg(self) -> bool {
-        matches!(
-            self,
-            Tok::AccentBg | Tok::SelectDimBg | Tok::Surface2
-        )
+        matches!(self, Tok::AccentBg | Tok::SelectDimBg | Tok::Surface2)
     }
 }
 

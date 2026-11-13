@@ -617,7 +617,9 @@ pub(super) fn thumbs_grid(
         let first = usize::from(ri * cols);
         let in_row = (n - first).min(usize::from(cols)) as u16;
         // The focused selection is the large live screen: two shares of its row.
-        let big = picked.filter(|&p| (first..first + usize::from(in_row)).contains(&p) && in_row > 1 && r.width >= 90);
+        let big = picked.filter(|&p| {
+            (first..first + usize::from(in_row)).contains(&p) && in_row > 1 && r.width >= 90
+        });
         let shares = in_row + u16::from(big.is_some());
         let unit = ((r.width + gap) / shares).saturating_sub(gap);
         let tw = match big {
@@ -627,7 +629,11 @@ pub(super) fn thumbs_grid(
             None => tw,
         };
         // (The row's last tile takes what rounding left.)
-        let tw = if ci + 1 == in_row { r.right().saturating_sub(x) } else { tw };
+        let tw = if ci + 1 == in_row {
+            r.right().saturating_sub(x)
+        } else {
+            tw
+        };
         let tr = Rect::new(x, r.y + ri * (th + 1), tw, th);
         x += tw + gap;
         match list.get(i) {
@@ -1377,7 +1383,12 @@ fn peek(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession) {
         false,
     );
     cx.put_r(buf, strip.right(), strip.y, &hint, cx.st(Tok::Muted));
-    let tiles_r = Rect::new(strip.x, strip.y + 1, strip.width, strip.height.saturating_sub(1));
+    let tiles_r = Rect::new(
+        strip.x,
+        strip.y + 1,
+        strip.width,
+        strip.height.saturating_sub(1),
+    );
     let gap = 2;
     let n = (others.len() as u16)
         .min((tiles_r.width + gap) / (28 + gap))
@@ -2016,7 +2027,10 @@ fn send_to(cx: &Cx, buf: &mut Buffer, a: Rect) {
     let h = (gh + 5).min(a.height);
     let r = Rect::new(a.x, a.bottom().saturating_sub(h), a.width, h);
     cx.clear_hits();
-    cx.hit(Rect::new(a.x, a.y, a.width, r.y.saturating_sub(a.y)), "back");
+    cx.hit(
+        Rect::new(a.x, a.y, a.width, r.y.saturating_sub(a.y)),
+        "back",
+    );
     panel(cx, buf, r);
     let mut x = r.x + 2;
     let y = r.y + 1;
@@ -3241,7 +3255,8 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
                     Access::Password => Tok::Warn,
                     Access::Denied => Tok::Err,
                 };
-                cx.st(tok).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                cx.st(tok)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
             } else {
                 cx.ink(Tok::Fg, 0.6)
             };

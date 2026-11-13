@@ -1126,7 +1126,12 @@ fn bez(pts: &[(i32, i32)], t: f32) -> (f32, f32) {
     while p.len() > 1 {
         p = p
             .windows(2)
-            .map(|w| (w[0].0 + (w[1].0 - w[0].0) * t, w[0].1 + (w[1].1 - w[0].1) * t))
+            .map(|w| {
+                (
+                    w[0].0 + (w[1].0 - w[0].0) * t,
+                    w[0].1 + (w[1].1 - w[0].1) * t,
+                )
+            })
             .collect();
     }
     p.first().copied().unwrap_or_default()
@@ -1412,9 +1417,12 @@ pub(super) fn draw_with(
         let li = links.len();
         let pts = [(start, py), (trunk, py), (trunk, ky), (end, ky)];
         let dash = pattern(e) == Pat::Dash;
-        for g in [Some(&mut grid), matches!(sel, Sel::Edge(id) if e.id == id).then_some(&mut edited)]
-            .into_iter()
-            .flatten()
+        for g in [
+            Some(&mut grid),
+            matches!(sel, Sel::Edge(id) if e.id == id).then_some(&mut edited),
+        ]
+        .into_iter()
+        .flatten()
         {
             if cx.uni() {
                 g.link(&pts, li, dash);

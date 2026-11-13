@@ -3257,10 +3257,19 @@ pub fn sweep_attach_leftovers() {
     };
     let mut open = std::collections::HashSet::new();
     for p in procs.flatten() {
-        if !p.file_name().to_string_lossy().bytes().all(|b| b.is_ascii_digit()) {
+        if !p
+            .file_name()
+            .to_string_lossy()
+            .bytes()
+            .all(|b| b.is_ascii_digit())
+        {
             continue;
         }
-        for fd in fs::read_dir(p.path().join("fd")).into_iter().flatten().flatten() {
+        for fd in fs::read_dir(p.path().join("fd"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
             if let Ok(target) = fs::read_link(fd.path()) {
                 if target.starts_with(&dir) {
                     open.insert(target);
@@ -4171,7 +4180,10 @@ esac
                 assert!(guard.passed().unwrap());
                 // The owner keeps the verdict through its descriptor; the name is gone
                 // at once, so an owner that dies mid-attach leaves nothing behind.
-                assert!(!guard_path.exists(), "a passed guard must not outlive its check");
+                assert!(
+                    !guard_path.exists(),
+                    "a passed guard must not outlive its check"
+                );
                 assert!(
                     native_attach_check(
                         &payload,

@@ -31,8 +31,12 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     };
     let need = th_max;
     let fixed = tick_h + 1 + vit_h + 1 + 1 + 1; // ticker, sessions label, vitals, network label, gaps
-    // (Plus the band's blank row either side, and the air kept where the screen is tall.)
-    let pad = if sz >= Size::M && r.height >= 30 { 4 } else { 2 };
+                                                // (Plus the band's blank row either side, and the air kept where the screen is tall.)
+    let pad = if sz >= Size::M && r.height >= 30 {
+        4
+    } else {
+        2
+    };
     let orbit_min = (orbit::want_h(cx) + pad).min(r.height.saturating_sub(fixed + th_min));
     // (`min` then `max`: the bounds cross on a short screen, and the floor wins.)
     let th = r
@@ -148,7 +152,10 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     }
     if hidden > 0 {
         cx.put_r(buf, right, y, &hint, cx.st(Tok::Muted));
-        cx.hit(Rect::new(right.saturating_sub(hw), y, hw, 1), "palette:sessions");
+        cx.hit(
+            Rect::new(right.saturating_sub(hw), y, hw, 1),
+            "palette:sessions",
+        );
     }
     y += 1;
     let grid = Rect::new(r.x + 1, y, r.width.saturating_sub(2), grid_h);
@@ -573,7 +580,13 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
             let rest = (list.len() - i - 1) as u16 * 3;
             if i == tail_at && left >= rest + 4 {
                 let h = (left - rest - 1).min(12);
-                tiles::screen_text(cx, buf, Rect::new(r.x + 3, sy, r.width.saturating_sub(4), h), x, cx.c.has_color());
+                tiles::screen_text(
+                    cx,
+                    buf,
+                    Rect::new(r.x + 3, sy, r.width.saturating_sub(4), h),
+                    x,
+                    cx.c.has_color(),
+                );
                 sy += h;
             }
             sy += 1;
@@ -708,7 +721,14 @@ fn tree_row(cx: &Cx, buf: &mut Buffer, r: Rect, t: &orbit::TreeRow, sel: bool) {
     } else {
         cx.ink(Tok::Err, 0.85)
     };
-    cx.put(buf, tx, r.y, super::width(&meta, cx.uni()), &meta, mst.patch(bg));
+    cx.put(
+        buf,
+        tx,
+        r.y,
+        super::width(&meta, cx.uni()),
+        &meta,
+        mst.patch(bg),
+    );
     if r.height > 1 {
         let ex = x;
         if let Some(m) = d.metrics.as_ref().filter(|_| up) {

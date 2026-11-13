@@ -690,9 +690,14 @@ mod tests {
         assert!(selection_for(true, none)
             .add_modifier
             .contains(Modifier::BOLD | Modifier::UNDERLINED));
-        assert!(selection_for(true, at(Ansi16, Background::Dark)).bg.is_none());
+        assert!(selection_for(true, at(Ansi16, Background::Dark))
+            .bg
+            .is_none());
         assert_eq!(selection_for(false, none), Style::default());
-        assert_eq!(selection_for(true, at(TrueColor, Background::Dark)).bg, Option::<Color>::None);
+        assert_eq!(
+            selection_for(true, at(TrueColor, Background::Dark)).bg,
+            Option::<Color>::None
+        );
     }
 
     fn luminance((r, g, b): Rgb) -> f64 {
@@ -794,7 +799,8 @@ mod tests {
         let chip = &buf[(2, 0)];
         assert_eq!(chip.symbol(), "F");
         assert!(
-            chip.modifier.contains(Modifier::UNDERLINED | Modifier::BOLD)
+            chip.modifier
+                .contains(Modifier::UNDERLINED | Modifier::BOLD)
                 && !chip.modifier.contains(Modifier::REVERSED),
             "title chip is bold underlined ink"
         );

@@ -375,8 +375,9 @@ mod size_fuzz {
     }
 
     pub(crate) fn fixtures() -> Vec<(String, LabState)> {
-        let mut v: Vec<(String, LabState)> =
-            (0..=7).map(|n| (format!("{n}-devices"), first(n))).collect();
+        let mut v: Vec<(String, LabState)> = (0..=7)
+            .map(|n| (format!("{n}-devices"), first(n)))
+            .collect();
         let mut down = state::typical();
         for (i, d) in down.devices.iter_mut().enumerate().skip(1) {
             d.status = if i % 2 == 0 {
@@ -406,7 +407,10 @@ mod size_fuzz {
         v.push(("no-meshes".into(), flat));
         let mut long = state::typical();
         for d in &mut long.devices {
-            d.name = format!("{}-with-a-very-long-descriptive-hostname-0123456789", d.name);
+            d.name = format!(
+                "{}-with-a-very-long-descriptive-hostname-0123456789",
+                d.name
+            );
             d.account = "a-very-long-account-name-for-this-machine".into();
         }
         for x in &mut long.sessions {
@@ -424,8 +428,10 @@ mod size_fuzz {
     }
 
     fn views(s: &LabState) -> Vec<(LabView, Option<Pane>)> {
-        let mut v: Vec<(LabView, Option<Pane>)> =
-            LabView::defaults(s).into_iter().map(|v| (v, None)).collect();
+        let mut v: Vec<(LabView, Option<Pane>)> = LabView::defaults(s)
+            .into_iter()
+            .map(|v| (v, None))
+            .collect();
         let session = s.sessions.first().map(|x| x.id.clone()).unwrap_or_default();
         let device = s.devices.last().map(|d| d.id.clone()).unwrap_or_default();
         v.extend([
@@ -465,7 +471,8 @@ mod size_fuzz {
             WHERE.with(|w| *w.borrow_mut() = format!("{at} {what}"));
         }));
         let cases = fixtures();
-        let fails = std::sync::Mutex::new(std::collections::BTreeMap::<String, (usize, String)>::new());
+        let fails =
+            std::sync::Mutex::new(std::collections::BTreeMap::<String, (usize, String)>::new());
         std::thread::scope(|sc| {
             for chunk in cases.chunks(cases.len().div_ceil(4)) {
                 let (fails, caps) = (&fails, &caps);
@@ -529,7 +536,9 @@ mod size_fuzz {
     /// layouts change (phone, touch, size classes, half terminals).
     #[test]
     fn every_view_renders_across_sizes() {
-        let ws = [20, 21, 40, 59, 60, 69, 70, 80, 95, 99, 100, 120, 159, 160, 190, 250];
+        let ws = [
+            20, 21, 40, 59, 60, 69, 70, 80, 95, 99, 100, 120, 159, 160, 190, 250,
+        ];
         let hs = [5, 6, 7, 15, 16, 20, 28, 36, 48, 50];
         let sizes: Vec<(u16, u16)> = ws.iter().flat_map(|&w| hs.map(|h| (w, h))).collect();
         check(sweep(&sizes));

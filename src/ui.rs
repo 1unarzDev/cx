@@ -649,6 +649,8 @@ struct App {
     /// has focus; the device order the last frame drew.
     hub_device: Option<String>,
     hub_sessions: bool,
+    /// A device's LINKS zone has focus, on the neighbour (view-model id) it selects.
+    device_link: Option<String>,
     hub_order: std::cell::RefCell<Vec<String>>,
     /// Where the last frame drew each map node and session tile (`views::mission::Drawn::nav`).
     nav: std::cell::RefCell<Vec<(Rect, String)>>,
@@ -826,6 +828,7 @@ impl App {
             palette_mru: VecDeque::new(),
             hub_device: None,
             hub_sessions: false,
+            device_link: None,
             hub_order: Default::default(),
             nav: Default::default(),
             hotkeys: Default::default(),

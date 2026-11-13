@@ -98,6 +98,17 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
             if cx.c.focus == Some(Pane::Custom("stop")) && n > 0 {
                 items = vec![("⌫", "stop it", "stop"), ("esc", "keep", "back")];
             }
+            // Its LINKS focused: the link under the selection, how to move, the way back.
+            let arrows = cx.g("←↑↓→", "hjkl");
+            if cx.c.focus == Some(Pane::Graph) {
+                items = vec![
+                    (cx.ret(), "link", "attach"),
+                    (arrows, "move", ""),
+                    ("tab", "sessions", ""),
+                    ("esc", "back", "back"),
+                    ("`", "hub", "hub"),
+                ];
+            }
             footer(cx, buf, foot, items);
         }
         LabView::SessionPeek(id) if cx.c.focus != Some(Pane::Custom("peek")) => {
@@ -366,12 +377,18 @@ fn top(cx: &Cx, buf: &mut Buffer, crumbs: &[Crumb], status: bool) {
         }
     }
     if crumbs.is_empty() && cx.size() >= Size::S {
+        // The hub's focused zone (Tab flips it).
+        let zone = if cx.c.focus == Some(Pane::Sessions) {
+            cx.g("› sessions", "/ sessions")
+        } else {
+            cx.g("› network", "/ network")
+        };
         cx.put(
             buf,
             x + 1,
             y,
             limit.saturating_sub(x + 1),
-            cx.g("› network", "/ network"),
+            zone,
             cx.ink(Tok::Muted, 0.8),
         );
     }
@@ -460,24 +477,33 @@ fn footer(cx: &Cx, buf: &mut Buffer, r: Rect, items: Keys) {
         })
         .collect();
     let (x0, right) = (r.x + 1, r.right().saturating_sub(1));
-    // Two columns between chips at every width, so a label never butts against the
-    // next keycap.
-    let sep = 2;
-    // How many of `items` fit one row.
+    // How many of `items` fit one row (as `chips` spaces them).
     let fits = |items: &[(&str, &str, &str)]| {
         let mut x = x0;
         let mut n = 0;
-        for (k, l, _) in items {
-            let lw = super::width(l, cx.uni());
-            let need = super::width(k, cx.uni()) + 2 + if lw > 0 { lw + 1 } else { 0 };
-            if x + need > right {
+        for it in items {
+            let need = cx.chips_w(std::slice::from_ref(it));
+            if x + need - 1 - cx.chip_gap() > right {
                 break;
             }
-            x += need + sep;
+            x += need;
             n += 1;
         }
         n
     };
+    // One row: what does not fit gives way from the end, but `? help` stays, so the
+    // keys that did not fit are one key away.
+    let mut items = items;
+    if !cx.touch() {
+        while fits(&items) < items.len() && items.len() > 1 {
+            let help = items.iter().position(|(k, _, _)| *k == "?");
+            let drop = match help {
+                Some(h) if h + 1 == items.len() => h - 1,
+                _ => items.len() - 1,
+            };
+            items.remove(drop);
+        }
+    }
     let fit_n = fits(&items);
     if cx.touch() && fit_n < items.len() && r.y > cx.area.y + 1 {
         // Read top to bottom in priority order: the primary verb leads the upper row.
@@ -505,6 +531,7 @@ fn hub_keys(cx: &Cx) -> Keys<'static> {
     let mut v: Keys = if on_sess {
         vec![
             ("⏎", "attach", "attach"),
+            (cx.g("←↑↓→", "hjkl"), "move", ""),
             ("␣", "peek", "peek"),
             ("⌫", "stop", "stop"),
             ("-", "last", "last"),
@@ -600,7 +627,9 @@ pub(super) fn thumbs_grid(
     } else {
         cells.min(list.len() + 1)
     };
-    let picked = (sel.1 && !list.is_empty()).then(|| sel.0 % list.len());
+    // The large live screen: the focused selection, else (the map focused, as at
+    // startup) the session ranked first.
+    let picked = (!list.is_empty()).then(|| if sel.1 { sel.0 % list.len() } else { 0 });
     let mut x = r.x;
     for i in 0..n {
         let (ci, ri) = (i as u16 % cols, i as u16 / cols);
@@ -609,7 +638,7 @@ pub(super) fn thumbs_grid(
         }
         let first = usize::from(ri * cols);
         let in_row = (n - first).min(usize::from(cols)) as u16;
-        // The focused selection is the large live screen: two shares of its row.
+        // The large screen takes two shares of its row.
         let big = picked.filter(|&p| {
             (first..first + usize::from(in_row)).contains(&p) && in_row > 1 && r.width >= 90
         });
@@ -674,7 +703,19 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     } else {
         (links_n.div_ceil(2) * 3).max(5)
     };
-    let sel = cx.c.selected % (list.len() + 1);
+    // Its LINKS focused (Tab, or down from the bottom tiles): `selected` is the link,
+    // and no tile is picked.
+    let links_focus = cx.c.focus == Some(Pane::Graph);
+    let link_sel = s
+        .edges_of(&d.id)
+        .nth(cx.c.selected)
+        .filter(|_| links_focus)
+        .map(|e| if e.from == d.id { &e.to } else { &e.from });
+    let sel = if links_focus {
+        usize::MAX
+    } else {
+        cx.c.selected % (list.len() + 1)
+    };
     // The ghost is one row under the tiles (`new c claude x codex n shell`), so the
     // sessions take the full width and no half-empty card floats beside them.
     let used = if sz == Size::Xs {
@@ -729,7 +770,7 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         main.y.saturating_sub(1),
         right,
         "SESSIONS",
-        true,
+        !links_focus,
     );
     let fy = main.y + used;
     let edges: Vec<&LabEdge> = s.edges_of(&d.id).collect();
@@ -746,12 +787,13 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         link_list(cx, buf, rows, d, &edges);
     } else if links_n > 0 && fy + 7 <= r.bottom() {
         // The footer says `e links`; the zone label is the tap target.
-        zone(cx, buf, main.x, fy, right, "LINKS", false);
+        zone(cx, buf, main.x, fy, right, "LINKS", links_focus);
         cx.hit(Rect::new(main.x, fy, 12, 1), "links");
         // The star alone: each link's numbers are one `e` away (the edge editor). It
         // sits centred in the rows left under the label, at the hub's spacing.
         let band = Rect::new(r.x, fy + 2, r.width, r.bottom().saturating_sub(fy + 3));
-        orbit::draw_with(cx, buf, band, &d.id, 1, orbit::Sel::Root, false);
+        let at = link_sel.map_or(orbit::Sel::Root, |n| orbit::Sel::Node(n, true));
+        orbit::draw_with(cx, buf, band, &d.id, 1, at, false);
     }
 }
 
@@ -3577,14 +3619,16 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
     ));
     // The map's marks, where a map is drawn: strokes, then the device states (and, in
     // ASCII, the cursor a selection takes there).
+    // (The strokes as the map draws a curve: braille, dashed for a password, the
+    // arrowhead where access goes one way, `⊘` mid-run when closed.)
     let mut marks: Vec<(&str, &str)> = vec![
-        (cx.g("──", "--"), "key"),
-        (cx.g("╌╌", ".."), "password"),
-        (cx.g("◀─", "<-"), "one way"),
-        (cx.g("─╴", "- "), "closed"),
+        (cx.g("⠒⠒", "--"), "key"),
+        (cx.g("⠒⠂", ".."), "password"),
+        (cx.g("⠒▶", "->"), "one way"),
+        (cx.g("⠒⊘", "- "), "closed"),
     ];
     if ctx == "ON A LINK" {
-        marks.push((cx.g("──", "##"), "this link"));
+        marks.push((cx.g("⠒⠒", "##"), "this link"));
     }
     if cx.uni() {
         marks.push(("●", "online"));

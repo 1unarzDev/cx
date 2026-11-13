@@ -251,10 +251,7 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
         items.clear();
     }
     let ky = r.bottom() - 1;
-    let kw: u16 = items
-        .iter()
-        .map(|(k, l, _)| cx.key_w(k) + 1 + super::width(l, cx.uni()) + 2)
-        .sum();
+    let kw: u16 = cx.chips_w(&items);
     let mut kx = r.right();
     if r.height >= 2 || x + kw <= right {
         kx = if r.height >= 2 {

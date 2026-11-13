@@ -121,7 +121,15 @@ fn screen(app: &App, state: &LabState, caps: &mut LabCaps) -> LabView {
             if app.stop_armed.is_some() {
                 caps.focus = Some(Pane::Custom("stop"));
             }
-            LabView::DeviceFocus(dev_id(d))
+            // Its LINKS focused: `selected` is the link, in `edges_of` order.
+            if let Some(n) = &app.device_link {
+                caps.focus = Some(Pane::Graph);
+                caps.selected = state
+                    .edges_of(&id)
+                    .position(|e| e.from == *n || e.to == *n)
+                    .unwrap_or(0);
+            }
+            LabView::DeviceFocus(id)
         }
         View::Files => {
             let preview = app.browser.as_ref().is_some_and(|b| b.preview.is_some());

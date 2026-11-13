@@ -6,7 +6,7 @@ files_bench). One pyte screen model; PNGs go through lab_png.py, the single rend
 
 Needs pyte (and Pillow for PNGs).
 """
-import fcntl, json, os, pathlib, pty, select, struct, subprocess, sys, termios
+import codecs, fcntl, json, os, pathlib, pty, select, struct, subprocess, sys, termios
 
 import pyte
 
@@ -38,6 +38,9 @@ class Pty:
                                      stderr=self.slave, preexec_fn=tty)
         self.screen = Screen(cols, rows)
         self.stream = pyte.Stream(self.screen)
+        # A glyph split across two reads stays whole (a per-chunk decode would make it
+        # U+FFFD and shift the rest of the row).
+        self.decoder = codecs.getincrementaldecoder('utf-8')('replace')
 
     def read(self, timeout):
         """Feed one output chunk to the screen and return it; None when nothing arrived."""
@@ -47,7 +50,7 @@ class Pty:
             data = os.read(self.master, 1 << 16)
         except OSError:
             return None
-        self.stream.feed(data.decode('utf-8', 'replace'))
+        self.stream.feed(self.decoder.decode(data))
         return data
 
     def write(self, data):

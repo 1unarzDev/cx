@@ -63,6 +63,17 @@ def main():
             return None
 
         settle(lambda: all(n in text() for n in NAMES), 'hub tiles never appeared', 15)
+        # The tiles rank by attention (state, then the latest activity), so they settle
+        # once every new shell has drawn its prompt and gone idle: then the grid stays.
+        def order():
+            return [m.group(0) for m in re.finditer(r'grid-[a-d]', text())]
+        settle(lambda: text().count('idle') >= len(NAMES), 'the shells never went idle', 10)
+        end, last, since = time.monotonic() + 10, None, time.monotonic()
+        while time.monotonic() - since < 1.5:
+            assert time.monotonic() < end, f'the tiles never settled: {order()}'
+            if order() != last:
+                last, since = order(), time.monotonic()
+            viewer.read(.1)
         # Tiles: Tab focuses them.
         press(b'\t', lambda: '▍SESSIONS' in text(), 'Tab did not focus the tiles')
         start = focused()

@@ -687,10 +687,11 @@ impl<'a> Cx<'a> {
         th: u16,
     ) -> u16 {
         let mut cx = x;
+        let gap = self.chip_gap();
         for (k, label, action) in items {
             let kw = self.key_w(k);
             let lw = width(label, self.uni());
-            let need = kw + if lw > 0 { lw + 1 } else { 0 };
+            let need = kw + if lw > 0 { lw + gap } else { 0 };
             if cx + need > right {
                 break;
             }
@@ -716,7 +717,7 @@ impl<'a> Cx<'a> {
                 cx += self.keycap(buf, cx, y, kw, k, self.key_style());
             }
             if lw > 0 {
-                cx += 1;
+                cx += gap;
                 cx += self.put(buf, cx, y, lw, label, self.st(Tok::Muted));
             }
             // A chip with no action only teaches its key (`j k move`): no tap target.
@@ -724,9 +725,26 @@ impl<'a> Cx<'a> {
                 let top = y.saturating_sub(th - 1);
                 self.hit(Rect::new(x0, top, cx - x0, y + 1 - top), *action);
             }
-            cx += 2;
+            cx += 1 + gap;
         }
         cx
+    }
+    /// The columns between a key and its label inside a chip: a pill's rounded cap
+    /// needs one; a plain keycap's own padding cell is the gap (` k label`). Chips are
+    /// `1 + gap` apart, so a pair reads as one and pairs stay apart.
+    pub fn chip_gap(&self) -> u16 {
+        u16::from(self.pills())
+    }
+    /// The columns `chips` draws for `items`.
+    pub fn chips_w(&self, items: &[(&str, &str, &str)]) -> u16 {
+        let gap = self.chip_gap();
+        items
+            .iter()
+            .map(|(k, l, _)| {
+                let lw = width(l, self.uni());
+                self.key_w(k) + if lw > 0 { lw + gap } else { 0 } + 1 + gap
+            })
+            .sum()
     }
 }
 

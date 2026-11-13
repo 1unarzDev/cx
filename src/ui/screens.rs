@@ -152,6 +152,7 @@ impl App {
         self.send_pick = false;
         self.edge = None;
         self.edge_pending = false;
+        self.device_link = None;
         self.close_invite();
     }
     /// Close the invite, if one is open: its listener stops within a poll (its thread,
@@ -216,8 +217,18 @@ impl App {
         match self.spatial(dx, dy) {
             Some(true) => return,
             // Not drawn (no frame yet, or scrolled off): along the order.
-            None => return self.screen_move((dx + dy) as isize),
-            Some(false) => {}
+            None if self.device_link.is_none() => return self.screen_move((dx + dy) as isize),
+            _ => {}
+        }
+        if self.view == View::Work {
+            // A device: the tiles above its LINKS; up and down cross between them, and
+            // the edges stay put (left and right step along the tiles' order).
+            if (dy > 0) == self.device_link.is_none() && dy != 0 {
+                self.toggle_zone();
+            } else if dx != 0 && self.device_link.is_none() {
+                self.screen_move(dx as isize);
+            }
+            return;
         }
         let other = self.view == View::Network && (dy > 0) != self.hub_sessions && dy != 0;
         if other {
@@ -233,12 +244,27 @@ impl App {
         let current = if graph {
             let d = self.hub_device.clone();
             format!("device:{}", d.unwrap_or_else(|| dev_id(self.local_index())))
+        } else if let Some(n) = &self.device_link {
+            format!("device:{n}")
         } else {
             let (d, s) = self.selected_session()?;
             format!("session:{d}:{}", workspaces::runtime_key(&s))
         };
-        let kind = if graph { "device:" } else { "session:" };
-        let nav = self.nav.borrow().clone();
+        let kind = if graph || self.device_link.is_some() {
+            "device:"
+        } else {
+            "session:"
+        };
+        // (A device's own node in its LINKS is where they start, not a stop.)
+        let own = (self.view == View::Work && self.device > 0)
+            .then(|| format!("device:{}", dev_id(self.device - 1)));
+        let nav: Vec<(Rect, String)> = self
+            .nav
+            .borrow()
+            .iter()
+            .filter(|(_, a)| Some(a) != own.as_ref())
+            .cloned()
+            .collect();
         let from = nav.iter().find(|(_, a)| *a == current).map(|(r, _)| *r)?;
         // Centres in half cells; an item counts when it lies past the selection's edge
         // that way, scored by distance with the sideways offset weighed double.
@@ -278,6 +304,9 @@ impl App {
         };
         let mut parts = to.splitn(3, ':').skip(1);
         match (parts.next(), parts.next()) {
+            (Some(id), None) if self.device_link.is_some() => {
+                self.device_link = Some(id.to_string())
+            }
             (Some(id), None) => self.hub_device = Some(id.to_string()),
             (Some(d), Some(key)) => self.select_session(dev_index(d)?, key.to_string()),
             _ => return None,
@@ -863,6 +892,10 @@ impl App {
         if !plain {
             return false;
         }
+        // (Two Escs in a row: any key between them breaks the pair.)
+        if key.code != KeyCode::Esc {
+            self.last_esc = None;
+        }
         if key.code == KeyCode::Esc {
             let double = self.last_esc.is_some_and(|t| t.elapsed() < DOUBLE_ESC);
             self.last_esc = Some(Instant::now());
@@ -974,13 +1007,9 @@ impl App {
                 self.retry(d);
                 true
             }
-            // Tiles, then the new-session row: Tab in order, arrows and `h j k l` on screen.
-            KeyCode::Tab => {
-                self.screen_move(1);
-                true
-            }
-            KeyCode::BackTab => {
-                self.screen_move(-1);
+            // Tab between the zones (tiles, LINKS); arrows and `h j k l` on screen.
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.toggle_zone();
                 true
             }
             KeyCode::Char(c @ ('h' | 'j' | 'k' | 'l')) => {
@@ -997,11 +1026,11 @@ impl App {
                 self.primary_here();
                 true
             }
-            KeyCode::Char(' ') => {
+            KeyCode::Char(' ') if self.device_link.is_none() => {
                 self.peek = self.selected_session().is_some();
                 true
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if self.device_link.is_none() => {
                 self.arm_stop();
                 true
             }
@@ -1144,7 +1173,10 @@ impl App {
                 self.open_device(d);
             }
             View::Work if self.device > 0 => {
-                if self.selected_session().is_some() {
+                if let Some(n) = self.device_link.as_deref().and_then(dev_index) {
+                    // A link in the LINKS zone: its editor (as `e` and its letter).
+                    self.open_edge(self.device - 1, n);
+                } else if self.selected_session().is_some() {
                     self.attach_selected();
                 } else {
                     self.new_session(self.device - 1, "shell");
@@ -1177,9 +1209,26 @@ impl App {
         }
     }
     fn toggle_zone(&mut self) {
+        if self.view == View::Work && self.device > 0 {
+            // A device: its tiles and its LINKS (the neighbour the frame drew first,
+            // when it drew any).
+            let own = format!("device:{}", dev_id(self.device - 1));
+            self.device_link = match self.device_link {
+                Some(_) => None,
+                None => self.nav.borrow().iter().find_map(|(_, a)| {
+                    a.strip_prefix("device:")
+                        .filter(|_| *a != own)
+                        .map(str::to_string)
+                }),
+            };
+            return;
+        }
         self.hub_sessions = !self.hub_sessions;
-        if self.hub_sessions && self.selected_session().is_none() {
-            self.screen_move(0);
+        // The tiles focus on the one drawn large while the map had focus: the first.
+        if self.hub_sessions {
+            if let Some((d, key)) = self.hub_sessions_order().first().cloned() {
+                self.select_session(d, key);
+            }
         }
     }
     /// Select what a view target shows (a right-click or long press, before its menu).

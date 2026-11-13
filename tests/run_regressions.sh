@@ -58,6 +58,7 @@ CORE=(
     "session_watch_live|pyte|BIN"
     "hub_thumbnails_pty|pyte|BIN"
     "grid_keys_pty|pyte|BIN"
+    "map_grid_pty|pyte|BIN"
     "container_discovery_fixtures||BIN"
     "container_session_reconcile_live||BIN"
     "session_activity_timestamp_live||BIN"

@@ -947,11 +947,11 @@ fn popup(
             let h = 25.min(area.height);
             let r = Rect::new(
                 area.x + (area.width - w) / 2,
-                area.y + (area.height - h) / 2,
+                area.y + (area.height - h).div_ceil(2),
                 w,
                 h,
             );
-            p.rounded(r, t.help_border, Some(("mgr.help", Style::default(), true)));
+            p.rounded(r, t.help_border, Some(("mgr.help", t.help_border, true)));
             if r.height < 5 || r.width < 4 {
                 return;
             }
@@ -982,14 +982,10 @@ fn popup(
                 };
                 if hov {
                     p.style_cells(r.x + 1, end, y, base);
+                    // yazi's: the key column of the hovered row in the key colour.
+                    p.style_cells(r.x + 1, (r.x + 21).min(end), y, base.patch(t.help_on));
                 }
-                let x = p.put(
-                    r.x + 1,
-                    y,
-                    end,
-                    key,
-                    base.patch(if hov { Style::default() } else { t.help_on }),
-                );
+                let x = p.put(r.x + 1, y, end, key, base.patch(t.help_on));
                 let kx = (r.x + 21).max(x + 1);
                 p.put(kx, y, end, desc, base);
             }

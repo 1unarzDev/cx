@@ -141,10 +141,10 @@ impl Plan<'_> {
 
 // ------------------------------------------------------------------------ layout
 
-fn leaves(nodes: &[N], kids: &[Vec<usize>], i: usize) -> f32 {
+fn leaves(kids: &[Vec<usize>], i: usize) -> f32 {
     kids[i]
         .iter()
-        .map(|&k| leaves(nodes, kids, k))
+        .map(|&k| leaves(kids, k))
         .sum::<f32>()
         .max(1.0)
 }
@@ -167,7 +167,7 @@ fn cluster<'a>(cx: &Cx<'a>, nodes: &mut [N<'a>]) -> Vec<Cl> {
         let key = match nodes[top].up.map(|e| &e.kind) {
             Some(EdgeKind::Mesh(m)) => m.clone(),
             Some(EdgeKind::Lan) => "lan".into(),
-            Some(_) if leaves(nodes, &kids, top) >= 2.0 => format!("site:{}", nodes[top].d.id),
+            Some(_) if leaves(&kids, top) >= 2.0 => format!("site:{}", nodes[top].d.id),
             _ => "direct".into(),
         };
         let at = match cls.iter().position(|c| c.key == key) {
@@ -411,7 +411,7 @@ fn layout<'a>(
                         .members
                         .iter()
                         .filter(|&&i| nodes[i].parent.is_none())
-                        .map(|&i| leaves(nodes, &kids, i))
+                        .map(|&i| leaves(&kids, i))
                         .sum::<f32>()
                         .max(1.0)
                 } else {
@@ -430,12 +430,12 @@ fn layout<'a>(
             cls[c].phi = at + w * unit / 2.0;
             if cls[c].open {
                 fn spread(i: usize, a: f32, unit: f32, kids: &[Vec<usize>], nodes: &mut [N]) {
-                    let l = leaves(nodes, kids, i);
+                    let l = leaves(kids, i);
                     nodes[i].phi = a + l * unit / 2.0;
                     let mut b = a;
                     for &k in &kids[i] {
                         spread(k, b, unit, kids, nodes);
-                        b += leaves(nodes, kids, k) * unit;
+                        b += leaves(kids, k) * unit;
                     }
                 }
                 let mut a = at;
@@ -447,7 +447,7 @@ fn layout<'a>(
                     .collect();
                 for i in tops {
                     spread(i, a, unit, &kids, nodes);
-                    a += leaves(nodes, &kids, i) * unit;
+                    a += leaves(&kids, i) * unit;
                 }
             }
             at += (w + gap) * unit;

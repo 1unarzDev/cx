@@ -49,6 +49,9 @@ fn rank(items: &[Item], a: usize, b: usize, d: usize, cone: f32) -> Option<(bool
     Some((items[a].group != items[b].group, dist * (1.0 + 4.0 * angle)))
 }
 
+/// A candidate's rank: (takes over a key, leaves the group, score).
+type Rank = (bool, bool, f32);
+
 /// Items reachable from `start` through items `inside` allows.
 fn reached(mv: &[[Option<usize>; 4]], start: usize, inside: &dyn Fn(usize) -> bool) -> Vec<bool> {
     let mut seen = vec![false; mv.len()];
@@ -70,6 +73,8 @@ fn reached(mv: &[[Option<usize>; 4]], start: usize, inside: &dyn Fn(usize) -> bo
 
 /// For every item, where each direction (`LEFT RIGHT UP DOWN`) moves. The first item
 /// is the root.
+// (A graph over item indexes: indexing reads plainer than iterator chains here.)
+#[allow(clippy::needless_range_loop)]
 pub(super) fn moves(items: &[Item]) -> Vec<[Option<usize>; 4]> {
     let n = items.len();
     let mut mv = vec![[None; 4]; n];
@@ -168,7 +173,7 @@ pub(super) fn moves(items: &[Item]) -> Vec<[Option<usize>; 4]> {
             if lost.is_empty() {
                 continue;
             }
-            let mut best: Option<((bool, bool, f32), (usize, usize, usize))> = None;
+            let mut best: Option<(Rank, (usize, usize, usize))> = None;
             for &u in &lost {
                 for a in (0..n).filter(|&a| seen[a]) {
                     for d in 0..4 {

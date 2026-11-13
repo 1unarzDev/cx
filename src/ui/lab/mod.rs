@@ -419,12 +419,11 @@ mod review_tests {
             let chars: Vec<char> = row.chars().collect();
             let at = row.chars().position(|c| c == '◉').unwrap();
             let end = at + "◉ tranquility".chars().count();
-            for x in at.saturating_sub(2)..(end + 2).min(chars.len()) {
-                assert!(
-                    !('\u{2800}'..='\u{28ff}').contains(&chars[x]),
-                    "{w}x{h}: a dot touches the name: {row}"
-                );
-            }
+            let near = &chars[at.saturating_sub(2)..(end + 2).min(chars.len())];
+            assert!(
+                !near.iter().any(|c| ('\u{2800}'..='\u{28ff}').contains(c)),
+                "{w}x{h}: a dot touches the name: {row}"
+            );
         }
     }
 }

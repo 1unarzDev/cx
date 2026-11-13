@@ -1693,6 +1693,10 @@ fn a_highlighted_folder_previews_its_entries() {
     let mut child = Browser::new(0, "/files/docs".into());
     child.entries = vec![entry("guides", "directory"), entry("inner-note.md", "file")].into();
     a.browser.as_mut().unwrap().peek = Some(Box::new(child));
+    // Lazy: the column waits for the highlight to rest, so a folder's own first rows
+    // paint alone.
+    assert!(!draw(&a, 190, 50).contains("inner-note.md"));
+    a.browser.as_mut().unwrap().settle = Some(("/files/docs".into(), Instant::now(), true));
     let text = draw(&a, 190, 50);
     assert!(
         text.contains("guides/") && text.contains("inner-note.md"),

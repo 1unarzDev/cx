@@ -107,7 +107,8 @@ impl App {
         b.settle.as_mut().unwrap().2 = true;
         let device = b.device;
         let peek = b.peek_shown.get() && !dual;
-        let mut dirty = false;
+        // (A rested folder's column shows now, even from a listing already in hand.)
+        let mut dirty = peek && entry.kind == "directory";
         if entry.kind == "directory" {
             let key = (
                 device,
@@ -366,6 +367,8 @@ impl App {
         if let Some(b) = &mut self.browser {
             b.show_hidden = show_hidden;
             b.container = scope;
+            // Its highlight rests anew: the folder column waits for it (first rows first).
+            b.settle = None;
         }
         self.view = View::Files;
         self.focus = Focus::Workspace;

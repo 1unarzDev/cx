@@ -479,11 +479,14 @@ fn files(app: &App) -> LabFiles {
         offset,
         total: rows.len(),
         previews: shown.map(lab_preview).into_iter().collect(),
-        // A highlighted folder's listing, once it has one (the peek of a directory).
+        // A highlighted folder's listing, once it has one (the peek of a directory) and
+        // the highlight has rested (`files_tick`): a folder's first rows paint alone, the
+        // column follows.
         folder: b
             .peek
             .as_deref()
             .filter(|p| b.preview.is_none() && p.preview.is_none() && !p.loading)
+            .filter(|p| matches!(&b.settle, Some((path, _, true)) if *path == p.path))
             // (Its first rows straight from the listing, which arrives in display order:
             // no index of a 100k-entry folder just to show a column of it.)
             .map(|p| {

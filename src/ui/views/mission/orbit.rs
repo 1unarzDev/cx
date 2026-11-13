@@ -1,9 +1,11 @@
 //! The network as a quiet diagram: the root device (this one on the hub) sits in the
 //! middle as `◉` and its name, the devices it reaches sit in a column either side of it and
 //! devices reached through them in the next column out, each subtree beside its relay.
-//! Links are thin box-drawing lines of one weight with rounded corners: a short stub
-//! leaves the root, a trunk runs along the column, and a branch enters each label with a
-//! clear cell before it. Hue means network (mesh hue, teal for lan, neutral for direct
+//! Links are thin lines of one weight: a straight run along a row or column in box lines,
+//! anything that turns a smooth braille curve whose control points are its route's
+//! corners (it leaves and arrives along the same rows and columns, never a hard corner;
+//! ASCII keeps the route with `.` and `'` corners). Each enters its label with a clear
+//! cell before it. Hue means network (mesh hue, teal for lan, neutral for direct
 //! ssh; a line shared by several links is neutral); the selection's route is brighter.
 //! The stroke is the access policy, used sparingly: solid where a key is allowed, dashed
 //! where only a password is, an arrowhead at the end access reaches where it goes one
@@ -778,6 +780,14 @@ fn radial<'a>(
                 vec![(px, pl.1 + dir), (px, py - dir)]
             }
             s if py == pl.1 => vec![(start, py), (if s > 0 { x - 3 } else { x + w + 2 }, py)],
+            // Out along the parent's row and into the label along its own: an S whose
+            // turn sits halfway (drawn as a curve through these corners).
+            s if (if s > 0 { x - 3 } else { x + w + 2 } - start) * s >= 6 => {
+                let end = if s > 0 { x - 3 } else { x + w + 2 };
+                let mid = (start + end) / 2;
+                vec![(start, pl.1), (mid, pl.1), (mid, py), (end, py)]
+            }
+            // A device beside its parent's column: down into its dot, one rounded turn.
             _ => vec![(start, pl.1), (px, pl.1), (px, py - (py - pl.1).signum())],
         };
     }
@@ -792,32 +802,25 @@ fn radial<'a>(
             }
         }
     }
-    // Lines cross no label, and links from different parents share no cell.
+    // Lines cross no label, and links from different parents share no cell: the
+    // orthogonal route (ASCII) and the curve drawn over its corners alike.
     let mut owner: std::collections::HashMap<(i32, i32), Option<usize>> = Default::default();
     for node in nodes.iter().take(n) {
         let pts = &node.pts;
         if pts.is_empty() || node.up.is_none() {
             continue;
         }
+        let mut route = Vec::new();
         for w in pts.windows(2) {
-            let (a, b) = (w[0], w[1]);
-            if (b.0 - a.0) * (b.1 - a.1) != 0 {
+            route.extend(cells(w));
+        }
+        for q in route.into_iter().chain(cells(pts)) {
+            if boxes.iter().any(|bx| hit(bx, q.0, q.1)) {
                 return None;
             }
-            let (sx, sy) = ((b.0 - a.0).signum(), (b.1 - a.1).signum());
-            let mut q = a;
-            loop {
-                if boxes.iter().any(|bx| hit(bx, q.0, q.1)) {
-                    return None;
-                }
-                let o = owner.entry(q).or_insert(node.parent);
-                if *o != node.parent {
-                    return None;
-                }
-                if q == b {
-                    break;
-                }
-                q = (q.0 + sx, q.1 + sy);
+            let o = owner.entry(q).or_insert(node.parent);
+            if *o != node.parent {
+                return None;
             }
         }
     }
@@ -966,6 +969,8 @@ const RT: u8 = 8;
 struct Grid {
     r: Rect,
     bits: Vec<u8>,
+    /// Braille dots of curved runs (a cell with box joins draws those instead).
+    dots: Vec<u8>,
     links: Vec<Vec<usize>>,
 }
 
@@ -975,6 +980,7 @@ impl Grid {
         Self {
             r,
             bits: vec![0; n],
+            dots: vec![0; n],
             links: vec![Vec::new(); n],
         }
     }
@@ -988,6 +994,26 @@ impl Grid {
         for y in y0.min(y1)..=y0.max(y1) {
             if let Some(i) = self.cell(x, y) {
                 self.bits[i] |= UP | DN;
+                self.links[i].push(li);
+            }
+        }
+    }
+    /// A link through control cells `pts`: a straight run in box lines, else a smooth
+    /// curve in braille dots (dashed where only a password crosses).
+    fn link(&mut self, pts: &[(i32, i32)], li: usize, dash: bool) {
+        if straight(pts) {
+            return self.path(pts, li);
+        }
+        const B: [[u8; 4]; 2] = [[0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20, 0x80]];
+        for ((sx, sy), along) in stroke(pts) {
+            if dash && along % 3.0 >= 2.0 {
+                continue;
+            }
+            let Some(i) = self.cell(sx.div_euclid(2), sy.div_euclid(4)) else {
+                continue;
+            };
+            self.dots[i] |= B[sx.rem_euclid(2) as usize][sy.rem_euclid(4) as usize];
+            if !self.links[i].contains(&li) {
                 self.links[i].push(li);
             }
         }
@@ -1038,7 +1064,7 @@ impl Grid {
     }
 }
 
-/// The line glyph for a cell's joins. ASCII: `-` `|`, corners `,` above and `'`
+/// The line glyph for a cell's joins. ASCII: `-` `|`, rounded corners `.` above and `'`
 /// below, a junction its trunk's `|` or `-` (`+` is the invite key); a password run is
 /// `.` and `:`; a quiet line is drawn plain (its ends say why).
 fn line_ch(b: u8, pat: Pat, uni: bool) -> char {
@@ -1076,11 +1102,101 @@ fn line_ch(b: u8, pat: Pat, uni: bool) -> char {
             (Pat::Dash, _, true) => ':',
             (_, true, _) => '-',
             (_, _, true) => '|',
-            _ if b == DN | RT || b == DN | LT => ',',
+            _ if b == DN | RT || b == DN | LT => '.',
             _ if b == UP | RT || b == UP | LT => '\'',
             _ if b & (UP | DN) == UP | DN => '|',
             _ => '-',
         }
+    }
+}
+
+/// Control cells along one row or one column: a straight run.
+fn straight(pts: &[(i32, i32)]) -> bool {
+    pts.iter().all(|p| p.0 == pts[0].0) || pts.iter().all(|p| p.1 == pts[0].1)
+}
+
+/// The Bezier curve with control cells `pts` (their centres) at `t` in 0..=1: a line,
+/// a quadratic or a cubic. The orthogonal route's corners are its control points, so
+/// the curve leaves and arrives along the same rows and columns, rounded.
+fn bez(pts: &[(i32, i32)], t: f32) -> (f32, f32) {
+    let mut p: Vec<(f32, f32)> = pts
+        .iter()
+        .map(|&(x, y)| (x as f32 + 0.5, y as f32 + 0.5))
+        .collect();
+    while p.len() > 1 {
+        p = p
+            .windows(2)
+            .map(|w| (w[0].0 + (w[1].0 - w[0].0) * t, w[0].1 + (w[1].1 - w[0].1) * t))
+            .collect();
+    }
+    p.first().copied().unwrap_or_default()
+}
+
+/// The curve's braille dots in order (2 per column, 4 per row), sampled finer than the
+/// dot grid so the stroke has no gap, each with its distance along the curve in columns
+/// (a row counts as two).
+fn stroke(pts: &[(i32, i32)]) -> Vec<((i32, i32), f32)> {
+    let len: f32 = pts
+        .windows(2)
+        .map(|w| ((w[1].0 - w[0].0).abs() + 2 * (w[1].1 - w[0].1).abs()) as f32)
+        .sum();
+    let steps = ((len * 12.0) as usize).max(8);
+    let mut out: Vec<((i32, i32), f32)> = Vec::new();
+    let (mut prev, mut along) = (bez(pts, 0.0), 0.0);
+    for k in 0..=steps {
+        let q = bez(pts, k as f32 / steps as f32);
+        along += ((q.0 - prev.0).powi(2) + ((q.1 - prev.1) * 2.0).powi(2)).sqrt();
+        prev = q;
+        let dot = ((q.0 * 2.0).floor() as i32, (q.1 * 4.0).floor() as i32);
+        if out.last().map(|d| d.0) != Some(dot) {
+            out.push((dot, along));
+        }
+    }
+    out
+}
+
+/// The cells a link through `pts` covers as drawn (a curve's, or a straight run's).
+fn cells(pts: &[(i32, i32)]) -> Vec<(i32, i32)> {
+    let mut out: Vec<(i32, i32)> = Vec::new();
+    if straight(pts) {
+        for w in pts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let (sx, sy) = ((b.0 - a.0).signum(), (b.1 - a.1).signum());
+            let mut q = a;
+            loop {
+                if !out.contains(&q) {
+                    out.push(q);
+                }
+                if q == b {
+                    break;
+                }
+                q = (q.0 + sx, q.1 + sy);
+            }
+        }
+        return out;
+    }
+    for ((sx, sy), _) in stroke(pts) {
+        let c = (sx.div_euclid(2), sy.div_euclid(4));
+        if out.last() != Some(&c) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// An arrowhead along the curve's direction at `t` (toward increasing `t`), on screen
+/// where a row is twice as tall as a column.
+fn arrow_at(cx: &Cx, pts: &[(i32, i32)], t: f32, toward_end: bool) -> &'static str {
+    let (a, b) = (bez(pts, (t - 0.02).max(0.0)), bez(pts, (t + 0.02).min(1.0)));
+    let (dx, dy) = (b.0 - a.0, (b.1 - a.1) * 2.0);
+    let (dx, dy) = if toward_end { (dx, dy) } else { (-dx, -dy) };
+    match (dx.abs() >= dy.abs(), dx >= 0.0, dy >= 0.0, cx.uni()) {
+        (true, true, _, true) => "▶",
+        (true, false, _, true) => "◀",
+        (false, _, true, true) => "▼",
+        (false, _, false, true) => "▲",
+        (_, true, _, false) => ">",
+        (_, false, _, false) => "<",
     }
 }
 
@@ -1112,6 +1228,8 @@ struct Link<'a> {
     /// Access flows from the parent toward the kid.
     toward_kid: bool,
     side: i32,
+    /// Control cells from the parent's end to the kid's (the drawn curve's).
+    pts: Vec<(i32, i32)>,
 }
 
 pub(super) fn draw_with(
@@ -1200,6 +1318,8 @@ pub(super) fn draw_with(
                 // (A one-cell run straight up or down is still vertical.)
                 if s == 0 {
                     g.vline(a.0, a.1, b.1, li);
+                } else if cx.uni() {
+                    g.link(&n.pts, li, pattern(e) == Pat::Dash);
                 } else {
                     g.path(&n.pts, li);
                 }
@@ -1222,9 +1342,13 @@ pub(super) fn draw_with(
                 kid_arrow,
                 toward_kid,
                 side: s,
+                pts: n.pts.clone(),
             });
             if !cx.touch() {
-                let (mx, my) = if n.pts.len() == 3 {
+                let (mx, my) = if cx.uni() && s != 0 {
+                    let m = bez(&n.pts, 0.5);
+                    (m.0 as i32, m.1 as i32)
+                } else if n.pts.len() == 3 {
                     ((a.0 + prev.0) / 2, a.1)
                 } else {
                     ((a.0 + b.0) / 2, (a.1 + b.1) / 2)
@@ -1255,6 +1379,7 @@ pub(super) fn draw_with(
                 kid_arrow: b,
                 toward_kid,
                 side: 0,
+                pts: vec![a, b],
             });
             if !cx.touch() {
                 cx.hit(
@@ -1286,9 +1411,16 @@ pub(super) fn draw_with(
         let alone = sibs.count() == 1;
         let li = links.len();
         let pts = [(start, py), (trunk, py), (trunk, ky), (end, ky)];
-        grid.path(&pts, li);
-        if matches!(sel, Sel::Edge(id) if e.id == id) {
-            edited.path(&pts, li);
+        let dash = pattern(e) == Pat::Dash;
+        for g in [Some(&mut grid), matches!(sel, Sel::Edge(id) if e.id == id).then_some(&mut edited)]
+            .into_iter()
+            .flatten()
+        {
+            if cx.uni() {
+                g.link(&pts, li, dash);
+            } else {
+                g.path(&pts, li);
+            }
         }
         let par_end = if trunk == end {
             (end, ky)
@@ -1308,6 +1440,7 @@ pub(super) fn draw_with(
             kid_arrow: (end, ky),
             toward_kid,
             side: n.side,
+            pts: pts.to_vec(),
         });
         // Desktop: a 3x1 spot on the branch is the link's tap target (phones tap the
         // tree rows).
@@ -1355,7 +1488,7 @@ pub(super) fn draw_with(
         for x in 0..band.width {
             let i = usize::from(y) * usize::from(band.width) + usize::from(x);
             let b = grid.bits[i];
-            if b == 0 {
+            if b == 0 && grid.dots[i] == 0 {
                 continue;
             }
             // A cell shared by several links: a lit one's ink, else their common hue and
@@ -1381,7 +1514,11 @@ pub(super) fn draw_with(
                 None => pat,
             };
             let (bx, by) = (band.x + x, band.y + y);
-            let ch = line_ch(b, pat, cx.uni());
+            let ch = if b == 0 {
+                char::from_u32(0x2800 + u32::from(grid.dots[i])).unwrap_or(' ')
+            } else {
+                line_ch(b, pat, cx.uni())
+            };
             // The edge editor's subject keeps the one weight, in the accent (ASCII `#`,
             // a mark no other line uses), so the link being edited reads at a glance.
             let lb = edited.bits[i];
@@ -1398,7 +1535,19 @@ pub(super) fn draw_with(
                 cx.put(buf, at.0 as u16, at.1 as u16, 1, g, st);
             }
         };
-        if l.e.up && l.e.one_way() && l.side != 0 {
+        let curved = cx.uni() && !straight(&l.pts);
+        let on = |t: f32| {
+            let q = bez(&l.pts, t);
+            (q.0.floor() as i32, q.1.floor() as i32)
+        };
+        if curved && l.e.up && l.e.one_way() {
+            // On the curve, pointing the way access goes, near the end it reaches.
+            let t = if l.toward_kid { 0.85 } else { 0.15 };
+            put(on(t), arrow_at(cx, &l.pts, t, l.toward_kid));
+        } else if cx.uni() && l.e.up && closed(l.e) {
+            // Closed both ways: `⊘` mid-run, the one mark on a line.
+            put(on(0.5), "⊘");
+        } else if l.e.up && l.e.one_way() && l.side != 0 {
             let right = (l.side > 0) == l.toward_kid;
             // A solid triangle meets its stroke; a font arrow floats in its cell.
             let g = match (right, cx.uni()) {

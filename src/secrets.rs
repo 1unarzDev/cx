@@ -5,6 +5,8 @@
 //! * [`Secrets::get`] returns a [`SecretValue`], which zeroizes on drop and has no `Display` and a redacted `Debug`.
 //! * [`Secrets::set`] stores in the OS keyring when one answers within [`KEYRING_TIMEOUT`], else in the fallback file.
 //! * [`Secrets::inject`] puts values into one child's environment, never into argv.
+//! * [`Secrets::session_specs`] names the secrets marked "expose to sessions" (index metadata, off by default) that
+//!   new local sessions get through `cx secrets get --exec` (docs/secrets.md).
 //!
 //! Backends: the keyring is the Secret Service through libsecret's `secret-tool` on Linux, values on its stdin and
 //! stdout only (no D-Bus stack in this binary, so the static musl release keeps working). macOS uses the file:
@@ -41,7 +43,7 @@ pub const CLOUDFLARE_TOKEN: &str = "cloudflare.api_token";
 const WELL_KNOWN: &[(&str, &str)] = &[(CLOUDFLARE_TOKEN, "CLOUDFLARE_API_TOKEN")];
 
 /// The variable [`Secrets::inject`] sets for `name` unless the spec says `VAR=NAME`.
-fn default_env_var(name: &str) -> String {
+pub fn default_env_var(name: &str) -> String {
     WELL_KNOWN
         .iter()
         .find(|(n, _)| *n == name)
@@ -75,6 +77,21 @@ pub struct SecretMeta {
     pub backend: Backend,
     /// Value length in characters, for the masked "•••• (40)" display.
     pub length: usize,
+    /// New sessions cx starts on this device get the value as an environment variable.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub expose: bool,
+    /// That variable when it is not [`default_env_var`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<String>,
+}
+
+impl SecretMeta {
+    /// The variable new sessions get this secret in.
+    pub fn env_var(&self) -> String {
+        self.env
+            .clone()
+            .unwrap_or_else(|| default_env_var(&self.name))
+    }
 }
 
 /// A secret value: zeroized on drop, no `Display`, `Debug` prints only its length.
@@ -459,9 +476,11 @@ impl Secrets {
             name: name.to_string(),
             created: previous.as_ref().map_or(t, |p| p.created),
             updated: t,
-            last_used: previous.and_then(|p| p.last_used),
+            last_used: previous.as_ref().and_then(|p| p.last_used),
             backend,
             length: value.chars().count(),
+            expose: previous.as_ref().is_some_and(|p| p.expose),
+            env: previous.and_then(|p| p.env),
         };
         index.version = 1;
         index.secrets.insert(name.to_string(), meta.clone());
@@ -520,6 +539,54 @@ impl Secrets {
     #[cfg(test)]
     fn stale_keyring(&self) -> Result<Vec<String>> {
         Ok(self.read_index()?.stale_keyring.into_iter().collect())
+    }
+
+    /// Whether new sessions get `name`, and in which variable (None or empty: the default one). Refused when
+    /// another exposed secret already sets that variable, or for `CX_*`, which cx sets in sessions itself.
+    pub fn set_exposure(&self, name: &str, expose: bool, env: Option<&str>) -> Result<SecretMeta> {
+        let _lock = lock(&self.dir)?;
+        let mut index = self.read_index()?;
+        let mut meta = index
+            .secrets
+            .get(name)
+            .cloned()
+            .with_context(|| format!("no secret named {name}"))?;
+        meta.expose = expose;
+        meta.env = env
+            .filter(|v| !v.is_empty() && *v != default_env_var(name))
+            .map(str::to_string);
+        let var = meta.env_var();
+        if expose || meta.env.is_some() {
+            validate_env_var(&var)?;
+            ensure!(!var.starts_with("CX_"), "cx sets the CX_ variables itself");
+        }
+        if expose {
+            if let Some(other) = index
+                .secrets
+                .values()
+                .find(|m| m.expose && m.name != name && m.env_var() == var)
+            {
+                bail!("{} already sets {var}", other.name);
+            }
+        }
+        index.secrets.insert(name.to_string(), meta.clone());
+        self.write_index(&index)?;
+        Ok(meta)
+    }
+
+    /// `VAR=NAME` for each secret new sessions get, after checking each value can be read here now (a locked
+    /// keyring is reported to the launcher, not as a session that dies at startup). Empty when none is exposed,
+    /// without contacting a backend.
+    pub fn session_specs(&self) -> Result<Vec<String>> {
+        let exposed: Vec<SecretMeta> = self.list()?.into_iter().filter(|m| m.expose).collect();
+        for m in &exposed {
+            self.get(&m.name)
+                .with_context(|| format!("secret {} is exposed to sessions", m.name))?;
+        }
+        Ok(exposed
+            .iter()
+            .map(|m| format!("{}={}", m.env_var(), m.name))
+            .collect())
     }
 
     /// Set each secret as an environment variable of `cmd` only. A spec is `NAME` (the well-known variable, else
@@ -1431,5 +1498,60 @@ esac
         assert_eq!(store.matches(CANARY).count(), 1);
         assert_eq!(mode(&dir.join(STORE)), 0o600);
         assert!(seen[0].contains("redacted"));
+    }
+
+    #[test]
+    fn exposure_is_off_by_default_kept_on_rotation_and_named_in_specs() {
+        let (_t, dir) = temp();
+        let s = file_store(&dir);
+        s.set("anthropic.api_key", CANARY).unwrap();
+        s.set("robot.wifi", "w").unwrap();
+        assert!(!s.meta("anthropic.api_key").unwrap().unwrap().expose);
+        assert!(s.session_specs().unwrap().is_empty());
+        // The index stays byte-compatible for secrets nobody exposed.
+        assert!(!fs::read_to_string(dir.join(INDEX)).unwrap().contains("expose"));
+
+        s.set_exposure("anthropic.api_key", true, None).unwrap();
+        assert_eq!(s.session_specs().unwrap(), ["ANTHROPIC_API_KEY=anthropic.api_key"]);
+        // Rotating the value keeps the choice; a custom variable is kept, and the default is not stored.
+        s.set("anthropic.api_key", "rotated").unwrap();
+        assert!(s.meta("anthropic.api_key").unwrap().unwrap().expose);
+        let m = s.set_exposure("robot.wifi", true, Some("WIFI_PASS")).unwrap();
+        assert_eq!(m.env.as_deref(), Some("WIFI_PASS"));
+        let m = s.set_exposure("anthropic.api_key", true, Some("ANTHROPIC_API_KEY")).unwrap();
+        assert_eq!(m.env, None);
+        assert_eq!(
+            s.session_specs().unwrap(),
+            ["ANTHROPIC_API_KEY=anthropic.api_key", "WIFI_PASS=robot.wifi"]
+        );
+        // The specs are what `cx secrets get --exec` takes.
+        let mut cmd = std::process::Command::new("true");
+        let specs = s.session_specs().unwrap();
+        let specs: Vec<&str> = specs.iter().map(String::as_str).collect();
+        assert_eq!(s.inject(&specs, &mut cmd).unwrap(), ["ANTHROPIC_API_KEY", "WIFI_PASS"]);
+
+        // One variable per exposed secret, never a CX_ one, always a valid name.
+        assert!(s.set_exposure("robot.wifi", true, Some("ANTHROPIC_API_KEY")).is_err());
+        assert!(s.set_exposure("robot.wifi", true, Some("CX_MANAGED_SOCKET")).is_err());
+        assert!(s.set_exposure("robot.wifi", true, Some("1X")).is_err());
+        assert!(s.set_exposure("missing", true, None).is_err());
+        assert_eq!(s.meta("robot.wifi").unwrap().unwrap().env.as_deref(), Some("WIFI_PASS"));
+
+        s.set_exposure("anthropic.api_key", false, None).unwrap();
+        s.set_exposure("robot.wifi", false, Some("WIFI_PASS")).unwrap();
+        assert!(s.session_specs().unwrap().is_empty());
+        let index = fs::read_to_string(dir.join(INDEX)).unwrap();
+        assert!(!index.contains(CANARY) && !index.contains("rotated"));
+    }
+
+    #[test]
+    fn exposed_secret_missing_from_its_backend_fails_the_launch_not_the_session() {
+        let (_t, dir) = temp();
+        let s = file_store(&dir);
+        s.set("anthropic.api_key", CANARY).unwrap();
+        s.set_exposure("anthropic.api_key", true, None).unwrap();
+        fs::write(dir.join(STORE), "{}").unwrap();
+        let err = format!("{:#}", s.session_specs().unwrap_err());
+        assert!(err.contains("exposed to sessions") && !err.contains(CANARY), "{err}");
     }
 }

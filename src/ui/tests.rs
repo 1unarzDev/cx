@@ -7127,6 +7127,23 @@ fn yazi_unsupported_defaults_give_way_to_cx_globals() {
 }
 
 #[test]
+fn yazi_n_and_bang_start_a_session_here_and_n_finds_during_a_find() {
+    for key in ['n', '!'] {
+        let (mut a, _rx) = file_app();
+        press(&mut a, key);
+        assert!(
+            matches!(a.dialog, Some(Dialog::SessionChooser(..))),
+            "{key} did not open the session chooser"
+        );
+    }
+    // While a find is active, `n` is yazi's next match, not a new session.
+    let (mut a, _rx) = file_app();
+    a.yz.find = Some(("x".into(), false));
+    press(&mut a, 'n');
+    assert!(a.dialog.is_none(), "n during a find opened a dialog");
+}
+
+#[test]
 fn yazi_semicolon_panel_closes_on_success_and_colon_stays() {
     let (mut a, _rx) = file_app();
     press(&mut a, ';');

@@ -4,6 +4,13 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.3.2
+
+A hotfix on v0.3.1.
+
+### Fixes
+- **`n` starts a session in Files.** In the file view, `n` (like `!`) opens the new-session chooser for the current folder, as it does everywhere else in cx. While a find is active, `n` and `N` still move between matches.
+
 ## v0.3.1
 
 v0.3.0 was tagged but never published: its release build stopped on a CI runner setting. v0.3.1 is the same release with that fixed.

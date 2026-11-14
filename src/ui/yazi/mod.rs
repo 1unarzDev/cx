@@ -279,7 +279,11 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(["f"], Filter, "Filter files"),
             b!(["/"], Find(false), "Find next file"),
             b!(["?"], Find(true), "Find previous file"),
-            b!(["n"], FindNext(false), "Next found"),
+            b!(
+                ["n"],
+                FindNext(false),
+                "New session here · next found during a find"
+            ),
             b!(["N"], FindNext(true), "Previous found"),
             b!([",", "m"], Sort("mtime", false), "Sort by modified time"),
             b!(
@@ -1063,6 +1067,9 @@ impl App {
                 self.text.clear();
                 self.rename_cursor = 0;
             }
+            // `n` with no find active starts a session in this folder (cx's `n` everywhere
+            // else); with a find active it is yazi's next/previous match.
+            FindNext(false) if self.yz.find.is_none() => self.session_shortcut(),
             FindNext(prev) => {
                 let dir = self.yz.find.as_ref().map_or(prev, |(_, p)| *p != prev);
                 self.next_file_match(if dir { -1 } else { 1 });

@@ -22,6 +22,9 @@ has no mesh, long names and eight sessions.
 
 Each capture (config x tier x size) is kept as text, cell JSON and PNG under
 ~/.cache/cx-hub-matrix/<run>/, with contact.png (dark) and contact-<tier>.png sheets.
+`fleet-5` is the user's own: every device direct, none in a cx-deployed mesh, two reached
+over WARP (an overlay address and a mesh DNS name), two never seen.
+
 Checks per capture: the viewer is alive (no panic); device labels never overlap; every
 device's name shows or its folded cluster counts it (letters only on the smallest sizes);
 no cell has a background or reverse video (the sessions print none); the vitals strip shows
@@ -79,6 +82,16 @@ def configs():
                                relay=None, seen=7200, temp=None, cpu=0.3 + 0.1 * i)
                           for i, nm in enumerate(LONG)])
     out.append(long5)
+    # The user's own fleet: every device direct (no cx-deployed mesh), two of them reached
+    # over Cloudflare WARP (an overlay address, a mesh DNS name), two never seen.
+    direct = dict(mesh=None, lan=False, relay=None, temp=None)
+    fleet5 = dict(name='fleet-5', lab=None, meshes=0, temp=47.0, sessions=four,
+                  devices=[dict(direct, name='innovation', state='up', target='fx@100.96.0.21', seen=3, cpu=.4),
+                           dict(direct, name='creation', state='up', target='fx@creation.mesh.example.net',
+                                seen=3, cpu=.2),
+                           dict(direct, name='blastoise-jetson', state='hang', seen=None, cpu=.1),
+                           dict(direct, name='blastoise-odroid', state='down', seen=None, cpu=.1)])
+    out.append(fleet5)
     return {c['name']: c for c in out}
 
 
@@ -177,6 +190,8 @@ class Fleet:
         self.build()
 
     def target(self, i, d):
+        if d.get('target'):
+            return d['target']
         return f'fx@192.168.77.{10 + i}' if d['lan'] else f"fx@{d['name']}"
 
     def build(self):
@@ -200,7 +215,7 @@ class Fleet:
             if d['relay']:
                 j = next(k for k, x in enumerate(cfg['devices']) if x['name'] == d['relay'])
                 routes[target] = [self.target(j, cfg['devices'][j])]
-            if d['state'] == 'down':
+            if d['state'] == 'down' and d['seen'] is not None:
                 seen.append((f'dev{i}', d, target))
             if d['mesh'] == 0:
                 warp.append(dict(name=d['name'], host=d['name'], os='linux', ipv4=f'100.96.0.{10 + i}',
@@ -561,8 +576,15 @@ def check(cfg, tier, size, text, dump, alive, lab):
     if uni and remote_up and not tree:
         curves = len(BRAILLE.findall(mapped))
         lab_curves = len(BRAILLE.findall(lab_mapped))
-        if curves < 4 or lab_curves > 20 and curves < 0.5 * lab_curves:
+        # (Dotted links are sparse: a small map may draw as few cells as the lab does.)
+        if curves < min(4, lab_curves or 4) or lab_curves > 20 and curves < 0.5 * lab_curves:
             fails.append(f'curves: {curves} braille cells (the lab draws {lab_curves})')
+    # The nebula link style: evenly spaced dots, never a continuous braille run (the
+    # smooth curves of v0.2.2), lit or not, meshed or direct.
+    if uni and not tree:
+        runs = re.findall('[⠁-⣿]{4,}', mapped)
+        if runs:
+            fails.append(f'solid braille runs on the map: {runs[:3]}')
     # Structure: labels where the lab puts them (the phone tree: in the lab's order).
     if lab_d and len(names) > 1:
         lab_found = labels(lab_lines, names, lstrip if lstrip is not None else max(rows - 3, 1))

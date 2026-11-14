@@ -781,6 +781,37 @@ mod nebula_tests {
         (buf, d)
     }
 
+    /// Every link in the nebula style, selected or not, meshed or direct: evenly
+    /// spaced dots, never four braille cells in a row as v0.2.2's smooth curves drew
+    /// (three where links fan out of the root side by side). Up to ten devices: past
+    /// that a folded cluster's bundle crowds its dots together.
+    #[test]
+    fn links_are_evenly_dotted_never_solid_runs() {
+        for s in fixtures().into_iter().filter(|s| s.devices.len() <= 10) {
+            for &(w, h) in &SIZES {
+                for sel in 0..s.devices.len() {
+                    let (buf, _) = drawn(&s, sel, w, h);
+                    for y in 0..h {
+                        let row: String =
+                            (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect();
+                        if row.contains("this device") || row.contains("SESSIONS") {
+                            break;
+                        }
+                        let mut run = 0;
+                        for c in row.chars() {
+                            run = if ('\u{2801}'..='\u{28ff}').contains(&c) {
+                                run + 1
+                            } else {
+                                0
+                            };
+                            assert!(run < 4, "{} {w}x{h} sel {sel} row {y}: {row}", s.fixture);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn centre(r: Rect) -> (f32, f32) {
         (
             f32::from(r.x) + f32::from(r.width) / 2.0,

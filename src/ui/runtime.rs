@@ -387,9 +387,23 @@ fn read_input(
     winch_read: &std::os::fd::OwnedFd,
 ) {
     use std::os::fd::AsRawFd;
+    let mut replies = super::caps::ReplyFilter::default();
+    let send = |events: Vec<Event>| {
+        events
+            .into_iter()
+            .all(|e| tx.send(Wake::Input(e, Instant::now())).is_ok())
+    };
     loop {
         {
             let mut state = lock.lock().unwrap();
+            if state.pauses > 0 {
+                // Held keys go out before someone else takes the terminal.
+                drop(state);
+                if !send(replies.flush()) {
+                    return;
+                }
+                state = lock.lock().unwrap();
+            }
             while state.pauses > 0 {
                 state.parked = true;
                 changed.notify_all();
@@ -407,7 +421,7 @@ fn read_input(
             let Ok(input) = event::read() else {
                 return;
             };
-            if tx.send(Wake::Input(input, Instant::now())).is_err() {
+            if !send(replies.push(input, Instant::now())) {
                 return;
             }
         }
@@ -417,7 +431,17 @@ fn read_input(
                 events: libc::POLLIN,
                 revents: 0,
             });
-        unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
+        // Held events that may be a late probe reply wait at most until their deadline.
+        let timeout = replies.deadline().map_or(-1, |d| {
+            d.saturating_duration_since(Instant::now()).as_millis() as i32 + 1
+        });
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) };
+        if ready == 0 {
+            if !send(replies.expire(Instant::now())) {
+                return;
+            }
+            continue;
+        }
         if fds[0].revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
             && fds[0].revents & libc::POLLIN == 0
         {
@@ -2086,9 +2110,6 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         };
         {
             for (input, observed) in batch {
-                if super::caps::swallow_stray_reply(&input) {
-                    continue;
-                }
                 if !wheel_reports.accepts(&input, observed) {
                     continue;
                 }

@@ -117,6 +117,9 @@ fn render_yazi(
         frame.set_cursor_position(at);
     }
     let files = hitmap::file_rows(app);
+    for (r, key) in &d.keys {
+        hitmap::register_action(*r, &format!("yazi:{key}"), &files);
+    }
     for (i, row) in v.current.rows.iter().enumerate() {
         let r = Rect::new(d.current.x, d.current.y + i as u16, d.current.width, 1);
         hitmap::register_action(r, &format!("file:{}", row.name), &files);

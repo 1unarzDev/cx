@@ -101,10 +101,7 @@ fn hub_letters_open_devices_and_shift_h_returns_from_anywhere() {
     press(&mut a, l);
     a.key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
     assert!(a.view == View::Files);
-    // In Files Esc only clears (yazi's: a double Esc "to be sure" stays); H is the hub.
-    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(a.view == View::Files);
+    // In Files H is the hub.
     press(&mut a, 'H');
     assert!(a.view == View::Network);
     // `e` then a letter opens the link to that device.

@@ -232,6 +232,8 @@ Guard notation:
 | `36cd089`, `7fba202` v0.1.3–4 | Ctrl+C/Ctrl+Z and builtins misbehaved in POSIX shell profiles | | py:native_command_pty [ci] (also CX_TEST_SHELL=/bin/sh) |
 | `20a3737` v0.1.85 | Stale "Connection closed" text showed on session handoff | LeaveAlternateScreen restored the old primary buffer | py:terminal_startup_loader_pty [ci] (raw `\e[?1049l\e[2J`) |
 | `2acff83` v0.1.11 | OSC 52 copies never reached the viewer | | py:clipboard_pty [ci] |
+| v0.3.0-pre (hotfix030) | Stuck in Files on real terminals: keys typed into a stray `run:` prompt, no visible way out | a startup-probe reply arriving after its 100 ms limit reached the event loop as keys (`ESC _ G i=31;OK ESC \\` read as Alt+_, G, i, =, 3, 1, `;` (yazi's shell prompt), O, K); the old guard only knew OSC 11 and swallowed every key after an Alt+] | **NEW** py:terminal_replies_pty (kitty/ghostty/foot replies prompt, late, split, inside tmux), rust:late_probe_replies_are_dropped_only_when_complete, rust:yazi_esc_clears_first_then_leaves_files_and_ctrl_s_only_cancels_find |
+| v0.3.0-pre (hotfix030) | Hub links drew v0.2.2's continuous braille curves on a direct, ungrouped fleet | key links stepped every other raster dot (a solid run on shallow curves) and a lit link turned solid; WARP members reached by overlay address were never grouped without a cx-deployed mesh | **NEW** rust:links_are_evenly_dotted_never_solid_runs, rust:a_link_dots_evenly_along_any_slope, rust:overlay_addresses_group_devices_without_mesh_state, py:hub_matrix `fleet-5` |
 
 ## Test-infrastructure regressions (fixture or CI only)
 

@@ -173,6 +173,9 @@ pub(crate) struct Drawn {
     pub parent: Rect,
     pub cursor: Option<(u16, u16)>,
     pub tabs: Vec<(Rect, usize)>,
+    /// Tappable key hints (the header's back chip, the status line's hint) and the
+    /// key each one presses.
+    pub keys: Vec<(Rect, char)>,
 }
 
 const CAP_L: &str = "\u{e0b6}";
@@ -715,7 +718,7 @@ fn column(
     }
 }
 
-fn status(p: &mut Pen, t: &Theme, r: Rect, s: &Status) {
+fn status(p: &mut Pen, t: &Theme, r: Rect, s: &Status, keys: &mut Vec<(Rect, char)>) {
     if r.width == 0 {
         return;
     }
@@ -814,6 +817,28 @@ fn status(p: &mut Pen, t: &Theme, r: Rect, s: &Status) {
             )
         })
         .or_else(|| s.message.clone().map(|m| (m, None, t.status)));
+    // Nothing to report: how to get out (each part taps as its key).
+    if mid.is_none() {
+        let sep = if look.unicode { " · " } else { " | " };
+        let parts = [('q', "q back"), ('H', "H hub"), ('~', "~ help")];
+        let room = end.saturating_sub(x + 2) as usize;
+        let fits = (1..=parts.len()).rev().find(|&n| {
+            parts[..n].iter().map(|(_, l)| width(l)).sum::<usize>() + (n - 1) * 3 <= room
+        });
+        if let Some(n) = fits {
+            let total = parts[..n].iter().map(|(_, l)| width(l)).sum::<usize>() + (n - 1) * 3;
+            let dim = Style::default().add_modifier(Modifier::DIM);
+            let mut hx = end.saturating_sub(total as u16 + 1);
+            for (i, (key, label)) in parts[..n].iter().enumerate() {
+                if i > 0 {
+                    hx = p.put(hx, r.y, end, sep, dim);
+                }
+                let start = hx;
+                hx = p.put(hx, r.y, end, label, dim);
+                keys.push((Rect::new(start, r.y, hx - start, 1), *key));
+            }
+        }
+    }
     if let Some((text, frac, st)) = mid {
         let room = end.saturating_sub(x + 2);
         let bar = if frac.is_some() && room >= 30 {
@@ -1091,10 +1116,25 @@ pub(crate) fn render(v: &View, t: &Theme, look: Look, area: Rect, buf: &mut Buff
         )
     });
     let rw = right.as_ref().map_or(0, |(s, _)| width(s) as u16 + 1);
-    let left_room = header.width.saturating_sub(rw) as usize;
+    // A dim, tappable way out first (it presses q).
+    let back = if look.unicode { "‹ back" } else { "< back" };
+    let mut x = header.x;
+    if header.width >= 24 + rw {
+        x = p.put(
+            x,
+            header.y,
+            header.right() - rw,
+            back,
+            Style::default().add_modifier(Modifier::DIM),
+        );
+        d.keys
+            .push((Rect::new(header.x, header.y, x - header.x, 1), 'q'));
+        x = p.put(x, header.y, header.right() - rw, " ", t.cwd);
+    }
+    let left_room = (header.right() - rw).saturating_sub(x) as usize;
     let flags_w = width(&v.flags).min(left_room / 2);
     let cwd = ellipsis_left(&v.cwd, left_room - flags_w, look.unicode);
-    let x = p.put(header.x, header.y, header.right() - rw, &cwd, t.cwd);
+    let x = p.put(x, header.y, header.right() - rw, &cwd, t.cwd);
     p.put(x, header.y, header.right() - rw, &v.flags, t.cwd);
     if let Some((s, st)) = &right {
         let x = header.right() - rw;
@@ -1175,7 +1215,7 @@ pub(crate) fn render(v: &View, t: &Theme, look: Look, area: Rect, buf: &mut Buff
     if let Some(Preview::Folder(c)) = &v.preview {
         column(&mut p, t, vr, c, Which::Preview, v.linemode, v.now);
     }
-    status(&mut p, t, status_r, &v.status);
+    status(&mut p, t, status_r, &v.status, &mut d.keys);
     d
 }
 

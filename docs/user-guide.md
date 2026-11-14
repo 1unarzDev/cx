@@ -99,6 +99,8 @@ Select files → `s` and the destination's letter (or `t` → choose device) →
 
 ## Search and foreground commands
 
+Leaving Files: `q` goes back, and so does Esc once there is no selection, visual range, search or filter left to clear (unlike yazi, where Esc then does nothing); `H` goes to the hub. The header's dim `‹ back` and the status line's `q back · H hub · ~ help` hint are tappable.
+
 Each device's screen lists its persistent work; file operations live on browser keys. In Files, `/` highlights matching names without hiding or reordering files; Enter finishes typing, `n`/`N` cycle matches, and Escape clears the search. `f` filters names. With no active search, `n` chooses a session profile for that folder; New session remains available through the palette while searching. `:` opens a command prompt pinned to the execution host/folder and runs it in the native terminal; Ctrl+C interrupts the command; Ctrl+Z offers Resume/Cancel; Enter returns after completion. Fish/Bash/Zsh load interactive wrappers; sh/dash commands use login startup. Shell startup themes should respect `CX_VIEWER_THEME=1` during native commands; cx does not reset the viewing terminal’s palette. Commands are foreground work; cx does not save or retry their text, and do not survive disconnect as managed sessions do.
 
 ## Previews and Markdown

@@ -95,105 +95,123 @@ pub fn render_send_to(
     cx.hits.into_inner()
 }
 
-/// The attach expand (and the detach shrink, `t` running back) part-way: a rect eased
-/// out from the session's tile (`from`) to the whole area, `t` thousandths of the way.
-/// Inside it the session's screen is laid out as tmux will paint it (its rows from the
-/// top, the last row left to tmux's status line) from the rect's left edge, showing the
-/// text's tail while the rect is shorter than it (as the tile did) and its top once
-/// taller, so it lands in place: nothing moves at the hand-off.
-/// The rect has a 1-cell edge while it moves; what it has not covered yet steps back
-/// (dim). Within a cell of the full area the edge is gone, so
-/// the hand-off (the plain screen) only brightens it. Cells only (no targets).
+/// The rect a tile has grown to at `e` (0 the tile, 1 the full `area`), eased by the
+/// caller. Within a cell of the full screen on every side it is the full screen: the
+/// last frames never crawl a column at a time.
+pub fn expand_rect(from: Rect, area: Rect, e: f32) -> Rect {
+    let e = e.clamp(0.0, 1.0);
+    let lerp = |a: u16, b: u16| (f32::from(a) + (f32::from(b) - f32::from(a)) * e).round() as u16;
+    let (l, t) = (lerp(from.left(), area.left()), lerp(from.top(), area.top()));
+    let (r, b) = (lerp(from.right(), area.right()), lerp(from.bottom(), area.bottom()));
+    let near = |a: u16, b: u16| a.abs_diff(b) <= 1;
+    if near(l, area.left()) && near(t, area.top()) && near(r, area.right()) && near(b, area.bottom())
+    {
+        return area;
+    }
+    Rect::new(l, t, r.saturating_sub(l), b.saturating_sub(t))
+}
+
+/// The screen an attach lands on when cx has no live grid of it: the session's screen
+/// as `attached` lays it out (its bar dropped: tmux's status is the last row).
+pub fn landing_screen(state: &LabState, caps: &LabCaps, area: Rect, session: &str) -> Option<Buffer> {
+    let x = state.session(session)?;
+    let full = Rect::new(0, 0, area.width, area.height + 1);
+    let mut scratch = Buffer::empty(full);
+    if area.width >= 12 && area.height >= 3 {
+        views::attached(&Cx::new(state, caps, full), &mut scratch, x);
+    }
+    let mut out = Buffer::empty(Rect::new(0, 0, area.width, area.height));
+    for y in 0..area.height {
+        for x in 0..area.width {
+            out[(x, y)] = scratch[(x, y + 1)].clone();
+        }
+    }
+    Some(out)
+}
+
+/// The attach expand (or detach shrink) at `e` (eased, 0 the tile `from`, 1 the full
+/// `area`): `screen`, the frame the attach lands on, in a rect growing from the tile.
+/// The rect keeps the tile's anchor (the text's tail at its bottom edge) and eases to
+/// the screen's own rows, so the last frame is the landed screen cell for cell. A thin
+/// edge rides outside the rect (never over the text); the hub behind it dims.
 pub fn render_expand(
     state: &LabState,
     caps: &LabCaps,
     area: Rect,
     buf: &mut Buffer,
-    session: &str,
+    screen: &Buffer,
     from: Rect,
-    t: u16,
+    e: f32,
 ) {
-    let Some(x) = state.session(session) else {
-        return;
-    };
-    let e = ease_out(f32::from(t.min(1000)) / 1000.0);
-    let lerp = |a: u16, b: u16| (f32::from(a) + (f32::from(b) - f32::from(a)) * e).round() as u16;
-    let r = Rect::new(
-        lerp(from.x, area.x),
-        lerp(from.y, area.y),
-        lerp(from.width, area.width),
-        lerp(from.height, area.height),
-    )
-    .intersection(area)
-    .intersection(buf.area);
+    let r = expand_rect(from, area, e).intersection(area).intersection(buf.area);
     if r.is_empty() {
         return;
     }
-    let cx = Cx::new(state, caps, area);
-    let moving = r != area;
-    let dim = Style::default().add_modifier(Modifier::DIM);
-    // The screen at its final place: `attached` draws its bar on row 0 and the pane
-    // under it, so it is drawn one row taller and read from row 1 (the pane's rows,
-    // then a blank last row where tmux's status goes).
-    let full = Rect::new(0, 0, area.width, area.height + 1);
-    let mut scratch = Buffer::empty(full);
-    if area.width >= 12 && area.height >= 3 {
-        let sx = Cx::new(state, caps, full);
-        views::attached(&sx, &mut scratch, x);
-    }
-    // The pane's rows in use (its text ends above blank rows).
-    let used = (1..=area.height)
+    let landed = r == area;
+    // The screen's rows in use: the tile showed their tail.
+    let sa = screen.area;
+    let used = (0..sa.height)
         .rev()
-        .find(|&y| (0..area.width).any(|x| scratch[(x, y)].symbol() != " "))
-        .unwrap_or(0);
-    // A rect shorter than that shows the text's tail (as the tile did), a taller one its
-    // top: the screen lands in place as the rect reaches the full area.
-    let top = used.saturating_sub(r.height);
+        .find(|&y| (0..sa.width).any(|x| screen[(x, y)].symbol() != " "))
+        .map_or(0, |y| y + 1);
+    let off = if landed {
+        0
+    } else {
+        let tail = used.saturating_sub(from.height);
+        (f32::from(tail) * (1.0 - e.clamp(0.0, 1.0))).round() as u16
+    };
+    let dim = Style::default().add_modifier(Modifier::DIM);
     for y in area.top()..area.bottom() {
-        for xx in area.left()..area.right() {
-            let c = &mut buf[(xx, y)];
-            if !r.contains((xx, y).into()) {
-                if moving {
-                    c.set_style(dim);
-                }
+        for x in area.left()..area.right() {
+            let c = &mut buf[(x, y)];
+            if !r.contains((x, y).into()) {
+                c.set_style(dim);
                 continue;
             }
-            let sy = y - r.y + top + 1;
-            *c = if sy <= area.height {
-                scratch[(xx - r.x, sy)].clone()
+            let (sx, sy) = (x - r.x, y - r.y + off);
+            *c = if sx < sa.width && sy < sa.height {
+                screen[(sx, sy)].clone()
             } else {
                 ratatui::buffer::Cell::default()
             };
         }
     }
-    let edge = r.width + 2 < area.width || r.height + 2 < area.height;
-    if moving && edge && r.width >= 6 && r.height >= 4 {
-        let st = cx.ink(Tok::Accent, 0.7);
-        let (h, v) = (cx.g("─", "-"), cx.g("│", "|"));
-        let (b, rt) = (r.bottom() - 1, r.right() - 1);
-        for xx in r.x + 1..rt {
-            cx.put(buf, xx, r.y, 1, h, st);
-            cx.put(buf, xx, b, 1, h, st);
-        }
-        for y in r.y + 1..b {
-            cx.put(buf, r.x, y, 1, v, st);
-            cx.put(buf, rt, y, 1, v, st);
-        }
-        for (xx, y, c) in [
-            (r.x, r.y, cx.g("╭", "+")),
-            (rt, r.y, cx.g("╮", "+")),
-            (r.x, b, cx.g("╰", "+")),
-            (rt, b, cx.g("╯", "+")),
-        ] {
-            cx.put(buf, xx, y, 1, c, st);
-        }
+    if landed {
+        return;
     }
+    // The edge, one cell outside the rect (clipped by the screen), in one ink.
+    let cx = Cx::new(state, caps, area);
+    let st = cx.ink(Tok::Accent, 0.7);
+    let (h, v) = (cx.g("─", "-"), cx.g("│", "|"));
+    let (x0, y0) = (i32::from(r.x) - 1, i32::from(r.y) - 1);
+    let (x1, y1) = (i32::from(r.right()), i32::from(r.bottom()));
+    let mut put = |x: i32, y: i32, g: &str| {
+        let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+            return;
+        };
+        if area.contains((x, y).into()) {
+            buf[(x, y)] = ratatui::buffer::Cell::default();
+            cx.put(buf, x, y, 1, g, st);
+        }
+    };
+    for x in x0 + 1..x1 {
+        put(x, y0, h);
+        put(x, y1, h);
+    }
+    for y in y0 + 1..y1 {
+        put(x0, y, v);
+        put(x1, y, v);
+    }
+    put(x0, y0, cx.g("╭", "+"));
+    put(x1, y0, cx.g("╮", "+"));
+    put(x0, y1, cx.g("╰", "+"));
+    put(x1, y1, cx.g("╯", "+"));
 }
 
-/// Ease-out quad: quick to leave, a long soft landing (gentler than cubic, so the first
-/// frames still show the tile moving rather than jumping).
+/// Ease-out cubic: off the tile at once, a long soft landing that reaches the full
+/// screen (within a cell) at about three quarters of the time.
 pub fn ease_out(t: f32) -> f32 {
-    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(2)
+    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
 }
 
 /// Session ids in hub order (what needs you first), as the hub's tiles rank them.

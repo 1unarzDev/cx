@@ -115,10 +115,12 @@ fn lab_capture() {
                         let tile = targets.iter().find(|t| {
                             t.action.starts_with("tile:") && t.action.ends_with(&format!(":{id}"))
                         });
-                        if let Some(tile) = tile {
-                            let area = buf.area;
+                        let area = buf.area;
+                        let screen = super::mission::landing_screen(&state, &caps, area, &id);
+                        if let (Some(tile), Some(screen)) = (tile, screen) {
+                            let e = super::mission::ease_out(f32::from(t.min(1000)) / 1000.0);
                             super::mission::render_expand(
-                                &state, &caps, area, &mut buf, &id, tile.area, t,
+                                &state, &caps, area, &mut buf, &screen, tile.area, e,
                             );
                         }
                     }

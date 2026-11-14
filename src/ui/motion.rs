@@ -14,10 +14,10 @@ use std::time::{Duration, Instant};
 
 /// How long a transition takes.
 pub(super) const GLIDE: Duration = Duration::from_millis(160);
-/// How long the attach expand takes (the attach hands off as it lands), and the detach
-/// shrink (shorter: the hub is what you came back for).
-pub(super) const EXPAND: Duration = Duration::from_millis(130);
-pub(super) const SHRINK: Duration = Duration::from_millis(100);
+/// How long the attach expand takes (ease-out cubic: it lands within a cell at about
+/// three quarters of this, and the attach hands off there), and the detach shrink.
+pub(super) const EXPAND: Duration = Duration::from_millis(90);
+pub(super) const SHRINK: Duration = Duration::from_millis(90);
 
 /// A session's tile growing to the full screen before its attach (`grow`), or the
 /// full screen shrinking back into its tile after a detach. Drawn by the view layer
@@ -34,17 +34,31 @@ pub(super) struct Expand {
 }
 
 impl Expand {
-    /// Progress 0..1 while it plays, None once done.
+    /// Progress 0..1 of the time while it plays, None once done.
     pub(super) fn progress(&self, now: Instant) -> Option<f32> {
         let d = if self.grow { EXPAND } else { SHRINK };
         let t = now.saturating_duration_since(self.start).as_secs_f32() / d.as_secs_f32();
         (t < 1.0).then_some(t)
     }
-    /// The rect is on the full screen to the eye (ease-out quad at 90% of the time is
-    /// 99% of the way, under a cell on any screen up to ~100 rows of travel): an attach
-    /// waiting on it hands off here.
-    pub(super) fn landed(&self, now: Instant) -> bool {
-        self.progress(now).is_none_or(|t| t >= 0.9)
+    /// How far toward the full screen the rect is (eased): a grow eases out into the
+    /// full screen, a shrink eases out of it (it leaves the full screen at once).
+    pub(super) fn reach(&self, now: Instant) -> Option<f32> {
+        let e = super::views::mission::ease_out(self.progress(now)?);
+        Some(if self.grow { e } else { 1.0 - e })
+    }
+    /// When a grow's rect reaches the full `area` (`expand_rect` snaps the last cell):
+    /// the attach hands off then.
+    pub(super) fn lands_at(&self, area: ratatui::layout::Rect) -> Instant {
+        let Some(from) = self.from.filter(|_| self.grow) else {
+            return self.start;
+        };
+        (0..=EXPAND.as_millis() as u64)
+            .map(|ms| Duration::from_millis(ms))
+            .find(|&t| {
+                let e = super::views::mission::ease_out(t.as_secs_f32() / EXPAND.as_secs_f32());
+                super::views::mission::expand_rect(from, area, e) == area
+            })
+            .map_or(self.start + EXPAND, |t| self.start + t)
     }
 }
 /// Above this terminal round trip, frames are better spent elsewhere.
@@ -198,7 +212,17 @@ mod tests {
         let mid = e.progress(t0 + EXPAND / 2).unwrap();
         assert!((0.45..0.55).contains(&mid), "{mid}");
         assert_eq!(e.progress(t0 + EXPAND), None);
-        assert!(!e.landed(t0 + EXPAND / 2) && e.landed(t0 + EXPAND * 9 / 10));
+        // From a tile it lands (the full screen, snapped) before its time is up.
+        let e = Expand {
+            from: Some(ratatui::layout::Rect::new(60, 20, 40, 16)),
+            ..e
+        };
+        let area = ratatui::layout::Rect::new(0, 0, 120, 40);
+        let at = e.lands_at(area) - t0;
+        assert!(at > EXPAND / 2 && at < EXPAND, "{at:?}");
+        let shrink = Expand { grow: false, ..e };
+        assert_eq!(shrink.reach(t0), Some(1.0), "the shrink starts at full screen");
+        assert!(shrink.reach(t0 + SHRINK / 4).unwrap() < 0.6, "and leaves it at once");
     }
 
     #[test]

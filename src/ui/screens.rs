@@ -161,7 +161,14 @@ impl App {
             key,
             from: from.filter(|_| grow),
             grow,
-            start: Instant::now(),
+            // A shrink's first frame is one frame in: the hub shows at once.
+            start: if grow {
+                Instant::now()
+            } else {
+                Instant::now()
+                    .checked_sub(runtime::FRAME_INTERVAL)
+                    .unwrap_or_else(Instant::now)
+            },
         });
     }
     /// Where the last frame drew a session's tile.
@@ -176,20 +183,38 @@ impl App {
             .as_ref()
             .is_some_and(|e| e.progress(now).is_some())
     }
-    /// True while a grow still has a visible way to go (the attach waits for it).
-    pub(super) fn attach_waits(&self, now: Instant) -> bool {
+    /// True while a grow has not yet reached the full `area` (the attach waits for it).
+    pub(super) fn attach_waits(&self, now: Instant, area: Rect) -> bool {
         self.expand
             .as_ref()
-            .is_some_and(|e| e.grow && !e.landed(now))
+            .is_some_and(|e| e.grow && e.progress(now).is_some() && now < e.lands_at(area))
+    }
+    /// A remote attach, prepared, starts once its grow is within one round trip of
+    /// landing: the ssh client shows nothing before the far end answers.
+    pub(super) fn attach_starts_early(&self, now: Instant, area: Rect) -> bool {
+        let (Some(e), Some((d, s, _))) = (self.expand.as_ref(), self.pending_attach.as_ref())
+        else {
+            return false;
+        };
+        let prepared = self
+            .attach_prep
+            .as_ref()
+            .is_some_and(|(k, h)| *k == workspaces::runtime_key(s) && h.is_finished());
+        let lead = self.devices[*d]
+            .target
+            .as_ref()
+            .and_then(|_| self.vitals.get(&self.devices[*d].id))
+            .and_then(|v| v.link().1.into_iter().flatten().reduce(f32::min))
+            .map_or(Duration::ZERO, |ms| Duration::from_secs_f32(ms.min(60.0) / 1000.0));
+        e.grow && prepared && !lead.is_zero() && now + lead >= e.lands_at(area)
     }
     /// What the frame drawn at `now` lays over the screen: the session, its tile and how
-    /// far toward the full screen (thousandths), eased by the view.
-    pub(super) fn expand_frame(&self, now: Instant) -> Option<(String, Rect, u16)> {
+    /// far toward the full screen it is (eased, 0..=1).
+    pub(super) fn expand_frame(&self, now: Instant) -> Option<(String, Rect, f32)> {
         let e = self.expand.as_ref()?;
-        let p = e.progress(now)?;
+        let reach = e.reach(now)?;
         let tile = e.from.or_else(|| self.tile_rect(e.d, &e.key))?;
-        let t = if e.grow { p } else { 1.0 - p };
-        Some((e.key.clone(), tile, (t * 1000.0) as u16))
+        Some((e.key.clone(), tile, reach))
     }
     /// The session holding key `c` on device `d`.
     pub(super) fn session_for_key(&self, d: usize, c: char) -> Option<Session> {

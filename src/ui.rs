@@ -747,6 +747,8 @@ struct App {
     ended: Vec<(String, Session, u64)>,
     /// The attach expand or detach shrink in flight (`motion::Expand`).
     expand: Option<motion::Expand>,
+    /// The pending attach's command, prepared while its tile grows (by runtime key).
+    attach_prep: Option<AttachPrep>,
     last_esc: Option<Instant>,
     onboarding_dismissed: bool,
     /// Where the open file preview was drawn (native images go there).
@@ -929,6 +931,7 @@ impl App {
             last_session: None,
             ended: Vec::new(),
             expand: None,
+            attach_prep: None,
             last_esc: None,
             onboarding_dismissed: false,
             preview_rect: std::cell::Cell::new(None),
@@ -1658,6 +1661,10 @@ fn command_panel_size(area: ratatui::layout::Size) -> (u16, u16) {
     let rows = area.height.saturating_sub(6).clamp(4, 120);
     (cols, rows)
 }
+type AttachPrep = (
+    String,
+    std::thread::JoinHandle<Result<Option<std::process::Command>>>,
+);
 /// A minimal Session describing a command pane, for full-screen expand.
 fn command_panel_session(panel: &CommandPanel) -> Session {
     Session {

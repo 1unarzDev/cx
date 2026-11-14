@@ -283,7 +283,9 @@ fn attaching_from_a_tile_expands_it_and_a_key_skips_it() {
     assert!(e.grow && e.from.is_some_and(|r| r.width < 120), "{e:?}");
     let t0 = e.start;
     let (id, tile, t) = a.expand_frame(t0).unwrap();
-    assert_eq!((tile, t), (e.from.unwrap(), 0));
+    assert_eq!((tile, t), (e.from.unwrap(), 0.0));
+    let area = Rect::new(0, 0, 120, 40);
+    assert!(a.attach_waits(t0, area) && !a.attach_waits(e.lands_at(area), area));
     assert_eq!(id, workspaces::runtime_key(a.slot_sessions(0)[1]));
     assert!(runtime::loop_wait(&a, t0, None) <= runtime::FRAME_INTERVAL);
     let done = t0 + motion::EXPAND;
@@ -297,7 +299,8 @@ fn attaching_from_a_tile_expands_it_and_a_key_skips_it() {
     let e = a.expand.clone().unwrap();
     assert!(!e.grow && e.from.is_none());
     let (_, _, t) = a.expand_frame(e.start).unwrap();
-    assert_eq!(t, 1000, "the shrink starts at full screen");
+    assert_eq!(t, 1.0, "the shrink starts at full screen");
+    assert!(a.expand_frame(Instant::now()).unwrap().2 < 0.7, "its first drawn frame shows the hub");
     // Reduced motion: nothing plays.
     a.expand = None;
     a.motion = motion::Clock::new(true);

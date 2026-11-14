@@ -154,9 +154,11 @@ fn render_frame(
     *app.nav.borrow_mut() = drawn.nav.into_iter().map(|t| (t.area, t.action)).collect();
     *app.moves.borrow_mut() = drawn.moves;
     // The attach expand / detach shrink, over the screen just drawn.
-    if let Some((id, tile, t)) = app.expand_frame(now) {
-        let buf = frame.buffer_mut();
-        views::mission::render_expand(&vm.state, &vm.caps, area, buf, &id, tile, t);
+    if let Some((id, tile, e)) = app.expand_frame(now) {
+        if let Some(screen) = app.landing(&vm, &id, area) {
+            let buf = frame.buffer_mut();
+            views::mission::render_expand(&vm.state, &vm.caps, area, buf, &screen, tile, e);
+        }
     }
     // Phones keep a spacer row above their footer (views::mission::views::draw).
     let spare = u16::from(area.width < 70);

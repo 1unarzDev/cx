@@ -3450,35 +3450,57 @@ pub fn exit_copy_mode(id: &str) {
     }
 }
 pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
+    match attach_command(device, session, observe)? {
+        Some(mut c) => attach_ended(c.status().context("native terminal attachment failed")?),
+        None => attach_terminal_session(device, session, observe),
+    }
+}
+/// How a spawned attach (`attach_command`) ended.
+pub fn attach_ended(result: std::process::ExitStatus) -> Result<()> {
+    if !result.success() {
+        bail!("native terminal attachment ended with {result}");
+    }
+    Ok(())
+}
+/// The attach of a tmux session as a command to spawn on this terminal, its local
+/// preparation (managed server settings, copy mode left) already done, so a caller can
+/// prepare it ahead; None for a terminal session (`attach` runs that one itself).
+pub fn attach_command(device: &Device, session: &Session, observe: bool) -> Result<Option<Command>> {
     if std::env::var_os("TMUX").is_some() {
         bail!("cx attachment from inside tmux requires leaving the outer client first; protected outer sessions are kept intact");
     }
     if session.terminal.is_some() {
-        let payload = attach_payload(&CheckedAttach {
-            session: session.clone(),
-            observe,
-            guard: None,
-            ascii: viewer_ascii(),
-        })?;
-        if device.target.is_some() {
-            let routed = crate::edges::interactive_ssh(device)?;
-            let mut command = Command::new("ssh");
-            command.arg("-t").args(routed.get_args());
-            command.arg(format!(
-                "~/.local/bin/cx native-attach-checked {}",
-                quote(&payload)
-            ));
-            anyhow::ensure!(
-                command
-                    .status()
-                    .context("checked remote attachment failed")?
-                    .success(),
-                ATTACH_REFUSED
-            );
-            return Ok(());
-        }
-        return native_attach_checked(&payload);
+        return Ok(None);
     }
+    attach_tmux_command(device, session, observe).map(Some)
+}
+fn attach_terminal_session(device: &Device, session: &Session, observe: bool) -> Result<()> {
+    let payload = attach_payload(&CheckedAttach {
+        session: session.clone(),
+        observe,
+        guard: None,
+        ascii: viewer_ascii(),
+    })?;
+    if device.target.is_some() {
+        let routed = crate::edges::interactive_ssh(device)?;
+        let mut command = Command::new("ssh");
+        command.arg("-t").args(routed.get_args());
+        command.arg(format!(
+            "~/.local/bin/cx native-attach-checked {}",
+            quote(&payload)
+        ));
+        anyhow::ensure!(
+            command
+                .status()
+                .context("checked remote attachment failed")?
+                .success(),
+            ATTACH_REFUSED
+        );
+        return Ok(());
+    }
+    native_attach_checked(&payload)
+}
+fn attach_tmux_command(device: &Device, session: &Session, observe: bool) -> Result<Command> {
     if session.external {
         if !session.id.starts_with('$') || !session.id[1..].bytes().all(|b| b.is_ascii_digit()) {
             bail!("invalid external session identity");
@@ -3509,7 +3531,7 @@ pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
     if observe {
         args.extend(["-r".into(), "-f".into(), "ignore-size".into()]);
     }
-    let mut c = if let Some(target) = &device.target {
+    let c = if let Some(target) = &device.target {
         if target.starts_with('-') || target.bytes().any(|b| b.is_ascii_whitespace() || b < 32) {
             bail!("invalid SSH target");
         }
@@ -3537,11 +3559,7 @@ pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
         c.args(args);
         c
     };
-    let result = c.status().context("native terminal attachment failed")?;
-    if !result.success() {
-        bail!("native terminal attachment ended with {result}");
-    }
-    Ok(())
+    Ok(c)
 }
 
 /// Open an ordinary login terminal without requiring tmux or the CX helper.

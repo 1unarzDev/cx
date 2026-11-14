@@ -1551,7 +1551,7 @@ fn peek(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession) {
 /// selected, so `⏎` or `-` re-attaches.
 /// An attached session owns the whole terminal under a one-row breadcrumb whose right end
 /// is the tappable detach chip (`Ctrl+\\` does the same from the keyboard).
-fn attached(cx: &Cx, buf: &mut Buffer, x: &LabSession) {
+pub(super) fn attached(cx: &Cx, buf: &mut Buffer, x: &LabSession) {
     let a = cx.area;
     let lines = crate::ui::views::ansi_lines(&x.screen, x.screen_cols);
     let h = a.height.saturating_sub(1);

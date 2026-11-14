@@ -105,7 +105,23 @@ fn lab_capture() {
             }
             for view in &views {
                 for &(w, h) in &sizes {
-                    let (buf, targets) = render_frame(view, &state, &caps, w, h);
+                    let (mut buf, targets) = render_frame(view, &state, &caps, w, h);
+                    // CX_LAB_EXPAND=<session id>:<thousandths>: the attach expand from
+                    // that session's tile, part-way (0 the tile, 1000 full screen).
+                    if let Some((id, t)) = env::var("CX_LAB_EXPAND").ok().and_then(|v| {
+                        let (id, t) = v.rsplit_once(':')?;
+                        Some((id.to_string(), t.parse::<u16>().ok()?))
+                    }) {
+                        let tile = targets.iter().find(|t| {
+                            t.action.starts_with("tile:") && t.action.ends_with(&format!(":{id}"))
+                        });
+                        if let Some(tile) = tile {
+                            let area = buf.area;
+                            super::mission::render_expand(
+                                &state, &caps, area, &mut buf, &id, tile.area, t,
+                            );
+                        }
+                    }
                     let (rows, lint) = dump::dump(&buf, &caps);
                     let targets: Vec<_> = targets
                         .into_iter()

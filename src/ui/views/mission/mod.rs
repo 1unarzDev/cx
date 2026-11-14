@@ -95,6 +95,51 @@ pub fn render_send_to(
     cx.hits.into_inner()
 }
 
+/// The attach expand (and the detach shrink, `t` running back) part-way: the session's
+/// full-screen view drawn into the rect between its tile (`from`) and the whole area,
+/// eased out; `t` is thousandths of the way to full screen. Cells only (no targets).
+pub fn render_expand(
+    state: &LabState,
+    caps: &LabCaps,
+    area: Rect,
+    buf: &mut Buffer,
+    session: &str,
+    from: Rect,
+    t: u16,
+) {
+    let Some(x) = state.session(session) else {
+        return;
+    };
+    let e = ease_out(f32::from(t.min(1000)) / 1000.0);
+    let lerp = |a: u16, b: u16| (f32::from(a) + (f32::from(b) - f32::from(a)) * e).round() as u16;
+    let r = Rect::new(
+        lerp(from.x, area.x),
+        lerp(from.y, area.y),
+        lerp(from.width, area.width),
+        lerp(from.height, area.height),
+    )
+    .intersection(area)
+    .intersection(buf.area);
+    if r.is_empty() {
+        return;
+    }
+    let mut scratch = Buffer::empty(Rect::new(0, 0, r.width, r.height));
+    if r.width >= 12 && r.height >= 3 {
+        let cx = Cx::new(state, caps, scratch.area);
+        views::attached(&cx, &mut scratch, x);
+    }
+    for y in 0..r.height {
+        for xx in 0..r.width {
+            buf[(r.x + xx, r.y + y)] = scratch[(xx, y)].clone();
+        }
+    }
+}
+
+/// Ease-out cubic: fast at first, settling into place.
+pub fn ease_out(t: f32) -> f32 {
+    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
+}
+
 /// Session ids in hub order (what needs you first), as the hub's tiles rank them.
 pub fn by_attention(state: &LabState) -> Vec<String> {
     let caps = LabCaps::default();

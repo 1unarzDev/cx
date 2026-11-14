@@ -134,6 +134,9 @@ impl App {
         // last minute attaches directly. Errored, offline or startup-cache rows
         // keep the round trip, so an unreachable device fails inside cx with a
         // notice instead of suspending the viewer into a hanging ssh.
+        // The tile grows to the full screen while the attach gets going (the check's
+        // round trip, or straight away); the hand-off waits at most for its end.
+        self.start_expand(d, &s, true);
         if optimistic_attach(&s) && self.session_status(d, &s).starts_with('+') {
             // The checked attach re-verifies server, session and creation
             // identity atomically on the execution host, so a click-time

@@ -745,6 +745,8 @@ struct App {
     /// Sessions that ended while cx watched (device id, session, when), newest first;
     /// in memory only. A device with nothing running offers to resume them.
     ended: Vec<(String, Session, u64)>,
+    /// The attach expand or detach shrink in flight (`motion::Expand`).
+    expand: Option<motion::Expand>,
     last_esc: Option<Instant>,
     onboarding_dismissed: bool,
     /// Where the open file preview was drawn (native images go there).
@@ -926,6 +928,7 @@ impl App {
             copy_out: None,
             last_session: None,
             ended: Vec::new(),
+            expand: None,
             last_esc: None,
             onboarding_dismissed: false,
             preview_rect: std::cell::Cell::new(None),

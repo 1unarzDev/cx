@@ -144,6 +144,43 @@ impl App {
         });
         out
     }
+    /// Start the attach expand from the session's tile (when it is on screen), or the
+    /// detach shrink back into it; never with reduced motion.
+    pub(super) fn start_expand(&mut self, d: usize, s: &Session, grow: bool) {
+        let key = workspaces::runtime_key(s);
+        let from = self.tile_rect(d, &key);
+        if self.motion.reduced() || (grow && from.is_none()) {
+            return;
+        }
+        self.expand = Some(motion::Expand {
+            d,
+            key,
+            from: from.filter(|_| grow),
+            grow,
+            start: Instant::now(),
+        });
+    }
+    /// Where the last frame drew a session's tile.
+    fn tile_rect(&self, d: usize, key: &str) -> Option<Rect> {
+        let id = format!("session:{}:{key}", dev_id(d));
+        let nav = self.nav.borrow();
+        nav.iter().find(|(_, a)| *a == id).map(|(r, _)| *r)
+    }
+    /// True while the expand or shrink plays.
+    pub(super) fn expanding(&self, now: Instant) -> bool {
+        self.expand
+            .as_ref()
+            .is_some_and(|e| e.progress(now).is_some())
+    }
+    /// What the frame drawn at `now` lays over the screen: the session, its tile and how
+    /// far toward the full screen (thousandths), eased by the view.
+    pub(super) fn expand_frame(&self, now: Instant) -> Option<(String, Rect, u16)> {
+        let e = self.expand.as_ref()?;
+        let p = e.progress(now)?;
+        let tile = e.from.or_else(|| self.tile_rect(e.d, &e.key))?;
+        let t = if e.grow { p } else { 1.0 - p };
+        Some((e.key.clone(), tile, (t * 1000.0) as u16))
+    }
     /// The session holding key `c` on device `d`.
     pub(super) fn session_for_key(&self, d: usize, c: char) -> Option<Session> {
         self.slot_keys(d)

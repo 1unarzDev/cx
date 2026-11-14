@@ -511,6 +511,9 @@ pub(super) fn loop_wait(app: &App, now: Instant, frame_wait: Option<Duration>) -
     if let Some(next) = app.motion.wait(now) {
         wait = wait.min(next);
     }
+    if app.expanding(now) {
+        wait = wait.min(FRAME_INTERVAL);
+    }
     for deadline in [app.press_deadline()].into_iter().flatten() {
         wait = wait.min(deadline.saturating_duration_since(now));
     }
@@ -1927,7 +1930,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             }
             dirty = true;
         }
-        if app.pending_attach.is_some() && carried.is_empty() {
+        // The expand plays out (at most EXPAND from the key) before the hand-off.
+        let expanding = app.expanding(Instant::now());
+        if app.pending_attach.is_some() && carried.is_empty() && !expanding {
             // Typed input stays cx-owned: a queued key, paste, click or wheel is
             // handled first and may cancel the attachment. Passive reports
             // (pointer motion, button release, focus, resize) never postpone it.
@@ -1937,8 +1942,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 resume_input();
             }
         }
-        if app.pending_attach.is_some() && carried.is_empty() {
+        if app.pending_attach.is_some() && carried.is_empty() && !expanding {
             let (d, session, observe) = app.pending_attach.take().unwrap();
+            app.expand = None;
             cleanup_native_preview(&mut screen, &mut native_preview)?;
             app.stop_watches();
             // The tmux client paints over the frame it shows: the live screen.
@@ -1960,6 +1966,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             last_interaction = Instant::now();
             app.returned_from(d, &session);
             let returned = result.is_ok();
+            if returned {
+                app.start_expand(d, &session, false);
+            }
             app.set_notice_as(
                 if result.is_err() {
                     NoticeKind::Error
@@ -2046,6 +2055,14 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         let sel = app.map_selection();
         app.motion.track(sel.as_deref(), now);
         dirty |= app.motion.animating(now);
+        // The expand / shrink draws every frame while it plays; once done, one plain
+        // frame (a grow whose attach is due hands off instead: no flash of the tiles).
+        if app.expanding(now) {
+            dirty = true;
+        } else if app.expand.is_some() && app.pending_attach.is_none() {
+            app.expand = None;
+            dirty = true;
+        }
         dirty |= app.tick_press(now);
         dirty |= app.files_tick(now);
         // Coalesce bursts (key repeat, reply floods) to at most ~60 fps.

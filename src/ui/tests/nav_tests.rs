@@ -269,6 +269,42 @@ fn an_ended_session_resumes_and_recent_folders_start_with_one_key() {
     assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(0, p)) if p == "/srv/notes"));
 }
 
+/// Attaching from a tile plays the expand from where the tile was drawn: the loop
+/// keeps drawing frames for it (and no longer once it is done), any key ends it, and
+/// reduced motion never starts one; a detach plays the shrink back into the tile.
+#[test]
+fn attaching_from_a_tile_expands_it_and_a_key_skips_it() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 2);
+    a.open_device(0);
+    draw(&a, 120, 40);
+    press(&mut a, 's');
+    let e = a.expand.clone().expect("the tile grows");
+    assert!(e.grow && e.from.is_some_and(|r| r.width < 120), "{e:?}");
+    let t0 = e.start;
+    let (id, tile, t) = a.expand_frame(t0).unwrap();
+    assert_eq!((tile, t), (e.from.unwrap(), 0));
+    assert_eq!(id, workspaces::runtime_key(&a.slot_sessions(0)[1]));
+    assert!(runtime::loop_wait(&a, t0, None) <= runtime::FRAME_INTERVAL);
+    let done = t0 + motion::EXPAND;
+    assert!(!a.expanding(done) && a.expand_frame(done).is_none());
+    // A key ends it at once.
+    a.key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert!(a.expand.is_none());
+    // The shrink after a detach finds its tile on the frame it draws.
+    let s = a.slot_sessions(0)[1].clone();
+    a.start_expand(0, &s, false);
+    let e = a.expand.clone().unwrap();
+    assert!(!e.grow && e.from.is_none());
+    let (_, _, t) = a.expand_frame(e.start).unwrap();
+    assert_eq!(t, 1000, "the shrink starts at full screen");
+    // Reduced motion: nothing plays.
+    a.expand = None;
+    a.motion = motion::Clock::new(true);
+    a.start_expand(0, &s, true);
+    assert!(a.expand.is_none());
+}
+
 #[test]
 fn nodes_tiles_and_chips_are_tap_targets_with_key_semantics() {
     let (mut a, _rx) = queued_app();

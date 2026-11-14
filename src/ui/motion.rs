@@ -14,6 +14,30 @@ use std::time::{Duration, Instant};
 
 /// How long a transition takes.
 pub(super) const GLIDE: Duration = Duration::from_millis(160);
+/// How long the attach expand and the detach shrink take.
+pub(super) const EXPAND: Duration = Duration::from_millis(120);
+
+/// A session's tile growing to the full screen before its attach (`grow`), or the
+/// full screen shrinking back into its tile after a detach. Drawn by the view layer
+/// (`views::mission::render_expand`) over the frame; a key skips it to its end.
+#[derive(Clone, Debug)]
+pub(super) struct Expand {
+    pub d: usize,
+    /// The session's runtime key (its view-model id).
+    pub key: String,
+    /// The tile it grows from; a shrink finds its tile on the frame it draws.
+    pub from: Option<ratatui::layout::Rect>,
+    pub grow: bool,
+    pub start: Instant,
+}
+
+impl Expand {
+    /// Progress 0..1 while it plays, None once done.
+    pub(super) fn progress(&self, now: Instant) -> Option<f32> {
+        let t = now.saturating_duration_since(self.start).as_secs_f32() / EXPAND.as_secs_f32();
+        (t < 1.0).then_some(t)
+    }
+}
 /// Above this terminal round trip, frames are better spent elsewhere.
 const SLOW_LINK_MS: u32 = 80;
 
@@ -46,6 +70,11 @@ impl Clock {
             start: None,
             reduced,
         }
+    }
+
+    /// Motion is off for this terminal (the attach expand follows it too).
+    pub(super) fn reduced(&self) -> bool {
+        self.reduced
     }
 
     /// The terminal's own setting (environment, phone, measured link).
@@ -144,6 +173,22 @@ mod tests {
         assert!(reduced(None, true, None));
         assert!(reduced(None, false, Some(120)));
         assert!(!reduced(None, false, Some(30)));
+    }
+
+    #[test]
+    fn an_expand_plays_once_then_is_done() {
+        let t0 = Instant::now();
+        let e = Expand {
+            d: 0,
+            key: "k".into(),
+            from: None,
+            grow: true,
+            start: t0,
+        };
+        assert_eq!(e.progress(t0), Some(0.0));
+        let mid = e.progress(t0 + EXPAND / 2).unwrap();
+        assert!((0.45..0.55).contains(&mid), "{mid}");
+        assert_eq!(e.progress(t0 + EXPAND), None);
     }
 
     #[test]

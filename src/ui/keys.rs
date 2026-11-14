@@ -39,6 +39,8 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        // A key never waits for the expand or shrink: it ends it.
+        self.expand = None;
         if key.code != KeyCode::Enter {
             self.pending_adoption = None;
         }

@@ -251,3 +251,36 @@ impl ViewIndex {
         matches
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, size: u64) -> Entry {
+        Entry {
+            name: name.into(),
+            path: format!("/d/{name}"),
+            kind: "file".into(),
+            size,
+            identity: None,
+            hidden: name.starts_with('.'),
+            rename_name: None,
+            modified: None,
+            mode: None,
+        }
+    }
+
+    /// The size bars' scale covers every entry (hidden ones too) and follows appended
+    /// pages and edits, without a pass over the listing each frame.
+    #[test]
+    fn size_scale_follows_appends_and_edits() {
+        let mut entries: Entries = vec![entry("a", 5), entry(".big", 90)].into();
+        let mut index = ViewIndex::default();
+        let rows = index.visible(&entries, false, "");
+        assert_eq!((rows.len(), rows.size_max()), (1, 90));
+        entries.append(vec![entry("b", 400)]);
+        assert_eq!(index.visible(&entries, false, "").size_max(), 400);
+        entries.truncate(2);
+        assert_eq!(index.visible(&entries, false, "").size_max(), 90);
+    }
+}

@@ -1931,7 +1931,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             dirty = true;
         }
         // The expand plays out (at most EXPAND from the key) before the hand-off.
-        let expanding = app.expanding(Instant::now());
+        let expanding = app.attach_waits(Instant::now());
         if app.pending_attach.is_some() && carried.is_empty() && !expanding {
             // Typed input stays cx-owned: a queued key, paste, click or wheel is
             // handled first and may cancel the attachment. Passive reports

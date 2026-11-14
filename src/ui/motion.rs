@@ -37,6 +37,11 @@ impl Expand {
         let t = now.saturating_duration_since(self.start).as_secs_f32() / EXPAND.as_secs_f32();
         (t < 1.0).then_some(t)
     }
+    /// Far enough that the eased rect is the full screen to the eye (99.7%): an attach
+    /// waiting on it hands off here rather than a frame later.
+    pub(super) fn landed(&self, now: Instant) -> bool {
+        self.progress(now).is_none_or(|t| t >= 0.85)
+    }
 }
 /// Above this terminal round trip, frames are better spent elsewhere.
 const SLOW_LINK_MS: u32 = 80;
@@ -189,6 +194,7 @@ mod tests {
         let mid = e.progress(t0 + EXPAND / 2).unwrap();
         assert!((0.45..0.55).contains(&mid), "{mid}");
         assert_eq!(e.progress(t0 + EXPAND), None);
+        assert!(!e.landed(t0 + EXPAND / 2) && e.landed(t0 + EXPAND * 9 / 10));
     }
 
     #[test]

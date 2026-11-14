@@ -172,6 +172,12 @@ impl App {
             .as_ref()
             .is_some_and(|e| e.progress(now).is_some())
     }
+    /// True while a grow still has a visible way to go (the attach waits for it).
+    pub(super) fn attach_waits(&self, now: Instant) -> bool {
+        self.expand
+            .as_ref()
+            .is_some_and(|e| e.grow && !e.landed(now))
+    }
     /// What the frame drawn at `now` lays over the screen: the session, its tile and how
     /// far toward the full screen (thousandths), eased by the view.
     pub(super) fn expand_frame(&self, now: Instant) -> Option<(String, Rect, u16)> {

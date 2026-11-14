@@ -832,8 +832,7 @@ fn cl_w(cx: &Cx, cl: &Cl, nodes: &[N], mode: Mode) -> i32 {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Pat {
-    Solid,
-    /// Key links: a dot every other step.
+    /// Key links (and the welcome page's inner orbit): the closest dots.
     Dots,
     /// Password links.
     Sparse,
@@ -846,11 +845,23 @@ enum Pat {
 impl Pat {
     fn on(self, i: usize) -> bool {
         match self {
-            Pat::Solid => true,
             Pat::Dots => i % 2 == 0,
             Pat::Sparse => i % 4 == 0,
             Pat::Quiet => i % 6 == 0,
             Pat::Ring => i % 5 == 0,
+        }
+    }
+}
+
+impl Pat {
+    /// A link's distance between dots along its curve, in sub-cell dots (as wide as
+    /// they are tall on screen): dots fall evenly whatever the slope, a cell or more
+    /// apart, never a continuous braille line.
+    fn gap(self) -> f32 {
+        match self {
+            Pat::Dots => 4.0,
+            Pat::Sparse => 6.0,
+            Pat::Quiet | Pat::Ring => 10.0,
         }
     }
 }
@@ -940,32 +951,42 @@ impl Canvas {
         }
         out
     }
-    /// Stroke `pts` (right-half coordinates) on `side`, from dot `skip` on.
+    /// Stroke `pts` (right-half coordinates) on `side`: rings and orbits step by dot.
     fn stroke(&mut self, pts: &[P], side: i32, pat: Pat, st: Style, pri: u8) {
+        self.stroke_by(pts, side, pat, st, pri, false)
+    }
+    /// A link: its dots evenly spaced along the curve (see [`Pat::gap`]).
+    fn link(&mut self, pts: &[P], side: i32, pat: Pat, st: Style, pri: u8) {
+        self.stroke_by(pts, side, pat, st, pri, true)
+    }
+    fn stroke_by(&mut self, pts: &[P], side: i32, pat: Pat, st: Style, pri: u8, even: bool) {
         let a2 = 2 * self.a - 1;
         let flip = |sx: i32| if side < 0 { a2 - sx } else { sx };
+        let mut last: Option<(i32, i32)> = None;
         for (i, (sx, sy)) in Self::raster(pts).into_iter().enumerate() {
             // A ring leaves the cell on the mirror axis empty: both halves' dots would
             // crowd it, and one alone would break the mirror.
             let seam = pat == Pat::Ring && (a2 - 2 * sx).abs() <= 1;
-            if pat.on(i) && !seam {
+            let on = if even {
+                // The next dot: the first point a gap (straight, not along the
+                // staircase) from the last one.
+                let on = last.is_none_or(|(px, py)| {
+                    (((sx - px).pow(2) + (sy - py).pow(2)) as f32).sqrt() >= pat.gap()
+                });
+                if on {
+                    last = Some((sx, sy));
+                }
+                on
+            } else {
+                pat.on(i)
+            };
+            if on && !seam {
                 self.dot(flip(sx), sy, st, pri);
             }
         }
-        for (ci, (x, y, slope)) in ascii_path(pts).into_iter().enumerate() {
-            let (x, slope) = if side < 0 {
-                (
-                    self.a - 1 - x,
-                    match slope {
-                        '/' => '\\',
-                        '\\' => '/',
-                        c => c,
-                    },
-                )
-            } else {
-                (x, slope)
-            };
-            let ch = ascii_for(pat, ci, slope);
+        for (ci, (x, y)) in ascii_path(pts).into_iter().enumerate() {
+            let x = if side < 0 { self.a - 1 - x } else { x };
+            let ch = ascii_for(pat, ci);
             let Some(j) = self.cell(x, y) else { continue };
             if ch == ' ' || self.mask[j] || (self.asc[j] != ' ' && pri < self.st[j].0) {
                 continue;
@@ -1023,8 +1044,8 @@ impl Canvas {
 }
 
 /// The cells an ASCII line visits (one per column where it runs sideways, one per row
-/// where it runs up or down), each with its slope character.
-fn ascii_path(pts: &[P]) -> Vec<(i32, i32, char)> {
+/// where it runs up or down).
+fn ascii_path(pts: &[P]) -> Vec<(i32, i32)> {
     let (Some(&f), Some(&l)) = (pts.first(), pts.last()) else {
         return Vec::new();
     };
@@ -1057,23 +1078,11 @@ fn ascii_path(pts: &[P]) -> Vec<(i32, i32, char)> {
             }
         }
     }
-    let mut out: Vec<(i32, i32, char)> = Vec::new();
-    for (k, &(x, y)) in cells.iter().enumerate() {
-        let c = match cells.get(k + 1) {
-            Some(&(_, ny)) if wide && ny == y => '-',
-            Some(&(nx, _)) if !wide && nx == x => '|',
-            Some(&(nx, ny)) if (nx - x).signum() == (ny - y).signum() => '\\',
-            Some(_) => '/',
-            None => out.last().map_or(if wide { '-' } else { '|' }, |o| o.2),
-        };
-        out.push((x, y, c));
-    }
-    out
+    cells
 }
 
-fn ascii_for(pat: Pat, i: usize, slope: char) -> char {
+fn ascii_for(pat: Pat, i: usize) -> char {
     match pat {
-        Pat::Solid => slope,
         Pat::Dots | Pat::Sparse => '.',
         Pat::Quiet => {
             if i % 2 == 0 {
@@ -1497,12 +1506,8 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, sel: &str, focus: bool
         if on {
             st = st.add_modifier(Modifier::BOLD);
         }
-        let pat = if on && pattern(e) == Pat::Dots {
-            Pat::Solid
-        } else {
-            pattern(e)
-        };
-        cv.stroke(&pts, it.side, pat, st, if on { 6 } else { 4 });
+        // Lit or not, a link keeps its dotted pattern (brighter and bold when lit).
+        cv.link(&pts, it.side, pattern(e), st, if on { 6 } else { 4 });
         let screen = |q: P| p.mirror(it.side, q);
         if e.up && e.one_way() && (on || it.bundle.is_none()) {
             // Access flows from the parent's end toward this device, or back.
@@ -1966,5 +1971,61 @@ fn brief(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It) {
             cx.put(buf, x, y, 1, cx.g("◍", "*"), cx.ink(p.cls[c].tok, a));
         }
         Kind::Root => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_link_dots_evenly_along_any_slope() {
+        for b in [(40.0, 2.0), (40.0, 12.0), (8.0, 14.0)] {
+            let mut cv = Canvas::new(Rect::new(0, 0, 60, 20), 0);
+            let a = (1.0, 1.0);
+            cv.link(
+                &curve(a, bow(a, b, 0.12), b),
+                1,
+                Pat::Dots,
+                Style::default(),
+                4,
+            );
+            let dots: Vec<(i32, i32)> = (0..cv.bits.len())
+                .flat_map(|i| {
+                    let (cx, cy) = ((i % 60) as i32, (i / 60) as i32);
+                    let bits = cv.bits[i];
+                    [
+                        (0, 0x01),
+                        (0, 0x02),
+                        (0, 0x04),
+                        (0, 0x40),
+                        (1, 0x08),
+                        (1, 0x10),
+                        (1, 0x20),
+                        (1, 0x80),
+                    ]
+                    .into_iter()
+                    .filter(move |(_, m)| bits & m != 0)
+                    .map(move |(dx, m)| {
+                        let dy = [0x01, 0x02, 0x04, 0x40, 0x08, 0x10, 0x20, 0x80]
+                            .iter()
+                            .position(|&x| x == m)
+                            .unwrap() as i32
+                            % 4;
+                        (cx * 2 + dx, cy * 4 + dy)
+                    })
+                })
+                .collect();
+            assert!(dots.len() >= 4, "{b:?}");
+            // Every dot's nearest neighbour sits 3 to 5 sub-cell dots away.
+            for &(x, y) in &dots {
+                let near = dots
+                    .iter()
+                    .filter(|&&q| q != (x, y))
+                    .map(|&(qx, qy)| (((qx - x).pow(2) + (qy - y).pow(2)) as f32).sqrt())
+                    .fold(f32::MAX, f32::min);
+                assert!((2.9..=5.0).contains(&near), "{b:?}: {near} at {x},{y}");
+            }
+        }
     }
 }

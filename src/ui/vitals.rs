@@ -251,17 +251,17 @@ fn observe_meshes() -> Vec<Mesh> {
             });
         }
     }
-    let paired: Vec<Member> = store::devices()
-        .unwrap_or_default()
-        .into_iter()
+    let devices = store::devices().unwrap_or_default();
+    let paired: Vec<Member> = devices
+        .iter()
         .filter(|d| {
             d.target
                 .as_deref()
                 .is_some_and(|t| crate::peer_ssh::options(t).ok().flatten().is_some())
         })
         .map(|d| Member {
-            name: d.name,
-            host: d.host,
+            name: d.name.clone(),
+            host: d.host.clone(),
             ..Member::default()
         })
         .collect();
@@ -287,7 +287,68 @@ fn observe_meshes() -> Vec<Mesh> {
             });
         }
     }
+    out.extend(overlay_meshes(&devices, &out));
     out
+}
+
+/// A WARP or Tailscale mesh with no backend state here (not deployed by cx, no
+/// tailscale CLI): devices whose SSH address is its overlay address (100.96.0.0/12 for
+/// WARP, the rest of 100.64.0.0/10 for Tailscale) or a mesh DNS name (`*.mesh.<domain>`,
+/// `*.ts.net`) are its members all the same. Read-only, from the device list alone.
+pub(super) fn overlay_meshes(devices: &[Device], known: &[Mesh]) -> Vec<Mesh> {
+    fn v4(h: &str) -> Option<u32> {
+        h.parse::<std::net::Ipv4Addr>().ok().map(u32::from)
+    }
+    fn warp(h: &str) -> bool {
+        match v4(h) {
+            Some(ip) => ip & 0xfff0_0000 == 0x6460_0000,
+            None => h.to_ascii_lowercase().contains(".mesh."),
+        }
+    }
+    fn tailnet(h: &str) -> bool {
+        match v4(h) {
+            Some(ip) => ip & 0xffc0_0000 == 0x6440_0000 && !warp(h),
+            None => h
+                .to_ascii_lowercase()
+                .trim_end_matches('.')
+                .ends_with(".ts.net"),
+        }
+    }
+    type Kind = (MeshBackend, &'static str, fn(&str) -> bool);
+    let kinds: [Kind; 2] = [
+        (
+            MeshBackend::CloudflareWarp,
+            crate::mesh::cloudflare::ID,
+            warp,
+        ),
+        (MeshBackend::Tailscale, crate::mesh::tailscale::ID, tailnet),
+    ];
+    kinds
+        .into_iter()
+        .filter(|(backend, _, _)| !known.iter().any(|m| m.backend == *backend))
+        .filter_map(|(backend, id, test)| {
+            let members: Vec<Member> = devices
+                .iter()
+                .filter_map(|d| {
+                    let host = target_host(d.target.as_deref()?);
+                    test(host).then(|| Member {
+                        name: d.name.clone(),
+                        host: d.host.clone(),
+                        overlay_ipv4: v4(host).map(|_| host.to_string()),
+                        dns_name: v4(host).is_none().then(|| host.to_string()),
+                        state: "overlay address".into(),
+                        ..Member::default()
+                    })
+                })
+                .collect();
+            (!members.is_empty()).then(|| Mesh {
+                id: id.into(),
+                name: id.into(),
+                backend,
+                members,
+            })
+        })
+        .collect()
 }
 
 /// The host part of an SSH target (`user@host`, `user@[v6]`, or an alias).
@@ -429,6 +490,43 @@ mod tests {
             status: String::new(),
             observed_at: 0,
         }
+    }
+
+    #[test]
+    fn overlay_addresses_group_devices_without_mesh_state() {
+        let devices = vec![
+            dev("tranquility", None),
+            dev("innovation", Some("lunar@100.96.0.21")),
+            dev("creation", Some("lunar@creation.mesh.example.net")),
+            dev("pi", Some("pi@100.101.2.3")),
+            dev("nas", Some("nas.lan")),
+            dev("cgnat", Some("x@100.64.9.9")),
+            dev("box", Some("box.tail1234.ts.net")),
+        ];
+        let meshes = overlay_meshes(&devices, &[]);
+        let ids: Vec<(&str, Vec<Option<usize>>)> = meshes
+            .iter()
+            .map(|m| {
+                let at = m
+                    .members
+                    .iter()
+                    .map(|x| member_device(&devices, x))
+                    .collect();
+                (m.id.as_str(), at)
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                ("cloudflare-warp", vec![Some(1), Some(2), Some(3)]),
+                ("tailscale", vec![Some(5), Some(6)]),
+            ]
+        );
+        // Their links ride the mesh; a lan device's does not.
+        assert_eq!(mesh_route(&meshes, &devices[2]), Some(0));
+        assert_eq!(mesh_route(&meshes, &devices[4]), None);
+        // A mesh its backend reports is never doubled by a guess.
+        assert!(overlay_meshes(&devices, &meshes).is_empty());
     }
 
     #[test]

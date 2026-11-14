@@ -36,16 +36,21 @@ every row is a key and a tap.
 
 One component replaces the dashed card: the **launch panel**, drawn without a frame,
 in the space the tiles would take. Every row has one grammar: a quiet label column
-(`start`, `or on`, `add`, `resume`, `recent`), the key, then what it does. Phones (under
+(`start`, `add`, `resume`, `recent`), the key, then what it does. Phones (under
 56 columns) drop the label column on every row, so no row puts its label on the other
-side. Top to bottom, each part only when its data exists:
+side; there a resume row starts with `↻` (`a ↻ claude merge lidar maps`) and a folder
+with `▸` (`s ▸ ~/cx`), so a resume key never reads like a start key, and an unreachable
+device's history keeps a muted `earlier` row above it. Top to bottom, each part only when its data exists:
 
 1. **Launch row**: `start  c claude   x codex   n shell`, each provider word in its
    colour, its key as a keycap. It is the same component (word, colours, label column)
    as the row under a device's tiles. On the hub the device is said once, in the grammar
-   of the vitals strip: `start on  t tranquility then  c claude  x codex  n shell`; the
-   keys after `then` are drawn quiet (muted, not the accent), so only the first-press
-   keys look primary and `c` under it (`or on  c creation`) is not read as claude. An
+   of the vitals strip: `start on  t tranquility then  c claude  x codex  n shell  f files`
+   (the strip's own `t then f files` hint gives way to it); the keys after `then` are
+   drawn quiet (muted, not the accent), so only the first-press keys look primary. Other
+   devices are not listed: the map (or the phone's tree) right above already shows each
+   one's letter. Phones say `t › c claude  x codex  n shell`. With only one device the
+   row is `start  c claude  x codex  n shell`, and those keys work on the hub. An
    agent the device's helper did not report is left out (shell always stays); before
    the helper has answered, all three show.
 2. **Only this device**: `add  + invite a device`, a group of its own (a blank row
@@ -59,8 +64,9 @@ side. Top to bottom, each part only when its data exists:
    the provider chooser in that folder, so a new agent in a recent project is two keys.
 
 "Nothing running" is said on the SESSIONS rule (` SESSIONS  nothing running ───`, where
-the hub's tiles say `needs you first`), not on a row of its own. The panel sits at the
-top of its zone, right under the rule. A blank row separates its groups where they all
+the hub's tiles say `needs you first`), not on a row of its own. The panel sits right under
+the rule; with nothing running the rule, the panel and the links (or the map, on the
+hub) sit together in the middle of the rows they have, not pinned over a void. A blank row separates its groups where they all
 fit: always on the hub, and on a device screen from 120x40 up (so two devices at one
 size keep one rhythm). Resume and the folders take the session slot keys (`a s d g
 ...`): on a device with no sessions those keys are free, and they are the same keys a
@@ -68,26 +74,26 @@ started session will take.
 
 The other states:
 
-- **Hub, no sessions**: the map sits near the top as in the approved reference, the
-  vitals strip and the panel right under it; the rows left over stay below, where tiles
-  will go. The panel adds `or on  i innovation  c creation ...` (every other reachable
-  device, a letter away, names cut to a common length, at least four letters, so no
-  key ever shows without its device) and the newest session that ended on up to two
+- **Hub, no sessions**: the map, the vitals strip and the panel form one group, centred
+  in the screen's rows (the panel measured off screen). The panel adds the newest session that ended on up to two
   reachable devices (`b a shell  ros core · ~/ros_ws · 1s ago`, the device letter first
   as on a tile). Fixture `quiet`. Phones: under the device tree, the same panel
-  (`on t then c claude  x codex`, resumes), the tree's rows going single-height to make
-  room; the `or on` row is left to the tree right above it.
+  (`t › c claude  x codex  n shell`, resumes), the tree's rows going single-height to
+  make room.
 - **Only this device** (`solo`): the hub draws this device at the middle of the welcome
   page's quiet orbits, as tall as the panel leaves (up to 15 rows); the device screen
-  has `LINKS  none yet` with the same picture under its panel.
-- **Device screen links**: the LINKS star is pinned under its rule (as the sessions are
-  under theirs); the rows it does not need stay below it.
+  has `LINKS  none yet` with the same picture under its panel (phones: the rule and
+  `none yet` alone).
+- **Device screen links**: the LINKS star sits under its rule (as the sessions are
+  under theirs). It is a picture, not options: its device letters would mean session
+  slots here, so its nodes and links are not tap targets; `e link` opens the links.
 - **Unreachable device**: the header says `✕ unreachable`; the reason is said once,
   under SESSIONS, muted with only the mark red: `✕ can't start anything · no route ·
   last seen 3h   r retry` (on a phone the reason alone; the footer's `r retry` gives way
   to it). What it last ran and its folders show as a quiet history: `earlier  shell
   record run-0412 · ~/bags · 3h ago`, `recent  ~/ros_ws`, muted, with no key column at
-  all (not options with missing keys). Fixture `ended`, squirtle-jetson.
+  all (not options with missing keys). The footer drops `f files` and `e link` there.
+  Fixture `ended`, squirtle-jetson.
 - **Empty Files folder**: under yazi's `No items` (its own place, the column's first
   row), `a create   ' other device`, keys in which-key's colour, both keys yazi already
   binds; a narrow column (phones) stacks them, one centred row each.
@@ -95,14 +101,17 @@ The other states:
   env vars` (the key a keycap), under `h new secret`. Not connected, Cloudflare's own
   card already says `⏎ connect`, so no second (yellow) line repeats it. The slot chip
   leaves the footer while there are no cards.
-- **Empty search**: `no matches for “zzqx”` and `esc close`, one breathing row between.
+- **Empty search**: `no matches for “zzqx”` and `esc close`, one breathing row between;
+  the box is as tall as that on phones too.
 - **Tile keys**: a pool, home row first, that avoids every key the device screen binds:
   `a s d g`, then `q u i o y z v m`, then `1`-`9` (21 keys). A session keeps its key
   until it ends; new sessions take the lowest free key. Past 21 sessions on one device
   the last tile is a `+N` chip whose key (`/`) opens the session picker; while it shows,
   the footer's `/ find` (the same palette) gives way to it, so `/` is labelled once. On
   a device's own screen a tile shows only its slot key (`a refactor transport`), the key
-  pressed there; the hub keeps the device letter first (`i a`).
+  pressed there; the hub keeps the device letter first (`i a`). A full device screen
+  always keeps one row for its launch keys. The hub's alerts that do not fit are a
+  `/ +2 more` chip, the same key and grammar as the sessions' `/ +3 more ›`.
 
 ## As built
 
@@ -120,7 +129,9 @@ The other states:
   session leaves the listing; `screens::assign_slots` is the pure rule. The device and
   hub tiles are drawn in key order, and the hub ranks keyless sessions last, so every
   tile on screen has a key. `lab::key_tests` checks that every tile, launch row, `+N`
-  chip and invite row prints its key, once per screen, in every fixture and size;
+  chip and invite row prints its key, once per screen, in every fixture and size, that a
+  launch row prints every agent, and that a device screen has no keyless device or link
+  targets;
   `nav_tests::every_launch_panel_keycap_does_what_its_tap_does` presses each printed key
   (the device letter first on the hub) and compares the result with a tap.
 - Not built: "last-used mode" on the launch row (cx does not record a mode yet), ROS

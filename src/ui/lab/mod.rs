@@ -1439,6 +1439,31 @@ mod key_tests {
                             assert!(seen.insert((d.to_string(), k)), "key {k} twice: {at}");
                         }
                     }
+                    // A launch row keeps every agent the device has (phones too).
+                    for d in &s.devices {
+                        let n = targets
+                            .iter()
+                            .filter(|t| t.action.starts_with(&format!("new:{}:", d.id)))
+                            .count();
+                        let want = if d.caps.is_empty() { 3 } else { d.caps.len().min(3) };
+                        // (One alone is the vitals strip's `c claude` hint.)
+                        assert!(n <= 1 || n == want, "{at}: {n} of {want} agents on {}", d.id);
+                    }
+                    // A device screen's letters are its sessions': no other device or
+                    // link is a target there (they would be options without keys).
+                    if let LabView::DeviceFocus(id) = v {
+                        for t in &targets {
+                            let other = t
+                                .action
+                                .strip_prefix("device:")
+                                .is_some_and(|x| x != id);
+                            assert!(
+                                !other && !t.action.starts_with("edge:"),
+                                "keyless {}: {at}",
+                                t.action
+                            );
+                        }
+                    }
                     // `/` is labelled once: the chip, or the footer's `find`.
                     let has = |a: &str| targets.iter().any(|t| t.action == a);
                     assert!(!(has("palette:sessions") && has("palette")), "{at}");

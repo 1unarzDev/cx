@@ -2211,3 +2211,22 @@ fn every_launch_panel_keycap_does_what_its_tap_does() {
         }
     }
 }
+
+/// The only device: its launch keys work on the hub without its letter first.
+#[test]
+fn a_lone_device_starts_from_the_hub_with_one_key() {
+    let (tx, rx) = mpsc::sync_channel(64);
+    let mut a = App::new(app().devices.into_iter().take(1).collect(), tx);
+    a.providers
+        .insert(0, (vec!["claude".into(), "codex".into()], transport::now()));
+    a.onboarding_dismissed = true;
+    a.go_hub();
+    let text = draw(&a, 120, 40);
+    assert!(text.contains(" x  codex"), "{text}");
+    let _ = rx.try_iter().count();
+    press(&mut a, 'x');
+    let started = rx
+        .try_iter()
+        .any(|t| matches!(&t.op, Operation::Create(c) if c.provider == "codex"));
+    assert!(started || matches!(&a.dialog, Some(Dialog::SessionChooser(0, _))));
+}

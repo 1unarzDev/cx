@@ -1119,6 +1119,18 @@ impl App {
             }
             KeyCode::Char('G') => false,
             KeyCode::Char('g') if self.device_for_letter('g').is_none() => false,
+            // Only this device: its launch keys work right here, no letter first.
+            KeyCode::Char(c @ ('c' | 'x' | 'n'))
+                if self.devices.len() == 1 && self.device_for_letter(c).is_none() =>
+            {
+                let p = match c {
+                    'c' => "claude",
+                    'x' => "codex",
+                    _ => "shell",
+                };
+                self.new_session(0, p);
+                true
+            }
             KeyCode::Char(c) if c.is_ascii_lowercase() => {
                 if let Some(d) = self.device_for_letter(c) {
                     self.open_device(d);

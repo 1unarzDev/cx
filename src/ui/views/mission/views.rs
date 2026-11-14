@@ -54,6 +54,13 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                     DeviceStatus::Down | DeviceStatus::Stale | DeviceStatus::Unknown
                 )
             });
+            // No route: files and links are not offered (as nothing can start).
+            let routed = !d.is_some_and(|d| d.status == DeviceStatus::Down && d.id != cx.s.viewer);
+            let reach: &[(&str, &str, &str)] = if routed {
+                &[("f", "files", "files"), ("e", "link", "links")]
+            } else {
+                &[]
+            };
             if cx.touch() {
                 // The primary verb first, then the way back; tiles also attach on a tap.
                 if n > 0 {
@@ -62,12 +69,9 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                 if retry {
                     items.push(("r", "retry", "retry"));
                 }
-                items.extend([
-                    ("esc", "back", "back"),
-                    ("f", "files", "files"),
-                    ("e", "link", "links"),
-                    ("H", "hub", "hub"),
-                ]);
+                items.push(("esc", "back", "back"));
+                items.extend(reach.iter().copied());
+                items.push(("H", "hub", "hub"));
                 // The destructive verb goes last, never first on a row.
                 if n > 0 {
                     items.push(("⌫", "stop", "stop"));
@@ -85,7 +89,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                 if retry {
                     items.push(("r", "retry", "retry"));
                 }
-                items.extend([("f", "files", "files"), ("e", "link", "links")]);
+                items.extend(reach.iter().copied());
                 if n > 0 {
                     items.push(("⌫", "stop", "stop"));
                 }
@@ -563,7 +567,8 @@ pub(super) fn more_chip(cx: &Cx, buf: &mut Buffer, right: u16, y: u16, hidden: u
     if hidden == 0 {
         return 0;
     }
-    let text = format!("+{hidden} more");
+    // `›` (goes on) in Unicode; ASCII keeps the words (`>` is selection).
+    let text = format!("+{hidden} more{}", cx.g(" ›", ""));
     let (kw, tw) = (cx.key_w("/"), super::width(&text, cx.uni()));
     let x = right.saturating_sub(kw + 1 + tw);
     cx.fill(
@@ -639,8 +644,9 @@ pub(super) fn thumbs_grid(
         let first = usize::from(ri * cols);
         let in_row = (n - first).min(usize::from(cols)) as u16;
         // The large screen takes two shares of its row.
+        // (Two in a row are equal halves, as in the reference.)
         let big = picked.filter(|&p| {
-            (first..first + usize::from(in_row)).contains(&p) && in_row > 1 && r.width >= 90
+            (first..first + usize::from(in_row)).contains(&p) && in_row > 2 && r.width >= 90
         });
         let shares = in_row + u16::from(big.is_some());
         let unit = ((r.width + gap) / shares).saturating_sub(gap);
@@ -691,7 +697,7 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     let head = Rect::new(r.x + 1, r.y + 1, r.width.saturating_sub(2), head_h);
     device_header(cx, buf, head, d);
     let right = r.right().saturating_sub(1);
-    let main = Rect::new(
+    let mut main = Rect::new(
         r.x + 1,
         head.bottom() + 2,
         r.width.saturating_sub(2),
@@ -726,6 +732,23 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     // sessions take the full width and no half-empty card floats beside them; with none,
     // the launch panel (no card) takes their place.
     let mut shown = 0;
+    if list.is_empty() {
+        // Nothing runs: the panel and the links sit in the middle of the rows under the
+        // header, not pinned over a void. (The panel measured off screen.)
+        let n = cx.hits.borrow().len();
+        let area = Rect::new(0, 0, main.width + 1, main.height);
+        let panel = launch_panel(cx, &mut Buffer::empty(area), area, d, false);
+        cx.hits.borrow_mut().truncate(n);
+        let links = match links_n {
+            0 if s.devices.len() == 1 => 2 + if cx.touch() { 0 } else { 15 },
+            0 => 0,
+            _ if cx.touch() => links_n + 2,
+            _ => fan_want + 4,
+        };
+        let off = main.height.saturating_sub(panel + 1 + links) / 2;
+        main.y += off;
+        main.height -= off;
+    }
     let used = if list.is_empty() {
         // Nothing runs: the launch panel, then the links right under it.
         let reserve = if fan_want > 0 { fan_want + 4 } else { 0 };
@@ -756,7 +779,8 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
             let (ci, ri) = (i as u16 % cols, i as u16 / cols);
             let x0 = main.x + ci * (sw + gap);
             let tr = Rect::new(x0, main.y + ri * (th + 1), sw, th);
-            if tr.bottom() > main.bottom() {
+            // (Always a row left for the launch keys: a full screen still starts one.)
+            if tr.bottom() + 2 > main.bottom() {
                 break;
             }
             bottom = tr.bottom() + 1;
@@ -823,23 +847,31 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
             r.x,
             fy + 2,
             r.width,
+            // (With nothing running, the star takes the rows the panel leaves.)
             r.bottom().saturating_sub(fy + 3).min(fan_want + 1),
         );
         let at = link_sel.map_or(orbit::Sel::Root, |n| orbit::Sel::Node(n, true));
+        // (A picture, not options: its device letters mean slots here, and a link
+        // opens with `e`.)
+        let n = cx.hits.borrow().len();
         orbit::draw_with(cx, buf, band, &d.id, 1, at, false);
-    } else if links_n == 0 && s.devices.len() == 1 && !cx.touch() && fy + 8 <= r.bottom() {
+        cx.hits.borrow_mut().truncate(n);
+    } else if links_n == 0 && s.devices.len() == 1 && fy + 2 <= r.bottom() {
         // The only device: its network is itself, at the middle of its quiet orbits
         // (the welcome page's picture; the panel above offers `+ invite`), so the
         // screen is not a panel over a void.
         let lx = zone(cx, buf, main.x, fy, right, "LINKS", false);
         cx.put(buf, lx + 1, fy, 10, " none yet ", cx.ink(Tok::Muted, 0.8));
-        let h = r.bottom().saturating_sub(fy + 3).min(11);
-        nebula::welcome(cx, buf, Rect::new(r.x, fy + 2, r.width, h), d);
+        let h = r.bottom().saturating_sub(fy + 3).min(15);
+        if !cx.touch() && h >= 5 {
+            nebula::welcome(cx, buf, Rect::new(r.x, fy + 2, r.width, h), d);
+        }
     }
 }
 
 /// Phone links: the far end's name, its policy seen from `d` and the rtt (or why not),
 /// on fixed columns sized to the longest name; the loss goes first when rows are short.
+/// Rows, not options: a link opens with `e` (no letter per link).
 fn link_list(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, edges: &[&LabEdge]) {
     let other = |e: &LabEdge| {
         let id = if e.from == d.id { &e.to } else { &e.from };
@@ -890,7 +922,6 @@ fn link_list(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, edges: &[&LabEdg
         );
         cx.put(buf, x + room + 1, y, 7, &pol, cx.st(Tok::Muted));
         cx.put_r(buf, r.right(), y, &tail(e, loss), cx.st(Tok::Muted));
-        cx.hit(Rect::new(r.x, y, r.width, 1), format!("edge:{}", e.id));
     }
 }
 
@@ -1021,7 +1052,7 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         let mx = r.x + left_w + 3;
         (mx, r.y, r.right().saturating_sub(mx), r.height)
     } else {
-        (r.x, r.y + 3, r.width, r.height.saturating_sub(3))
+        (ix, r.y + 3, r.right().saturating_sub(ix), r.height.saturating_sub(3))
     };
     if mh == 0 || mw < 20 {
         return;
@@ -1139,21 +1170,10 @@ pub(super) fn launch_panel(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, hu
         .filter(|f| idle && own.is_none_or(|e| e.cwd != **f))
         .take(if hub { 2 } else { 5 })
         .collect();
-    let others: Vec<&LabDevice> = if everywhere {
-        s.devices
-            .iter()
-            .filter(|x| x.id != d.id && cx.up(x))
-            .collect()
-    } else {
-        Vec::new()
-    };
     let invite = s.devices.len() == 1 && !down;
     // Groups of rows: the reason (down), launch, invite, resume, folders.
-    let nl = if down {
-        1
-    } else {
-        1 + u16::from(!others.is_empty() && r.width >= 56)
-    };
+    // (Phones: a muted `earlier` row heads a history without keys.)
+    let nl = 1;
     let ni = u16::from(invite);
     let nr = resumes.len() as u16;
     let mut nf = folders.len() as u16;
@@ -1210,14 +1230,12 @@ pub(super) fn launch_panel(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, hu
         // On the hub the provider keys are the second step (after the device's
         // letter), so they are drawn quiet: only the first-press keys look primary.
         let mut kst = cx.key_style();
-        if hub {
+        // (The only device: its keys work on the hub as on its own screen.)
+        if hub && s.devices.len() > 1 {
             label(buf, y, "start on");
-            if lw == 0 {
-                x += cx.put(buf, x, y, 3, "on ", cx.ink(Tok::Muted, 0.8));
-            }
             x += cx.dchip(buf, x, y, d, false) + 1;
             let name_w = super::width(&d.name, cx.uni()) + 1;
-            if x + name_w + 6 + 30 <= right {
+            if lw > 0 && x + name_w + 6 + 30 <= right {
                 x += cx.put(
                     buf,
                     x,
@@ -1227,52 +1245,25 @@ pub(super) fn launch_panel(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, hu
                     cx.ink(Tok::Fg, 0.85).add_modifier(Modifier::BOLD),
                 ) + 2;
             }
-            x += cx.put(buf, x, y, 6, "then  ", cx.ink(Tok::Muted, 0.8));
+            // (Phones: `t › c claude  x codex  n shell`, every agent kept.)
+            x += if lw > 0 {
+                cx.put(buf, x, y, 6, "then  ", cx.ink(Tok::Muted, 0.8))
+            } else {
+                cx.put(buf, x, y, 2, cx.g("› ", "> "), cx.ink(Tok::Muted, 0.8))
+            };
             kst = cx.ink(Tok::Muted, 0.9);
         } else {
             label(buf, y, "start");
         }
-        launch_keys(cx, buf, x, y, r.right(), d, kst);
-        y += 1;
-        // The other devices, each a letter away (then the same keys), always named
-        // (phones leave them to the device tree right above).
-        if !others.is_empty() && lw > 0 && y < r.bottom() {
-            label(buf, y, "or on");
-            let x1 = cx0
-                + if lw == 0 {
-                    cx.put(buf, cx0, y, 3, "or ", cx.ink(Tok::Muted, 0.8))
-                } else {
-                    0
-                };
-            let kw = cx.key_w("a") + 1 + 2;
-            let room = right.saturating_sub(x1);
-            // The longest name length at which they all fit, cut to it (at least four
-            // letters, else the last devices are left to the map).
-            let cut = (4..=24usize)
-                .rev()
-                .find(|&n| {
-                    others
-                        .iter()
-                        .map(|o| kw + (super::width(&o.name, cx.uni()) as usize).min(n) as u16)
-                        .sum::<u16>()
-                        <= room
-                })
-                .unwrap_or(4);
-            let mut x = x1;
-            for o in &others {
-                let name = fit(&o.name, cut, cx.uni());
-                let w = super::width(&name, cx.uni());
-                if x + kw + w > right + 2 {
-                    break;
-                }
-                let xs = x;
-                x += cx.dchip(buf, x, y, o, false) + 1;
-                x += cx.put(buf, x, y, w, &name, cx.ink(Tok::Fg, 0.75));
-                cx.hit(Rect::new(xs, y, x - xs, 1), format!("device:{}", o.id));
-                x += 2;
-            }
-            y += 1;
+        let x = launch_keys(cx, buf, x, y, r.right(), d, kst);
+        // On the hub, the device's files are the same letter away.
+        if hub && s.devices.len() > 1 && x + 9 <= r.right() {
+            let x1 = x;
+            let x = x + cx.keycap(buf, x, y, 3, "f", kst) + 1;
+            let w = cx.put(buf, x, y, 5, "files", cx.ink(Tok::Fg, 0.85));
+            cx.hit(Rect::new(x1, y, x + w - x1, 1), format!("files:{}", d.id));
         }
+        y += 1;
     }
     // Only this device so far: the way to a second one, its own group.
     if invite && y + u16::from(started.get() && gap) < r.bottom() {
@@ -1317,11 +1308,20 @@ pub(super) fn launch_panel(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, hu
             }
             group(&mut y);
             label(buf, y, if down { "earlier" } else { "resume" });
+            // (Phones have no label column: a history without keys gets its word.)
+            if lw == 0 && down && y + 1 < r.bottom() {
+                cx.put(buf, x0, y, 8, "earlier", cx.ink(Tok::Muted, 0.8));
+                y += 1;
+            }
         }
         if y >= r.bottom() {
             break;
         }
         let mut x = cx0 + key(buf, cx0, y, o, SLOTS[0]);
+        // (Phones: `↻` tells a resume from a start, the label column being gone.)
+        if lw == 0 && !down {
+            x += cx.put(buf, x, y, 2, cx.g("↻ ", "^ "), cx.st(Tok::Muted));
+        }
         let (p, tok) = cx.prov(e);
         x += cx.put(
             buf,
@@ -1373,7 +1373,10 @@ pub(super) fn launch_panel(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, hu
         if y >= r.bottom() {
             break;
         }
-        let x = cx0 + key(buf, cx0, y, d, k);
+        let mut x = cx0 + key(buf, cx0, y, d, k);
+        if lw == 0 {
+            x += cx.put(buf, x, y, 2, cx.g("▸ ", "> "), cx.st(Tok::Muted));
+        }
         let room = right.saturating_sub(x);
         cx.put(
             buf,
@@ -1405,7 +1408,7 @@ fn launch_keys(
     right: u16,
     d: &LabDevice,
     kst: Style,
-) {
+) -> u16 {
     for (k, word, tok) in [
         ("c", "claude", Tok::Claude),
         ("x", "codex", Tok::Codex),
@@ -1423,6 +1426,7 @@ fn launch_keys(
         cx.hit(Rect::new(x1, y, x - x1, 1), format!("new:{}:{word}", d.id));
         x += 2;
     }
+    x
 }
 
 /// Phone device view: two rows per session, then the provider buttons; returns the rows
@@ -1442,7 +1446,8 @@ fn device_sessions_rows(
     // session as a thumbnail (up to its screen tail), so a prompt is recognisable.
     let spare = r.height.saturating_sub(list.len() as u16 * 3 + 1 + reserve);
     for (i, x) in list.iter().enumerate() {
-        if y + 1 >= r.bottom() {
+        // (A row stays for the launch keys.)
+        if y + 3 > r.bottom() {
             break;
         }
         let h = if i == sel && spare >= 2 {
@@ -1462,6 +1467,8 @@ fn device_sessions_rows(
         shown += 1;
         y += h + 1;
     }
+    // (Into the last entry's gap when the screen is full.)
+    y = y.min(r.bottom().saturating_sub(1)).max(r.y);
     if y < r.bottom() {
         new_row(cx, buf, r.x, y, r.right(), d);
         // A blank row keeps the links' zone off the buttons, unless it would cost a link.
@@ -1895,7 +1902,7 @@ fn yazi_files(cx: &Cx, buf: &mut Buffer, a: Rect) -> Rect {
         unicode: cx.uni(),
         icons: false,
         pills: cx.pills(),
-        color: true,
+        color: cx.c.has_color(),
     };
     let t = crate::ui::yazi::theme();
     let d = render::render(&view, t, look, a, buf);
@@ -2278,8 +2285,13 @@ pub(super) fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str, cursor: usize
             Style::default(),
         );
         // The sheet ends a row above the screen's last, where its chips sit as on
-        // every phone footer (never inside the sheet's border).
-        Rect::new(a.x, a.y + 1, a.width, a.height.saturating_sub(2))
+        // every phone footer (never inside the sheet's border). Nothing found: it is
+        // as tall as what it says.
+        if rows.is_empty() {
+            Rect::new(a.x, a.y + 1, a.width, h)
+        } else {
+            Rect::new(a.x, a.y + 1, a.width, a.height.saturating_sub(2))
+        }
     } else {
         Rect::new(
             a.x + a.width.saturating_sub(w) / 2,
@@ -2290,7 +2302,8 @@ pub(super) fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str, cursor: usize
     };
     // Only the sheet is live; a tap beside it closes the palette.
     cx.clear_hits();
-    let below = if cx.touch() {
+    let sheet = cx.touch() && !rows.is_empty();
+    let below = if sheet {
         0
     } else {
         a.bottom().saturating_sub(r.bottom())
@@ -2340,7 +2353,7 @@ pub(super) fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str, cursor: usize
     cx.put(buf, x, y, end.saturating_sub(x), &after, qst);
     // The last row teaches the palette's own keys.
     // (Phones pin it to the screen's last row, like every phone footer.)
-    let hint_y = if cx.touch() {
+    let hint_y = if sheet {
         a.bottom().saturating_sub(1)
     } else {
         inner.bottom().saturating_sub(1)

@@ -54,7 +54,8 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let band_th = th;
     // (The top row stays blank, as air under the top bar: no header strip. A device's
     // meshes show quietly in its vitals strip.)
-    let band = Rect::new(r.x, r.y + 2, r.width, band_h.saturating_sub(2));
+    // (One column in: a label at the map's edge stays on the text's gutter.)
+    let band = Rect::new(r.x + 1, r.y + 2, r.width.saturating_sub(2), band_h.saturating_sub(2));
     let ids = nebula::order(cx, band);
     cx.order.borrow_mut().clone_from(&ids);
     let sel_id = if on_sess && !list.is_empty() {
@@ -100,10 +101,22 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     if list.is_empty() {
         // Nothing running: the map near the top as in the reference, the strip and the
         // panel right under it, and the rows left over stay below, where tiles will go.
+        // The rows the panel does not need go half above the map, half under the
+        // panel: the group sits in the middle, not over a void. (Measured off screen.)
         above = (1 + lift).min(above);
+        let bottom = y + grid_h;
         let ny = (r.y + above + gh + 2 + lift).min(y);
-        grid_h += y - ny;
-        y = ny;
+        let panel = cx.s.device(&sel_id).map_or(1, |d| {
+            let n = cx.hits.borrow().len();
+            let area = Rect::new(0, 0, r.width, grid_h);
+            let h = views::launch_panel(cx, &mut Buffer::empty(area), area, d, true);
+            cx.hits.borrow_mut().truncate(n);
+            h
+        });
+        let free = bottom.saturating_sub(ny + panel + 1) / 2;
+        above += free;
+        y = ny + free;
+        grid_h = bottom.saturating_sub(y);
     }
     // The only device and nothing running: this device at the middle of its quiet
     // orbits (the welcome page's picture), as tall as the panel's rows allow.
@@ -271,7 +284,8 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
     if up && !ghost {
         items.push(("c", "claude", &new));
     }
-    if up {
+    // (The launch panel under it says `f files` with the rest.)
+    if up && !ghost {
         items.push(("f", "files", &files));
     }
     if items.len() == 1 {
@@ -451,10 +465,12 @@ fn ticker(cx: &Cx, buf: &mut Buffer, r: Rect) {
         // The first item keeps its words; later ones only when they fit whole-ish.
         let tw = super::width(&text, cx.uni()).min(room);
         if tw < 12 || (i > 0 && tw < super::width(&text, cx.uni()).min(28)) {
-            if i > 0 && x + 6 < right {
-                // A chip, so the alerts that did not fit are one tap away.
-                let more = format!(" +{} ", n - i);
-                let w = cx.put(buf, x, r.y, 5, &more, cx.key_style());
+            let more = format!("+{} more", n - i);
+            let kw = cx.key_w("/");
+            if i > 0 && x + kw + 1 + super::width(&more, cx.uni()) < right {
+                // `/ +2 more`: the alerts that did not fit are a find away, by key or tap.
+                let w = cx.keycap(buf, x, r.y, kw, "/", cx.key_style()) + 1;
+                let w = w + cx.put(buf, x + w, r.y, 8, &more, cx.st(Tok::Muted));
                 cx.hit(Rect::new(x, r.y, w, 1), "notices");
             }
             break;

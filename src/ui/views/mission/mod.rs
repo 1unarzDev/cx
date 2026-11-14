@@ -102,9 +102,15 @@ pub fn expand_rect(from: Rect, area: Rect, e: f32) -> Rect {
     let e = e.clamp(0.0, 1.0);
     let lerp = |a: u16, b: u16| (f32::from(a) + (f32::from(b) - f32::from(a)) * e).round() as u16;
     let (l, t) = (lerp(from.left(), area.left()), lerp(from.top(), area.top()));
-    let (r, b) = (lerp(from.right(), area.right()), lerp(from.bottom(), area.bottom()));
+    let (r, b) = (
+        lerp(from.right(), area.right()),
+        lerp(from.bottom(), area.bottom()),
+    );
     let near = |a: u16, b: u16| a.abs_diff(b) <= 1;
-    if near(l, area.left()) && near(t, area.top()) && near(r, area.right()) && near(b, area.bottom())
+    if near(l, area.left())
+        && near(t, area.top())
+        && near(r, area.right())
+        && near(b, area.bottom())
     {
         return area;
     }
@@ -113,7 +119,12 @@ pub fn expand_rect(from: Rect, area: Rect, e: f32) -> Rect {
 
 /// The screen an attach lands on when cx has no live grid of it: the session's screen
 /// as `attached` lays it out (its bar dropped: tmux's status is the last row).
-pub fn landing_screen(state: &LabState, caps: &LabCaps, area: Rect, session: &str) -> Option<Buffer> {
+pub fn landing_screen(
+    state: &LabState,
+    caps: &LabCaps,
+    area: Rect,
+    session: &str,
+) -> Option<Buffer> {
     let x = state.session(session)?;
     let full = Rect::new(0, 0, area.width, area.height + 1);
     let mut scratch = Buffer::empty(full);
@@ -143,7 +154,9 @@ pub fn render_expand(
     from: Rect,
     e: f32,
 ) {
-    let r = expand_rect(from, area, e).intersection(area).intersection(buf.area);
+    let r = expand_rect(from, area, e)
+        .intersection(area)
+        .intersection(buf.area);
     if r.is_empty() {
         return;
     }

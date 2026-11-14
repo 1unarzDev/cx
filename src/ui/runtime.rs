@@ -2013,7 +2013,9 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                             .context("native terminal attachment failed")
                             .and_then(sessions::attach_ended)
                     }
-                    Err(e) => Err(anyhow::Error::from(e).context("native terminal attachment failed")),
+                    Err(e) => {
+                        Err(anyhow::Error::from(e).context("native terminal attachment failed"))
+                    }
                 },
                 Some(Err(e)) => Err(e),
                 _ => sessions::attach(&app.devices[d], &session, observe),

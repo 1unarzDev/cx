@@ -12,7 +12,7 @@ One grammar on every screen: **a device letter, then a session slot or a verb**.
 |---|---|
 | device letter | Open that device's screen (from the hub, peek or palette) |
 | `a s d g …` (device screen) | Attach the session whose tile shows that key, at once. Keys go out home row first (`a s d g`, then `q u i o y z v m`, then `1`-`9`); a session keeps its key until it ends, and a new one takes the first free key. Past 21 sessions on a device, `/ +N more` finds the rest |
-| `a s d …` (device with nothing running) | The launch panel in place of the tiles: `a` resumes the newest session that ended there while cx watched (the agent's latest conversation in its folder, or a shell there), then `s d …` open the launch chooser in recent folders (ended and pinned sessions' folders, the last Files folder). `c x n` start new agents as everywhere; only the agents the device's helper reported are offered |
+| `a s d …` (device with nothing running) | The launch panel in place of the tiles: `a` resumes the newest session that ended there while cx watched (the agent's latest conversation in its folder, or a shell there), then `s d …` open the launch chooser in recent folders (ended and pinned sessions' folders, the last Files folder). `c x n` start new agents as everywhere; only the agents the device's helper reported are offered. With only one device, `c x n` also work on the hub |
 | `c` / `x` / `n` (device screen) | New Claude / Codex / shell in the device's home, attached at once |
 | Enter, Space | Attach / open the selection; peek a session's screen (Tab steps through peeks) |
 | Backspace, Backspace | Stop the selected CX-managed session; any other key keeps it, never `y` |

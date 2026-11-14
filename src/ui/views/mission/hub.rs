@@ -55,7 +55,12 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // (The top row stays blank, as air under the top bar: no header strip. A device's
     // meshes show quietly in its vitals strip.)
     // (One column in: a label at the map's edge stays on the text's gutter.)
-    let band = Rect::new(r.x + 1, r.y + 2, r.width.saturating_sub(2), band_h.saturating_sub(2));
+    let band = Rect::new(
+        r.x + 1,
+        r.y + 2,
+        r.width.saturating_sub(2),
+        band_h.saturating_sub(2),
+    );
     let ids = nebula::order(cx, band);
     cx.order.borrow_mut().clone_from(&ids);
     let sel_id = if on_sess && !list.is_empty() {

@@ -53,7 +53,7 @@ impl Expand {
             return self.start;
         };
         (0..=EXPAND.as_millis() as u64)
-            .map(|ms| Duration::from_millis(ms))
+            .map(Duration::from_millis)
             .find(|&t| {
                 let e = super::views::mission::ease_out(t.as_secs_f32() / EXPAND.as_secs_f32());
                 super::views::mission::expand_rect(from, area, e) == area
@@ -221,8 +221,15 @@ mod tests {
         let at = e.lands_at(area) - t0;
         assert!(at > EXPAND / 2 && at < EXPAND, "{at:?}");
         let shrink = Expand { grow: false, ..e };
-        assert_eq!(shrink.reach(t0), Some(1.0), "the shrink starts at full screen");
-        assert!(shrink.reach(t0 + SHRINK / 4).unwrap() < 0.6, "and leaves it at once");
+        assert_eq!(
+            shrink.reach(t0),
+            Some(1.0),
+            "the shrink starts at full screen"
+        );
+        assert!(
+            shrink.reach(t0 + SHRINK / 4).unwrap() < 0.6,
+            "and leaves it at once"
+        );
     }
 
     #[test]

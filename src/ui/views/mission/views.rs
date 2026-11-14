@@ -1052,7 +1052,12 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         let mx = r.x + left_w + 3;
         (mx, r.y, r.right().saturating_sub(mx), r.height)
     } else {
-        (ix, r.y + 3, r.right().saturating_sub(ix), r.height.saturating_sub(3))
+        (
+            ix,
+            r.y + 3,
+            r.right().saturating_sub(ix),
+            r.height.saturating_sub(3),
+        )
     };
     if mh == 0 || mw < 20 {
         return;

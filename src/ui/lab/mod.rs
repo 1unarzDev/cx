@@ -1445,18 +1445,23 @@ mod key_tests {
                             .iter()
                             .filter(|t| t.action.starts_with(&format!("new:{}:", d.id)))
                             .count();
-                        let want = if d.caps.is_empty() { 3 } else { d.caps.len().min(3) };
+                        let want = if d.caps.is_empty() {
+                            3
+                        } else {
+                            d.caps.len().min(3)
+                        };
                         // (One alone is the vitals strip's `c claude` hint.)
-                        assert!(n <= 1 || n == want, "{at}: {n} of {want} agents on {}", d.id);
+                        assert!(
+                            n <= 1 || n == want,
+                            "{at}: {n} of {want} agents on {}",
+                            d.id
+                        );
                     }
                     // A device screen's letters are its sessions': no other device or
                     // link is a target there (they would be options without keys).
                     if let LabView::DeviceFocus(id) = v {
                         for t in &targets {
-                            let other = t
-                                .action
-                                .strip_prefix("device:")
-                                .is_some_and(|x| x != id);
+                            let other = t.action.strip_prefix("device:").is_some_and(|x| x != id);
                             assert!(
                                 !other && !t.action.starts_with("edge:"),
                                 "keyless {}: {at}",

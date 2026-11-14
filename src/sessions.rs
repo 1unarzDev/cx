@@ -3465,7 +3465,11 @@ pub fn attach_ended(result: std::process::ExitStatus) -> Result<()> {
 /// The attach of a tmux session as a command to spawn on this terminal, its local
 /// preparation (managed server settings, copy mode left) already done, so a caller can
 /// prepare it ahead; None for a terminal session (`attach` runs that one itself).
-pub fn attach_command(device: &Device, session: &Session, observe: bool) -> Result<Option<Command>> {
+pub fn attach_command(
+    device: &Device,
+    session: &Session,
+    observe: bool,
+) -> Result<Option<Command>> {
     if std::env::var_os("TMUX").is_some() {
         bail!("cx attachment from inside tmux requires leaving the outer client first; protected outer sessions are kept intact");
     }

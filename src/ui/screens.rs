@@ -205,7 +205,9 @@ impl App {
             .as_ref()
             .and_then(|_| self.vitals.get(&self.devices[*d].id))
             .and_then(|v| v.link().1.into_iter().flatten().reduce(f32::min))
-            .map_or(Duration::ZERO, |ms| Duration::from_secs_f32(ms.min(60.0) / 1000.0));
+            .map_or(Duration::ZERO, |ms| {
+                Duration::from_secs_f32(ms.min(60.0) / 1000.0)
+            });
         e.grow && prepared && !lead.is_zero() && now + lead >= e.lands_at(area)
     }
     /// What the frame drawn at `now` lays over the screen: the session, its tile and how

@@ -300,7 +300,10 @@ fn attaching_from_a_tile_expands_it_and_a_key_skips_it() {
     assert!(!e.grow && e.from.is_none());
     let (_, _, t) = a.expand_frame(e.start).unwrap();
     assert_eq!(t, 1.0, "the shrink starts at full screen");
-    assert!(a.expand_frame(Instant::now()).unwrap().2 < 0.7, "its first drawn frame shows the hub");
+    assert!(
+        a.expand_frame(Instant::now()).unwrap().2 < 0.7,
+        "its first drawn frame shows the hub"
+    );
     // Reduced motion: nothing plays.
     a.expand = None;
     a.motion = motion::Clock::new(true);

@@ -421,6 +421,8 @@ def targets_overlay(im, dump, geo):
 
 def label_font(px, bold=False):
     path = fc('DejaVu Sans:bold' if bold else 'DejaVu Sans') or fc('sans')
+    if not path:
+        return ImageFont.load_default(px)
     try:
         return ImageFont.truetype(path, px)
     except OSError:

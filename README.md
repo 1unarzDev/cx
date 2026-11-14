@@ -55,7 +55,7 @@ In **Files**, cx is a yazi clone: three columns (parent, folder, preview), yazi'
 
 Refresh on the hub (palette **Refresh**) observes each device's network; its LAN neighbours then appear in the palette. Devices reachable through another host use saved SSH jump routes. Internet sharing and full reverse-access enforcement are still in development; see [robot mesh sharing](docs/robot-mesh-sharing.md).
 
-Devices you own pair over SSH with a short code: `+` on the hub (or `cx invite`) shows it, `y` copies it, and the new device runs `cx join <code> <host>`. `cx edge set FROM TO key|password|one-way|none` sets access per link and direction, and `cx secrets` (or `K` on the hub) keeps tokens in the OS keyring or a 0600 file.
+Devices you own pair over SSH with a short code: `+` on the hub (or `cx invite`) shows it, `y` copies it, and the new device runs `cx join <code> <host>`. `cx edge set FROM TO key|password|one-way|none` sets access per link and direction, and `cx secrets` (or `K` on the hub) keeps tokens in the OS keyring or a 0600 file; `e` there exposes one to new sessions on this device (off by default, see [secrets](docs/secrets.md)).
 
 `cx mesh` also sets up a private WARP mesh on your own free Cloudflare account: internet over MASQUE, LANs untouched, the mesh reachable. Devices join with one line (`curl -sL <endpoint>/<code>|sh`) and need no cx. See [mesh](docs/mesh.md). `cx claude lend <name>` lends your Claude Code gateway the same way: one line (`curl -sL <endpoint>/claude/<code>|sh`) configures Claude Code; see [claude](docs/claude.md).
 

@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""v0.2.1 <-> v0.2.2 compatibility over a disposable loopback sshd, both directions.
+"""Compatibility of two cx builds over a disposable loopback sshd, both directions
+(written for v0.2.1 <-> v0.2.2; used for v0.2.1, v0.2.2 and fed0fc3 <-> v0.3.0).
 
-usage: compat_021.py OLD_CX NEW_CX     (for example ~/.cache/cx-targets/v021/release/cx
+usage: compat_021.py OLD_CX NEW_CX     (for example ~/.cache/cx-targets/v022/cx
                                          and target/release/cx)
+
+Run it inside tests/isolate.sh where available (private pid/user namespaces).
 
 Not in CI (it needs two builds and sshd). A viewer HOME and a device HOME, both this OS
 account, each private (HOME, XDG_STATE_HOME, TMUX_TMPDIR); the device's helper is
@@ -134,6 +137,15 @@ os.execv({ssh!r},[{ssh!r},*args])
     def config():
         return dict(options=tmux('show-options', '-g'), server=tmux('show-options', '-s'),
                     window=tmux('show-options', '-gw'), keys=tmux('list-keys'))
+
+    def digest(cfg):
+        """Line counts and a hash per table, and allow-passthrough, for the evidence."""
+        import hashlib
+        out = {k: [len((v or '').splitlines()), hashlib.sha256((v or '').encode()).hexdigest()[:12]]
+               for k, v in cfg.items()}
+        out['allow-passthrough'] = [line for v in cfg.values() for line in (v or '').splitlines()
+                                    if line.startswith('allow-passthrough')]
+        return out
 
     def configured_by():
         """The version that last sourced the managed config into the running server."""
@@ -332,6 +344,7 @@ AllowUsers {account}
                 after=dict(server=after['server'],
                            panes={k[:12] + '…': v for k, v in after['panes'].items()}),
                 configured_by=[by, configured_by()],
+                config_before=digest(cfg), config_after=digest(config()),
                 unchanged=after == before, config_unchanged=same_config)
         evidence['result'] = 'PASS'
         print(json.dumps(evidence))

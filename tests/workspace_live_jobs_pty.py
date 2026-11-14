@@ -2,6 +2,8 @@
 """Real disposable PTY copy and shell-start integration, no agent prompts.
 Run: uv run --with pyte python tests/workspace_live_jobs_pty.py /absolute/cx [evidence-dir]
 """
+import isolation  # tests/isolate.sh: the viewer never lists a real terminal
+isolation.isolate()
 import fcntl
 import json
 import os

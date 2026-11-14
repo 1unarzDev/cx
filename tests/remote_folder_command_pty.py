@@ -3,6 +3,8 @@
 Creates/removes one remote temporary folder; uses existing SSH trust/authentication.
 Run only on an authorized agent-free host. No enrollment or service changes.
 """
+import isolation  # tests/isolate.sh: the viewer never lists a real terminal
+isolation.isolate()
 import fcntl,json,os,pathlib,pwd,pty,select,socket,struct,subprocess,sys,tempfile,termios,time
 binary=str(pathlib.Path(sys.argv[1]).resolve())
 remote=sys.argv[2]

@@ -8,13 +8,17 @@ exactly what discovery lists. It stands in for the user's real terminals. Two gu
 - the debug build's helper, asked outside any private namespace (as a fixture run
   without tests/isolate.sh, or one that needs the host's ids, asks), lists nothing;
 - under tests/isolate.sh (always new namespaces, whatever the environment says), the
-  helper lists a second terminal started there, so discovery works, and only that one.
+  helper lists a second terminal started there, so discovery works, and only that one;
+- in a pid namespace of its own without isolate.sh's marker (a container's), the
+  helper lists nothing, not even a terminal started beside it.
 pty_lib.Pty refuses to start outside a private pid namespace, so the outside terminal
 is started here directly.
 """
 import fcntl, json, os, pathlib, pty, subprocess, sys, tempfile, termios, time
 
 HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import isolation  # noqa: E402
 
 
 def terminal(home):
@@ -55,12 +59,6 @@ def listed(binary, home):
     return {(row.get('origin') or {}).get('tty') for row in reply['result']}
 
 
-def private():
-    """In a private pid namespace with its own /proc (pty_lib.isolated, without pyte)."""
-    return (os.readlink('/proc/self/ns/pid') != 'pid:[4026531836]'
-            and os.readlink('/proc/self') == str(os.getpid()))
-
-
 def inside(binary, outside_tty):
     with tempfile.TemporaryDirectory(prefix='cx-probe-in-') as tmp:
         home = pathlib.Path(tmp)
@@ -79,19 +77,38 @@ def inside(binary, outside_tty):
             assert len(pids) < 50 and 1 in pids, len(pids)
         finally:
             close(shell)
+    # A container: its own pid namespace and /proc, a /dev/shm without the marker.
+    container = subprocess.run(['unshare', '--user', '--map-root-user', '--mount', '--pid', '--fork',
+                                '--kill-child', '--mount-proc', 'sh', '-c',
+                                'mount -t tmpfs tmpfs /dev/shm && exec "$@"', 'sh',
+                                sys.executable, __file__, binary, '--container'], timeout=60)
+    assert container.returncode == 0, 'a container-like namespace listed a terminal'
     print(json.dumps(dict(result='PASS', listed=len(seen))))
+
+
+def in_container(binary):
+    with tempfile.TemporaryDirectory(prefix='cx-probe-ct-') as tmp:
+        home = pathlib.Path(tmp)
+        shell, _ = terminal(home)
+        try:
+            assert not isolation.isolated()
+            assert listed(binary, home) == set(), 'a terminal was listed in a container'
+        finally:
+            close(shell)
 
 
 def main():
     binary = str(pathlib.Path(sys.argv[1]).resolve())
     if sys.argv[2:3] == ['--inside']:
         return inside(binary, sys.argv[3])
+    if sys.argv[2:3] == ['--container']:
+        return in_container(binary)
     with tempfile.TemporaryDirectory(prefix='cx-probe-out-') as tmp:
         shell, tty = terminal(pathlib.Path(tmp))
         try:
             # The regression runner starts this on the host (hostids): there a debug build
             # lists nothing, the outside terminal included. isolate.sh nests anyway.
-            if not private():
+            if not isolation.isolated():
                 assert listed(binary, pathlib.Path(tmp)) == set(), 'a terminal was listed outside a namespace'
             done = subprocess.run([str(HERE / 'isolate.sh'), sys.executable, __file__, binary, '--inside', tty],
                                   timeout=120)

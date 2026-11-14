@@ -1220,13 +1220,13 @@ fn origin(terminal: &crate::adoption::Terminal) -> crate::model::ExternalOrigin 
     }
 }
 fn external_terminals() -> Vec<crate::adoption::Terminal> {
-    // Debug builds are test builds: they list terminals only inside a private pid
-    // namespace with its own /proc (tests/isolate.sh), never in the machine's first one
-    // (inode 0xEFFFFFFC), so a fixture viewer or helper can never offer a real terminal.
+    // Debug builds are test builds: they list terminals only inside tests/isolate.sh
+    // (a pid namespace not the machine's first one, inode 0xEFFFFFFC, whose private
+    // /dev/shm holds its marker; a container's own namespace has none), so a fixture
+    // viewer or helper can never offer a real terminal. tests/isolation.py is the twin.
     let private = std::fs::read_link("/proc/self/ns/pid")
         .is_ok_and(|ns| ns != std::path::Path::new("pid:[4026531836]"))
-        && std::fs::read_link("/proc/self")
-            .is_ok_and(|me| me == std::path::Path::new(&std::process::id().to_string()));
+        && std::path::Path::new("/dev/shm/cx-isolated").exists();
     if cfg!(debug_assertions) && !private {
         return vec![];
     }

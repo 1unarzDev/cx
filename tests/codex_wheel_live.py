@@ -3,6 +3,8 @@
 Requires configured Fish/Codex on the execution account. Uses native /status only;
 no inference prompts, configuration changes, or retained terminal content. Usage: script BINARY.
 """
+import isolation  # tests/isolate.sh: the viewer never lists a real terminal
+isolation.isolate()
 import fcntl, json, os, pathlib, pty, select, shlex, struct, subprocess, sys, tempfile, termios, time
 binary = str(pathlib.Path(sys.argv[1]).resolve())
 with tempfile.TemporaryDirectory(prefix='cx-wheel-') as temporary:

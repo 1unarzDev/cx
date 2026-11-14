@@ -2,6 +2,8 @@
 """Read-only live provider-picker acceptance against enrolled helpers; no agent starts.
 Run: uv run --with pyte python tests/provider_choices_pty.py target/release/cx
 """
+import isolation  # tests/isolate.sh: the viewer never lists a real terminal
+isolation.isolate()
 import fcntl,json,os,pathlib,pty,select,struct,subprocess,sys,tempfile,termios,time
 import pyte
 binary=str(pathlib.Path(sys.argv[1]).resolve())

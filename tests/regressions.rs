@@ -283,13 +283,9 @@ fn previews_refuse_fifos_and_devices_without_opening_them() {
 #[test]
 fn sessions_stay_managed_only_while_outside_terminals_use_their_own_operation() {
     use std::os::unix::{io::FromRawFd, process::CommandExt};
-    // Discovery reads /proc: in a private pid namespace (tests/isolate.sh) it sees only
-    // this fixture's terminal, never a real one (a debug build lists none outside).
-    let private = std::fs::read_link("/proc/self/ns/pid")
-        .is_ok_and(|ns| ns != Path::new("pid:[4026531836]"))
-        && std::fs::read_link("/proc/self")
-            .is_ok_and(|me| me == Path::new(&std::process::id().to_string()));
-    if !private {
+    // Discovery reads /proc: under tests/isolate.sh (its marker) it sees only this
+    // fixture's terminal; the debug cx itself lists none anywhere else.
+    if !Path::new("/dev/shm/cx-isolated").exists() {
         let name = "sessions_stay_managed_only_while_outside_terminals_use_their_own_operation";
         let status = Command::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/isolate.sh"))
             .arg(std::env::current_exe().unwrap())

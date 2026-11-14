@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Read-only innovation/server switching with private viewer state; no session mutation."""
+import isolation  # tests/isolate.sh: the viewer never lists a real terminal
+isolation.isolate()
 import fcntl,json,os,pathlib,pty,select,struct,subprocess,sys,tempfile,termios,time
 import pyte
 binary=str(pathlib.Path(sys.argv[1]).resolve())

@@ -53,9 +53,9 @@ done
 # space-separated: pyte, pillow, fish, poppler, sshd, docker, node, userns, and
 # hostids (always met: a fixture that checks root-owned files such as
 # /etc/ssh/ssh_config, which a user namespace shows as nobody's, so it runs
-# outside tests/isolate.sh; a debug build lists no terminal outside a private pid
-# namespace, which probe_isolation checks, so the viewer peer_mesh_cli starts and
-# their helpers see none). A name
+# outside tests/isolate.sh; a debug build lists no terminal outside it (its pid
+# namespace and marker), which probe_isolation checks, so the viewer
+# peer_mesh_cli starts and their helpers see none). A name
 # ending in .mjs runs with node; every other name is tests/NAME.py.
 CORE=(
     "command_panel_live||BIN"

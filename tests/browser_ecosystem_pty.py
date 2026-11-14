@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Exercise actual browser keys and detached jobs on disposable files in a real PTY."""
+import isolation  # tests/isolate.sh: the viewer never lists a real terminal
+isolation.isolate()
 import fcntl, json, os, pathlib, pty, select, struct, subprocess, sys, tempfile, termios, time
 import pyte
 

@@ -11,6 +11,7 @@ import codecs, fcntl, json, os, pathlib, pty, select, struct, subprocess, sys, t
 import pyte
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from isolation import isolate, isolated  # noqa: E402,F401  (pty_lib.isolate() in harnesses)
 
 
 class Screen(pyte.Screen):
@@ -21,26 +22,6 @@ class Screen(pyte.Screen):
 
     def set_title(self, *args, **kwargs):
         pass
-
-
-def isolated():
-    """Whether this process runs in a private pid namespace (not the machine's first one,
-    inode 0xEFFFFFFC) whose own /proc is mounted (it names this process by its pid there):
-    checked, never inherited."""
-    try:
-        return (os.readlink('/proc/self/ns/pid') != 'pid:[4026531836]'
-                and os.readlink('/proc/self') == str(os.getpid()))
-    except OSError:
-        return False
-
-
-def isolate():
-    """Re-run this script under tests/isolate.sh (private user, pid and mount namespaces), so
-    the viewers it starts can never list a real terminal of this machine. Call it first in
-    main(); a no-op once inside."""
-    if not isolated():
-        script = str(pathlib.Path(__file__).resolve().parent / 'isolate.sh')
-        os.execv(script, [script, sys.executable, *sys.argv])
 
 
 CELL_PIXELS = None

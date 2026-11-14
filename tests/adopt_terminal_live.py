@@ -57,10 +57,12 @@ def _reexec_sandbox():
         print(json.dumps(dict(result='SKIP', reason='user namespace mapping unavailable')))
         sys.exit(0)
     os.environ['CX_ADOPT_NS'] = '1'
-    # Its own pid namespace and /proc too: discovery sees only this fixture's terminals
-    # (a debug build lists none outside one).
+    # Its own pid namespace and /proc too, with tests/isolate.sh's marker in a private
+    # /dev/shm: discovery sees only this fixture's terminals (a debug build lists none
+    # without the marker, tests/isolation.py).
     os.execvp('unshare', ['unshare', '-U', *maps, '--pid', '--fork', '--mount', '--mount-proc',
-                          sys.executable, *sys.argv])
+                          'sh', '-c', 'mount -t tmpfs tmpfs /dev/shm && : >/dev/shm/cx-isolated && exec "$@"',
+                          'sh', sys.executable, *sys.argv])
 
 
 if (os.geteuid() != 0 and os.environ.get('CX_ADOPT_CAPABLE') != '1'

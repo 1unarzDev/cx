@@ -236,6 +236,10 @@ impl App {
         if !self.work[d].loading {
             self.work[d].loading = self.send(d, Operation::Sessions);
         }
+        // Nothing runs there: its launch panel lists the agents the helper reports.
+        if self.work[d].sessions.is_empty() && !self.providers.contains_key(&d) {
+            self.check_providers(d);
+        }
     }
     /// The edge graph from the state files (on refresh and after a policy change; never
     /// from render).
@@ -1084,6 +1088,8 @@ impl App {
                     self.attach_session(d, s);
                     true
                 }
+                // Nothing runs: the launch panel's resume and recent folders.
+                None if self.work[d].sessions.is_empty() && self.launch_item(d, c) => true,
                 None => !c.is_ascii_digit(),
             },
             KeyCode::Char('c') => {
@@ -1443,6 +1449,12 @@ impl App {
             ("new", Some(d), Some(provider)) => {
                 if let Some(d) = dev_index(d) {
                     self.new_session(d, provider);
+                }
+            }
+            // The launch panel's resume and folder rows: the key they show.
+            ("launch", Some(d), Some(k)) => {
+                if let (Some(d), Some(c)) = (dev_index(d), k.chars().next()) {
+                    self.launch_item(d, c);
                 }
             }
             ("files", Some(d), _) => {

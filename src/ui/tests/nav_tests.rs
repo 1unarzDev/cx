@@ -217,6 +217,58 @@ fn every_session_key_attaches_its_session_and_keys_are_stable() {
     assert!(after.contains(&(heir.clone(), Some('s'))));
 }
 
+/// A device with nothing running: a session that ended while cx watched is its resume
+/// row (`a` continues the agent's latest conversation in that folder) and recent
+/// folders follow on `s d ...` (each opens the launch chooser there); taps do the same.
+#[test]
+fn an_ended_session_resumes_and_recent_folders_start_with_one_key() {
+    let (mut a, rx) = queued_app();
+    sessions(&mut a, 0, 1);
+    a.work[0].sessions[0].provider = "claude".into();
+    a.work[0].sessions[0].directory = "/srv/proj".into();
+    a.file_locations.insert(0, "/srv/notes".into());
+    a.apply(Reply {
+        device_id: Some(a.devices[0].id.clone()),
+        execution_target: None,
+        device: 0,
+        op: Operation::Sessions,
+        generation: a.generation,
+        preview: None,
+        result: Ok(serde_json::json!([])),
+    });
+    a.open_device(0);
+    let text = draw(&a, 120, 40);
+    assert!(text.contains("nothing running"), "{text}");
+    let row = |w: &str| {
+        text.lines()
+            .find(|l| l.contains(w))
+            .unwrap_or("")
+            .to_string()
+    };
+    assert!(
+        row("resume").contains(" a ") && row("resume").contains("/srv/proj"),
+        "{text}"
+    );
+    assert!(
+        row("recent").contains(" s ") && row("recent").contains("/srv/notes"),
+        "{text}"
+    );
+    let _ = rx.try_iter().count();
+    press(&mut a, 'a');
+    assert!(rx.try_iter().any(|t| matches!(&t.op,
+        Operation::Create(c) if c.resume && !c.resume_pick && c.directory == "/srv/proj" && c.provider == "claude")));
+    a.creating = false;
+    a.open_device(0);
+    press(&mut a, 's');
+    assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(0, p)) if p == "/srv/notes"));
+    a.dialog = None;
+    // The row's tap is its key.
+    draw(&a, 120, 40);
+    let r = act("launch:0:s");
+    click(&mut a, r.x + 1, r.y, Rect::new(0, 0, 120, 40));
+    assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(0, p)) if p == "/srv/notes"));
+}
+
 #[test]
 fn nodes_tiles_and_chips_are_tap_targets_with_key_semantics() {
     let (mut a, _rx) = queued_app();

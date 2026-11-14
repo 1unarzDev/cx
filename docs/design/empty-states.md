@@ -48,8 +48,10 @@ in the space the tiles would take. Top to bottom, each part only when its data e
 3. **Recent folders** (folders of ended sessions, then Files locations on that device,
    newest first, at most five): `s ~/cx`, `d ~/datasets/lidar`. The key opens the
    provider chooser in that folder, so a new agent in a recent project is two keys.
-4. **Capabilities**, one quiet line: `runs claude · codex · containers  ·  gpu 35%`,
-   from the helper's capability report and the device's metrics.
+4. **Capabilities** are the launch row itself: an agent the helper did not report is
+   not offered (a separate "runs claude · codex" line repeated it, and the header
+   already carries cpu, memory, temperature and gpu).
+5. **Only this device** (hub): `+ invite a device` closes the launch row.
 
 Resume and the folders take the session slot keys (`a s d g ...`): on a device with no
 sessions those keys are free, and they are the same keys a started session will take.
@@ -71,3 +73,20 @@ The other states:
   `a s d g`, then `q u i o y z v m`, then `1`-`9` (21 keys). A session keeps its key
   until it ends; new sessions take the lowest free key. Past 21 sessions on one device
   the last tile is a `+N` chip whose key (`/`) opens the session picker.
+
+## As built
+
+- `views::mission::views::launch_panel` draws the panel (device view with no
+  sessions, the hub's empty grid and its spare cell). Its rows tap as their keys
+  (`new:<d>:<provider>`, `launch:<d>:<key>`, `invite`).
+- Data, no new process per frame: `LabDevice::caps` from the helper's capability reply
+  (asked once when a device with nothing running opens), `LabDevice::recent` and
+  `LabState::ended` from `App::launch_items`: sessions that left a fresh listing while
+  cx ran (`App::ended`, memory only: the session list cache on disk is unchanged), pinned
+  sessions and the last Files folder.
+- Keys: `screens::slot_keys` keeps each session's key in `App::slot_memo` until the
+  session leaves the listing; `screens::assign_slots` is the pure rule. The device and
+  hub tiles are drawn in key order, and the hub ranks keyless sessions last, so every
+  tile on screen has a key (`lab::key_tests`).
+- Not built: "last-used mode" on the launch row (cx does not record a mode yet), ROS
+  workspace and container detection on the panel (no cheap source today).

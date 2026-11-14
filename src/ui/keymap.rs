@@ -234,7 +234,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         [code(Enter)],
         "Enter · a s d g …",
         Cmd::View("attach"),
-        "Attach the selected session / the one showing that key",
+        "Attach the selected session / the one showing that key; with nothing running, resume the last one or start in a recent folder",
         hint("Attach")
     ),
     bind!(

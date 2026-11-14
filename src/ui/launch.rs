@@ -2,6 +2,78 @@
 use super::*;
 
 impl App {
+    /// Record sessions that ended on device `d` (newest first, at most 32 in all).
+    pub(super) fn note_ended(&mut self, d: usize, gone: Vec<Session>) {
+        let id = self.devices[d].id.clone();
+        let now = transport::now();
+        for s in gone {
+            let key = workspaces::runtime_key(&s);
+            self.ended
+                .retain(|(x, e, _)| *x != id || workspaces::runtime_key(e) != key);
+            self.ended.insert(0, (id.clone(), s, now));
+        }
+        self.ended.truncate(32);
+    }
+    /// What a device with nothing running offers besides new sessions (the launch
+    /// panel, in key order from `a`): the newest session that ended there, then recent
+    /// folders (other ended sessions', pinned ones', the last Files folder; at most five).
+    pub(super) fn launch_items(&self, d: usize) -> (Option<(&Session, u64)>, Vec<String>) {
+        let id = &self.devices[d].id;
+        let ended: Vec<(&Session, u64)> = self
+            .ended
+            .iter()
+            .filter(|(x, s, _)| x == id && s.container.is_none())
+            .map(|(_, s, at)| (s, *at))
+            .collect();
+        let resume = ended.first().copied();
+        let pinned = self
+            .pins
+            .iter()
+            .filter(|p| workspaces::device_matches(&self.devices[d], &p.device))
+            .map(|p| &p.session)
+            .filter(|s| s.container.is_none());
+        let mut dirs: Vec<String> = Vec::new();
+        let candidates = ended
+            .iter()
+            .map(|(s, _)| *s)
+            .chain(pinned)
+            .map(|s| s.directory.clone())
+            .chain(self.file_locations.get(&d).cloned());
+        for dir in candidates {
+            let own = resume.is_some_and(|(s, _)| s.directory == dir);
+            if !dir.is_empty() && !own && !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+        dirs.truncate(5);
+        (resume, dirs)
+    }
+    /// A launch panel key (`a s d ...` while nothing runs on `d`): resume the session
+    /// that ended (the agent's latest conversation in its folder, or a shell there), or
+    /// open the launch chooser in a recent folder. False when the key names nothing.
+    pub(super) fn launch_item(&mut self, d: usize, c: char) -> bool {
+        let Some(i) = super::views::mission::SLOTS.iter().position(|k| *k == c) else {
+            return false;
+        };
+        let (resume, dirs) = self.launch_items(d);
+        let resume = resume.map(|(s, _)| (s.provider.clone(), s.directory.clone()));
+        let skip = usize::from(resume.is_some());
+        match (i, resume) {
+            (0, Some((provider, dir))) => {
+                if self.creating {
+                    return true;
+                }
+                let agent = provider == "claude" || provider == "codex";
+                let provider = if agent { provider } else { "shell".into() };
+                self.create_permission_session(d, dir, provider, false, agent, false);
+            }
+            _ => match dirs.get(i.wrapping_sub(skip)) {
+                Some(dir) => self.open_session_chooser(d, dir.clone()),
+                None => return false,
+            },
+        }
+        true
+    }
     pub(super) fn provider_choices(&self, device: usize) -> Vec<&'static str> {
         let mut choices = vec!["shell"];
         if let Some((available, checked)) = self.providers.get(&device) {

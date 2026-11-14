@@ -1311,7 +1311,13 @@ pub fn bare() -> LabState {
     s.files.folder = None;
     s.files.cwd = "~/scratch".into();
     s.files.previews.clear();
-    s.secrets.clear();
+    // (The app always lists the Cloudflare card, missing until it is set.)
+    s.secrets.retain(|x| x.key.starts_with("cloudflare"));
+    for x in &mut s.secrets {
+        x.masked = None;
+        x.updated_secs = None;
+        x.source.clear();
+    }
     s
 }
 

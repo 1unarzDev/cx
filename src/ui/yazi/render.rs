@@ -1212,6 +1212,22 @@ pub(crate) fn render(v: &View, t: &Theme, look: Look, area: Rect, buf: &mut Buff
         v.linemode,
         v.now,
     );
+    // An empty folder is not a dead end: under yazi's `No items`, the two ways on (each
+    // taps as its key): create here, or the same view on another device.
+    if v.current.rows.is_empty() && v.current.empty.as_deref() == Some("No items") {
+        let dim = Style::default().add_modifier(Modifier::DIM);
+        let hints = [('a', "a  create"), ('\'', "'  other device")];
+        let w = hints.iter().map(|(_, l)| width(l)).max().unwrap_or(0) as u16;
+        let x = current_list.x + current_list.width.saturating_sub(w) / 2;
+        for (i, (key, label)) in hints.iter().enumerate() {
+            let y = current_list.y + 2 + i as u16;
+            if y >= current_list.bottom() || w > current_list.width {
+                break;
+            }
+            let end = p.put(x, y, current_list.right(), label, dim);
+            d.keys.push((Rect::new(x, y, end - x, 1), *key));
+        }
+    }
     if let Some(Preview::Folder(c)) = &v.preview {
         column(&mut p, t, vr, c, Which::Preview, v.linemode, v.now);
     }

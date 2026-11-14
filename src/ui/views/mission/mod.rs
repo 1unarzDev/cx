@@ -123,21 +123,64 @@ pub fn render_expand(
     if r.is_empty() {
         return;
     }
-    let mut scratch = Buffer::empty(Rect::new(0, 0, r.width, r.height));
-    if r.width >= 12 && r.height >= 3 {
+    let cx = Cx::new(state, caps, area);
+    let moving = t < 1000;
+    // While it moves: what it has not covered yet steps back (dim ink, no background),
+    // and the growing screen has an edge, so it reads as one thing in motion.
+    if moving {
+        let dim = Style::default().add_modifier(Modifier::DIM);
+        for y in area.top()..area.bottom() {
+            for xx in area.left()..area.right() {
+                if !r.contains((xx, y).into()) {
+                    buf[(xx, y)].set_style(dim);
+                }
+            }
+        }
+    }
+    let edge = moving && r.width >= 6 && r.height >= 4;
+    let inner = if edge { inset(r, 1, 1) } else { r };
+    let mut scratch = Buffer::empty(Rect::new(0, 0, inner.width, inner.height));
+    if inner.width >= 12 && inner.height >= 3 {
         let cx = Cx::new(state, caps, scratch.area);
         views::attached(&cx, &mut scratch, x);
     }
     for y in 0..r.height {
         for xx in 0..r.width {
-            buf[(r.x + xx, r.y + y)] = scratch[(xx, y)].clone();
+            buf[(r.x + xx, r.y + y)].reset();
+        }
+    }
+    for y in 0..inner.height {
+        for xx in 0..inner.width {
+            buf[(inner.x + xx, inner.y + y)] = scratch[(xx, y)].clone();
+        }
+    }
+    if edge {
+        let st = cx.ink(Tok::Accent, 0.7);
+        let (h, v) = (cx.g("─", "-"), cx.g("│", "|"));
+        let (b, rt) = (r.bottom() - 1, r.right() - 1);
+        for xx in r.x + 1..rt {
+            cx.put(buf, xx, r.y, 1, h, st);
+            cx.put(buf, xx, b, 1, h, st);
+        }
+        for y in r.y + 1..b {
+            cx.put(buf, r.x, y, 1, v, st);
+            cx.put(buf, rt, y, 1, v, st);
+        }
+        for (xx, y, c) in [
+            (r.x, r.y, cx.g("╭", "+")),
+            (rt, r.y, cx.g("╮", "+")),
+            (r.x, b, cx.g("╰", "+")),
+            (rt, b, cx.g("╯", "+")),
+        ] {
+            cx.put(buf, xx, y, 1, c, st);
         }
     }
 }
 
-/// Ease-out cubic: fast at first, settling into place.
+/// Ease-out quad: quick to leave, a long soft landing (gentler than cubic, so the first
+/// frames still show the tile moving rather than jumping).
 pub fn ease_out(t: f32) -> f32 {
-    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
+    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(2)
 }
 
 /// Session ids in hub order (what needs you first), as the hub's tiles rank them.

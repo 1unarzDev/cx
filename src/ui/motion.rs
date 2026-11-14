@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 /// How long a transition takes.
 pub(super) const GLIDE: Duration = Duration::from_millis(160);
 /// How long the attach expand and the detach shrink take.
-pub(super) const EXPAND: Duration = Duration::from_millis(120);
+pub(super) const EXPAND: Duration = Duration::from_millis(160);
 
 /// A session's tile growing to the full screen before its attach (`grow`), or the
 /// full screen shrinking back into its tile after a detach. Drawn by the view layer
@@ -37,7 +37,7 @@ impl Expand {
         let t = now.saturating_duration_since(self.start).as_secs_f32() / EXPAND.as_secs_f32();
         (t < 1.0).then_some(t)
     }
-    /// Far enough that the eased rect is the full screen to the eye (99.7%): an attach
+    /// Far enough that the eased rect is the full screen to the eye (98%): an attach
     /// waiting on it hands off here rather than a frame later.
     pub(super) fn landed(&self, now: Instant) -> bool {
         self.progress(now).is_none_or(|t| t >= 0.85)

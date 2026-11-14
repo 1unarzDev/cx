@@ -1807,7 +1807,7 @@ impl App {
             } else {
                 Some("No items".into())
             },
-            size_max: b.entries.iter().map(|e| e.size).max().unwrap_or(0),
+            size_max: all.size_max(),
             rows: rows_vec,
         };
         // Parent column, from the listing cache.
@@ -1838,29 +1838,20 @@ impl App {
                 let listed = self
                     .browser_cache
                     .get(&(device, e.path.clone(), scope.clone()))
-                    .map(|c| (c.entries.clone(), c.selected))
-                    .or_else(|| {
-                        b.peek
-                            .as_ref()
-                            .filter(|p| p.path == e.path && !p.loading)
-                            .map(|p| (p.entries.clone(), p.selected))
-                    });
+                    .or_else(|| b.peek.as_deref().filter(|p| p.path == e.path && !p.loading));
                 v.preview = Some(match listed {
-                    Some((entries, sel)) => {
-                        let shown: Vec<&Entry> = entries
-                            .iter()
-                            .filter(|x| b.show_hidden || !x.hidden)
-                            .collect();
-                        let sel = sel.min(shown.len().saturating_sub(1));
-                        let off = scrolled(0, sel, shown.len(), rows);
+                    Some(c) => {
+                        // Its index, not a filtered copy: a 100k listing is O(1) a frame.
+                        let shown = c.index.borrow_mut().visible(&c.entries, b.show_hidden, "");
+                        let len = shown.len();
+                        let sel = c.selected.min(len.saturating_sub(1));
+                        let off = scrolled(0, sel, len, rows);
                         Preview::Folder(Column {
-                            hovered: (!shown.is_empty()).then(|| sel - off),
-                            empty: shown.is_empty().then(|| "No items".into()),
+                            hovered: (len > 0).then(|| sel - off),
+                            empty: (len == 0).then(|| "No items".into()),
                             size_max: 0,
-                            rows: shown
-                                .iter()
-                                .skip(off)
-                                .take(rows)
+                            rows: (off..(off + rows).min(len))
+                                .filter_map(|i| shown.get(i))
                                 .map(|x| to_row(x, Mark::None))
                                 .collect(),
                         })

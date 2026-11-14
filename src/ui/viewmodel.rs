@@ -5,9 +5,9 @@
 use super::actions::PaletteTarget;
 use super::views::{
     Access, ColorLevel, DeviceStatus, EdgeKind, FileKind, FileNode, LabCaps, LabDevice, LabEdge,
-    LabFiles, LabInvite, LabMesh, LabNeighbor, LabNotice, LabPreview, LabSecret, LabSecretEntry,
-    LabSession, LabState, LabTransfer, LabView, NoticeKind, PaletteRow, Pane, PreviewKind,
-    Provider, SessionState, Theme, NEVER_SEEN,
+    LabFiles, LabInvite, LabMesh, LabNotice, LabPreview, LabSecret, LabSecretEntry, LabSession,
+    LabState, LabTransfer, LabView, NoticeKind, PaletteRow, Pane, PreviewKind, Provider,
+    SessionState, Theme, NEVER_SEEN,
 };
 use super::*;
 
@@ -38,7 +38,8 @@ impl From<&App> for ViewModel {
             viewer: dev_id(app.local_index()),
             meshes: meshes(app, &devices),
             edges: edges(app, &devices),
-            neighbors: neighbors(app),
+            // No view draws lan neighbours yet: none built each frame.
+            neighbors: Vec::new(),
             devices,
             sessions: sessions(app),
             files: files(app),
@@ -310,31 +311,6 @@ fn meshes(app: &App, devices: &[LabDevice]) -> Vec<LabMesh> {
                 detail: format!("{} of {} members here", members.len(), m.members.len()),
                 members,
             })
-        })
-        .collect()
-}
-
-/// This host's lan neighbours that are not enrolled devices (recent observations only).
-fn neighbors(app: &App) -> Vec<LabNeighbor> {
-    let local = app.local_index();
-    let now = transport::now();
-    app.network_candidates()
-        .into_iter()
-        .filter(|c| c["_device"].as_u64() == Some(local as u64))
-        .filter(|c| app.known_neighbor(c).is_none())
-        .take(64)
-        .map(|c| {
-            let addr = safe_label(c["address"].as_str().unwrap_or(""));
-            LabNeighbor {
-                seen_from: dev_id(local),
-                name: c["hostname"].as_str().map_or(addr.clone(), safe_label),
-                addr,
-                vendor: String::new(),
-                ssh_open: network_view::neighbor_ssh(&c, now) == "port open",
-                seen_secs: now
-                    .saturating_sub(c["_snapshot"].as_u64().unwrap_or(now))
-                    .min(u64::from(u32::MAX)) as u32,
-            }
         })
         .collect()
 }

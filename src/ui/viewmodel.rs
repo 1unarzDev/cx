@@ -52,6 +52,7 @@ impl From<&App> for ViewModel {
             }),
             notifications: notices(app),
             transfers: transfers(app),
+            ended: Vec::new(),
             palette: (app.input == Some(Input::Palette)).then(|| palette(app)),
         };
         let view = screen(app, &state, &mut caps);
@@ -288,6 +289,8 @@ fn devices(app: &App) -> Vec<LabDevice> {
                     .collect(),
                 joined_via: None,
                 core: app.device_policy(i).access == store::AccessMode::Core,
+                caps: Vec::new(),
+                recent: Vec::new(),
             }
         })
         .collect()

@@ -85,6 +85,8 @@ fn dev(
         meshes: meshes.iter().map(|s| s.to_string()).collect(),
         joined_via: None,
         core,
+        caps: Vec::new(),
+        recent: Vec::new(),
     }
 }
 
@@ -790,6 +792,16 @@ pub fn typical() -> LabState {
     sessions[1].unread = true;
     for (i, d) in devices.iter_mut().enumerate() {
         d.hue = (i % crate::ui::theme::SWATCHES as usize) as u8;
+        // What each helper reported it can start (the down one was never asked).
+        d.caps = match i {
+            0 | 2 => vec!["shell", "claude", "codex", "containers"],
+            1 | 6 => vec!["shell", "claude", "codex"],
+            3 | 5 => vec!["shell"],
+            _ => vec![],
+        }
+        .into_iter()
+        .map(String::from)
+        .collect();
     }
     LabState {
         fixture: "typical",
@@ -821,6 +833,7 @@ pub fn typical() -> LabState {
                 .map(|v| v * 48e6)
                 .collect(),
         }],
+        ended: Vec::new(),
         palette: None,
     }
 }
@@ -861,6 +874,7 @@ pub fn small() -> LabState {
         secret_entry: None,
         notifications: vec![],
         transfers: vec![],
+        ended: Vec::new(),
         palette: None,
     };
     for d in &mut s.devices {
@@ -1260,6 +1274,91 @@ pub fn mirror() -> LabState {
             .filter(|d| d.meshes.contains(&m.id))
             .map(|d| d.id.clone())
             .collect();
+    }
+    s
+}
+
+/// Nothing running anywhere: no sessions, an empty folder in Files, no secrets.
+pub fn bare() -> LabState {
+    let mut s = typical();
+    s.fixture = "bare";
+    s.sessions.clear();
+    s.files.entries.clear();
+    s.files.total = 0;
+    s.files.selected = 0;
+    s.files.folder = None;
+    s.files.cwd = "~/scratch".into();
+    s.files.previews.clear();
+    s.secrets.clear();
+    s
+}
+
+/// Creation's work has ended: two finished sessions and the folders they ran in.
+pub fn ended() -> LabState {
+    let mut s = typical();
+    s.fixture = "ended";
+    let mut gone: Vec<LabSession> = s
+        .sessions
+        .iter()
+        .filter(|x| x.device == "creation")
+        .cloned()
+        .collect();
+    s.sessions.retain(|x| x.device != "creation");
+    let mut map = session(
+        "mapmerge",
+        "merge lidar maps",
+        "creation",
+        Provider::Claude,
+        SessionState::Exited,
+        "~/ros_ws/src/mapping",
+        "claude",
+        40 * 60,
+        3 * 3600,
+        36,
+        claude_screen("merge lidar maps", false),
+    );
+    map.state = SessionState::Exited;
+    for x in &mut gone {
+        x.state = SessionState::Exited;
+        x.last_activity_secs = 3 * 3600;
+    }
+    gone.insert(0, map);
+    s.ended = gone;
+    if let Some(d) = s.devices.iter_mut().find(|d| d.id == "creation") {
+        d.recent = ["~/ros_ws/src/mapping", "~/cx", "~/datasets/lidar"]
+            .map(String::from)
+            .to_vec();
+    }
+    s
+}
+
+/// Only this device: no links, meshes or sessions.
+pub fn solo() -> LabState {
+    let mut s = typical();
+    s.fixture = "solo";
+    s.devices.truncate(1);
+    s.devices[0].meshes.clear();
+    s.meshes.clear();
+    s.edges.clear();
+    s.neighbors.clear();
+    s.sessions.clear();
+    s.notifications.clear();
+    s.transfers.clear();
+    s
+}
+
+/// The typical network with no meshes: every link is plain SSH.
+pub fn nomesh() -> LabState {
+    let mut s = typical();
+    s.fixture = "nomesh";
+    s.meshes.clear();
+    for d in &mut s.devices {
+        d.meshes.clear();
+    }
+    for e in &mut s.edges {
+        if matches!(e.kind, EdgeKind::Mesh(_)) {
+            e.kind = EdgeKind::Direct;
+        }
     }
     s
 }

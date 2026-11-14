@@ -14,7 +14,10 @@ tier and lints leaks (non-ASCII cells in ASCII mode, colors above the tier), whi
 as `!` in contact-sheet captions. Fixtures are `small` (3 devices), `typical` (7 devices,
 2 meshes, 5 sessions), `large` (25 devices, 40 sessions), `nebula-1` .. `nebula-25` (that
 many devices over 1-3 meshes, mixed up, down and never-seen, some behind a relay) and
-`mirror` (a network that is its own mirror image). `CX_LAB_MOTION=<device>:<thousandths>`
+`mirror` (a network that is its own mirror image), and the empty states (see
+`docs/design/empty-states.md`): `bare` (no sessions anywhere, an empty folder, no
+secrets), `ended` (creation's sessions have ended), `solo` (only this device) and
+`nomesh` (plain SSH links). `CX_LAB_MOTION=<device>:<thousandths>`
 captures the hub map part-way through a transition from that device to the selection. `baseline` roughly copies
 the v0.1.95 layout and is the bar to beat. `glyphs` is a renderer test card.
 

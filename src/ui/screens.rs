@@ -24,6 +24,8 @@ pub(super) struct SecretEntry {
     /// Typing the new secret's name (plain text) before its value.
     pub naming: bool,
     pub value: zeroize::Zeroizing<String>,
+    /// Editing the variable new sessions get the secret in (`v`), not its value.
+    pub var: Option<String>,
 }
 
 impl SecretEntry {
@@ -34,12 +36,15 @@ impl SecretEntry {
             name,
             naming,
             value: zeroize::Zeroizing::new(String::with_capacity(SECRET_INPUT_LIMIT)),
+            var: None,
         }
     }
     /// Typed or pasted text: the name while naming, else the value (control characters
     /// dropped, bounded).
     fn push(&mut self, text: &str) {
-        let field: &mut String = if self.naming {
+        let field: &mut String = if let Some(var) = &mut self.var {
+            var
+        } else if self.naming {
             &mut self.name
         } else {
             &mut self.value
@@ -562,8 +567,23 @@ impl App {
                 if e.naming {
                     e.name.clear();
                 }
+                if let Some(var) = &mut e.var {
+                    var.clear();
+                }
             }
             KeyCode::Char(c) if !ctrl => e.push(&c.to_string()),
+            KeyCode::Backspace if e.var.is_some() => {
+                if let Some(var) = &mut e.var {
+                    var.pop();
+                }
+            }
+            KeyCode::Enter if e.var.is_some() => {
+                let name = e.name.clone();
+                let var = e.var.take().unwrap_or_default();
+                self.secret_entry = None;
+                let expose = self.secret_meta(&name).is_some_and(|m| m.expose);
+                self.save_exposure(&name, expose, Some(&var));
+            }
             KeyCode::Backspace if e.naming => {
                 e.name.pop();
             }
@@ -1141,8 +1161,48 @@ impl App {
             self.secret_card(i);
         }
     }
+    fn secret_meta(&self, name: &str) -> Option<&crate::secrets::SecretMeta> {
+        self.secret_list.iter().find(|m| m.name == name)
+    }
+    /// The selected card's secret, when it is stored (the missing cards have none to expose).
+    fn selected_secret(&self) -> Option<crate::secrets::SecretMeta> {
+        self.secret_list.get(self.secret_selected).cloned()
+    }
+    /// `e`: turn "expose to new sessions on this device" on or off for the selected secret.
+    fn toggle_exposure(&mut self) {
+        if let Some(m) = self.selected_secret() {
+            self.save_exposure(&m.name, !m.expose, m.env.as_deref());
+        }
+    }
+    /// `v`: edit the variable new sessions get the selected secret in.
+    fn edit_variable(&mut self) {
+        if let Some(m) = self.selected_secret() {
+            let mut entry = SecretEntry::new(m.name.clone(), false);
+            entry.var = Some(m.env_var());
+            self.secret_entry = Some(entry);
+        }
+    }
+    /// Only the index changes (names and flags, no backend), so it is written here.
+    fn save_exposure(&mut self, name: &str, expose: bool, var: Option<&str>) {
+        let result = crate::store::ensure()
+            .and_then(|dir| crate::secrets::Secrets::at(dir, None).set_exposure(name, expose, var));
+        match result {
+            Ok(m) => {
+                self.open_secrets();
+                let text = if m.expose {
+                    format!("New sessions here get {} as ${}", m.name, m.env_var())
+                } else {
+                    format!("New sessions no longer get {}", m.name)
+                };
+                self.set_notice_as(NoticeKind::Success, safe_text(&text));
+            }
+            Err(e) => self.set_notice_as(NoticeKind::Error, safe_text(&format!("{e:#}"))),
+        }
+    }
     fn secrets_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
+            KeyCode::Char('e') => self.toggle_exposure(),
+            KeyCode::Char('v') => self.edit_variable(),
             KeyCode::Char(c) if SLOTS.contains(&c) => {
                 let i = SLOTS.iter().position(|s| *s == c).unwrap_or(0);
                 self.secret_card(i);
@@ -1425,6 +1485,8 @@ impl App {
             ("palette" | "find" | "notices", None, _) => self.open_palette(""),
             ("invite" | "join" | "new-code", None, _) => self.invite(),
             ("secret-new", None, _) => self.new_secret(),
+            ("expose", None, _) => self.toggle_exposure(),
+            ("variable", None, _) => self.edit_variable(),
             ("secrets", None, _) => self.open_secrets(),
             ("help", None, _) => self.run_cmd(keymap::Cmd::Help),
             ("zone", None, _) => self.toggle_zone(),

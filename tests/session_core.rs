@@ -123,6 +123,19 @@ fn persistent_idempotent_hostile_directory() {
 #[path = "../src/auth.rs"]
 mod auth;
 
+/// No exposed secrets in this fixture (tests/secrets_sessions_live.py covers them with the real store).
+mod secrets {
+    pub struct Secrets;
+    impl Secrets {
+        pub fn open() -> anyhow::Result<Secrets> {
+            Ok(Secrets)
+        }
+        pub fn session_specs(&self) -> anyhow::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+    }
+}
+
 mod transport {
     /// No shared-master warm-up in the fixture: the store command alone.
     pub fn ssh(target: &str, interactive: bool) -> anyhow::Result<std::process::Command> {

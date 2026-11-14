@@ -48,6 +48,7 @@ impl From<&App> for ViewModel {
                 name: safe_label(&e.name),
                 naming: e.naming,
                 typed: e.value.chars().count(),
+                var: e.var.as_deref().map(safe_label),
             }),
             notifications: notices(app),
             transfers: transfers(app),
@@ -708,7 +709,11 @@ fn secrets(app: &App) -> Vec<LabSecret> {
             )),
             source: m.backend.as_str().into(),
             updated_secs: Some(now.saturating_sub(m.updated).min(u64::from(u32::MAX)) as u32),
-            used_by: Vec::new(),
+            used_by: if m.expose {
+                vec![format!("new sessions as ${}", safe_label(&m.env_var()))]
+            } else {
+                Vec::new()
+            },
         })
         .collect();
     let token = crate::secrets::CLOUDFLARE_TOKEN;

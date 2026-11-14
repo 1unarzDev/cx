@@ -196,12 +196,22 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
             secrets(cx, buf, body);
             let keys = match &cx.s.secret_entry {
                 Some(e) => vec![
-                    (cx.ret(), if e.naming { "next" } else { "save" }, "go"),
+                    (
+                        cx.ret(),
+                        if e.naming && e.var.is_none() {
+                            "next"
+                        } else {
+                            "save"
+                        },
+                        "go",
+                    ),
                     ("esc", "cancel", "back"),
                 ],
                 None => vec![
                     ("a s d g", "set", "edit"),
                     ("h", "new", "secret-new"),
+                    ("e", "to sessions", "expose"),
+                    ("v", "variable", "variable"),
                     ("esc", "back", "back"),
                 ],
             };
@@ -2295,7 +2305,9 @@ fn secrets(cx: &Cx, buf: &mut Buffer, r: Rect) {
         let rect = Rect::new(x0, y, w, r.bottom().saturating_sub(y).min(2));
         cx.fill(buf, rect, Style::default());
         cx.bar(buf, rect.x, rect.y, rect.height, cx.st(Tok::Accent));
-        let (label, shown) = if e.naming {
+        let (label, shown) = if let Some(var) = &e.var {
+            (e.name.as_str(), format!("${var}"))
+        } else if e.naming {
             ("name", e.name.clone())
         } else {
             let dot = cx.g("•", "*");
@@ -2314,6 +2326,9 @@ fn secrets(cx: &Cx, buf: &mut Buffer, r: Rect) {
         cx.put(buf, x, y, 1, cx.g("▏", "_"), cx.st(Tok::Accent));
         if rect.height > 1 {
             let hint = match (e.naming, e.typed) {
+                _ if e.var.is_some() => {
+                    "the variable new sessions here get it in; empty for the default".to_string()
+                }
                 (true, _) => "the secret's name, then its value".to_string(),
                 (false, 0) => "type or paste the value; it is never shown".into(),
                 (false, n) => format!("{n} characters · ctrl+u clears"),

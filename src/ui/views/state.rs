@@ -242,6 +242,8 @@ pub struct LabSecretEntry {
     pub name: String,
     pub naming: bool,
     pub typed: usize,
+    /// The variable being edited (`v`), instead of the value.
+    pub var: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

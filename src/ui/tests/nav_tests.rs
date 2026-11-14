@@ -804,6 +804,52 @@ fn a_secret_value_is_typed_masked_and_never_drawn() {
     );
 }
 
+/// The keys screen's `e` exposes the selected secret to new sessions here (off by default) and
+/// `v` edits its variable; the card says which variable, never the value.
+#[test]
+fn e_exposes_a_secret_to_new_sessions_and_v_names_its_variable() {
+    let (mut a, _rx) = queued_app();
+    let name = "ui.expose-test";
+    let store = crate::secrets::Secrets::at(store::ensure().unwrap(), None);
+    store.set(name, "ui-expose-canary").unwrap();
+    a.open_secrets();
+    a.secret_selected = a.secret_list.iter().position(|m| m.name == name).unwrap();
+    let meta = |a: &App| {
+        a.secret_list
+            .iter()
+            .find(|m| m.name == name)
+            .cloned()
+            .unwrap()
+    };
+    assert!(!meta(&a).expose, "off by default");
+    press(&mut a, 'e');
+    assert!(meta(&a).expose && store.meta(name).unwrap().unwrap().expose);
+    let text = draw(&a, 120, 40);
+    assert!(text.contains("new sessions as $UI_EXPOSE_TEST"), "{text}");
+    press(&mut a, 'v');
+    assert_eq!(
+        a.secret_entry.as_ref().unwrap().var.as_deref(),
+        Some("UI_EXPOSE_TEST")
+    );
+    a.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    for c in "MY_TOKEN".chars() {
+        press(&mut a, c);
+    }
+    assert!(draw(&a, 120, 40).contains("$MY_TOKEN"));
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(a.secret_entry.is_none());
+    assert_eq!(meta(&a).env.as_deref(), Some("MY_TOKEN"));
+    assert!(meta(&a).expose, "renaming the variable keeps the choice");
+    let text = draw(&a, 120, 40);
+    assert!(
+        text.contains("$MY_TOKEN") && !text.contains("ui-expose-canary"),
+        "{text}"
+    );
+    press(&mut a, 'e');
+    assert!(!meta(&a).expose);
+    store.delete(name).unwrap();
+}
+
 /// After a detach the left session is selected on the hub even when it ranks below the
 /// tile row: its tile takes the row's last cell.
 #[test]

@@ -275,9 +275,8 @@ pub(crate) fn osc11_reply_background(bytes: &[u8]) -> Option<Background> {
     })
 }
 
-/// Until when a timed-out OSC 11 reply may still arrive as keystrokes, and whether
-/// one is being swallowed right now (with a hard cap on swallowed events).
-static STRAY_REPLY: std::sync::Mutex<Option<(Instant, bool, u8)>> = std::sync::Mutex::new(None);
+/// Until when a timed-out probe's replies may still arrive (as keystrokes).
+static STRAY_UNTIL: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
 const STRAY_WINDOW: Duration = Duration::from_secs(3);
 
 /// Query the terminal background with OSC 11 followed by a DA1 sentinel (every
@@ -285,8 +284,8 @@ const STRAY_WINDOW: Duration = Duration::from_secs(3);
 /// limit). Reads `/dev/tty` with echo and canonical mode off, restores the
 /// previous termios, and never blocks longer than `limit`. Skipped unless stdin
 /// and stdout are terminals. If the sentinel did not arrive in time, a late reply
-/// would reach the event loop as `Alt+]` and printable keys, so a short guard
-/// ([`swallow_stray_reply`]) is armed to drop it.
+/// would reach the event loop as `Alt+]`/`Alt+_` and printable keys, so for a few
+/// seconds [`ReplyFilter`] drops the events that spell a complete expected reply.
 fn query_osc11(limit: Duration) -> Option<Background> {
     use std::os::fd::AsRawFd;
     if unsafe { libc::isatty(0) != 1 || libc::isatty(1) != 1 } {
@@ -361,8 +360,8 @@ fn query_osc11(limit: Duration) -> Option<Background> {
         // (No reply within the limit: at least that slow.)
         let ms = limit.as_millis().min(u128::from(u32::MAX - 2)) as u32 + 1;
         TERMINAL_RTT_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
-        if let Ok(mut guard) = STRAY_REPLY.lock() {
-            *guard = Some((Instant::now() + STRAY_WINDOW, false, 0));
+        if let Ok(mut guard) = STRAY_UNTIL.lock() {
+            *guard = Some(Instant::now() + STRAY_WINDOW);
         }
     }
     osc11_reply_background(&reply)
@@ -388,43 +387,167 @@ impl NoCtty for std::fs::OpenOptions {
     }
 }
 
-/// Event-loop filter for a late OSC 11 reply after a timed-out query: within a
-/// few seconds, `Alt+]` starts swallowing and BEL (`Ctrl+G`) or ST (`Alt+\`)
-/// ends it; at most 64 events are ever dropped. Inert when the query was
-/// answered or never sent.
-pub(crate) fn swallow_stray_reply(event: &crossterm::event::Event) -> bool {
-    use crossterm::event::{Event, KeyCode, KeyModifiers};
-    let Ok(mut guard) = STRAY_REPLY.lock() else {
-        return false;
-    };
-    let Some((until, swallowing, count)) = *guard else {
-        return false;
-    };
-    let now = Instant::now();
-    if (!swallowing && now >= until) || count >= 64 {
-        *guard = None;
-        return false;
+#[derive(Debug, PartialEq, Eq)]
+enum Fit {
+    Prefix,
+    Reply,
+    No,
+}
+
+/// Whether `b` is (the start of) one of the replies the startup probe asks for:
+/// OSC 11, kitty graphics, XTVERSION, `CSI 16 t` and DA1 (the last two only reach
+/// the event loop as keys when the terminal's write was split after its ESC).
+fn reply_fit(b: &[u8]) -> Fit {
+    const ST: u8 = b'\\';
+    fn text(c: u8) -> bool {
+        (0x20..0x7f).contains(&c)
     }
-    let Event::Key(key) = event else {
-        return false;
-    };
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
-    if !swallowing {
-        if alt && key.code == KeyCode::Char(']') {
-            *guard = Some((until, true, count + 1));
-            return true;
+    fn num(c: u8) -> bool {
+        c.is_ascii_digit() || c == b';'
+    }
+    // (introducer, body bytes allowed, final bytes: ESC starts an ST)
+    type Form = (&'static [u8], fn(u8) -> bool, &'static [u8]);
+    let forms: [Form; 5] = [
+        (b"\x1b]11;", text, b"\x07\x1b"),
+        (b"\x1b_G", text, b"\x1b"),
+        (b"\x1bP>|", text, b"\x1b"),
+        (b"\x1b[6;", num, b"t"),
+        (b"\x1b[?", num, b"c"),
+    ];
+    let mut best = Fit::No;
+    for (intro, body, ends) in forms {
+        let fit = if b.len() <= intro.len() {
+            if intro.starts_with(b) {
+                Fit::Prefix
+            } else {
+                Fit::No
+            }
+        } else if !b.starts_with(intro) || b.len() > 256 {
+            Fit::No
+        } else {
+            let rest = &b[intro.len()..];
+            match rest.iter().position(|&c| !body(c)) {
+                None => Fit::Prefix,
+                Some(i) if !ends.contains(&rest[i]) => Fit::No,
+                Some(i) if rest[i] == 0x1b => match rest.len() - i {
+                    1 => Fit::Prefix,
+                    2 if rest[i + 1] == ST => Fit::Reply,
+                    _ => Fit::No,
+                },
+                Some(i) if i + 1 == rest.len() => Fit::Reply,
+                Some(_) => Fit::No,
+            }
+        };
+        match fit {
+            Fit::Reply => return Fit::Reply,
+            Fit::Prefix => best = Fit::Prefix,
+            Fit::No => {}
         }
-        return false;
     }
-    let end = (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g'))
-        || (alt && key.code == KeyCode::Char('\\'));
-    // One reply per query: disarm once it has been swallowed.
-    *guard = if end {
-        None
-    } else {
-        Some((until, true, count + 1))
+    best
+}
+
+/// The bytes a key event stands for, when it could be part of a terminal reply
+/// (crossterm reads `ESC x` as Alt+x, BEL as Ctrl+G).
+fn event_bytes(event: &crossterm::event::Event) -> Option<Vec<u8>> {
+    use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+    let Event::Key(k) = event else {
+        return None;
     };
-    true
+    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = k.modifiers.contains(KeyModifiers::ALT);
+    if k.kind != KeyEventKind::Press {
+        return None;
+    }
+    match k.code {
+        KeyCode::Esc if !ctrl && !alt => Some(vec![0x1b]),
+        KeyCode::Char('g') if ctrl && !alt => Some(vec![0x07]),
+        KeyCode::Char(c) if !ctrl => {
+            let mut out = if alt { vec![0x1b] } else { Vec::new() };
+            out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+/// Late replies to a timed-out startup probe arrive as keystrokes (`ESC _ G i=31;OK
+/// ESC \` reads as Alt+_, G, i, =, 3, 1, ;, O, K, Alt+\). For a few seconds after
+/// such a timeout, events that could start a reply are held; they are dropped only
+/// once they spell a COMPLETE expected reply, and are delivered unchanged as soon as
+/// they cannot (or after [`REPLY_HOLD`] without the rest). Inert otherwise.
+#[derive(Default)]
+pub(crate) struct ReplyFilter {
+    held: Vec<crossterm::event::Event>,
+    bytes: Vec<u8>,
+    last: Option<Instant>,
+}
+/// How long a possible reply's start waits for the rest of it.
+const REPLY_HOLD: Duration = Duration::from_millis(150);
+
+impl ReplyFilter {
+    /// The events to deliver now, given one more from the terminal.
+    pub(crate) fn push(
+        &mut self,
+        event: crossterm::event::Event,
+        now: Instant,
+    ) -> Vec<crossterm::event::Event> {
+        let armed = STRAY_UNTIL
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .is_some_and(|until| now < until);
+        if self.held.is_empty() && !armed {
+            return vec![event];
+        }
+        let Some(more) = event_bytes(&event) else {
+            let mut out = self.flush();
+            out.push(event);
+            return out;
+        };
+        let mut bytes = self.bytes.clone();
+        bytes.extend_from_slice(&more);
+        match reply_fit(&bytes) {
+            Fit::Reply => {
+                self.held.clear();
+                self.bytes.clear();
+                Vec::new()
+            }
+            Fit::Prefix => {
+                self.held.push(event);
+                self.bytes = bytes;
+                self.last = Some(now);
+                Vec::new()
+            }
+            Fit::No if self.held.is_empty() => vec![event],
+            Fit::No => {
+                // Not a reply after all: deliver what was held; this event may start one.
+                let mut out = self.flush();
+                out.extend(self.push(event, now));
+                out
+            }
+        }
+    }
+    /// When held events are due for delivery.
+    pub(crate) fn deadline(&self) -> Option<Instant> {
+        self.last
+            .filter(|_| !self.held.is_empty())
+            .map(|t| t + REPLY_HOLD)
+    }
+    /// Held events whose reply never completed.
+    pub(crate) fn expire(&mut self, now: Instant) -> Vec<crossterm::event::Event> {
+        if self.deadline().is_some_and(|d| d <= now) {
+            self.flush()
+        } else {
+            Vec::new()
+        }
+    }
+    /// Everything held, in order.
+    pub(crate) fn flush(&mut self) -> Vec<crossterm::event::Event> {
+        self.bytes.clear();
+        self.last = None;
+        std::mem::take(&mut self.held)
+    }
 }
 
 /// Bounded, read-only probes of the real system.
@@ -993,42 +1116,78 @@ mod tests {
     }
 
     #[test]
-    fn late_osc11_reply_is_swallowed_once_and_bounded() {
+    fn late_probe_replies_are_dropped_only_when_complete() {
         use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
         let key = |c: char, m: KeyModifiers| Event::Key(KeyEvent::new(KeyCode::Char(c), m));
-        let plain = |c: char| key(c, KeyModifiers::NONE);
-        // Unarmed: nothing is ever dropped.
-        *STRAY_REPLY.lock().unwrap() = None;
-        assert!(!swallow_stray_reply(&key(']', KeyModifiers::ALT)));
-        // Armed: ESC ] 11 ; rgb:... BEL arrives as Alt+] then keys then Ctrl+G.
-        *STRAY_REPLY.lock().unwrap() = Some((Instant::now() + STRAY_WINDOW, false, 0));
-        assert!(!swallow_stray_reply(&plain('j')), "real keys pass");
-        assert!(swallow_stray_reply(&key(']', KeyModifiers::ALT)));
-        for c in "11;rgb:1e1e/1e1e/1e1e".chars() {
-            assert!(swallow_stray_reply(&plain(c)));
+        let alt = |c: char| key(c, KeyModifiers::ALT);
+        let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        // The events crossterm makes of a byte string (ESC x: Alt+x, a lone ESC: Esc).
+        let events = |b: &str| {
+            let mut out = Vec::new();
+            let mut it = b.chars().peekable();
+            while let Some(c) = it.next() {
+                out.push(match c {
+                    '\x1b' => match it.next() {
+                        Some(n) => alt(n),
+                        None => esc.clone(),
+                    },
+                    '\x07' => key('g', KeyModifiers::CONTROL),
+                    c => key(c, KeyModifiers::NONE),
+                });
+            }
+            out
+        };
+        let feed = |f: &mut ReplyFilter, evs: Vec<Event>, now: Instant| -> Vec<Event> {
+            evs.into_iter().flat_map(|e| f.push(e, now)).collect()
+        };
+        let now = Instant::now();
+        let mut f = ReplyFilter::default();
+        // Unarmed: everything passes, replies included.
+        *STRAY_UNTIL.lock().unwrap() = None;
+        assert_eq!(feed(&mut f, events("\x1b_Gi=31;OK\x1b\\"), now).len(), 10);
+        *STRAY_UNTIL.lock().unwrap() = Some(now + STRAY_WINDOW);
+        // Complete replies vanish: kitty graphics, XTVERSION, OSC 11 (BEL and ST),
+        // and a 16 t / DA1 split after its ESC.
+        for reply in [
+            "\x1b_Gi=31;OK\x1b\\",
+            "\x1bP>|kitty(0.39.1)\x1b\\",
+            "\x1b]11;rgb:1e1e/1e1e/2e2e\x07",
+            "\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\",
+        ] {
+            assert!(feed(&mut f, events(reply), now).is_empty(), "{reply:?}");
         }
-        assert!(swallow_stray_reply(&key('g', KeyModifiers::CONTROL)));
-        assert!(
-            !swallow_stray_reply(&plain('q')),
-            "disarmed after one reply"
-        );
-        assert!(!swallow_stray_reply(&key(']', KeyModifiers::ALT)));
-        // ST terminator, and the hard cap on swallowed events.
-        *STRAY_REPLY.lock().unwrap() = Some((Instant::now() + STRAY_WINDOW, false, 0));
-        assert!(swallow_stray_reply(&key(']', KeyModifiers::ALT)));
-        assert!(swallow_stray_reply(&key('\\', KeyModifiers::ALT)));
-        assert!(!swallow_stray_reply(&plain('x')));
-        *STRAY_REPLY.lock().unwrap() = Some((Instant::now() + STRAY_WINDOW, false, 0));
-        assert!(swallow_stray_reply(&key(']', KeyModifiers::ALT)));
-        let dropped = (0..100)
-            .take_while(|_| swallow_stray_reply(&plain('1')))
-            .count();
-        assert!(dropped < 64, "{dropped}");
-        assert!(!swallow_stray_reply(&plain('1')));
+        let mut split = vec![esc.clone()];
+        split.extend(events("[6;20;10t"));
+        split.push(esc.clone());
+        split.extend(events("[?62;22c"));
+        assert!(feed(&mut f, split, now).is_empty());
+        // Real keys pass at once, even right after a reply.
+        for k in ["q", "H", "j", ";", "`"] {
+            assert_eq!(feed(&mut f, events(k), now), events(k), "{k}");
+        }
+        // A reply's start then something else: all of it is delivered, in order.
+        let mixed = events("\x1b[q");
+        assert_eq!(feed(&mut f, mixed.clone(), now), mixed);
+        // An unfinished reply is delivered once it stops arriving.
+        let part = events("\x1b_Gi=31");
+        assert!(feed(&mut f, part.clone(), now).is_empty());
+        assert_eq!(f.expire(now + REPLY_HOLD), part);
+        // Esc is held only while it may start a reply, then delivered.
+        assert!(f.push(esc.clone(), now).is_empty());
+        assert_eq!(f.deadline(), Some(now + REPLY_HOLD));
+        assert!(f.expire(now).is_empty());
+        assert_eq!(f.expire(now + REPLY_HOLD), vec![esc.clone()]);
+        assert!(f.push(esc.clone(), now).is_empty());
+        let q = key('q', KeyModifiers::NONE);
+        assert_eq!(f.push(q.clone(), now), vec![esc.clone(), q]);
+        // A non-key event releases what is held, before itself.
+        assert!(f.push(alt('_'), now).is_empty());
+        let resize = Event::Resize(80, 24);
+        assert_eq!(f.push(resize.clone(), now), vec![alt('_'), resize]);
         // Expired window: inert.
-        *STRAY_REPLY.lock().unwrap() = Some((Instant::now(), false, 0));
-        assert!(!swallow_stray_reply(&key(']', KeyModifiers::ALT)));
-        assert!(STRAY_REPLY.lock().unwrap().is_none());
+        *STRAY_UNTIL.lock().unwrap() = Some(now);
+        assert_eq!(f.push(esc.clone(), now), vec![esc]);
+        *STRAY_UNTIL.lock().unwrap() = None;
     }
 
     fn assert_gone(pid: &str) {

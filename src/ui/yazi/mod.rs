@@ -840,8 +840,11 @@ impl App {
                         b.search.clear();
                     } else if !b.filter.is_empty() {
                         b.filter.clear();
+                    } else {
+                        // Nothing to clear: Esc leaves Files, like q (a user decision
+                        // over yazi's, where it does nothing).
+                        self.yazi_run(Quit);
                     }
-                    // Nothing to clear: nothing happens (yazi's; q, Q and H leave).
                 }
             }
             CancelSearch => {

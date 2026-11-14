@@ -105,6 +105,7 @@ CORE=(
     "preview_search_pty|pyte|BIN"
     "browser_find_pty|pyte|BIN"
     "yazi_files_pty|pyte pillow|BIN"
+    "terminal_replies_pty|pyte|BIN"
     "list_wheel_pty|pyte|BIN"
     "pdf_pages_pty|pyte poppler|BIN"
     "capture_matrix|pyte pillow|--self-test"

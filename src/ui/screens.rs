@@ -1405,6 +1405,17 @@ impl App {
             // Footer chips and buttons: the verbs their keys run.
             ("back", None, _) => self.back_here(),
             ("hub", None, _) => self.go_hub(),
+            // Files' back chip and status hint: the key they name.
+            ("yazi", Some(k), _) => {
+                if let Some(c) = k.chars().next() {
+                    let shift = if c.is_ascii_uppercase() {
+                        KeyModifiers::SHIFT
+                    } else {
+                        KeyModifiers::NONE
+                    };
+                    self.key(KeyEvent::new(KeyCode::Char(c), shift));
+                }
+            }
             // The top bar's device count: the map; its transfer readout: `T`.
             ("devices", None, _) => {
                 self.go_hub();

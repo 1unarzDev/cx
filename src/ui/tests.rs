@@ -7080,18 +7080,22 @@ fn yazi_ctrl_c_closes_a_tab_and_dash_stays_in_files() {
 }
 
 #[test]
-fn yazi_esc_and_ctrl_s_with_nothing_to_clear_stay_in_files() {
+fn yazi_esc_clears_first_then_leaves_files_and_ctrl_s_only_cancels_find() {
     let (mut a, _rx) = file_app();
     let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
     let ctrl_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
-    // Visual mode, then Esc twice "to be sure": the second Esc does nothing.
+    // Visual mode: Esc ends it (committing the range), the next clears the selection,
+    // and only one with nothing left to clear leaves Files (a user decision over yazi's).
     press(&mut a, 'v');
     press(&mut a, 'j');
     a.key(esc);
     assert!(a.browser.as_ref().unwrap().visual_anchor.is_none());
     a.key(esc);
-    a.key(esc);
     assert_eq!(a.view, View::Files);
+    assert!(a.browser.as_ref().unwrap().marked.is_empty());
+    a.key(esc);
+    assert_eq!(a.view, View::Work);
+    a.view = View::Files;
     // Ctrl+S cancels a find, and only that: the selection stays, Files stays.
     press(&mut a, ' ');
     a.yz.find = Some(("x".into(), false));

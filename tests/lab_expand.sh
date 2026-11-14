@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Mid-animation frames of the attach expand (lab), one PNG/TXT per frame time.
+# Mid-animation frames of the attach expand (lab): tests/lab_expand.sh OUT_DIR writes
+# <view>-<ms>ms.{png,txt} for the hub and a device screen (SIZES, default 120x40).
 set -euo pipefail
-root=/home/lunarz/cx/worktrees/rv-empty032
+root=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:?out dir}
 mkdir -p "$out"
 cd "$root"
 for view in hub device:innovation; do
-  for ms in 0 16 32 48 64 72 80 100; do
-    t=$((ms * 10))
+  for ms in 0 15 30 45 55 65 75 90; do
+    t=$((ms * 1000 / 90))
     d=$(mktemp -d "$out/.f.XXXX")
     CX_LAB_OUT="$d" CX_LAB_VIEWS="$view" CX_LAB_SIZES=${SIZES:-120x40} CX_LAB_VARIANTS=dark-truecolor \
       CX_LAB_EXPAND="refactor:$t" nice -n 15 cargo test --locked --quiet --bin cx ui::lab::capture::lab_capture -- --ignored --exact --nocapture >/dev/null 2>&1

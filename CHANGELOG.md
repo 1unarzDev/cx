@@ -8,11 +8,13 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 The new look, released early: the nebula hub, yazi-style Files and the welcome page, with real data behind them, plus opt-in secrets for sessions.
 
-### Changes
+### Features
 - **The hub is a nebula.** Devices sit on dotted orbits with bowed dotted links; devices group into clusters by network (a mesh, your LAN, a relay's site or direct links), and when they do not all fit, every cluster but the selected one folds into a node with a count and opens when you move into it. Each node shows live cpu, memory and temperature (a sparkline under the node; the selected device's strip reads cpu, `41% of 32G`, `47°` and uptime) and each link its measured round-trip time, all from the devices themselves. Session tiles show their state: `◆ needs you` in amber, `● working` in cyan, idle and running. `H` (Shift+H) returns to the hub from every screen.
 - **Files is yazi.** Three columns (parent, folder, preview), yazi's keymap with which-key panels after a prefix key, and your `~/.config/yazi` theme, openers and keymap prepends when they exist; `~` lists every key. `␣` and `v` select several items, `cc` `cd` `cf` `cn` copy a path, directory, file name or name without extension. `'` and a device letter switch the tab to another device (`''` goes back), so `y`, `'` + letter, `p` copies across devices in four keys (`x` moves). Images are sharp: kitty, sixel or iTerm2 graphics, scaled on the device to the preview's pixel size. Listings are instant: cached folders paint at once, others stream in, and the next folders are fetched ahead. yazi's history back and forward are Alt+← and Alt+→, since `H` is the hub, and `!` starts a session in the folder.
 - **A welcome page** with concentric dotted orbits greets a first start, while this device is still alone, and shows it in the middle of its orbits.
 - **Secrets for agent sessions, opt-in.** In the keys screen (`K`), `e` exposes the selected secret to new sessions on this device (off by default) and `v` names its variable (`anthropic.api_key` → `ANTHROPIC_API_KEY` unless you change it). New shell, Claude and Codex sessions started here then have it in their environment; running sessions, other devices and containers never get it. The value never reaches argv, tmux's environment or options, logs or any file but the secrets store (docs/secrets.md).
+
+### Changes
 - **Works with v0.2.2 and v0.2.1 both ways.** Sessions list, preview, attach and detach across versions, and updating keeps running sessions, their processes and their tmux settings. Images inside tmux (kitty, iTerm2) need tmux's passthrough, which cx sets only when it starts a server, so sessions already running get it after their server next starts.
 
 ### Known

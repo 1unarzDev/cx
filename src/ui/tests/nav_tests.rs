@@ -482,7 +482,7 @@ fn idle_frames_send_nothing_and_cursor_changes_send_only_the_cursor() {
     assert!(frame_payload(&moved, &mut tail).is_none());
 }
 
-/// A terminal for what `encode` emits: CUP, CHA, ECH, ED 2 and SGR. Cells keep the
+/// A terminal for what `encode` emits: CUP, CHA, ECH and SGR. Cells keep the
 /// symbol and the SGR state they were written with (as crossterm spells it).
 struct Replay {
     width: u16,
@@ -524,7 +524,6 @@ impl Replay {
                             );
                         }
                     }
-                    "J" => *self = Replay::new(self.width, self.cells.len() as u16 / self.width),
                     "m" => {
                         let mut parts = params.split(';').peekable();
                         while let Some(p) = parts.next() {

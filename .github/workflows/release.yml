@@ -28,6 +28,8 @@ jobs:
           node-version: 22.20.0 # node:sqlite, for the mesh Worker's in-memory D1
       - name: Regression fixtures (tests/run_regressions.sh is the one list; any SKIP fails CI)
         run: |
+          # Ubuntu 24.04 runners block unprivileged user namespaces through AppArmor; fixtures sandbox with unshare.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           docker pull ubuntu:24.04
           tests/run_regressions.sh --no-rust --with-ssh --with-docker | tee "$RUNNER_TEMP/regressions.log"
           ! grep '^SKIP' "$RUNNER_TEMP/regressions.log"

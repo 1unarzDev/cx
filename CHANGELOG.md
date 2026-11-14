@@ -4,7 +4,10 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
-## v0.3.0
+## v0.3.1
+
+v0.3.0 was tagged but never published: its release build stopped on a CI runner setting. v0.3.1 is the same release with that fixed.
+
 
 The new look, released early: the nebula hub, yazi-style Files and the welcome page, with real data behind them, plus opt-in secrets for sessions.
 

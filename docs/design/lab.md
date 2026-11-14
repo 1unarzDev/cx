@@ -16,7 +16,7 @@ as `!` in contact-sheet captions. Fixtures are `small` (3 devices), `typical` (7
 many devices over 1-3 meshes, mixed up, down and never-seen, some behind a relay) and
 `mirror` (a network that is its own mirror image), and the empty states (see
 `docs/design/empty-states.md`): `bare` (no sessions anywhere, an empty folder, no
-secrets), `ended` (creation's sessions have ended), `solo` (only this device) and
+secrets), `ended` (creation's sessions have ended), `quiet` (everything has ended), `solo` (only this device) and
 `nomesh` (plain SSH links). `CX_LAB_EXPAND=<session>:<thousandths>` captures the attach expand part-way (its tile grown that far toward full screen, eased out; the detach shrink is the same frames in reverse). `CX_LAB_MOTION=<device>:<thousandths>`
 captures the hub map part-way through a transition from that device to the selection. `baseline` roughly copies
 the v0.1.95 layout and is the bar to beat. `glyphs` is a renderer test card.

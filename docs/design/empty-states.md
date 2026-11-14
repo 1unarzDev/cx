@@ -2,13 +2,13 @@
 
 Audit of every screen where cx has little or nothing to show, drawn from the lab
 fixtures `bare` (no sessions anywhere, an empty folder, no secrets), `ended` (creation's
-work has ended), `solo` (only this device), `nomesh` (plain SSH links) and `typical`
+work has ended), `quiet` (everything has ended), `solo` (only this device), `nomesh` (plain SSH links) and `typical`
 (an unreachable device, an empty search), at 40x20, 80x24, 120x40 and 190x50, dark and
 light:
 
 ```sh
 CX_LAB_SIZES=40x20,80x24,120x40,190x50 CX_LAB_VARIANTS=dark-truecolor,light-truecolor \
-  CX_LAB_FIXTURES=bare,ended,solo,nomesh,typical \
+  CX_LAB_FIXTURES=bare,ended,quiet,solo,nomesh,typical \
   tests/lab.sh empty "hub,device:creation,device:squirtle-jetson,files,secrets,palette:zzqx"
 ```
 
@@ -38,46 +38,60 @@ One component replaces the dashed card: the **launch panel**, drawn without a fr
 in the space the tiles would take. Top to bottom, each part only when its data exists:
 
 1. **Launch row**: `c claude   x codex   n shell`, each provider word in its colour, its
-   key as a keycap. On the hub each key carries the device letter first (`t c`). An
-   agent the device's helper did not report is left out (shell always stays); before
-   the helper has answered, all three show.
-2. **Resume** (the newest session that ended while cx watched): `a ↺ claude · merge
-   lidar maps · ~/ros_ws/src/mapping · 40m ago`. The key resumes the agent's latest
-   conversation in that folder (`claude --continue`, `codex resume --last`), or opens a
-   shell there.
+   key as a keycap. On the hub the device is said once, in the grammar of the vitals
+   strip: `start on t tranquility then c claude  x codex  n shell`. An agent the
+   device's helper did not report is left out (shell always stays); before the helper
+   has answered, all three show.
+2. **Resume** (the newest session that ended while cx watched): `a claude  merge lidar
+   maps · ~/ros_ws/src/mapping · 40m ago` (a narrow row drops the age, then the folder,
+   then cuts the title). The key resumes the agent's latest conversation in that folder
+   (`claude --continue`, `codex resume --last`), or opens a shell there.
 3. **Recent folders** (folders of ended sessions, then Files locations on that device,
    newest first, at most five): `s ~/cx`, `d ~/datasets/lidar`. The key opens the
    provider chooser in that folder, so a new agent in a recent project is two keys.
 4. **Capabilities** are the launch row itself: an agent the helper did not report is
    not offered (a separate "runs claude · codex" line repeated it, and the header
    already carries cpu, memory, temperature and gpu).
-5. **Only this device** (hub): `+ invite a device` closes the launch row.
+5. **Only this device** (hub): `+ invite a device` on its own row under the launch row
+   (the footer's `+ invite` gives way to it).
+
+The panel sits at the top of its zone, right under the SESSIONS rule (never centred in
+blank rows), with one blank row between its groups where they fit. Without a label
+column (phones) the resume row says `resume` inline and the first folder `recent`.
 
 Resume and the folders take the session slot keys (`a s d g ...`): on a device with no
 sessions those keys are free, and they are the same keys a started session will take.
 
 The other states:
 
-- **Hub, no sessions**: the launch panel for the selected device in place of the tile
-  grid, headed `nothing running · start something on tranquility`.
-- **Unreachable device**: the panel says `can't start anything: no route · last seen 3h`
-  with `r retry`; recent folders and resume still show (as memory, without keys that
-  would fail).
-- **Empty Files folder**: under `No items`, two quiet hints, `a create` and
-  `' other device`, both keys yazi already binds.
+- **Hub, no sessions**: SESSIONS loses its `needs you first` sort label and the panel
+  takes at most ten rows (the map keeps the rest): `nothing running`, the launch row for
+  the selected device, `or on i innovation  c creation ...` (every other reachable
+  device, a letter away), then the newest session that ended on up to two reachable
+  devices (`b a shell  ros core · ~/ros_ws · 1s ago`, the device letter first as on a
+  tile) and the selected device's recent folders. Fixture `quiet`.
+- **Unreachable device**: the header says `✕ unreachable`; the reason is said once,
+  under SESSIONS, muted with only the mark red: `✕ can't start anything · no route ·
+  last seen 3h   r retry` (on a phone the reason alone; the footer's `r retry` gives way
+  to it). Resume and recent folders still show, muted and without keys (fixture `ended`,
+  squirtle-jetson).
+- **Empty Files folder**: under `No items`, one centred row, `a create   ' other
+  device`, keys in which-key's colour, both keys yazi already binds.
 - **Keys with none**: one line saying what keys are for ("Secrets reach new sessions on
   this device as environment variables, and connect meshes"), then `h new secret`.
   The slot chip leaves the footer while there are no cards.
-- **Empty search**: `no matches for “zzqx”` and `esc close`.
+- **Empty search**: `no matches for “zzqx”`, and the footer offers only `esc close`.
 - **Tile keys**: a pool, home row first, that avoids every key the device screen binds:
   `a s d g`, then `q u i o y z v m`, then `1`-`9` (21 keys). A session keeps its key
   until it ends; new sessions take the lowest free key. Past 21 sessions on one device
-  the last tile is a `+N` chip whose key (`/`) opens the session picker.
+  the last tile is a `+N` chip whose key (`/`) opens the session picker; while it shows,
+  the footer's `/ find` (the same palette) gives way to it, so `/` is labelled once.
 
 ## As built
 
 - `views::mission::views::launch_panel` draws the panel (device view with no
-  sessions, the hub's empty grid and its spare cell). Its rows tap as their keys
+  sessions, the hub's empty grid, and the hub's spare cell when one row of tiles leaves
+  one; with two rows the last row's tiles widen instead). Its rows tap as their keys
   (`new:<d>:<provider>`, `launch:<d>:<key>`, `invite`).
 - Data, no new process per frame: `LabDevice::caps` from the helper's capability reply
   (whenever cx last asked, for a launch; opening a device does not ask, because a capability reply also turns on external-terminal discovery), `LabDevice::recent` and
@@ -87,6 +101,9 @@ The other states:
 - Keys: `screens::slot_keys` keeps each session's key in `App::slot_memo` until the
   session leaves the listing; `screens::assign_slots` is the pure rule. The device and
   hub tiles are drawn in key order, and the hub ranks keyless sessions last, so every
-  tile on screen has a key (`lab::key_tests`).
+  tile on screen has a key. `lab::key_tests` checks that every tile, launch row, `+N`
+  chip and invite row prints its key, once per screen, in every fixture and size;
+  `nav_tests::every_launch_panel_keycap_does_what_its_tap_does` presses each printed key
+  (the device letter first on the hub) and compares the result with a tap.
 - Not built: "last-used mode" on the launch row (cx does not record a mode yet), ROS
   workspace and container detection on the panel (no cheap source today).

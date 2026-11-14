@@ -3,7 +3,7 @@ use super::*;
 
 pub const FIXTURES: [&str; 3] = ["small", "typical", "large"];
 /// The empty and sparse states (docs/design/empty-states.md) and a crowded device.
-pub const SPARSE: [&str; 5] = ["bare", "ended", "solo", "nomesh", "crowded"];
+pub const SPARSE: [&str; 6] = ["bare", "ended", "quiet", "solo", "nomesh", "crowded"];
 
 // ---------------------------------------------------------------- fixture builders
 
@@ -1351,12 +1351,47 @@ pub fn ended() -> LabState {
         x.last_activity_secs = 3 * 3600;
     }
     gone.insert(0, map);
+    // squirtle-jetson's last recording ended before it dropped off (memory, no keys).
+    let mut rec = session(
+        "bagrec",
+        "record run-0412",
+        "squirtle-jetson",
+        Provider::Shell,
+        SessionState::Exited,
+        "~/bags",
+        "ros2 bag record -a",
+        3 * 3600,
+        5 * 3600,
+        0,
+        Vec::new(),
+    );
+    rec.state = SessionState::Exited;
+    gone.push(rec);
     s.ended = gone;
-    if let Some(d) = s.devices.iter_mut().find(|d| d.id == "creation") {
-        d.recent = ["~/ros_ws/src/mapping", "~/cx", "~/datasets/lidar"]
-            .map(String::from)
-            .to_vec();
+    for (id, recent) in [
+        (
+            "creation",
+            &["~/ros_ws/src/mapping", "~/cx", "~/datasets/lidar"][..],
+        ),
+        ("squirtle-jetson", &["~/bags", "~/ros_ws"][..]),
+    ] {
+        if let Some(d) = s.devices.iter_mut().find(|d| d.id == id) {
+            d.recent = recent.iter().map(|x| x.to_string()).collect();
+        }
     }
+    s
+}
+
+/// Everything has ended: nothing runs anywhere, but cx remembers what did.
+pub fn quiet() -> LabState {
+    let mut s = ended();
+    s.fixture = "quiet";
+    let mut gone = std::mem::take(&mut s.sessions);
+    for x in &mut gone {
+        x.state = SessionState::Exited;
+    }
+    gone.sort_by_key(|x| x.last_activity_secs);
+    s.ended.splice(0..0, gone);
     s
 }
 

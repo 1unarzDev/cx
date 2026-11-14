@@ -1387,7 +1387,8 @@ mod nebula_tests {
 }
 #[cfg(test)]
 mod key_tests {
-    //! Every session tile on a device screen and on the hub shows its own key.
+    //! Every session tile, launch row and `+N` chip on a device screen and on the hub
+    //! shows its own key.
     use super::*;
     use std::collections::BTreeSet;
 
@@ -1408,6 +1409,39 @@ mod key_tests {
                 for (w, h) in [(40, 20), (80, 24), (120, 40), (190, 50)] {
                     let (buf, targets) = render_frame(v, s, &LabCaps::default(), w, h);
                     let mut seen = BTreeSet::new();
+                    let at = format!("{} {v:?} {w}x{h}", s.fixture);
+                    let row = |a: Rect| -> String {
+                        (a.x..a.right())
+                            .map(|x| buf[(x, a.y)].symbol().to_string())
+                            .collect()
+                    };
+                    for t in &targets {
+                        // The launch panel and the `+N` chip: the key their action
+                        // answers to, printed in the target, once per device.
+                        let key = match t.action.split(':').collect::<Vec<_>>()[..] {
+                            ["new", d, p] => {
+                                let k = match p {
+                                    "claude" => "c",
+                                    "codex" => "x",
+                                    _ => "n",
+                                };
+                                Some((d, &k.to_string()))
+                            }
+                            ["launch", d, k] => Some((d, &k.to_string())),
+                            ["palette", "sessions"] => Some(("", &"/".to_string())),
+                            ["invite"] => Some(("", &"+".to_string())),
+                            _ => None,
+                        };
+                        if let Some((d, k)) = key {
+                            let r = row(t.area);
+                            assert!(r.contains(&format!(" {k} ")), "{at} {}: {r}", t.action);
+                            let k = k.chars().next().unwrap();
+                            assert!(seen.insert((d.to_string(), k)), "key {k} twice: {at}");
+                        }
+                    }
+                    // `/` is labelled once: the chip, or the footer's `find`.
+                    let has = |a: &str| targets.iter().any(|t| t.action == a);
+                    assert!(!(has("palette:sessions") && has("palette")), "{at}");
                     for t in &targets {
                         let Some((d, id)) = t
                             .action
@@ -1416,15 +1450,12 @@ mod key_tests {
                         else {
                             continue;
                         };
-                        let at = format!("{} {v:?} {w}x{h} {id}", s.fixture);
+                        let at = format!("{at} {id}");
                         let k = s.session(id).and_then(|x| x.key);
                         let k = k.unwrap_or_else(|| panic!("no key: {at}"));
                         assert!(seen.insert((d.to_string(), k)), "key {k} twice: {at}");
-                        let a = t.area;
-                        let row: String = (a.x..a.right())
-                            .map(|x| buf[(x, a.y)].symbol().to_string())
-                            .collect();
-                        assert!(row.contains(&format!(" {k} ")), "{at}: {row}");
+                        let r = row(t.area);
+                        assert!(r.contains(&format!(" {k} ")), "{at}: {r}");
                     }
                 }
             }

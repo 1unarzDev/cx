@@ -2105,3 +2105,106 @@ fn an_arrow_keeps_the_files_which_key_panel() {
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(a.yz.pending.is_empty());
 }
+
+/// Every keycap the launch panel prints (device view, and the hub with nothing running,
+/// where the device's letter comes first) does exactly what a tap on its row does.
+#[test]
+fn every_launch_panel_keycap_does_what_its_tap_does() {
+    let (mut a, rx) = queued_app();
+    sessions(&mut a, 0, 1);
+    a.work[0].sessions[0].provider = "claude".into();
+    a.work[0].sessions[0].directory = "/srv/proj".into();
+    a.file_locations.insert(0, "/srv/notes".into());
+    a.apply(Reply {
+        device_id: Some(a.devices[0].id.clone()),
+        execution_target: None,
+        device: 0,
+        op: Operation::Sessions,
+        generation: a.generation,
+        preview: None,
+        result: Ok(serde_json::json!([])),
+    });
+    let area = Rect::new(0, 0, 120, 40);
+    // What an action did: the dialog it opened and the sessions it asked for.
+    let effect = |a: &mut App| {
+        let ops: Vec<String> = rx
+            .try_iter()
+            .filter_map(|t| match &t.op {
+                Operation::Create(c) | Operation::CreateYolo(c) => {
+                    Some(format!("{} {} {}", c.provider, c.directory, c.resume))
+                }
+                _ => None,
+            })
+            .collect();
+        let dialog = match a.dialog.take() {
+            Some(Dialog::SessionChooser(d, p)) => format!("chooser {d} {p}"),
+            Some(Dialog::Permissions(d, dir, p, ..)) => format!("permissions {d} {dir} {p}"),
+            Some(Dialog::SessionPicker(d, dir, _, p, _)) => format!("picker {d} {dir} {p}"),
+            Some(_) => "other".into(),
+            None => "None".into(),
+        };
+        a.creating = false;
+        (dialog, ops)
+    };
+    for hub in [false, true] {
+        let open = |a: &mut App| {
+            a.dialog = None;
+            if hub {
+                a.go_hub();
+            } else {
+                a.open_device(0);
+            }
+        };
+        open(&mut a);
+        let text = draw(&a, 120, 40);
+        let rows: Vec<&str> = text.lines().collect();
+        let targets: Vec<(Rect, String)> = hitmap::with(|m| m.all())
+            .into_iter()
+            .filter_map(|(r, h)| match h {
+                Hit::View(i) => hitmap::action(i).map(|x| (r, x)),
+                _ => None,
+            })
+            .filter(|(_, x)| {
+                x.strip_prefix("new:")
+                    .or(x.strip_prefix("launch:"))
+                    .is_some_and(|r| r.starts_with(&format!("{}:", viewmodel::dev_id(0))))
+            })
+            .collect();
+        assert!(targets.len() >= 5, "hub {hub}: {targets:?}\n{text}");
+        for (r, action) in targets {
+            // The key: the last one-letter cap before the row's words.
+            let cells: String = rows[r.y as usize]
+                .chars()
+                .skip(r.x as usize)
+                .take(r.width as usize)
+                .collect();
+            let key = cells
+                .split_whitespace()
+                .take_while(|t| t.chars().count() == 1)
+                .last()
+                .and_then(|t| t.chars().next())
+                .unwrap_or_else(|| panic!("hub {hub}: no key on {action}: {cells:?}"));
+            open(&mut a);
+            let _ = effect(&mut a);
+            if hub {
+                let l = letter(&a, 0);
+                press(&mut a, l);
+            }
+            press(&mut a, key);
+            let by_key = effect(&mut a);
+            open(&mut a);
+            draw(&a, 120, 40);
+            click(&mut a, r.x + 1, r.y, area);
+            if hub {
+                // (A tap acts at once; the key went through the device first.)
+                assert_eq!(a.view, View::Network, "{action}");
+            }
+            let by_tap = effect(&mut a);
+            assert!(
+                by_key.0 != "None" || !by_key.1.is_empty(),
+                "hub {hub}: {key} did nothing ({action})"
+            );
+            assert_eq!(by_key, by_tap, "hub {hub}: key {key} vs tap {action}");
+        }
+    }
+}

@@ -366,6 +366,7 @@ impl LabState {
             "mirror" => Some(mirror()),
             "bare" => Some(bare()),
             "ended" => Some(ended()),
+            "quiet" => Some(quiet()),
             "solo" => Some(solo()),
             "nomesh" => Some(nomesh()),
             "crowded" => Some(crowded()),

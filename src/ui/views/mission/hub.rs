@@ -28,7 +28,8 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         Size::M => 16,
         _ => 12,
     };
-    let need = th_max;
+    // With nothing running, the launch panel needs ten rows at most: the map keeps the rest.
+    let need = if list.is_empty() { 10 } else { th_max };
     let fixed = tick_h + 1 + vit_h + 1 + 1 + 1; // ticker, sessions label, vitals, top row, gaps
                                                 // (Plus the band's blank row either side, and the air kept where the screen is tall.)
     let pad = if sz >= Size::M && r.height >= 30 {
@@ -74,7 +75,11 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     } else {
         0
     };
-    let room = th + band.height.saturating_sub(gh + air);
+    let room = if list.is_empty() {
+        th
+    } else {
+        th + band.height.saturating_sub(gh + air)
+    };
     let (rows, th) = if list.len() >= usize::from(cols) && room > 2 * th_min.max(10) {
         (2, (room - 1) / 2)
     } else {
@@ -134,7 +139,8 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         "SESSIONS",
         on_sess,
     );
-    if sz >= Size::M {
+    // (A sort order only means something with tiles to sort.)
+    if sz >= Size::M && n > 0 {
         let t = " needs you first ";
         cx.put(buf, lx + 1, y, 17, t, cx.ink(Tok::Muted, 0.8));
     }

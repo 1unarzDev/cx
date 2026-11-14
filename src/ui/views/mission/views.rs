@@ -439,8 +439,13 @@ fn right_status(cx: &Cx, buf: &mut Buffer, y: u16) -> u16 {
 /// footer that does not fit wraps its tail into it instead of dropping verbs; a single
 /// row keeps two-row thumb targets.
 fn footer(cx: &Cx, buf: &mut Buffer, r: Rect, items: Keys) {
+    // One label per key: what the screen above already offers (`+ invite a device`,
+    // `r retry`, a `/ +N more` chip) leaves the footer.
+    let drawn = |a: &str| cx.hits.borrow().iter().any(|t| t.action == a);
+    let chip = drawn("palette:sessions");
     let items: Keys = items
         .into_iter()
+        .filter(|(k, _, a)| !(chip && *k == "/") && !(matches!(*a, "invite" | "retry") && drawn(a)))
         .map(|(k, l, a)| {
             // One label set everywhere (`␣ ⏎ ⌫`, words in ASCII).
             let k = cx.key_label(k);
@@ -660,7 +665,7 @@ pub(super) fn thumbs_grid(
                 if let Some(d) = ghost {
                     // (Its text on the zone label's column.)
                     let pr = Rect::new(tr.x.saturating_sub(1), tr.y, tr.width + 1, tr.height);
-                    launch_panel(cx, buf, pr, d, true, false, true);
+                    launch_panel(cx, buf, pr, d, true);
                 }
             }
         }
@@ -724,7 +729,7 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         let reserve = if fan_want > 0 { fan_want + 4 } else { 0 };
         let room = main.height.saturating_sub(reserve).max(3.min(main.height));
         let pr = Rect::new(main.x - 1, main.y, main.width + 1, room);
-        launch_panel(cx, buf, pr, d, false, sel == 0, false) + 1
+        launch_panel(cx, buf, pr, d, false) + 1
     } else if sz == Size::Xs {
         // The links keep a row each plus their zone rule; the rest goes to the tiles.
         let reserve = if links_n > 0 { links_n + 1 } else { 0 };
@@ -915,6 +920,9 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     x += 1;
     let ev = if d.id == cx.s.viewer {
         "this device".to_string()
+    } else if d.status == DeviceStatus::Down {
+        // (Why, and since when, is said once: beside `r retry` under SESSIONS.)
+        "unreachable".to_string()
     } else {
         d.evidence.clone()
     };
@@ -973,18 +981,9 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     }
     // Metrics block.
     let Some(m) = d.metrics.as_ref().filter(|_| cx.up(d)) else {
-        // No live figures: a down device says why; an up one says how it is known (an
-        // unchecked one already says so, muted, in its header).
-        if r.height > 3 && d.status == DeviceStatus::Down {
-            cx.put(
-                buf,
-                ix,
-                r.y + 3,
-                r.width.saturating_sub(1),
-                &format!("{} {}", cx.g("✕", "!"), d.evidence),
-                cx.st(Tok::Err),
-            );
-        } else if r.height > 3 && d.id == cx.s.viewer {
+        // No live figures: this device says how it is known (a down one says why under
+        // SESSIONS; an unchecked one already says so, muted, in its header).
+        if r.height > 3 && d.id == cx.s.viewer {
             cx.put(
                 buf,
                 ix,
@@ -1069,134 +1068,142 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     }
 }
 
-/// What a device offers where no session tile is: no card, no frame. A heading, the
-/// launch row (the agents its helper reported, in their colours, on `c x n`), then, when
-/// nothing runs there, the newest session that ended (resume) and recent folders on the
-/// session keys `a s d ...` (free while nothing runs). On the hub (`hub`) every key
-/// carries the device letter first (`t c`), as hub letters are devices. A short rect
-/// drops the blank rows, then the heading, then folders. `center`: sit in the middle of
-/// a tall rect. Returns the rows used.
-fn launch_panel(
-    cx: &Cx,
-    buf: &mut Buffer,
-    r: Rect,
-    d: &LabDevice,
-    hub: bool,
-    picked: bool,
-    center: bool,
-) -> u16 {
+/// What a device offers where no session tile is: no card, no frame, top-aligned. A
+/// heading while nothing runs, the launch row (the agents its helper reported, in their
+/// colours, on `c x n`), then the newest session that ended (resume) and recent folders
+/// on the session keys `a s d ...` (free while nothing runs). On the hub (`hub`) hub
+/// letters are devices: the launch row says the device once (`start on t tranquility
+/// then c claude ...`) and a resume row carries its device letter, as a tile does; with
+/// nothing running anywhere it also lists the other devices and what ended on them. An
+/// unreachable device keeps its resume and folders as memory, without keys. A short rect
+/// drops the blank rows, then the heading, then folders. Returns the rows used.
+fn launch_panel(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, hub: bool) -> u16 {
     if r.width < 12 || r.height == 0 {
         return 0;
     }
     cx.fill(buf, r, Style::default());
-    let idle = cx.s.sessions_on(&d.id).next().is_none();
-    let resume = cx.s.ended.iter().find(|x| x.device == d.id && idle);
-    // (The resumed session's folder is its own row.)
+    let s = cx.s;
+    let idle = s.sessions_on(&d.id).next().is_none();
+    // The hub with nothing running anywhere: every device's way back in.
+    let everywhere = hub && s.sessions.is_empty();
+    let down = d.status == DeviceStatus::Down && d.id != s.viewer;
+    let sep = cx.g(" · ", " - ");
+    let own = s.ended.iter().find(|e| e.device == d.id).filter(|_| idle);
+    // Resume rows: this device's newest ended session; on the empty hub, the newest on
+    // each reachable device (two at most), each `a` on its device.
+    let mut resumes: Vec<(&LabDevice, &LabSession)> = Vec::new();
+    for e in &s.ended {
+        let Some(x) = s.device(&e.device) else {
+            continue;
+        };
+        let fits = if everywhere {
+            cx.up(x)
+        } else {
+            x.id == d.id && idle
+        };
+        if fits && resumes.len() < 2 && !resumes.iter().any(|(y, _)| y.id == x.id) {
+            resumes.push((x, e));
+        }
+        if !everywhere && !resumes.is_empty() {
+            break;
+        }
+    }
     let folders: Vec<&String> = d
         .recent
         .iter()
-        .filter(|f| idle && resume.is_none_or(|e| e.cwd != **f))
+        .filter(|f| idle && own.is_none_or(|e| e.cwd != **f))
+        .take(if hub { 2 } else { 5 })
         .collect();
-    let down = d.status == DeviceStatus::Down && d.id != cx.s.viewer;
-    // Rows: heading, launch, resume, folders (blank rows between groups when they fit).
-    let mut nf = folders.len().min(5) as u16;
-    let nr = u16::from(resume.is_some());
-    // (A device that cannot start anything has no launch row.)
-    let nl = u16::from(!down);
-    let groups = 1 + nl + nr + u16::from(nf > 0);
-    let mut head = true;
-    let mut gap = r.height >= 1 + nl + nr + nf + groups - 1;
-    if !gap && r.height < 1 + nl + nr + nf {
+    let others: Vec<&LabDevice> = if everywhere {
+        s.devices
+            .iter()
+            .filter(|x| x.id != d.id && cx.up(x))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let invite = hub && s.devices.len() == 1;
+    // Groups of rows (a blank row between groups where they fit).
+    let nh = u16::from(idle || down);
+    let nl = u16::from(!down) + u16::from(!others.is_empty()) + u16::from(invite);
+    let nr = resumes.len() as u16;
+    let mut nf = folders.len() as u16;
+    let groups = [nh, nl, nr, nf].iter().filter(|n| **n > 0).count() as u16;
+    let mut head = nh > 0;
+    let gap = r.height >= nh + nl + nr + nf + groups.saturating_sub(1);
+    if !gap && r.height < nh + nl + nr + nf && !down {
         head = false;
         nf = nf.min(r.height.saturating_sub(nl + nr));
     }
-    if !head && r.height >= nl + nr + nf + groups - 2 {
-        gap = true;
-    }
-    let gaps = if gap {
-        (groups - 1).saturating_sub(u16::from(!head))
-    } else {
-        0
-    };
-    let rows = u16::from(head) + nl + nr + nf + gaps;
-    let mut y = if center && r.height > rows + 4 {
-        r.y + (r.height - rows) / 3
-    } else {
-        r.y
-    };
     let x0 = r.x + 2;
     let right = r.right().saturating_sub(1);
-    // A quiet label column (`start`, `resume`, `recent`) where there is room.
-    let lw: u16 = if r.width >= 56 { 8 } else { 0 };
+    // A quiet label column (`start`, `resume`, `recent`) where there is room; on a
+    // phone the resume and recent rows say it inline instead.
+    let lw: u16 = if r.width >= 56 { 10 } else { 0 };
     let label = |buf: &mut Buffer, y: u16, t: &str| {
         if lw > 0 {
             cx.put(buf, x0, y, lw, t, cx.ink(Tok::Muted, 0.8));
         }
     };
     let cx0 = x0 + lw;
-    // A key: the device letter first on the hub, then the key.
-    let key = |buf: &mut Buffer, x: u16, y: u16, k: &str| -> u16 {
-        let mut w = 0;
-        if hub {
-            w += cx.dchip(buf, x, y, d, false);
-        }
-        w + cx.keycap(buf, x + w, y, 3, k, cx.key_style())
-    };
-    let sep = cx.g(" · ", " - ");
-    if head {
-        let mut x = x0;
+    let mut y = r.y;
+    if head && y < r.bottom() {
         if down {
-            let t = format!("{} can't start anything{sep}{}", cx.g("✕", "!"), d.evidence);
+            // The reason once, muted; only the mark is red.
+            let mut x = x0 + cx.put(buf, x0, y, 2, cx.g("✕ ", "! "), cx.st(Tok::Err));
             let room = right.saturating_sub(x + 10);
+            let t = format!("can't start anything{sep}{}", d.evidence);
+            // (Narrow: the reason alone.)
+            let t = if super::width(&t, cx.uni()) <= room {
+                t
+            } else {
+                d.evidence.clone()
+            };
             x += cx.put(
                 buf,
                 x,
                 y,
                 room,
                 &fit(&t, room as usize, cx.uni()),
-                cx.st(Tok::Err),
+                cx.st(Tok::Muted),
             );
             if !hub {
-                let items = [("r", "retry", "retry")];
-                cx.chips(buf, x + 2, y, right, &items);
+                cx.chips(buf, x + 3, y, right, &[("r", "retry", "retry")]);
             }
         } else {
-            // (Beside its tiles, the device runs something: only the way to more.)
-            let mut t = if idle { "nothing running" } else { "new on " }.to_string();
-            if let Some(e) = resume {
-                t.push_str(&format!(
-                    "{sep}the last session ended {} ago",
-                    fmt::age(e.last_activity_secs)
-                ));
-            } else if hub && idle {
-                t.push_str(&format!("{sep}start something on "));
-            } else if idle {
-                t.push_str(" here yet");
-            }
-            let st = cx.ink(Tok::Fg, 0.85);
-            x += cx.put(buf, x, y, right.saturating_sub(x), &t, st);
-            if resume.is_none() && (hub || !idle) {
-                x += cx.dchip(buf, x, y, d, false) + 1;
-                let room = right.saturating_sub(x);
-                cx.put(
-                    buf,
-                    x,
-                    y,
-                    room,
-                    &fit(&d.name, room as usize, cx.uni()),
-                    st.add_modifier(Modifier::BOLD),
-                );
-            }
+            cx.put(
+                buf,
+                x0,
+                y,
+                right.saturating_sub(x0),
+                "nothing running",
+                cx.ink(Tok::Fg, 0.85),
+            );
         }
         y += 1 + u16::from(gap);
     }
     // Launch row: the agents the helper reported (all three before it has answered).
     if !down && y < r.bottom() {
-        if picked {
-            cx.bar_in(buf, r.x, y, 1, cx.st(Tok::Accent), true);
-        }
-        label(buf, y, "start");
         let mut x = cx0;
+        if hub {
+            // `start on t tranquility then`: the device once, then its keys.
+            x = x0 + cx.put(buf, x0, y, 10, "start on  ", cx.ink(Tok::Muted, 0.8));
+            x += cx.dchip(buf, x, y, d, false) + 1;
+            let name_w = super::width(&d.name, cx.uni()) + 1;
+            if x + name_w + 6 + 30 <= right {
+                x += cx.put(
+                    buf,
+                    x,
+                    y,
+                    name_w,
+                    &d.name,
+                    cx.ink(Tok::Fg, 0.85).add_modifier(Modifier::BOLD),
+                ) + 2;
+            }
+            x += cx.put(buf, x, y, 6, "then  ", cx.ink(Tok::Muted, 0.8));
+        } else {
+            label(buf, y, "start");
+        }
         for (k, word, tok) in [
             ("c", "claude", Tok::Claude),
             ("x", "codex", Tok::Codex),
@@ -1205,90 +1212,157 @@ fn launch_panel(
             if !d.caps.is_empty() && !d.caps.iter().any(|c| c == word) {
                 continue;
             }
-            if x + 10 > r.right() {
+            if x + 9 > r.right() {
                 break;
             }
             let x1 = x;
-            x += key(buf, x, y, k) + 1;
+            x += cx.keycap(buf, x, y, 3, k, cx.key_style()) + 1;
             x += cx.put(buf, x, y, 8, word, cx.st(tok));
             cx.hit(Rect::new(x1, y, x - x1, 1), format!("new:{}:{word}", d.id));
-            x += 3;
+            x += 2;
         }
-        // Only this device so far: the way to a second one, beside the first steps.
-        let t = "invite a device";
-        if hub && cx.s.devices.len() == 1 && x + 4 + super::width(t, cx.uni()) < r.right() {
-            let x1 = x + 1;
-            let kw = cx.keycap(buf, x1, y, 3, "+", cx.key_style());
-            let w = cx.put(buf, x1 + kw + 1, y, 16, t, cx.ink(Tok::Fg, 0.85));
-            cx.hit(Rect::new(x1, y, kw + 1 + w, 1), "invite");
+        y += 1 + u16::from(gap && others.is_empty() && !invite);
+    }
+    // The other devices, each a letter away (then the same keys).
+    if !others.is_empty() && y < r.bottom() {
+        let mut x = x0 + cx.put(buf, x0, y, 10, "or on     ", cx.ink(Tok::Muted, 0.8));
+        // Names where they all fit, else the letters alone.
+        let names = x + others
+            .iter()
+            .map(|o| super::width(&o.name, cx.uni()) + 6)
+            .sum::<u16>()
+            <= right;
+        for o in &others {
+            let w = if names {
+                super::width(&o.name, cx.uni())
+            } else {
+                0
+            };
+            if x + 4 + w > right {
+                break;
+            }
+            let x1 = x;
+            x += cx.dchip(buf, x, y, o, false) + 1;
+            x += cx.put(buf, x, y, w, &o.name, cx.ink(Tok::Fg, 0.75));
+            cx.hit(Rect::new(x1, y, x - x1, 1), format!("device:{}", o.id));
+            x += 2;
         }
+        y += 1 + u16::from(gap && !invite);
+    }
+    // Only this device so far: the way to a second one.
+    if invite && y < r.bottom() {
+        let x1 = cx0;
+        let kw = cx.keycap(buf, x1, y, 3, "+", cx.key_style());
+        let w = cx.put(
+            buf,
+            x1 + kw + 1,
+            y,
+            16,
+            "invite a device",
+            cx.ink(Tok::Fg, 0.85),
+        );
+        cx.hit(Rect::new(x1, y, kw + 1 + w, 1), "invite");
         y += 1 + u16::from(gap);
     }
-    let mut slot = super::SLOTS.iter();
-    // Resume: the newest session that ended here, in its folder.
-    if let (Some(e), Some(k)) = (resume, slot.next()) {
-        if y < r.bottom() {
+    // Keys: the device letter first on the hub (as its tiles), none while unreachable.
+    let key = |buf: &mut Buffer, x: u16, y: u16, o: &LabDevice, k: char| -> u16 {
+        let mut w = 0;
+        if hub {
+            w += cx.dchip(buf, x, y, o, false);
+        }
+        let kw = cx.key_w("a");
+        if !down {
+            cx.keycap(buf, x + w, y, 3, &k.to_string(), cx.key_style());
+        }
+        w + kw
+    };
+    let ink = |t: Tok, a: f32| {
+        if down {
+            cx.st(Tok::Muted)
+        } else {
+            cx.ink(t, a)
+        }
+    };
+    // Resume: the newest session that ended, in its folder.
+    for (i, (o, e)) in resumes.iter().enumerate() {
+        if y >= r.bottom() {
+            break;
+        }
+        if i == 0 {
             label(buf, y, "resume");
-            let mut x = cx0;
-            x += key(buf, x, y, &k.to_string()) + 1;
-            let (p, tok) = cx.prov(e);
-            x += cx.put(buf, x, y, 2, cx.g("↺ ", "~ "), cx.st(tok));
-            x += cx.put(buf, x, y, 7, p, cx.st(tok)) + 2;
-            let age = format!("{} ago", fmt::age(e.last_activity_secs));
-            let room = right.saturating_sub(x + super::width(&age, cx.uni()) + 2);
-            let t = format!("{}{sep}{}", e.title, e.cwd);
-            let tw = cx.put(
-                buf,
-                x,
-                y,
-                room,
-                &fit(&e.title, room as usize, cx.uni()),
-                cx.ink(Tok::Fg, 0.95),
-            );
-            if super::width(&t, cx.uni()) <= room {
-                cx.put(
-                    buf,
-                    x + tw,
-                    y,
-                    room - tw,
-                    &format!("{sep}{}", e.cwd),
-                    cx.st(Tok::Muted),
-                );
+        }
+        let mut x = cx0 + key(buf, cx0, y, o, SLOTS[0]) + 1;
+        if lw == 0 {
+            x += cx.put(buf, x, y, 7, "resume ", cx.ink(Tok::Muted, 0.8));
+        }
+        let (p, tok) = cx.prov(e);
+        x += cx.put(
+            buf,
+            x,
+            y,
+            7,
+            p,
+            if down { cx.st(Tok::Muted) } else { cx.st(tok) },
+        ) + 2;
+        // Title, folder, age: the age goes first, then the folder, then the title is cut.
+        let age = format!("{sep}{} ago", fmt::age(e.last_activity_secs));
+        let cwd = format!("{sep}{}", e.cwd);
+        let room = right.saturating_sub(x);
+        let w = |t: &str| super::width(t, cx.uni());
+        let tw = cx.put(
+            buf,
+            x,
+            y,
+            room,
+            &fit(&e.title, room as usize, cx.uni()),
+            ink(Tok::Fg, 0.95),
+        );
+        let mut x = x + tw;
+        for t in [&cwd, &age] {
+            if tw < w(&e.title) || x + w(t) > right {
+                break;
             }
-            cx.put_r(buf, right, y, &age, cx.st(Tok::Muted));
+            x += cx.put(buf, x, y, w(t), t, cx.st(Tok::Muted));
+        }
+        if !down {
             cx.hit(
                 Rect::new(cx0, y, right - cx0, 1),
-                format!("launch:{}:{k}", d.id),
+                format!("launch:{}:{}", o.id, SLOTS[0]),
             );
-            y += 1 + u16::from(gap);
         }
+        y += 1 + u16::from(gap && i + 1 == resumes.len());
     }
     // Recent folders: each opens the launch chooser there.
+    let skip = usize::from(own.is_some());
     for (i, f) in folders.iter().take(nf as usize).enumerate() {
-        let Some(k) = slot.next() else { break };
+        let k = SLOTS[skip + i];
         if y >= r.bottom() {
             break;
         }
         if i == 0 {
             label(buf, y, "recent");
         }
-        let x = cx0 + key(buf, cx0, y, &k.to_string()) + 1;
-        let room = right.saturating_sub(x);
-        cx.put(
+        let x = cx0 + key(buf, cx0, y, d, k) + 1;
+        let tag = if lw == 0 && i == 0 { "  recent" } else { "" };
+        let room = right.saturating_sub(x + super::width(tag, cx.uni()));
+        let w = cx.put(
             buf,
             x,
             y,
             room,
             &fit(f, room as usize, cx.uni()),
-            cx.ink(Tok::Fg, 0.85),
+            ink(Tok::Fg, 0.85),
         );
-        cx.hit(
-            Rect::new(cx0, y, right - cx0, 1),
-            format!("launch:{}:{k}", d.id),
-        );
+        cx.put(buf, x + w, y, 8, tag, cx.ink(Tok::Muted, 0.8));
+        if !down {
+            cx.hit(
+                Rect::new(cx0, y, right - cx0, 1),
+                format!("launch:{}:{k}", d.id),
+            );
+        }
         y += 1;
     }
-    rows.min(r.height)
+    (y - r.y).min(r.height)
 }
 
 /// Phone device view: two rows per session, then the provider buttons; returns the rows
@@ -2212,7 +2286,10 @@ pub(super) fn palette(cx: &Cx, buf: &mut Buffer, a: Rect, q: &str, cursor: usize
     };
     let mv = "↑↓";
     // (Phones tap a row, so their row keeps `esc close` in place of the arrows.)
-    let chips: &[(&str, &str, &str)] = if cx.touch() {
+    // (Nothing found: go and move would do nothing.)
+    let chips: &[(&str, &str, &str)] = if rows.is_empty() {
+        &[("esc", "close", "back")]
+    } else if cx.touch() {
         &[(cx.ret(), "go", "go"), ("esc", "close", "back")]
     } else {
         &[

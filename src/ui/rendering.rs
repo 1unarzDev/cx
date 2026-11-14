@@ -116,15 +116,16 @@ fn render_yazi(
     if let Some(at) = d.cursor {
         frame.set_cursor_position(at);
     }
-    let files = hitmap::file_rows(app);
-    for (i, row) in v.current.rows.iter().enumerate() {
+    // The rows drawn are the visible ones from the scroll offset `yazi_view` kept.
+    let first = app.browser.as_ref().map_or(0, |b| b.offset.get());
+    for i in 0..v.current.rows.len() {
         let r = Rect::new(d.current.x, d.current.y + i as u16, d.current.width, 1);
-        hitmap::register_action(r, &format!("file:{}", row.name), &files);
+        hitmap::register(r, hitmap::Hit::Row(hitmap::ListId::Files, first + i));
     }
     if app.send_pick {
         let vm = viewmodel::ViewModel::from(app);
         for t in views::mission::render_send_to(&vm.state, &vm.caps, area, frame.buffer_mut()) {
-            hitmap::register_action(t.area, &t.action, &files);
+            hitmap::register_action(t.area, &t.action, &HashMap::new());
         }
     }
 }
@@ -138,14 +139,17 @@ fn render_frame(
     hitmap::begin();
     app.preview_rect.set(None);
     let yazi = yazi_drawn(app);
-    let vm = viewmodel::ViewModel::from(app);
-    let drawn = if yazi {
-        render_yazi(frame, app, native.take(), area);
-        views::mission::Drawn::default()
-    } else {
-        views::mission::render(&vm.view, &vm.state, &vm.caps, area, frame.buffer_mut())
+    // The Files list draws from the app itself: a view model only for a palette over it.
+    let vm = (!yazi || app.input == Some(Input::Palette)).then(|| viewmodel::ViewModel::from(app));
+    let drawn = match vm.as_ref().filter(|_| !yazi) {
+        Some(vm) => views::mission::render(&vm.view, &vm.state, &vm.caps, area, frame.buffer_mut()),
+        None => {
+            render_yazi(frame, app, native.take(), area);
+            views::mission::Drawn::default()
+        }
     };
-    if vm.view == views::LabView::Hub {
+    let hub = vm.as_ref().is_some_and(|vm| vm.view == views::LabView::Hub);
+    if hub {
         *app.hub_order.borrow_mut() = drawn.order;
     }
     *app.nav.borrow_mut() = drawn.nav.into_iter().map(|t| (t.area, t.action)).collect();
@@ -160,7 +164,11 @@ fn render_frame(
     );
     // One workspace panel takes the wheel (and the open preview's clicks).
     *app.panels.borrow_mut() = vec![(Focus::Workspace, false, body)];
-    let files = hitmap::file_rows(app);
+    let files = if yazi {
+        HashMap::new()
+    } else {
+        hitmap::file_rows(app)
+    };
     let mut preview = None;
     for t in &drawn.targets {
         // Two surfaces the app draws and routes itself (preview links and wheel,
@@ -209,7 +217,7 @@ fn render_frame(
         }
     }
 
-    if app.view == View::Containers && vm.view == views::LabView::Hub {
+    if app.view == View::Containers && hub {
         frame.render_widget(Clear, body);
         hitmap::begin();
         render_containers(frame, app, body);
@@ -224,7 +232,10 @@ fn render_frame(
     if app.pane_focused() {
         typing_bar(frame, area);
     }
-    if let Some(query) = &vm.palette {
+    if let Some((vm, query)) = vm
+        .as_ref()
+        .and_then(|vm| vm.palette.as_ref().map(|query| (vm, query)))
+    {
         hitmap::begin();
         // The sheet's selection is the palette's own, not the screen's beneath it.
         let mut caps = vm.caps;

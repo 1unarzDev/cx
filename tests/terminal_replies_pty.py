@@ -31,6 +31,12 @@ TERMINALS = {
 }
 
 
+def hub(v):
+    """The hub, or its first-run form: this fixture's viewer has no devices, links or
+    sessions, so the hub is the welcome page (unless discovery saw real terminals)."""
+    return ph.on_hub(v.text()) or 'welcome' in v.screen.display[0]
+
+
 class Terminal(pty_lib.Pty):
     """A PTY that answers the probe like a real terminal: after `delay` seconds, in pieces
     of `split` bytes written `gap` seconds apart (0: one write)."""
@@ -173,10 +179,10 @@ def run_case(name, answers, delay, split, tmux):
                 if 'q back' not in hint or 'H hub' not in hint or '‹ back' not in v.screen.display[0]:
                     raise AssertionError(f'no way-out hints: {v.screen.display[0]!r} {hint!r}')
                 press(click(0, '‹ back'), 'tap ‹ back leaves files', lambda: not in_files(v), b'f')
-                press(click(-1, 'H hub'), 'tap H hub goes to the hub', lambda: ph.on_hub(v.text()))
+                press(click(-1, 'H hub'), 'tap H hub goes to the hub', lambda: hub(v))
                 results[name] = steps
                 return
-            press(b'H', 'H goes to the hub', lambda: ph.on_hub(v.text()))
+            press(b'H', 'H goes to the hub', lambda: hub(v))
             results[name] = steps
         finally:
             v.close()

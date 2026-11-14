@@ -716,6 +716,8 @@ struct App {
     motion: motion::Clock,
     /// Device letters (`hotkeys::assign`), by device id.
     hotkeys: std::cell::RefCell<BTreeMap<String, char>>,
+    /// Session keys (`slot_keys`) by device id: (runtime key, key), kept while it runs.
+    slot_memo: std::cell::RefCell<HashMap<String, Vec<(String, char)>>>,
     /// `␣`: the selected session's peek.
     peek: bool,
     /// `⌫` asked about this session (identity captured when asked).
@@ -904,6 +906,7 @@ impl App {
             moves: Default::default(),
             motion: Default::default(),
             hotkeys: Default::default(),
+            slot_memo: Default::default(),
             peek: false,
             stop_armed: None,
             send_pick: false,

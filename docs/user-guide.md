@@ -11,7 +11,7 @@ One grammar on every screen: **a device letter, then a session slot or a verb**.
 | Keys | Action |
 |---|---|
 | device letter | Open that device's screen (from the hub, peek or palette) |
-| `a s d g` (device screen) | Attach that session slot at once; further sessions are a move or `/` away |
+| `a s d g …` (device screen) | Attach the session whose tile shows that key, at once. Keys go out home row first (`a s d g`, then `q u i o y z v m`, then `1`-`9`); a session keeps its key until it ends, and a new one takes the first free key. Past 21 sessions on a device, `/ +N more` finds the rest |
 | `c` / `x` / `n` (device screen) | New Claude / Codex / shell in the device's home, attached at once |
 | Enter, Space | Attach / open the selection; peek a session's screen (Tab steps through peeks) |
 | Backspace, Backspace | Stop the selected CX-managed session; any other key keeps it, never `y` |

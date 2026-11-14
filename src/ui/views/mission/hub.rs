@@ -122,15 +122,9 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
 
     // Sessions: one row, ranked by attention; the full grid lives in each device.
     let n = list.len();
-    // `›` (a crumb, "goes on") in Unicode; ASCII keeps the words (`>` is selection).
-    // Only when tiles are hidden: `+2 more ›` (when every session shows, no chip).
+    // Only when tiles are hidden: `/ +2 more` (when every session shows, no chip).
     let hidden = n.saturating_sub(usize::from(rows * cols));
-    let hint = if hidden > 0 {
-        format!("+{hidden} more{}", cx.g(" ›", ""))
-    } else {
-        String::new()
-    };
-    let hw = super::width(&hint, cx.uni());
+    let hw = views::more_chip(cx, buf, right, y, hidden);
     let lx = views::zone(
         cx,
         buf,
@@ -143,13 +137,6 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     if sz >= Size::M {
         let t = " needs you first ";
         cx.put(buf, lx + 1, y, 17, t, cx.ink(Tok::Muted, 0.8));
-    }
-    if hidden > 0 {
-        cx.put_r(buf, right, y, &hint, cx.st(Tok::Muted));
-        cx.hit(
-            Rect::new(right.saturating_sub(hw), y, hw, 1),
-            "palette:sessions",
-        );
     }
     y += 1;
     let grid = Rect::new(r.x + 1, y, r.width.saturating_sub(2), grid_h);
@@ -361,7 +348,7 @@ fn alerts(cx: &Cx) -> Vec<Alert> {
         } else {
             format!("{} needs you on {}", x.title, d.name)
         };
-        // A session past the four slots has no letter pair: `/` finds it by name.
+        // A session past the key pool has no letter pair: `/` finds it by name.
         let (keys, verb) = match cx.slot(x) {
             Some(s) => (format!("@{} {s}", d.hotkey), "attach"),
             None => ("/".to_string(), "find"),

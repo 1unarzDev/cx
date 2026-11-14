@@ -175,6 +175,48 @@ fn device_slots_attach_and_moving_clamps_without_wrapping() {
     );
 }
 
+/// Every session on a device holds its own key (21 of them, home row first) and the
+/// key attaches exactly that session; a session keeps its key while others end and a
+/// new one takes the freed key; the 22nd has none and a digit nobody holds stays a count.
+#[test]
+fn every_session_key_attaches_its_session_and_keys_are_stable() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 23);
+    let keys: Vec<(String, Option<char>)> = a
+        .slot_keys(0)
+        .into_iter()
+        .map(|(s, k)| (s.id.clone(), k))
+        .collect();
+    let given: String = keys.iter().filter_map(|(_, k)| *k).collect();
+    assert_eq!(given, "asdgquioyzvm123456789");
+    assert_eq!(keys.iter().filter(|(_, k)| k.is_none()).count(), 2);
+    for (id, k) in keys.iter().filter_map(|(id, k)| k.map(|k| (id, k))) {
+        a.open_device(0);
+        press(&mut a, k);
+        let attached = a
+            .pending_attach
+            .take()
+            .map(|(_, s, _)| s.id)
+            .or_else(|| a.attach_check.take().map(|(_, s, _, _)| s.id));
+        assert_eq!(attached.as_deref(), Some(id.as_str()), "key {k}");
+    }
+    // `s` ends: the others keep theirs; the first without a key takes `s`.
+    let s_id = keys[1].0.clone();
+    a.work[0].sessions.retain(|s| s.id != s_id);
+    let after: Vec<(String, Option<char>)> = a
+        .slot_keys(0)
+        .into_iter()
+        .map(|(s, k)| (s.id.clone(), k))
+        .collect();
+    for (id, k) in &keys {
+        if *id != s_id && k.is_some() {
+            assert!(after.contains(&(id.clone(), *k)), "{id} kept {k:?}");
+        }
+    }
+    let heir = &keys.iter().find(|(_, k)| k.is_none()).unwrap().0;
+    assert!(after.contains(&(heir.clone(), Some('s'))));
+}
+
 #[test]
 fn nodes_tiles_and_chips_are_tap_targets_with_key_semantics() {
     let (mut a, _rx) = queued_app();

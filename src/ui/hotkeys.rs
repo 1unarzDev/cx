@@ -5,7 +5,7 @@
 //! and a vim hand never opens a device by accident; `e` is never assigned. A device keeps its letter for as long as it
 //! stays in the list, so refreshes and new devices never move an existing letter.
 // (A device whose initial is taken prefers letters that are not session slots.)
-use super::views::mission::SLOTS;
+use super::views::mission::HOME;
 use std::collections::BTreeMap;
 
 const NEVER: [char; 1] = ['e'];
@@ -44,7 +44,7 @@ pub(super) fn assign(
                 letters
                     .iter()
                     .copied()
-                    .find(|c| early(*c) && !SLOTS.contains(c) && free(c, &taken))
+                    .find(|c| early(*c) && !HOME.contains(c) && free(c, &taken))
             })
             .or_else(|| ('a'..='z').find(|c| early(*c) && free(c, &taken)))
             .or_else(|| {

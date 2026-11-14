@@ -545,6 +545,26 @@ pub(super) fn zone(
     x + w
 }
 
+/// `/ +9 more` ending at `right`: sessions without a tile (or past the key pool) are a
+/// find away, by key or tap. Returns its width (0 when nothing is hidden).
+pub(super) fn more_chip(cx: &Cx, buf: &mut Buffer, right: u16, y: u16, hidden: usize) -> u16 {
+    if hidden == 0 {
+        return 0;
+    }
+    let text = format!("+{hidden} more");
+    let (kw, tw) = (cx.key_w("/"), super::width(&text, cx.uni()));
+    let x = right.saturating_sub(kw + 1 + tw);
+    cx.fill(
+        buf,
+        Rect::new(x.saturating_sub(1), y, right - x + 1, 1),
+        Style::default(),
+    );
+    cx.keycap(buf, x, y, kw, "/", cx.key_style());
+    cx.put(buf, x + kw + 1, y, tw, &text, cx.st(Tok::Muted));
+    cx.hit(Rect::new(x, y, right - x, 1), "palette:sessions");
+    right - x + 1
+}
+
 /// Session grid shape for a width: (columns, tile height).
 pub(super) fn grid_shape(cx: &Cx, w: u16, h: u16) -> (u16, u16) {
     // Few, large screens: two or three a row, each wide enough to read.
@@ -686,10 +706,13 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
     };
     // The ghost is one row under the tiles (`new c claude x codex n shell`), so the
     // sessions take the full width and no half-empty card floats beside them.
+    let mut shown = 0;
     let used = if sz == Size::Xs {
         // The links keep a row each plus their zone rule; the rest goes to the tiles.
         let reserve = if links_n > 0 { links_n + 1 } else { 0 };
-        device_sessions_rows(cx, buf, main, &list, reserve)
+        let (used, n) = device_sessions_rows(cx, buf, main, &list, reserve);
+        shown = n;
+        used
     } else {
         let tiles_n = (list.len() as u16).max(1);
         let cols = if sz == Size::S { 2 } else { 3 }.min(tiles_n);
@@ -714,6 +737,7 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
             bottom = tr.bottom() + 1;
             match list.get(i) {
                 Some(x) => {
+                    shown += 1;
                     tiles::thumb(cx, buf, tr, x, (i == sel).then_some(true));
                     if i == sel && cx.c.focus == Some(Pane::Custom("stop")) {
                         stop_confirm(cx, buf, tr, x);
@@ -731,12 +755,21 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         }
         bottom - main.y
     };
+    // Sessions past the screen or the key pool: `/ +9 more`.
+    let keyless = list.iter().take(shown).filter(|x| x.key.is_none()).count();
+    let hw = more_chip(
+        cx,
+        buf,
+        right,
+        main.y.saturating_sub(1),
+        list.len() - shown + keyless,
+    );
     zone(
         cx,
         buf,
         main.x,
         main.y.saturating_sub(1),
-        right,
+        right.saturating_sub(hw),
         "SESSIONS",
         !links_focus,
     );
@@ -1139,14 +1172,16 @@ fn new_tile(cx: &Cx, buf: &mut Buffer, r: Rect, d: Option<&LabDevice>, picked: b
     }
 }
 
-/// Phone device view: two rows per session, then the provider buttons; returns rows used.
+/// Phone device view: two rows per session, then the provider buttons; returns the rows
+/// used and how many sessions it showed.
 fn device_sessions_rows(
     cx: &Cx,
     buf: &mut Buffer,
     r: Rect,
     list: &[&LabSession],
     reserve: u16,
-) -> u16 {
+) -> (u16, usize) {
+    let mut shown = 0;
     let mut y = r.y;
     let sel = cx.c.selected % (list.len() + 1);
     // Rows the two-row entries, the ghost row and the links leave go to the selected
@@ -1170,6 +1205,7 @@ fn device_sessions_rows(
         if i == sel && cx.c.focus == Some(Pane::Custom("stop")) {
             stop_confirm(cx, buf, row, x);
         }
+        shown += 1;
         y += h + 1;
     }
     if y < r.bottom() {
@@ -1177,7 +1213,7 @@ fn device_sessions_rows(
         // A blank row keeps the links' zone off the buttons, unless it would cost a link.
         y += 1 + u16::from(r.bottom().saturating_sub(y + 1) > reserve);
     }
-    y - r.y
+    (y - r.y, shown)
 }
 
 /// The inline stop confirm over a tile's last row: `stop refactor transport?  ⌫ stop
@@ -2191,7 +2227,7 @@ fn secrets(cx: &Cx, buf: &mut Buffer, r: Rect) {
         let right = card.right().saturating_sub(2);
         // Each card has a home-row key, like session slots.
         let mut x = ix;
-        if let Some(k) = SLOTS.get(i) {
+        if let Some(k) = super::HOME.get(i) {
             x += cx.keycap(buf, x, y, 3, &k.to_string(), cx.key_style()) + 1;
         }
         x += cx.put(buf, x, y, 1, g, gst) + 1;
@@ -2203,7 +2239,7 @@ fn secrets(cx: &Cx, buf: &mut Buffer, r: Rect) {
             } else {
                 "add"
             };
-            let key = match SLOTS.get(i) {
+            let key = match super::HOME.get(i) {
                 Some(k) if !picked => k.to_string(),
                 _ => cx.ret().to_string(),
             };
@@ -3212,11 +3248,11 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                 "session",
                 vec![
                     (
-                        k("a s d g"),
+                        k("a s d g …"),
                         if wide {
-                            "attach the 1st / 2nd / 3rd / 4th session"
+                            "attach the session showing that key"
                         } else {
-                            "attach session 1-4"
+                            "attach that session"
                         },
                     ),
                     (k(key("⏎")), "attach the selection"),
@@ -3317,11 +3353,11 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                 "  then",
                 vec![
                     (
-                        k("a s d g"),
+                        k("a s d g …"),
                         if wide {
-                            "attach its 1st / 2nd / 3rd / 4th session"
+                            "attach the session showing that key"
                         } else {
-                            "attach session 1-4"
+                            "attach that session"
                         },
                     ),
                     (

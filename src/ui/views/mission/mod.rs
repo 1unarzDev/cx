@@ -113,10 +113,17 @@ pub(super) enum Size {
     L,
 }
 
-/// Session slot keys inside a device (home row; `f` stays "files", `j k` stay motion as
-/// in files and every list; `h l` stay fold keys as in files). Sessions past the fourth
-/// are reached by the arrows, `Tab` or `/`.
-pub const SLOTS: [char; 4] = ['a', 's', 'd', 'g'];
+/// Session keys inside a device, in the order they are given out: the home row (`f`
+/// stays "files", `h j k l` motion), then the top and bottom rows' letters no device
+/// screen binds (`c x n` new, `w e r t p b` verbs), then the digits. A session keeps its
+/// key until it ends; past these 21 a device's sessions are a `/` away.
+pub const SLOTS: [char; 21] = [
+    'a', 's', 'd', 'g', 'q', 'u', 'i', 'o', 'y', 'z', 'v', 'm', '1', '2', '3', '4', '5', '6', '7',
+    '8', '9',
+];
+/// The home-row slots alone: the keys screen's cards, and the letters device names give
+/// way to (`hotkeys`).
+pub const HOME: [char; 4] = ['a', 's', 'd', 'g'];
 
 /// A pill's rounded caps (powerline extra symbols, drawn by kitty, ghostty and wezterm).
 pub const PILL_L: &str = "\u{e0b6}";
@@ -624,12 +631,12 @@ impl<'a> Cx<'a> {
             crate::ui::views::Provider::Shell => ("shell", Tok::Shell),
         }
     }
-    /// The session's slot key within its device (stable creation order).
+    /// The session's key within its device (`SLOTS`; None past the pool).
     pub fn slot(&self, x: &LabSession) -> Option<char> {
-        let i = self.s.sessions_on(&x.device).position(|y| y.id == x.id)?;
-        SLOTS.get(i).copied()
+        x.key
     }
-    /// Hub order: what needs you first, then live work, then by recency.
+    /// Hub order: what needs you first, then live work, then by recency (a session past
+    /// the key pool last: the tiles shown are the ones with a key).
     pub fn by_attention(&self) -> Vec<&'a LabSession> {
         let mut v: Vec<&LabSession> = self.s.sessions.iter().collect();
         let rank = |x: &LabSession| match x.state {
@@ -640,7 +647,7 @@ impl<'a> Cx<'a> {
             SessionState::Unknown => 4,
             SessionState::Exited => 5,
         };
-        v.sort_by_key(|x| (rank(x), x.last_activity_secs));
+        v.sort_by_key(|x| (x.key.is_none(), rank(x), x.last_activity_secs));
         v
     }
 

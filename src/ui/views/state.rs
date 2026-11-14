@@ -172,6 +172,8 @@ pub struct LabSession {
     /// Screen snapshot as SGR-colored lines (see `lab::ansi_lines`).
     pub screen: Vec<String>,
     pub screen_cols: u16,
+    /// Its key within its device (`mission::SLOTS`): kept until it ends; None past the pool.
+    pub key: Option<char>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -366,6 +368,7 @@ impl LabState {
             "ended" => Some(ended()),
             "solo" => Some(solo()),
             "nomesh" => Some(nomesh()),
+            "crowded" => Some(crowded()),
             _ => {
                 let n: usize = name.strip_prefix("nebula-")?.parse().ok()?;
                 (n <= 25).then(|| nebula(n))

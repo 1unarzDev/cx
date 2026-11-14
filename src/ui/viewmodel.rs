@@ -486,7 +486,7 @@ fn sessions(app: &App) -> Vec<LabSession> {
         .map(|(d, s)| (d, workspaces::runtime_key(&s)));
     let mut out = Vec::new();
     for d in 0..app.work.len().min(app.devices.len()) {
-        for s in app.slot_sessions(d) {
+        for (s, slot) in app.slot_keys(d) {
             let key = workspaces::runtime_key(s);
             let (screen, cols) = if live.as_ref() == Some(&(d, key.clone()))
                 && !app.session_preview_lines().is_empty()
@@ -535,6 +535,7 @@ fn sessions(app: &App) -> Vec<LabSession> {
                 screen,
                 screen_cols: cols,
                 id: key,
+                key: slot,
             });
         }
     }
@@ -807,10 +808,10 @@ fn palette(app: &App) -> Vec<PaletteRow> {
             let (keys, device) = match &item.target {
                 PaletteTarget::Session(d, key) => {
                     let slot = app
-                        .slot_sessions(*d)
-                        .iter()
-                        .position(|s| workspaces::runtime_key(s) == *key)
-                        .and_then(|n| super::views::mission::SLOTS.get(n));
+                        .slot_keys(*d)
+                        .into_iter()
+                        .find(|(s, _)| workspaces::runtime_key(s) == *key)
+                        .and_then(|(_, k)| k);
                     let keys = match (letter(*d), slot) {
                         (Some(l), Some(s)) => format!("{l} {s}"),
                         _ => String::new(),

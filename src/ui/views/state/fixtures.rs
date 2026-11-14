@@ -2,6 +2,8 @@
 use super::*;
 
 pub const FIXTURES: [&str; 3] = ["small", "typical", "large"];
+/// The empty and sparse states (docs/design/empty-states.md) and a crowded device.
+pub const SPARSE: [&str; 5] = ["bare", "ended", "solo", "nomesh", "crowded"];
 
 // ---------------------------------------------------------------- fixture builders
 
@@ -279,6 +281,23 @@ fn session(
         unread: false,
         screen,
         screen_cols: 80,
+        key: None,
+    }
+}
+
+/// Give every session without a key the first free one on its device, in list order
+/// (what the app does for sessions as they appear).
+pub fn assign_keys(s: &mut LabState) {
+    for i in 0..s.sessions.len() {
+        if s.sessions[i].key.is_some() {
+            continue;
+        }
+        let d = s.sessions[i].device.clone();
+        let taken: Vec<char> = s.sessions_on(&d).filter_map(|x| x.key).collect();
+        s.sessions[i].key = crate::ui::views::mission::SLOTS
+            .iter()
+            .copied()
+            .find(|c| !taken.contains(c));
     }
 }
 
@@ -803,7 +822,7 @@ pub fn typical() -> LabState {
         .map(String::from)
         .collect();
     }
-    LabState {
+    let mut s = LabState {
         fixture: "typical",
         viewer: "tranquility".into(),
         devices,
@@ -835,7 +854,9 @@ pub fn typical() -> LabState {
         }],
         ended: Vec::new(),
         palette: None,
-    }
+    };
+    assign_keys(&mut s);
+    s
 }
 
 pub fn small() -> LabState {
@@ -1070,6 +1091,7 @@ pub fn large() -> LabState {
         age_secs: 30,
         action: Some("inspect".into()),
     });
+    assign_keys(&mut s);
     s
 }
 
@@ -1360,5 +1382,56 @@ pub fn nomesh() -> LabState {
             e.kind = EdgeKind::Direct;
         }
     }
+    s
+}
+
+/// Innovation runs 24 sessions, past the 21 keys of the pool (one in the middle ended
+/// and gave its key to the first that had none).
+pub fn crowded() -> LabState {
+    let mut s = typical();
+    s.fixture = "crowded";
+    let kinds = [
+        (Provider::Claude, SessionState::Working),
+        (Provider::Codex, SessionState::Idle),
+        (Provider::Shell, SessionState::Running),
+        (Provider::Claude, SessionState::AwaitingInput),
+    ];
+    for i in 1..25u32 {
+        let (p, st) = kinds[i as usize % kinds.len()];
+        let id = format!("job{i:02}");
+        let screen = shell_screen("innovation", &format!("make job{i:02}"));
+        s.sessions.push(session(
+            &id,
+            &format!("job {i:02}"),
+            "innovation",
+            p,
+            st,
+            "~/cx",
+            "make",
+            30 * i,
+            3600 + i * 60,
+            400 + i,
+            screen,
+        ));
+    }
+    assign_keys(&mut s);
+    // `job05` ended: its key went back to the pool and the first session without one
+    // (in slot order) took it; the rest of the keys did not move.
+    let freed = s.sessions.iter().position(|x| x.id == "job05").unwrap();
+    let key = s.sessions.remove(freed).key;
+    let heir = s.sessions.iter().position(|x| x.key.is_none()).unwrap();
+    assign_keys(&mut s);
+    assert_eq!(s.sessions[heir].key, key);
+    // (Tiles go in key order, as the app lists them.)
+    let order = |x: &LabSession| {
+        x.key
+            .and_then(|k| {
+                crate::ui::views::mission::SLOTS
+                    .iter()
+                    .position(|c| *c == k)
+            })
+            .unwrap_or(usize::MAX)
+    };
+    s.sessions.sort_by_key(order);
     s
 }

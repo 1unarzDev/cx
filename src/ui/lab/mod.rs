@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn all_concepts_render_everywhere() {
         let sizes = [(1, 1), (10, 4), (40, 20), (200, 60)];
-        for fx in FIXTURES {
+        for fx in FIXTURES.iter().chain(&SPARSE) {
             let s = LabState::fixture(fx).unwrap();
             for v in LabView::defaults(&s) {
                 for variant in ["light-256", "ascii"] {
@@ -202,8 +202,9 @@ mod review_tests {
         (text(&buf), targets)
     }
 
-    /// A waiting session past the four slots has no `letter slot` address: the ticker
-    /// never prints slot `a` (another session's) for it.
+    /// A waiting fifth session has its own key (`q`, after `a s d g`) and the ticker
+    /// attaches it by it; one past the key pool has no address: the ticker says `/ find`
+    /// and never prints another session's key for it.
     #[test]
     fn the_ticker_never_prints_another_sessions_slot() {
         let mut s = state::typical();
@@ -213,8 +214,10 @@ mod review_tests {
             x.id = format!("extra{i}");
             x.title = format!("extra {i}");
             x.state = SessionState::Idle;
+            x.key = None;
             s.sessions.push(x);
         }
+        state::assign_keys(&mut s);
         let fifth = s
             .sessions
             .iter_mut()
@@ -224,6 +227,17 @@ mod review_tests {
         fifth.state = SessionState::AwaitingInput;
         // (Ranked after the other waiting session, so the ticker names it.)
         fifth.last_activity_secs = 99_999;
+        assert_eq!(fifth.key, Some('q'));
+        let (t, _) = draw(LabView::Hub, &s, 200, 60);
+        let row = t.lines().find(|l| l.contains("FIFTH needs you"));
+        let row = row.expect("ticker row");
+        assert!(row.contains(" q ") && row.contains("attach"), "{row}");
+        // Past the pool.
+        s.sessions
+            .iter_mut()
+            .rfind(|x| x.device == "innovation")
+            .unwrap()
+            .key = None;
         let (t, targets) = draw(LabView::Hub, &s, 200, 60);
         let row = t
             .lines()
@@ -503,6 +517,12 @@ mod size_fuzz {
         for n in [10, 25] {
             v.push((format!("nebula-{n}"), state::nebula(n)));
         }
+        // The empty and sparse states, and a device past the key pool.
+        v.extend(
+            SPARSE
+                .iter()
+                .map(|f| (f.to_string(), LabState::fixture(f).unwrap())),
+        );
         v
     }
 
@@ -1360,6 +1380,52 @@ mod nebula_tests {
                     let (a, _) = render_frame(&LabView::Hub, &s, &settled, w, h);
                     let (b, _) = render_frame(&LabView::Hub, &s, &map_caps(sel), w, h);
                     assert_eq!(a, b, "{} {w}x{h} sel {sel}", s.fixture);
+                }
+            }
+        }
+    }
+}
+#[cfg(test)]
+mod key_tests {
+    //! Every session tile on a device screen and on the hub shows its own key.
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// In every fixture (a device past the 21-key pool included), at phone to wide
+    /// sizes, each drawn tile has a key, unique on its device, printed on its first row.
+    #[test]
+    fn every_visible_tile_has_a_unique_key() {
+        let mut all: Vec<LabState> = FIXTURES
+            .iter()
+            .chain(&SPARSE)
+            .map(|f| LabState::fixture(f).unwrap())
+            .collect();
+        all.extend([3, 10, 25].map(state::nebula));
+        for s in &all {
+            let mut views = vec![LabView::Hub];
+            views.extend(s.devices.iter().map(|d| LabView::DeviceFocus(d.id.clone())));
+            for v in &views {
+                for (w, h) in [(40, 20), (80, 24), (120, 40), (190, 50)] {
+                    let (buf, targets) = render_frame(v, s, &LabCaps::default(), w, h);
+                    let mut seen = BTreeSet::new();
+                    for t in &targets {
+                        let Some((d, id)) = t
+                            .action
+                            .strip_prefix("tile:")
+                            .and_then(|r| r.split_once(':'))
+                        else {
+                            continue;
+                        };
+                        let at = format!("{} {v:?} {w}x{h} {id}", s.fixture);
+                        let k = s.session(id).and_then(|x| x.key);
+                        let k = k.unwrap_or_else(|| panic!("no key: {at}"));
+                        assert!(seen.insert((d.to_string(), k)), "key {k} twice: {at}");
+                        let a = t.area;
+                        let row: String = (a.x..a.right())
+                            .map(|x| buf[(x, a.y)].symbol().to_string())
+                            .collect();
+                        assert!(row.contains(&format!(" {k} ")), "{at}: {row}");
+                    }
                 }
             }
         }

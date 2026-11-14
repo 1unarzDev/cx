@@ -3,7 +3,7 @@
 //! a device letter, then a verb or a session slot (docs/design/concept-mission.md 6).
 //! Keys, taps and context-menu rows all end in the same methods here.
 use super::viewmodel::{dev_id, dev_index};
-use super::views::mission::SLOTS;
+use super::views::mission::{HOME, SLOTS};
 use super::*;
 
 /// The edge editor: which link (`a-b`, the opener first) and which lane has the bar.
@@ -108,9 +108,13 @@ impl App {
         }
         self.hotkeys.borrow()
     }
-    /// A device's sessions in slot order (`a s d g`): creation order, so a slot keeps
-    /// its session while others come and go.
+    /// A device's sessions in key order (`a s d g ...`, then those without a key): the
+    /// order its tiles are drawn in.
     pub(super) fn slot_sessions(&self, d: usize) -> Vec<&Session> {
+        self.slot_keys(d).into_iter().map(|(s, _)| s).collect()
+    }
+    /// Creation order: keys are given out in it.
+    fn created_sessions(&self, d: usize) -> Vec<&Session> {
         let mut v: Vec<&Session> = self.work[d].sessions.iter().collect();
         v.sort_by_key(|s| {
             let created = s
@@ -120,6 +124,32 @@ impl App {
             (created.unwrap_or(u64::MAX), s.started.clone(), s.id.clone())
         });
         v
+    }
+    /// A device's sessions with their keys (`SLOTS`), in key order: a session keeps its
+    /// key until it ends and a new one takes the first free key; past the pool, none.
+    pub(super) fn slot_keys(&self, d: usize) -> Vec<(&Session, Option<char>)> {
+        let list = self.created_sessions(d);
+        let live: Vec<String> = list.iter().map(|s| workspaces::runtime_key(s)).collect();
+        let mut memo = self.slot_memo.borrow_mut();
+        let keys = assign_slots(memo.get(&self.devices[d].id).map_or(&[][..], |v| v), &live);
+        let mut out: Vec<(&Session, Option<char>)> = list
+            .into_iter()
+            .zip(&live)
+            .map(|(s, k)| (s, keys.iter().find(|(x, _)| x == k).map(|(_, c)| *c)))
+            .collect();
+        memo.insert(self.devices[d].id.clone(), keys);
+        out.sort_by_key(|(_, k)| {
+            k.and_then(|k| SLOTS.iter().position(|c| *c == k))
+                .unwrap_or(usize::MAX)
+        });
+        out
+    }
+    /// The session holding key `c` on device `d`.
+    pub(super) fn session_for_key(&self, d: usize, c: char) -> Option<Session> {
+        self.slot_keys(d)
+            .into_iter()
+            .find(|(_, k)| *k == Some(c))
+            .map(|(s, _)| s.clone())
     }
     pub(super) fn device_for_letter(&self, c: char) -> Option<usize> {
         let letters = self.hotkeys();
@@ -436,12 +466,10 @@ impl App {
         }
     }
     /// A session slot on the current device (`a s d g`).
-    fn attach_slot(&mut self, d: usize, slot: usize) {
-        if let Some(s) = self.slot_sessions(d).get(slot).map(|s| (*s).clone()) {
-            self.reconcile_session_selection(Some((d, workspaces::runtime_key(&s))));
-            self.peek = false;
-            self.open_session(d, s, false);
-        }
+    fn attach_session(&mut self, d: usize, s: Session) {
+        self.reconcile_session_selection(Some((d, workspaces::runtime_key(&s))));
+        self.peek = false;
+        self.open_session(d, s, false);
     }
     /// New claude / codex / shell in the device's home, attached at once.
     fn new_session(&mut self, d: usize, provider: &str) {
@@ -931,11 +959,9 @@ impl App {
             match key.code {
                 KeyCode::Backspace => self.send_stop(d, session),
                 KeyCode::Char(c) if plain && self.view == View::Work && SLOTS.contains(&c) => {
-                    let slot = SLOTS.iter().position(|s| *s == c).unwrap_or(0);
                     if let Some(k) = self
-                        .slot_sessions(d)
-                        .get(slot)
-                        .map(|s| workspaces::runtime_key(s))
+                        .session_for_key(d, c)
+                        .map(|s| workspaces::runtime_key(&s))
                     {
                         self.reconcile_session_selection(Some((d, k)));
                         self.arm_stop();
@@ -1052,11 +1078,14 @@ impl App {
                 self.edge_pending = true;
                 true
             }
-            KeyCode::Char(c) if SLOTS.contains(&c) => {
-                let slot = SLOTS.iter().position(|s| *s == c).unwrap_or(0);
-                self.attach_slot(d, slot);
-                true
-            }
+            // A session's key attaches it; a digit no session holds stays a count (`5j`).
+            KeyCode::Char(c) if SLOTS.contains(&c) => match self.session_for_key(d, c) {
+                Some(s) => {
+                    self.attach_session(d, s);
+                    true
+                }
+                None => !c.is_ascii_digit(),
+            },
             KeyCode::Char('c') => {
                 self.new_session(d, "claude");
                 true
@@ -1203,8 +1232,8 @@ impl App {
         match key.code {
             KeyCode::Char('e') => self.toggle_exposure(),
             KeyCode::Char('v') => self.edit_variable(),
-            KeyCode::Char(c) if SLOTS.contains(&c) => {
-                let i = SLOTS.iter().position(|s| *s == c).unwrap_or(0);
+            KeyCode::Char(c) if HOME.contains(&c) => {
+                let i = HOME.iter().position(|s| *s == c).unwrap_or(0);
                 self.secret_card(i);
             }
             KeyCode::Enter => self.secret_card(self.secret_selected),
@@ -1620,4 +1649,47 @@ pub(super) fn toward<'a>(
         .find(|a| ranked(a, -dx, -dy).first() == Some(&current))
         .or(options.first())
         .copied()
+}
+
+/// Keys for the live sessions (runtime keys, slot order): each keeps the key it had,
+/// the others take the first free ones in `SLOTS` order.
+fn assign_slots(prev: &[(String, char)], live: &[String]) -> Vec<(String, char)> {
+    let mut out: Vec<(String, char)> = prev
+        .iter()
+        .filter(|(k, _)| live.contains(k))
+        .cloned()
+        .collect();
+    for k in live {
+        if out.iter().any(|(x, _)| x == k) {
+            continue;
+        }
+        if let Some(c) = SLOTS.iter().find(|c| out.iter().all(|(_, y)| y != *c)) {
+            out.push((k.clone(), *c));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::assign_slots;
+    fn keys(v: &[(String, char)]) -> String {
+        v.iter().map(|(_, c)| *c).collect()
+    }
+    #[test]
+    fn a_session_keeps_its_key_until_it_ends_and_new_ones_take_the_first_free() {
+        let ids = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let a = assign_slots(&[], &ids(&["1", "2", "3"]));
+        assert_eq!(keys(&a), "asd");
+        // `1` ended: `2` and `3` keep `s` and `d`; the next new one takes `a`.
+        let b = assign_slots(&a, &ids(&["2", "3"]));
+        assert_eq!(keys(&b), "sd");
+        let c = assign_slots(&b, &ids(&["2", "3", "4"]));
+        assert_eq!(c.iter().find(|(k, _)| k == "4").unwrap().1, 'a');
+        // Past the 21 keys a session has none.
+        let many: Vec<String> = (0..25).map(|i| i.to_string()).collect();
+        let d = assign_slots(&[], &many);
+        assert_eq!(d.len(), 21);
+        assert_eq!(keys(&d), "asdgquioyzvm123456789");
+    }
 }

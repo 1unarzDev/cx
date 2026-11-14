@@ -94,7 +94,9 @@ def enter_namespace():
                      f'dev lan0 nud permanent' for i in range(40))
     # A private mount namespace hides the caller's user bus and runtime directory: the
     # fixture's tmux servers never become units of the caller's systemd.
-    setup = (f'mount -t tmpfs -o mode=700 tmpfs /run/user/{os.getuid()} && '
+    # (Only when it exists: a CI runner without a login session has none to hide.)
+    run_user = f'/run/user/{os.getuid()}'
+    setup = (f'{{ [ ! -d {run_user} ] || mount -t tmpfs -o mode=700 tmpfs {run_user}; }} && '
              f'{sys.executable} -c "import socket; socket.sethostname(\\"fixture-host\\")" && ip link set lo up && ip link add lan0 type bridge && '
              'ip addr add 192.168.77.1/24 dev lan0 && ip link set lan0 up && ' + neigh)
     uid, gid = os.getuid(), os.getgid()

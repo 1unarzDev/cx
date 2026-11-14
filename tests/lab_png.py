@@ -94,7 +94,9 @@ class Fonts:
     def load(self, path):
         if path not in self.cache:
             try:
-                if path and 'Emoji' in path:  # bitmap color font: only its strike size loads
+                if not path:  # no fontconfig (a bare CI image): Pillow's own font
+                    raise OSError('no font file')
+                if 'Emoji' in path:  # bitmap color font: only its strike size loads
                     f = ImageFont.truetype(path, 109)
                 else:
                     f = ImageFont.truetype(path, self.px)

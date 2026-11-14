@@ -36,6 +36,9 @@ def main():
             folder.mkdir()
             made = env.cx('new', '--directory', str(folder), '--name', name, '--key', name)
             assert made.returncode == 0, f'cx new {name} failed'
+        # (No attach expand / detach shrink: the hub must be back before this host's
+        # own terminals, which the fixture's discovery can see, outrank the tiles.)
+        env.env['CX_REDUCED_MOTION'] = '1'
         viewer = pty_lib.Pty([binary], env.env, env.root, COLS, ROWS)
         text = lambda: '\n'.join(viewer.screen.display)  # noqa: E731
 

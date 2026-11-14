@@ -284,7 +284,7 @@ fn attaching_from_a_tile_expands_it_and_a_key_skips_it() {
     let t0 = e.start;
     let (id, tile, t) = a.expand_frame(t0).unwrap();
     assert_eq!((tile, t), (e.from.unwrap(), 0));
-    assert_eq!(id, workspaces::runtime_key(&a.slot_sessions(0)[1]));
+    assert_eq!(id, workspaces::runtime_key(a.slot_sessions(0)[1]));
     assert!(runtime::loop_wait(&a, t0, None) <= runtime::FRAME_INTERVAL);
     let done = t0 + motion::EXPAND;
     assert!(!a.expanding(done) && a.expand_frame(done).is_none());

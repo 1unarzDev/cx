@@ -80,7 +80,7 @@ The other states:
   sessions, the hub's empty grid and its spare cell). Its rows tap as their keys
   (`new:<d>:<provider>`, `launch:<d>:<key>`, `invite`).
 - Data, no new process per frame: `LabDevice::caps` from the helper's capability reply
-  (asked once when a device with nothing running opens), `LabDevice::recent` and
+  (whenever cx last asked, for a launch; opening a device does not ask, because a capability reply also turns on external-terminal discovery), `LabDevice::recent` and
   `LabState::ended` from `App::launch_items`: sessions that left a fresh listing while
   cx ran (`App::ended`, memory only: the session list cache on disk is unchanged), pinned
   sessions and the last Files folder.

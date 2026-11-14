@@ -745,7 +745,7 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         // size whether or not the screen has arrived).
         let th = ((room + 1) / rows.max(1)).saturating_sub(1).clamp(5, 22);
         let mut bottom = main.y;
-        for i in 0..tiles_n as usize {
+        for (i, x) in list.iter().enumerate() {
             let (ci, ri) = (i as u16 % cols, i as u16 / cols);
             let x0 = main.x + ci * (sw + gap);
             let tr = Rect::new(x0, main.y + ri * (th + 1), sw, th);
@@ -753,7 +753,6 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
                 break;
             }
             bottom = tr.bottom() + 1;
-            let x = list[i];
             shown += 1;
             tiles::thumb(cx, buf, tr, x, (i == sel).then_some(true));
             if i == sel && cx.c.focus == Some(Pane::Custom("stop")) {

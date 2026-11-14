@@ -279,10 +279,6 @@ impl App {
         if !self.work[d].loading {
             self.work[d].loading = self.send(d, Operation::Sessions);
         }
-        // Nothing runs there: its launch panel lists the agents the helper reports.
-        if self.work[d].sessions.is_empty() && !self.providers.contains_key(&d) {
-            self.check_providers(d);
-        }
     }
     /// The edge graph from the state files (on refresh and after a policy change; never
     /// from render).

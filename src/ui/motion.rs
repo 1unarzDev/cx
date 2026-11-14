@@ -14,8 +14,10 @@ use std::time::{Duration, Instant};
 
 /// How long a transition takes.
 pub(super) const GLIDE: Duration = Duration::from_millis(160);
-/// How long the attach expand and the detach shrink take.
-pub(super) const EXPAND: Duration = Duration::from_millis(160);
+/// How long the attach expand takes (the attach hands off as it lands), and the detach
+/// shrink (shorter: the hub is what you came back for).
+pub(super) const EXPAND: Duration = Duration::from_millis(130);
+pub(super) const SHRINK: Duration = Duration::from_millis(100);
 
 /// A session's tile growing to the full screen before its attach (`grow`), or the
 /// full screen shrinking back into its tile after a detach. Drawn by the view layer
@@ -34,13 +36,15 @@ pub(super) struct Expand {
 impl Expand {
     /// Progress 0..1 while it plays, None once done.
     pub(super) fn progress(&self, now: Instant) -> Option<f32> {
-        let t = now.saturating_duration_since(self.start).as_secs_f32() / EXPAND.as_secs_f32();
+        let d = if self.grow { EXPAND } else { SHRINK };
+        let t = now.saturating_duration_since(self.start).as_secs_f32() / d.as_secs_f32();
         (t < 1.0).then_some(t)
     }
-    /// Far enough that the eased rect is the full screen to the eye (98%): an attach
-    /// waiting on it hands off here rather than a frame later.
+    /// The rect is on the full screen to the eye (ease-out quad at 90% of the time is
+    /// 99% of the way, under a cell on any screen up to ~100 rows of travel): an attach
+    /// waiting on it hands off here.
     pub(super) fn landed(&self, now: Instant) -> bool {
-        self.progress(now).is_none_or(|t| t >= 0.85)
+        self.progress(now).is_none_or(|t| t >= 0.9)
     }
 }
 /// Above this terminal round trip, frames are better spent elsewhere.

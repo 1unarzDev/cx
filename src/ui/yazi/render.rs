@@ -1220,17 +1220,24 @@ pub(crate) fn render(v: &View, t: &Theme, look: Look, area: Rect, buf: &mut Buff
         let key = t.which_cand.add_modifier(Modifier::BOLD);
         let hints = [('a', " create"), ('\'', " other device")];
         let w = hints.iter().map(|(_, l)| 1 + width(l)).sum::<usize>() as u16 + 3;
-        let x0 = current_list.x + current_list.width.saturating_sub(w) / 2;
-        let y = current_list.y + 2;
-        if y < current_list.bottom() && w <= current_list.width {
-            let mut x = x0;
-            for (k, label) in hints {
-                let x1 = x;
-                x = p.put(x, y, current_list.right(), &k.to_string(), key);
-                x = p.put(x, y, current_list.right(), label, dim);
-                d.keys.push((Rect::new(x1, y, x - x1, 1), k));
-                x += 3;
+        // (A narrow column, a phone's, stacks them: each centred on a row of its own.)
+        let stack = w > current_list.width;
+        let mut y = current_list.y + 2;
+        let mut x = current_list.x + current_list.width.saturating_sub(w) / 2;
+        for (k, label) in hints {
+            let lw = 1 + width(label) as u16;
+            if stack {
+                x = current_list.x + current_list.width.saturating_sub(lw) / 2;
             }
+            if y >= current_list.bottom() || lw > current_list.width {
+                break;
+            }
+            let x1 = x;
+            x = p.put(x, y, current_list.right(), &k.to_string(), key);
+            x = p.put(x, y, current_list.right(), label, dim);
+            d.keys.push((Rect::new(x1, y, x - x1, 1), k));
+            x += 3;
+            y += u16::from(stack);
         }
     }
     if let Some(Preview::Folder(c)) = &v.preview {

@@ -95,9 +95,15 @@ pub fn render_send_to(
     cx.hits.into_inner()
 }
 
-/// The attach expand (and the detach shrink, `t` running back) part-way: the session's
-/// full-screen view drawn into the rect between its tile (`from`) and the whole area,
-/// eased out; `t` is thousandths of the way to full screen. Cells only (no targets).
+/// The attach expand (and the detach shrink, `t` running back) part-way: a rect eased
+/// out from the session's tile (`from`) to the whole area, `t` thousandths of the way.
+/// Inside it the session's screen is laid out as tmux will paint it (its rows from the
+/// top, the last row left to tmux's status line) from the rect's left edge, showing the
+/// text's tail while the rect is shorter than it (as the tile did) and its top once
+/// taller, so it lands in place: nothing moves at the hand-off.
+/// The rect has a 1-cell edge while it moves; what it has not covered yet steps back
+/// (dim). Within a cell of the full area the edge is gone, so
+/// the hand-off (the plain screen) only brightens it. Cells only (no targets).
 pub fn render_expand(
     state: &LabState,
     caps: &LabCaps,
@@ -124,37 +130,44 @@ pub fn render_expand(
         return;
     }
     let cx = Cx::new(state, caps, area);
-    let moving = t < 1000;
-    // While it moves: what it has not covered yet steps back (dim ink, no background),
-    // and the growing screen has an edge, so it reads as one thing in motion.
-    if moving {
-        let dim = Style::default().add_modifier(Modifier::DIM);
-        for y in area.top()..area.bottom() {
-            for xx in area.left()..area.right() {
-                if !r.contains((xx, y).into()) {
-                    buf[(xx, y)].set_style(dim);
+    let moving = r != area;
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    // The screen at its final place: `attached` draws its bar on row 0 and the pane
+    // under it, so it is drawn one row taller and read from row 1 (the pane's rows,
+    // then a blank last row where tmux's status goes).
+    let full = Rect::new(0, 0, area.width, area.height + 1);
+    let mut scratch = Buffer::empty(full);
+    if area.width >= 12 && area.height >= 3 {
+        let sx = Cx::new(state, caps, full);
+        views::attached(&sx, &mut scratch, x);
+    }
+    // The pane's rows in use (its text ends above blank rows).
+    let used = (1..=area.height)
+        .rev()
+        .find(|&y| (0..area.width).any(|x| scratch[(x, y)].symbol() != " "))
+        .unwrap_or(0);
+    // A rect shorter than that shows the text's tail (as the tile did), a taller one its
+    // top: the screen lands in place as the rect reaches the full area.
+    let top = used.saturating_sub(r.height);
+    for y in area.top()..area.bottom() {
+        for xx in area.left()..area.right() {
+            let c = &mut buf[(xx, y)];
+            if !r.contains((xx, y).into()) {
+                if moving {
+                    c.set_style(dim);
                 }
+                continue;
             }
+            let sy = y - r.y + top + 1;
+            *c = if sy <= area.height {
+                scratch[(xx - r.x, sy)].clone()
+            } else {
+                ratatui::buffer::Cell::default()
+            };
         }
     }
-    let edge = moving && r.width >= 6 && r.height >= 4;
-    let inner = if edge { inset(r, 1, 1) } else { r };
-    let mut scratch = Buffer::empty(Rect::new(0, 0, inner.width, inner.height));
-    if inner.width >= 12 && inner.height >= 3 {
-        let cx = Cx::new(state, caps, scratch.area);
-        views::attached(&cx, &mut scratch, x);
-    }
-    for y in 0..r.height {
-        for xx in 0..r.width {
-            buf[(r.x + xx, r.y + y)].reset();
-        }
-    }
-    for y in 0..inner.height {
-        for xx in 0..inner.width {
-            buf[(inner.x + xx, inner.y + y)] = scratch[(xx, y)].clone();
-        }
-    }
-    if edge {
+    let edge = r.width + 2 < area.width || r.height + 2 < area.height;
+    if moving && edge && r.width >= 6 && r.height >= 4 {
         let st = cx.ink(Tok::Accent, 0.7);
         let (h, v) = (cx.g("─", "-"), cx.g("│", "|"));
         let (b, rt) = (r.bottom() - 1, r.right() - 1);
@@ -229,6 +242,9 @@ pub(super) struct Cx<'a> {
     nav: RefCell<Vec<LabTarget>>,
     /// The map's arrow moves (see `Drawn::moves`).
     moves: RefCell<Vec<(String, [Option<String>; 4])>>,
+    /// Drawing one device's own screen: its tiles drop the device letter (only the
+    /// slot key is pressed there).
+    pub on_device: std::cell::Cell<bool>,
 }
 
 impl<'a> Cx<'a> {
@@ -241,6 +257,7 @@ impl<'a> Cx<'a> {
             order: RefCell::new(Vec::new()),
             nav: RefCell::new(Vec::new()),
             moves: RefCell::new(Vec::new()),
+            on_device: std::cell::Cell::new(false),
         }
     }
 
@@ -757,7 +774,8 @@ impl<'a> Cx<'a> {
                 self.st(Tok::Accent).add_modifier(Modifier::BOLD),
             )
         } else {
-            (self.g(" ", "  "), self.ink(Tok::Muted, 0.8))
+            // (ASCII too: one column, so the text sits under `[`'s text.)
+            (" ", self.ink(Tok::Muted, 0.8))
         };
         if focused && !self.uni() {
             let t = format!("[{text}]");

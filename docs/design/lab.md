@@ -17,7 +17,7 @@ many devices over 1-3 meshes, mixed up, down and never-seen, some behind a relay
 `mirror` (a network that is its own mirror image), and the empty states (see
 `docs/design/empty-states.md`): `bare` (no sessions anywhere, an empty folder, no
 secrets), `ended` (creation's sessions have ended), `quiet` (everything has ended), `solo` (only this device) and
-`nomesh` (plain SSH links). `CX_LAB_EXPAND=<session>:<thousandths>` captures the attach expand part-way: thousandths of its 160 ms (`motion::EXPAND`), the tile grown that far toward full screen (ease-out quad, a 1-cell edge, the screen behind it dimmed; the detach shrink is the same frames in reverse). `CX_LAB_MOTION=<device>:<thousandths>`
+`nomesh` (plain SSH links). `CX_LAB_EXPAND=<session>:<thousandths>` captures the attach expand part-way: thousandths of its 130 ms (`motion::EXPAND`), the rect grown that far from the tile toward full screen (ease-out quad, a 1-cell edge until it is within a cell, the screen behind it dimmed), the session's screen laid out as tmux paints it, its tail showing while the rect is shorter than its text (the detach shrink is the same frames in reverse, over `motion::SHRINK`). `CX_LAB_MOTION=<device>:<thousandths>`
 captures the hub map part-way through a transition from that device to the selection. `baseline` roughly copies
 the v0.1.95 layout and is the bar to beat. `glyphs` is a renderer test card.
 

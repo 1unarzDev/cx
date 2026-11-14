@@ -159,7 +159,7 @@ def main():
         # File search: Down moves between matches, Left/Right edit the query.
         letter = re.search(r'\s(\w)\s+then', text())
         assert letter, f'no device letter on the vitals strip:\n{text()}'
-        press(letter.group(1).encode(), lambda: 'SESSIONS' in text() and 'LINKS' in text() or 'new' in text(),
+        press(letter.group(1).encode(), lambda: 'SESSIONS' in text() and 'LINKS' in text() or 'start' in text(),
               'the device did not open')
         press(b'f', lambda: 'work-0' in text(), 'files did not open')
         # yazi's find (`/`): the hovered match carries [i/n]; Down/Ctrl+N/Up step it.

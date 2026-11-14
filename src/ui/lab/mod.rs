@@ -399,7 +399,7 @@ mod review_tests {
     }
 
     /// A device's session tile is a large screen (v0.2.2: fewer, bigger previews): it
-    /// takes the rows the links leave, shows its whole text, and the `new` row follows.
+    /// takes the rows the links leave, shows its whole text, and the `start` row follows.
     #[test]
     fn a_device_session_tile_is_a_large_screen() {
         let s = state::typical();
@@ -410,7 +410,7 @@ mod review_tests {
             .position(|r| r.contains("refactor transport"))
             .unwrap();
         let text_end = rows.iter().position(|r| r.contains("Refactoring")).unwrap();
-        let ghost = rows.iter().position(|r| r.contains(" new ")).unwrap();
+        let ghost = rows.iter().position(|r| r.contains(" start ")).unwrap();
         assert!(
             title < text_end && text_end < ghost && ghost - title >= 16,
             "{t}"

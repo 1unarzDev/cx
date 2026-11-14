@@ -152,6 +152,10 @@ impl App {
         if self.motion.reduced() || (grow && from.is_none()) {
             return;
         }
+        // The attach's connection warms while the tile grows (a no-op when warm).
+        if grow {
+            crate::transport::prewarm(&self.devices[d]);
+        }
         self.expand = Some(motion::Expand {
             d,
             key,

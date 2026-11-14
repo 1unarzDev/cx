@@ -145,9 +145,11 @@ the session too); Ctrl+\, Esc Esc or a tap outside the screen (the typing bar's
 Ctrl+], Ctrl+O, Escape and Ctrl+C go to the application. To send a literal Ctrl+\
 (SIGQUIT, nvim Ctrl+\ Ctrl+N), use the palette (`/`) → **Send Ctrl+\ to the last
 session**: it forwards one to the session you last detached from and re-attaches it.
-Attaching from a tile grows it to the full screen over 160 ms (eased, with an edge,
-the screen behind it dimmed) and detaching shrinks it back into its tile; any key skips
-it. It is off with `CX_REDUCED_MOTION=1`, on phones and over slow terminal links.
+Attaching from a tile grows it to the full screen over 130 ms (ease-out, with an
+edge, the screen behind it dimmed): the session's text starts as the tile showed it and
+lands where tmux paints it, and the attach hands off as it lands (its connection warms
+while it grows). Detaching shrinks it back into its tile over 100 ms; any key skips
+either. It is off with `CX_REDUCED_MOTION=1`, on phones and over slow terminal links.
 
 The pane preserves colors, blank rows, alternate-screen content and cursor location.
 It refreshes at up to 4 Hz while browsing and 10 Hz while focused. Its viewport

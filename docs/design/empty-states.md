@@ -35,63 +35,81 @@ every row is a key and a tap.
 ## Redesign
 
 One component replaces the dashed card: the **launch panel**, drawn without a frame,
-in the space the tiles would take. Top to bottom, each part only when its data exists:
+in the space the tiles would take. Every row has one grammar: a quiet label column
+(`start`, `or on`, `add`, `resume`, `recent`), the key, then what it does. Phones (under
+56 columns) drop the label column on every row, so no row puts its label on the other
+side. Top to bottom, each part only when its data exists:
 
-1. **Launch row**: `c claude   x codex   n shell`, each provider word in its colour, its
-   key as a keycap. On the hub the device is said once, in the grammar of the vitals
-   strip: `start on t tranquility then c claude  x codex  n shell`. An agent the
-   device's helper did not report is left out (shell always stays); before the helper
-   has answered, all three show.
-2. **Resume** (the newest session that ended while cx watched): `a claude  merge lidar
-   maps · ~/ros_ws/src/mapping · 40m ago` (a narrow row drops the age, then the folder,
-   then cuts the title). The key resumes the agent's latest conversation in that folder
-   (`claude --continue`, `codex resume --last`), or opens a shell there.
-3. **Recent folders** (folders of ended sessions, then Files locations on that device,
-   newest first, at most five): `s ~/cx`, `d ~/datasets/lidar`. The key opens the
-   provider chooser in that folder, so a new agent in a recent project is two keys.
-4. **Capabilities** are the launch row itself: an agent the helper did not report is
-   not offered (a separate "runs claude · codex" line repeated it, and the header
-   already carries cpu, memory, temperature and gpu).
-5. **Only this device** (hub): `+ invite a device` on its own row under the launch row
-   (the footer's `+ invite` gives way to it).
+1. **Launch row**: `start  c claude   x codex   n shell`, each provider word in its
+   colour, its key as a keycap. It is the same component (word, colours, label column)
+   as the row under a device's tiles. On the hub the device is said once, in the grammar
+   of the vitals strip: `start on  t tranquility then  c claude  x codex  n shell`; the
+   keys after `then` are drawn quiet (muted, not the accent), so only the first-press
+   keys look primary and `c` under it (`or on  c creation`) is not read as claude. An
+   agent the device's helper did not report is left out (shell always stays); before
+   the helper has answered, all three show.
+2. **Only this device**: `add  + invite a device`, a group of its own (a blank row
+   before it), on the hub and on the device screen (the footer's `+ invite` gives way).
+3. **Resume** (the newest session that ended while cx watched): `resume  a claude  merge
+   lidar maps · ~/ros_ws/src/mapping · 40m ago` (a narrow row drops the age, then the
+   folder, then cuts the title). The key resumes the agent's latest conversation in
+   that folder (`claude --continue`, `codex resume --last`), or opens a shell there.
+4. **Recent folders** (folders of ended sessions, then Files locations on that device,
+   newest first, at most five): `recent  s ~/cx`, `d ~/datasets/lidar`. The key opens
+   the provider chooser in that folder, so a new agent in a recent project is two keys.
 
-The panel sits at the top of its zone, right under the SESSIONS rule (never centred in
-blank rows), with one blank row between its groups where they fit. Without a label
-column (phones) the resume row says `resume` inline and the first folder `recent`.
-
-Resume and the folders take the session slot keys (`a s d g ...`): on a device with no
-sessions those keys are free, and they are the same keys a started session will take.
+"Nothing running" is said on the SESSIONS rule (` SESSIONS  nothing running ───`, where
+the hub's tiles say `needs you first`), not on a row of its own. The panel sits at the
+top of its zone, right under the rule. A blank row separates its groups where they all
+fit: always on the hub, and on a device screen from 120x40 up (so two devices at one
+size keep one rhythm). Resume and the folders take the session slot keys (`a s d g
+...`): on a device with no sessions those keys are free, and they are the same keys a
+started session will take.
 
 The other states:
 
-- **Hub, no sessions**: SESSIONS loses its `needs you first` sort label and the panel
-  takes at most ten rows (the map keeps the rest): `nothing running`, the launch row for
-  the selected device, `or on i innovation  c creation ...` (every other reachable
-  device, a letter away), then the newest session that ended on up to two reachable
-  devices (`b a shell  ros core · ~/ros_ws · 1s ago`, the device letter first as on a
-  tile) and the selected device's recent folders. Fixture `quiet`.
+- **Hub, no sessions**: the map sits near the top as in the approved reference, the
+  vitals strip and the panel right under it; the rows left over stay below, where tiles
+  will go. The panel adds `or on  i innovation  c creation ...` (every other reachable
+  device, a letter away, names cut to a common length, at least four letters, so no
+  key ever shows without its device) and the newest session that ended on up to two
+  reachable devices (`b a shell  ros core · ~/ros_ws · 1s ago`, the device letter first
+  as on a tile). Fixture `quiet`. Phones: under the device tree, the same panel
+  (`on t then c claude  x codex`, resumes), the tree's rows going single-height to make
+  room; the `or on` row is left to the tree right above it.
+- **Only this device** (`solo`): the hub draws this device at the middle of the welcome
+  page's quiet orbits, as tall as the panel leaves (up to 15 rows); the device screen
+  has `LINKS  none yet` with the same picture under its panel.
+- **Device screen links**: the LINKS star is pinned under its rule (as the sessions are
+  under theirs); the rows it does not need stay below it.
 - **Unreachable device**: the header says `✕ unreachable`; the reason is said once,
   under SESSIONS, muted with only the mark red: `✕ can't start anything · no route ·
   last seen 3h   r retry` (on a phone the reason alone; the footer's `r retry` gives way
-  to it). Resume and recent folders still show, muted and without keys (fixture `ended`,
-  squirtle-jetson).
-- **Empty Files folder**: under `No items`, one centred row, `a create   ' other
-  device`, keys in which-key's colour, both keys yazi already binds.
-- **Keys with none**: one line saying what keys are for ("Secrets reach new sessions on
-  this device as environment variables, and connect meshes"), then `h new secret`.
-  The slot chip leaves the footer while there are no cards.
-- **Empty search**: `no matches for “zzqx”`, and the footer offers only `esc close`.
+  to it). What it last ran and its folders show as a quiet history: `earlier  shell
+  record run-0412 · ~/bags · 3h ago`, `recent  ~/ros_ws`, muted, with no key column at
+  all (not options with missing keys). Fixture `ended`, squirtle-jetson.
+- **Empty Files folder**: under yazi's `No items` (its own place, the column's first
+  row), `a create   ' other device`, keys in which-key's colour, both keys yazi already
+  binds; a narrow column (phones) stacks them, one centred row each.
+- **Keys with none**: one muted line, `new sessions here get the ones you expose  e  as
+  env vars` (the key a keycap), under `h new secret`. Not connected, Cloudflare's own
+  card already says `⏎ connect`, so no second (yellow) line repeats it. The slot chip
+  leaves the footer while there are no cards.
+- **Empty search**: `no matches for “zzqx”` and `esc close`, one breathing row between.
 - **Tile keys**: a pool, home row first, that avoids every key the device screen binds:
   `a s d g`, then `q u i o y z v m`, then `1`-`9` (21 keys). A session keeps its key
   until it ends; new sessions take the lowest free key. Past 21 sessions on one device
   the last tile is a `+N` chip whose key (`/`) opens the session picker; while it shows,
-  the footer's `/ find` (the same palette) gives way to it, so `/` is labelled once.
+  the footer's `/ find` (the same palette) gives way to it, so `/` is labelled once. On
+  a device's own screen a tile shows only its slot key (`a refactor transport`), the key
+  pressed there; the hub keeps the device letter first (`i a`).
 
 ## As built
 
 - `views::mission::views::launch_panel` draws the panel (device view with no
-  sessions, the hub's empty grid, and the hub's spare cell when one row of tiles leaves
-  one; with two rows the last row's tiles widen instead). Its rows tap as their keys
+  sessions, the hub's empty grid, the phone hub under its tree, and the hub's spare cell
+  when one row of tiles leaves one; with two rows the last row's tiles widen instead);
+  `launch_keys` is the launch row both it and `new_row` (under a device's tiles) draw. Its rows tap as their keys
   (`new:<d>:<provider>`, `launch:<d>:<key>`, `invite`).
 - Data, no new process per frame: `LabDevice::caps` from the helper's capability reply
   (whenever cx last asked, for a launch; opening a device does not ask, because a capability reply also turns on external-terminal discovery), `LabDevice::recent` and

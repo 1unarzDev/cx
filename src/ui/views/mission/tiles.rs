@@ -378,7 +378,7 @@ pub(super) fn caption(x: &LabSession) -> String {
 /// (`i` `a`), which is exactly what you type from the hub. Returns the width.
 pub(super) fn addr(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, s: &LabSession) -> u16 {
     let mut w = 0;
-    if let Some(d) = cx.s.device(&s.device) {
+    if let Some(d) = cx.s.device(&s.device).filter(|_| !cx.on_device.get()) {
         w += cx.dchip(buf, x, y, d, false);
     }
     let k = cx.slot(s).unwrap_or(' ');

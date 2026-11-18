@@ -3480,12 +3480,35 @@ pub fn exit_copy_mode(id: &str) {
 }
 pub fn attach(device: &Device, session: &Session, observe: bool) -> Result<()> {
     match attach_command(device, session, observe)? {
-        Some(mut c) => attach_ended(c.status().context("native terminal attachment failed")?),
+        Some(mut c) => attach_ended(
+            device,
+            c.status().context("native terminal attachment failed")?,
+        ),
         None => attach_terminal_session(device, session, observe),
     }
 }
+/// A remote attach whose SSH connection dropped, as opposed to a detach or the
+/// session's end (exit 0) or a refusal by the device (its own nonzero exit): the
+/// viewer reconnects instead of returning to the hub.
+#[derive(Debug)]
+pub struct Dropped;
+impl std::fmt::Display for Dropped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("connection lost")
+    }
+}
+impl std::error::Error for Dropped {}
+/// ssh's own failure status (255: connection lost, reset or timed out, or the remote
+/// cx killed) or the ssh client killed by a signal. Never for a local attach.
+fn dropped(device: &Device, status: std::process::ExitStatus) -> bool {
+    use std::os::unix::process::ExitStatusExt;
+    device.target.is_some() && (status.code() == Some(255) || status.signal().is_some())
+}
 /// How a spawned attach (`attach_command`) ended.
-pub fn attach_ended(result: std::process::ExitStatus) -> Result<()> {
+pub fn attach_ended(device: &Device, result: std::process::ExitStatus) -> Result<()> {
+    if dropped(device, result) {
+        return Err(Dropped.into());
+    }
     if !result.success() {
         bail!("native terminal attachment ended with {result}");
     }
@@ -3522,13 +3545,13 @@ fn attach_terminal_session(device: &Device, session: &Session, observe: bool) ->
             "~/.local/bin/cx native-attach-checked {}",
             quote(&payload)
         ));
-        anyhow::ensure!(
-            command
-                .status()
-                .context("checked remote attachment failed")?
-                .success(),
-            ATTACH_REFUSED
-        );
+        let status = command
+            .status()
+            .context("checked remote attachment failed")?;
+        if dropped(device, status) {
+            return Err(Dropped.into());
+        }
+        anyhow::ensure!(status.success(), ATTACH_REFUSED);
         return Ok(());
     }
     native_attach_checked(&payload)
@@ -4078,6 +4101,27 @@ fn stopped_command_choice(fd: i32, pid: libc::pid_t) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A remote attach's ssh failing on its own (255) or killed is a dropped
+    /// connection to reconnect; a detach or the session's end (0) and a refusal by
+    /// the device (its own nonzero exit) are not, and a local attach never is.
+    #[test]
+    fn remote_drops_are_not_detaches() {
+        use std::os::unix::process::ExitStatusExt;
+        let remote = Device {
+            target: Some("me@robot".into()),
+            ..crate::store::local_device()
+        };
+        let local = crate::store::local_device();
+        let exit = |code: i32| std::process::ExitStatus::from_raw(code << 8);
+        let killed = std::process::ExitStatus::from_raw(libc::SIGKILL);
+        let is_drop = |d: &Device, s| attach_ended(d, s).is_err_and(|e| e.is::<Dropped>());
+        assert!(is_drop(&remote, exit(255)));
+        assert!(is_drop(&remote, killed));
+        assert!(attach_ended(&remote, exit(0)).is_ok());
+        assert!(attach_ended(&remote, exit(1)).is_err() && !is_drop(&remote, exit(1)));
+        assert!(!is_drop(&local, exit(255)) && !is_drop(&local, killed));
+    }
 
     /// A running server is re-sourced on update and attach: that config must carry no
     /// setting a v0.2.2 server lacks (compat_021 compares options and keys). Passthrough

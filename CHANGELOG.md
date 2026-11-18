@@ -4,6 +4,14 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.3.5
+
+A hotfix on v0.3.4.
+
+### Fixes
+- **A connection blip no longer throws you out of a remote terminal.** When the connection to a device drops while you are attached (ssh lost, reset or timed out), cx stays in the session: its last screen stays up with a quiet `connection lost · reconnecting (2s) · esc to leave` line, and cx reattaches the same session by itself (at once, then after 0.5, 1, 2, 4 and every 5 s), reusing the device's warm connection or opening a new one, on an address seen working if its name stops resolving. You are back in the terminal with no keypress. Esc gives up and returns to the hub with that tile selected; if the session ended meanwhile, cx says so. Ctrl+\ and the `⏏ detach` chip still return to the hub at once, and local sessions are unchanged.
+- **Short outages do not drop a terminal at all.** Terminal connections (and the shared connection they ride) now tolerate about a minute of silence (ssh keepalives every 10 s, six missed, TCP keepalive off), so a Wi-Fi hiccup or a brief network switch passes without a reconnect. Background status checks still notice a dead device within seconds.
+
 ## v0.3.4
 
 A hotfix on v0.3.3.

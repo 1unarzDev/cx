@@ -479,6 +479,10 @@ pub fn prewarm_blocking(device: &Device) -> Result<bool> {
         crate::store::multiplex_enabled(),
         "SSH connection sharing is turned off (CX_SSH_MULTIPLEX)"
     );
+    // Check for real: a master confirmed a moment ago may have died since.
+    if let Some(mut m) = masters() {
+        m.confirmed.remove(target);
+    }
     let replaced = stop_stuck_master(target);
     match ensure_master(target, MASTER_DEADLINE + std::time::Duration::from_secs(2)) {
         MasterState::Ready => Ok(replaced),

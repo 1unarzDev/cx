@@ -1151,13 +1151,25 @@ pub(crate) fn ssh_mode_via(
             c.arg("-o").arg(option);
         }
     }
+    // A terminal survives about a minute of silence (a Wi-Fi blip, a suspended
+    // laptop's first seconds): ssh's own keepalive decides, not TCP's. The master
+    // carries the terminals that join it, so it gets the same; a helper channel that
+    // waits on a silently dead master is recovered by `transport` (probe, -O stop).
+    if matches!(mode, SshMode::Interactive | SshMode::Master) {
+        c.args([
+            "-o",
+            "ServerAliveInterval=10",
+            "-o",
+            "ServerAliveCountMax=6",
+            "-o",
+            "TCPKeepAlive=no",
+        ]);
+    } else {
+        c.args(["-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2"]);
+    }
     c.args([
         "-o",
         "ConnectTimeout=6",
-        "-o",
-        "ServerAliveInterval=5",
-        "-o",
-        "ServerAliveCountMax=2",
         "-o",
         "ForwardAgent=no",
         "-o",
@@ -1460,6 +1472,34 @@ mod control_tests {
         );
         assert_eq!(args.last().map(String::as_str), Some(t));
         assert!(ssh_mode_via(t, SshMode::Background, Some(("a b", "x"))).is_err());
+    }
+    /// Terminals and the master they join tolerate about a minute of silence with
+    /// ssh's own keepalive; helper channels keep detecting a dead link in seconds.
+    #[test]
+    fn terminals_and_their_master_ride_out_blips() {
+        isolate_test_state();
+        let args = |mode| -> Vec<String> {
+            ssh_mode("me@blip.example.invalid", mode)
+                .unwrap()
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        for mode in [SshMode::Interactive, SshMode::Master] {
+            let a = args(mode);
+            for want in [
+                "ServerAliveInterval=10",
+                "ServerAliveCountMax=6",
+                "TCPKeepAlive=no",
+            ] {
+                assert!(a.iter().any(|x| x == want), "{mode:?} lacks {want}");
+            }
+            assert!(!a.iter().any(|x| x == "ServerAliveInterval=5"));
+        }
+        let a = args(SshMode::Background);
+        assert!(a.iter().any(|x| x == "ServerAliveInterval=5"));
+        assert!(a.iter().any(|x| x == "ServerAliveCountMax=2"));
+        assert!(!a.iter().any(|x| x == "TCPKeepAlive=no"));
     }
     #[test]
     fn control_paths_are_private_short_and_route_and_trust_specific() {

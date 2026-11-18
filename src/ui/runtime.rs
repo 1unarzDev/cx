@@ -475,6 +475,139 @@ pub(super) fn resume_input() {
     state.pauses = state.pauses.saturating_sub(1);
     changed.notify_all();
 }
+/// The banner a dropped remote attach shows on the bottom row while it reconnects.
+pub(super) fn reconnect_banner(retry_in: Option<Duration>) -> String {
+    match retry_in {
+        Some(wait) => format!(
+            "connection lost · reconnecting ({}s) · esc to leave",
+            wait.as_millis().div_ceil(1000).max(1)
+        ),
+        None => "connection lost · reconnecting… · esc to leave".into(),
+    }
+}
+/// Wait before the next reconnect attempt after `attempts` failed ones: at once,
+/// then 0.5 s, 1 s, 2 s, 4 s, then every 5 s.
+pub(super) fn reconnect_backoff(attempts: u32) -> Duration {
+    match attempts {
+        0 => Duration::ZERO,
+        n => (Duration::from_millis(250) * 2u32.pow(n.min(5))).min(Duration::from_secs(5)),
+    }
+}
+/// After a remote attach's connection dropped (`sessions::Dropped`), with the input
+/// thread parked and the terminal still showing the session's last screen (cx never
+/// sees the remote bytes, so it is left as tmux drew it): a one-line banner on the
+/// bottom row, and attempts to reattach the same session (by runtime identity:
+/// terminal id, server pid and start ticks) with backoff. Each attempt first
+/// confirms or rebuilds the route's master (a stuck one is stopped) and lists the
+/// device's sessions over it, which also starts the address fallback when the name
+/// stops resolving or connecting. Ok(None): reattached, then left by a detach or
+/// the session's end; Ok(Some(notice)): Esc gave up, or the session ended meanwhile.
+fn reconnect(device: &Device, session: &Session, observe: bool) -> Result<Option<String>> {
+    use crossterm::{cursor, style};
+    use std::io::Write;
+    let key = workspaces::runtime_key(session);
+    let mut attempts = 0;
+    let mut next = Instant::now();
+    let mut probe: Option<mpsc::Receiver<Result<Option<Session>>>> = None;
+    let mut shown = String::new();
+    // Modes the remote tmux client set and could not undo (mouse, focus, paste,
+    // modifyOtherKeys): reports they would send are not keys for this loop.
+    let quiet = |out: &mut io::Stdout| -> io::Result<()> {
+        out.write_all(
+            b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[>4m\x1b[?25l",
+        )?;
+        out.flush()
+    };
+    terminal::enable_raw_mode()?;
+    quiet(&mut io::stdout())?;
+    loop {
+        let now = Instant::now();
+        let text = reconnect_banner(probe.is_none().then(|| next.saturating_duration_since(now)));
+        if text != shown {
+            let (_, rows) = terminal::size()?;
+            let mut out = io::stdout();
+            crossterm::queue!(
+                out,
+                cursor::SavePosition,
+                cursor::MoveTo(0, rows.saturating_sub(1)),
+                terminal::Clear(terminal::ClearType::CurrentLine),
+                style::SetAttribute(style::Attribute::Dim),
+                style::Print(&text),
+                style::SetAttribute(style::Attribute::Reset),
+                cursor::RestorePosition
+            )?;
+            out.flush()?;
+            shown = text;
+        }
+        if let Some(rx) = &probe {
+            match rx.try_recv() {
+                Err(mpsc::TryRecvError::Empty) => {}
+                Ok(Ok(Some(fresh))) => {
+                    probe = None;
+                    terminal::disable_raw_mode()?;
+                    match sessions::attach(device, &fresh, observe) {
+                        Ok(()) => return Ok(None),
+                        Err(e) if e.is::<sessions::Dropped>() => {
+                            terminal::enable_raw_mode()?;
+                            quiet(&mut io::stdout())?;
+                            shown.clear();
+                            attempts = 1;
+                            next = Instant::now();
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(Ok(None)) => {
+                    return Ok(Some(format!(
+                        "Session ended on {} while disconnected",
+                        identity(device)
+                    )))
+                }
+                Ok(Err(e))
+                    if matches!(
+                        e.downcast_ref::<transport::ConnectionFailure>(),
+                        Some(
+                            transport::ConnectionFailure::Authentication
+                                | transport::ConnectionFailure::HostKey
+                                | transport::ConnectionFailure::MissingHelper
+                        )
+                    ) =>
+                {
+                    return Err(e.context("connection lost"))
+                }
+                Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => {
+                    probe = None;
+                    attempts += 1;
+                    next = Instant::now() + reconnect_backoff(attempts);
+                }
+            }
+        } else if now >= next {
+            let (tx, rx) = mpsc::channel();
+            let (device, key) = (device.clone(), key.clone());
+            std::thread::spawn(move || {
+                let _ = transport::prewarm_blocking(&device);
+                let found = transport::request(&device, Operation::Sessions)
+                    .and_then(|v| Ok(serde_json::from_value::<Vec<Session>>(v)?))
+                    .map(|list| list.into_iter().find(|s| workspaces::runtime_key(s) == key));
+                let _ = tx.send(found);
+            });
+            probe = Some(rx);
+        }
+        if event::poll(Duration::from_millis(100))? {
+            if let Event::Key(k) = event::read()? {
+                let leave = k.code == KeyCode::Esc
+                    || (k.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(k.code, KeyCode::Char('\\' | '4')));
+                if leave && k.kind != KeyEventKind::Release {
+                    return Ok(Some(format!(
+                        "Left {} · connection lost · the session keeps running there",
+                        identity(device)
+                    )));
+                }
+            }
+        }
+    }
+}
 /// The frame an attach lands on (`App::landing`), alone on a cleared frame.
 fn draw_landing(screen: &mut Screen, app: &App, key: &str, area: Rect) -> Result<()> {
     let vm = viewmodel::ViewModel::from(app);
@@ -2017,7 +2150,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                         child
                             .wait()
                             .context("native terminal attachment failed")
-                            .and_then(sessions::attach_ended)
+                            .and_then(|status| sessions::attach_ended(&app.devices[d], status))
                     }
                     Err(e) => {
                         Err(anyhow::Error::from(e).context("native terminal attachment failed"))
@@ -2025,6 +2158,16 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 },
                 Some(Err(e)) => Err(e),
                 _ => sessions::attach(&app.devices[d], &session, observe),
+            };
+            // A dropped connection stays in the session and reconnects (Esc leaves).
+            let (result, left) = match result {
+                Err(e) if e.is::<sessions::Dropped>() => {
+                    match reconnect(&app.devices[d], &session, observe) {
+                        Ok(left) => (Ok(()), left),
+                        Err(e) => (Err(e), None),
+                    }
+                }
+                result => (result, None),
             };
             screen.resume()?;
             last_interaction = Instant::now();
@@ -2040,10 +2183,12 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                     NoticeKind::Info
                 },
                 match result {
-                    Ok(()) => format!(
-                        "Returned from {} · session remains on execution host",
-                        identity(&app.devices[d])
-                    ),
+                    Ok(()) => left.unwrap_or_else(|| {
+                        format!(
+                            "Returned from {} · session remains on execution host",
+                            identity(&app.devices[d])
+                        )
+                    }),
                     Err(e) => safe_text(&format!("Attachment failed: {e:#}")),
                 },
             );

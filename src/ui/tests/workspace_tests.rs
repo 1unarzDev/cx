@@ -1,5 +1,27 @@
 use super::*;
 
+/// A dropped remote attach retries at once, then after 0.5, 1, 2 and 4 s, then every
+/// 5 s, and its banner counts down to the next attempt (whole seconds, never 0).
+#[test]
+fn reconnect_backoff_and_banner() {
+    let waits: Vec<u64> = (0..8)
+        .map(|n| runtime::reconnect_backoff(n).as_millis() as u64)
+        .collect();
+    assert_eq!(waits, [0, 500, 1000, 2000, 4000, 5000, 5000, 5000]);
+    assert_eq!(
+        runtime::reconnect_banner(Some(Duration::from_millis(1500))),
+        "connection lost · reconnecting (2s) · esc to leave"
+    );
+    assert_eq!(
+        runtime::reconnect_banner(Some(Duration::ZERO)),
+        "connection lost · reconnecting (1s) · esc to leave"
+    );
+    assert_eq!(
+        runtime::reconnect_banner(None),
+        "connection lost · reconnecting… · esc to leave"
+    );
+}
+
 #[test]
 fn workspace_picker_shows_every_runtime_in_the_same_folder() {
     let (mut a, _) = queued_app();

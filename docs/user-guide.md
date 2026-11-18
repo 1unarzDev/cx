@@ -153,6 +153,13 @@ the session too); Ctrl+\, Esc Esc or a tap outside the screen (the typing bar's
 Ctrl+], Ctrl+O, Escape and Ctrl+C go to the application. To send a literal Ctrl+\
 (SIGQUIT, nvim Ctrl+\ Ctrl+N), use the palette (`/`) → **Send Ctrl+\ to the last
 session**: it forwards one to the session you last detached from and re-attaches it.
+A dropped connection to a remote device does not leave the session: its last screen stays
+up with `connection lost · reconnecting (2s) · esc to leave` on the bottom row, and cx
+reattaches the same session by itself (at once, then after 0.5, 1, 2, 4 and every 5 s),
+over the device's warm SSH connection or a new one, on an address seen working when its
+name stops resolving. Esc gives up and returns to its tile; a session that ended
+meanwhile is reported. Terminal connections ride out about a minute of silence (ssh
+keepalives every 10 s, six missed) before they count as dropped.
 Attaching from a tile grows it to the full screen over at most 45 ms (it costs an attach at most about 40 ms) (ease-out, a thin
 edge outside it, the screen behind it dimmed). It shows the screen you are about to see,
 starting from the tail the tile showed, and lands on it cell for cell. The attach is

@@ -640,6 +640,8 @@ struct App {
     creating: bool,
     device_generation_floor: u64,
     providers: HashMap<usize, (Vec<String>, u64)>,
+    /// Why a device cannot move outside terminals into cx (its Info `adoption_unavailable`).
+    adoption_unavailable: HashMap<usize, String>,
     provider_loading: std::collections::HashSet<usize>,
     network: HashMap<usize, Value>,
     peer_checks: VecDeque<usize>,
@@ -844,6 +846,7 @@ impl App {
             creating: false,
             device_generation_floor: 0,
             providers: HashMap::new(),
+            adoption_unavailable: HashMap::new(),
             provider_loading: std::collections::HashSet::new(),
             network: HashMap::new(),
             peer_checks: VecDeque::new(),
@@ -964,6 +967,7 @@ impl App {
         self.container_selected = 0;
         self.file_locations.clear();
         self.providers.clear();
+        self.adoption_unavailable.clear();
         self.provider_loading.clear();
         self.network.clear();
         self.peer_evidence.clear();

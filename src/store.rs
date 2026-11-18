@@ -126,7 +126,7 @@ fn private_state_name(name: &str) -> Result<()> {
     anyhow::ensure!(
         matches!(
             name,
-            "session-pins.json" | "ui-navigation.json" | "edges.json"
+            "session-pins.json" | "ui-navigation.json" | "edges.json" | "addresses.json"
         ),
         "invalid private state name"
     );
@@ -153,6 +153,85 @@ fn write_state_at<T: Serialize>(dir: &Path, name: &str, value: &T, limit: usize)
     let bytes = serde_json::to_vec(value)?;
     anyhow::ensure!(bytes.len() <= limit, "private state exceeds limit");
     atomic_write(dir, name, &bytes)
+}
+
+/// Where a device has been seen answering, by SSH target: its last overlay (WARP,
+/// Tailscale) and LAN addresses from its own interfaces, and the fallback address that
+/// last worked when the target's own name did not, with the host name its key is
+/// pinned under (`HostKeyAlias`). Never networking or DNS configuration.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Addresses {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lan: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+}
+type AddressBook = std::collections::BTreeMap<String, Addresses>;
+static ADDRESSES: std::sync::Mutex<Option<(PathBuf, AddressBook)>> = std::sync::Mutex::new(None);
+/// A host name or IP literal (or a `[host]:port` key alias) fit for an `-o` value: no
+/// spaces, quotes, `%` or `@`.
+pub fn valid_address(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() < 254
+        && !s.starts_with('-')
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b".-:_[]".contains(&b))
+}
+fn with_addresses<T>(f: impl FnOnce(&mut AddressBook) -> T) -> T {
+    let dir = state_dir();
+    let mut cache = ADDRESSES.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.as_ref().is_none_or(|(d, _)| *d != dir) {
+        let book = read_state::<AddressBook>("addresses.json", 64 * 1024)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        *cache = Some((dir, book));
+    }
+    f(&mut cache.as_mut().expect("loaded").1)
+}
+/// What cx has seen of `target`'s addresses (empty when nothing).
+pub fn addresses(target: &str) -> Addresses {
+    with_addresses(|book| book.get(target).cloned().unwrap_or_default())
+}
+/// Change `target`'s address record; written only when it changed. Invalid addresses
+/// are dropped, and at most 256 targets are kept.
+pub fn update_addresses(target: &str, f: impl FnOnce(&mut Addresses)) -> Result<()> {
+    with_addresses(|book| {
+        let before = book.get(target).cloned().unwrap_or_default();
+        let mut next = before.clone();
+        f(&mut next);
+        for a in [
+            &mut next.overlay,
+            &mut next.lan,
+            &mut next.via,
+            &mut next.alias,
+        ] {
+            if a.as_deref().is_some_and(|a| !valid_address(a)) {
+                *a = None;
+            }
+        }
+        if next.via.is_none() || next.alias.is_none() {
+            next.via = None;
+            next.alias = None;
+        }
+        if next == before || (!book.contains_key(target) && book.len() >= 256) {
+            return Ok(());
+        }
+        if next == Addresses::default() {
+            book.remove(target);
+        } else {
+            book.insert(target.to_owned(), next);
+        }
+        write_state("addresses.json", &*book, 64 * 1024)
+    })
+}
+/// The fallback address `target` is reached on now, when its own name failed.
+pub fn via(target: &str) -> Option<String> {
+    addresses(target).via
 }
 
 pub fn session_pins() -> Result<Vec<SessionPin>> {
@@ -1004,11 +1083,34 @@ pub fn ssh(target: &str, interactive: bool) -> Result<std::process::Command> {
 }
 
 pub(crate) fn ssh_mode(target: &str, mode: SshMode) -> Result<std::process::Command> {
+    let a = addresses(target);
+    ssh_mode_via(target, mode, a.via.as_deref().zip(a.alias.as_deref()))
+}
+
+/// `ssh_mode`, reaching the device at `via = (address, alias)` instead of its target's
+/// own host name: the host key must be the one pinned for `alias` (the original host
+/// name, so the same known_hosts entry matches), strictly, never learned anew.
+pub(crate) fn ssh_mode_via(
+    target: &str,
+    mode: SshMode,
+    via: Option<(&str, &str)>,
+) -> Result<std::process::Command> {
     if !valid_target(target) {
         anyhow::bail!("invalid SSH target")
     };
     let interactive = mode == SshMode::Interactive;
     let mut c = std::process::Command::new("ssh");
+    if let Some((address, alias)) = via {
+        anyhow::ensure!(
+            valid_address(address) && valid_address(alias),
+            "invalid fallback address"
+        );
+        // First on the command line: these win over ~/.ssh/config and the managed
+        // endpoint options below.
+        c.arg("-o").arg(format!("HostName={address}"));
+        c.arg("-o").arg(format!("HostKeyAlias={alias}"));
+        c.args(["-o", "StrictHostKeyChecking=yes", "-o", "CheckHostIP=no"]);
+    }
     let mut managed = None;
     if let Some((identity, known_hosts)) = crate::peer_ssh::options(target)? {
         let (account, hostname) = target.split_once('@').context("invalid managed endpoint")?;
@@ -1304,6 +1406,61 @@ fn close_masters_in(dir: &std::path::Path, target: &str) -> usize {
 #[cfg(test)]
 mod control_tests {
     use super::*;
+    /// A remembered fallback address is used first on every ssh command for its target,
+    /// with the host key pinned under the original name, strictly; invalid addresses
+    /// are never stored and a fallback without its alias is no fallback.
+    #[test]
+    fn fallback_addresses_pin_the_original_host_key() {
+        isolate_test_state();
+        let t = "me@innovation.mesh.example.invalid";
+        update_addresses(t, |a| {
+            a.overlay = Some("100.96.0.12".into());
+            a.lan = Some("bad host;rm".into());
+        })
+        .unwrap();
+        assert_eq!(addresses(t).overlay.as_deref(), Some("100.96.0.12"));
+        assert_eq!(addresses(t).lan, None);
+        update_addresses(t, |a| a.via = Some("100.96.0.12".into())).unwrap();
+        assert_eq!(
+            via(t),
+            None,
+            "a fallback needs the name its key is pinned under"
+        );
+        let plain: Vec<String> = ssh_mode(t, SshMode::Background)
+            .unwrap()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(!plain.iter().any(|a| a.starts_with("HostName=")));
+        update_addresses(t, |a| {
+            a.via = Some("100.96.0.12".into());
+            a.alias = Some("innovation.mesh.example.invalid".into());
+        })
+        .unwrap();
+        // Remembered across a reload of the state file.
+        *ADDRESSES.lock().unwrap() = None;
+        assert_eq!(via(t).as_deref(), Some("100.96.0.12"));
+        let args: Vec<String> = ssh_mode(t, SshMode::Background)
+            .unwrap()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args[..8],
+            [
+                "-o",
+                "HostName=100.96.0.12",
+                "-o",
+                "HostKeyAlias=innovation.mesh.example.invalid",
+                "-o",
+                "StrictHostKeyChecking=yes",
+                "-o",
+                "CheckHostIP=no"
+            ]
+        );
+        assert_eq!(args.last().map(String::as_str), Some(t));
+        assert!(ssh_mode_via(t, SshMode::Background, Some(("a b", "x"))).is_err());
+    }
     #[test]
     fn control_paths_are_private_short_and_route_and_trust_specific() {
         let dir = std::path::Path::new("/home/someone/.local/state/cx/ssh");

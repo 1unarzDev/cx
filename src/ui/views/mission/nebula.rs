@@ -668,13 +668,17 @@ fn ev_w(cx: &Cx, v: &[(String, Style)]) -> i32 {
 fn evidence(cx: &Cx, d: &LabDevice, up: Option<&LabEdge>, linked: bool) -> Vec<(String, Style)> {
     let mut v = Vec::new();
     if !cx.up(d) {
-        let t = if d.status == DeviceStatus::Unknown {
+        let mut t = if d.status == DeviceStatus::Unknown {
             "not probed".to_string()
         } else if d.observed_secs == crate::ui::views::NEVER_SEEN {
             "never seen".to_string()
         } else {
             format!("seen {}", super::fmt::age(d.observed_secs))
         };
+        // Why, in a word, before when.
+        if !d.why.is_empty() {
+            t = format!("{} {} {t}", d.why, cx.g("·", "-"));
+        }
         v.push((t, cx.ink(Tok::Err, 0.8)));
         return v;
     }

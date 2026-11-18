@@ -270,6 +270,8 @@ fn establish_master(target: &str) -> MasterState {
                 sample.truncate(length);
                 return match classify_connection_failure(&sample) {
                     failure @ (ConnectionFailure::Unreachable
+                    | ConnectionFailure::Unresolved
+                    | ConnectionFailure::Refused
                     | ConnectionFailure::Authentication
                     | ConnectionFailure::HostKey) => MasterState::Failed(failure),
                     _ if master_alive(target) => MasterState::Ready,
@@ -692,6 +694,11 @@ impl Connection {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConnectionFailure {
+    /// The name does not resolve (DNS).
+    Unresolved,
+    /// The host answered, but nothing listens on its SSH port.
+    Refused,
+    /// No route, or the connect timed out.
     Unreachable,
     Authentication,
     HostKey,
@@ -709,11 +716,14 @@ fn classify_connection_failure(stderr: &[u8]) -> ConnectionFailure {
         || text.contains("sign_and_send_pubkey: signing failed")
     {
         ConnectionFailure::Authentication
+    } else if text.contains("Could not resolve hostname") {
+        ConnectionFailure::Unresolved
+    } else if text.contains("Connection refused") {
+        ConnectionFailure::Refused
     } else if [
         "No route to host",
-        "Connection refused",
         "Connection timed out",
-        "Could not resolve hostname",
+        "Operation timed out",
         "Network is unreachable",
     ]
     .iter()
@@ -731,8 +741,10 @@ fn classify_connection_failure(stderr: &[u8]) -> ConnectionFailure {
 impl std::fmt::Display for ConnectionFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Unreachable => "Device unreachable over SSH · check its connection, then Refresh",
-            Self::Authentication => "SSH access unavailable · unlock or authenticate, then Refresh",
+            Self::Unresolved => "Name does not resolve (DNS) · check its address, then Refresh",
+            Self::Refused => "SSH connection refused · check that its SSH server runs, then Refresh",
+            Self::Unreachable => "No route or connect timed out · check its connection, then Refresh",
+            Self::Authentication => "SSH authentication failed · unlock or authenticate, then Refresh",
             Self::HostKey => "SSH host identity could not be verified · review the host key before reconnecting",
             Self::MissingHelper => "cx helper unavailable on device · run cx add to repair enrollment",
             Self::Closed => "Session metadata connection closed · Refresh to reconnect; terminal state is unconfirmed",
@@ -948,6 +960,157 @@ pub fn list_pages(
     }
 }
 fn request_once(d: &Device, op: Operation, hover: bool) -> Result<serde_json::Value> {
+    let result = request_attempt(d, op, hover);
+    if let (Err(error), Some(target)) = (&result, &d.target) {
+        if matches!(
+            error.downcast_ref::<ConnectionFailure>(),
+            Some(
+                ConnectionFailure::Unresolved
+                    | ConnectionFailure::Refused
+                    | ConnectionFailure::Unreachable
+            )
+        ) {
+            find_fallback(d, target);
+        }
+    }
+    result
+}
+
+/// After `target` did not resolve or connect: in the background, try the addresses cx
+/// has seen the device answer on, in order: the user's ssh config resolution of its
+/// name and host, its last overlay address, its last LAN address, then `<host>.local`
+/// (mDNS). Each probe is a BatchMode `exit 0` that must present the host key pinned
+/// for the original host name (`HostKeyAlias`); the first that answers is remembered
+/// (`store::Addresses::via`) and every later connection uses it. A remembered address
+/// that fails is forgotten first. At most one search per target every 30 s; never
+/// changes networking or DNS configuration.
+fn find_fallback(d: &Device, target: &str) {
+    static SEARCHED: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    > = std::sync::LazyLock::new(Default::default);
+    {
+        let Ok(mut searched) = SEARCHED.lock() else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        searched.retain(|_, at| now.duration_since(*at) < std::time::Duration::from_secs(30));
+        if searched.contains_key(target) || searched.len() >= 64 {
+            return;
+        }
+        searched.insert(target.to_owned(), now);
+    }
+    let (target, name, host) = (target.to_owned(), d.name.clone(), d.host.clone());
+    let _ = std::thread::Builder::new()
+        .name("cx-ssh-fallback".into())
+        .spawn(move || {
+            let known = crate::store::addresses(&target);
+            let failed = known.via.clone();
+            if failed.is_some() {
+                let _ = crate::store::update_addresses(&target, |a| a.via = None);
+            }
+            let own = target.rsplit_once('@').map_or(target.as_str(), |(_, h)| h);
+            let own = own.trim_start_matches('[').trim_end_matches(']');
+            // The name its known_hosts entry is under, as OpenSSH writes it.
+            let alias = known
+                .alias
+                .clone()
+                .or_else(|| {
+                    let (host, port) = ssh_config(&target)?;
+                    Some(if port == "22" {
+                        host
+                    } else {
+                        format!("[{host}]:{port}")
+                    })
+                })
+                .unwrap_or_else(|| own.to_owned());
+            let short = host.split('.').next().unwrap_or("").to_owned();
+            let mut tried = vec![alias.clone(), own.to_owned()];
+            tried.extend(failed);
+            let configured = |n: &str| ssh_config(n).map(|(h, _)| h);
+            let candidates = [
+                configured(&name),
+                configured(&host),
+                known.overlay,
+                known.lan,
+                (!short.is_empty()).then(|| format!("{short}.local")),
+            ];
+            for address in candidates.into_iter().flatten() {
+                if tried.contains(&address) || !crate::store::valid_address(&address) {
+                    continue;
+                }
+                tried.push(address.clone());
+                if fallback_answers(&target, &address, &alias) {
+                    let _ = crate::store::update_addresses(&target, |a| {
+                        a.via = Some(address);
+                        a.alias = Some(alias);
+                    });
+                    return;
+                }
+            }
+        });
+}
+
+/// `ssh -G <name>`'s `hostname` and `port` (the user's own configuration, read-only;
+/// nothing is contacted). None for a name that is not a plain SSH destination.
+fn ssh_config(name: &str) -> Option<(String, String)> {
+    if !valid_target(name) {
+        return None;
+    }
+    let mut child = Command::new("ssh")
+        .args(["-G", name])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = stdout.take(256 * 1024).read_to_end(&mut out);
+        out
+    });
+    let finished = wait_bounded(&mut child, std::time::Duration::from_secs(2)) == Some(true);
+    let out = reader.join().ok()?;
+    if !finished {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out);
+    let field = |k: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(k).map(str::to_owned))
+    };
+    Some((
+        field("hostname ")?,
+        field("port ").unwrap_or_else(|| "22".into()),
+    ))
+}
+
+/// One BatchMode probe of `target` at `address`, its key checked as `alias`'s.
+fn fallback_answers(target: &str, address: &str, alias: &str) -> bool {
+    use std::os::unix::process::CommandExt;
+    let Ok(mut command) = crate::store::ssh_mode_via(
+        target,
+        crate::store::SshMode::Background,
+        Some((address, alias)),
+    ) else {
+        return false;
+    };
+    command
+        .arg("exit 0")
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    let pid = child.id() as i32;
+    let ok = wait_bounded(&mut child, std::time::Duration::from_secs(12)) == Some(true);
+    unsafe { libc::kill(-pid, libc::SIGKILL) };
+    ok
+}
+
+fn request_attempt(d: &Device, op: Operation, hover: bool) -> Result<serde_json::Value> {
     let Some(target) = &d.target else {
         return crate::dispatch(op);
     };
@@ -1009,6 +1172,7 @@ fn request_once(d: &Device, op: Operation, hover: bool) -> Result<serde_json::Va
             | Operation::ContainerProviders { .. }
             | Operation::Containers
             | Operation::Sessions
+            | Operation::ExternalSessions
             | Operation::ContainerFileAction { .. }
     ) {
         90
@@ -1815,6 +1979,18 @@ mod tests {
             (
                 "No route to host\nSYNTHETIC_SECRET",
                 ConnectionFailure::Unreachable,
+            ),
+            (
+                "ssh: connect to host h port 22: Connection timed out\nSYNTHETIC_SECRET",
+                ConnectionFailure::Unreachable,
+            ),
+            (
+                "ssh: Could not resolve hostname h: Name or service not known\nSYNTHETIC_SECRET",
+                ConnectionFailure::Unresolved,
+            ),
+            (
+                "ssh: connect to host h port 22: Connection refused\nSYNTHETIC_SECRET",
+                ConnectionFailure::Refused,
             ),
             (
                 "Permission denied (publickey).\nSYNTHETIC_SECRET",

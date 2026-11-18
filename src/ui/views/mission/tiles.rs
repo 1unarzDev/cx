@@ -426,7 +426,9 @@ pub(super) fn session_row(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pi
         let (p, ptok) = cx.prov(x);
         let mut x2 = r.x + 2;
         x2 += cx.put(buf, x2, r.y + 1, 7, p, cx.st(ptok)) + 1;
-        let cap = if ask {
+        let cap = if let Some(n) = &x.note {
+            note_line(cx, n.lines().next().unwrap_or(""))
+        } else if ask {
             format!("is asking {} open to answer", cx.g("·", "-"))
         } else {
             caption(x)
@@ -443,6 +445,44 @@ pub(super) fn session_row(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pi
     }
     cx.nav(r, format!("session:{}:{}", x.device, x.id));
     cx.hit(r, format!("tile:{}:{}", x.device, x.id));
+}
+
+fn note_line(cx: &Cx, line: &str) -> String {
+    if cx.uni() {
+        line.to_string()
+    } else {
+        line.replace('⏎', "Enter").replace('·', "-")
+    }
+}
+
+/// A tile's note (`LabSession::note`), one line per row from the top of `r`; returns
+/// the rows used. In ASCII, `⏎` reads `Enter`.
+pub(super) fn note(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession) -> u16 {
+    let Some(n) = &x.note else {
+        return 0;
+    };
+    let down =
+        cx.s.device(&x.device)
+            .is_some_and(|d| d.status == crate::ui::views::DeviceStatus::Down);
+    let st = if down {
+        cx.ink(Tok::Err, 0.85)
+    } else {
+        cx.st(Tok::Muted)
+    };
+    let mut rows = 0;
+    for line in n.lines().take(usize::from(r.height)) {
+        let line = note_line(cx, line);
+        cx.put(
+            buf,
+            r.x,
+            r.y + rows,
+            r.width,
+            &fit(&line, usize::from(r.width), cx.uni()),
+            st,
+        );
+        rows += 1;
+    }
+    rows
 }
 
 /// Session thumbnail: header (keys, title, state), the screen's live tail and a caption
@@ -483,7 +523,9 @@ pub(super) fn thumb_with(
     }
     hx += 1;
     let (g, word, sst) = cx.sstate(x);
-    let state = if x.state == crate::ui::views::SessionState::Idle {
+    let state = if x.external {
+        "outside cx".to_string()
+    } else if x.state == crate::ui::views::SessionState::Idle {
         format!("{word} {}", fmt::age(x.last_activity_secs))
     } else {
         word.to_string()
@@ -517,12 +559,16 @@ pub(super) fn thumb_with(
         r.height.saturating_sub(2),
     );
     if body.height > 0 {
-        let text = Rect::new(
+        let mut text = Rect::new(
             body.x + 1,
             body.y,
             body.width.saturating_sub(2),
             body.height,
         );
+        // Why there is no (current) screen, above whatever was last seen.
+        let shown = note(cx, buf, text, x);
+        text.y += shown;
+        text.height -= shown;
         screen_text(cx, buf, text, x, cx.c.has_color());
     }
     // Caption: provider, folder, activity and age.

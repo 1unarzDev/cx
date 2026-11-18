@@ -61,9 +61,17 @@ New Codex/Claude sessions offer **Default** (existing host permissions) or **YOL
 
 Backspace stops the selected CX-managed shell, Claude or Codex session after an inline question on its tile: a second Backspace stops it, any other key (Enter and `y` included) keeps it. The runtime identity captured when it asked is the one stopped. External tmux sessions are protected. Expanded sessions must be stopped from their terminal.
 
+### When a device cannot be reached
+
+A device CX cannot reach says why on its hub node, its strip and every one of its tiles, within the connect timeout: its name does not resolve (DNS), the connection was refused, no route or the connect timed out, its host key could not be verified, or SSH authentication failed, with when it was last seen. No tile waits blank.
+
+When a device's own name does not resolve or connect, CX tries addresses it has seen that device answer on, in order: your ssh config's `HostName` for the device's name or host (`ssh -G`, read-only), its last overlay address (WARP or Tailscale, from its own interfaces), its last LAN address, then `<host>.local` (mDNS). Each must present the host key already pinned for the original name (`HostKeyAlias`, strict checking; a different key is refused and never learned). The first that answers is remembered in `~/.local/state/cx/addresses.json` and shown quietly on the device (`via 100.96.0.12`); when it stops answering CX forgets it and searches again. CX never changes networking or DNS configuration.
+
 ### Moving terminals started outside CX
 
 A device's screen also shows your shells and Claude/Codex sessions that CX did not start. These include sessions in an ordinary terminal window, an SSH login, another tmux or screen server, a default-server tmux pane, or a `docker exec` client. Rows outside tmux end with where they live, such as `· terminal` or `· ssh`.
+
+Remote devices list them too: agent terminals outside CX's tmux appear as their own tiles marked `outside cx · ⏎ adopt`, with the agent, folder and age but no screen (CX cannot read a plain terminal's screen), and are not counted as managed sessions. When a device cannot move terminals yet, its tiles say exactly why; Enter then offers to install `cx-reptyr` there from the release assets.
 
 Press Enter on such a session to move it into CX. The terminal's processes keep running: the same PIDs, threads, child tools and in-progress work, with only where the terminal is shown changing. A move takes well under a second, and output continues during it. If the terminal was a single-window emulator, its now-empty window closes automatically; a multiplexer (tmux, screen) or a server emulator that drives other windows (gnome-terminal, konsole) is left alone, and you can close that window yourself. The moved row then appears once, as a managed CX session. Stopping it with Backspace, Backspace on its tile, exiting its shell, or `cx reset` ends it as it would end any CX session. Programs that ignore SIGTERM are not force-killed.
 

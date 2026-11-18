@@ -45,6 +45,11 @@ pub struct LabDevice {
     pub status: DeviceStatus,
     /// Evidence for the status, e.g. "14ms · 3s ago", "refused · 3h".
     pub evidence: String,
+    /// Why it cannot be reached, in a word ("dns", "refused", "timeout", "host key",
+    /// "auth"), for the map's quiet row; empty while it answers.
+    pub why: String,
+    /// The remembered address it is reached on because its own name failed.
+    pub via: Option<String>,
     pub observed_secs: u32,
     pub metrics: Option<Metrics>,
     /// Mesh ids this device belongs to.
@@ -167,6 +172,11 @@ pub struct LabSession {
     /// Screen snapshot as SGR-colored lines (see `lab::ansi_lines`).
     pub screen: Vec<String>,
     pub screen_cols: u16,
+    /// A terminal outside cx's tmux (shown for adoption, never counted as managed).
+    pub external: bool,
+    /// What the tile says instead of (or above) a screen: why its device cannot be
+    /// reached, or that cx cannot read an outside terminal's screen.
+    pub note: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

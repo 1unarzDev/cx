@@ -7322,3 +7322,154 @@ fn hidden_toggle_onto_a_folder_prefetches_its_listing() {
     });
     assert!(draw_text(&a).contains("No items"), "{}", draw_text(&a));
 }
+fn external_agent() -> Session {
+    serde_json::from_value(serde_json::json!({"id":"ext-0123456789abcdef","name":"claude · api","directory":"/home/peace/api","provider":"claude","host":"laptop","account":"peace","pid":4321,"started":"ext:12345","boot_id":"b","external":true,"socket":null,
+        "origin":{"kind":"terminal","tty":"/dev/pts/3","leader":{"pid":4321,"start_ticks":"12345"},"holder":null}})).unwrap()
+}
+fn reply(a: &App, device: usize, op: Operation, result: Result<Value>) -> Reply {
+    Reply {
+        device_id: None,
+        execution_target: None,
+        device,
+        generation: a.generation,
+        op,
+        preview: None,
+        result,
+    }
+}
+fn draw_h(a: &App, w: u16, h: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+    terminal.draw(|f| render(f, a)).unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content
+        .chunks(w as usize)
+        .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A remote device's outside-tmux agent terminals are tiles of their own, listed as soon
+/// as its Info says it can adopt them: marked outside cx, with how Enter adopts them (or
+/// exactly why it cannot), no screen, and never counted as managed sessions.
+#[test]
+fn remote_outside_terminals_are_marked_tiles_not_managed_sessions() {
+    let (mut a, rx) = queued_app();
+    a.providers.remove(&1);
+    let _ = rx.try_iter().count();
+    let info = |caps: &[&str], why: Option<&str>| serde_json::json!({"capabilities": caps, "adoption_unavailable": why});
+    a.apply(reply(
+        &a,
+        1,
+        Operation::Info,
+        Ok(info(
+            &["claude", "adopt-session-v1"],
+            Some("install cx-reptyr (cx device ptrace enable) to move terminals"),
+        )),
+    ));
+    assert!(rx
+        .try_iter()
+        .any(|t| t.device == 1 && matches!(t.op, Operation::ExternalSessions)));
+    a.apply(reply(&a, 1, Operation::Sessions, Ok(serde_json::json!([]))));
+    a.apply(reply(
+        &a,
+        1,
+        Operation::ExternalSessions,
+        Ok(serde_json::json!([external_agent()])),
+    ));
+    let vm = viewmodel::ViewModel::from(&a);
+    let tile = vm.state.sessions_on("1").next().unwrap();
+    assert!(tile.external);
+    a.open_device(1);
+    let screen = draw_h(&a, 120, 30);
+    assert!(screen.contains("outside cx"), "{screen}");
+    assert!(screen.contains("installs cx-reptyr"), "{screen}");
+    assert!(screen.contains("no preview"), "{screen}");
+    assert!(screen.contains("0 sessions listed"), "{screen}");
+    // A relay in place: Enter adopts.
+    a.apply(reply(
+        &a,
+        1,
+        Operation::Info,
+        Ok(info(
+            &["claude", "adopt-session-v1", "adopt-reptyr-v1"],
+            None,
+        )),
+    ));
+    assert!(draw_h(&a, 120, 30).contains("outside cx · ⏎ adopt"));
+    // No relay can help (ptrace disabled): exactly why.
+    a.apply(reply(
+        &a,
+        1,
+        Operation::Info,
+        Ok(info(
+            &["claude", "adopt-session-v1"],
+            Some("ptrace is disabled on this host (Yama scope 3)"),
+        )),
+    ));
+    assert!(draw_h(&a, 120, 30).contains("cannot adopt: ptrace is disabled"));
+}
+
+/// Whichever request finds a remote device unreachable (a vitals sample, a screen
+/// read), the device and every tile of it say why and when it was last seen; a screen
+/// read that only timed out (a slow link) is not that evidence.
+#[test]
+fn unreachable_devices_say_why_on_every_tile() {
+    let (mut a, _rx) = queued_app();
+    a.apply(reply(
+        &a,
+        1,
+        Operation::Sessions,
+        Ok(serde_json::json!([disposable_shell()])),
+    ));
+    a.apply(reply(
+        &a,
+        1,
+        Operation::Metrics,
+        Err(anyhow::Error::new(transport::ConnectionFailure::Timeout)),
+    ));
+    assert!(a.work[1].error.is_none());
+    a.apply(reply(
+        &a,
+        1,
+        Operation::Metrics,
+        Err(anyhow::Error::new(transport::ConnectionFailure::Unresolved)),
+    ));
+    assert!(a.work[1].error.is_some());
+    let vm = viewmodel::ViewModel::from(&a);
+    let d = vm.state.device("1").unwrap();
+    assert_eq!(d.status, views::DeviceStatus::Down);
+    assert_eq!(d.why, "dns");
+    assert!(
+        d.evidence
+            .starts_with("Name does not resolve (DNS) · last seen"),
+        "{}",
+        d.evidence
+    );
+    let tile = vm.state.sessions_on("1").next().unwrap();
+    assert!(tile
+        .note
+        .as_deref()
+        .unwrap()
+        .contains("Name does not resolve"));
+    a.open_device(1);
+    let screen = draw_h(&a, 120, 30);
+    assert!(
+        screen.contains("Name does not resolve (DNS) · last seen"),
+        "{screen}"
+    );
+    a.go_hub();
+    assert!(draw_h(&a, 120, 40).contains("dns · seen"));
+    // Each failure says its own reason.
+    for (kind, word) in [
+        (transport::ConnectionFailure::Refused, "refused"),
+        (transport::ConnectionFailure::Unreachable, "timeout"),
+        (transport::ConnectionFailure::HostKey, "host key"),
+        (transport::ConnectionFailure::Authentication, "auth"),
+    ] {
+        a.work[1].error = None;
+        a.apply(reply(&a, 1, Operation::Info, Err(anyhow::Error::new(kind))));
+        assert_eq!(viewmodel::ViewModel::from(&a).state.devices[1].why, word);
+    }
+}

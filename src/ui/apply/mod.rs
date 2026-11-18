@@ -6,6 +6,31 @@ mod sessions;
 use super::*;
 
 impl App {
+    /// A remote device that cannot be reached says why at once, whichever request found
+    /// out (a screen read, a vitals sample, its capabilities), so no tile of it waits
+    /// blank for its listing to time out. A screen read or sample that only timed out on
+    /// a slow link is not evidence of that; its listing decides.
+    fn note_unreachable(&mut self, reply: &Reply) {
+        let Err(e) = &reply.result else {
+            return;
+        };
+        let Some(kind) = e.downcast_ref::<transport::ConnectionFailure>().copied() else {
+            return;
+        };
+        let interactive = transport::channel_class(&reply.op) == transport::Channel::Interactive;
+        if kind == transport::ConnectionFailure::Closed
+            || (interactive && kind == transport::ConnectionFailure::Timeout)
+            || matches!(reply.op, Operation::Sessions)
+            || self.devices[reply.device].target.is_none()
+            || self.work[reply.device].error.is_some()
+        {
+            return;
+        }
+        self.work[reply.device].error = Some(safe_text(&format!(
+            "{}: {kind}",
+            identity(&self.devices[reply.device])
+        )));
+    }
     pub(super) fn apply(&mut self, mut reply: Reply) {
         // A highlight follow-up is not a request of its own.
         let highlight = reply
@@ -52,6 +77,7 @@ impl App {
             self.apply_highlight_reply(reply);
             return;
         }
+        self.note_unreachable(&reply);
         if let Operation::SessionPaneInput {
             pane_id, session, ..
         } = &reply.op

@@ -80,6 +80,8 @@ fn dev(
         host: format!("{id}.lab.invalid"),
         status,
         evidence: evidence.into(),
+        why: String::new(),
+        via: None,
         observed_secs: observed,
         metrics: m,
         meshes: meshes.iter().map(|s| s.to_string()).collect(),
@@ -277,6 +279,8 @@ fn session(
         unread: false,
         screen,
         screen_cols: 80,
+        external: false,
+        note: None,
     }
 }
 

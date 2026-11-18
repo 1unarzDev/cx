@@ -314,6 +314,12 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
         if x + 10 < stop {
             x += cx.put(buf, x, y, 12, &format!("up {}", m.uptime), lab) + 2;
         }
+        if let Some(v) = d.via.as_ref() {
+            let t = format!("via {v}");
+            if x + super::width(&t, cx.uni()) + 2 <= stop {
+                x += cx.put(buf, x, y, super::width(&t, cx.uni()), &t, lab) + 2;
+            }
+        }
     } else {
         x += cx.put(
             buf,

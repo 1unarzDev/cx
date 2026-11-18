@@ -189,7 +189,8 @@ fn status(app: &App, d: usize) -> (DeviceStatus, String, u32) {
         u32::try_from(transport::now().saturating_sub(last)).unwrap_or(u32::MAX - 1)
     };
     let listed = || {
-        let n = w.sessions.len();
+        // Outside terminals are offered for adoption, not managed sessions.
+        let n = w.sessions.iter().filter(|s| !outside_tmux(s)).count();
         // Within the refresh's own minute it says "just now": a seconds counter would
         // redraw an idle screen every second.
         let when = if age < 60 {
@@ -203,7 +204,16 @@ fn status(app: &App, d: usize) -> (DeviceStatus, String, u32) {
         format!("{n} session{} listed {when}", if n == 1 { "" } else { "s" })
     };
     if let Some(e) = &w.error {
-        return (DeviceStatus::Down, safe_label(e), secs);
+        let seen = if last == 0 {
+            "never seen".to_string()
+        } else {
+            format!("last seen {} ago", super::views::fmt::age(secs))
+        };
+        return (
+            DeviceStatus::Down,
+            format!("{} · {seen}", safe_label(reason(e))),
+            secs,
+        );
     }
     if w.fetched == 0 {
         let word = if w.loading {
@@ -250,6 +260,15 @@ fn devices(app: &App) -> Vec<LabDevice> {
             if d.target.is_some() && app.device_policy(i).access == store::AccessMode::Directed {
                 evidence.push_str(" · single-direction");
             }
+            // Reached on a remembered address because its own name failed: said quietly.
+            let via = d
+                .target
+                .as_deref()
+                .and_then(store::via)
+                .map(|v| safe_label(&v));
+            if let Some(v) = &via {
+                evidence.push_str(&format!(" · via {v}"));
+            }
             let vitals = app.vitals.get(&d.id);
             // The link as measured: last round trip, its jitter and any loss.
             if let Some((Some(ms), _, loss, jitter)) = vitals.map(|v| v.link()) {
@@ -271,6 +290,13 @@ fn devices(app: &App) -> Vec<LabDevice> {
                 host: safe_label(&d.host),
                 status,
                 evidence,
+                why: app.work[i]
+                    .error
+                    .as_deref()
+                    .map(short_reason)
+                    .unwrap_or_default()
+                    .into(),
+                via,
                 observed_secs,
                 // Live figures only while the device answers.
                 metrics: vitals
@@ -502,7 +528,26 @@ fn sessions(app: &App) -> Vec<LabSession> {
             if s.container.is_some() && s.provider == "shell" {
                 title = format!("{title} · {}", menus::session_label(app, d, s));
             }
+            let external = outside_tmux(s);
+            let note = if app.work[d].error.is_some() {
+                Some(status(app, d).1)
+            } else if external {
+                Some(external_note(app, d))
+            } else {
+                None
+            };
+            // An outside terminal's age (it has no tmux activity clock): its start on the
+            // device's own uptime clock.
+            let age = external
+                .then(|| {
+                    let ticks: u64 = s.started.strip_prefix("ext:")?.parse().ok()?;
+                    let up = app.vitals.get(&app.devices[d].id)?.uptime_now()?;
+                    Some(up.saturating_sub(ticks / 100).min(u64::from(u32::MAX)) as u32)
+                })
+                .flatten();
             out.push(LabSession {
+                external,
+                note,
                 title,
                 device: dev_id(d),
                 provider: match s.provider.as_str() {
@@ -522,8 +567,9 @@ fn sessions(app: &App) -> Vec<LabSession> {
                     ))
                 },
                 command: safe_label(&s.provider),
-                last_activity_secs: s.idle_seconds.unwrap_or(0).min(u64::from(u32::MAX)) as u32,
-                age_secs: 0,
+                last_activity_secs: age
+                    .unwrap_or(s.idle_seconds.unwrap_or(0).min(u64::from(u32::MAX)) as u32),
+                age_secs: age.unwrap_or(0),
                 activity: app
                     .session_list
                     .levels(&app.devices[d], s, transport::now()),
@@ -536,6 +582,51 @@ fn sessions(app: &App) -> Vec<LabSession> {
         }
     }
     out
+}
+
+/// What an outside terminal's tile says: how Enter adopts it into cx (or exactly why it
+/// cannot yet), and why there is no screen.
+fn external_note(app: &App, d: usize) -> String {
+    let caps = app
+        .providers
+        .get(&d)
+        .map(|(caps, _)| caps.as_slice())
+        .unwrap_or(&[]);
+    let has = |c: &str| caps.iter().any(|x| x == c);
+    let action = if has("adopt-reptyr-v1") {
+        "outside cx · ⏎ adopt".to_string()
+    } else if has("adopt-session-v1") {
+        match app.adoption_unavailable.get(&d) {
+            // (Yama scope 3: no relay can help; say so instead of offering one.)
+            Some(why) if !why.contains("install") => format!("outside cx · cannot adopt: {why}"),
+            _ => "outside cx · ⏎ installs cx-reptyr (release asset) to adopt".to_string(),
+        }
+    } else if caps.is_empty() {
+        "outside cx · checking whether it can be adopted".to_string()
+    } else {
+        "outside cx · update cx on this device to adopt".to_string()
+    };
+    format!("{action}\nno preview: cx cannot read a plain terminal's screen")
+}
+
+/// A failure in a word, for the map's quiet row under a device.
+fn short_reason(e: &str) -> &'static str {
+    let e = e.to_ascii_lowercase();
+    if e.contains("does not resolve") {
+        "dns"
+    } else if e.contains("refused") {
+        "refused"
+    } else if e.contains("timed out") {
+        "timeout"
+    } else if e.contains("host identity") || e.contains("host key") {
+        "host key"
+    } else if e.contains("authentication") {
+        "auth"
+    } else if e.contains("helper unavailable") {
+        "no helper"
+    } else {
+        "down"
+    }
 }
 
 /// A session's folder with its home as `~`: this host's $HOME, or the account's usual

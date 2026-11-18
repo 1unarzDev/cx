@@ -54,8 +54,28 @@ impl App {
                             .collect()
                     })
                     .unwrap_or_default();
+                let adopt = |caps: &Vec<String>| caps.iter().any(|c| c == "adopt-session-v1");
+                // Outside terminals are listed as soon as the device says it can move them,
+                // not at the next fleet refresh.
+                let first_adopt = adopt(&available)
+                    && !self
+                        .providers
+                        .get(&reply.device)
+                        .is_some_and(|(caps, _)| adopt(caps));
+                match value["adoption_unavailable"].as_str() {
+                    Some(why) => {
+                        self.adoption_unavailable
+                            .insert(reply.device, safe_text(why));
+                    }
+                    None => {
+                        self.adoption_unavailable.remove(&reply.device);
+                    }
+                }
                 self.providers
                     .insert(reply.device, (available, transport::now()));
+                if first_adopt {
+                    self.send(reply.device, Operation::ExternalSessions);
+                }
                 if self
                     .pending_adoption
                     .as_ref()
@@ -132,8 +152,13 @@ impl App {
                                 .filter(is_discovered_external),
                         );
                         self.work[reply.device].sessions = s;
-                        self.work[reply.device].error = None;
+                        let recovered = self.work[reply.device].error.take().is_some();
                         self.work[reply.device].fetched = transport::now();
+                        // Back after an outage (its capabilities check failed with it): ask
+                        // now, so its outside terminals and vitals follow at once.
+                        if recovered && !self.providers.contains_key(&reply.device) {
+                            self.check_providers(reply.device);
+                        }
                         self.session_list.record(
                             &self.devices[reply.device],
                             &self.work[reply.device].sessions,

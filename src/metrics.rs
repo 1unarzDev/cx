@@ -106,6 +106,35 @@ fn disk() -> Option<f32> {
     Some(1.0 - s.f_bavail as f32 / s.f_blocks as f32)
 }
 
+/// This host's IPv4 interface addresses (loopback excluded, at most 16) as
+/// `{"if", "addr"}`: what a viewer remembers to reach it by when its name fails.
+fn addresses() -> Vec<Value> {
+    let mut out = Vec::new();
+    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: getifaddrs fills a list freed below; entries are read-only views.
+    if unsafe { libc::getifaddrs(&mut list) } != 0 {
+        return out;
+    }
+    let mut at = list;
+    while !at.is_null() && out.len() < 16 {
+        let entry = unsafe { &*at };
+        at = entry.ifa_next;
+        if entry.ifa_addr.is_null()
+            || i32::from(unsafe { (*entry.ifa_addr).sa_family }) != libc::AF_INET
+        {
+            continue;
+        }
+        let sin = unsafe { &*(entry.ifa_addr as *const libc::sockaddr_in) };
+        let ip = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+        let name = unsafe { std::ffi::CStr::from_ptr(entry.ifa_name) };
+        if !ip.is_loopback() {
+            out.push(json!({"if": crate::files::display(&name.to_string_lossy()), "addr": ip.to_string()}));
+        }
+    }
+    unsafe { libc::freeifaddrs(list) };
+    out
+}
+
 pub fn read_all() -> Value {
     let stat = read("proc/stat");
     let cores = stat
@@ -138,6 +167,7 @@ pub fn read_all() -> Value {
         "disk": disk(),
         "os": crate::files::display(&os(&release)),
         "arch": std::env::consts::ARCH,
+        "addrs": addresses(),
     })
 }
 

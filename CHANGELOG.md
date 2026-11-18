@@ -4,6 +4,15 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.3.3
+
+A hotfix on v0.3.2.
+
+### Fixes
+- **An unreachable device says why, at once.** Its hub node, its strip and every one of its tiles name the reason (its name does not resolve, connection refused, no route or timed out, host key, authentication) and when it was last seen, within the connect timeout, whichever request found out. No tile stays blank and loading.
+- **Devices are reached on addresses seen working.** When a device's own name does not resolve or connect, cx tries, in order, your ssh config's `HostName` for its name, its last overlay (WARP, Tailscale) and LAN addresses from its own interfaces, then `<host>.local`. Each must present the host key already pinned for the original name (strict `HostKeyAlias`), and the one that answers is remembered and shown quietly on the device (`via 100.96.0.12`). cx never changes networking or DNS.
+- **Outside terminals on remote devices.** Agent terminals running outside cx's tmux on another device now appear on its screen and the hub as tiles marked `outside cx · ⏎ adopt`, with their agent, folder and age; Enter moves them into cx, or the tile says exactly why it cannot yet. They are not counted as managed sessions.
+
 ## v0.3.2
 
 A hotfix on v0.3.1.

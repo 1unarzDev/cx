@@ -129,6 +129,7 @@ SSH=(
     "enrollment_ssh|sshd|."
     "robot_enrollment|sshd|"
     "hub_matrix|userns pyte pillow|BIN --jobs 3"
+    "address_fallback_pty|sshd userns pyte|BIN"
 )
 DOCKER=(
     "containers_live|docker|BIN"

@@ -96,6 +96,19 @@ impl App {
     /// The background observation landed: meshes, and this host's lan candidates as
     /// the network view keeps them (the hub's lan evidence).
     pub(super) fn topology(&mut self, meshes: Vec<Mesh>, lan: Option<Value>) {
+        // A member's overlay address is where its device can be reached when its name fails.
+        for m in &meshes {
+            for x in &m.members {
+                if let (Some(d), Some(ip)) = (
+                    member_device(&self.devices, x),
+                    x.overlay_ipv4.as_deref().filter(|ip| overlay_ip(ip)),
+                ) {
+                    if let Some(t) = &self.devices[d].target {
+                        let _ = store::update_addresses(t, |a| a.overlay = Some(ip.into()));
+                    }
+                }
+            }
+        }
         self.meshes = meshes;
         if let Some(lan) = lan {
             let local = self.local_index();
@@ -109,7 +122,8 @@ impl App {
     }
 
     pub(super) fn vitals_replied(&mut self, d: usize, result: Result<Value>) {
-        let remote = self.devices[d].target.is_some();
+        let target = self.devices[d].target.clone();
+        let remote = target.is_some();
         let v = self.vitals.entry(self.devices[d].id.clone()).or_default();
         v.inflight = false;
         let Ok(sample) = result else {
@@ -120,6 +134,15 @@ impl App {
         };
         if remote {
             push(&mut v.rtt, sample["rtt_ms"].as_f64().map(|ms| ms as f32));
+            if let Some(t) = &target {
+                let (overlay, lan) = own_addresses(&sample["addrs"]);
+                if overlay.is_some() || lan.is_some() {
+                    let _ = store::update_addresses(t, |a| {
+                        a.overlay = overlay.or(a.overlay.take());
+                        a.lan = lan.or(a.lan.take());
+                    });
+                }
+            }
         }
         let cpu = sample["cpu"]
             .as_array()
@@ -136,6 +159,38 @@ impl App {
         v.sample = sample;
         v.at = transport::now();
     }
+}
+
+/// WARP (100.96/12) and Tailscale (100.64/10) addresses share the CGNAT range.
+fn overlay_ip(ip: &str) -> bool {
+    ip.parse::<std::net::Ipv4Addr>()
+        .is_ok_and(|ip| ip.octets()[0] == 100 && ip.octets()[1] & 0xc0 == 64)
+}
+
+/// A device's own overlay and LAN addresses from its metrics sample's interfaces
+/// (container and VM bridges are not its LAN).
+fn own_addresses(addrs: &Value) -> (Option<String>, Option<String>) {
+    let rows: Vec<(&str, &str)> = addrs
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|a| Some((a["if"].as_str()?, a["addr"].as_str()?)))
+        .collect();
+    let overlay = rows.iter().find(|(_, ip)| overlay_ip(ip));
+    let lan = rows.iter().find(|(name, ip)| {
+        ![
+            "docker", "br-", "veth", "virbr", "cni", "flannel", "podman", "lxc",
+        ]
+        .iter()
+        .any(|p| name.starts_with(p))
+            && ip
+                .parse::<std::net::Ipv4Addr>()
+                .is_ok_and(|ip| ip.is_private())
+    });
+    (
+        overlay.map(|(_, ip)| (*ip).to_owned()),
+        lan.map(|(_, ip)| (*ip).to_owned()),
+    )
 }
 
 /// `4d 2h`, `3h 12m`, `45m`.
@@ -176,6 +231,11 @@ impl Vitals {
             disk: s["disk"].as_f64().unwrap_or(0.0) as f32,
             uptime: s["uptime_secs"].as_u64().map(uptime).unwrap_or_default(),
         })
+    }
+    /// The device's uptime now, from its last sample (seconds).
+    pub(super) fn uptime_now(&self) -> Option<u64> {
+        let up = self.sample["uptime_secs"].as_u64()?;
+        Some(up + transport::now().saturating_sub(self.at))
     }
     /// `ubuntu 22.04 aarch64`, from the last sample.
     pub(super) fn os(&self) -> String {
@@ -660,6 +720,21 @@ mod tests {
             Some(0)
         );
         assert_eq!(mesh_route(&[mesh], &devices[2]), None);
+    }
+
+    #[test]
+    fn own_addresses_are_the_overlay_and_a_real_lan() {
+        let addrs = serde_json::json!([
+            {"if":"docker0","addr":"172.17.0.1"},
+            {"if":"enp5s0","addr":"192.168.1.20"},
+            {"if":"CloudflareWARP","addr":"100.96.0.12"},
+            {"if":"tailscale0","addr":"100.64.3.4"}]);
+        assert_eq!(
+            own_addresses(&addrs),
+            (Some("100.96.0.12".into()), Some("192.168.1.20".into()))
+        );
+        assert!(overlay_ip("100.127.255.1") && !overlay_ip("100.128.0.1") && !overlay_ip("x"));
+        assert_eq!(own_addresses(&serde_json::json!(null)), (None, None));
     }
 
     #[test]

@@ -922,7 +922,27 @@ fn device_header(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
                 cx.st(Tok::Muted),
             );
         } else if d.meshes.is_empty() {
-            cx.put(buf, mx, y, iw, "no mesh · direct ssh", cx.st(Tok::Muted));
+            let t = match &d.via {
+                Some(v) => format!("no mesh · ssh via {v}"),
+                None => "no mesh · direct ssh".into(),
+            };
+            cx.put(
+                buf,
+                mx,
+                y,
+                iw,
+                &fit(&t, iw as usize, cx.uni()),
+                cx.st(Tok::Muted),
+            );
+        } else if let Some(v) = &d.via {
+            cx.put(
+                buf,
+                mx,
+                y,
+                iw.saturating_sub(mx - ix),
+                &format!("via {v}"),
+                cx.st(Tok::Muted),
+            );
         }
     }
     // Metrics block.
@@ -3219,7 +3239,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                             "attach session 1-4"
                         },
                     ),
-                    (k(key("⏎")), "attach the selection"),
+                    (k(key("⏎")), "attach (adopt one outside cx)"),
                     (k(key("␣")), "peek"),
                     (k(key("⌫")), "stop (press twice)"),
                     (k("w p t"), "watch / pin / its tasks"),

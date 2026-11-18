@@ -257,8 +257,25 @@ fn user_reptyr() -> Option<PathBuf> {
     (version(&path).as_deref() == Some(REPTYR_VERSION)).then_some(path)
 }
 
+/// The host's Yama ptrace scope (None without Yama: classic same-user ptrace).
+pub fn ptrace_scope() -> Option<u8> {
+    fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope")
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Why this host needs cx-reptyr with cap_sys_ptrace (or sudo) to move a terminal.
+pub fn scope_note() -> String {
+    match ptrace_scope() {
+        Some(n) => format!("kernel.yama.ptrace_scope={n}"),
+        None => "ptrace of another process tree".into(),
+    }
+}
+
 /// Locate a relay and the privilege it needs, or say why none is usable.
-pub fn reptyr() -> Result<Relay, &'static str> {
+pub fn reptyr() -> Result<Relay, String> {
     // Debug builds accept a fixture relay so tests never need host privilege.
     #[cfg(debug_assertions)]
     if let Some(path) = std::env::var_os("CX_ADOPT_REPTYR") {
@@ -268,10 +285,14 @@ pub fn reptyr() -> Result<Relay, &'static str> {
                 path,
                 privilege: Privilege::Capability,
             })
-            .ok_or("fixture cx-reptyr version mismatch");
+            .ok_or_else(|| "fixture cx-reptyr version mismatch".to_string());
     }
-    if fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope").is_ok_and(|s| s.trim() == "3") {
-        return Err("ptrace is disabled on this host (Yama scope 3)");
+    if ptrace_scope() == Some(3) {
+        return Err(
+            "ptrace is disabled here (kernel.yama.ptrace_scope=3 holds until reboot): \
+                    an admin must set it to 1 in /etc/sysctl.d and reboot"
+                .into(),
+        );
     }
     let path = PathBuf::from(REPTYR_PATH);
     // A root-owned capability install needs no prompt. Any ancestor being
@@ -298,7 +319,12 @@ pub fn reptyr() -> Result<Relay, &'static str> {
             path,
             privilege: Privilege::Sudo,
         })
-        .ok_or("install cx-reptyr (cx device ptrace enable) to move terminals")
+        .ok_or_else(|| {
+            format!(
+                "{} needs cx-reptyr with cap_sys_ptrace: install it once with one sudo password",
+                scope_note()
+            )
+        })
 }
 fn version(path: &Path) -> Option<String> {
     use std::{io::Read, os::fd::AsRawFd, os::unix::process::CommandExt, process::Stdio};
@@ -461,6 +487,18 @@ pub fn close_empty_holder(holder: &ProcessIdentity, kind: &str) -> bool {
 /// Whether `pid` or any descendant holds the master of `index`. A sudo relay's
 /// pane child is `sudo`, with cx-reptyr (holding the master) beneath it.
 pub fn descendant_holds_master(pid: u32, index: u32) -> bool {
+    any_descendant(pid, |p| masters(Path::new("/proc"), p).contains(&index))
+}
+
+/// Whether `pid` or any descendant runs `exe` (sudo has handed over to the relay).
+pub fn descendant_runs(pid: u32, exe: &Path) -> bool {
+    let exe = fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
+    any_descendant(pid, |p| {
+        executable(Path::new("/proc"), p).as_ref() == Some(&exe)
+    })
+}
+
+fn any_descendant(pid: u32, f: impl Fn(u32) -> bool) -> bool {
     let root = Path::new("/proc");
     let mut stack = vec![pid];
     let mut seen = 0;
@@ -469,7 +507,7 @@ pub fn descendant_holds_master(pid: u32, index: u32) -> bool {
         if seen > 64 {
             break;
         }
-        if masters(root, current).contains(&index) {
+        if f(current) {
             return true;
         }
         if let Ok(children) =

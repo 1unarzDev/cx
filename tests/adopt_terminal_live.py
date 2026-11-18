@@ -97,6 +97,8 @@ while True:
 '''
 
 checks = []
+# Per-phase milliseconds of each move (the helper prints them with CX_ADOPT_TIMINGS).
+timings = []
 
 
 def stat(pid):
@@ -178,6 +180,8 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-') as temporary:
         wire = b'CX1 ' + str(len(request)).encode() + b'\n' + request
         result = subprocess.run([binary, 'helper'], input=wire, env=env, capture_output=True, timeout=30)
         assert result.returncode == 0, result.stderr.decode()
+        timings.extend(l.split()[1:] for l in result.stderr.decode().splitlines()
+                       if l.startswith('adopt-phase '))
         header, data = result.stdout.split(b'\n', 1)
         assert header == b'CX1 ' + str(len(data)).encode(), result.stdout
         return json.loads(data)
@@ -323,7 +327,7 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-') as temporary:
         assert not leftovers, leftovers
         assert not [n for n in os.listdir(root) if n.endswith(('.adopt', '.tmp'))], os.listdir(root)
         checks.append('no leftover agents, relays or temporary adoption files')
-        print(json.dumps(dict(result='PASS', checks=checks)))
+        print(json.dumps(dict(result='PASS', checks=checks, timings=timings)))
     finally:
         for process in emulators:
             process.kill()

@@ -1778,7 +1778,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             }
             dirty = true;
         }
-        if let Some(d) = app.pending_ptrace.take() {
+        if let Some((d, session)) = app.pending_ptrace.take() {
             cleanup_native_preview(&mut screen, &mut native_preview)?;
             let device = app.devices[d].clone();
             let name = if device.target.is_none() {
@@ -1796,13 +1796,19 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             screen.resume()?;
             last_interaction = Instant::now();
             match result {
-                Ok(_) => {
+                Ok(status) if status["adoption"] == "enabled (no prompt)" => {
+                    // The move continues by itself once the device reports the relay.
                     app.providers.remove(&d);
-                    app.check_providers(d);
-                    app.set_notice(
-                        "Terminal moving is set up · select the terminal again to move it".into(),
-                    );
+                    app.provider_loading.remove(&d);
+                    app.adopt_external_session(d, session);
                 }
+                Ok(status) => app.set_notice_as(
+                    NoticeKind::Error,
+                    safe_text(&format!(
+                        "Setup finished but moving is still unavailable: {}",
+                        status["reason"].as_str().unwrap_or("relay not verified")
+                    )),
+                ),
                 Err(e) => app.set_notice_as(
                     NoticeKind::Error,
                     safe_text(&format!("Setup did not complete: {e:#}")),

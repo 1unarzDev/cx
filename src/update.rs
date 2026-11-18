@@ -949,13 +949,23 @@ pub fn obtain_reptyr_binary(arch: &str, version: &str) -> Result<EnrollmentBinar
     numeric(version)?;
     let (home, state) = paths()?;
     let root = state_dir(&home, &state)?;
-    let url = format!("https://github.com/{REPO}/releases/download/v{version}/cx-reptyr-v{version}-linux-{arch}.tar.gz");
-    let (stage, binary) = match download_verified_member(
-        root.child("tools", true)?,
-        &url,
-        &Backend::system(),
-        "cx-reptyr",
-    )? {
+    let backend = Backend::system();
+    let fetch = |version: &str| {
+        let url = format!("https://github.com/{REPO}/releases/download/v{version}/cx-reptyr-v{version}-linux-{arch}.tar.gz");
+        download_verified_member(root.child("tools", true)?, &url, &backend, "cx-reptyr")
+    };
+    let mut outcome = fetch(version)?;
+    // The relay is pinned apart from cx (REPTYR_VERSION, verified where it is
+    // installed): a viewer whose own version is not published (a hotfix deployed
+    // before its release, a local build) takes it from the latest signed release.
+    if matches!(outcome, ArtifactOutcome::Unavailable(_)) {
+        if let ReleaseLookup::Found(latest, _) = latest_release(arch, None, &backend)? {
+            if latest != version {
+                outcome = fetch(&latest)?;
+            }
+        }
+    }
+    let (stage, binary) = match outcome {
         ArtifactOutcome::Ready(stage, binary) => (stage, binary),
         ArtifactOutcome::Offline => {
             bail!("cx-reptyr download unavailable; retry when this viewer is online")

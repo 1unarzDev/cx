@@ -1,6 +1,6 @@
 //! Screens: hub, device, session peek, files, preview, palette, keys, onboarding, join,
 //! link policy and help. Each is a plain function over the shared `Cx`.
-use super::{fit, fmt, inset, orbit, tiles, Cx, Size, SLOTS};
+use super::{fit, fmt, inset, nebula, orbit, tiles, Cx, Size, SLOTS};
 use crate::ui::views::{
     caps::Pane, Access, DeviceStatus, EdgeKind, FileKind, LabDevice, LabEdge, LabSession, LabView,
     PreviewKind, Tok,
@@ -669,7 +669,11 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         // Phones list one row per link.
         links_n
     } else {
-        (links_n.div_ceil(2) * 3).max(5)
+        // The hub's map seen from this device, in up to a third of the screen, with
+        // two rows of air either side for its orbit rings (as the hub keeps).
+        let most = (r.height / 3).max(5);
+        let gh = nebula::height(cx, Rect::new(r.x, r.y, r.width, most), &d.id);
+        (gh + 4).min(most)
     };
     // Its LINKS focused (Tab, or down from the bottom tiles): `selected` is the link,
     // and no tile is picked.
@@ -757,11 +761,10 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
         // The footer says `e links`; the zone label is the tap target.
         zone(cx, buf, main.x, fy, right, "LINKS", links_focus);
         cx.hit(Rect::new(main.x, fy, 12, 1), "links");
-        // The star alone: each link's numbers are one `e` away (the edge editor). It
-        // sits centred in the rows left under the label, at the hub's spacing.
+        // The hub's map seen from this device: each link's numbers are one `e` away
+        // (the edge editor). It sits centred in the rows left under the label.
         let band = Rect::new(r.x, fy + 2, r.width, r.bottom().saturating_sub(fy + 3));
-        let at = link_sel.map_or(orbit::Sel::Root, |n| orbit::Sel::Node(n, true));
-        orbit::draw_with(cx, buf, band, &d.id, 1, at, false);
+        nebula::draw(cx, buf, band, &d.id, link_sel.unwrap_or(&d.id), links_focus);
     }
 }
 
@@ -1804,13 +1807,7 @@ pub(super) fn send_to(cx: &Cx, buf: &mut Buffer, a: Rect) {
     } else {
         (a.height * 2 / 3).saturating_sub(4)
     };
-    let gh = orbit::height(
-        cx,
-        Rect::new(a.x, a.y, a.width, fit_h),
-        &f.device,
-        3,
-        orbit::Sel::Targets,
-    );
+    let gh = nebula::height(cx, Rect::new(a.x, a.y, a.width, fit_h), &f.device);
     let h = (gh + 5).min(a.height);
     let r = Rect::new(a.x, a.bottom().saturating_sub(h), a.width, h);
     cx.clear_hits();
@@ -1842,7 +1839,7 @@ pub(super) fn send_to(cx: &Cx, buf: &mut Buffer, a: Rect) {
         );
     }
     let band = Rect::new(r.x, y + 2, r.width, gh);
-    orbit::draw(cx, buf, band, &f.device, 3, orbit::Sel::Targets);
+    nebula::draw(cx, buf, band, &f.device, &f.device, false);
 }
 
 fn panel(cx: &Cx, buf: &mut Buffer, r: Rect) {
@@ -2887,11 +2884,7 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
     let gh = if cx.touch() || avail < 3 {
         avail.min(3)
     } else {
-        orbit::drawn_h(
-            cx,
-            Rect::new(r.x, r.y, r.width, avail),
-            orbit::Sel::Edge(&e.id),
-        )
+        nebula::height(cx, Rect::new(r.x, r.y, r.width, avail), &cx.s.viewer)
     };
     let mut spare = avail.saturating_sub(gh);
     // Rows the map leaves go to the rtt chart (up to twice its height, a row of
@@ -2912,7 +2905,13 @@ fn edge_editor(cx: &Cx, buf: &mut Buffer, r: Rect, id: &str) {
         } else {
             band
         };
-        orbit::draw(cx, buf, band, &cx.s.viewer, 3, orbit::Sel::Edge(&e.id));
+        // The edited link lit: the device it brings into the map selected.
+        let tree = orbit::tree(cx, &cx.s.viewer, 3);
+        let far = tree
+            .iter()
+            .find(|n| n.up.is_some_and(|u| u.id == e.id))
+            .map_or(e.to.as_str(), |n| n.d.id.as_str());
+        nebula::draw(cx, buf, band, &cx.s.viewer, far, false);
     } else if let (Some(a), Some(b)) = (cx.s.device(&e.from), cx.s.device(&e.to)) {
         // Phones draw no map (it only crowded at that size): the link alone, its two
         // keycaps around the policy, in the accent like the map's edited link.

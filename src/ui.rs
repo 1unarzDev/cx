@@ -689,7 +689,8 @@ struct App {
     /// A command panel to attach full-screen on the next loop turn.
     pending_panel_expand: Option<(usize, Session)>,
     command_panel_label: Option<String>,
-    pending_ptrace: Option<usize>,
+    /// The device whose relay is set up next, and the terminal moved once it is.
+    pending_ptrace: Option<(usize, Session)>,
     pending_adoption: Option<(Device, Session, Instant)>,
     pending_terminal: Option<Device>,
     pending_add: Option<String>,

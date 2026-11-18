@@ -787,29 +787,85 @@ mod nebula_tests {
     /// that a folded cluster's bundle crowds its dots together.
     #[test]
     fn links_are_evenly_dotted_never_solid_runs() {
+        fn runs(buf: &Buffer, w: u16, ys: std::ops::Range<u16>, what: &str) {
+            for y in ys {
+                let row: String = (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect();
+                if row.contains("this device") || row.contains("SESSIONS") {
+                    break;
+                }
+                let mut run = 0;
+                for c in row.chars() {
+                    run = if ('\u{2801}'..='\u{28ff}').contains(&c) {
+                        run + 1
+                    } else {
+                        0
+                    };
+                    assert!(run < 4, "{what} row {y}: {row}");
+                }
+            }
+        }
         for s in fixtures().into_iter().filter(|s| s.devices.len() <= 10) {
             for &(w, h) in &SIZES {
                 for sel in 0..s.devices.len() {
                     let (buf, _) = drawn(&s, sel, w, h);
-                    for y in 0..h {
-                        let row: String =
-                            (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect();
-                        if row.contains("this device") || row.contains("SESSIONS") {
-                            break;
-                        }
-                        let mut run = 0;
-                        for c in row.chars() {
-                            run = if ('\u{2801}'..='\u{28ff}').contains(&c) {
-                                run + 1
-                            } else {
-                                0
-                            };
-                            assert!(run < 4, "{} {w}x{h} sel {sel} row {y}: {row}", s.fixture);
-                        }
+                    runs(&buf, w, 0..h, &format!("{} {w}x{h} sel {sel}", s.fixture));
+                }
+                // A device's LINKS (the rows under its zone label), unfocused and with
+                // each of its links selected.
+                for d in &s.devices {
+                    for sel in [None, Some(0), Some(1)] {
+                        let area = Rect::new(0, 0, w, h);
+                        let mut buf = Buffer::empty(area);
+                        let caps = LabCaps {
+                            focus: sel.map(|_| Pane::Graph),
+                            selected: sel.unwrap_or(0),
+                            ..LabCaps::default()
+                        };
+                        let view = LabView::DeviceFocus(d.id.clone());
+                        mission::render(&view, &s, &caps, area, &mut buf);
+                        let Some(y0) = (0..h).find(|&y| {
+                            (0..w)
+                                .map(|x| buf[(x, y)].symbol().to_string())
+                                .collect::<String>()
+                                .contains("LINKS")
+                        }) else {
+                            continue;
+                        };
+                        let what = format!("{} {w}x{h} device {} LINKS {sel:?}", s.fixture, d.id);
+                        runs(&buf, w, y0..h, &what);
                     }
                 }
             }
         }
+    }
+
+    /// The device view's LINKS is the hub's map seen from that device: drawn by the
+    /// same renderer, so its dots, letters and markers match the hub's.
+    #[test]
+    fn device_links_draw_the_hubs_map() {
+        let s = LabState::fixture("nebula-5").unwrap();
+        let d = &s.devices[0];
+        let area = Rect::new(0, 0, 120, 40);
+        let mut buf = Buffer::empty(area);
+        let view = LabView::DeviceFocus(d.id.clone());
+        mission::render(&view, &s, &LabCaps::default(), area, &mut buf);
+        let text: Vec<String> = (0..40)
+            .map(|y| (0..120).map(|x| buf[(x, y)].symbol().to_string()).collect())
+            .collect();
+        let y0 = text
+            .iter()
+            .position(|r| r.contains("LINKS"))
+            .expect("LINKS");
+        let below = text[y0 + 1..].join("\n");
+        assert!(
+            below
+                .chars()
+                .any(|c| ('\u{2801}'..='\u{28ff}').contains(&c)),
+            "{below}"
+        );
+        assert!(below.contains(&d.name), "{below}");
+        // Not the old orbit star's box-drawn trunks.
+        assert!(!below.contains('─') && !below.contains('│'), "{below}");
     }
 
     fn centre(r: Rect) -> (f32, f32) {

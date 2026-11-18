@@ -67,9 +67,15 @@ impl App {
         } else if !outside_tmux(&session) {
             self.check_session(device, session, false);
         } else if caps.iter().any(|c| c == "adopt-session-v1") {
-            // Set the relay up from inside CX rather than asking the user to run
-            // a CLI command; the move can be retried once it is installed.
-            self.pending_ptrace = Some(device);
+            match self.adoption_unavailable.get(&device) {
+                // (Yama scope 3: no relay can help.)
+                Some(why) if !why.contains("install") => {
+                    self.set_notice_as(NoticeKind::Warning, format!("Cannot move: {why}"))
+                }
+                // Set the relay up from inside CX rather than asking the user to run a
+                // CLI command; the move continues once it is installed.
+                _ => self.pending_ptrace = Some((device, session)),
+            }
         } else {
             self.set_notice_as(
                 NoticeKind::Warning,

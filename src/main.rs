@@ -462,13 +462,26 @@ fn info() -> Result<serde_json::Value> {
     caps.push("peer-authorize-v1");
     caps.push("adopt-session-v1");
     caps.push("metrics-v1");
-    let relay = adoption::reptyr();
+    // A relay that needs sudo can only move a terminal where a password prompt reaches
+    // it: a viewer on this device. A helper reached over SSH has none, so a remote
+    // viewer is offered the one-time cap_sys_ptrace install instead.
+    let relay = adoption::reptyr().and_then(|r| {
+        if r.privilege == adoption::Privilege::Sudo && auth::askpass_env().is_none() {
+            Err(format!(
+                "{} needs cx-reptyr with cap_sys_ptrace to move terminals from another \
+                 device: install it once with one sudo password",
+                adoption::scope_note()
+            ))
+        } else {
+            Ok(r)
+        }
+    });
     if relay.is_ok() {
         caps.push("adopt-reptyr-v1");
     }
     let (needs_sudo, unavailable) = match &relay {
         Ok(r) => (r.privilege == adoption::Privilege::Sudo, None),
-        Err(e) => (false, Some(*e)),
+        Err(e) => (false, Some(e.as_str())),
     };
     Ok(
         serde_json::json!({"host":d.host,"account":d.account,"machine_id":machine.trim(),"capabilities":caps,"protocol":1,"persistent_channel":true,"version":env!("CARGO_PKG_VERSION"),"adoption_unavailable":unavailable,"adoption_needs_password":needs_sudo}),

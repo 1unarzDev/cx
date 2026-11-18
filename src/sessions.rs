@@ -1294,12 +1294,22 @@ fn session_lock(root: &std::path::Path) -> Result<fs::File> {
 /// only where the terminal is displayed changes. Every identity CX observed is
 /// re-verified under the session lock, and failure leaves the original holder.
 pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> Result<Session> {
+    // CX_ADOPT_TIMINGS=1: each phase's milliseconds on stderr (fixtures and diagnosis).
+    let timed = std::env::var_os("CX_ADOPT_TIMINGS").is_some();
+    let mut last = std::time::Instant::now();
+    let mut phase = |name: &str| {
+        if timed {
+            eprintln!("adopt-phase {name} {}", last.elapsed().as_millis());
+        }
+        last = std::time::Instant::now();
+    };
     let (_, _, boot) = identity();
     anyhow::ensure!(
         !boot.is_empty() && boot == boot_id,
         "execution device restarted; refresh sessions"
     );
-    let relay = crate::adoption::reptyr().map_err(|e| anyhow::anyhow!(e))?;
+    let relay = crate::adoption::reptyr().map_err(anyhow::Error::msg)?;
+    phase("tool-check");
     let root = state()?;
     let _lock = session_lock(&root)?;
     let name = format!(
@@ -1322,6 +1332,7 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
                 && t.leader.start_ticks == origin.leader.start_ticks
         })
         .context("terminal changed or closed; refresh sessions")?;
+    phase("discovery");
     anyhow::ensure!(
         id == crate::adoption::session_id(&boot, &terminal)
             || (id.starts_with('$') && id[1..].bytes().all(|b| b.is_ascii_digit())),
@@ -1339,6 +1350,7 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
     );
     let snapshot = external_terminal(&terminal).context("terminal changed; refresh sessions")?;
     ensure_server()?;
+    phase("verify");
     let record = root.join(format!("{name}.json"));
     let errors = root.join(format!("{name}.adopt"));
     let leader = &terminal.leader;
@@ -1411,9 +1423,14 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
         let _ = fs::remove_file(&record);
         return Err(error);
     }
+    phase("pane");
     // Success is observed, not assumed: the relay holds the master, the
     // previous holder no longer does, and the relay dropped its capabilities.
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    // The steal has 10 s from when the relay runs: while sudo still waits for the
+    // password (its askpass gives up after 300 s) the clock does not start.
+    let sudo = relay.privilege == crate::adoption::Privilege::Sudo;
+    let asked = std::time::Instant::now();
+    let mut deadline = asked + Duration::from_secs(10);
     // tmux prints nothing for a session that no longer exists, so only an
     // explicit "0" proves a live pane.
     let relay_pid = loop {
@@ -1428,6 +1445,12 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
                 || crate::adoption::descendant_holds_master(pane, terminal.index);
             if moved && !crate::adoption::holds_master(holder.process.pid, terminal.index) {
                 break pane;
+            }
+            if sudo
+                && asked.elapsed() < Duration::from_secs(310)
+                && !crate::adoption::descendant_runs(pane, &relay.path)
+            {
+                deadline = std::time::Instant::now() + Duration::from_secs(10);
             }
         } else {
             let reason = fs::read_to_string(&errors).unwrap_or_default();
@@ -1450,6 +1473,11 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
         }
         thread::sleep(Duration::from_millis(25));
     };
+    phase(if relay.privilege == crate::adoption::Privilege::Sudo {
+        "privilege+ptrace"
+    } else {
+        "ptrace"
+    });
     let _ = fs::remove_file(&errors);
     let temp = root.join(format!("{name}.tmp"));
     let finish = || -> Result<Session> {
@@ -1469,6 +1497,7 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
         Ok(session)
     };
     let outcome = finish();
+    phase("register");
     if outcome.is_ok() {
         // The source window is now empty; close it if it was single-window.
         if let Some(h) = origin.holder.as_ref() {

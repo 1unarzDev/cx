@@ -1343,8 +1343,7 @@ fn label_rect(it: &It) -> R {
 
 /// Rows the map's drawing takes in `band`: the most any selection needs (a cluster
 /// blooming never moves the rows under the map).
-pub(super) fn height(cx: &Cx, band: Rect) -> u16 {
-    let root = cx.s.viewer.as_str();
+pub(super) fn height(cx: &Cx, band: Rect, root: &str) -> u16 {
     let mut ids = vec![root.to_string()];
     let tree = orbit::tree(cx, root, 3);
     let mut nodes = nodes_of(tree);
@@ -1384,8 +1383,10 @@ fn rings(cx: &Cx, p: &Plan) -> Vec<(f32, f32)> {
     if !ringed(cx, p.mode) || p.ring_k <= 0.0 {
         return Vec::new();
     }
+    // (A ring squeezed under three rows tall crowds its dots into solid runs.)
     (1..=p.hops.min(2))
         .map(|h| (p.r0 + p.rx * ring(h), p.ry * ring(h) * p.ring_k))
+        .filter(|&(_, ry)| ry >= 3.0)
         .collect()
 }
 
@@ -1424,21 +1425,24 @@ fn order_ids(cx: &Cx) -> Vec<String> {
     out
 }
 
-/// Draw the hub's map in `band`, `sel` selected (`focus`: the map has the keys).
-pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, sel: &str, focus: bool) {
+/// Draw the map seen from `root` (the hub's: the viewer; a device's LINKS: that
+/// device) in `band`, `sel` selected (`focus`: the map has the keys).
+pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, root: &str, sel: &str, focus: bool) {
+    // (A picker's band on a tiny screen can reach past it.)
+    let band = band.intersection(cx.area);
     if band.width < 12 || band.height < 1 {
         return;
     }
     let s = cx.s;
-    let root = s.viewer.as_str();
     let rootd = s.device(root);
     let p = plan(cx, band, root, sel);
     let mo = cx.c.motion;
+    // (The glide is the hub's: its selection moves between the viewer's nodes.)
     let from = mo
         .from
         .and_then(|i| s.devices.get(usize::from(i)))
         .map(|d| d.id.as_str())
-        .filter(|f| *f != sel && mo.moving());
+        .filter(|f| *f != sel && mo.moving() && root == s.viewer);
     let t = ease(mo.at());
     let mut items = scene(&p, rootd);
     if let Some(f) = from {
@@ -1721,7 +1725,10 @@ fn label(cx: &Cx, buf: &mut Buffer, p: &Plan, it: &It, r: R, pick: Option<bool>,
             let st = faded(cx, Tok::Fg, 1.0, sel_k).add_modifier(Modifier::BOLD);
             orbit::name(cx, buf, x + 2, y, d, 16, st, true);
             if p.mode == Mode::Full {
-                let mut ev = vec![("you".to_string(), cx.st(Tok::Accent))];
+                let mut ev = Vec::new();
+                if d.id == cx.s.viewer {
+                    ev.push(("you".to_string(), cx.st(Tok::Accent)));
+                }
                 ev.extend(evidence(cx, d, None, true));
                 let ew = ev_w(cx, &ev);
                 let mut xx = (it.dot.0 - ew as f32 / 2.0).round().max(0.0) as u16;

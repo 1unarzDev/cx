@@ -68,7 +68,7 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // where the screen is tall, else the blank row the band already keeps. With room
     // for two, a second row of tiles shows the rest of the sessions and the ghost
     // (only when each row keeps ten rows, so a tile still shows enough of its screen).
-    let gh = nebula::height(cx, band);
+    let gh = nebula::height(cx, band, &cx.s.viewer);
     let air = if sz >= Size::M && r.height >= 30 {
         2
     } else {
@@ -108,7 +108,7 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         height: band.height.min(y.saturating_sub(band.y)).max(1),
         ..band
     };
-    nebula::draw(cx, buf, band, &sel_id, on_graph);
+    nebula::draw(cx, buf, band, &cx.s.viewer, &sel_id, on_graph);
     if let Some(d) = cx.s.device(&sel_id) {
         vitals(
             cx,

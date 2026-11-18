@@ -4,6 +4,16 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+## v0.3.4
+
+A hotfix on v0.3.3.
+
+### Fixes
+- **A device's LINKS is the hub's map.** The links graph at the bottom of a device screen, the link editor and the send-to picker now draw with the hub's nebula: the same dotted, bowed links with evenly spaced dots, colours, clusters, names and state markers, seen from that device.
+- **Adopt a terminal from another device.** Enter on an `outside cx · ⏎ adopt` tile of a remote device now moves that terminal into cx there and attaches to it, without logging in to that device first. A device that can only move terminals through a sudo prompt (which cannot reach it over SSH) no longer offers a move that fails: its tile offers the one-time setup instead (Enter installs the signed cx-reptyr with cap_sys_ptrace on that device, with one sudo password), and the move then continues by itself. Later moves on that device ask for nothing. When moving is impossible, the tile says exactly why (for example `kernel.yama.ptrace_scope=3`, which only an admin and a reboot can lower).
+- **No more "taking unusually long" while you type a password.** A move that asks for your sudo password waits for it (one prompt per move) and only then gives the move its time; it no longer fails while you are typing, which also made a retry ask again.
+- **cx-reptyr is found for unreleased builds.** Setting up moving from a cx build whose own release is not published (a hotfix deployed early) takes cx-reptyr from the latest signed release instead of failing with "cx-reptyr download unavailable" or "artifact unavailable".
+
 ## v0.3.3
 
 A hotfix on v0.3.2.

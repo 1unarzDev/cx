@@ -116,6 +116,8 @@ def wait_for(predicate, seconds=10, message='condition'):
 
 
 checks = []
+# Per-phase milliseconds of each move (the helper prints them with CX_ADOPT_TIMINGS).
+timings = []
 prompts = []
 with tempfile.TemporaryDirectory(prefix='cx-adopt-sudo-') as temporary:
     home = Path(temporary)
@@ -176,12 +178,15 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-sudo-') as temporary:
                 got_nonce = frame_read(conn).decode()
                 prompt = frame_read(conn).decode()
                 prompts.append((got_nonce == nonce, prompt))
+                # The user takes longer to type than the steal's own 10 s budget.
+                time.sleep(slow_typing.pop() if slow_typing else 0)
                 frame_write(conn, b'\x01' + PASSWORD.encode())
             except OSError:
                 pass
             finally:
                 conn.close()
 
+    slow_typing = []
     threading.Thread(target=serve, daemon=True).start()
 
     env = dict(os.environ, HOME=str(home), XDG_STATE_HOME=str(home / 'state'), TMUX_TMPDIR=str(home),
@@ -206,6 +211,8 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-sudo-') as temporary:
         wire = b'CX1 ' + str(len(request)).encode() + b'\n' + request
         result = subprocess.run([binary, 'helper'], input=wire, env=env, capture_output=True, timeout=30)
         assert result.returncode == 0, result.stderr.decode()
+        timings.extend(l.split()[1:] for l in result.stderr.decode().splitlines()
+                       if l.startswith('adopt-phase '))
         return json.loads(result.stdout.split(b'\n', 1)[1])
 
     try:
@@ -235,17 +242,34 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-sudo-') as temporary:
         r = subprocess.run([binary, 'helper'], input=b'CX1 ' + str(len(req)).encode() + b'\n' + req,
                            env=no_prompt_env, capture_output=True, timeout=30)
         refused = json.loads(r.stdout.split(b'\n', 1)[1])
+        # Such a helper (one reached over SSH) does not offer the move: it says the
+        # one-time cap_sys_ptrace install is what a remote viewer needs.
+        info_req = json.dumps(dict(version=1, id='ni', op=dict(op='info'))).encode()
+        r = subprocess.run([binary, 'helper'], input=b'CX1 ' + str(len(info_req)).encode() + b'\n' + info_req,
+                           env=no_prompt_env, capture_output=True, timeout=30)
+        remote_info = json.loads(r.stdout.split(b'\n', 1)[1])['result']
+        assert 'adopt-reptyr-v1' not in remote_info['capabilities'], remote_info
+        assert 'install' in remote_info['adoption_unavailable'] and 'cap_sys_ptrace' in \
+            remote_info['adoption_unavailable'], remote_info
+        checks.append('a helper no password prompt reaches offers the one-time install, not a move')
         assert refused['error'] and 'cx device ptrace' in refused['error'], refused
         assert not any(n.endswith('.json') for n in os.listdir(root)), ('stale record', os.listdir(root))
         assert any((s.get('origin') or {}).get('tty') == tty
                    for s in helper('external_sessions')['result']), 'terminal disappeared after a failed move'
         checks.append('a move with no reachable password prompt fails cleanly and keeps the terminal listed')
 
+        slow_typing.append(11)
+        asked = len(prompts)
+        started = time.time()
         moved = helper('adopt_session', dict(id=found['id'], origin=found['origin'], boot_id=boot))
+        elapsed = time.time() - started
         assert moved['error'] is None, moved
         session = moved['result']
         assert any(ok and 'sudo password' in text for ok, text in prompts), prompts
-        checks.append('the move asked for a password through the askpass bridge with the right nonce')
+        assert len(prompts) - asked == 1, prompts
+        # 11 s typing, then the steal: no premature "taking unusually long".
+        assert 11 <= elapsed < 14, elapsed
+        checks.append(f'one password prompt for the move; 11 s of typing did not time it out ({elapsed:.1f}s)')
 
         after = stat(leader)
         # ppid changes when the emptied source window closes; the process
@@ -294,7 +318,7 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-sudo-') as temporary:
                        for n in os.listdir(root)), os.listdir(root)
         emulator2.kill()
         checks.append('a wrong password fails the move and leaves the original terminal intact')
-        print(json.dumps(dict(result='PASS', checks=checks)))
+        print(json.dumps(dict(result='PASS', checks=checks, timings=timings)))
     finally:
         if emulator:
             emulator.kill()

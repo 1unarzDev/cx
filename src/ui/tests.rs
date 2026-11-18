@@ -7409,6 +7409,23 @@ fn remote_outside_terminals_are_marked_tiles_not_managed_sessions() {
         )),
     ));
     assert!(draw_h(&a, 120, 30).contains("cannot adopt: ptrace is disabled"));
+    // Enter there says why instead of starting a setup that cannot help.
+    a.adopt_external_session(1, external_agent());
+    assert!(a.pending_ptrace.is_none());
+    // A device whose relay needs the one-time install (a remote one with only a sudo
+    // relay): Enter sets it up, keeping the terminal to move once it is in place.
+    a.apply(reply(
+        &a,
+        1,
+        Operation::Info,
+        Ok(info(
+            &["claude", "adopt-session-v1"],
+            Some("kernel.yama.ptrace_scope=1 needs cx-reptyr with cap_sys_ptrace to move terminals from another device: install it once with one sudo password"),
+        )),
+    ));
+    assert!(draw_h(&a, 120, 30).contains("⏎ installs cx-reptyr"));
+    a.adopt_external_session(1, external_agent());
+    assert!(matches!(&a.pending_ptrace, Some((1, s)) if s.external));
 }
 
 /// Whichever request finds a remote device unreachable (a vitals sample, a screen

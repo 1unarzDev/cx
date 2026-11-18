@@ -1173,6 +1173,7 @@ fn request_attempt(d: &Device, op: Operation, hover: bool) -> Result<serde_json:
             | Operation::Containers
             | Operation::Sessions
             | Operation::ExternalSessions
+            | Operation::AdoptSession { .. }
             | Operation::ContainerFileAction { .. }
     ) {
         90

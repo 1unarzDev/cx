@@ -52,6 +52,7 @@ impl From<&App> for ViewModel {
             }),
             notifications: notices(app),
             transfers: transfers(app),
+            ended: ended(app),
             palette: (app.input == Some(Input::Palette)).then(|| palette(app)),
         };
         let view = screen(app, &state, &mut caps);
@@ -314,6 +315,27 @@ fn devices(app: &App) -> Vec<LabDevice> {
                     .collect(),
                 joined_via: None,
                 core: app.device_policy(i).access == store::AccessMode::Core,
+                caps: app.providers.get(&i).map_or_else(Vec::new, |(caps, _)| {
+                    let has = |c: &str| caps.iter().any(|x| x == c);
+                    let mut v = vec!["shell".to_string()];
+                    v.extend(
+                        [
+                            ("claude", "claude"),
+                            ("codex", "codex"),
+                            ("containers-v1", "containers"),
+                        ]
+                        .iter()
+                        .filter(|(c, _)| has(c))
+                        .map(|(_, w)| w.to_string()),
+                    );
+                    v
+                }),
+                recent: app
+                    .launch_items(i)
+                    .1
+                    .iter()
+                    .map(|p| safe_label(&tilde(p, &d.account, d.target.is_none())))
+                    .collect(),
             }
         })
         .collect()
@@ -509,7 +531,7 @@ fn sessions(app: &App) -> Vec<LabSession> {
         .map(|(d, s)| (d, workspaces::runtime_key(&s)));
     let mut out = Vec::new();
     for d in 0..app.work.len().min(app.devices.len()) {
-        for s in app.slot_sessions(d) {
+        for (s, slot) in app.slot_keys(d) {
             let key = workspaces::runtime_key(s);
             let (screen, cols) = if live.as_ref() == Some(&(d, key.clone()))
                 && !app.session_preview_lines().is_empty()
@@ -578,6 +600,7 @@ fn sessions(app: &App) -> Vec<LabSession> {
                 screen,
                 screen_cols: cols,
                 id: key,
+                key: slot,
             });
         }
     }
@@ -627,6 +650,48 @@ fn short_reason(e: &str) -> &'static str {
     } else {
         "down"
     }
+}
+
+/// The newest session that ended on each device with nothing running (its launch
+/// panel's resume row).
+fn ended(app: &App) -> Vec<LabSession> {
+    let now = transport::now();
+    (0..app.devices.len().min(app.work.len()))
+        .filter_map(|d| {
+            let (s, at) = app.launch_items(d).0?;
+            Some(LabSession {
+                id: workspaces::runtime_key(s),
+                title: session_preview::label(s),
+                device: dev_id(d),
+                provider: match s.provider.as_str() {
+                    "claude" => Provider::Claude,
+                    "codex" => Provider::Codex,
+                    _ => Provider::Shell,
+                },
+                state: SessionState::Exited,
+                cwd: if s.directory.is_empty() {
+                    "? folder".into()
+                } else {
+                    safe_label(&tilde(
+                        &s.directory,
+                        &s.account,
+                        app.devices[d].target.is_none(),
+                    ))
+                },
+                command: safe_label(&s.provider),
+                last_activity_secs: now.saturating_sub(at).min(u64::from(u32::MAX)) as u32,
+                age_secs: 0,
+                activity: Vec::new(),
+                clients: 0,
+                unread: false,
+                screen: Vec::new(),
+                screen_cols: 0,
+                external: false,
+                note: None,
+                key: None,
+            })
+        })
+        .collect()
 }
 
 /// A session's folder with its home as `~`: this host's $HOME, or the account's usual
@@ -895,10 +960,10 @@ fn palette(app: &App) -> Vec<PaletteRow> {
             let (keys, device) = match &item.target {
                 PaletteTarget::Session(d, key) => {
                     let slot = app
-                        .slot_sessions(*d)
-                        .iter()
-                        .position(|s| workspaces::runtime_key(s) == *key)
-                        .and_then(|n| super::views::mission::SLOTS.get(n));
+                        .slot_keys(*d)
+                        .into_iter()
+                        .find(|(s, _)| workspaces::runtime_key(s) == *key)
+                        .and_then(|(_, k)| k);
                     let keys = match (letter(*d), slot) {
                         (Some(l), Some(s)) => format!("{l} {s}"),
                         _ => String::new(),

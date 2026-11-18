@@ -719,6 +719,8 @@ struct App {
     motion: motion::Clock,
     /// Device letters (`hotkeys::assign`), by device id.
     hotkeys: std::cell::RefCell<BTreeMap<String, char>>,
+    /// Session keys (`slot_keys`) by device id: (runtime key, key), kept while it runs.
+    slot_memo: std::cell::RefCell<HashMap<String, Vec<(String, char)>>>,
     /// `␣`: the selected session's peek.
     peek: bool,
     /// `⌫` asked about this session (identity captured when asked).
@@ -743,6 +745,13 @@ struct App {
     copy_out: Option<String>,
     /// The last session detached from, for `-`.
     last_session: Option<(usize, String)>,
+    /// Sessions that ended while cx watched (device id, session, when), newest first;
+    /// in memory only. A device with nothing running offers to resume them.
+    ended: Vec<(String, Session, u64)>,
+    /// The attach expand or detach shrink in flight (`motion::Expand`).
+    expand: Option<motion::Expand>,
+    /// The pending attach's command, prepared while its tile grows (by runtime key).
+    attach_prep: Option<AttachPrep>,
     last_esc: Option<Instant>,
     onboarding_dismissed: bool,
     /// Where the open file preview was drawn (native images go there).
@@ -908,6 +917,7 @@ impl App {
             moves: Default::default(),
             motion: Default::default(),
             hotkeys: Default::default(),
+            slot_memo: Default::default(),
             peek: false,
             stop_armed: None,
             send_pick: false,
@@ -923,6 +933,9 @@ impl App {
             invite_thread: None,
             copy_out: None,
             last_session: None,
+            ended: Vec::new(),
+            expand: None,
+            attach_prep: None,
             last_esc: None,
             onboarding_dismissed: false,
             preview_rect: std::cell::Cell::new(None),
@@ -1653,6 +1666,10 @@ fn command_panel_size(area: ratatui::layout::Size) -> (u16, u16) {
     let rows = area.height.saturating_sub(6).clamp(4, 120);
     (cols, rows)
 }
+type AttachPrep = (
+    String,
+    std::thread::JoinHandle<Result<Option<std::process::Command>>>,
+);
 /// A minimal Session describing a command pane, for full-screen expand.
 fn command_panel_session(panel: &CommandPanel) -> Session {
     Session {

@@ -1202,24 +1202,43 @@ impl App {
     /// Enter on the previewed session with its live screen loaded: show that
     /// screen full-screen before the handoff, so tmux paints over the same picture.
     pub(super) fn show_attach_frame(&self, session: &Session) -> bool {
+        self.live_screen_of(&workspaces::runtime_key(session))
+    }
+    /// The live screen cx holds is this session's (by runtime key).
+    fn live_screen_of(&self, runtime_key: &str) -> bool {
         let p = &self.session_preview;
         self.preview_selection().is_some_and(|(d, s)| {
-            workspaces::runtime_key(&s) == workspaces::runtime_key(session)
+            workspaces::runtime_key(&s) == runtime_key
                 && p.key.as_ref() == Some(&key(&self.devices[d], &s))
         }) && p.live
             && !p.carried
             && !p.lines.is_empty()
     }
+    /// The frame an attach of `runtime_key` lands on, `area` sized: the live screen when
+    /// cx holds it (what the hand-off draws), else the session's last known screen.
+    pub(super) fn landing(
+        &self,
+        vm: &super::viewmodel::ViewModel,
+        runtime_key: &str,
+        area: Rect,
+    ) -> Option<ratatui::buffer::Buffer> {
+        if self.live_screen_of(runtime_key) {
+            let mut buf = ratatui::buffer::Buffer::empty(area);
+            render_attach_frame(&mut buf, self, area);
+            return Some(buf);
+        }
+        super::views::mission::landing_screen(&vm.state, &vm.caps, area, runtime_key)
+    }
 }
 /// The live screen alone, top-left, at the pane's size (no chrome).
-pub(super) fn render_attach_frame(frame: &mut Frame<'_>, app: &App, area: Rect) {
+pub(super) fn render_attach_frame(buf: &mut ratatui::buffer::Buffer, app: &App, area: Rect) {
     let p = &app.session_preview;
     let lines = rendering::ansi_screen(&p.lines, p.palette8, p.cols);
     let start = (p.history_total.saturating_sub(p.line_start) as usize).min(lines.len());
     let rows = usize::from(p.rows.min(area.height));
     let end = (start + rows).min(lines.len());
     let screen = Rect::new(area.x, area.y, p.cols.min(area.width), rows as u16);
-    frame.render_widget(Paragraph::new(lines[start..end].to_vec()), screen);
+    ratatui::widgets::Widget::render(Paragraph::new(lines[start..end].to_vec()), screen, buf);
 }
 /// The pane's colour 8 as the helper reports it (`#rrggbb`).
 fn palette8(value: &Value) -> Option<Color> {

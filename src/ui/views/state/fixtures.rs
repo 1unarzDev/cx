@@ -2,6 +2,8 @@
 use super::*;
 
 pub const FIXTURES: [&str; 3] = ["small", "typical", "large"];
+/// The empty and sparse states (docs/design/empty-states.md) and a crowded device.
+pub const SPARSE: [&str; 6] = ["bare", "ended", "quiet", "solo", "nomesh", "crowded"];
 
 // ---------------------------------------------------------------- fixture builders
 
@@ -87,6 +89,8 @@ fn dev(
         meshes: meshes.iter().map(|s| s.to_string()).collect(),
         joined_via: None,
         core,
+        caps: Vec::new(),
+        recent: Vec::new(),
     }
 }
 
@@ -281,6 +285,23 @@ fn session(
         screen_cols: 80,
         external: false,
         note: None,
+        key: None,
+    }
+}
+
+/// Give every session without a key the first free one on its device, in list order
+/// (what the app does for sessions as they appear).
+pub fn assign_keys(s: &mut LabState) {
+    for i in 0..s.sessions.len() {
+        if s.sessions[i].key.is_some() {
+            continue;
+        }
+        let d = s.sessions[i].device.clone();
+        let taken: Vec<char> = s.sessions_on(&d).filter_map(|x| x.key).collect();
+        s.sessions[i].key = crate::ui::views::mission::SLOTS
+            .iter()
+            .copied()
+            .find(|c| !taken.contains(c));
     }
 }
 
@@ -794,8 +815,18 @@ pub fn typical() -> LabState {
     sessions[1].unread = true;
     for (i, d) in devices.iter_mut().enumerate() {
         d.hue = (i % crate::ui::theme::SWATCHES as usize) as u8;
+        // What each helper reported it can start (the down one was never asked).
+        d.caps = match i {
+            0 | 2 => vec!["shell", "claude", "codex", "containers"],
+            1 | 6 => vec!["shell", "claude", "codex"],
+            3 | 5 => vec!["shell"],
+            _ => vec![],
+        }
+        .into_iter()
+        .map(String::from)
+        .collect();
     }
-    LabState {
+    let mut s = LabState {
         fixture: "typical",
         viewer: "tranquility".into(),
         devices,
@@ -825,8 +856,11 @@ pub fn typical() -> LabState {
                 .map(|v| v * 48e6)
                 .collect(),
         }],
+        ended: Vec::new(),
         palette: None,
-    }
+    };
+    assign_keys(&mut s);
+    s
 }
 
 pub fn small() -> LabState {
@@ -865,6 +899,7 @@ pub fn small() -> LabState {
         secret_entry: None,
         notifications: vec![],
         transfers: vec![],
+        ended: Vec::new(),
         palette: None,
     };
     for d in &mut s.devices {
@@ -1060,6 +1095,7 @@ pub fn large() -> LabState {
         age_secs: 30,
         action: Some("inspect".into()),
     });
+    assign_keys(&mut s);
     s
 }
 
@@ -1265,5 +1301,182 @@ pub fn mirror() -> LabState {
             .map(|d| d.id.clone())
             .collect();
     }
+    s
+}
+
+/// Nothing running anywhere: no sessions, an empty folder in Files, no secrets.
+pub fn bare() -> LabState {
+    let mut s = typical();
+    s.fixture = "bare";
+    s.sessions.clear();
+    s.files.entries.clear();
+    s.files.total = 0;
+    s.files.selected = 0;
+    s.files.folder = None;
+    s.files.cwd = "~/scratch".into();
+    s.files.previews.clear();
+    // (The app always lists the Cloudflare card, missing until it is set.)
+    s.secrets.retain(|x| x.key.starts_with("cloudflare"));
+    for x in &mut s.secrets {
+        x.masked = None;
+        x.updated_secs = None;
+        x.source.clear();
+    }
+    s
+}
+
+/// Creation's work has ended: two finished sessions and the folders they ran in.
+pub fn ended() -> LabState {
+    let mut s = typical();
+    s.fixture = "ended";
+    let mut gone: Vec<LabSession> = s
+        .sessions
+        .iter()
+        .filter(|x| x.device == "creation")
+        .cloned()
+        .collect();
+    s.sessions.retain(|x| x.device != "creation");
+    let mut map = session(
+        "mapmerge",
+        "merge lidar maps",
+        "creation",
+        Provider::Claude,
+        SessionState::Exited,
+        "~/ros_ws/src/mapping",
+        "claude",
+        40 * 60,
+        3 * 3600,
+        36,
+        claude_screen("merge lidar maps", false),
+    );
+    map.state = SessionState::Exited;
+    for x in &mut gone {
+        x.state = SessionState::Exited;
+        x.last_activity_secs = 3 * 3600;
+    }
+    gone.insert(0, map);
+    // squirtle-jetson's last recording ended before it dropped off (memory, no keys).
+    let mut rec = session(
+        "bagrec",
+        "record run-0412",
+        "squirtle-jetson",
+        Provider::Shell,
+        SessionState::Exited,
+        "~/bags",
+        "ros2 bag record -a",
+        3 * 3600,
+        5 * 3600,
+        0,
+        Vec::new(),
+    );
+    rec.state = SessionState::Exited;
+    gone.push(rec);
+    s.ended = gone;
+    for (id, recent) in [
+        (
+            "creation",
+            &["~/ros_ws/src/mapping", "~/cx", "~/datasets/lidar"][..],
+        ),
+        ("squirtle-jetson", &["~/bags", "~/ros_ws"][..]),
+    ] {
+        if let Some(d) = s.devices.iter_mut().find(|d| d.id == id) {
+            d.recent = recent.iter().map(|x| x.to_string()).collect();
+        }
+    }
+    s
+}
+
+/// Everything has ended: nothing runs anywhere, but cx remembers what did.
+pub fn quiet() -> LabState {
+    let mut s = ended();
+    s.fixture = "quiet";
+    let mut gone = std::mem::take(&mut s.sessions);
+    for x in &mut gone {
+        x.state = SessionState::Exited;
+    }
+    gone.sort_by_key(|x| x.last_activity_secs);
+    s.ended.splice(0..0, gone);
+    s
+}
+
+/// Only this device: no links, meshes or sessions.
+pub fn solo() -> LabState {
+    let mut s = typical();
+    s.fixture = "solo";
+    s.devices.truncate(1);
+    s.devices[0].meshes.clear();
+    s.meshes.clear();
+    s.edges.clear();
+    s.neighbors.clear();
+    s.sessions.clear();
+    s.notifications.clear();
+    s.transfers.clear();
+    s
+}
+
+/// The typical network with no meshes: every link is plain SSH.
+pub fn nomesh() -> LabState {
+    let mut s = typical();
+    s.fixture = "nomesh";
+    s.meshes.clear();
+    for d in &mut s.devices {
+        d.meshes.clear();
+    }
+    for e in &mut s.edges {
+        if matches!(e.kind, EdgeKind::Mesh(_)) {
+            e.kind = EdgeKind::Direct;
+        }
+    }
+    s
+}
+
+/// Innovation runs 24 sessions, past the 21 keys of the pool (one in the middle ended
+/// and gave its key to the first that had none).
+pub fn crowded() -> LabState {
+    let mut s = typical();
+    s.fixture = "crowded";
+    let kinds = [
+        (Provider::Claude, SessionState::Working),
+        (Provider::Codex, SessionState::Idle),
+        (Provider::Shell, SessionState::Running),
+        (Provider::Claude, SessionState::AwaitingInput),
+    ];
+    for i in 1..25u32 {
+        let (p, st) = kinds[i as usize % kinds.len()];
+        let id = format!("job{i:02}");
+        let screen = shell_screen("innovation", &format!("make job{i:02}"));
+        s.sessions.push(session(
+            &id,
+            &format!("job {i:02}"),
+            "innovation",
+            p,
+            st,
+            "~/cx",
+            "make",
+            30 * i,
+            3600 + i * 60,
+            400 + i,
+            screen,
+        ));
+    }
+    assign_keys(&mut s);
+    // `job05` ended: its key went back to the pool and the first session without one
+    // (in slot order) took it; the rest of the keys did not move.
+    let freed = s.sessions.iter().position(|x| x.id == "job05").unwrap();
+    let key = s.sessions.remove(freed).key;
+    let heir = s.sessions.iter().position(|x| x.key.is_none()).unwrap();
+    assign_keys(&mut s);
+    assert_eq!(s.sessions[heir].key, key);
+    // (Tiles go in key order, as the app lists them.)
+    let order = |x: &LabSession| {
+        x.key
+            .and_then(|k| {
+                crate::ui::views::mission::SLOTS
+                    .iter()
+                    .position(|c| *c == k)
+            })
+            .unwrap_or(usize::MAX)
+    };
+    s.sessions.sort_by_key(order);
     s
 }

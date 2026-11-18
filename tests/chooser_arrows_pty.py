@@ -61,14 +61,12 @@ def main():
         settle(lambda: 'cx › ' in viewer.screen.display[0], 'the viewer drew nothing', 15)
         if 'welcome' in viewer.screen.display[0]:
             press(b'\x1b', lambda: 'welcome' not in viewer.screen.display[0], 'Esc kept the welcome page')
-        letter = None
-        def strip():
-            nonlocal letter
-            m = re.search(r'\s(\w)\s+then', text())
-            letter = m and m.group(1)
-            return letter
-        settle(strip, 'no device letter on the vitals strip', 15)
-        press(letter.encode(), lambda: 'new' in text(), 'the device did not open')
+        # The only device, nothing running: the hub's own launch row says its keys, and
+        # Enter opens the selected device (this one).
+        settle(lambda: 'start' in text() and 'claude' in text(), 'no launch row on the hub', 15)
+        # (Nothing runs there: its launch panel, `start c claude x codex n shell`.)
+        press(b'\r', lambda: 'network' not in viewer.screen.display[0] and 'claude' in text(),
+              'the device did not open')
         press(b'f', lambda: 'NOR' in text(), 'files did not open')  # yazi's mode pill
         press(b'!', lambda: '[n] Shell' in text() and selected(), '! did not open the chooser')
         # (The availability check may add choices: it can take two 3 s probe timeouts.)

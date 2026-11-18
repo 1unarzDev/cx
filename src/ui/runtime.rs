@@ -475,6 +475,14 @@ pub(super) fn resume_input() {
     state.pauses = state.pauses.saturating_sub(1);
     changed.notify_all();
 }
+/// The frame an attach lands on (`App::landing`), alone on a cleared frame.
+fn draw_landing(screen: &mut Screen, app: &App, key: &str, area: Rect) -> Result<()> {
+    let vm = viewmodel::ViewModel::from(app);
+    if let Some(buf) = app.landing(&vm, key, area) {
+        screen.draw(|f| f.buffer_mut().merge(&buf))?;
+    }
+    Ok(())
+}
 /// DEC private mode 2026: begin / end synchronized update.
 const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
 const SYNC_END: &[u8] = b"\x1b[?2026l";
@@ -510,6 +518,9 @@ pub(super) fn loop_wait(app: &App, now: Instant, frame_wait: Option<Duration>) -
     }
     if let Some(next) = app.motion.wait(now) {
         wait = wait.min(next);
+    }
+    if app.expanding(now) {
+        wait = wait.min(FRAME_INTERVAL);
     }
     for deadline in [app.press_deadline()].into_iter().flatten() {
         wait = wait.min(deadline.saturating_duration_since(now));
@@ -1933,7 +1944,26 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             }
             dirty = true;
         }
-        if app.pending_attach.is_some() && carried.is_empty() {
+        // The attach is prepared off the loop while the tile grows (its local tmux
+        // settings, the command line), dropped if the attach is.
+        if app.pending_attach.is_none() {
+            app.attach_prep = None;
+        } else if app.attach_prep.is_none() && app.expand.as_ref().is_some_and(|e| e.grow) {
+            let (d, s, observe) = app.pending_attach.clone().unwrap();
+            let device = app.devices[d].clone();
+            app.attach_prep = Some((
+                workspaces::runtime_key(&s),
+                std::thread::spawn(move || sessions::attach_command(&device, &s, observe)),
+            ));
+        }
+        // The grow plays until it lands (about three quarters of EXPAND), then hands
+        // off; a remote attach starts a round trip early, while its last frames play
+        // (no byte of it can come back sooner).
+        let size = screen.terminal.size()?;
+        let full = Rect::new(0, 0, size.width, size.height);
+        let now = Instant::now();
+        let expanding = app.attach_waits(now, full) && !app.attach_starts_early(now, full);
+        if app.pending_attach.is_some() && carried.is_empty() && !expanding {
             // Typed input stays cx-owned: a queued key, paste, click or wheel is
             // handled first and may cancel the attachment. Passive reports
             // (pointer motion, button release, focus, resize) never postpone it.
@@ -1943,29 +1973,66 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
                 resume_input();
             }
         }
-        if app.pending_attach.is_some() && carried.is_empty() {
+        if app.pending_attach.is_some() && carried.is_empty() && !expanding {
             let (d, session, observe) = app.pending_attach.take().unwrap();
+            let grow = app.expand.take().filter(|e| e.grow);
+            let key = workspaces::runtime_key(&session);
+            let prepared = app
+                .attach_prep
+                .take()
+                .filter(|(k, _)| *k == key)
+                .and_then(|(_, h)| h.join().ok());
             cleanup_native_preview(&mut screen, &mut native_preview)?;
             app.stop_watches();
-            // The tmux client paints over the frame it shows: the live screen.
-            if app.show_attach_frame(&session) {
-                let size = screen.terminal.size()?;
-                screen.draw(|frame| {
-                    session_preview::render_attach_frame(
-                        frame,
-                        &app,
-                        Rect::new(0, 0, size.width, size.height),
-                    )
-                })?;
+            // The frame the tmux client paints over: the landed screen (the live
+            // screen when cx holds it), on a cleared frame. Frames still due (an early
+            // remote start) play first.
+            let spawnable = matches!(prepared, Some(Ok(Some(_))));
+            let pending = grow
+                .clone()
+                .filter(|e| spawnable && Instant::now() < e.lands_at(full));
+            let landing = app.show_attach_frame(&session) || grow.is_some();
+            if pending.is_none() && landing {
+                draw_landing(&mut screen, &app, &key, full)?;
             }
             screen.hand_off()?;
             // The drain's pause ends here; hand_off holds its own until resume.
             resume_input();
-            let result = sessions::attach(&app.devices[d], &session, observe);
+            let result = match prepared {
+                Some(Ok(Some(mut c))) => match c.spawn() {
+                    Ok(mut child) => {
+                        if let Some(e) = pending {
+                            app.expand = Some(e.clone());
+                            let end = e.lands_at(full);
+                            while Instant::now() < end {
+                                screen.draw(|f| rendering::render_with_native(f, &app, None))?;
+                                std::thread::sleep(
+                                    end.saturating_duration_since(Instant::now())
+                                        .min(FRAME_INTERVAL),
+                                );
+                            }
+                            app.expand = None;
+                            draw_landing(&mut screen, &app, &key, full)?;
+                        }
+                        child
+                            .wait()
+                            .context("native terminal attachment failed")
+                            .and_then(sessions::attach_ended)
+                    }
+                    Err(e) => {
+                        Err(anyhow::Error::from(e).context("native terminal attachment failed"))
+                    }
+                },
+                Some(Err(e)) => Err(e),
+                _ => sessions::attach(&app.devices[d], &session, observe),
+            };
             screen.resume()?;
             last_interaction = Instant::now();
             app.returned_from(d, &session);
             let returned = result.is_ok();
+            if returned {
+                app.start_expand(d, &session, false);
+            }
             app.set_notice_as(
                 if result.is_err() {
                     NoticeKind::Error
@@ -2052,6 +2119,14 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         let sel = app.map_selection();
         app.motion.track(sel.as_deref(), now);
         dirty |= app.motion.animating(now);
+        // The expand / shrink draws every frame while it plays; once done, one plain
+        // frame (a grow whose attach is due hands off instead: no flash of the tiles).
+        if app.expanding(now) {
+            dirty = true;
+        } else if app.expand.is_some() && app.pending_attach.is_none() {
+            app.expand = None;
+            dirty = true;
+        }
         dirty |= app.tick_press(now);
         dirty |= app.files_tick(now);
         // Coalesce bursts (key repeat, reply floods) to at most ~60 fps.

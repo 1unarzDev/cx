@@ -95,6 +95,138 @@ pub fn render_send_to(
     cx.hits.into_inner()
 }
 
+/// The rect a tile has grown to at `e` (0 the tile, 1 the full `area`), eased by the
+/// caller. Within a cell of the full screen on every side it is the full screen: the
+/// last frames never crawl a column at a time.
+pub fn expand_rect(from: Rect, area: Rect, e: f32) -> Rect {
+    let e = e.clamp(0.0, 1.0);
+    let lerp = |a: u16, b: u16| (f32::from(a) + (f32::from(b) - f32::from(a)) * e).round() as u16;
+    let (l, t) = (lerp(from.left(), area.left()), lerp(from.top(), area.top()));
+    let (r, b) = (
+        lerp(from.right(), area.right()),
+        lerp(from.bottom(), area.bottom()),
+    );
+    let near = |a: u16, b: u16| a.abs_diff(b) <= 1;
+    if near(l, area.left())
+        && near(t, area.top())
+        && near(r, area.right())
+        && near(b, area.bottom())
+    {
+        return area;
+    }
+    Rect::new(l, t, r.saturating_sub(l), b.saturating_sub(t))
+}
+
+/// The screen an attach lands on when cx has no live grid of it: the session's screen
+/// as `attached` lays it out (its bar dropped: tmux's status is the last row).
+pub fn landing_screen(
+    state: &LabState,
+    caps: &LabCaps,
+    area: Rect,
+    session: &str,
+) -> Option<Buffer> {
+    let x = state.session(session)?;
+    let full = Rect::new(0, 0, area.width, area.height + 1);
+    let mut scratch = Buffer::empty(full);
+    if area.width >= 12 && area.height >= 3 {
+        views::attached(&Cx::new(state, caps, full), &mut scratch, x);
+    }
+    let mut out = Buffer::empty(Rect::new(0, 0, area.width, area.height));
+    for y in 0..area.height {
+        for x in 0..area.width {
+            out[(x, y)] = scratch[(x, y + 1)].clone();
+        }
+    }
+    Some(out)
+}
+
+/// The attach expand (or detach shrink) at `e` (eased, 0 the tile `from`, 1 the full
+/// `area`): `screen`, the frame the attach lands on, in a rect growing from the tile.
+/// The rect keeps the tile's anchor (the text's tail at its bottom edge) and eases to
+/// the screen's own rows, so the last frame is the landed screen cell for cell. A thin
+/// edge rides outside the rect (never over the text); the hub behind it dims.
+pub fn render_expand(
+    state: &LabState,
+    caps: &LabCaps,
+    area: Rect,
+    buf: &mut Buffer,
+    screen: &Buffer,
+    from: Rect,
+    e: f32,
+) {
+    let r = expand_rect(from, area, e)
+        .intersection(area)
+        .intersection(buf.area);
+    if r.is_empty() {
+        return;
+    }
+    let landed = r == area;
+    // The screen's rows in use: the tile showed their tail.
+    let sa = screen.area;
+    let used = (0..sa.height)
+        .rev()
+        .find(|&y| (0..sa.width).any(|x| screen[(x, y)].symbol() != " "))
+        .map_or(0, |y| y + 1);
+    let off = if landed {
+        0
+    } else {
+        let tail = used.saturating_sub(from.height);
+        (f32::from(tail) * (1.0 - e.clamp(0.0, 1.0))).round() as u16
+    };
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let c = &mut buf[(x, y)];
+            if !r.contains((x, y).into()) {
+                c.set_style(dim);
+                continue;
+            }
+            let (sx, sy) = (x - r.x, y - r.y + off);
+            *c = if sx < sa.width && sy < sa.height {
+                screen[(sx, sy)].clone()
+            } else {
+                ratatui::buffer::Cell::default()
+            };
+        }
+    }
+    if landed {
+        return;
+    }
+    // The edge, one cell outside the rect (clipped by the screen), in one ink.
+    let cx = Cx::new(state, caps, area);
+    let st = cx.ink(Tok::Accent, 0.7);
+    let (h, v) = (cx.g("─", "-"), cx.g("│", "|"));
+    let (x0, y0) = (i32::from(r.x) - 1, i32::from(r.y) - 1);
+    let (x1, y1) = (i32::from(r.right()), i32::from(r.bottom()));
+    let mut put = |x: i32, y: i32, g: &str| {
+        let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+            return;
+        };
+        if area.contains((x, y).into()) {
+            buf[(x, y)] = ratatui::buffer::Cell::default();
+            cx.put(buf, x, y, 1, g, st);
+        }
+    };
+    for x in x0 + 1..x1 {
+        put(x, y0, h);
+        put(x, y1, h);
+    }
+    for y in y0 + 1..y1 {
+        put(x0, y, v);
+        put(x1, y, v);
+    }
+    put(x0, y0, cx.g("╭", "+"));
+    put(x1, y0, cx.g("╮", "+"));
+    put(x0, y1, cx.g("╰", "+"));
+    put(x1, y1, cx.g("╯", "+"));
+}
+
+/// Ease-out cubic: off the tile at once, a long soft landing that reaches the full
+/// screen (within a cell) at about three quarters of the time.
+pub fn ease_out(t: f32) -> f32 {
+    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
+}
+
 /// Session ids in hub order (what needs you first), as the hub's tiles rank them.
 pub fn by_attention(state: &LabState) -> Vec<String> {
     let caps = LabCaps::default();
@@ -113,10 +245,17 @@ pub(super) enum Size {
     L,
 }
 
-/// Session slot keys inside a device (home row; `f` stays "files", `j k` stay motion as
-/// in files and every list; `h l` stay fold keys as in files). Sessions past the fourth
-/// are reached by the arrows, `Tab` or `/`.
-pub const SLOTS: [char; 4] = ['a', 's', 'd', 'g'];
+/// Session keys inside a device, in the order they are given out: the home row (`f`
+/// stays "files", `h j k l` motion), then the top and bottom rows' letters no device
+/// screen binds (`c x n` new, `w e r t p b` verbs), then the digits. A session keeps its
+/// key until it ends; past these 21 a device's sessions are a `/` away.
+pub const SLOTS: [char; 21] = [
+    'a', 's', 'd', 'g', 'q', 'u', 'i', 'o', 'y', 'z', 'v', 'm', '1', '2', '3', '4', '5', '6', '7',
+    '8', '9',
+];
+/// The home-row slots alone: the keys screen's cards, and the letters device names give
+/// way to (`hotkeys`).
+pub const HOME: [char; 4] = ['a', 's', 'd', 'g'];
 
 /// A pill's rounded caps (powerline extra symbols, drawn by kitty, ghostty and wezterm).
 pub const PILL_L: &str = "\u{e0b6}";
@@ -134,6 +273,9 @@ pub(super) struct Cx<'a> {
     nav: RefCell<Vec<LabTarget>>,
     /// The map's arrow moves (see `Drawn::moves`).
     moves: RefCell<Vec<(String, [Option<String>; 4])>>,
+    /// Drawing one device's own screen: its tiles drop the device letter (only the
+    /// slot key is pressed there).
+    pub on_device: std::cell::Cell<bool>,
 }
 
 impl<'a> Cx<'a> {
@@ -146,6 +288,7 @@ impl<'a> Cx<'a> {
             order: RefCell::new(Vec::new()),
             nav: RefCell::new(Vec::new()),
             moves: RefCell::new(Vec::new()),
+            on_device: std::cell::Cell::new(false),
         }
     }
 
@@ -624,12 +767,12 @@ impl<'a> Cx<'a> {
             crate::ui::views::Provider::Shell => ("shell", Tok::Shell),
         }
     }
-    /// The session's slot key within its device (stable creation order).
+    /// The session's key within its device (`SLOTS`; None past the pool).
     pub fn slot(&self, x: &LabSession) -> Option<char> {
-        let i = self.s.sessions_on(&x.device).position(|y| y.id == x.id)?;
-        SLOTS.get(i).copied()
+        x.key
     }
-    /// Hub order: what needs you first, then live work, then by recency.
+    /// Hub order: what needs you first, then live work, then by recency (a session past
+    /// the key pool last: the tiles shown are the ones with a key).
     pub fn by_attention(&self) -> Vec<&'a LabSession> {
         let mut v: Vec<&LabSession> = self.s.sessions.iter().collect();
         let rank = |x: &LabSession| match x.state {
@@ -640,7 +783,7 @@ impl<'a> Cx<'a> {
             SessionState::Unknown => 4,
             SessionState::Exited => 5,
         };
-        v.sort_by_key(|x| (rank(x), x.last_activity_secs));
+        v.sort_by_key(|x| (x.key.is_none(), rank(x), x.last_activity_secs));
         v
     }
 
@@ -662,7 +805,8 @@ impl<'a> Cx<'a> {
                 self.st(Tok::Accent).add_modifier(Modifier::BOLD),
             )
         } else {
-            (self.g(" ", "  "), self.ink(Tok::Muted, 0.8))
+            // (ASCII too: one column, so the text sits under `[`'s text.)
+            (" ", self.ink(Tok::Muted, 0.8))
         };
         if focused && !self.uni() {
             let t = format!("[{text}]");

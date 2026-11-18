@@ -43,7 +43,7 @@ Record changes in [CHANGELOG.md](../CHANGELOG.md). Before tagging a stable versi
 | `preview.rs` | File preview state and rendering: text, markdown layout/links, raster fallback, in-preview find; `DocCache` (retained wrapped layout, slice rendering) and chunked streaming of large text previews |
 | `network_view.rs` | Network/neighbor state, probes and the network render |
 | `screens.rs` | The screens as a controller: the hub (start view), a device's sessions, peek, the edge policy editor, keys and the send-to picker; one grammar of a device letter, then a verb or a session slot |
-| `hotkeys.rs` | Device letters for the hub and the session slots `a s d g` ([concept-mission](design/concept-mission.md) section 6) |
+| `hotkeys.rs` | Device letters for the hub (they give way to the home-row session keys `a s d g`; the session key pool and its stable assignment are `mission::SLOTS` and `screens::slot_keys`) ([concept-mission](design/concept-mission.md) section 6) |
 | `viewmodel.rs` | `ViewModel::from(&App)`: App state mapped into the view layer's `LabState`, plus the screen, focus and selection to draw; pure, never dispatches a request |
 | `views/` | The production view layer (`views/mission/`: hub, orbit, tiles) drawn from the view-model into a ratatui buffer; no App, IO, tmux or network |
 | `activity.rs` | Per-viewer session activity history (from listings, in memory), the trend a session's peek shows |

@@ -11,7 +11,8 @@ One grammar on every screen: **a device letter, then a session slot or a verb**.
 | Keys | Action |
 |---|---|
 | device letter | Open that device's screen (from the hub, peek or palette) |
-| `a s d g` (device screen) | Attach that session slot at once; further sessions are a move or `/` away |
+| `a s d g …` (device screen) | Attach the session whose tile shows that key, at once. Keys go out home row first (`a s d g`, then `q u i o y z v m`, then `1`-`9`); a session keeps its key until it ends, and a new one takes the first free key. Past 21 sessions on a device, `/ +N more` finds the rest |
+| `a s d …` (device with nothing running) | The launch panel in place of the tiles: `a` resumes the newest session that ended there while cx watched (the agent's latest conversation in its folder, or a shell there), then `s d …` open the launch chooser in recent folders (ended and pinned sessions' folders, the last Files folder). `c x n` start new agents as everywhere; only the agents the device's helper reported are offered. With only one device, `c x n` also work on the hub |
 | `c` / `x` / `n` (device screen) | New Claude / Codex / shell in the device's home, attached at once |
 | Enter, Space | Attach / open the selection; peek a session's screen (Tab steps through peeks) |
 | Backspace, Backspace | Stop the selected CX-managed session; any other key keeps it, never `y` |
@@ -71,7 +72,7 @@ When a device's own name does not resolve or connect, CX tries addresses it has 
 
 A device's screen also shows your shells and Claude/Codex sessions that CX did not start. These include sessions in an ordinary terminal window, an SSH login, another tmux or screen server, a default-server tmux pane, or a `docker exec` client. Rows outside tmux end with where they live, such as `· terminal` or `· ssh`.
 
-Remote devices list them too: agent terminals outside CX's tmux appear as their own tiles marked `outside cx · ⏎ adopt`, with the agent, folder and age but no screen (CX cannot read a plain terminal's screen), and are not counted as managed sessions. When a device cannot move terminals yet, its tiles say exactly why; Enter then offers to install `cx-reptyr` there from the release assets.
+Remote devices list them too: agent terminals outside CX's tmux appear as their own tiles marked `outside cx · ⏎ adopt`, with the agent, folder and age but no screen (CX cannot read a plain terminal's screen), and are not counted as managed sessions. When a device cannot move terminals yet, its tiles say exactly why; Enter then installs the signed `cx-reptyr` there with `cap_sys_ptrace` (one `sudo` password on that device) and the move continues by itself, with no prompt on later moves. A remote device whose relay only works through `sudo` (installed with `install` below) is offered this setup too: a password panel cannot reach its helper over SSH.
 
 Press Enter on such a session to move it into CX. The terminal's processes keep running: the same PIDs, threads, child tools and in-progress work, with only where the terminal is shown changing. A move takes well under a second, and output continues during it. If the terminal was a single-window emulator, its now-empty window closes automatically; a multiplexer (tmux, screen) or a server emulator that drives other windows (gnome-terminal, konsole) is left alone, and you can close that window yourself. The moved row then appears once, as a managed CX session. Stopping it with Backspace, Backspace on its tile, exiting its shell, or `cx reset` ends it as it would end any CX session. Programs that ignore SIGTERM are not force-killed.
 
@@ -83,7 +84,7 @@ cx device ptrace local status
 cx device ptrace local uninstall
 ```
 
-`install` places `cx-reptyr` in `~/.local/bin`. Each move then runs it through `sudo`, and CX asks for your password in a panel, so no privileged state persists between moves. The relay accepts only one exact form: it refuses any process not fully owned by you, re-checks every process identity CX observed, and drops back to your user (and all capabilities) once the terminal has moved.
+`install` places `cx-reptyr` in `~/.local/bin`. Each move from a viewer on that device then runs it through `sudo`, and CX asks for your password in a panel (once per move; the move's own time starts after you answer), so no privileged state persists between moves. The relay accepts only one exact form: it refuses any process not fully owned by you, re-checks every process identity CX observed, and drops back to your user (and all capabilities) once the terminal has moved.
 
 To skip the per-move password on a device you trust, `cx device ptrace <device> enable` installs a root-owned `/usr/local/libexec/cx/cx-reptyr` with `cap_sys_ptrace` (one `sudo` at setup; undo with `disable`). Any program running as you on that device could then use it to take over your other terminals, so enable it only where you want that. Hosts with Yama `ptrace_scope=3` cannot move terminals. Without setup, these rows stay visible and default-server tmux rows still attach as before.
 
@@ -152,6 +153,12 @@ the session too); Ctrl+\, Esc Esc or a tap outside the screen (the typing bar's
 Ctrl+], Ctrl+O, Escape and Ctrl+C go to the application. To send a literal Ctrl+\
 (SIGQUIT, nvim Ctrl+\ Ctrl+N), use the palette (`/`) → **Send Ctrl+\ to the last
 session**: it forwards one to the session you last detached from and re-attaches it.
+Attaching from a tile grows it to the full screen over at most 45 ms (it costs an attach at most about 40 ms) (ease-out, a thin
+edge outside it, the screen behind it dimmed). It shows the screen you are about to see,
+starting from the tail the tile showed, and lands on it cell for cell. The attach is
+prepared while it grows and hands off as it lands; on a remote device it starts a round
+trip early. Detaching shrinks it back into its tile; any key skips
+either. It is off with `CX_REDUCED_MOTION=1`, on phones and over slow terminal links.
 
 The pane preserves colors, blank rows, alternate-screen content and cursor location.
 It refreshes at up to 4 Hz while browsing and 10 Hz while focused. Its viewport

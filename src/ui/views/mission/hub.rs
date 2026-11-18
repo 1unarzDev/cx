@@ -28,7 +28,8 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         Size::M => 16,
         _ => 12,
     };
-    let need = th_max;
+    // With nothing running, the launch panel needs ten rows at most: the map keeps the rest.
+    let need = if list.is_empty() { 10 } else { th_max };
     let fixed = tick_h + 1 + vit_h + 1 + 1 + 1; // ticker, sessions label, vitals, top row, gaps
                                                 // (Plus the band's blank row either side, and the air kept where the screen is tall.)
     let pad = if sz >= Size::M && r.height >= 30 {
@@ -53,7 +54,13 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let band_th = th;
     // (The top row stays blank, as air under the top bar: no header strip. A device's
     // meshes show quietly in its vitals strip.)
-    let band = Rect::new(r.x, r.y + 2, r.width, band_h.saturating_sub(2));
+    // (One column in: a label at the map's edge stays on the text's gutter.)
+    let band = Rect::new(
+        r.x + 1,
+        r.y + 2,
+        r.width.saturating_sub(2),
+        band_h.saturating_sub(2),
+    );
     let ids = nebula::order(cx, band);
     cx.order.borrow_mut().clone_from(&ids);
     let sel_id = if on_sess && !list.is_empty() {
@@ -68,13 +75,24 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // where the screen is tall, else the blank row the band already keeps. With room
     // for two, a second row of tiles shows the rest of the sessions and the ghost
     // (only when each row keeps ten rows, so a tile still shows enough of its screen).
-    let gh = nebula::height(cx, band, &cx.s.viewer);
+    // (Nothing running: the map grows into the rows the panel leaves.)
+    // (Its rows, and those the launch panel's ten leave: it needs three or so.)
+    let tall = if list.is_empty() {
+        band.height + th.saturating_sub(4)
+    } else {
+        0
+    };
+    let gh = nebula::height(cx, band, &cx.s.viewer, tall);
     let air = if sz >= Size::M && r.height >= 30 {
         2
     } else {
         0
     };
-    let room = th + band.height.saturating_sub(gh + air);
+    let room = if list.is_empty() {
+        th
+    } else {
+        th + band.height.saturating_sub(gh + air)
+    };
     let (rows, th) = if list.len() >= usize::from(cols) && room > 2 * th_min.max(10) {
         (2, (room - 1) / 2)
     } else {
@@ -86,12 +104,42 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     } else {
         cols
     };
-    let grid_h = (rows * th + rows).saturating_sub(1);
+    let mut grid_h = (rows * th + rows).saturating_sub(1);
     let mut y = (band.bottom() + 1 + band_th).saturating_sub(grid_h);
     // The map sits centred in the rows above the vitals strip.
     // (Counting the row of mesh wash above the map where rows are airy.)
     let lift = u16::from(sz >= Size::M);
-    let above = ((y - r.y - 1).saturating_sub(gh + lift) / 2).max(1) + lift;
+    let mut above = ((y - r.y - 1).saturating_sub(gh + lift) / 2).max(1) + lift;
+    if list.is_empty() {
+        // Nothing running: the map near the top as in the reference, the strip and the
+        // panel right under it, and the rows left over stay below, where tiles will go.
+        // The rows the panel does not need go half above the map, half under the
+        // panel: the group sits in the middle, not over a void. (Measured off screen.)
+        above = (1 + lift).min(above);
+        let bottom = y + grid_h;
+        let ny = (r.y + above + gh + 2 + lift).min(y);
+        let panel = cx.s.device(&sel_id).map_or(1, |d| {
+            let n = cx.hits.borrow().len();
+            let area = Rect::new(0, 0, r.width, grid_h);
+            let h = views::launch_panel(cx, &mut Buffer::empty(area), area, d, true);
+            cx.hits.borrow_mut().truncate(n);
+            h
+        });
+        let free = bottom.saturating_sub(ny + panel + 1) / 2;
+        above += free;
+        y = ny + free;
+        grid_h = bottom.saturating_sub(y);
+    }
+    // The only device and nothing running: this device at the middle of its quiet
+    // orbits (the welcome page's picture), as tall as the panel's rows allow.
+    let lone = list.is_empty() && cx.s.devices.len() == 1 && cx.uni();
+    let grow = if lone {
+        grid_h.saturating_sub(8).min(15u16.saturating_sub(gh + 2))
+    } else {
+        0
+    };
+    y += grow;
+    grid_h -= grow;
     // (Not so low that the drawing runs into the vitals strip.)
     let above = above.min(y.saturating_sub(r.y + gh + 1)).max(1);
     // (A row more either side where there is air, for the mesh wash's margin. The
@@ -108,7 +156,17 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         height: band.height.min(y.saturating_sub(band.y)).max(1),
         ..band
     };
-    nebula::draw(cx, buf, band, &cx.s.viewer, &sel_id, on_graph);
+    match cx.s.device(&sel_id).filter(|_| grow > 0) {
+        Some(d) => {
+            let band = Rect {
+                height: band.height + grow,
+                ..band
+            };
+            nebula::welcome(cx, buf, band, d);
+            cx.hit(band, format!("device:{}", d.id));
+        }
+        None => nebula::draw(cx, buf, band, &cx.s.viewer, &sel_id, on_graph, tall),
+    }
     if let Some(d) = cx.s.device(&sel_id) {
         vitals(
             cx,
@@ -122,15 +180,9 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
 
     // Sessions: one row, ranked by attention; the full grid lives in each device.
     let n = list.len();
-    // `›` (a crumb, "goes on") in Unicode; ASCII keeps the words (`>` is selection).
-    // Only when tiles are hidden: `+2 more ›` (when every session shows, no chip).
+    // Only when tiles are hidden: `/ +2 more` (when every session shows, no chip).
     let hidden = n.saturating_sub(usize::from(rows * cols));
-    let hint = if hidden > 0 {
-        format!("+{hidden} more{}", cx.g(" ›", ""))
-    } else {
-        String::new()
-    };
-    let hw = super::width(&hint, cx.uni());
+    let hw = views::more_chip(cx, buf, right, y, hidden);
     let lx = views::zone(
         cx,
         buf,
@@ -140,16 +192,15 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         "SESSIONS",
         on_sess,
     );
-    if sz >= Size::M {
-        let t = " needs you first ";
+    // (A sort order only means something with tiles to sort.)
+    // (With none, the rule says so: the panel under it starts with what to do.)
+    let t = if n > 0 {
+        " needs you first "
+    } else {
+        " nothing running "
+    };
+    if sz >= Size::M || n == 0 {
         cx.put(buf, lx + 1, y, 17, t, cx.ink(Tok::Muted, 0.8));
-    }
-    if hidden > 0 {
-        cx.put_r(buf, right, y, &hint, cx.st(Tok::Muted));
-        cx.hit(
-            Rect::new(right.saturating_sub(hw), y, hw, 1),
-            "palette:sessions",
-        );
     }
     y += 1;
     let grid = Rect::new(r.x + 1, y, r.width.saturating_sub(2), grid_h);
@@ -166,6 +217,7 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         list.swap(shown - 1, cx.c.selected % n);
         pick.0 = shown - 1;
     }
+    let th = if list.is_empty() { grid_h } else { th };
     views::thumbs_grid(cx, buf, grid, &list, pick, cols, th, cx.s.device(&sel_id));
     if tick_h > 0 {
         ticker(
@@ -244,7 +296,8 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
     if up && !ghost {
         items.push(("c", "claude", &new));
     }
-    if up {
+    // (The launch panel under it says `f files` with the rest.)
+    if up && !ghost {
         items.push(("f", "files", &files));
     }
     if items.len() == 1 {
@@ -367,7 +420,7 @@ fn alerts(cx: &Cx) -> Vec<Alert> {
         } else {
             format!("{} needs you on {}", x.title, d.name)
         };
-        // A session past the four slots has no letter pair: `/` finds it by name.
+        // A session past the key pool has no letter pair: `/` finds it by name.
         let (keys, verb) = match cx.slot(x) {
             Some(s) => (format!("@{} {s}", d.hotkey), "attach"),
             None => ("/".to_string(), "find"),
@@ -430,10 +483,12 @@ fn ticker(cx: &Cx, buf: &mut Buffer, r: Rect) {
         // The first item keeps its words; later ones only when they fit whole-ish.
         let tw = super::width(&text, cx.uni()).min(room);
         if tw < 12 || (i > 0 && tw < super::width(&text, cx.uni()).min(28)) {
-            if i > 0 && x + 6 < right {
-                // A chip, so the alerts that did not fit are one tap away.
-                let more = format!(" +{} ", n - i);
-                let w = cx.put(buf, x, r.y, 5, &more, cx.key_style());
+            let more = format!("+{} more", n - i);
+            let kw = cx.key_w("/");
+            if i > 0 && x + kw + 1 + super::width(&more, cx.uni()) < right {
+                // `/ +2 more`: the alerts that did not fit are a find away, by key or tap.
+                let w = cx.keycap(buf, x, r.y, kw, "/", cx.key_style()) + 1;
+                let w = w + cx.put(buf, x + w, r.y, 8, &more, cx.st(Tok::Muted));
                 cx.hit(Rect::new(x, r.y, w, 1), "notices");
             }
             break;
@@ -462,8 +517,15 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let n = rows.len() as u16;
     let al = alerts(cx);
     let tick_h = (al.len() as u16).min(2).min(r.height / 8);
-    // A breathing row, the tree, a breathing row, the ticker.
+    // A breathing row, the tree, a breathing row, the ticker. With nothing running,
+    // three rows stay for SESSIONS and its launch row where the tree can spare them.
+    let idle = cx.s.sessions.is_empty();
     let avail = r.height.saturating_sub(1 + tick_h + 1);
+    let avail = if idle && avail >= n + 3 {
+        avail - 3
+    } else {
+        avail
+    };
     // Two-row device rows when the height allows (a thumb-sized target with vitals).
     let row_h = if avail >= 2 * n { 2 } else { 1 };
     let shown = (avail / row_h).min(n);
@@ -498,8 +560,8 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // Rows the tree leaves go to the sessions that need you first (two-row thumb
     // targets), keeping a breathing row above the ticker.
     let mut sy = y + 2;
-    if sy + 2 < ty {
-        views::zone(
+    if sy + 2 < ty || (sy < ty && idle) {
+        let lx = views::zone(
             cx,
             buf,
             r.x + 1,
@@ -509,6 +571,20 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
             focus == Pane::Sessions,
         );
         let list = cx.by_attention();
+        if list.is_empty() {
+            cx.put(
+                buf,
+                lx + 1,
+                y + 1,
+                17,
+                " nothing running ",
+                cx.ink(Tok::Muted, 0.8),
+            );
+            if let Some(d) = cx.s.device(sel_id) {
+                let pr = Rect::new(r.x, sy, r.width, ty.saturating_sub(sy + 1).max(1));
+                views::launch_panel(cx, buf, pr, d, true);
+            }
+        }
         let sel = (focus == Pane::Sessions && !list.is_empty()).then(|| cx.c.selected % list.len());
         // With rows to spare, the selected session's (else the first's) last lines sit
         // under its row: the phone's live preview.

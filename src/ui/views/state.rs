@@ -58,6 +58,11 @@ pub struct LabDevice {
     pub joined_via: Option<String>,
     /// Core devices are the user's own always-on machines.
     pub core: bool,
+    /// What its helper reported it can start (`claude`, `codex`, `containers`); empty
+    /// when it has not been asked yet.
+    pub caps: Vec<String>,
+    /// Folders cx has seen work in on this device (ended sessions, Files), newest first.
+    pub recent: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -177,6 +182,8 @@ pub struct LabSession {
     /// What the tile says instead of (or above) a screen: why its device cannot be
     /// reached, or that cx cannot read an outside terminal's screen.
     pub note: Option<String>,
+    /// Its key within its device (`mission::SLOTS`): kept until it ends; None past the pool.
+    pub key: Option<char>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -312,6 +319,8 @@ pub struct LabState {
     pub secret_entry: Option<LabSecretEntry>,
     pub notifications: Vec<LabNotice>,
     pub transfers: Vec<LabTransfer>,
+    /// Sessions that ended while cx watched (newest first, `last_activity_secs` is when).
+    pub ended: Vec<LabSession>,
     /// Palette rows from the real app (already filtered and ranked); None in fixtures,
     /// where the palette lists the fixture's devices, sessions and actions itself.
     pub palette: Option<Vec<PaletteRow>>,
@@ -365,6 +374,12 @@ impl LabState {
             "typical" => Some(typical()),
             "large" => Some(large()),
             "mirror" => Some(mirror()),
+            "bare" => Some(bare()),
+            "ended" => Some(ended()),
+            "quiet" => Some(quiet()),
+            "solo" => Some(solo()),
+            "nomesh" => Some(nomesh()),
+            "crowded" => Some(crowded()),
             _ => {
                 let n: usize = name.strip_prefix("nebula-")?.parse().ok()?;
                 (n <= 25).then(|| nebula(n))

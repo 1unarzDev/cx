@@ -175,6 +175,142 @@ fn device_slots_attach_and_moving_clamps_without_wrapping() {
     );
 }
 
+/// Every session on a device holds its own key (21 of them, home row first) and the
+/// key attaches exactly that session; a session keeps its key while others end and a
+/// new one takes the freed key; the 22nd has none and a digit nobody holds stays a count.
+#[test]
+fn every_session_key_attaches_its_session_and_keys_are_stable() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 23);
+    let keys: Vec<(String, Option<char>)> = a
+        .slot_keys(0)
+        .into_iter()
+        .map(|(s, k)| (s.id.clone(), k))
+        .collect();
+    let given: String = keys.iter().filter_map(|(_, k)| *k).collect();
+    assert_eq!(given, "asdgquioyzvm123456789");
+    assert_eq!(keys.iter().filter(|(_, k)| k.is_none()).count(), 2);
+    for (id, k) in keys.iter().filter_map(|(id, k)| k.map(|k| (id, k))) {
+        a.open_device(0);
+        press(&mut a, k);
+        let attached = a
+            .pending_attach
+            .take()
+            .map(|(_, s, _)| s.id)
+            .or_else(|| a.attach_check.take().map(|(_, s, _, _)| s.id));
+        assert_eq!(attached.as_deref(), Some(id.as_str()), "key {k}");
+    }
+    // `s` ends: the others keep theirs; the first without a key takes `s`.
+    let s_id = keys[1].0.clone();
+    a.work[0].sessions.retain(|s| s.id != s_id);
+    let after: Vec<(String, Option<char>)> = a
+        .slot_keys(0)
+        .into_iter()
+        .map(|(s, k)| (s.id.clone(), k))
+        .collect();
+    for (id, k) in &keys {
+        if *id != s_id && k.is_some() {
+            assert!(after.contains(&(id.clone(), *k)), "{id} kept {k:?}");
+        }
+    }
+    let heir = &keys.iter().find(|(_, k)| k.is_none()).unwrap().0;
+    assert!(after.contains(&(heir.clone(), Some('s'))));
+}
+
+/// A device with nothing running: a session that ended while cx watched is its resume
+/// row (`a` continues the agent's latest conversation in that folder) and recent
+/// folders follow on `s d ...` (each opens the launch chooser there); taps do the same.
+#[test]
+fn an_ended_session_resumes_and_recent_folders_start_with_one_key() {
+    let (mut a, rx) = queued_app();
+    sessions(&mut a, 0, 1);
+    a.work[0].sessions[0].provider = "claude".into();
+    a.work[0].sessions[0].directory = "/srv/proj".into();
+    a.file_locations.insert(0, "/srv/notes".into());
+    a.apply(Reply {
+        device_id: Some(a.devices[0].id.clone()),
+        execution_target: None,
+        device: 0,
+        op: Operation::Sessions,
+        generation: a.generation,
+        preview: None,
+        result: Ok(serde_json::json!([])),
+    });
+    a.open_device(0);
+    let text = draw(&a, 120, 40);
+    assert!(text.contains("nothing running"), "{text}");
+    let row = |w: &str| {
+        text.lines()
+            .find(|l| l.contains(w))
+            .unwrap_or("")
+            .to_string()
+    };
+    assert!(
+        row("resume").contains(" a ") && row("resume").contains("/srv/proj"),
+        "{text}"
+    );
+    assert!(
+        row("recent").contains(" s ") && row("recent").contains("/srv/notes"),
+        "{text}"
+    );
+    let _ = rx.try_iter().count();
+    press(&mut a, 'a');
+    assert!(rx.try_iter().any(|t| matches!(&t.op,
+        Operation::Create(c) if c.resume && !c.resume_pick && c.directory == "/srv/proj" && c.provider == "claude")));
+    a.creating = false;
+    a.open_device(0);
+    press(&mut a, 's');
+    assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(0, p)) if p == "/srv/notes"));
+    a.dialog = None;
+    // The row's tap is its key.
+    draw(&a, 120, 40);
+    let r = act("launch:0:s");
+    click(&mut a, r.x + 1, r.y, Rect::new(0, 0, 120, 40));
+    assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(0, p)) if p == "/srv/notes"));
+}
+
+/// Attaching from a tile plays the expand from where the tile was drawn: the loop
+/// keeps drawing frames for it (and no longer once it is done), any key ends it, and
+/// reduced motion never starts one; a detach plays the shrink back into the tile.
+#[test]
+fn attaching_from_a_tile_expands_it_and_a_key_skips_it() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 2);
+    a.open_device(0);
+    draw(&a, 120, 40);
+    press(&mut a, 's');
+    let e = a.expand.clone().expect("the tile grows");
+    assert!(e.grow && e.from.is_some_and(|r| r.width < 120), "{e:?}");
+    let t0 = e.start;
+    let (id, tile, t) = a.expand_frame(t0).unwrap();
+    assert_eq!((tile, t), (e.from.unwrap(), 0.0));
+    let area = Rect::new(0, 0, 120, 40);
+    assert!(a.attach_waits(t0, area) && !a.attach_waits(e.lands_at(area), area));
+    assert_eq!(id, workspaces::runtime_key(a.slot_sessions(0)[1]));
+    assert!(runtime::loop_wait(&a, t0, None) <= runtime::FRAME_INTERVAL);
+    let done = t0 + motion::EXPAND;
+    assert!(!a.expanding(done) && a.expand_frame(done).is_none());
+    // A key ends it at once.
+    a.key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert!(a.expand.is_none());
+    // The shrink after a detach finds its tile on the frame it draws.
+    let s = a.slot_sessions(0)[1].clone();
+    a.start_expand(0, &s, false);
+    let e = a.expand.clone().unwrap();
+    assert!(!e.grow && e.from.is_none());
+    let (_, _, t) = a.expand_frame(e.start).unwrap();
+    assert_eq!(t, 1.0, "the shrink starts at full screen");
+    assert!(
+        a.expand_frame(Instant::now()).unwrap().2 < 0.7,
+        "its first drawn frame shows the hub"
+    );
+    // Reduced motion: nothing plays.
+    a.expand = None;
+    a.motion = motion::Clock::new(true);
+    a.start_expand(0, &s, true);
+    assert!(a.expand.is_none());
+}
+
 #[test]
 fn nodes_tiles_and_chips_are_tap_targets_with_key_semantics() {
     let (mut a, _rx) = queued_app();
@@ -1974,4 +2110,126 @@ fn an_arrow_keeps_the_files_which_key_panel() {
     }
     a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(a.yz.pending.is_empty());
+}
+
+/// Every keycap the launch panel prints (device view, and the hub with nothing running,
+/// where the device's letter comes first) does exactly what a tap on its row does.
+#[test]
+fn every_launch_panel_keycap_does_what_its_tap_does() {
+    let (mut a, rx) = queued_app();
+    sessions(&mut a, 0, 1);
+    a.work[0].sessions[0].provider = "claude".into();
+    a.work[0].sessions[0].directory = "/srv/proj".into();
+    a.file_locations.insert(0, "/srv/notes".into());
+    a.apply(Reply {
+        device_id: Some(a.devices[0].id.clone()),
+        execution_target: None,
+        device: 0,
+        op: Operation::Sessions,
+        generation: a.generation,
+        preview: None,
+        result: Ok(serde_json::json!([])),
+    });
+    let area = Rect::new(0, 0, 120, 40);
+    // What an action did: the dialog it opened and the sessions it asked for.
+    let effect = |a: &mut App| {
+        let ops: Vec<String> = rx
+            .try_iter()
+            .filter_map(|t| match &t.op {
+                Operation::Create(c) | Operation::CreateYolo(c) => {
+                    Some(format!("{} {} {}", c.provider, c.directory, c.resume))
+                }
+                _ => None,
+            })
+            .collect();
+        let dialog = match a.dialog.take() {
+            Some(Dialog::SessionChooser(d, p)) => format!("chooser {d} {p}"),
+            Some(Dialog::Permissions(d, dir, p, ..)) => format!("permissions {d} {dir} {p}"),
+            Some(Dialog::SessionPicker(d, dir, _, p, _)) => format!("picker {d} {dir} {p}"),
+            Some(_) => "other".into(),
+            None => "None".into(),
+        };
+        a.creating = false;
+        (dialog, ops)
+    };
+    for hub in [false, true] {
+        let open = |a: &mut App| {
+            a.dialog = None;
+            if hub {
+                a.go_hub();
+            } else {
+                a.open_device(0);
+            }
+        };
+        open(&mut a);
+        let text = draw(&a, 120, 40);
+        let rows: Vec<&str> = text.lines().collect();
+        let targets: Vec<(Rect, String)> = hitmap::with(|m| m.all())
+            .into_iter()
+            .filter_map(|(r, h)| match h {
+                Hit::View(i) => hitmap::action(i).map(|x| (r, x)),
+                _ => None,
+            })
+            .filter(|(_, x)| {
+                x.strip_prefix("new:")
+                    .or(x.strip_prefix("launch:"))
+                    .is_some_and(|r| r.starts_with(&format!("{}:", viewmodel::dev_id(0))))
+            })
+            .collect();
+        assert!(targets.len() >= 5, "hub {hub}: {targets:?}\n{text}");
+        for (r, action) in targets {
+            // The key: the last one-letter cap before the row's words.
+            let cells: String = rows[r.y as usize]
+                .chars()
+                .skip(r.x as usize)
+                .take(r.width as usize)
+                .collect();
+            let key = cells
+                .split_whitespace()
+                .take_while(|t| t.chars().count() == 1)
+                .last()
+                .and_then(|t| t.chars().next())
+                .unwrap_or_else(|| panic!("hub {hub}: no key on {action}: {cells:?}"));
+            open(&mut a);
+            let _ = effect(&mut a);
+            if hub {
+                let l = letter(&a, 0);
+                press(&mut a, l);
+            }
+            press(&mut a, key);
+            let by_key = effect(&mut a);
+            open(&mut a);
+            draw(&a, 120, 40);
+            click(&mut a, r.x + 1, r.y, area);
+            if hub {
+                // (A tap acts at once; the key went through the device first.)
+                assert_eq!(a.view, View::Network, "{action}");
+            }
+            let by_tap = effect(&mut a);
+            assert!(
+                by_key.0 != "None" || !by_key.1.is_empty(),
+                "hub {hub}: {key} did nothing ({action})"
+            );
+            assert_eq!(by_key, by_tap, "hub {hub}: key {key} vs tap {action}");
+        }
+    }
+}
+
+/// The only device: its launch keys work on the hub without its letter first.
+#[test]
+fn a_lone_device_starts_from_the_hub_with_one_key() {
+    let (tx, rx) = mpsc::sync_channel(64);
+    let mut a = App::new(app().devices.into_iter().take(1).collect(), tx);
+    a.providers
+        .insert(0, (vec!["claude".into(), "codex".into()], transport::now()));
+    a.onboarding_dismissed = true;
+    a.go_hub();
+    let text = draw(&a, 120, 40);
+    assert!(text.contains(" x  codex"), "{text}");
+    let _ = rx.try_iter().count();
+    press(&mut a, 'x');
+    let started = rx
+        .try_iter()
+        .any(|t| matches!(&t.op, Operation::Create(c) if c.provider == "codex"));
+    assert!(started || matches!(&a.dialog, Some(Dialog::SessionChooser(0, _))));
 }

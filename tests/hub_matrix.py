@@ -31,7 +31,7 @@ no cell has a background or reverse video (the sessions print none); the vitals 
 the cpu sparkline, mem and uptime, and temperature exactly when the device has a sensor;
 remote devices show cpu and rtt; curves are drawn; each session state has its badge in its
 own colour, the lab's; and the map's labels sit where the lab puts them (within 2 rows and
-4 columns, for 80% of the labels).
+4 columns, for 80% of the labels both draw).
 """
 import argparse, concurrent.futures, http.server, json, os, pathlib, re, shutil, signal
 import subprocess, sys, tempfile, threading, time, uuid
@@ -55,6 +55,24 @@ SPARK = set('▁▂▃▄▅▆▇█')
 BRAILLE = re.compile('[⠁-⣿]')
 # What each session state says (src/ui/views/mission/mod.rs `badge`), in attention order.
 STATES = ['needs you', 'working', 'running', 'idle']
+
+
+def touching(text):
+    """Sub-cell dots (2x4 per braille cell) of `text` that chain three or more dots."""
+    bits = [(0x01, 0, 0), (0x02, 0, 1), (0x04, 0, 2), (0x40, 0, 3),
+            (0x08, 1, 0), (0x10, 1, 1), (0x20, 1, 2), (0x80, 1, 3)]
+    on = set()
+    for y, line in enumerate(text.split('\n')):
+        for x, c in enumerate(line):
+            if '\u2801' <= c <= '\u28ff':
+                b = ord(c) - 0x2800
+                on.update((2 * x + dx, 4 * y + dy) for m, dx, dy in bits if b & m)
+
+    def near(p):
+        return [(p[0] + dx, p[1] + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                if (dx, dy) != (0, 0) and (p[0] + dx, p[1] + dy) in on]
+    return sorted(p for p in on
+                  if len(near(p)) >= 2 or any(r != p for q in near(p) for r in near(q)))
 
 
 def nebula(n, sessions):
@@ -579,12 +597,13 @@ def check(cfg, tier, size, text, dump, alive, lab):
         # (Dotted links are sparse: a small map may draw as few cells as the lab does.)
         if curves < min(4, lab_curves or 4) or lab_curves > 20 and curves < 0.5 * lab_curves:
             fails.append(f'curves: {curves} braille cells (the lab draws {lab_curves})')
-    # The nebula link style: evenly spaced dots, never a continuous braille run (the
-    # smooth curves of v0.2.2), lit or not, meshed or direct.
+    # The nebula link style: evenly spaced dots about a cell apart, each with a clear
+    # gap, never a continuous braille run (the smooth curves of v0.2.2), lit or not,
+    # meshed or direct: no three dots touch in a chain.
     if uni and not tree:
-        runs = re.findall('[⠁-⣿]{4,}', mapped)
+        runs = touching(mapped)
         if runs:
-            fails.append(f'solid braille runs on the map: {runs[:3]}')
+            fails.append(f'solid braille runs on the map at {runs[:3]}')
     # Structure: labels where the lab puts them (the phone tree: in the lab's order).
     if lab_d and len(names) > 1:
         lab_found = labels(lab_lines, names, lstrip if lstrip is not None else max(rows - 3, 1))
@@ -594,11 +613,14 @@ def check(cfg, tier, size, text, dump, alive, lab):
             if [n for n in order if n in lab_found] != [n for n in lab_order if n in found]:
                 fails.append(f'tree order differs from the lab: {order[:5]} vs {lab_order[:5]}')
         else:
-            near = [n for n in lab_found if n in found and abs(found[n][0] - lab_found[n][0]) <= 2
+            # (Among the labels both draw: one folded into its cluster here, where a
+            # digit more of live evidence did not fit, is counted by the fold check.)
+            both = [n for n in lab_found if n in found]
+            near = [n for n in both if abs(found[n][0] - lab_found[n][0]) <= 2
                     and abs(found[n][1] - lab_found[n][1]) <= 4]
-            if len(lab_found) >= 2 and len(near) < 0.8 * len(lab_found):
-                far = [(n, found.get(n, '-')[:2], lab_found[n][:2]) for n in lab_found if n not in near]
-                fails.append(f'labels away from the lab ({len(near)}/{len(lab_found)}): {far[:3]}')
+            if len(both) >= 2 and len(near) < 0.8 * len(both):
+                far = [(n, found[n][:2], lab_found[n][:2]) for n in both if n not in near]
+                fails.append(f'labels away from the lab ({len(near)}/{len(both)}): {far[:3]}')
     # Sessions: the right badge for each real state, each in its own colour, the lab's.
     want = [s for s in STATES if s in {s for _, s in cfg['sessions']}]
     hues = badges(dump['cells'], (strip or 0) + 1, uni)

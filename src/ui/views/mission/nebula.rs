@@ -273,7 +273,8 @@ struct Try {
 
 /// Lay the map out in `band` (only its width and at most its height are used, so a
 /// band of the drawing's own height lays out the same).
-fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, sel: &str) -> Plan<'a> {
+/// `tall`: rows the map may grow into (a screen with nothing running), else 0.
+fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, sel: &str, tall: u16) -> Plan<'a> {
     let mut nodes = nodes_of(orbit::tree(cx, root, 3));
     let mut cls = cluster(cx, &mut nodes);
     let focus = nodes.iter().find(|n| n.d.id == sel).map(|n| n.cl);
@@ -293,6 +294,10 @@ fn plan<'a>(cx: &Cx<'a>, band: Rect, root: &str, sel: &str) -> Plan<'a> {
     } else {
         cap
     };
+    // A screen with nothing running grows the orbits into its free rows instead of
+    // leaving them empty around a small map. (Given apart from the band, so a band of
+    // the drawing's own height still lays out the same.)
+    let cap = cap.max(((f32::from(tall) - 2.0) / (2.0 * RING[1])).min(14.0));
     let mut ladder: Vec<(Mode, usize)> = Vec::new();
     if !cx.touch() {
         // Narrow but tall (95x50) still has room for folded clusters' letter rows.
@@ -859,13 +864,14 @@ impl Pat {
 
 impl Pat {
     /// A link's distance between dots along its curve, in sub-cell dots (as wide as
-    /// they are tall on screen): dots fall evenly whatever the slope, a cell or more
-    /// apart, never a continuous braille line.
+    /// they are tall on screen): dots fall evenly whatever the slope, about a cell
+    /// apart (as the approved mockup), each with a clear dot of gap: never a
+    /// continuous braille line.
     fn gap(self) -> f32 {
         match self {
-            Pat::Dots => 4.0,
-            Pat::Sparse => 6.0,
-            Pat::Quiet | Pat::Ring => 10.0,
+            Pat::Dots => 2.0,
+            Pat::Sparse => 3.0,
+            Pat::Quiet | Pat::Ring => 6.0,
         }
     }
 }
@@ -1343,7 +1349,7 @@ fn label_rect(it: &It) -> R {
 
 /// Rows the map's drawing takes in `band`: the most any selection needs (a cluster
 /// blooming never moves the rows under the map).
-pub(super) fn height(cx: &Cx, band: Rect, root: &str) -> u16 {
+pub(super) fn height(cx: &Cx, band: Rect, root: &str, tall: u16) -> u16 {
     let mut ids = vec![root.to_string()];
     let tree = orbit::tree(cx, root, 3);
     let mut nodes = nodes_of(tree);
@@ -1351,7 +1357,7 @@ pub(super) fn height(cx: &Cx, band: Rect, root: &str) -> u16 {
         ids.extend(cl.members.first().map(|&m| nodes[m].d.id.clone()));
     }
     ids.iter()
-        .map(|sel| rows_of(&plan(cx, band, root, sel)))
+        .map(|sel| rows_of(&plan(cx, band, root, sel, tall)))
         .max()
         .unwrap_or(1) as u16
 }
@@ -1427,7 +1433,16 @@ fn order_ids(cx: &Cx) -> Vec<String> {
 
 /// Draw the map seen from `root` (the hub's: the viewer; a device's LINKS: that
 /// device) in `band`, `sel` selected (`focus`: the map has the keys).
-pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, root: &str, sel: &str, focus: bool) {
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw(
+    cx: &Cx,
+    buf: &mut Buffer,
+    band: Rect,
+    root: &str,
+    sel: &str,
+    focus: bool,
+    tall: u16,
+) {
     // (A picker's band on a tiny screen can reach past it.)
     let band = band.intersection(cx.area);
     if band.width < 12 || band.height < 1 {
@@ -1435,7 +1450,7 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, root: &str, sel: &str,
     }
     let s = cx.s;
     let rootd = s.device(root);
-    let p = plan(cx, band, root, sel);
+    let p = plan(cx, band, root, sel, tall);
     let mo = cx.c.motion;
     // (The glide is the hub's: its selection moves between the viewer's nodes.)
     let from = mo
@@ -1446,7 +1461,7 @@ pub(super) fn draw(cx: &Cx, buf: &mut Buffer, band: Rect, root: &str, sel: &str,
     let t = ease(mo.at());
     let mut items = scene(&p, rootd);
     if let Some(f) = from {
-        let q = plan(cx, band, root, f);
+        let q = plan(cx, band, root, f, tall);
         let prev = scene(&q, rootd);
         if prev.iter().map(|x| &x.key).ne(items.iter().map(|x| &x.key))
             || prev.iter().zip(&items).any(|(a, b)| a.dot != b.dot)
@@ -2028,14 +2043,15 @@ mod tests {
                 })
                 .collect();
             assert!(dots.len() >= 4, "{b:?}");
-            // Every dot's nearest neighbour sits 3 to 5 sub-cell dots away.
+            // Every dot's nearest neighbour sits 2 to 3 sub-cell dots away: about a
+            // cell apart, never touching.
             for &(x, y) in &dots {
                 let near = dots
                     .iter()
                     .filter(|&&q| q != (x, y))
                     .map(|&(qx, qy)| (((qx - x).pow(2) + (qy - y).pow(2)) as f32).sqrt())
                     .fold(f32::MAX, f32::min);
-                assert!((2.9..=5.0).contains(&near), "{b:?}: {near} at {x},{y}");
+                assert!((1.9..=3.0).contains(&near), "{b:?}: {near} at {x},{y}");
             }
         }
     }

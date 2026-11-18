@@ -34,7 +34,7 @@ You can also find a discovered LAN neighbor in the palette (`/`, after a Refresh
 | Key | Action |
 |---|---|
 | device letter (`p`, `b`, …) | Open that device: its sessions, ready to attach or start |
-| `a s d g` on a device | Attach that session slot at once |
+| `a s d g …` on a device | Attach the session showing that key (every tile has one; a session keeps it until it ends) |
 | `c` / `x` / `n` on a device | New Claude / Codex / shell in its home, attached at once |
 | Enter / Space | Attach (or open) the selection / peek a session's screen |
 | Backspace, Backspace | Stop the selected CX-managed session (any other key keeps it) |

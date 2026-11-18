@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn all_concepts_render_everywhere() {
         let sizes = [(1, 1), (10, 4), (40, 20), (200, 60)];
-        for fx in FIXTURES {
+        for fx in FIXTURES.iter().chain(&SPARSE) {
             let s = LabState::fixture(fx).unwrap();
             for v in LabView::defaults(&s) {
                 for variant in ["light-256", "ascii"] {
@@ -202,8 +202,9 @@ mod review_tests {
         (text(&buf), targets)
     }
 
-    /// A waiting session past the four slots has no `letter slot` address: the ticker
-    /// never prints slot `a` (another session's) for it.
+    /// A waiting fifth session has its own key (`q`, after `a s d g`) and the ticker
+    /// attaches it by it; one past the key pool has no address: the ticker says `/ find`
+    /// and never prints another session's key for it.
     #[test]
     fn the_ticker_never_prints_another_sessions_slot() {
         let mut s = state::typical();
@@ -213,8 +214,10 @@ mod review_tests {
             x.id = format!("extra{i}");
             x.title = format!("extra {i}");
             x.state = SessionState::Idle;
+            x.key = None;
             s.sessions.push(x);
         }
+        state::assign_keys(&mut s);
         let fifth = s
             .sessions
             .iter_mut()
@@ -224,6 +227,17 @@ mod review_tests {
         fifth.state = SessionState::AwaitingInput;
         // (Ranked after the other waiting session, so the ticker names it.)
         fifth.last_activity_secs = 99_999;
+        assert_eq!(fifth.key, Some('q'));
+        let (t, _) = draw(LabView::Hub, &s, 200, 60);
+        let row = t.lines().find(|l| l.contains("FIFTH needs you"));
+        let row = row.expect("ticker row");
+        assert!(row.contains(" q ") && row.contains("attach"), "{row}");
+        // Past the pool.
+        s.sessions
+            .iter_mut()
+            .rfind(|x| x.device == "innovation")
+            .unwrap()
+            .key = None;
         let (t, targets) = draw(LabView::Hub, &s, 200, 60);
         let row = t
             .lines()
@@ -385,7 +399,7 @@ mod review_tests {
     }
 
     /// A device's session tile is a large screen (v0.2.2: fewer, bigger previews): it
-    /// takes the rows the links leave, shows its whole text, and the `new` row follows.
+    /// takes the rows the links leave, shows its whole text, and the `start` row follows.
     #[test]
     fn a_device_session_tile_is_a_large_screen() {
         let s = state::typical();
@@ -396,7 +410,7 @@ mod review_tests {
             .position(|r| r.contains("refactor transport"))
             .unwrap();
         let text_end = rows.iter().position(|r| r.contains("Refactoring")).unwrap();
-        let ghost = rows.iter().position(|r| r.contains(" new ")).unwrap();
+        let ghost = rows.iter().position(|r| r.contains(" start ")).unwrap();
         assert!(
             title < text_end && text_end < ghost && ghost - title >= 16,
             "{t}"
@@ -503,6 +517,12 @@ mod size_fuzz {
         for n in [10, 25] {
             v.push((format!("nebula-{n}"), state::nebula(n)));
         }
+        // The empty and sparse states, and a device past the key pool.
+        v.extend(
+            SPARSE
+                .iter()
+                .map(|f| (f.to_string(), LabState::fixture(f).unwrap())),
+        );
         v
     }
 
@@ -782,26 +802,47 @@ mod nebula_tests {
     }
 
     /// Every link in the nebula style, selected or not, meshed or direct: evenly
-    /// spaced dots, never four braille cells in a row as v0.2.2's smooth curves drew
-    /// (three where links fan out of the root side by side). Up to ten devices: past
-    /// that a folded cluster's bundle crowds its dots together.
+    /// spaced dots about a cell apart, each with a clear gap: no three braille dots
+    /// touch in a chain (v0.2.2's smooth curves drew unbroken runs; two links meeting
+    /// may put two dots side by side). Up to ten devices: past that a folded cluster's
+    /// bundle crowds its dots together. Hub maps and every device's LINKS.
     #[test]
     fn links_are_evenly_dotted_never_solid_runs() {
+        /// Rows `ys` of `buf` (up to the strip under the map) as sub-cell dots; fails on
+        /// a chain of three 8-connected dots.
         fn runs(buf: &Buffer, w: u16, ys: std::ops::Range<u16>, what: &str) {
+            let mut on = std::collections::HashSet::new();
             for y in ys {
                 let row: String = (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect();
                 if row.contains("this device") || row.contains("SESSIONS") {
                     break;
                 }
-                let mut run = 0;
-                for c in row.chars() {
-                    run = if ('\u{2801}'..='\u{28ff}').contains(&c) {
-                        run + 1
-                    } else {
-                        0
-                    };
-                    assert!(run < 4, "{what} row {y}: {row}");
+                for (x, c) in row.chars().enumerate() {
+                    if !('\u{2801}'..='\u{28ff}').contains(&c) {
+                        continue;
+                    }
+                    let b = c as u32 - 0x2800;
+                    const B: [[u32; 4]; 2] = [[0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20, 0x80]];
+                    for (dx, col) in B.iter().enumerate() {
+                        for (dy, bit) in col.iter().enumerate() {
+                            if b & bit != 0 {
+                                on.insert((x as i32 * 2 + dx as i32, i32::from(y) * 4 + dy as i32));
+                            }
+                        }
+                    }
                 }
+            }
+            let near = |&(x, y): &(i32, i32)| {
+                (-1..=1)
+                    .flat_map(|dx| (-1..=1).map(move |dy| (x + dx, y + dy)))
+                    .filter(|&q| q != (x, y) && on.contains(&q))
+                    .collect::<Vec<_>>()
+            };
+            for p in &on {
+                let n = near(p);
+                // A chain of three: a dot with two neighbours, or a neighbour with its own.
+                let chain = n.len() >= 2 || n.iter().any(|q| near(q).iter().any(|r| r != p));
+                assert!(!chain, "{what}: dots touch in a run at sub-cell {p:?}");
             }
         }
         for s in fixtures().into_iter().filter(|s| s.devices.len() <= 10) {
@@ -811,8 +852,9 @@ mod nebula_tests {
                     runs(&buf, w, 0..h, &format!("{} {w}x{h} sel {sel}", s.fixture));
                 }
                 // A device's LINKS (the rows under its zone label), unfocused and with
-                // each of its links selected.
-                for d in &s.devices {
+                // each of its links selected. (A lone device's LINKS is the welcome
+                // page's orbits, no link.)
+                for d in s.devices.iter().filter(|_| s.devices.len() > 1) {
                     for sel in [None, Some(0), Some(1)] {
                         let area = Rect::new(0, 0, w, h);
                         let mut buf = Buffer::empty(area);
@@ -1416,6 +1458,113 @@ mod nebula_tests {
                     let (a, _) = render_frame(&LabView::Hub, &s, &settled, w, h);
                     let (b, _) = render_frame(&LabView::Hub, &s, &map_caps(sel), w, h);
                     assert_eq!(a, b, "{} {w}x{h} sel {sel}", s.fixture);
+                }
+            }
+        }
+    }
+}
+#[cfg(test)]
+mod key_tests {
+    //! Every session tile, launch row and `+N` chip on a device screen and on the hub
+    //! shows its own key.
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// In every fixture (a device past the 21-key pool included), at phone to wide
+    /// sizes, each drawn tile has a key, unique on its device, printed on its first row.
+    #[test]
+    fn every_visible_tile_has_a_unique_key() {
+        let mut all: Vec<LabState> = FIXTURES
+            .iter()
+            .chain(&SPARSE)
+            .map(|f| LabState::fixture(f).unwrap())
+            .collect();
+        all.extend([3, 10, 25].map(state::nebula));
+        for s in &all {
+            let mut views = vec![LabView::Hub];
+            views.extend(s.devices.iter().map(|d| LabView::DeviceFocus(d.id.clone())));
+            for v in &views {
+                for (w, h) in [(40, 20), (80, 24), (120, 40), (190, 50)] {
+                    let (buf, targets) = render_frame(v, s, &LabCaps::default(), w, h);
+                    let mut seen = BTreeSet::new();
+                    let at = format!("{} {v:?} {w}x{h}", s.fixture);
+                    let row = |a: Rect| -> String {
+                        (a.x..a.right())
+                            .map(|x| buf[(x, a.y)].symbol().to_string())
+                            .collect()
+                    };
+                    for t in &targets {
+                        // The launch panel and the `+N` chip: the key their action
+                        // answers to, printed in the target, once per device.
+                        let key = match t.action.split(':').collect::<Vec<_>>()[..] {
+                            ["new", d, p] => {
+                                let k = match p {
+                                    "claude" => "c",
+                                    "codex" => "x",
+                                    _ => "n",
+                                };
+                                Some((d, &k.to_string()))
+                            }
+                            ["launch", d, k] => Some((d, &k.to_string())),
+                            ["palette", "sessions"] => Some(("", &"/".to_string())),
+                            ["invite"] => Some(("", &"+".to_string())),
+                            _ => None,
+                        };
+                        if let Some((d, k)) = key {
+                            let r = row(t.area);
+                            assert!(r.contains(&format!(" {k} ")), "{at} {}: {r}", t.action);
+                            let k = k.chars().next().unwrap();
+                            assert!(seen.insert((d.to_string(), k)), "key {k} twice: {at}");
+                        }
+                    }
+                    // A launch row keeps every agent the device has (phones too).
+                    for d in &s.devices {
+                        let n = targets
+                            .iter()
+                            .filter(|t| t.action.starts_with(&format!("new:{}:", d.id)))
+                            .count();
+                        let want = if d.caps.is_empty() {
+                            3
+                        } else {
+                            d.caps.len().min(3)
+                        };
+                        // (One alone is the vitals strip's `c claude` hint.)
+                        assert!(
+                            n <= 1 || n == want,
+                            "{at}: {n} of {want} agents on {}",
+                            d.id
+                        );
+                    }
+                    // A device screen's letters are its sessions': no other device or
+                    // link is a target there (they would be options without keys).
+                    if let LabView::DeviceFocus(id) = v {
+                        for t in &targets {
+                            let other = t.action.strip_prefix("device:").is_some_and(|x| x != id);
+                            assert!(
+                                !other && !t.action.starts_with("edge:"),
+                                "keyless {}: {at}",
+                                t.action
+                            );
+                        }
+                    }
+                    // `/` is labelled once: the chip, or the footer's `find`.
+                    let has = |a: &str| targets.iter().any(|t| t.action == a);
+                    assert!(!(has("palette:sessions") && has("palette")), "{at}");
+                    for t in &targets {
+                        let Some((d, id)) = t
+                            .action
+                            .strip_prefix("tile:")
+                            .and_then(|r| r.split_once(':'))
+                        else {
+                            continue;
+                        };
+                        let at = format!("{at} {id}");
+                        let k = s.session(id).and_then(|x| x.key);
+                        let k = k.unwrap_or_else(|| panic!("no key: {at}"));
+                        assert!(seen.insert((d.to_string(), k)), "key {k} twice: {at}");
+                        let r = row(t.area);
+                        assert!(r.contains(&format!(" {k} ")), "{at}: {r}");
+                    }
                 }
             }
         }

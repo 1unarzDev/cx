@@ -143,6 +143,22 @@ impl App {
                 };
                 match serde_json::from_value::<Vec<Session>>(data) {
                     Ok(mut s) => {
+                        // Managed sessions this listing no longer has have ended (not
+                        // on the first listing: the cached list may be from long ago).
+                        if self.work[reply.device].fetched > 0 {
+                            let gone: Vec<Session> = self.work[reply.device]
+                                .sessions
+                                .iter()
+                                .filter(|o| {
+                                    !is_discovered_external(o)
+                                        && !s.iter().any(|n| {
+                                            workspaces::runtime_key(n) == workspaces::runtime_key(o)
+                                        })
+                                })
+                                .cloned()
+                                .collect();
+                            self.note_ended(reply.device, gone);
+                        }
                         // Keep discovered external terminals (a separate request);
                         // the managed list owns everything else.
                         s.extend(

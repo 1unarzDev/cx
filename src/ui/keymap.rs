@@ -232,9 +232,9 @@ pub(super) const BINDINGS: &[Binding] = &[
     bind!(
         Device,
         [code(Enter)],
-        "Enter · a s d g",
+        "Enter · a s d g …",
         Cmd::View("attach"),
-        "Attach the selected session / a slot",
+        "Attach the selected session / the one showing that key; with nothing running, resume the last one or start in a recent folder",
         hint("Attach")
     ),
     bind!(

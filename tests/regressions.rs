@@ -283,6 +283,18 @@ fn previews_refuse_fifos_and_devices_without_opening_them() {
 #[test]
 fn sessions_stay_managed_only_while_outside_terminals_use_their_own_operation() {
     use std::os::unix::{io::FromRawFd, process::CommandExt};
+    // Discovery reads /proc: under tests/isolate.sh (its marker) it sees only this
+    // fixture's terminal; the debug cx itself lists none anywhere else.
+    if !Path::new("/dev/shm/cx-isolated").exists() {
+        let name = "sessions_stay_managed_only_while_outside_terminals_use_their_own_operation";
+        let status = Command::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/isolate.sh"))
+            .arg(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--test-threads=1"])
+            .status()
+            .unwrap();
+        assert!(status.success(), "{name} in a private namespace: {status}");
+        return;
+    }
     let home = Home::new();
     home.fake_tmux("absent");
     let (mut master, mut slave) = (0, 0);

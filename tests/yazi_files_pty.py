@@ -331,6 +331,7 @@ def ssh_flow():
 
 
 def main():
+    pty_lib.isolate()
     only = sys.argv[sys.argv.index('--only') + 1] if '--only' in sys.argv else None
     if only in (None, 'local'):
         local_flows()

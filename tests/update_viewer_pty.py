@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Actual offline UI/manual-check and restart-state PTY restoration, no release/signature claims."""
+import isolation  # tests/isolate.sh: the viewer never lists a real terminal
+isolation.isolate()
 import fcntl,json,os,pathlib,pty,select,struct,subprocess,sys,tempfile,termios,time
 import pyte
 binary=str(pathlib.Path(sys.argv[1]).resolve());results=[]

@@ -6,11 +6,12 @@ files_bench). One pyte screen model; PNGs go through lab_png.py, the single rend
 
 Needs pyte (and Pillow for PNGs).
 """
-import codecs, fcntl, json, os, pathlib, pty, select, struct, subprocess, sys, termios
+import codecs, fcntl, json, os, pathlib, pty, select, struct, subprocess, sys, termios, time
 
 import pyte
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from isolation import isolate, isolated  # noqa: E402,F401  (pty_lib.isolate() in harnesses)
 
 
 class Screen(pyte.Screen):
@@ -33,6 +34,8 @@ class Pty:
     """One process on a private PTY of cols x rows (its controlling terminal), with a screen."""
 
     def __init__(self, argv, env, cwd, cols, rows):
+        if not isolated():
+            raise SystemExit('pty_lib: not in a private pid namespace; call pty_lib.isolate() first')
         self.master, self.slave = pty.openpty()
         self.termios_before = termios.tcgetattr(self.slave)
         # CELL_PIXELS (w, h): report a pixel size too, as bitmap terminals do (TIOCGWINSZ).
@@ -58,6 +61,11 @@ class Pty:
             data = os.read(self.master, 1 << 16)
         except OSError:
             return None
+        # When the bytes reached the terminal, before pyte parses them: parsing a 4 KB
+        # chunk takes pyte about 1.5 ms, which no real terminal spends, and timing after
+        # it measured each binary's escape sequences (+0.3 ms on a Files Enter frame
+        # whose bytes arrived as early as v0.2.2's).
+        self.arrived = time.monotonic()
         for trigger, reply in ANSWERS:
             if trigger in data:
                 os.write(self.master, reply)

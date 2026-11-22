@@ -3,6 +3,7 @@
 use super::*;
 use crate::ui::hitmap::Hit;
 use crate::ui::keymap::Cmd;
+use ratatui::buffer::Buffer;
 
 fn draw(a: &App, width: u16, height: u16) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -612,6 +613,209 @@ fn idle_frames_send_nothing_and_cursor_changes_send_only_the_cursor() {
         b"\x1b[?25h\x1b[5;6H"
     );
     assert!(frame_payload(&moved, &mut tail).is_none());
+}
+
+/// A terminal for what `encode` emits: CUP, CHA, ECH and SGR. Cells keep the
+/// symbol and the SGR state they were written with (as crossterm spells it).
+struct Replay {
+    width: u16,
+    cells: Vec<(String, [String; 3], Modifier)>,
+}
+impl Replay {
+    fn new(width: u16, height: u16) -> Self {
+        let blank = (" ".to_string(), Default::default(), Modifier::empty());
+        Replay {
+            width,
+            cells: vec![blank; width as usize * height as usize],
+        }
+    }
+    fn feed(&mut self, bytes: &[u8]) {
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        let (mut x, mut y, mut style, mut modifier) =
+            (0u16, 0u16, <[String; 3]>::default(), Modifier::empty());
+        let mut rest = text.as_str();
+        while !rest.is_empty() {
+            if let Some(seq) = rest.strip_prefix("\x1b[") {
+                let end = seq.find(|c: char| c.is_ascii_alphabetic()).unwrap();
+                let (params, cmd) = (&seq[..end], &seq[end..=end]);
+                let n = |i: usize| {
+                    params
+                        .split(';')
+                        .nth(i)
+                        .and_then(|v| v.parse::<u16>().ok())
+                        .unwrap_or(1)
+                };
+                match cmd {
+                    "H" => (y, x) = (n(0) - 1, n(1) - 1),
+                    "G" => x = n(0) - 1,
+                    "X" => {
+                        for k in x..x + n(0) {
+                            self.cells[(y * self.width + k) as usize] = (
+                                " ".into(),
+                                [String::new(), style[1].clone(), String::new()],
+                                Modifier::empty(),
+                            );
+                        }
+                    }
+                    "m" => {
+                        let mut parts = params.split(';').peekable();
+                        while let Some(p) = parts.next() {
+                            let color = |parts: &mut std::iter::Peekable<std::str::Split<char>>,
+                                         head: &str| {
+                                let k = if parts.peek() == Some(&"5") { 2 } else { 4 };
+                                std::iter::once(head.to_string())
+                                    .chain(parts.take(k).map(str::to_string))
+                                    .collect::<Vec<_>>()
+                                    .join(";")
+                            };
+                            match p {
+                                "38" => style[0] = color(&mut parts, p),
+                                "48" => style[1] = color(&mut parts, p),
+                                "58" => style[2] = color(&mut parts, p),
+                                "39" => style[0] = String::new(),
+                                "49" => style[1] = String::new(),
+                                "59" => style[2] = String::new(),
+                                "0" => (style, modifier) = (Default::default(), Modifier::empty()),
+                                "1" => modifier |= Modifier::BOLD,
+                                "2" => modifier |= Modifier::DIM,
+                                "3" => modifier |= Modifier::ITALIC,
+                                "4" => modifier |= Modifier::UNDERLINED,
+                                "7" => modifier |= Modifier::REVERSED,
+                                "9" => modifier |= Modifier::CROSSED_OUT,
+                                "22" => modifier -= Modifier::BOLD | Modifier::DIM,
+                                "23" => modifier -= Modifier::ITALIC,
+                                "24" => modifier -= Modifier::UNDERLINED,
+                                "27" => modifier -= Modifier::REVERSED,
+                                "29" => modifier -= Modifier::CROSSED_OUT,
+                                other => panic!("unexpected SGR {other}"),
+                            }
+                        }
+                    }
+                    other => panic!("unexpected CSI {other}"),
+                }
+                rest = &seq[end + 1..];
+            } else {
+                let end = rest.find('\x1b').unwrap_or(rest.len());
+                for g in ratatui::text::Span::raw(&rest[..end]).styled_graphemes(Style::default()) {
+                    self.cells[(y * self.width + x) as usize] =
+                        (g.symbol.to_string(), style.clone(), modifier);
+                    x += ratatui::text::Span::raw(g.symbol).width() as u16;
+                }
+                rest = &rest[end..];
+            }
+        }
+    }
+    /// Every cell matches `want` (cells under a wide symbol aside; a blank cell's
+    /// foreground does not show).
+    fn assert_shows(&self, want: &Buffer) {
+        fn spelled(c: Color, command: impl crossterm::Command) -> String {
+            let mut out = String::new();
+            if c != Color::Reset {
+                command.write_ansi(&mut out).unwrap();
+            }
+            out.trim_start_matches("\x1b[")
+                .trim_end_matches('m')
+                .to_string()
+        }
+        let width = |s: &str| ratatui::text::Span::raw(s).width();
+        let mut covered = false;
+        for (i, (cell, got)) in want.content.iter().zip(&self.cells).enumerate() {
+            if !std::mem::replace(&mut covered, width(cell.symbol()) > 1) {
+                let style = [
+                    spelled(
+                        cell.fg,
+                        crossterm::style::SetForegroundColor(cell.fg.into()),
+                    ),
+                    spelled(
+                        cell.bg,
+                        crossterm::style::SetBackgroundColor(cell.bg.into()),
+                    ),
+                    spelled(
+                        cell.underline_color,
+                        crossterm::style::SetUnderlineColor(cell.underline_color.into()),
+                    ),
+                ];
+                let blank = cell.symbol() == " " && cell.modifier.is_empty();
+                assert_eq!(got.0, cell.symbol(), "symbol at {i}");
+                assert_eq!(got.1[1], style[1], "background at {i}");
+                assert_eq!(got.2, cell.modifier, "modifiers at {i}");
+                if !blank {
+                    assert_eq!(got.1, style, "colours at {i}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn encoded_frames_show_exactly_the_buffer_in_fewer_bytes() {
+    use ratatui::backend::Backend as _;
+    use ratatui::style::Stylize;
+    let area = Rect::new(0, 0, 40, 6);
+    // Varied rows: colour and attribute changes, wide symbols, gaps and long blanks.
+    let frame = |seed: u64| {
+        let mut buffer = Buffer::empty(area);
+        let mut state = seed;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as usize
+        };
+        for y in 0..area.height {
+            let mut x = next() % 6;
+            while x < 36 {
+                let word = ["ab", "漢字", "│ ", "x", "  ", "▌n"][next() % 6];
+                let style = [
+                    Style::new(),
+                    Style::new().blue(),
+                    Style::new().fg(Color::Indexed(8)).bold(),
+                    Style::new().fg(Color::Rgb(1, 2, 3)).on_red(),
+                    Style::new()
+                        .dim()
+                        .underlined()
+                        .underline_color(Color::Green),
+                    Style::new().reversed().italic(),
+                ][next() % 6];
+                buffer.set_string(x as u16, y, word, style);
+                x += word.chars().count() + next() % 9;
+            }
+        }
+        buffer
+    };
+    for seed in 0..60 {
+        let (before, after) = (frame(seed), frame(seed + 1000));
+        let mut screen = Replay::new(area.width, area.height);
+        let mut first = Vec::new();
+        encode(&mut first, Buffer::empty(area).diff(&before)).unwrap();
+        screen.feed(&first);
+        screen.assert_shows(&before);
+        let (mut ours, mut theirs) = (Vec::new(), Vec::new());
+        encode(&mut ours, before.diff(&after)).unwrap();
+        ratatui::backend::CrosstermBackend::new(&mut theirs)
+            .draw(before.diff(&after).into_iter())
+            .unwrap();
+        assert!(
+            ours.len() <= theirs.len(),
+            "seed {seed}: {} > {}",
+            ours.len(),
+            theirs.len()
+        );
+        screen.feed(&ours);
+        screen.assert_shows(&after);
+    }
+    // A long blank run is erased in place, a jump along the row moves by column.
+    let mut wide = Buffer::empty(area);
+    wide.set_string(0, 0, "x".repeat(30), Style::new());
+    let mut bytes = Vec::new();
+    encode(&mut bytes, wide.diff(&Buffer::empty(area))).unwrap();
+    assert!(bytes.starts_with(b"\x1b[1;1H\x1b[30X"), "{bytes:?}");
+    let mut gap = Buffer::empty(area);
+    gap.set_string(2, 1, "a", Style::new());
+    gap.set_string(9, 1, "b", Style::new());
+    bytes.clear();
+    encode(&mut bytes, Buffer::empty(area).diff(&gap)).unwrap();
+    assert!(bytes.starts_with(b"\x1b[2;3Ha\x1b[10Gb"), "{bytes:?}");
 }
 
 #[test]

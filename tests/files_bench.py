@@ -17,7 +17,9 @@ helper command for `exec env HOME=<private> ... BINARY helper`. Any other remote
 refused, so the installed ~/.local/bin/cx and the real ~/.ssh are never used. --rtt MS adds a
 userspace relay (ProxyCommand) that delays each direction by MS/2 to model a real link.
 
-Isolation: each viewer gets a private HOME/XDG_STATE_HOME/TMUX_TMPDIR with TMUX unset. Fixtures
+Isolation: the whole bench runs under tests/isolate.sh (private user, pid, mount and cgroup
+namespaces: no real process or terminal is visible), and each viewer gets a private
+HOME/XDG_STATE_HOME/TMUX_TMPDIR with TMUX unset. Fixtures
 live on disk (/var/tmp, not tmpfs) and are removed afterwards. Every spawned process carries a
 private tag in its environment, and cleanup kills only processes with that tag. Cold means
 "cx-cold": a fresh viewer process. Directory metadata stays OS-warm because the page and dentry
@@ -28,7 +30,7 @@ Output: JSON (--out, default local-evidence/perf/files-bench-<label>.json) holdi
 and a flat `metrics` map {name: {unit, better, samples, median, p95}}, plus a markdown table
 on stdout and next to the JSON (.md). Compare two results with tests/files_bench_compare.py.
 """
-import argparse, hashlib, json, os, pathlib, platform, pwd, re, shlex, shutil, signal, socket
+import argparse, gc, hashlib, json, os, pathlib, platform, pwd, re, shlex, shutil, signal, socket
 import statistics, subprocess, sys, tempfile, time, uuid
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -1321,6 +1323,10 @@ def markdown(report):
 
 
 def main():
+    pty_lib.isolate()
+    # No collection pauses inside a timed window: one landed in the same cold Enter on
+    # every run of one binary (+2.6 ms) and none on another's, depending on its bytes.
+    gc.disable()
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('binary')
     parser.add_argument('--remote', action='store_true', help='also measure over a loopback sshd')

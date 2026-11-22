@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Bounded native PTY checks; disposable test sessions only, no provider prompts."""
+import isolation  # tests/isolate.sh: the viewer never lists a real terminal
+isolation.isolate()
 import os,pty,subprocess,select,time,termios,fcntl,struct,json,sys
 TARGET=sys.argv[1] if len(sys.argv)>1 else 'verybeautifulserver'
 SESSION=sys.argv[2] if len(sys.argv)>2 else 'cx-priority-codex'

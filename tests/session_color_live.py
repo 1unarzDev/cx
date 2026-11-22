@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Check native RGB question backgrounds survive a managed tmux viewer."""
+import isolation  # tests/isolate.sh: the viewer never lists a real terminal
+isolation.isolate()
 import fcntl,json,os,pathlib,pty,select,struct,subprocess,sys,tempfile,termios,time
 binary=str(pathlib.Path(sys.argv[1]).resolve())
 with tempfile.TemporaryDirectory(prefix='cx-color-') as t:

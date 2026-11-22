@@ -103,6 +103,9 @@ def read_operations(f):
 class Viewer:
     def __init__(self, f):
         import pyte
+        import isolation
+        if not isolation.isolated():
+            raise SystemExit('not under tests/isolate.sh; call isolation.isolate() first')
         self.f = f
         name = 'viewer-restart-123-789.json'
         snapshot = f.state / name
@@ -295,6 +298,8 @@ class PureTests(unittest.TestCase):
 
 
 def main():
+    import isolation  # tests/isolate.sh: the viewer never lists a real terminal
+    isolation.isolate()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('binary', nargs='?')
     modes = parser.add_mutually_exclusive_group(required=True)

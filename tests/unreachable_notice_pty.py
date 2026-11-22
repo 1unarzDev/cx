@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Real viewer/transport outage recovery via an owned fake SSH endpoint; no network access."""
+import isolation  # tests/isolate.sh: the viewer never lists a real terminal
+isolation.isolate()
 import fcntl,json,os,pathlib,pty,select,struct,subprocess,sys,tempfile,termios,time,signal,shlex
 import pyte
 binary=str(pathlib.Path(sys.argv[1]).resolve());results=[];frames=[];frame_started=time.monotonic()

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import isolation  # tests/isolate.sh: the viewer never lists a real terminal
+isolation.isolate()
 import os,pty,subprocess,select,time,termios,fcntl,struct,json
 master,slave=pty.openpty();fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',40,120,0,0))
 env=dict(os.environ,TERM='xterm-256color');env.pop('TMUX',None);env.pop('TMUX_PANE',None)

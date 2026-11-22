@@ -17,9 +17,12 @@ impl App {
         let Some(kind) = e.downcast_ref::<transport::ConnectionFailure>().copied() else {
             return;
         };
-        let interactive = transport::channel_class(&reply.op) == transport::Channel::Interactive;
+        // Screen reads and vitals samples (its own channel since perf030) are the
+        // reads a slow link times out.
+        let sampled = matches!(reply.op, Operation::Metrics)
+            || transport::channel_class(&reply.op) == transport::Channel::Interactive;
         if kind == transport::ConnectionFailure::Closed
-            || (interactive && kind == transport::ConnectionFailure::Timeout)
+            || (sampled && kind == transport::ConnectionFailure::Timeout)
             || matches!(reply.op, Operation::Sessions)
             || self.devices[reply.device].target.is_none()
             || self.work[reply.device].error.is_some()

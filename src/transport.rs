@@ -1185,8 +1185,8 @@ fn request_attempt(d: &Device, op: Operation, hover: bool) -> Result<serde_json:
         15
     };
     let is_info = matches!(&op, Operation::Info);
-    // A metrics sample is a ~1 ms read on the helper: its round trip on the warm channel
-    // is the link's latency, measured without extra traffic.
+    // A metrics sample is a ~1 ms read on the helper: its round trip on the open
+    // capabilities channel is the link's latency, measured without extra traffic.
     let timed = matches!(&op, Operation::Metrics).then(std::time::Instant::now);
     let mut result = exchange(&mut slot, op, response_timeout);
     if let (Some(start), Ok(serde_json::Value::Object(m))) = (timed, result.as_mut()) {
@@ -1232,6 +1232,8 @@ fn channel_key(class: Channel, target: &str) -> String {
 pub(crate) enum Channel {
     /// Screens, keystrokes and the watch: never queued behind anything else.
     Interactive,
+    /// Info, and the hub's 2 s vitals: never ahead of a select, keystroke or attach, and
+    /// never behind a container burst or a transfer.
     Capabilities,
     /// Containers and transfers: long bursts that must not delay sessions.
     Bulk,
@@ -1250,9 +1252,8 @@ pub(crate) fn channel_class(op: &Operation) -> Channel {
         | Operation::Watch { .. }
         | Operation::CapturePane { .. }
         | Operation::PaneInput { .. }
-        | Operation::PaneClose { .. }
-        | Operation::Metrics => Channel::Interactive,
-        Operation::Info => Channel::Capabilities,
+        | Operation::PaneClose { .. } => Channel::Interactive,
+        Operation::Info | Operation::Metrics => Channel::Capabilities,
         Operation::Containers
         | Operation::ContainerInspect { .. }
         | Operation::ContainerFiles { .. }
@@ -2419,6 +2420,9 @@ mod tests {
         };
         assert_eq!(channel_class(&watch), Channel::Interactive);
         assert_eq!(channel_class(&Operation::Containers), Channel::Bulk);
+        // The hub's periodic vitals queue neither ahead of a select or an attach nor
+        // behind a container listing or a transfer.
+        assert_eq!(channel_class(&Operation::Metrics), Channel::Capabilities);
         assert_eq!(
             channel_class(&Operation::List { path: "/".into() }),
             Channel::Files

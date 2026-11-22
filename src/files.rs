@@ -424,17 +424,20 @@ fn list_page(path: &Path, offset: u64, limit: u32) -> Result<Value> {
     if next_offset.is_none_or(|next| next > MAX_LIST_OFFSET) {
         forget_snapshot(&path);
     }
-    Ok(json!({
+    let mut page = json!({
         "path":encode_path(&path),
         "display_path":display(&home_relative(&path)),
         "parent":path.parent().map(encode_path),
         "next_offset":next_offset,
-        "entries":entries,
         "truncated":next_offset.is_some() || incomplete,
         "order":LIST_ORDER,
         "total":snapshot.len(),
         "incomplete":incomplete,
-    }))
+    });
+    // Moved in: `json!` would copy every entry (it serializes its values), which took
+    // as long as building them.
+    page["entries"] = Value::Array(entries);
+    Ok(page)
 }
 fn open_read(path: &Path) -> Result<File> {
     // Reject special files before opening them: opening a device can itself have

@@ -265,5 +265,7 @@ AllowUsers {account}
 
 
 if __name__ == '__main__':
+    import pty_lib
+    pty_lib.isolate()
     checks = remote() if '--ssh' in sys.argv[2:] else local()
     print(json.dumps(dict(result='PASS', **checks)))

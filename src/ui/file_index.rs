@@ -89,6 +89,8 @@ pub(super) struct ViewIndex {
     /// Entries revision that `lower` and `rows` describe.
     revision: u64,
     lower: Arc<Vec<Box<str>>>,
+    /// The largest entry size, hidden ones included (the size bars' scale).
+    size_max: u64,
     /// (show_hidden, lowercase filter) the rows were built for.
     view: Option<(bool, String)>,
     rows: Arc<Vec<u32>>,
@@ -103,16 +105,22 @@ pub(super) struct ViewIndex {
 pub(super) struct VisibleRows {
     entries: Arc<Vec<Entry>>,
     rows: Arc<Vec<u32>>,
+    size_max: u64,
 }
 impl VisibleRows {
     pub(super) fn empty() -> Self {
         Self {
             entries: Arc::new(Vec::new()),
             rows: Arc::new(Vec::new()),
+            size_max: 0,
         }
     }
     pub(super) fn len(&self) -> usize {
         self.rows.len()
+    }
+    /// The largest size in the whole listing, hidden entries included.
+    pub(super) fn size_max(&self) -> u64 {
+        self.size_max
     }
     pub(super) fn get(&self, row: usize) -> Option<&Entry> {
         self.rows.get(row).map(|&i| &self.entries[i as usize])
@@ -154,6 +162,10 @@ impl ViewIndex {
             match incremental {
                 Some(from) => {
                     Arc::make_mut(&mut self.lower).extend(entries[from..].iter().map(lowercase));
+                    self.size_max = entries[from..]
+                        .iter()
+                        .map(|e| e.size)
+                        .fold(self.size_max, u64::max);
                     if self.view.as_ref() == Some(&(show_hidden, filter.clone())) {
                         let rows = Arc::make_mut(&mut self.rows);
                         for (i, entry) in entries.iter().enumerate().skip(from) {
@@ -168,6 +180,7 @@ impl ViewIndex {
                 }
                 None => {
                     self.lower = Arc::new(entries.iter().map(lowercase).collect());
+                    self.size_max = entries.iter().map(|e| e.size).max().unwrap_or(0);
                     self.view = None;
                 }
             }
@@ -196,6 +209,7 @@ impl ViewIndex {
         VisibleRows {
             entries: entries.shared(),
             rows: self.rows.clone(),
+            size_max: self.size_max,
         }
     }
     /// Search matches over the visible rows, computed once per (rows, query).
@@ -235,5 +249,38 @@ impl ViewIndex {
         let matches = Arc::new(merged);
         self.search = Some((self.rows_generation, query.to_owned(), matches.clone()));
         matches
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, size: u64) -> Entry {
+        Entry {
+            name: name.into(),
+            path: format!("/d/{name}"),
+            kind: "file".into(),
+            size,
+            identity: None,
+            hidden: name.starts_with('.'),
+            rename_name: None,
+            modified: None,
+            mode: None,
+        }
+    }
+
+    /// The size bars' scale covers every entry (hidden ones too) and follows appended
+    /// pages and edits, without a pass over the listing each frame.
+    #[test]
+    fn size_scale_follows_appends_and_edits() {
+        let mut entries: Entries = vec![entry("a", 5), entry(".big", 90)].into();
+        let mut index = ViewIndex::default();
+        let rows = index.visible(&entries, false, "");
+        assert_eq!((rows.len(), rows.size_max()), (1, 90));
+        entries.append(vec![entry("b", 400)]);
+        assert_eq!(index.visible(&entries, false, "").size_max(), 400);
+        entries.truncate(2);
+        assert_eq!(index.visible(&entries, false, "").size_max(), 90);
     }
 }

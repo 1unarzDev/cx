@@ -20,6 +20,11 @@ import tempfile
 import termios
 import time
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import isolation  # noqa: E402
+
+# The viewers and helpers below run under tests/isolate.sh: none can see a real terminal.
+isolation.isolate()
 BINARY = str(pathlib.Path(sys.argv[1]).resolve())
 
 
@@ -84,7 +89,7 @@ with tempfile.TemporaryDirectory(prefix="cx-independent-review-") as temporary:
                  "provider": "shell", "host": "fixture-execution", "account": "fixture-user",
                  "pid": 0, "started": "unknown", "boot_id": "fixture", "external": False,
                  "socket": None} for i in range(100)]
-    env = dict(os.environ, HOME=temporary, XDG_STATE_HOME=str(root / "state"),
+    env = dict(os.environ, HOME=temporary, XDG_STATE_HOME=str(root / "state"), TMUX_TMPDIR=temporary,
                USER="fixture-user", TERM="xterm-256color", PATH=str(bindir)+":/usr/bin:/bin")
     env.pop("TMUX", None)
     env.pop("TMUX_PANE", None)

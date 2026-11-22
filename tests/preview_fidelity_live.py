@@ -53,4 +53,7 @@ def run(binary):
  finally:
   if viewer:viewer.close()
   f.close()
-if __name__=='__main__':run(sys.argv[1])
+if __name__=='__main__':
+  import isolation  # tests/isolate.sh: the viewer never lists a real terminal
+  isolation.isolate()
+  run(sys.argv[1])

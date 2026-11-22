@@ -2,6 +2,8 @@
 """Real PTY fixture navigation, no agents, transfers or host mutation.
 Run: uv run --with pyte python tests/workspace_flows_pty.py /absolute/cx [evidence-dir]
 """
+import isolation  # tests/isolate.sh: the viewer never lists a real terminal
+isolation.isolate()
 import fcntl
 import json
 import os

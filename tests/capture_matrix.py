@@ -41,6 +41,7 @@ Isolation (everything lives under one owned temp root, removed at exit):
     carrying this run's marker variable are stopped in a finally; the temp root is
     removed and re-checked. The result line reports leftovers.
 Never runs ~/.local/bin/cx; never touches the user's state, tmux servers, SSH or network config.
+Runs under tests/isolate.sh: the viewers it captures never see a real process or terminal.
 """
 import argparse, getpass, hashlib, ipaddress, json, os, pathlib, re, shlex, shutil, signal
 import socket, subprocess, sys, tempfile, time
@@ -555,6 +556,7 @@ def self_test():
 
 
 def main(argv):
+    pty_lib.isolate()
     if argv == ['--self-test']:
         return self_test()
     a = parse_args(argv)

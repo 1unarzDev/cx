@@ -102,8 +102,8 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
             }
             // `⌫` asks inline (`CX_LAB_FOCUS=stop`): a second `⌫` stops, anything else
             // keeps the session. Never `y`, which answers the agent's own approvals.
-            if cx.c.focus == Some(Pane::Custom("stop")) && n > 0 {
-                items = vec![("⌫", "stop it", "stop"), ("esc", "keep", "back")];
+            if armed(cx) && n > 0 {
+                items = STOP_KEYS.to_vec();
             }
             // Its LINKS focused: the link under the selection, how to move, the way back.
             let arrows = cx.g("←↑↓→", "hjkl");
@@ -138,7 +138,9 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                 cx,
                 buf,
                 foot,
-                if cx.touch() {
+                if armed(cx) {
+                    STOP_KEYS.to_vec()
+                } else if cx.touch() {
                     // The filmstrip tiles are tap targets, so `tab next` is not needed.
                     vec![
                         ("⏎", "attach", "attach"),
@@ -509,6 +511,9 @@ fn footer(cx: &Cx, buf: &mut Buffer, r: Rect, items: Keys) {
 /// Hub footer. Device letters are printed on every node, so they get no chip; `⏎` says
 /// what it does to the focused zone (a device opens, a session attaches).
 fn hub_keys(cx: &Cx) -> Keys<'static> {
+    if armed(cx) {
+        return STOP_KEYS.to_vec();
+    }
     let on_sess = cx.c.focus == Some(Pane::Sessions);
     // The footer follows the focused zone: a device opens and has links; a session
     // attaches, peeks and stops (`-` re-attaches the last detached one from anywhere).
@@ -668,6 +673,9 @@ pub(super) fn thumbs_grid(
             Some(x) => {
                 let pick = (sel.0 % list.len() == i).then_some(sel.1);
                 tiles::thumb(cx, buf, tr, x, pick);
+                if pick == Some(true) && armed(cx) {
+                    stop_confirm(cx, buf, tr, x);
+                }
             }
             None => {
                 if let Some(d) = ghost {
@@ -775,7 +783,7 @@ fn device(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice) {
             bottom = tr.bottom() + 1;
             shown += 1;
             tiles::thumb(cx, buf, tr, x, (i == sel).then_some(true));
-            if i == sel && cx.c.focus == Some(Pane::Custom("stop")) {
+            if i == sel && armed(cx) {
                 stop_confirm(cx, buf, tr, x);
             }
             if ci + 1 < cols && i + 1 < tiles_n as usize {
@@ -1468,7 +1476,7 @@ fn device_sessions_rows(
         } else {
             tiles::session_row(cx, buf, row, x, (i == sel).then_some(true));
         }
-        if i == sel && cx.c.focus == Some(Pane::Custom("stop")) {
+        if i == sel && armed(cx) {
             stop_confirm(cx, buf, row, x);
         }
         shown += 1;
@@ -1484,9 +1492,16 @@ fn device_sessions_rows(
     (y - r.y, shown)
 }
 
+/// The footer while `⌫` asks: a second `⌫` stops, anything else keeps the session.
+pub(super) const STOP_KEYS: [(&str, &str, &str); 2] =
+    [("⌫", "stop it", "stop"), ("esc", "keep", "back")];
+/// `⌫` asked (`CX_LAB_FOCUS=stop` in a device capture).
+pub(super) fn armed(cx: &Cx) -> bool {
+    cx.c.stop || cx.c.focus == Some(Pane::Custom("stop"))
+}
 /// The inline stop confirm over a tile's last row: `stop refactor transport?  ⌫ stop
 /// any other key keeps it`, warn-tinted. The default is no.
-fn stop_confirm(cx: &Cx, buf: &mut Buffer, tr: Rect, x: &LabSession) {
+pub(super) fn stop_confirm(cx: &Cx, buf: &mut Buffer, tr: Rect, x: &LabSession) {
     let y = tr.bottom().saturating_sub(1);
     let row = Rect::new(tr.x + 1, y, tr.width.saturating_sub(1), 1);
     cx.fill(buf, row, Style::default());
@@ -1636,6 +1651,9 @@ fn peek(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession) {
         }
     }
     cx.hit(scr, "attach");
+    if armed(cx) {
+        stop_confirm(cx, buf, scr, x);
+    }
     let strip = Rect::new(
         main.x,
         scr.bottom() + 1,

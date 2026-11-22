@@ -382,60 +382,65 @@ impl App {
             self.search.clear();
         }
     }
-    /// Whether `session` may be stopped here now (CX-managed, still listed, helper
-    /// support checked); says why not otherwise.
+    /// Whether `session` may be stopped here now (still listed, a kind of session
+    /// cx stops, and not refused by its helper's last capability check); says why
+    /// not otherwise. A remote check older than a minute refreshes in the background
+    /// while `⌫` asks, and `send_stop` looks at it again.
     pub(super) fn stoppable(&mut self, device: usize, session: &Session) -> bool {
         if !self.observed(device, session) {
             self.set_notice("This pinned runtime has ended; no process was stopped".into());
             return false;
         }
-        if session.external || !["shell", "codex", "claude"].contains(&session.provider.as_str()) {
+        let Ok((_, cap)) = crate::sessions::stop_operation(session) else {
             self.set_notice_as(
                 NoticeKind::Warning,
-                "Only CX-managed sessions can be stopped here".into(),
+                "Only CX sessions and agents outside tmux can be stopped here".into(),
             );
             return false;
-        }
-        if self.devices[device].target.is_some()
-            && !self.providers.get(&device).is_some_and(|(caps, checked)| {
-                transport::now().saturating_sub(*checked) < 60
-                    && caps.iter().any(|c| {
-                        c == if session.provider == "shell" {
-                            "stop-session-v1"
-                        } else {
-                            "stop-agent-session-v1"
-                        }
-                    })
-            })
-        {
+        };
+        if self.devices[device].target.is_some() {
+            let fresh = self
+                .providers
+                .get(&device)
+                .is_some_and(|(_, checked)| transport::now().saturating_sub(*checked) < 60);
+            if fresh && !self.stop_supported(device, cap) {
+                self.stop_refused(cap);
+                return false;
+            }
             self.check_providers(device);
-            self.set_notice("Checking session-stop support · press ⌫ again when ready".into());
-            return false;
         }
         true
+    }
+    /// Whether the device's last capability check (any age) allows `cap`; unknown
+    /// counts as allowed (its helper re-checks and refuses what it cannot do).
+    fn stop_supported(&self, device: usize, cap: &str) -> bool {
+        self.devices[device].target.is_none()
+            || self
+                .providers
+                .get(&device)
+                .is_none_or(|(caps, _)| caps.iter().any(|c| c == cap))
+    }
+    fn stop_refused(&mut self, cap: &str) {
+        self.set_notice_as(
+            NoticeKind::Warning,
+            if cap == "stop-external-v1" {
+                "Only CX-managed sessions can be stopped here · update cx on that device".into()
+            } else {
+                "This device's cx cannot stop that session · update it".into()
+            },
+        );
     }
     /// Stop the session captured when `⌫` asked (its runtime identity, rechecked on
     /// the execution host).
     pub(super) fn send_stop(&mut self, d: usize, session: Session) {
-        self.send(
-            d,
-            if session.provider == "shell" {
-                Operation::StopSession {
-                    id: session.id,
-                    pid: session.pid,
-                    started: session.started,
-                    boot_id: session.boot_id,
-                }
-            } else {
-                Operation::StopAgentSession {
-                    id: session.id,
-                    pid: session.pid,
-                    started: session.started,
-                    boot_id: session.boot_id,
-                    provider: session.provider,
-                }
-            },
-        );
+        let Ok((op, cap)) = crate::sessions::stop_operation(&session) else {
+            return;
+        };
+        if !self.stop_supported(d, cap) {
+            self.stop_refused(cap);
+            return;
+        }
+        self.send(d, op);
         self.set_notice("Stopping confirmed session…".into());
     }
     pub(super) fn switch_pane(&mut self) {

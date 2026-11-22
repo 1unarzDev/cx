@@ -509,9 +509,10 @@ fn terminal_server(root: &Path, pid: u32) -> bool {
     let args = fs::read(root.join(pid.to_string()).join("cmdline")).unwrap_or_default();
     name.ends_with("-server")
         || name == "urxvtd"
-        || args.split(|b| *b == 0).take(32).any(|a| {
-            [b"--server".as_slice(), b"--single-instance", b"--daemon"].contains(&a)
-        })
+        || args
+            .split(|b| *b == 0)
+            .take(32)
+            .any(|a| [b"--server".as_slice(), b"--single-instance", b"--daemon"].contains(&a))
 }
 
 /// Whether `pid` or any descendant runs `exe` (sudo has handed over to the relay).
@@ -662,7 +663,11 @@ pub fn descendants(roots: &[u32]) -> Vec<(u32, String)> {
         };
         for task in tasks.flatten().take(256) {
             if let Ok(children) = fs::read_to_string(task.path().join("children")) {
-                stack.extend(children.split_whitespace().filter_map(|c| c.parse::<u32>().ok()));
+                stack.extend(
+                    children
+                        .split_whitespace()
+                        .filter_map(|c| c.parse::<u32>().ok()),
+                );
             }
         }
     }
@@ -682,7 +687,11 @@ pub fn group_members(group: i32, session: i32) -> Vec<(u32, String)> {
         .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
         .take(PROCESS_LIMIT)
     {
-        if fs::metadata(root.join(pid.to_string())).map(|m| m.uid()).ok() != Some(uid) {
+        if fs::metadata(root.join(pid.to_string()))
+            .map(|m| m.uid())
+            .ok()
+            != Some(uid)
+        {
             continue;
         }
         let Ok(text) = fs::read_to_string(root.join(pid.to_string()).join("stat")) else {
@@ -985,7 +994,10 @@ mod tests {
             ..me.clone()
         };
         assert!(moved(&me, &gone, index), "the holder exited");
-        assert!(!moved(&gone, &me, index), "a changed leader is never a move");
+        assert!(
+            !moved(&gone, &me, index),
+            "a changed leader is never a move"
+        );
     }
 
     #[test]
@@ -993,7 +1005,10 @@ mod tests {
         use std::process::{Command, Stdio};
         // A shell whose setsid'd grandchild ignores SIGHUP and SIGTERM.
         let mut shell = Command::new("sh")
-            .args(["-c", "setsid sh -c 'trap \"\" HUP TERM; sleep 60; :' & sleep 60; :"])
+            .args([
+                "-c",
+                "setsid sh -c 'trap \"\" HUP TERM; sleep 60; :' & sleep 60; :",
+            ])
             .stdin(Stdio::null())
             .spawn()
             .unwrap();
@@ -1009,7 +1024,11 @@ mod tests {
         // The session ends (tmux hangs up the pane); the setsid tree survives.
         shell.kill().unwrap();
         shell.wait().unwrap();
-        let survivors: Vec<_> = snapshot.iter().filter(|(p, s)| alive(*p, s)).cloned().collect();
+        let survivors: Vec<_> = snapshot
+            .iter()
+            .filter(|(p, s)| alive(*p, s))
+            .cloned()
+            .collect();
         assert_eq!(survivors.len(), 3, "{survivors:?}");
         // A recycled pid (other start time) is never signalled.
         let mut probe = survivors.clone();
@@ -1020,7 +1039,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(!survivors.iter().any(|(p, s)| alive(*p, s)));
-        assert!(bystander.try_wait().unwrap().is_none(), "bystander untouched");
+        assert!(
+            bystander.try_wait().unwrap().is_none(),
+            "bystander untouched"
+        );
         bystander.kill().unwrap();
         bystander.wait().unwrap();
     }

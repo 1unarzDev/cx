@@ -608,6 +608,11 @@ impl App {
     }
     /// `⌫`: the selected session asks inline; a second `⌫` stops it.
     fn arm_stop(&mut self) {
+        // On the hub only a session you can see: the sessions zone, or peek.
+        let hub = !(self.view == View::Work && self.device > 0);
+        if hub && !self.hub_sessions && !self.peek {
+            return;
+        }
         let Some((d, session)) = self.selected_session() else {
             return;
         };

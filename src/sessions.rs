@@ -746,7 +746,10 @@ fn inspect_observed(
         })
         .unwrap_or_else(|| "unknown".into());
     let started = format!("{}:{process_start}", observed.created);
-    if let Some(p) = prior.as_ref().filter(|p| p.pid != pid || p.started != started) {
+    if let Some(p) = prior
+        .as_ref()
+        .filter(|p| p.pid != pid || p.started != started)
+    {
         heal_adopted(&name, p, pid, &started);
     }
     let original_provider = prior
@@ -1854,6 +1857,50 @@ pub fn stop_external(
     Ok(serde_json::json!({"status": "stopped", "signalled": signalled}))
 }
 
+/// The stop request for a listed session, with the helper capability it needs:
+/// a shell or agent session CX manages, or an agent in a terminal outside tmux.
+/// The execution host re-checks every identity it carries.
+pub fn stop_operation(s: &Session) -> Result<(crate::model::Operation, &'static str)> {
+    use crate::model::Operation;
+    if s.external {
+        let origin = s
+            .origin
+            .clone()
+            .filter(|_| ["codex", "claude"].contains(&s.provider.as_str()))
+            .context("only CX sessions and agents outside tmux can be stopped")?;
+        return Ok((
+            Operation::StopExternal {
+                id: s.id.clone(),
+                origin,
+                boot_id: s.boot_id.clone(),
+            },
+            "stop-external-v1",
+        ));
+    }
+    match s.provider.as_str() {
+        "shell" => Ok((
+            Operation::StopSession {
+                id: s.id.clone(),
+                pid: s.pid,
+                started: s.started.clone(),
+                boot_id: s.boot_id.clone(),
+            },
+            "stop-session-v1",
+        )),
+        "codex" | "claude" => Ok((
+            Operation::StopAgentSession {
+                id: s.id.clone(),
+                pid: s.pid,
+                started: s.started.clone(),
+                boot_id: s.boot_id.clone(),
+                provider: s.provider.clone(),
+            },
+            "stop-agent-session-v1",
+        )),
+        _ => bail!("only CX sessions and agents outside tmux can be stopped"),
+    }
+}
+
 /// Stop the exact CX-owned runtime shown at confirmation; preserve external sessions.
 pub fn stop_shell(id: &str, pid: u32, started: &str, boot_id: &str) -> Result<serde_json::Value> {
     stop_managed(id, pid, started, boot_id, "shell")
@@ -1993,9 +2040,8 @@ fn stop_managed(
     } else {
         "1"
     };
-    let guard = format!(
-        "#{{&&:{runtime_guard},#{{&&:{provider_guard},#{{==:#{{session_name}},{id}}}}}}}"
-    );
+    let guard =
+        format!("#{{&&:{runtime_guard},#{{&&:{provider_guard},#{{==:#{{session_name}},{id}}}}}}}");
     // Snapshot the whole tree first: kill-session only hangs up the panes, and a
     // descendant that left their session or ignores SIGHUP would live on.
     let tree = crate::adoption::descendants(&panes);

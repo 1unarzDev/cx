@@ -421,6 +421,7 @@ impl App {
                 | Operation::PaneClose { .. }
                 | Operation::StopSession { .. }
                 | Operation::StopAgentSession { .. }
+                | Operation::StopExternal { .. }
         ) {
             self.apply_session_reply(reply, value);
         } else if matches!(

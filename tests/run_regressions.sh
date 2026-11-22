@@ -69,6 +69,7 @@ CORE=(
     "grid_keys_pty|pyte|BIN"
     "chooser_arrows_pty|pyte|BIN"
     "launch_keys_pty|pyte|BIN"
+    "cli_launch_pty|pyte|BIN"
     "map_grid_pty|pyte|BIN"
     "hub_motion_pty|pyte|BIN"
     "container_discovery_fixtures||BIN"

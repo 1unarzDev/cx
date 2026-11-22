@@ -65,6 +65,7 @@ def main():
         port = s.getsockname()[1]
     subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(root / 'host')],
                    check=True, timeout=10)
+    (root / 'host.pub').chmod(0o644)
     host_key = ' '.join((root / 'host.pub').read_text().split()[:2])
     base = {k: v for k, v in os.environ.items()
             if k not in ('SSH_AUTH_SOCK', 'SSH_AGENT_PID', 'TMUX', 'TMUX_PANE', 'NO_COLOR', 'CX_ASCII')}
@@ -104,15 +105,17 @@ os.execv({ssh!r},[{ssh!r},*args])
         if args is not None:
             request['op']['args'] = args
         payload = json.dumps(request).encode()
-        command = [binary, 'helper']
+        # The helper reads the host's SSH key, which must be root-owned: inside
+        # tests/isolate.sh the real one shows as nobody's, so a nested namespace (this
+        # user as root) mounts the fixture sshd's own key there, the key ssh pins anyway.
+        mounts = f'mount --bind {shlex.quote(str(root / "host.pub"))} /etc/ssh/ssh_host_ed25519_key.pub'
         if distinct_machine:
             # Both sides share this host's machine-id; the viewer's one pairing call
             # sees a private one so the device is not "self" (as edge_policy_ssh).
             fake = root / 'machine-id'
             fake.write_text('0' * 32 + '\n')
-            command = ['unshare', '-rm', 'sh', '-c',
-                       f'mount --bind {shlex.quote(str(fake))} /etc/machine-id && exec "$@"', 'sh',
-                       *command]
+            mounts += f' && mount --bind {shlex.quote(str(fake))} /etc/machine-id'
+        command = ['unshare', '-rm', 'sh', '-c', mounts + ' && exec "$@"', 'sh', binary, 'helper']
         out = subprocess.run(command, env=env_of(home), capture_output=True, timeout=30,
                              input=b'CX1 ' + str(len(payload)).encode() + b'\n' + payload)
         assert out.returncode == 0, out.stderr[-400:]
@@ -149,8 +152,10 @@ os.execv({ssh!r},[{ssh!r},*args])
         return out
 
     def configured_by():
-        """The version that last sourced the managed config into the running server."""
-        return (device / 'state/cx/tmux-configured').read_text().split()[-1]
+        """The version that last sourced the managed config into the running server
+        (None: only the config it started with, `-f`, which writes no marker)."""
+        marker = device / 'state/cx/tmux-configured'
+        return marker.read_text().split()[-1] if marker.exists() else None
 
     def install(binary):
         """The fleet update: write cx.new, fsync, rename over cx (old processes keep theirs)."""
@@ -332,7 +337,7 @@ AllowUsers {account}
             assert after == before and after['server'] == started['server'], (started, before, after)
             assert after['panes'][s1] == started['panes'][s1], (started, after)
             # (The marker proves the second version did re-source its config.)
-            assert (by, configured_by()) == (version(first), version(second)), (by, configured_by())
+            assert by in (None, version(first)) and configured_by() == version(second), (by, configured_by())
             assert same_config, 'the other version changed the running server\'s options or keys'
             evidence['scenarios'][name] = dict(
                 viewer=version(viewer_bin), helper=version(second),

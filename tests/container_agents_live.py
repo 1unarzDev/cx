@@ -60,7 +60,7 @@ int main(int argc,char **argv){
      assert p.poll()==0 and termios.tcgetattr(t)==before
      live=next(s for s in cli('sessions') if s['id']==session['id']);assert live['container'] and live['provider']==provider
      fields={k:live[k] for k in ['id','pid','started','boot_id']}
-     assert request('stop_agent_session',dict(fields,provider=provider))['result']=={'status':'stopped'}
+     assert request('stop_agent_session',dict(fields,provider=provider))['result']['status']=='stopped'
      assert not any(s['id']==session['id'] for s in cli('sessions'))
     finally:
      if p.poll() is None:p.kill();p.wait()

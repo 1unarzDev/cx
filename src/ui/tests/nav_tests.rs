@@ -2437,3 +2437,120 @@ fn a_lone_device_starts_from_the_hub_with_one_key() {
         .any(|t| matches!(&t.op, Operation::Create(c) if c.provider == "codex"));
     assert!(started || matches!(&a.dialog, Some(Dialog::SessionChooser(0, _))));
 }
+
+/// `⌫` on the hub's sessions zone and in peek asks visibly (the next key used to
+/// cancel a question only the device view drew); a second `⌫` stops. From the map,
+/// where no session is in view, `⌫` asks nothing.
+#[test]
+fn hub_and_peek_show_the_stop_question_and_a_second_backspace_stops() {
+    let (mut a, rx) = queued_app();
+    sessions(&mut a, 0, 2);
+    a.go_hub();
+    a.hub_sessions = false;
+    bksp(&mut a);
+    assert!(a.stop_armed.is_none(), "the map has no session in view");
+    a.hub_sessions = true;
+    let _ = rx.try_iter().count();
+    bksp(&mut a);
+    let (_, armed) = a.stop_armed.clone().expect("armed");
+    let screen = draw(&a, 160, 48);
+    assert!(
+        screen.contains(&format!("stop {}?", armed.name)) && screen.contains("again to stop"),
+        "{screen}"
+    );
+    assert!(screen.contains("stop it"), "footer: {screen}");
+    bksp(&mut a);
+    assert!(rx
+        .try_iter()
+        .any(|t| matches!(t.op, Operation::StopSession { id, .. } if id == armed.id)));
+
+    press(&mut a, ' ');
+    assert!(a.peek);
+    bksp(&mut a);
+    let (_, armed) = a.stop_armed.clone().expect("armed in peek");
+    let screen = draw(&a, 160, 48);
+    assert!(
+        screen.contains(&format!("stop {}?", armed.name)) && screen.contains("stop it"),
+        "{screen}"
+    );
+    bksp(&mut a);
+    assert!(rx
+        .try_iter()
+        .any(|t| matches!(t.op, Operation::StopSession { id, .. } if id == armed.id)));
+}
+
+/// A remote capability check older than a minute no longer costs a third `⌫`: the
+/// question is asked at once while Info refreshes, and only an answer that says
+/// "unsupported" refuses at the confirm.
+#[test]
+fn one_double_backspace_stops_a_remote_session_with_a_stale_check() {
+    let (mut a, rx) = queued_app();
+    let mut s = disposable_shell();
+    s.provider = "claude".into();
+    a.work[1].sessions = vec![s];
+    a.work[1].fetched = transport::now();
+    a.providers.insert(
+        1,
+        (vec!["stop-agent-session-v1".into()], transport::now() - 120),
+    );
+    a.open_device(1);
+    let _ = rx.try_iter().count();
+    bksp(&mut a);
+    assert!(a.stop_armed.is_some(), "asked at once");
+    bksp(&mut a);
+    let ops: Vec<_> = rx.try_iter().map(|t| t.op).collect();
+    assert!(ops.iter().any(|o| matches!(o, Operation::Info)), "{ops:?}");
+    assert!(
+        ops.iter().any(
+            |o| matches!(o, Operation::StopAgentSession { provider, .. } if provider == "claude")
+        ),
+        "{ops:?}"
+    );
+    // An old helper: the refreshed answer arrives between the two presses.
+    a.providers
+        .insert(1, (vec!["claude".into()], transport::now() - 120));
+    bksp(&mut a);
+    assert!(a.stop_armed.is_some());
+    a.providers
+        .insert(1, (vec!["claude".into()], transport::now()));
+    bksp(&mut a);
+    assert!(!rx
+        .try_iter()
+        .any(|t| matches!(t.op, Operation::StopAgentSession { .. })));
+}
+
+/// An agent in a terminal outside tmux stops through StopExternal (identity checked
+/// on its host) when that host's cx can; otherwise the old refusal stays.
+#[test]
+fn backspace_stops_an_outside_agent_through_stop_external() {
+    let (mut a, rx) = queued_app();
+    let outside: Session = serde_json::from_value(serde_json::json!({
+        "id":"ext-0123456789abcdef","name":"claude · proj","directory":"/proj","provider":"claude",
+        "host":"laptop","account":"peace","pid":700,"started":"ext:900","boot_id":"boot",
+        "external":true,"socket":null,
+        "origin":{"kind":"terminal","tty":"/dev/pts/4","leader":{"pid":700,"start_ticks":"900"},
+                  "holder":{"pid":699,"start_ticks":"899"}}
+    }))
+    .unwrap();
+    a.work[1].sessions = vec![outside];
+    a.work[1].fetched = transport::now();
+    a.providers
+        .insert(1, (vec!["stop-agent-session-v1".into()], transport::now()));
+    a.open_device(1);
+    let _ = rx.try_iter().count();
+    bksp(&mut a);
+    assert!(a.stop_armed.is_none(), "an older helper cannot stop it");
+    a.providers
+        .insert(1, (vec!["stop-external-v1".into()], transport::now()));
+    bksp(&mut a);
+    let screen = draw(&a, 160, 48);
+    assert!(screen.contains("stop proj claude?"), "{screen}");
+    bksp(&mut a);
+    assert!(rx.try_iter().any(|t| matches!(t.op,
+        Operation::StopExternal { id, origin, boot_id }
+            if id == "ext-0123456789abcdef" && origin.leader.pid == 700 && boot_id == "boot")));
+    // A shell outside tmux is not an agent: nothing to stop.
+    a.work[1].sessions[0].provider = "shell".into();
+    bksp(&mut a);
+    assert!(a.stop_armed.is_none());
+}

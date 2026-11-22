@@ -471,6 +471,7 @@ fn info() -> Result<serde_json::Value> {
     caps.push("session-attach-checked-v1");
     caps.push("stop-session-v1");
     caps.push("stop-agent-session-v1");
+    caps.push("stop-external-v1");
     caps.push("session-yolo-v1");
     caps.push("containers-v1");
     caps.push("container-agents-v1");

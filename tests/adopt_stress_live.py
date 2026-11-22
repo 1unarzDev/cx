@@ -284,7 +284,13 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-stress-') as temporary:
                     pass
             worker.join()
             time.sleep(0.3)
-            if emulator.poll() is None and alive(leader):
+            # A steal now often completes within the kill's 0-30 ms: the master left the
+            # holder (whose emptied window cx then closes), so the kill ends the moved
+            # terminal, as closing any moved terminal's relay does. Only a kill before
+            # that point must leave the original terminal and agent intact.
+            error = outcome['r']['error'] or ''
+            completed = not error or 'closed while it was being moved' in error
+            if completed or (emulator.poll() is None and alive(leader)):
                 holders_ok += 1
             os.kill(leader, signal.SIGTERM)
             close_emulators()

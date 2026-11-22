@@ -4,6 +4,11 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+### Fixes
+- **Moved terminals show up, and stay.** Moving an outside terminal into cx with the installed relay (setcap or sudo) was never seen to succeed, so it ended in "taking unusually long", the session did not open and the old window kept its frozen last screen; closing that window later killed the moved agent minutes afterwards. The move is now seen at once, the session opens, and the emptied single-window terminal is closed for good (terminal servers serving other windows are left alone). Sessions moved by earlier versions are repaired the next time they are listed, so they can be stopped.
+- **⌫ asks where you can see it.** On the hub's sessions zone and in peek the stop question now appears on the session (`stop <name>? ⌫ again to stop`) instead of being invisible, so the next key no longer silently cancels it; from the map, where no session is in view, ⌫ asks nothing. A remote session stops with one ⌫⌫ even when cx last checked that device over a minute ago.
+- **⌫ stops more, and completely.** Split sessions stop whole (the notice counts the panes), processes a session started that left its terminal or ignore hang-ups are ended too (killed after 3 s), and a Claude or Codex agent in a terminal outside tmux can be stopped after its identity is re-checked (hang-up, then kill after 3 s; the window is left to its terminal app). Remote devices need this cx for the last one.
+
 ## v0.3.5
 
 A hotfix on v0.3.4.

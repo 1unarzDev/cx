@@ -91,7 +91,7 @@ with tempfile.TemporaryDirectory(prefix='cx-containers-') as tmp:
    assert p.returncode==0 and termios.tcgetattr(t)==before and alive_session(session['id'])
    live=next(s for s in cli('sessions') if s['id']==session['id'])
    fields={k:live[k] for k in ['id','pid','started','boot_id']}
-   assert request('stop_session',fields)['result']=={'status':'stopped'}
+   assert request('stop_session',fields)['result']['status']=='stopped'
    assert not alive_session(session['id'])
    assert docker('exec',a,'sh','-c','test ! -d /proc/$(cat /tmp/cx-terminal.pid)',check=False).returncode==0,'container shell survived CX stop'
    checks.append('native container paste, Tab completion, OSC52, RGB/default background, wheel scrollback, one detach/termios, stop terminates container shell')

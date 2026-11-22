@@ -44,6 +44,8 @@ pub struct LabCaps {
     pub pills: bool,
     /// The hub map's transition in progress (`ui::motion`); settled by default.
     pub motion: Motion,
+    /// `⌫` asked to stop the selected session: its tile (or peek) shows the question.
+    pub stop: bool,
 }
 
 /// A map transition the view draws part-way: the highlight gliding from the previous
@@ -83,6 +85,7 @@ impl Default for LabCaps {
             frame: 0,
             pills: false,
             motion: Motion::default(),
+            stop: false,
         }
     }
 }

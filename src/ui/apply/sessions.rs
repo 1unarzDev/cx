@@ -356,11 +356,22 @@ impl App {
                 }
             }
             Operation::PaneInput { .. } | Operation::PaneClose { .. } => {}
-            Operation::StopSession { .. } | Operation::StopAgentSession { .. } => {
+            Operation::StopSession { .. }
+            | Operation::StopAgentSession { .. }
+            | Operation::StopExternal { .. } => {
+                // A split session went whole: say how many panes.
+                let panes = value["panes"]
+                    .as_u64()
+                    .filter(|n| *n > 1)
+                    .map(|n| format!(" · {n} panes"))
+                    .unwrap_or_default();
                 self.set_notice(format!(
-                    "Session stopped · {}",
+                    "Session stopped{panes} · {}",
                     identity(&self.devices[reply.device])
                 ));
+                if matches!(reply.op, Operation::StopExternal { .. }) {
+                    self.send(reply.device, Operation::ExternalSessions);
+                }
                 self.work[reply.device].loading = self.send(reply.device, Operation::Sessions);
             }
             _ => {}

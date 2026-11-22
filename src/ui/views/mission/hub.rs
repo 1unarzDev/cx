@@ -595,6 +595,9 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
             }
             let pick = (sel == Some(i)).then_some(true);
             tiles::session_row(cx, buf, Rect::new(r.x, sy, r.width, 2), x, pick);
+            if pick.is_some() && views::armed(cx) {
+                views::stop_confirm(cx, buf, Rect::new(r.x, sy, r.width, 2), x);
+            }
             sy += 2;
             let left = ty.saturating_sub(sy + 1);
             let rest = (list.len() - i - 1) as u16 * 3;

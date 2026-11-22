@@ -62,10 +62,6 @@ with tempfile.TemporaryDirectory(prefix='cx-stop-shell-') as temporary:
         missing = dict(victim, id='cx-'+'f'*64)
         assert stop(missing)['error']
         checks.append('missing ownership record rejected')
-        tmux('split-window', '-d', '-t', victim['id'], '/bin/bash --noprofile --norc')
-        assert stop(victim)['error'] and alive(victim)
-        tmux('kill-pane', '-t', victim['id']+':0.1')
-        checks.append('additional panes protected')
         codex = home/'codex'
         shutil.copyfile('/bin/sleep', codex)
         codex.chmod(0o700)
@@ -115,7 +111,7 @@ with tempfile.TemporaryDirectory(prefix='cx-stop-shell-') as temporary:
         while Path(f'/proc/{child}').exists() and time.monotonic()<deadline:
             time.sleep(.03)
         result = stop(victim)
-        assert result['result'] == {'status':'stopped'}, result
+        assert result['result'] == {'status':'stopped', 'panes': 1, 'reaped': 0}, result
         assert not alive(victim) and alive(guard)
         assert stop(victim)['result'] == {'status':'already_stopped'}
         assert stop(dict(victim, boot_id='old-boot'))['error']
@@ -124,6 +120,30 @@ with tempfile.TemporaryDirectory(prefix='cx-stop-shell-') as temporary:
         tmux('new-session', '-d', '-s', victim['id'], '/bin/bash --noprofile --norc')
         assert stop(victim)['error'] and alive(victim)
         checks.append('reused session name with changed runtime rejected')
+        # A split session stops whole, and so does a descendant that left its
+        # session and ignores SIGHUP and SIGTERM (SIGKILL after 3 s).
+        multi = create('multi')
+        pidfile = home/'escapee.pid'
+        spawn = home/'spawn.sh'
+        spawn.write_text("setsid sh -c 'trap \"\" HUP TERM; echo $$ >%s; exec sleep 61' &\n"
+                         "exec /bin/bash --noprofile --norc\n" % pidfile)
+        tmux('split-window', '-d', '-t', multi['id'], f'sh {spawn}')
+        deadline = time.monotonic()+3
+        while not (pidfile.exists() and pidfile.read_text().strip()) and time.monotonic()<deadline:
+            time.sleep(.03)
+        escapee = int(pidfile.read_text())
+        assert Path(f'/proc/{escapee}/stat').read_text().rsplit(')', 1)[1].split()[3] == str(escapee)
+        started = time.monotonic()
+        result = stop(multi)
+        assert result['error'] is None and result['result']['panes'] == 2 and result['result']['reaped'] >= 1, result
+        assert not alive(multi) and alive(guard)
+        state = lambda: Path(f'/proc/{escapee}/stat').read_text().rsplit(')', 1)[1].split()[0]
+        try:
+            assert state() == 'Z', state()
+        except FileNotFoundError:
+            pass
+        assert time.monotonic()-started < 6
+        checks.append('split session stopped whole; its setsid, SIGHUP/SIGTERM-ignoring descendant was killed')
     finally:
         tmux('kill-server', check=False)
 print(json.dumps(dict(result='PASS', checks=checks, backend='private tmux socket + helper protocol', binary=binary)))

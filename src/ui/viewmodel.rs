@@ -93,6 +93,7 @@ pub(super) fn terminal_caps() -> LabCaps {
 
 /// Which screen to draw, with its focus and selection set on `caps`.
 fn screen(app: &App, state: &LabState, caps: &mut LabCaps) -> LabView {
+    caps.stop = app.stop_armed.is_some();
     if app.help {
         // The table for the screen it was opened over.
         caps.focus = match app.view {

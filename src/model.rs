@@ -226,12 +226,20 @@ pub enum Operation {
         started: String,
         boot_id: String,
         provider: String,
+        /// The viewer confirmed stopping every pane of a split session. Without
+        /// it (older viewers) a split session is refused.
+        #[serde(default)]
+        all_panes: bool,
     },
     StopSession {
         id: String,
         pid: u32,
         started: String,
         boot_id: String,
+        /// The viewer confirmed stopping every pane of a split session. Without
+        /// it (older viewers) a split session is refused.
+        #[serde(default)]
+        all_panes: bool,
     },
     List {
         path: String,

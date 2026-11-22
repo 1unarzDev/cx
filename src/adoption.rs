@@ -52,6 +52,8 @@ impl Terminal {
 }
 
 struct Stat {
+    zombie: bool,
+    group: i32,
     session: i32,
     tty: i64,
     foreground: i32,
@@ -61,6 +63,8 @@ fn stat(root: &Path, pid: u32) -> Option<Stat> {
     let text = fs::read_to_string(root.join(pid.to_string()).join("stat")).ok()?;
     let fields: Vec<_> = text.rsplit_once(')')?.1.split_whitespace().collect();
     Some(Stat {
+        zombie: *fields.first()? == "Z",
+        group: fields.get(2)?.parse().ok()?,
         session: fields.get(3)?.parse().ok()?,
         tty: fields.get(4)?.parse().ok()?,
         foreground: fields.get(5)?.parse().ok()?,
@@ -462,8 +466,16 @@ pub fn holds_master(pid: u32, index: u32) -> bool {
 /// the master of `index`, or has exited. Only the user's own processes are read:
 /// a relay with a file capability, or one that sudo ran and that then dropped to
 /// the user, is non-dumpable, so its `/proc/<pid>/fd` is unreadable.
+///
+/// A holder that exited proves a move only while the leader still has the
+/// terminal: had the relay not taken the master, the holder's exit closed it,
+/// which hangs the terminal up and leaves the leader's session without one
+/// (even when the leader survives the SIGHUP, as reptyr's leader does).
 pub fn moved(leader: &ProcessIdentity, holder: &ProcessIdentity, index: u32) -> bool {
-    if start_ticks(leader.pid).as_deref() != Some(leader.start_ticks.as_str()) {
+    let Some(current) = stat(Path::new("/proc"), leader.pid) else {
+        return false;
+    };
+    if current.start_ticks != leader.start_ticks || pts_index(current.tty) != Some(index) {
         return false;
     }
     if start_ticks(holder.pid).as_deref() != Some(holder.start_ticks.as_str()) {
@@ -475,31 +487,58 @@ pub fn moved(leader: &ProcessIdentity, holder: &ProcessIdentity, index: u32) -> 
 /// Close a single-window terminal emulator whose only terminal was just stolen.
 ///
 /// After the steal the holder no longer holds any pseudo-terminal master, so
-/// its window is empty. It is killed outright: emulators such as foot ignore
-/// SIGHUP, and closing the frozen window later would make the emulator signal
-/// the moved terminal's process group, killing the work it just handed over.
-/// A multiplexer (tmux, screen), a terminal server (one still holding other
-/// masters, or started as a server) and reused PIDs are left untouched.
+/// its window is empty. A known standalone terminal emulator is killed outright:
+/// some (foot) ignore SIGHUP, and closing the frozen window later would make the
+/// emulator signal the moved terminal's process group, killing the work it just
+/// handed over. Any other holder (an editor's terminal such as Emacs vterm, VS
+/// Code's pty host) only gets SIGHUP, as before. A multiplexer (tmux, screen), a
+/// terminal server (one still holding other masters, or started as a server), a
+/// holder whose descriptors cannot be read and reused PIDs are left untouched.
 pub fn close_empty_holder(holder: &ProcessIdentity, kind: &str) -> bool {
     if kind != "terminal" {
         return false;
     }
     let root = Path::new("/proc");
-    if start_ticks(holder.pid).as_deref() != Some(holder.start_ticks.as_str()) {
-        return false;
-    }
-    if fs::metadata(root.join(holder.pid.to_string()))
-        .map(|m| m.uid())
-        .ok()
-        != Some(unsafe { libc::geteuid() })
+    let dir = root.join(holder.pid.to_string());
+    if fs::metadata(&dir).map(|m| m.uid()).ok() != Some(unsafe { libc::geteuid() })
+        || fs::read_dir(dir.join("fd")).is_err()
+        || !masters(root, holder.pid).is_empty()
+        || terminal_server(root, holder.pid)
     {
         return false;
     }
-    if !masters(root, holder.pid).is_empty() || terminal_server(root, holder.pid) {
-        return false;
-    }
-    unsafe { libc::kill(holder.pid as i32, libc::SIGKILL) == 0 }
+    let comm = fs::read_to_string(dir.join("comm")).unwrap_or_default();
+    let sig = if EMULATORS.contains(&comm.trim()) {
+        libc::SIGKILL
+    } else {
+        libc::SIGHUP
+    };
+    signal(holder.pid, &holder.start_ticks, sig)
 }
+/// Standalone terminal emulators (by `comm`), whose emptied window may be killed.
+const EMULATORS: &[&str] = &[
+    "foot",
+    "alacritty",
+    "kitty",
+    "ghostty",
+    "wezterm-gui",
+    "xterm",
+    "uxterm",
+    "urxvt",
+    "rxvt",
+    "st",
+    "konsole",
+    "xfce4-terminal",
+    "lxterminal",
+    "mate-terminal",
+    "terminator",
+    "tilix",
+    "sakura",
+    "qterminal",
+    "terminology",
+    "contour",
+    "rio",
+];
 /// An emulator that serves many windows (gnome-terminal-server, `foot --server`,
 /// `kitty --single-instance`, urxvtd) outlives its last window by design.
 fn terminal_server(root: &Path, pid: u32) -> bool {
@@ -513,6 +552,27 @@ fn terminal_server(root: &Path, pid: u32) -> bool {
             .split(|b| *b == 0)
             .take(32)
             .any(|a| [b"--server".as_slice(), b"--single-instance", b"--daemon"].contains(&a))
+}
+
+/// Send `sig` to `pid` only while it is still the process that started at
+/// `start` (not a zombie): through a pidfd, so a pid reused after the check is
+/// never signalled; plain kill() only where pidfds are unsupported.
+pub fn signal(pid: u32, start: &str, sig: i32) -> bool {
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) } as i32;
+    if fd < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ENOSYS) {
+        return false;
+    }
+    let sent = alive(pid, start)
+        && if fd < 0 {
+            unsafe { libc::kill(pid as i32, sig) == 0 }
+        } else {
+            let null: *const libc::siginfo_t = std::ptr::null();
+            unsafe { libc::syscall(libc::SYS_pidfd_send_signal, fd, sig, null, 0) == 0 }
+        };
+    if fd >= 0 {
+        unsafe { libc::close(fd) };
+    }
+    sent
 }
 
 /// Whether `pid` or any descendant runs `exe` (sudo has handed over to the relay).
@@ -625,14 +685,7 @@ pub fn terminate(leader: &ProcessIdentity, index: u32) -> usize {
 
 /// Whether `pid` still runs (not a zombie) with the start time `start`.
 pub fn alive(pid: u32, start: &str) -> bool {
-    let Ok(text) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
-        return false;
-    };
-    let fields: Vec<_> = text
-        .rsplit_once(')')
-        .map(|(_, r)| r.split_whitespace().collect())
-        .unwrap_or_default();
-    fields.first().is_some_and(|s| *s != "Z") && fields.get(19) == Some(&start)
+    stat(Path::new("/proc"), pid).is_some_and(|s| !s.zombie && s.start_ticks == start)
 }
 
 /// This user's processes under `roots`, roots included, as (pid, start ticks),
@@ -681,51 +734,34 @@ pub fn group_members(group: i32, session: i32) -> Vec<(u32, String)> {
     let Ok(entries) = fs::read_dir(root) else {
         return vec![];
     };
-    let mut out = vec![];
-    for pid in entries
+    entries
         .flatten()
         .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
         .take(PROCESS_LIMIT)
-    {
-        if fs::metadata(root.join(pid.to_string()))
-            .map(|m| m.uid())
-            .ok()
-            != Some(uid)
-        {
-            continue;
-        }
-        let Ok(text) = fs::read_to_string(root.join(pid.to_string()).join("stat")) else {
-            continue;
-        };
-        let fields: Vec<_> = text
-            .rsplit_once(')')
-            .map(|(_, r)| r.split_whitespace().collect())
-            .unwrap_or_default();
-        if fields.get(2) == Some(&group.to_string().as_str())
-            && fields.get(3) == Some(&session.to_string().as_str())
-        {
-            if let Some(start) = fields.get(19) {
-                out.push((pid, start.to_string()));
-            }
-        }
-    }
-    out
+        .filter(|pid| {
+            fs::metadata(root.join(pid.to_string()))
+                .map(|m| m.uid())
+                .ok()
+                == Some(uid)
+        })
+        .filter_map(|pid| {
+            let s = stat(root, pid)?;
+            (s.group == group && s.session == session).then_some((pid, s.start_ticks))
+        })
+        .collect()
 }
 
 /// Send `first` to every snapshot process that still runs with its start time,
 /// then SIGKILL whatever is left after `grace`. Returns how many were asked.
 pub fn reap(snapshot: &[(u32, String)], first: i32, grace: Duration) -> usize {
     let live = || snapshot.iter().filter(|(p, s)| alive(*p, s));
-    let asked = live().count();
-    for (pid, _) in live() {
-        unsafe { libc::kill(*pid as i32, first) };
-    }
+    let asked = live().filter(|(p, s)| signal(*p, s, first)).count();
     let deadline = Instant::now() + grace;
     while live().next().is_some() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
-    for (pid, _) in live() {
-        unsafe { libc::kill(*pid as i32, libc::SIGKILL) };
+    for (pid, start) in live() {
+        signal(*pid, start, libc::SIGKILL);
     }
     asked
 }
@@ -966,41 +1002,6 @@ mod tests {
     }
 
     #[test]
-    fn a_move_is_seen_from_the_holder_and_leader_alone() {
-        use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
-        // This test process is both "leader" and "holder"; the relay is never read.
-        let pid = std::process::id();
-        let me = ProcessIdentity {
-            pid,
-            start_ticks: start_ticks(pid).unwrap(),
-            native_id: None,
-        };
-        let master = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(libc::O_NOCTTY)
-            .open("/dev/ptmx")
-            .unwrap();
-        let mut index: libc::c_uint = 0;
-        assert_eq!(
-            unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCGPTN, &mut index) },
-            0
-        );
-        assert!(!moved(&me, &me, index), "the holder still holds the master");
-        drop(master);
-        assert!(moved(&me, &me, index), "the master left the holder");
-        let gone = ProcessIdentity {
-            start_ticks: "1".into(),
-            ..me.clone()
-        };
-        assert!(moved(&me, &gone, index), "the holder exited");
-        assert!(
-            !moved(&gone, &me, index),
-            "a changed leader is never a move"
-        );
-    }
-
-    #[test]
     fn reaping_ends_only_snapshot_processes_that_outlived_their_session() {
         use std::process::{Command, Stdio};
         // A shell whose setsid'd grandchild ignores SIGHUP and SIGTERM.
@@ -1045,5 +1046,197 @@ mod tests {
         );
         bystander.kill().unwrap();
         bystander.wait().unwrap();
+    }
+
+    #[test]
+    fn a_move_is_seen_from_holder_and_leader_and_an_exited_holder_needs_the_terminal() {
+        use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt, unix::process::CommandExt};
+        let master = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOCTTY)
+            .open("/dev/ptmx")
+            .unwrap();
+        let mut index: libc::c_uint = 0;
+        let unlock: libc::c_int = 0;
+        unsafe {
+            assert_eq!(
+                libc::ioctl(master.as_raw_fd(), libc::TIOCGPTN, &mut index),
+                0
+            );
+            assert_eq!(
+                libc::ioctl(master.as_raw_fd(), libc::TIOCSPTLCK, &unlock),
+                0
+            );
+        }
+        let slave = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOCTTY)
+            .open(format!("/dev/pts/{index}"))
+            .unwrap();
+        // A leader that survives the hang-up, as reptyr's (SIGHUP blocked) does.
+        let mut child = unsafe {
+            std::process::Command::new("sh")
+                .args(["-c", "trap '' HUP; sleep 30; :"])
+                .stdin(slave)
+                .pre_exec(|| {
+                    libc::setsid();
+                    libc::ioctl(0, libc::TIOCSCTTY, 0);
+                    Ok(())
+                })
+                .spawn()
+                .unwrap()
+        };
+        // (Until its trap is set: SIGHUP's bit in SigIgn.)
+        let ignoring = |pid: u32| {
+            fs::read_to_string(format!("/proc/{pid}/status"))
+                .ok()
+                .and_then(|s| {
+                    let mask = s.lines().find_map(|l| l.strip_prefix("SigIgn:"))?;
+                    u64::from_str_radix(mask.trim(), 16).ok()
+                })
+                .is_some_and(|m| m & 1 != 0)
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !(ignoring(child.id()) && terminal_of(child.id()).and_then(|t| t.1) == Some(index))
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let leader = ProcessIdentity {
+            pid: child.id(),
+            start_ticks: start_ticks(child.id()).unwrap(),
+            native_id: None,
+        };
+        let gone = ProcessIdentity {
+            pid: std::process::id(),
+            start_ticks: "1".into(),
+            native_id: None,
+        };
+        // Seen from the holder and the leader alone; the relay is never read.
+        let me = ProcessIdentity {
+            pid: std::process::id(),
+            start_ticks: start_ticks(std::process::id()).unwrap(),
+            native_id: None,
+        };
+        assert!(
+            !moved(&leader, &me, index),
+            "the holder still holds the master"
+        );
+        assert!(
+            !moved(&gone, &gone, index),
+            "a changed leader is never a move"
+        );
+        // The master lives on elsewhere (here: this test, standing in for the relay).
+        assert!(
+            moved(&leader, &gone, index),
+            "the holder exited after the steal"
+        );
+        // The holder closed the master before any steal: the terminal hangs up.
+        drop(master);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while moved(&leader, &gone, index) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            alive(leader.pid, &leader.start_ticks),
+            "the leader survived the hang-up"
+        );
+        assert!(
+            !moved(&leader, &gone, index),
+            "a hung-up terminal was not moved"
+        );
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn only_a_known_emulator_holder_is_killed_others_get_sighup() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::Command;
+        let tmp = tempfile::tempdir().unwrap();
+        let foot = tmp.path().join("foot");
+        fs::copy("/bin/sleep", &foot).unwrap();
+        let identity = |c: &std::process::Child| ProcessIdentity {
+            pid: c.id(),
+            start_ticks: start_ticks(c.id()).unwrap(),
+            native_id: None,
+        };
+        let spawn = |program: &Path, args: &[&str]| {
+            // (A copy written just now can be busy while another test's fork holds it.)
+            let mut child = Command::new(program).args(args).spawn();
+            for _ in 0..100 {
+                match &child {
+                    Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) => {
+                        std::thread::sleep(Duration::from_millis(10));
+                        child = Command::new(program).args(args).spawn();
+                    }
+                    _ => break,
+                }
+            }
+            let child = child.unwrap();
+            // (Until the exec has happened: comm names the program.)
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let want = program.file_name().unwrap().to_str().unwrap().to_string();
+            while fs::read_to_string(format!("/proc/{}/comm", child.id()))
+                .map(|c| c.trim() != want)
+                .unwrap_or(true)
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            child
+        };
+        // A known emulator whose window was emptied: SIGKILL.
+        let mut emulator = spawn(&foot, &["30"]);
+        let id = identity(&emulator);
+        assert!(
+            !close_empty_holder(&id, "tmux"),
+            "multiplexers are never closed"
+        );
+        let reused = ProcessIdentity {
+            start_ticks: "1".into(),
+            ..id.clone()
+        };
+        assert!(
+            !close_empty_holder(&reused, "terminal"),
+            "a reused pid is never signalled"
+        );
+        assert!(close_empty_holder(&id, "terminal"));
+        assert_eq!(emulator.wait().unwrap().signal(), Some(libc::SIGKILL));
+        // Anything else (an editor's terminal, a pty host): only SIGHUP.
+        let mut other = spawn(Path::new("/bin/sleep"), &["30"]);
+        assert!(close_empty_holder(&identity(&other), "terminal"));
+        assert_eq!(other.wait().unwrap().signal(), Some(libc::SIGHUP));
+    }
+
+    #[test]
+    fn terminal_servers_are_recognised_by_name_or_argument() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let cases = [
+            (
+                10,
+                "/usr/libexec/gnome-terminal-server",
+                "gnome-terminal-server",
+                true,
+            ),
+            (11, "/usr/bin/foot", "foot\0--server", true),
+            (12, "/usr/bin/kitty", "kitty\0--single-instance", true),
+            (13, "/usr/bin/urxvtd", "urxvtd", true),
+            (14, "/usr/bin/foot", "foot\0-e\0claude", false),
+        ];
+        for (pid, exe, args, _) in cases {
+            process(root, pid, pid, 0, exe);
+            fs::write(
+                root.join(format!("{pid}/cmdline")),
+                args.replace("\\0", "\0"),
+            )
+            .unwrap();
+        }
+        for (pid, exe, _, server) in cases {
+            assert_eq!(terminal_server(root, pid), server, "{exe}");
+        }
     }
 }

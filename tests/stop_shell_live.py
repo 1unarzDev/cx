@@ -133,8 +133,10 @@ with tempfile.TemporaryDirectory(prefix='cx-stop-shell-') as temporary:
             time.sleep(.03)
         escapee = int(pidfile.read_text())
         assert Path(f'/proc/{escapee}/stat').read_text().rsplit(')', 1)[1].split()[3] == str(escapee)
+        # An older viewer (no all_panes) never confirmed the other panes: refused.
+        assert stop(multi)['error'] and alive(multi)
         started = time.monotonic()
-        result = stop(multi)
+        result = stop(dict(multi, all_panes=True))
         assert result['error'] is None and result['result']['panes'] == 2 and result['result']['reaped'] >= 1, result
         assert not alive(multi) and alive(guard)
         state = lambda: Path(f'/proc/{escapee}/stat').read_text().rsplit(')', 1)[1].split()[0]
@@ -143,7 +145,7 @@ with tempfile.TemporaryDirectory(prefix='cx-stop-shell-') as temporary:
         except FileNotFoundError:
             pass
         assert time.monotonic()-started < 6
-        checks.append('split session stopped whole; its setsid, SIGHUP/SIGTERM-ignoring descendant was killed')
+        checks.append('split session refused for older viewers, stopped whole with all_panes; its setsid, SIGHUP/SIGTERM-ignoring descendant was killed')
     finally:
         tmux('kill-server', check=False)
 print(json.dumps(dict(result='PASS', checks=checks, backend='private tmux socket + helper protocol', binary=binary)))

@@ -13,8 +13,13 @@ and stopping an outside terminal's agent (StopExternal).
 Runs in a user namespace: ns uid 0 is the caller (sets up the capability), ns uid 1
 (a subuid) plays the user. No real terminal, agent or tmux server is touched.
 """
+import fcntl
 import json
 import os
+import pty
+import select
+import struct
+import termios
 from pathlib import Path
 import shutil
 import signal
@@ -23,7 +28,7 @@ import sys
 import tempfile
 import time
 
-binary = str(Path(sys.argv[1]).resolve())
+source_binary = str(Path(sys.argv[1]).resolve())
 here = Path(__file__).resolve().parent
 
 
@@ -121,6 +126,8 @@ root.mkdir(parents=True, mode=0o700)
 socket = root / 'managed.sock'
 subprocess.run(['cc', '-O1', '-pthread', '-o', str(bins / 'claude'), str(here / 'adopt_churn.c')], check=True)
 stub = os.path.realpath(bins / 'claude')
+shutil.copyfile(os.path.realpath(sys.executable), bins / 'foot')
+os.chmod(bins / 'foot', 0o755)
 source = os.environ.get('CX_ADOPT_REPTYR')
 relay = str(home / 'cx-reptyr')
 if source:
@@ -129,6 +136,11 @@ else:
     subprocess.run(['sh', str(here.parent / 'scripts/build-portable-reptyr.sh'), relay],
                    env=dict(os.environ, CX_REPTYR_DYNAMIC='1'), check=True, stdout=subprocess.DEVNULL)
 os.chmod(relay, 0o755)
+# The user (ns uid 1) cannot reach the caller's home: run a copy, as an install would
+# (the attach predicate execs cx again as the user).
+binary = str(home / 'cx')
+shutil.copyfile(source_binary, binary)
+os.chmod(binary, 0o755)
 subprocess.run(['setcap', 'cap_sys_ptrace+ep', relay], check=True)
 for path in [home, *home.rglob('*')]:
     if path != Path(relay):
@@ -158,8 +170,11 @@ def helper(op, args=None):
 
 def emulate(name, program=FOOT):
     log = home / f'{name}.emulator'
-    process = subprocess.Popen([*USER, sys.executable, '-c', program, str(log), str(bins / 'claude')],
-                               env=dict(env, CHURN_LOG=str(home / f"{name}.churn")), stdin=subprocess.DEVNULL,
+    # The foot-like one runs as `foot` (cx kills only known emulators); others as python.
+    interpreter = str(bins / 'foot') if program == FOOT else sys.executable
+    process = subprocess.Popen([*USER, interpreter, '-c', program, str(log), str(bins / 'claude')],
+                               env=dict(env, CHURN_LOG=str(home / f"{name}.churn"), PYTHONHOME=sys.base_prefix),
+                               stdin=subprocess.DEVNULL,
                                cwd=str(home))
     emulators.append(process)
     leader = int(wait_for(lambda: log.exists() and log.read_text().split('\n')[0].split()[-1:], 5, 'emulator')[0])
@@ -168,6 +183,45 @@ def emulate(name, program=FOOT):
     found = wait_for(lambda: next((s for s in helper('external_sessions')['result']
                                    if (s.get('origin') or {}).get('tty') == tty), None), 5, 'external row')
     return process, leader, found
+
+
+def cli(args, answer=None, attach=True):
+    """Run `cx ARGS` as the user on its own PTY (a terminal of its own, as a person
+    would). `answer` is typed at the `move which?` prompt. Once the moved session's
+    output is on screen, Ctrl+\\ detaches. Returns (exit status, transcript)."""
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.chdir(home)
+        os.execvpe(USER[0], [*USER, binary, *args], env)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 100, 0, 0))
+    out, answered, detached = b'', answer is None, not attach
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        if select.select([fd], [], [], 0.05)[0]:
+            try:
+                data = os.read(fd, 65536)
+            except OSError:
+                break
+            if not data:
+                break
+            out += data
+        if not answered and b'move which?' in out:
+            os.write(fd, answer.encode())
+            answered = True
+        if not detached and b'tick' in out.split(b'into CX', 1)[-1] and b'into CX' in out:
+            time.sleep(0.3)
+            os.write(fd, b'\x1c')
+            detached = True
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            break
+    else:
+        os.kill(pid, signal.SIGKILL)
+        raise AssertionError(f'cx {args} did not finish: {out[-2000:]!r}')
+    if not done:
+        _, status = os.waitpid(pid, 0)
+    os.close(fd)
+    return os.waitstatus_to_exitcode(status), out.decode(errors='replace')
 
 
 def record(name):
@@ -263,6 +317,40 @@ try:
     assert 2.5 < took < 6, took
     assert emulator.poll() is None, 'the terminal window is left to its app'
     checks.append(f'outside agent got SIGHUP, then SIGKILL ({took:.1f}s); its window was left alone')
+
+    # 4. The CLI: `cx adopt PID`, `cx adopt /dev/pts/N` and `cx adopt` with a choice
+    #    from its list move the terminal and attach it; Ctrl+\\ detaches with status 0.
+    for how in ('pid', 'tty', 'list'):
+        emulator, leader, found = emulate(f'cli-{how}')
+        args, answer = {'pid': (['adopt', str(leader)], None),
+                        'tty': (['adopt', found['origin']['tty']], None),
+                        'list': (['adopt'], '1\n')}[how]
+        code, shown = cli(args, answer)
+        assert code == 0 and 'into CX' in shown, (how, code, shown[-3000:])
+        assert wait_for(lambda: emulator.poll() is not None, 3, 'holder killed') and emulator.returncode == -9, \
+            (how, emulator.returncode)
+        moved = [s for s in helper('sessions')['result'] if (s.get('origin') or {}).get('tty') == found['origin']['tty']]
+        assert moved and not moved[0]['external'], (how, moved)
+        assert not (root / f"{moved[0]['id']}.adopt").exists()
+        time.sleep(3)
+        assert alive(leader) and 'close' not in (home / f'cli-{how}.emulator').read_text(), how
+        stopped = helper('stop_agent_session', dict(id=moved[0]['id'], pid=moved[0]['pid'],
+                                                     started=moved[0]['started'], boot_id=boot, provider='claude'))
+        assert stopped['error'] is None, stopped
+        wait_for(lambda: not alive(leader), 5, 'cli agent exit')
+        checks.append(f'`cx adopt` by {how} moved the terminal, attached it, detached with 0; '
+                      'holder SIGKILLed, agent alive')
+
+    # 5. `cx kill ID -y` on an agent outside tmux: StopExternal (HUP, KILL after 3 s).
+    emulator, leader, found = emulate('cli-kill', EMULATOR)
+    started = time.time()
+    killed = subprocess.run([*USER, binary, 'kill', found['id'], '-y'], env=env, cwd=home,
+                            capture_output=True, text=True, timeout=30)
+    assert killed.returncode == 0, killed.stderr
+    wait_for(lambda: not alive(leader), 6, 'cx kill agent exit')
+    assert 'signal HUP' in (home / 'cli-kill.churn').read_text()
+    assert 2.5 < time.time() - started < 8 and emulator.poll() is None
+    checks.append('`cx kill ID -y` stopped the outside agent (HUP, then KILL); window untouched')
 
     leftovers = [p for p in map(int, filter(str.isdigit, os.listdir('/proc'))) if exe(p) == stub]
     assert not leftovers, leftovers

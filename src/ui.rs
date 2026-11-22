@@ -1536,7 +1536,7 @@ fn safe_text(text: &str) -> String {
 fn identity(device: &Device) -> String {
     safe_label(&format!("{}@{}", device.account, device.host))
 }
-fn safe_label(text: &str) -> String {
+pub(crate) fn safe_label(text: &str) -> String {
     text.chars()
         .map(|c| {
             if c.is_control() || matches!(c,'\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {

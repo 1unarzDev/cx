@@ -718,7 +718,7 @@ extern "C" fn restore_tty_and_die(sig: libc::c_int) {
 /// (and Ctrl-\) arrive as bytes and cancel the prompt here, Ctrl-D ends the value like Enter, and the mode is
 /// always restored on the way out; SIGINT/SIGTERM/SIGHUP/SIGQUIT from elsewhere restore it in a handler before the
 /// process dies as it would have.
-fn prompt_no_echo(label: &str, out: &mut Vec<u8>) -> Result<()> {
+pub(crate) fn prompt_no_echo(label: &str, out: &mut Vec<u8>) -> Result<()> {
     use std::os::fd::AsRawFd;
     let mut tty = fs::OpenOptions::new()
         .read(true)

@@ -1,6 +1,7 @@
 mod access;
 mod adoption;
 mod auth;
+mod cli;
 mod containers;
 mod edges;
 mod files;
@@ -128,8 +129,7 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Lend your Claude Code gateway with one line (docs/claude.md): lend NAME [--hours H | --days D],
-    /// revoke NAME, list; the teammate runs `curl -sL <mesh endpoint>/claude/<code>|sh`. --json for tools.
+    /// Start Claude in this folder and attach (`cx claude -h`); lend|revoke|list lend your gateway (docs/claude.md).
     #[command(disable_help_flag = true)]
     Claude {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -160,6 +160,31 @@ enum Cmd {
         /// Install this approved path for an already enrolled destination.
         #[arg(long)]
         install_route: bool,
+    },
+    /// Start Codex in this folder (or DIR, or on --device) and attach.
+    Codex(cli::LaunchArgs),
+    /// Start a shell in this folder (or DIR, or on --device) and attach.
+    Shell {
+        /// Folder to start in: this folder by default (`~` on another device).
+        dir: Option<String>,
+        #[arg(short, long)]
+        device: Option<String>,
+    },
+    /// Stop a session by id or name: CX-managed, adopted, or an agent terminal outside CX.
+    Kill {
+        session: String,
+        #[arg(short, long)]
+        device: Option<String>,
+        /// Skip the confirmation.
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Move an agent terminal started outside CX into CX and attach (by pid or tty;
+    /// none: choose from a list).
+    Adopt {
+        terminal: Option<String>,
+        #[arg(short, long)]
+        device: Option<String>,
     },
     LaunchShell {
         shell: String,
@@ -705,7 +730,7 @@ fn helper() -> Result<()> {
         transport::frame(&mut output, &response)?;
     }
 }
-fn device(name: Option<String>) -> Result<Device> {
+pub(crate) fn device(name: Option<String>) -> Result<Device> {
     match name {
         Some(n) => {
             let d = enrolled_device(&n)?;
@@ -1752,7 +1777,22 @@ fn run() -> Result<()> {
             .concat(),
         ),
         Some(Cmd::Join { args }) => mesh::run(&[vec!["pair".into()], args].concat()),
-        Some(Cmd::Claude { args }) => mesh::run_claude(&args),
+        Some(Cmd::Claude { args }) => cli::claude(args),
+        Some(Cmd::Codex(a)) => cli::launch("codex", a),
+        Some(Cmd::Shell { dir, device }) => cli::launch(
+            "shell",
+            cli::LaunchArgs {
+                dir,
+                device,
+                ..Default::default()
+            },
+        ),
+        Some(Cmd::Kill {
+            session,
+            device,
+            yes,
+        }) => cli::kill(&session, device, yes),
+        Some(Cmd::Adopt { terminal, device }) => cli::adopt(terminal, device),
         Some(Cmd::Secrets { command }) => secrets::run_cli(command),
         Some(Cmd::Edge { command }) => edge_cli(command),
         Some(Cmd::Device { command }) => {

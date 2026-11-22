@@ -74,18 +74,18 @@ impl App {
         }
         true
     }
+    /// From the device's last Info, however old: the chooser never waits for a recheck
+    /// (opening it starts one). A launch the device can no longer run says why there.
     pub(super) fn provider_choices(&self, device: usize) -> Vec<&'static str> {
         let mut choices = vec!["shell"];
-        if let Some((available, checked)) = self.providers.get(&device) {
-            if transport::now().saturating_sub(*checked) < 60 {
-                for provider in ["claude", "codex"] {
-                    if available.iter().any(|p| p == provider) {
-                        choices.push(provider);
-                    }
+        if let Some((available, _)) = self.providers.get(&device) {
+            for provider in ["claude", "codex"] {
+                if available.iter().any(|p| p == provider) {
+                    choices.push(provider);
                 }
-                if available.iter().any(|p| p == "containers-v1") {
-                    choices.push("container");
-                }
+            }
+            if available.iter().any(|p| p == "containers-v1") {
+                choices.push("container");
             }
         }
         choices

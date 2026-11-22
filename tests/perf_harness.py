@@ -25,6 +25,9 @@ Scenarios (all times in milliseconds):
                    on the tmux control path or forced polling (CX_TMUX_CONTROL=0): select ->
                    remembered frame and -> live frame, keystroke echo, Enter -> first attached
                    frame, detach -> UI. Two shell sessions print distinct markers.
+  create_agent     `c` on the device view -> the new claude session attached (tmux's status line)
+                   and -> the agent's first frame, with a fake claude (1 s startup) behind a 0.3 s
+                   login rc; plus `cx new --provider claude` and its CX_CREATE_TIMINGS phases.
 
 "Settled" means the expected change is on the pyte screen and no PTY output arrived for
 QUIET seconds; latency is measured to the last output chunk before that quiet window.
@@ -711,8 +714,86 @@ def scenario_idle(binary, seconds=5.0):
     return result
 
 
+AGENT_READY = 'FAKE-CLAUDE-READY'
+
+
+def fake_agent(env, startup=1.0, rc_delay=0.3):
+    """A fake `claude` on the login shell's PATH: `--version` answers at once, a launch
+    paints AGENT_READY after `startup` seconds. The login rc sleeps `rc_delay` first, as a
+    real shell configuration does."""
+    bin_dir = env.root / 'fake-bin'
+    bin_dir.mkdir()
+    agent = bin_dir / 'claude'
+    agent.write_text(f'''#!/bin/sh
+case "$1" in --version) echo "0.0.0 (fake)"; exit 0;; esac
+sleep {startup}
+printf '%s\\n' {AGENT_READY}
+exec sleep 600
+''')
+    agent.chmod(0o755)
+    (env.root / '.bash_profile').write_text(f'sleep {rc_delay}\nexport PATH="{bin_dir}:$PATH"\n')
+
+
+def scenario_create(binary, cycles, startup=1.0, rc_delay=0.3):
+    """`c` on the device view -> the new claude session attached natively (tmux's status
+    line) and -> the agent's first frame (AGENT_READY), with a fake claude taking `startup`
+    seconds behind a login rc taking `rc_delay`. Cycle 0 also starts the tmux server. Plus
+    `cx new --provider claude` with CX_CREATE_TIMINGS=1: the helper's phases (newer binaries)."""
+    env = Env(binary)
+    fake_agent(env, startup, rc_delay)
+    result = dict(agent_startup_ms=startup * 1000, login_rc_ms=rc_delay * 1000)
+    try:
+        viewer = Viewer(env, 'Work')
+        try:
+            viewer.wait(lambda: hub_layout(viewer) and 'claude' in viewer.text(), what='device view')
+            viewer.quiesce(.5)
+
+            def native():
+                return 'detach' in viewer.screen.display[-1] and not on_hub(viewer.text())
+
+            def agent():
+                return native() and AGENT_READY in viewer.text()
+
+            def back():
+                return not native() and AGENT_READY not in viewer.text()
+            attached, ready = [], []
+            for _ in range(cycles):
+                times = first_times(viewer, b'c', [native, agent], timeout=startup + 10)
+                attached.append(times[0])
+                ready.append(times[1])
+                viewer.quiesce(.15)
+                viewer.measure(DETACH_KEY, back, timeout=TIMEOUT)
+                viewer.quiesce(.5)
+                env.owned_pids()
+            result.update(cycles=cycles, first_to_attached_ms=attached[0], first_to_agent_ms=ready[0],
+                          key_to_attached_ms=summary(attached[1:]), key_to_agent_ms=summary(ready[1:]),
+                          agent_over_startup_ms=summary([r - startup * 1000 for r in ready[1:] if r is not None]))
+        finally:
+            result['viewer'] = viewer.close()
+        folder = env.root / 'work'
+        folder.mkdir()
+        phases, totals = {}, []
+        for i in range(cycles):
+            t0 = time.monotonic()
+            made = subprocess.run([binary, 'new', '--provider', 'claude', '--directory', str(folder),
+                                   '--key', f'perf-create-{i}'], env=dict(env.env, CX_CREATE_TIMINGS='1'),
+                                  capture_output=True, timeout=30)
+            totals.append(round((time.monotonic() - t0) * 1000, 2))
+            assert made.returncode == 0, 'cx new --provider claude failed'
+            for line in made.stderr.decode(errors='replace').splitlines():
+                parts = line.split()
+                if len(parts) == 3 and parts[0] == 'create-phase' and parts[2].isdigit():
+                    phases.setdefault(parts[1], []).append(int(parts[2]))
+        result['cx_new_claude_ms'] = summary(totals)
+        result['create_phases_ms'] = {k: summary(v) for k, v in phases.items()}
+    finally:
+        result['cleanup'] = env.cleanup()
+    return result
+
+
 SCENARIOS = ('preview_scroll', 'directory_list', 'sessions_attach', 'mouse_motion', 'idle',
-             'instant_local', 'instant_local_polling', 'instant_remote', 'instant_remote_polling')
+             'instant_local', 'instant_local_polling', 'instant_remote', 'instant_remote_polling',
+             'create_agent')
 DOWN, UP = b'\x1b[B', b'\x1b[A'
 
 
@@ -934,6 +1015,8 @@ def run_once(binary, iterations, only):
                 out[name] = scenario_mouse(binary)
             elif name == 'idle':
                 out[name] = scenario_idle(binary)
+            elif name == 'create_agent':
+                out[name] = scenario_create(binary, max(3, iterations // 5))
             elif name.startswith('instant_'):
                 side = name.split('_')[1]
                 out[name] = scenario_instant(binary, max(3, iterations // 3), side,

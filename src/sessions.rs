@@ -2136,17 +2136,72 @@ pub fn launch_shell() -> Result<String> {
     Ok(shell)
 }
 
+/// What `Info` last found runnable in a launch shell (state file `providers.json`).
+/// A launch within [`PROBE_TTL`] seconds trusts its "available" instead of starting
+/// login shells again; "unavailable" is always rechecked, so an install shows at once.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ProviderProbe {
+    shell: String,
+    at: u64,
+    claude: bool,
+    codex: bool,
+    codex_no_daemon: bool,
+}
+const PROBE_TTL: u64 = 600;
+const PROBE_FILE: &str = "providers.json";
+impl ProviderProbe {
+    fn available(&self, provider: &str) -> bool {
+        match provider {
+            "claude" => self.claude,
+            "codex" => self.codex,
+            _ => false,
+        }
+    }
+}
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+/// Probe every provider in `shell` at once (each a bounded login shell of its own) and
+/// record the result for launches.
+fn probe_providers(shell: &str) -> ProviderProbe {
+    let (claude, codex, codex_no_daemon) = thread::scope(|scope| {
+        let claude = scope.spawn(|| provider_available(shell, "claude --version"));
+        let codex = scope.spawn(|| provider_available(shell, "codex --version"));
+        let no_daemon = codex_supports_no_daemon(shell);
+        (
+            claude.join().unwrap_or(false),
+            codex.join().unwrap_or(false),
+            no_daemon,
+        )
+    });
+    let probe = ProviderProbe {
+        shell: shell.into(),
+        at: now_secs(),
+        claude,
+        codex,
+        codex_no_daemon: codex && codex_no_daemon,
+    };
+    let _ = crate::store::write_state(PROBE_FILE, &probe, 4096);
+    probe
+}
+/// The recorded probe of `shell`, when it is younger than [`PROBE_TTL`].
+fn recorded_probe(shell: &str) -> Option<ProviderProbe> {
+    let probe: ProviderProbe = crate::store::read_state(PROBE_FILE, 4096).ok().flatten()?;
+    let age = now_secs().checked_sub(probe.at)?;
+    (probe.shell == shell && age < PROBE_TTL).then_some(probe)
+}
+
 /// This is runtime availability, not provider authentication or model-route health.
 /// No output from shell configuration or providers enters metadata/logs.
 pub fn available_providers() -> Result<Vec<&'static str>> {
-    let shell = launch_shell()?;
-    let mut available = Vec::new();
-    for (provider, probe) in [("claude", "claude --version"), ("codex", "codex --version")] {
-        if provider_available(&shell, probe) {
-            available.push(provider);
-        }
-    }
-    Ok(available)
+    let probe = probe_providers(&launch_shell()?);
+    Ok(["claude", "codex"]
+        .into_iter()
+        .filter(|p| probe.available(p))
+        .collect())
 }
 
 /// Probe in the same selected login shell as the eventual launcher. Never
@@ -2428,25 +2483,37 @@ pub fn refresh_provider_environment() -> Result<()> {
         "ANTHROPIC_CUSTOM_HEADERS",
     ];
     let injected = std::env::var(SESSION_SECRETS).unwrap_or_default();
+    // One tmux run for all of them: commands separated by `;` arguments (no shell).
+    let mut command = tmux(true)?;
+    let mut first = true;
     for name in VARS
         .iter()
         .filter(|name| !injected.split(',').any(|v| v == **name))
     {
-        let mut command = tmux(true)?;
+        if !std::mem::take(&mut first) {
+            command.arg(";");
+        }
         command.args(["set-environment", "-g"]);
         match std::env::var(name) {
-            Ok(value) => {
-                command.arg(*name).arg(value);
-            }
-            Err(_) => {
-                command.args(["-u", *name]);
-            }
+            Ok(value) => command.arg(*name).arg(tmux_literal(value)),
+            Err(_) => command.args(["-u", *name]),
         };
-        command
-            .status()
-            .with_context(|| format!("refreshing managed tmux variable {name}"))?;
     }
+    if first {
+        return Ok(());
+    }
+    command
+        .status()
+        .context("refreshing managed tmux provider variables")?;
     Ok(())
+}
+/// An argument tmux takes as it is in a `;`-separated command list: an argument ending
+/// in `;` ends a command unless it ends in `\;` (one backslash is then removed).
+fn tmux_literal(mut value: String) -> String {
+    if value.ends_with(';') {
+        value.insert(value.len() - 1, '\\');
+    }
+    value
 }
 fn server_responds(attempts: u32) -> Result<bool> {
     for _ in 0..attempts {
@@ -2500,11 +2567,23 @@ fn bounded_stderr(raw: &[u8]) -> String {
 }
 fn ensure_server() -> Result<()> {
     // An owned server may persist after its last session ends. New binaries
-    // must reload its configuration too, rather than reusing old key bindings.
+    // must reload its configuration too, rather than reusing old key bindings;
+    // one this binary already configured (the attach marker) is left as it is.
     let mut existing = tmux(true)?;
-    existing.args(["show-options", "-g"]);
-    if existing.output()?.status.success() {
-        return configure_managed();
+    existing.args(["display-message", "-p", "#{pid}"]);
+    let existing = existing.output()?;
+    if existing.status.success() {
+        let configured = String::from_utf8_lossy(&existing.stdout)
+            .trim()
+            .parse()
+            .ok()
+            .and_then(|pid| Some((pid, process_start_ticks(pid)?)))
+            .is_some_and(|(pid, start)| control::configured(pid, &start));
+        return if configured {
+            Ok(())
+        } else {
+            configure_managed()
+        };
     }
     let root = state()?;
     let conf = root.join("tmux.conf");
@@ -2712,6 +2791,15 @@ fn create_with_permissions(
     yolo: bool,
     container: Option<&crate::model::ContainerScope>,
 ) -> Result<Session> {
+    // CX_CREATE_TIMINGS=1: each phase's milliseconds on stderr (fixtures and diagnosis).
+    let timed = std::env::var_os("CX_CREATE_TIMINGS").is_some();
+    let mut last = std::time::Instant::now();
+    let mut phase = |name: &str| {
+        if timed {
+            eprintln!("create-phase {name} {}", last.elapsed().as_millis());
+        }
+        last = std::time::Instant::now();
+    };
     let mut agent_command =
         provider_command(&request.provider, yolo, request.resume, request.resume_pick)?;
     if request.key.is_empty() || request.key.len() > 1024 {
@@ -2751,6 +2839,7 @@ fn create_with_permissions(
         bail!("session lock unavailable");
     }
     let name = format!("cx-{:x}", Sha256::digest(request.key.as_bytes()));
+    phase("lock");
     let launch = LaunchIntent {
         provider: request.provider.clone(),
         resume: request.resume,
@@ -2788,25 +2877,25 @@ fn create_with_permissions(
     if root.join(format!("{name}.json")).exists() {
         bail!("original session has ended; use a new creation key to start replacement work");
     }
+    phase("existing-check");
     let shell = launch_shell()?;
-    if container.is_none()
-        && request.provider != "shell"
-        && !provider_available(
-            &shell,
-            match request.provider.as_str() {
-                "claude" => "claude --version",
-                _ => "codex --version",
-            },
-        )
-    {
-        bail!(
-            "{} is not launchable on this execution device; choose an available profile",
-            request.provider
-        );
+    if container.is_none() && request.provider != "shell" {
+        // Info's recent probe when it found the provider; a fresh probe otherwise. A
+        // provider gone since then fails in its pane, which stays to show why.
+        let probe = recorded_probe(&shell)
+            .filter(|p| p.available(&request.provider))
+            .unwrap_or_else(|| probe_providers(&shell));
+        if !probe.available(&request.provider) {
+            bail!(
+                "{} is not launchable on this execution device; choose an available profile",
+                request.provider
+            );
+        }
+        if request.provider == "codex" && probe.codex_no_daemon {
+            agent_command.push_str(" --no-daemon --config 'tui.terminal_title=[\"thread-name\"]'");
+        }
     }
-    if container.is_none() && request.provider == "codex" && codex_supports_no_daemon(&shell) {
-        agent_command.push_str(" --no-daemon --config 'tui.terminal_title=[\"thread-name\"]'");
-    }
+    phase("provider-check");
     // Secrets marked "expose to sessions" go only to sessions this device's own viewer or CLI starts, never one a
     // helper starts for another device, and not into containers.
     let exposed =
@@ -2815,9 +2904,12 @@ fn create_with_permissions(
         } else {
             Vec::new()
         };
+    phase("secrets");
     ensure_server()?;
+    phase("server");
     refresh_provider_environment()?;
     let (host, account, boot_id) = identity();
+    phase("environment");
     let pending = Session {
         terminal: None,
         id: name.clone(),
@@ -2842,13 +2934,14 @@ fn create_with_permissions(
         container: container.cloned(),
     };
     // Persist intent before starting: an interrupted helper response must never lose the launcher identity.
+    // No fsync for these records: they describe a running terminal only, and no terminal outlives
+    // a power loss; a crashed or killed process loses nothing it wrote.
     let mut intent = fs::OpenOptions::new()
         .create_new(true)
         .write(true)
         .mode(0o600)
         .open(root.join(format!("{name}.json")))?;
     intent.write_all(&serde_json::to_vec(&pending)?)?;
-    intent.sync_all()?;
     let mut launch_file = fs::OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -2856,14 +2949,13 @@ fn create_with_permissions(
         .custom_flags(libc::O_NOFOLLOW)
         .open(root.join(format!("{name}.launch")))?;
     launch_file.write_all(&serde_json::to_vec(&launch)?)?;
-    launch_file.sync_all()?;
     let mut permissions = fs::OpenOptions::new()
         .create_new(true)
         .write(true)
         .mode(0o600)
         .open(permissions_file)?;
     permissions.write_all(if yolo { b"yolo" } else { b"default" })?;
-    permissions.sync_all()?;
+    phase("intent");
     // A single safely quoted shell-command works on tmux 2.7 as well as newer
     // versions; multi-argument new-session and -e were added later.
     let mut launcher = vec![shell.clone()];
@@ -2935,8 +3027,38 @@ fn create_with_permissions(
     c.args(["new-session", "-d", "-s", &name, "-n", "work", "-c"])
         .arg(directory)
         .arg(command);
+    if request.provider != "shell" && tmux_at_least(3, 3) {
+        // The viewer attaches while the terminal starts. An agent launch that fails (a
+        // provider gone since Info's probe, a broken shell setup) keeps its pane, saying so with
+        // its status (tmux may drop a dying pane's last output), for STARTUP_GRACE; then
+        // tmux removes it. A program still running by then ends as usual. (`##` defers
+        // the format to the timer.)
+        let window = format!("={name}:work");
+        c.args([";", "set-option", "-w", "-t", &window, "remain-on-exit", "failed"])
+            .args([";", "set-option", "-w", "-t", &window, "remain-on-exit-format"])
+            .arg(STARTUP_FAILED)
+            .args([";", "run-shell", "-b", "-d", STARTUP_GRACE, "-C"])
+            .arg(format!(
+                "if-shell -F -t {window} '##{{pane_dead}}' 'kill-session -t ={name}' 'set-option -w -t {window} remain-on-exit off'"
+            ));
+    }
     output(c)?;
-    let mut session = inspect(true, &name).context("terminal unavailable during startup")?;
+    phase("new-session");
+    let mut session = match inspect(true, &name) {
+        Ok(session) => session,
+        Err(error) => {
+            // Ended before the reply: no viewer will show its pane, so say how it ended.
+            let ended = field(true, &name, "#{pane_dead} #{pane_dead_status}").unwrap_or_default();
+            if let Some(status) = ended.strip_prefix("1 ") {
+                let mut kill = tmux(true)?;
+                kill.args(["kill-session", "-t", &format!("={name}")]);
+                let _ = output(kill);
+                bail!("terminal exited during startup (status {status})");
+            }
+            return Err(error.context("terminal unavailable during startup"));
+        }
+    };
+    phase("inspect");
     session.name = display_name;
     session.provider = request.provider.clone();
     let temp = root.join(format!("{name}.tmp"));
@@ -2947,37 +3069,14 @@ fn create_with_permissions(
         .mode(0o600)
         .open(&temp)?;
     f.write_all(&serde_json::to_vec(&session)?)?;
-    f.sync_all()?;
     fs::rename(temp, root.join(format!("{name}.json")))?;
     set_managed_status(&session, viewer_ascii()).context("terminal unavailable during startup")?;
-    wait_for_first_screen(&name).context("terminal unavailable during startup")?;
+    phase("record");
     Ok(session)
 }
-
-/// Creation already runs on the helper worker. Keep the viewer visible while
-/// the detached terminal initializes, without sending input or guessing prompts.
-/// Silent programs must remain attachable, so this is a bounded presentation wait.
-fn wait_for_first_screen(id: &str) -> Result<()> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        if field(true, id, "#{pane_dead}")? == "1" {
-            bail!("terminal exited during startup; inspect the session before retrying");
-        }
-        let mut capture = tmux(true)?;
-        // Only inspect the first 40 visible rows, never history. The text is
-        // discarded immediately and never stored, logged or used as metadata.
-        capture.args(["capture-pane", "-p", "-t", id, "-S", "0", "-E", "39"]);
-        let visible = output(capture)?;
-        if visible
-            .chars()
-            .any(|c| !c.is_whitespace() && !c.is_control())
-            || std::time::Instant::now() >= deadline
-        {
-            return Ok(());
-        }
-        thread::sleep(Duration::from_millis(80));
-    }
-}
+/// Seconds a launch that failed keeps its pane on screen (tmux 3.3+), and what it says.
+const STARTUP_GRACE: &str = "30";
+const STARTUP_FAILED: &str = "cx: the launch failed (exit status #{pane_dead_status}#{?#{==:#{pane_dead_status},127},: command not found,}). Detach to go back.";
 
 // Codex uses ANSI bright-black (index8) for prompt/answer backgrounds when
 // terminal background discovery is unavailable. User palettes may make that an
@@ -5391,6 +5490,74 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
         let start = std::time::Instant::now();
         assert!(!bounded_provider_check(stalled, Duration::from_millis(150)));
         assert!(start.elapsed() < Duration::from_secs(1));
+    }
+    #[test]
+    fn launches_trust_a_recent_probe_of_the_same_shell_only() {
+        crate::store::isolate_test_state();
+        let record = |shell: &str, at: u64| {
+            let probe = ProviderProbe {
+                shell: shell.into(),
+                at,
+                claude: true,
+                codex: false,
+                codex_no_daemon: false,
+            };
+            crate::store::write_state(PROBE_FILE, &probe, 4096).unwrap();
+        };
+        assert!(
+            recorded_probe("/bin/bash").is_none(),
+            "nothing recorded yet"
+        );
+        record("/bin/bash", now_secs() - 5);
+        let probe = recorded_probe("/bin/bash").expect("recent probe");
+        assert!(probe.available("claude") && !probe.available("codex"));
+        assert!(!probe.available("shell"));
+        // Another launch shell, an expired record or a clock gone backwards: probe again.
+        assert!(recorded_probe("/usr/bin/fish").is_none());
+        record("/bin/bash", now_secs() - PROBE_TTL);
+        assert!(recorded_probe("/bin/bash").is_none());
+        record("/bin/bash", now_secs() + 60);
+        assert!(recorded_probe("/bin/bash").is_none());
+    }
+    #[test]
+    fn tmux_list_arguments_keep_a_trailing_semicolon() {
+        assert_eq!(tmux_literal("plain".into()), "plain");
+        assert_eq!(tmux_literal("in;side".into()), "in;side");
+        assert_eq!(tmux_literal("end;".into()), "end\\;");
+        assert_eq!(tmux_literal("end\\;".into()), "end\\\\;");
+        if Command::new("tmux").arg("-V").output().is_err() {
+            return;
+        }
+        // What tmux makes of them in a `;` list (a private server, never cx's).
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("s");
+        let tmux = || {
+            let mut c = Command::new("tmux");
+            c.arg("-S").arg(&sock).arg("-f").arg("/dev/null");
+            c
+        };
+        assert!(tmux()
+            .args(["set", "-g", "exit-empty", "off", ";", "start-server"])
+            .status()
+            .unwrap()
+            .success());
+        let values = ["end;", "end\\;", "in;side", "plain"];
+        let mut set = tmux();
+        for (i, v) in values.iter().enumerate() {
+            set.args(["set-environment", "-g", &format!("V{i}")])
+                .arg(tmux_literal(v.to_string()))
+                .arg(";");
+        }
+        set.args(["set-environment", "-g", "LAST", "ok"]);
+        let ok = set.status().unwrap().success();
+        let shown = tmux().args(["show-environment", "-g"]).output().unwrap();
+        let _ = tmux().arg("kill-server").status();
+        assert!(ok);
+        let shown = String::from_utf8_lossy(&shown.stdout);
+        for (i, v) in values.iter().enumerate() {
+            assert!(shown.lines().any(|l| l == format!("V{i}={v}")), "{v}");
+        }
+        assert!(shown.lines().any(|l| l == "LAST=ok"));
     }
     #[test]
     fn fish_palette_reset_is_after_config_before_command() {

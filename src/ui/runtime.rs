@@ -1365,6 +1365,34 @@ pub(super) fn start_update_check(tx: &mpsc::Sender<UpdateEvent>, force: bool) {
         let _ = tx.send(UpdateEvent::Checked(force, result));
     });
 }
+/// Where `task` joins the queue: what the user just asked for (start, stop or move a
+/// session) runs next on its lane, ahead of queued refreshes and probes, in order among
+/// such requests; everything else at the end. (A request already running finishes first.)
+pub(super) fn queue_position(
+    tasks: &VecDeque<Task>,
+    task: &Task,
+    lane: impl Fn(&Task) -> String,
+) -> usize {
+    let urgent = |t: &Task| {
+        matches!(
+            t.op,
+            Operation::Create(_)
+                | Operation::CreateYolo(_)
+                | Operation::StopSession { .. }
+                | Operation::StopAgentSession { .. }
+                | Operation::StopExternal { .. }
+                | Operation::AdoptSession { .. }
+        )
+    };
+    if !urgent(task) {
+        return tasks.len();
+    }
+    let own = lane(task);
+    tasks
+        .iter()
+        .position(|t| !urgent(t) && lane(t) == own)
+        .unwrap_or(tasks.len())
+}
 // Eight workers permit independent hosts and lanes to progress while preserving FIFO per
 // lane. A device has up to seven lanes (metadata, capabilities, bulk, interactive, panel,
 // files, hover), and opening a lane's helper channel blocks its worker for a handshake:
@@ -1445,7 +1473,8 @@ pub(super) fn start_task_workers<W: From<Reply> + Send + 'static>(
             while queue.tasks.len() >= 32 {
                 queue = changed.wait(queue).unwrap();
             }
-            queue.tasks.push_back(task);
+            let at = queue_position(&queue.tasks, &task, endpoint);
+            queue.tasks.insert(at, task);
             changed.notify_all();
         }
         lock.lock().unwrap().closed = true;

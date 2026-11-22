@@ -746,6 +746,9 @@ fn inspect_observed(
         })
         .unwrap_or_else(|| "unknown".into());
     let started = format!("{}:{process_start}", observed.created);
+    if let Some(p) = prior.as_ref().filter(|p| p.pid != pid || p.started != started) {
+        heal_adopted(&name, p, pid, &started);
+    }
     let original_provider = prior
         .as_ref()
         .map(|s| s.provider.as_str())
@@ -1434,8 +1437,10 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
         return Err(error);
     }
     phase("pane");
-    // Success is observed, not assumed: the relay holds the master, the
-    // previous holder no longer does, and the relay dropped its capabilities.
+    // Success is observed, not assumed: the pane (the relay) lives on, the leader
+    // is unchanged and the previous holder no longer holds the master. The relay
+    // itself is not read: a setcap or sudo relay is non-dumpable, so its
+    // descriptors are hidden from this user.
     // The steal has 10 s from when the relay runs: while sudo still waits for the
     // password (its askpass gives up after 300 s) the clock does not start.
     let sudo = relay.privilege == crate::adoption::Privilege::Sudo;
@@ -1449,11 +1454,11 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
             .ok()
             .and_then(|p| p.parse::<u32>().ok());
         if let Some(pane) = pane.filter(|_| !dead) {
-            // The master now lives under the pane (the relay, possibly beneath
-            // sudo) and no longer in the previous holder.
-            let moved = crate::adoption::holds_master(pane, terminal.index)
-                || crate::adoption::descendant_holds_master(pane, terminal.index);
-            if moved && !crate::adoption::holds_master(holder.process.pid, terminal.index) {
+            if crate::adoption::moved(
+                &leader.identity(),
+                &holder.process.identity(),
+                terminal.index,
+            ) {
                 break pane;
             }
             if sudo
@@ -1509,10 +1514,8 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
     let outcome = finish();
     phase("register");
     if outcome.is_ok() {
-        // The source window is now empty; close it if it was single-window.
-        if let Some(h) = origin.holder.as_ref() {
-            crate::adoption::close_empty_holder(h, &origin.kind);
-        }
+        // The source window is now empty: kill it if it was single-window.
+        settle_adopted(&name, origin);
     }
     outcome.map_err(|error| {
         // The moved terminal ended immediately (its relay exits with it).
@@ -1524,6 +1527,56 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
             error.context("terminal unavailable after moving")
         }
     })
+}
+
+/// A verified move's leftovers: the relay's error file and the emptied source window.
+fn settle_adopted(name: &str, origin: &crate::model::ExternalOrigin) {
+    if let Ok(root) = state() {
+        let _ = fs::remove_file(root.join(format!("{name}.adopt")));
+    }
+    if let Some(h) = origin.holder.as_ref() {
+        crate::adoption::close_empty_holder(h, &origin.kind);
+    }
+}
+/// Finish a move whose success check gave up: its record still carries the
+/// identity from before the move (`ext:` start, the old leader pid), so stop
+/// refuses it, and its frozen source window could still kill it. Once the move
+/// is verifiable (the leader is unchanged, the old holder holds no master) the
+/// record takes the live pane's identity. The pane is the relay for this record
+/// by construction: CX started it under the session lock, named after this
+/// origin, and the relay exits when a steal fails or its terminal closes. The
+/// relay's own descriptors are never needed (a setcap/sudo relay hides them).
+/// Idempotent; runs only while a record differs from its live pane.
+fn heal_adopted(name: &str, prior: &Session, pid: u32, started: &str) {
+    let Some(origin) = prior.origin.as_ref() else {
+        return;
+    };
+    let (Some(holder), Ok(index)) = (origin.holder.as_ref(), adopted_index(origin)) else {
+        return;
+    };
+    if !crate::adoption::moved(&origin.leader, holder, index) {
+        return;
+    }
+    let mut healed = prior.clone();
+    healed.pid = pid;
+    healed.started = started.to_string();
+    let write = || -> Result<()> {
+        let root = state()?;
+        let temp = root.join(format!("{name}.{}.tmp", std::process::id()));
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&temp)?;
+        f.write_all(&serde_json::to_vec(&healed)?)?;
+        f.sync_all()?;
+        fs::rename(&temp, root.join(format!("{name}.json")))?;
+        Ok(())
+    };
+    if write().is_ok() {
+        settle_adopted(name, origin);
+    }
 }
 
 fn adopted_index(origin: &crate::model::ExternalOrigin) -> Result<u32> {
@@ -1757,13 +1810,48 @@ pub fn reset() -> Result<serde_json::Value> {
     }))
 }
 
-/// End an outside-CX terminal's agent after re-checking its identity (see `adopt`).
+/// End the agent of a terminal outside tmux after re-checking every identity
+/// `adopt` checks (boot, leader, holder, terminal): SIGHUP to the agent's
+/// process group, SIGKILL to what is left of it after 3 s. The window itself is
+/// left to its terminal app.
 pub fn stop_external(
-    _id: &str,
-    _origin: &crate::model::ExternalOrigin,
-    _boot_id: &str,
+    id: &str,
+    origin: &crate::model::ExternalOrigin,
+    boot_id: &str,
 ) -> Result<serde_json::Value> {
-    anyhow::bail!("stopping terminals outside CX is not supported yet")
+    let (_, _, boot) = identity();
+    anyhow::ensure!(
+        !boot.is_empty() && boot == boot_id,
+        "execution device restarted; refresh sessions"
+    );
+    let terminal = external_terminals()
+        .into_iter()
+        .find(|t| {
+            t.tty() == origin.tty
+                && t.leader.pid == origin.leader.pid
+                && t.leader.start_ticks == origin.leader.start_ticks
+        })
+        .context("terminal changed or closed; refresh sessions")?;
+    anyhow::ensure!(
+        id == crate::adoption::session_id(&boot, &terminal),
+        "invalid external session identity"
+    );
+    let holder = terminal.holder.as_ref().map(|h| h.process.identity());
+    anyhow::ensure!(
+        holder.as_ref().map(|h| (h.pid, &h.start_ticks))
+            == origin.holder.as_ref().map(|h| (h.pid, &h.start_ticks)),
+        "terminal owner changed; refresh sessions"
+    );
+    let (_, agent) = foreground_provider(terminal.leader.pid)
+        .context("no agent runs in this terminal; nothing was stopped")?;
+    let (group, _, _) = terminal_group(agent.pid).context("agent ended; refresh sessions")?;
+    anyhow::ensure!(
+        group > 0 && group == terminal.foreground,
+        "agent changed; refresh sessions"
+    );
+    let members = crate::adoption::group_members(group, terminal.leader.pid as i32);
+    let signalled = crate::adoption::reap(&members, libc::SIGHUP, Duration::from_secs(3));
+    Ok(serde_json::json!({"status": "stopped", "signalled": signalled}))
 }
 
 /// Stop the exact CX-owned runtime shown at confirmation; preserve external sessions.
@@ -1818,12 +1906,17 @@ fn stop_managed(
         &fs::read(root.join(format!("{id}.json")))
             .context("session ownership record unavailable")?,
     )?;
+    // The record pins the tmux session generation (`started` is
+    // "<session_created>:<pane start>"); the pane shown is checked live below,
+    // since the active pane of a split session need not be the first one.
+    let created = |s: &str| s.split_once(':').map(|(c, _)| c.to_string());
     if record.id != id
         || record.external
         || !["shell", "codex", "claude"].contains(&record.provider.as_str())
         || (provider == "shell" && record.provider != "shell")
-        || record.pid != pid
-        || record.started != started
+        || created(&record.started).is_none()
+        || created(&record.started) != created(started)
+        || (record.origin.is_some() && (record.pid != pid || record.started != started))
         || record.boot_id != boot_id
     {
         bail!("session ownership or runtime identity changed; refresh sessions");
@@ -1841,12 +1934,16 @@ fn stop_managed(
     let Some(target) = target else {
         return Ok(serde_json::json!({"status": "already_stopped"}));
     };
-    // Refuse expanded terminals: stopping a whole session must not kill unshown work.
-    let mut panes = tmux(true)?;
-    panes.args(["list-panes", "-s", "-t", &target, "-F", "#{pane_id}"]);
-    if output(panes)?.lines().count() != 1 {
-        bail!("session has multiple panes; stop it from its terminal instead");
-    }
+    // Every pane goes with the session (the confirm counts them); a shell stop
+    // still refuses when any pane runs an agent.
+    let panes = || -> Result<Vec<u32>> {
+        let mut c = tmux(true)?;
+        c.args(["list-panes", "-s", "-t", &target, "-F", "#{pane_pid}"]);
+        Ok(output(c)?
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect())
+    };
     let current = inspect(true, &target)?;
     if current.id != id
         || current.pid != pid
@@ -1857,15 +1954,20 @@ fn stop_managed(
         bail!("session provider or identity changed; refresh sessions");
     }
     if provider == "shell" {
-        reject_provider_descendants(pid)?;
+        for pane in panes()? {
+            reject_provider_descendants(pane)?;
+        }
     }
-    // Check again immediately before submitting an atomic tmux identity/shape guard.
+    // Check again immediately before submitting an atomic tmux identity guard.
     let current = inspect(true, &target)?;
     if current.pid != pid || current.started != started || current.provider != provider {
         bail!("session changed while confirming; refresh sessions");
     }
+    let panes = panes()?;
     if provider == "shell" {
-        reject_provider_descendants(pid)?;
+        for pane in &panes {
+            reject_provider_descendants(*pane)?;
+        }
     }
     if let Some(scope) = &record.container {
         crate::containers::stop_terminal(scope, id)?;
@@ -1882,7 +1984,6 @@ fn stop_managed(
     }
     let runtime_guard =
         format!("#{{&&:#{{==:#{{pane_pid}},{pid}}},#{{==:#{{session_created}},{created}}}}}");
-    let shape_guard = "#{&&:#{==:#{session_windows},1},#{==:#{window_panes},1}}";
     // tmux checks its current command again in the same command queue as the kill.
     // This narrows (but cannot completely eliminate) concurrent provider-start races.
     let provider_guard =
@@ -1893,8 +1994,11 @@ fn stop_managed(
         "1"
     };
     let guard = format!(
-        "#{{&&:#{{&&:{runtime_guard},{shape_guard}}},#{{&&:{provider_guard},#{{==:#{{session_name}},{id}}}}}}}"
+        "#{{&&:{runtime_guard},#{{&&:{provider_guard},#{{==:#{{session_name}},{id}}}}}}}"
     );
+    // Snapshot the whole tree first: kill-session only hangs up the panes, and a
+    // descendant that left their session or ignores SIGHUP would live on.
+    let tree = crate::adoption::descendants(&panes);
     let mut stop = tmux(true)?;
     stop.args([
         "if-shell",
@@ -1913,7 +2017,16 @@ fn stop_managed(
     if ids(true)?.iter().any(|session| session == &target) {
         bail!("session stop was not confirmed; refresh sessions before retrying");
     }
-    Ok(serde_json::json!({"status": "stopped"}))
+    // Survivors of the hang-up (given a moment to exit on their own) that are
+    // still exactly the processes snapshotted.
+    let settle = std::time::Instant::now() + Duration::from_millis(500);
+    while tree.iter().any(|(p, s)| crate::adoption::alive(*p, s))
+        && std::time::Instant::now() < settle
+    {
+        thread::sleep(Duration::from_millis(25));
+    }
+    let reaped = crate::adoption::reap(&tree, libc::SIGTERM, Duration::from_secs(3));
+    Ok(serde_json::json!({"status": "stopped", "panes": panes.len(), "reaped": reaped}))
 }
 
 fn reject_provider_descendants(pane: u32) -> Result<()> {

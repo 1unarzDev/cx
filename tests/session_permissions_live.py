@@ -50,7 +50,7 @@ int main(int argc,char **argv) {
                 assert bad['error'],bad
                 assert request('stop_session',fields)['error']
                 result=request('stop_agent_session',dict(fields,provider=provider))
-                assert result['result']=={'status':'stopped'},result
+                assert result['result']['status']=='stopped' and result['result']['panes']==1,result
                 assert any(s['id']==guard['id'] for s in cli('sessions'))
         assert request('create_yolo',dict(key='invalid',directory=tmp,provider='shell',name=''))['error']
         print(json.dumps(dict(result='PASS',checks='Default/YOLO argv for Codex and Claude; wrong-mode retry, wrong-provider and shell-stop refusal; agent stop and peer preservation',backend='private tmux + synthetic ELF agents; no inference')))

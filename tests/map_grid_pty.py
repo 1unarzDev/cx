@@ -58,6 +58,14 @@ def main():
                 viewer.read(.03)
             viewer.read(.05)
 
+        def quiet(gap=.3, limit=4.0):
+            """Read until the screen has been still for `gap` (a loaded host can take
+            longer than a fixed wait to draw the frame a key caused)."""
+            end, last = time.monotonic() + limit, time.monotonic()
+            while time.monotonic() < end and time.monotonic() - last < gap:
+                if viewer.read(.03):
+                    last = time.monotonic()
+
         def press(keys, until, what):
             viewer.write(keys)
             settle(until, what)
@@ -105,7 +113,7 @@ def main():
             for _ in range(2):
                 before = picked()
                 viewer.write(key)
-                viewer.read(.3)
+                quiet()
                 if 'cx › sessions' in text():  # Down past the map: the tiles; Up returns
                     press(UP, lambda: 'cx › network' in text(), 'Up from the tiles did not reach the map')
                     break
@@ -166,7 +174,7 @@ def main():
         # Up from the top row stays put, in the tiles.
         before = focused()
         viewer.write(UP)
-        viewer.read(.4)
+        quiet()
         assert focused() == before and '▌SESSIONS' in text(), f'Up from the top row moved: {focused()}'
         # Down from the bottom row: LINKS. Tab: the tiles again, on the same tile.
         press(DOWN, lambda: focused() != before, 'Down did not reach the bottom row')
@@ -184,7 +192,7 @@ def main():
         targets = {first}
         for key in (LEFT, RIGHT, RIGHT):
             viewer.write(key)
-            viewer.read(.3)
+            quiet()
             assert '▌LINKS' in text(), f'{key!r} left LINKS:\n{text()}'
             press(b'\r', edited, 'Enter on LINKS did not open a link')
             targets.add(edited())

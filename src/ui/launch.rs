@@ -1,6 +1,19 @@
 //! Session launch flows: device/provider choice, permission prompts, shells and adoption.
 use super::*;
 
+/// A YOLO launch that may wait for a remote device's capabilities (`yolo_ready`).
+#[derive(Clone)]
+pub(super) struct PendingLaunch {
+    pub(super) device: usize,
+    pub(super) directory: String,
+    pub(super) provider: String,
+    pub(super) resume: bool,
+    pub(super) pick: bool,
+}
+/// A launch waiting on its device's answer: when it was asked for, and the screen
+/// (view, device) it was asked from.
+pub(super) type Waiting = (PendingLaunch, Instant, (View, usize));
+
 impl App {
     /// Record sessions that ended on device `d` (newest first, at most 32 in all).
     pub(super) fn note_ended(&mut self, d: usize, gone: Vec<Session>) {
@@ -60,12 +73,9 @@ impl App {
         let skip = usize::from(resume.is_some());
         match (i, resume) {
             (0, Some((provider, dir))) => {
-                if self.creating {
-                    return true;
-                }
                 let agent = provider == "claude" || provider == "codex";
-                let provider = if agent { provider } else { "shell".into() };
-                self.create_permission_session(d, dir, provider, false, agent, false);
+                let provider = if agent { provider.as_str() } else { "shell" };
+                self.quick_launch(d, dir, provider, agent);
             }
             _ => match dirs.get(i.wrapping_sub(skip)) {
                 Some(dir) => self.open_session_chooser(d, dir.clone()),
@@ -335,11 +345,145 @@ impl App {
     }
     pub(super) fn create_at(&mut self, d: usize, directory: String, provider: String) {
         if provider != "shell" {
-            self.dialog = Some(Dialog::Permissions(d, directory, provider, false, false));
-            self.dialog_selected = 0;
+            self.ask_permissions(d, directory, provider, false, false);
             return;
         }
         self.create_permission_session(d, directory, provider, false, false, false);
+    }
+    /// Where `c x n` start on device `d`: on this device the folder cx was started in,
+    /// elsewhere the last folder Files showed there, else the device's home.
+    pub(super) fn launch_dir(&self, d: usize) -> String {
+        self.here
+            .clone()
+            .filter(|_| self.devices[d].target.is_none())
+            .or_else(|| self.file_locations.get(&d).cloned())
+            .unwrap_or_else(|| "~".into())
+    }
+    /// The one quick launch (the hub's and a device's `c x n C X`, Files' `!` keys, the
+    /// launch panel's resume): `provider` in `directory` on `d`, resumed or new, in the
+    /// mode it was last started in on that device, attached once it starts. No dialog.
+    pub(super) fn quick_launch(
+        &mut self,
+        d: usize,
+        directory: String,
+        provider: &str,
+        resume: bool,
+    ) {
+        if self.launch_blocked(d) {
+            return;
+        }
+        let yolo = provider != "shell" && self.last_yolo(d, provider);
+        let then = PendingLaunch {
+            device: d,
+            directory,
+            provider: provider.into(),
+            resume,
+            pick: false,
+        };
+        if yolo && !self.yolo_ready(then.clone()) {
+            return;
+        }
+        self.launch_provider = None;
+        self.create_permission_session(d, then.directory, then.provider, yolo, resume, false);
+    }
+    /// Nothing starts while a session is being created, or on a device that failed; a
+    /// notice says which. True when blocked.
+    pub(super) fn launch_blocked(&mut self, d: usize) -> bool {
+        if self.creating {
+            self.set_notice("A session is already starting…".into());
+        } else if let Some(e) = &self.work[d].error {
+            let e = safe_text(e);
+            self.set_notice_as(NoticeKind::Warning, format!("Not started: {e}"));
+        } else {
+            return false;
+        }
+        true
+    }
+    /// Default / YOLO for an agent launch, the last mode used for it there preselected.
+    pub(super) fn ask_permissions(
+        &mut self,
+        d: usize,
+        directory: String,
+        provider: String,
+        resume: bool,
+        pick: bool,
+    ) {
+        self.dialog_selected = usize::from(self.last_yolo(d, &provider));
+        self.dialog = Some(Dialog::Permissions(d, directory, provider, resume, pick));
+    }
+    /// Whether the last launch of `provider` on device `d` was YOLO. Read from the
+    /// shared state each time, so another viewer's (or the CLI's) choice counts.
+    pub(super) fn last_yolo(&self, d: usize, provider: &str) -> bool {
+        store::launch_yolo()
+            .unwrap_or_default()
+            .contains(&(self.devices[d].id.clone(), provider.to_string()))
+    }
+    /// YOLO on a remote device needs a helper that knows it. True when it is known to.
+    /// Otherwise a notice: the helper is old, or (its capabilities are stale or unread)
+    /// cx asks the device and starts `then` once it answers (`resume_pending_launch`).
+    pub(super) fn yolo_ready(&mut self, then: PendingLaunch) -> bool {
+        let d = then.device;
+        if self.devices[d].target.is_none() {
+            return true;
+        }
+        match self
+            .providers
+            .get(&d)
+            .filter(|(_, checked)| transport::now().saturating_sub(*checked) < 60)
+        {
+            Some((caps, _)) if caps.iter().any(|c| c == "session-yolo-v1") => return true,
+            Some(_) => self.set_notice_as(
+                NoticeKind::Warning,
+                "YOLO needs an updated execution helper · update this device, then retry".into(),
+            ),
+            None => {
+                self.check_providers(d);
+                if self.provider_loading.contains(&d) {
+                    let name = safe_label(&self.devices[d].name);
+                    let waiting = (then, Instant::now(), (self.view, self.device));
+                    let dropped = match self.pending_launch.replace(waiting) {
+                        Some(_) => " · the earlier waiting launch is dropped",
+                        None => "",
+                    };
+                    self.set_notice(format!(
+                        "Checking {name} for YOLO · starts when it answers{dropped}"
+                    ));
+                } else {
+                    self.set_notice_as(
+                        NoticeKind::Warning,
+                        "Not started: device unavailable".into(),
+                    );
+                }
+            }
+        }
+        false
+    }
+    /// The device's capabilities arrived (`ok`) or failed: start the launch waiting on
+    /// them, unless the user has since moved on (another device's screen, Files, an
+    /// attached session) or it waited too long; a dropped launch always says so.
+    pub(super) fn resume_pending_launch(&mut self, d: usize, ok: bool) {
+        let Some((p, asked, at)) = self.pending_launch.take_if(|w| w.0.device == d) else {
+            return;
+        };
+        let name = safe_label(&self.devices[d].name);
+        if !ok || asked.elapsed() > Duration::from_secs(12) {
+            self.set_notice_as(
+                NoticeKind::Warning,
+                format!("Not started: {name} did not answer"),
+            );
+        } else if at != (self.view, self.device) {
+            self.set_notice_as(
+                NoticeKind::Warning,
+                format!("Not started on {name}: you moved on · press again"),
+            );
+        } else if self.creating {
+            self.set_notice_as(
+                NoticeKind::Warning,
+                "Not started: another session was starting · press again".into(),
+            );
+        } else if self.yolo_ready(p.clone()) {
+            self.create_permission_session(d, p.directory, p.provider, true, p.resume, p.pick);
+        }
     }
     pub(super) fn create_permission_session(
         &mut self,
@@ -350,6 +494,12 @@ impl App {
         resume: bool,
         pick: bool,
     ) {
+        if provider == "claude" || provider == "codex" {
+            if let Err(e) = store::set_launch_yolo(&self.devices[d].id, &provider, yolo) {
+                let e = safe_text(&format!("{e:#}"));
+                self.set_notice_as(NoticeKind::Warning, format!("Mode not remembered: {e}"));
+            }
+        }
         let key = unique_key();
         // Execution helper generates the label after resolving the directory.
         let name = String::new();

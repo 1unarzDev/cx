@@ -91,7 +91,25 @@ fn dev(
         core,
         caps: Vec::new(),
         recent: Vec::new(),
+        start: "~".into(),
     }
+}
+
+/// The letters the real hub gives `names` added after `s`'s devices, which keep theirs
+/// (`' '`: none left, past the 22 assignable letters).
+fn letters(s: &LabState, names: &[&str]) -> Vec<char> {
+    let previous = s.devices.iter().map(|d| (d.id.clone(), d.hotkey)).collect();
+    let list: Vec<(&str, &str)> = s
+        .devices
+        .iter()
+        .map(|d| (d.id.as_str(), d.name.as_str()))
+        .chain(names.iter().map(|n| (*n, *n)))
+        .collect();
+    let m = crate::ui::hotkeys::assign(&list, &previous);
+    names
+        .iter()
+        .map(|n| m.get(*n).copied().unwrap_or(' '))
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -522,7 +540,7 @@ pub fn typical() -> LabState {
         ),
         dev(
             "creation",
-            'c',
+            'r',
             "ubuntu 24.04",
             Online,
             "0.6ms · 2s ago",
@@ -555,7 +573,7 @@ pub fn typical() -> LabState {
         ),
         dev(
             "nas",
-            'n',
+            'a',
             "truenas scale",
             Online,
             "1.2ms · 5s ago",
@@ -932,9 +950,9 @@ pub fn large() -> LabState {
         ("old-thinkpad-x220", Down),
         ("vps-fra1", Online),
     ];
-    // `e` is never a device (it is the hub's link verb); `h j k l` are vim motion, so
-    // they are assigned last, only past 21 devices.
-    let keys = "adfgmoqruvwxyzhjkl";
+    // The real app's letters (`hotkeys::assign`): never `e c x n`, `g h j k l` last.
+    let names: Vec<&str> = extra.iter().map(|(n, _)| *n).collect();
+    let keys = letters(&s, &names);
     for (i, (name, status)) in extra.iter().enumerate() {
         let seed = 100 + i as u32;
         let up = matches!(status, Online | Stale);
@@ -946,7 +964,7 @@ pub fn large() -> LabState {
         let ms = 2.0 + (i as f32 * 7.3) % 90.0;
         let mut d = dev(
             name,
-            keys.chars().nth(i).unwrap_or('?'),
+            keys[i],
             if i % 2 == 0 {
                 "debian 12"
             } else {
@@ -1154,10 +1172,10 @@ pub fn nebula(n: usize) -> LabState {
         "garage-door",
         "media-box",
     ];
-    // `t` is the viewer's; `e` the link verb; `h j k l` motion, given last.
-    let keys = "icnpbsrfxomwdgqzuyvajhkl";
     let root = s.devices[0].clone();
     s.devices = vec![root];
+    // `t` is the viewer's; the rest the real app's (`hotkeys::assign`).
+    let keys = letters(&s, &NAMES);
     s.edges.clear();
     for (i, name) in NAMES.iter().take(n.saturating_sub(1)).enumerate() {
         let status = match i % 9 {
@@ -1171,7 +1189,7 @@ pub fn nebula(n: usize) -> LabState {
         let ms = 1.0 + (i as f32 * 11.7) % 70.0;
         let mut d = dev(
             name,
-            keys.chars().nth(i).unwrap_or('?'),
+            keys[i],
             "debian 12",
             status,
             "",

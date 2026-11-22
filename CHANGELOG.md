@@ -4,6 +4,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+### Changes
+- **`cx` then `c`.** Running `cx` in a folder makes that folder where new sessions start on this device. On the hub, a bare `c`, `x` or `n` starts Claude, Codex or a shell there and attaches at once (2 keys from your shell, no file browsing), and `C` / `X` resume the agent's last conversation there. The hub's SESSIONS rule says where, quietly: `here ~/proj/foo` (cut from the left on narrow and phone screens). Device letters are never `c`, `x` or `n` any more (nor `e`), so these keys work with any number of devices; 22 letters remain, `g h j k l` after the first 17.
+- **Agents start in their last mode.** cx remembers, per device, whether Claude and Codex were last started in Default or YOLO (`launch-modes.json`, shared by every viewer and the CLI). `c` / `x` on the hub or a device's screen and `!` `c` / `x` in Files reuse it, `C` / `X` resume in it, and the chooser preselects it. On another device's screen, `c x n` start in the last folder Files showed there (else its home). A remembered YOLO on a remote device is checked against its helper first and never starts on an old one; a launch waiting for that check says so when it cannot start.
+- **Files: `!` then `c`, `x` or `n`** starts Claude, Codex or a shell in the folder; `!` Enter (or `n` outside a find) opens the full chooser there.
+- **Enter on a device with nothing selected** opens the full chooser (agent, then its mode) instead of starting a shell. Removing a device moves from `X` to `D` on its screen (`X` resumes Codex).
+
 ## v0.3.5
 
 A hotfix on v0.3.4.

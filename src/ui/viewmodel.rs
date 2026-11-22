@@ -337,6 +337,14 @@ fn devices(app: &App) -> Vec<LabDevice> {
                     .iter()
                     .map(|p| safe_label(&tilde(p, &d.account, d.target.is_none())))
                     .collect(),
+                start: match app.launch_dir(i) {
+                    home if home == "~" => home,
+                    dir => {
+                        let dir = crate::files::decode_path(&dir)
+                            .map_or(dir, |p| p.to_string_lossy().into_owned());
+                        safe_label(&tilde(&dir, &d.account, d.target.is_none()))
+                    }
+                },
             }
         })
         .collect()

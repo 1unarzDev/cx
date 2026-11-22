@@ -126,7 +126,11 @@ fn private_state_name(name: &str) -> Result<()> {
     anyhow::ensure!(
         matches!(
             name,
-            "session-pins.json" | "ui-navigation.json" | "edges.json" | "addresses.json"
+            "session-pins.json"
+                | "ui-navigation.json"
+                | "edges.json"
+                | "addresses.json"
+                | "launch-modes.json"
         ),
         "invalid private state name"
     );
@@ -262,6 +266,30 @@ pub fn change_session_pin(
     Ok(pins)
 }
 
+/// (device id, agent) pairs whose last launch was YOLO: new sessions (hub and device
+/// keys, Files `!`, the CLI) reuse that mode, and the chooser preselects it.
+pub fn launch_yolo() -> Result<std::collections::BTreeSet<(String, String)>> {
+    Ok(read_state("launch-modes.json", 64 * 1024)?.unwrap_or_default())
+}
+
+/// Record one launch's mode under a private lock, so simultaneous viewers keep each other's.
+pub fn set_launch_yolo(device: &str, provider: &str, yolo: bool) -> Result<()> {
+    let dir = ensure()?;
+    let _lock = private_lock(&dir, "launch-modes.lock", true)?;
+    let mut modes = launch_yolo()?;
+    let key = (device.to_string(), provider.to_string());
+    if yolo == modes.contains(&key) {
+        return Ok(());
+    }
+    if yolo {
+        anyhow::ensure!(modes.len() < 512, "too many remembered launch modes");
+        modes.insert(key);
+    } else {
+        modes.remove(&key);
+    }
+    write_state_at(&dir, "launch-modes.json", &modes, 64 * 1024)
+}
+
 #[cfg(test)]
 mod ui_state_tests {
     use super::*;
@@ -297,6 +325,24 @@ mod ui_state_tests {
         assert_eq!(
             read_state_at::<serde_json::Value>(dir.path(), "edges.json", 1024).unwrap(),
             Some(value)
+        );
+    }
+
+    #[test]
+    fn launch_modes_are_per_device_and_agent_and_merge() {
+        isolate_test_state();
+        assert!(launch_yolo().unwrap().is_empty());
+        set_launch_yolo("t", "claude", true).unwrap();
+        set_launch_yolo("i", "codex", true).unwrap();
+        set_launch_yolo("i", "codex", true).unwrap();
+        set_launch_yolo("t", "codex", false).unwrap();
+        let m = launch_yolo().unwrap();
+        assert_eq!(m.len(), 2);
+        assert!(m.contains(&("t".into(), "claude".into())));
+        set_launch_yolo("t", "claude", false).unwrap();
+        assert_eq!(
+            launch_yolo().unwrap().into_iter().collect::<Vec<_>>(),
+            [("i".to_string(), "codex".to_string())]
         );
     }
 

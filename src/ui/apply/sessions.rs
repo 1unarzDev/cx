@@ -73,6 +73,7 @@ impl App {
                 }
                 self.providers
                     .insert(reply.device, (available, transport::now()));
+                self.resume_pending_launch(reply.device, true);
                 if first_adopt {
                     self.send(reply.device, Operation::ExternalSessions);
                 }

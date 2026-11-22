@@ -1237,8 +1237,8 @@ pub(super) fn launch_panel(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, hu
         // On the hub the provider keys are the second step (after the device's
         // letter), so they are drawn quiet: only the first-press keys look primary.
         let mut kst = cx.key_style();
-        // (The only device: its keys work on the hub as on its own screen.)
-        if hub && s.devices.len() > 1 {
+        // (This device: its keys work on the hub as on its own screen.)
+        if hub && d.id != s.viewer {
             label(buf, y, "start on");
             x += cx.dchip(buf, x, y, d, false) + 1;
             let name_w = super::width(&d.name, cx.uni()) + 1;
@@ -1263,8 +1263,12 @@ pub(super) fn launch_panel(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, hu
             label(buf, y, "start");
         }
         let x = launch_keys(cx, buf, x, y, r.right(), d, kst);
-        // On the hub, the device's files are the same letter away.
-        if hub && s.devices.len() > 1 && x + 9 <= r.right() {
+        // On the hub, another device's files are the same letter away (where this
+        // device's keys start is on the SESSIONS rule above); on its own screen, where
+        // its keys start.
+        if !hub {
+            start_hint(cx, buf, x, y, right, d);
+        } else if d.id != s.viewer && x + 9 <= r.right() {
             let x1 = x;
             let x = x + cx.keycap(buf, x, y, 3, "f", kst) + 1;
             let w = cx.put(buf, x, y, 5, "files", cx.ink(Tok::Fg, 0.85));
@@ -1526,7 +1530,72 @@ fn new_row(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, right: u16, d: &LabDevice)
     if lw > 0 {
         cx.put(buf, x + 1, y, lw, "start", cx.ink(Tok::Muted, 0.8));
     }
-    launch_keys(cx, buf, x + 1 + lw, y, right, d, cx.key_style());
+    let x = launch_keys(cx, buf, x + 1 + lw, y, right, d, cx.key_style());
+    start_hint(cx, buf, x, y, right, d);
+}
+
+/// `here ~/proj/foo` from `x`, quiet: where `d`'s launch keys start, left-cut to the
+/// room before `right` (nothing for the home, or under ten columns). Returns its width.
+fn start_hint(cx: &Cx, buf: &mut Buffer, x: u16, y: u16, right: u16, d: &LabDevice) -> u16 {
+    if d.start == "~" {
+        return 0;
+    }
+    let room = right.saturating_sub(x + 1);
+    if room < 10 {
+        return 0;
+    }
+    let w = cx.put(buf, x + 1, y, 5, "here ", cx.ink(Tok::Muted, 0.7));
+    let path = super::fit_left(&d.start, usize::from(room - w), cx.uni());
+    1 + w + cx.put(buf, x + 1 + w, y, room - w, &path, cx.ink(Tok::Muted, 0.95))
+}
+
+/// The hub's bare launch keys and where they start, quiet, ending at `right` on the
+/// SESSIONS rule: `c x n  here ~/proj/foo` (`keys` false: the folder alone, when the
+/// launch panel under it shows those keys). The folder is cut from the left; then the keys
+/// go. Each key taps as itself. Returns the columns it took (0: nothing fits).
+/// Whether `here_hint` fits between `x0` and `right` with the folder's last 16 columns.
+pub(super) fn here_fits(cx: &Cx, x0: u16, right: u16, keys: bool) -> bool {
+    let start =
+        cx.s.device(&cx.s.viewer)
+            .map_or(0, |d| super::width(&d.start, cx.uni()));
+    let need = 5 + start.min(16) as u16 + if keys { 10 } else { 0 };
+    right.saturating_sub(x0 + 2) >= need
+}
+
+pub(super) fn here_hint(cx: &Cx, buf: &mut Buffer, x0: u16, y: u16, right: u16, keys: bool) -> u16 {
+    let Some(d) = cx.s.device(&cx.s.viewer).filter(|d| d.start != "~") else {
+        return 0;
+    };
+    let room = right.saturating_sub(x0 + 2);
+    let ks: Vec<(&str, &str)> = [("c", "claude"), ("x", "codex"), ("n", "shell")]
+        .into_iter()
+        .filter(|(_, w)| d.caps.is_empty() || d.caps.iter().any(|c| c == w))
+        .collect();
+    let kw = ks.len() as u16 * 3 + 1;
+    let pw = super::width(&d.start, cx.uni()) as u16;
+    // (The keys only with the folder's last parts beside them.)
+    let keys = keys && room >= kw + 5 + pw.min(10);
+    let pw = pw.min(room.saturating_sub(5 + if keys { kw } else { 0 }));
+    if pw < 5 {
+        return 0;
+    }
+    let path = super::fit_left(&d.start, usize::from(pw), cx.uni());
+    let pw = super::width(&path, cx.uni());
+    let w = 5 + pw + if keys { kw } else { 0 };
+    let mut x = right - w;
+    cx.fill(buf, Rect::new(x - 1, y, w + 1, 1), Style::default());
+    if keys {
+        let quiet = cx.ink(Tok::Muted, 0.9);
+        for (k, word) in ks {
+            let kx = x;
+            x += cx.keycap(buf, x, y, 3, k, quiet);
+            cx.hit(Rect::new(kx, y, 3, 1), format!("new-{word}"));
+        }
+        x += 1;
+    }
+    x += cx.put(buf, x, y, 5, "here ", cx.ink(Tok::Muted, 0.7));
+    cx.put(buf, x, y, pw, &path, cx.ink(Tok::Muted, 0.95));
+    w + 1
 }
 
 fn edge_kind(cx: &Cx, e: &LabEdge) -> (String, Tok) {
@@ -3580,14 +3649,17 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
             ),
             (
                 "start",
-                vec![(
-                    k("c x n"),
-                    if wide {
-                        "claude / codex / shell, attached"
-                    } else {
-                        "claude/codex/shell"
-                    },
-                )],
+                vec![
+                    (
+                        k("c x n"),
+                        if wide {
+                            "claude / codex / shell, attached, last mode"
+                        } else {
+                            "claude/codex/shell"
+                        },
+                    ),
+                    (k("C X"), "resume claude / codex"),
+                ],
             ),
             (
                 "device",
@@ -3603,7 +3675,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                     ),
                     (k("r"), "retry"),
                     (
-                        k("b E X"),
+                        k("b E D"),
                         if wide {
                             "access / edit address / remove"
                         } else {
@@ -3664,6 +3736,20 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
             ("back", vec![(k("esc"), "up a level")]),
         ],
         _ => vec![
+            (
+                "start",
+                vec![
+                    (
+                        k("c x n"),
+                        if wide {
+                            "claude / codex / shell here, where cx started"
+                        } else {
+                            "claude/codex/shell here"
+                        },
+                    ),
+                    (k("C X"), "resume claude / codex"),
+                ],
+            ),
             ("device", vec![(String::new(), "its letter opens it")]),
             // The second step, indented under the first: these keys follow a letter.
             (

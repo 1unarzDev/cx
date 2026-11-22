@@ -1802,6 +1802,10 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
     });
     let mut last_inventory_check = Instant::now();
     let mut app = App::new(devices, tx);
+    // `cx` started in a folder: `c x n` on the hub start there.
+    app.here = std::env::current_dir()
+        .ok()
+        .map(|p| crate::files::encode_path(&p));
     app.motion = super::motion::Clock::for_terminal();
     load_cache(&mut app);
     app.pins = store::session_pins().unwrap_or_default();

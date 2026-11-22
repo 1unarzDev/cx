@@ -223,6 +223,30 @@ pub(super) const BINDINGS: &[Binding] = &[
     ),
     bind!(
         Hub,
+        [ch('c')],
+        "c / x / n",
+        Cmd::View("new-claude"),
+        "New claude / codex / shell on this device where cx was started, attached, in its last mode",
+        hint("Claude")
+    ),
+    alias!(Hub, [ch('x')], "x", Cmd::View("new-codex"), "New codex here"),
+    alias!(Hub, [ch('n')], "n", Cmd::View("new-shell"), "New shell here"),
+    bind!(
+        Hub,
+        [ch('C')],
+        "C / X",
+        Cmd::View("resume-claude"),
+        "Resume the last claude / codex conversation where cx was started, in its last mode"
+    ),
+    alias!(
+        Hub,
+        [ch('X')],
+        "X",
+        Cmd::View("resume-codex"),
+        "Resume the last codex conversation here"
+    ),
+    bind!(
+        Hub,
         [code(Tab)],
         "Tab",
         Cmd::View("zone"),
@@ -242,7 +266,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         [ch('c')],
         "c",
         Cmd::View("new-claude"),
-        "New claude session here, attached",
+        "New claude session, attached, in its last mode (this device: where cx was started; others: the last Files folder)",
         hint("Claude")
     ),
     bind!(
@@ -250,7 +274,7 @@ pub(super) const BINDINGS: &[Binding] = &[
         [ch('x')],
         "x",
         Cmd::View("new-codex"),
-        "New codex session here, attached",
+        "New codex session, attached, in its last mode",
         hint("Codex")
     ),
     bind!(
@@ -258,8 +282,24 @@ pub(super) const BINDINGS: &[Binding] = &[
         [ch('n')],
         "n",
         Cmd::View("new-shell"),
-        "New shell here, attached",
+        "New shell, attached",
         hint("Shell")
+    ),
+    bind!(
+        Device,
+        [ch('C')],
+        "C",
+        Cmd::View("resume-claude"),
+        "Resume the last claude conversation, in its last mode",
+        hint("Resume claude")
+    ),
+    bind!(
+        Device,
+        [ch('X')],
+        "X",
+        Cmd::View("resume-codex"),
+        "Resume the last codex conversation, in its last mode",
+        hint("Resume codex")
     ),
     bind!(
         Device,
@@ -340,8 +380,8 @@ pub(super) const BINDINGS: &[Binding] = &[
     ),
     bind!(
         Device,
-        [ch('X')],
-        "X",
+        [ch('D')],
+        "D",
         Cmd::RemoveDevice,
         "Remove this device · confirm",
         None,
@@ -765,15 +805,21 @@ mod tests {
     }
     #[test]
     fn no_static_binding_takes_a_device_letter_on_the_hub() {
-        // The hub's letters are devices: only `e` (link) and `j k gg G` (motion) are
-        // bound there, and `K` (keys) is uppercase.
+        // The hub's letters are devices: only `e` (link), `c x n` (launch here, never
+        // device letters: see `hotkeys`) and `j k gg G` (motion) are bound there, and
+        // `K` (keys) is uppercase.
         for c in 'a'..='z' {
             let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
             let taken = BINDINGS
                 .iter()
                 .filter(|b| matches!(b.ctx, Ctx::Hub | Ctx::Global))
                 .any(|b| b.keys.iter().any(|k| k.matches(&key)));
-            assert_eq!(taken, "jkgG".contains(c), "{c}");
+            assert_eq!(taken, "jkgGcxn".contains(c), "{c}");
+            if "cxn".contains(c) {
+                let name = c.to_string();
+                let m = super::super::hotkeys::assign(&[(&name, &name)], &Default::default());
+                assert_ne!(m[&name], c, "{c} is a hub key and a device letter");
+            }
         }
     }
 }

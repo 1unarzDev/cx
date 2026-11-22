@@ -199,9 +199,15 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
     } else {
         " nothing running "
     };
-    if sz >= Size::M || n == 0 {
+    // Where the bare `c x n` start (their keys too, unless this device's launch row
+    // under it shows them); it takes the label's room where both do not fit.
+    let keys = n > 0 || sel_id != cx.s.viewer;
+    let end = right.saturating_sub(hw + 1);
+    let label = (sz >= Size::M || n == 0) && views::here_fits(cx, lx + 18, end, keys);
+    if label || cx.s.device(&cx.s.viewer).is_none_or(|d| d.start == "~") {
         cx.put(buf, lx + 1, y, 17, t, cx.ink(Tok::Muted, 0.8));
     }
+    views::here_hint(cx, buf, if label { lx + 18 } else { lx + 1 }, y, end, keys);
     y += 1;
     let grid = Rect::new(r.x + 1, y, r.width.saturating_sub(2), grid_h);
     let mut pick = if on_sess {
@@ -296,8 +302,9 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
     if up && !ghost {
         items.push(("c", "claude", &new));
     }
-    // (The launch panel under it says `f files` with the rest.)
-    if up && !ghost {
+    // (The launch panel under it says `f files` with the rest, but for this device,
+    // whose launch keys work without its letter.)
+    if up && (!ghost || d.id == cx.s.viewer) {
         items.push(("f", "files", &files));
     }
     if items.len() == 1 {
@@ -560,7 +567,9 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
     // Rows the tree leaves go to the sessions that need you first (two-row thumb
     // targets), keeping a breathing row above the ticker.
     let mut sy = y + 2;
-    if sy + 2 < ty || (sy < ty && idle) {
+    // (The rule alone where no tile fits: it says where `c x n` start.)
+    let here = cx.s.device(&cx.s.viewer).is_some_and(|d| d.start != "~");
+    if sy + 2 < ty || (sy < ty && (idle || here)) {
         let lx = views::zone(
             cx,
             buf,
@@ -571,15 +580,23 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
             focus == Pane::Sessions,
         );
         let list = cx.by_attention();
+        // Where the bare `c x n` start (their keys too, unless this device's launch row
+        // under it shows them); it takes the label's room where both do not fit.
+        let keys = !list.is_empty() || sel_id != cx.s.viewer;
+        let label = list.is_empty() && views::here_fits(cx, lx + 18, right, keys);
+        if label || (list.is_empty() && cx.s.device(&cx.s.viewer).is_none_or(|d| d.start == "~")) {
+            let quiet = cx.ink(Tok::Muted, 0.8);
+            cx.put(buf, lx + 1, y + 1, 17, " nothing running ", quiet);
+        }
+        views::here_hint(
+            cx,
+            buf,
+            if label { lx + 18 } else { lx + 1 },
+            y + 1,
+            right,
+            keys,
+        );
         if list.is_empty() {
-            cx.put(
-                buf,
-                lx + 1,
-                y + 1,
-                17,
-                " nothing running ",
-                cx.ink(Tok::Muted, 0.8),
-            );
             if let Some(d) = cx.s.device(sel_id) {
                 let pr = Rect::new(r.x, sy, r.width, ty.saturating_sub(sy + 1).max(1));
                 views::launch_panel(cx, buf, pr, d, true);

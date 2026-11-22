@@ -2044,8 +2044,9 @@ fn new_shortcut_chooses_profile_and_preserves_focused_folder() {
     a.browser = Some(Browser::new(1, "/projects/robot".into()));
     a.device = 1;
     a.focus = Focus::Workspace;
-    // `!` (yazi's n is find-next, T is cx's transfers): a new session in this folder.
+    // `!` Enter (yazi's n is find-next, T is cx's transfers): the chooser for this folder.
     press(&mut a, '!');
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(1,path)) if path == "/projects/robot"));
     assert!(rx.try_recv().is_err());
     // `n` is Shell everywhere: the device screen's verb and the chooser's choice (`n` `n` = new shell).
@@ -2063,6 +2064,7 @@ fn moving_to_client_only_host_drops_unavailable_launch_profile() {
     a.providers
         .insert(1, (vec!["shell".into()], transport::now()));
     press(&mut a, '!');
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(1, path)) if path == "/server/files"));
     assert!(a.launch_provider.is_none());
     assert!(rx.try_recv().is_err());
@@ -2479,6 +2481,7 @@ fn new_session_from_all_explicitly_selects_execution_provider_directory() {
     assert!(matches!(list.op, Operation::List { .. }));
     a.browser.as_mut().unwrap().path = "/projects/test".into();
     press(&mut a, '!');
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(matches!(a.dialog, Some(Dialog::SessionChooser(..))));
     press(&mut a, 'x');
     assert!(matches!(a.dialog, Some(Dialog::SessionPicker(..))));
@@ -2511,10 +2514,14 @@ fn agent_permissions_are_per_launch_cancelable_and_yolo_dispatches_distinct_oper
         assert!(
             matches!(rx.try_recv().unwrap().op, Operation::CreateYolo(c) if c.provider == provider && c.directory == "/folder")
         );
+        a.creating = false;
+        // The chooser preselects the mode last used for this agent on this device.
         a.create_at(0, "/folder".into(), provider.into());
-        assert_eq!(a.dialog_selected, 0);
+        assert_eq!(a.dialog_selected, 1);
+        a.dialog_selected = 0;
         a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(rx.try_recv().unwrap().op, Operation::Create(_)));
+        a.creating = false;
     }
 }
 #[test]
@@ -3109,17 +3116,16 @@ fn stale_directory_reply_cannot_retarget_browser() {
 }
 #[test]
 fn empty_session_action_respects_loading_errors_search_and_focus() {
-    // A device with no sessions: Enter (the new-session tile) starts a shell
-    // in its home, except while one is being created or the device failed.
+    // A device with no sessions: Enter opens the full chooser where its keys start,
+    // except while one is being created or the device failed.
     let (mut a, rx) = queued_app();
     a.devices.truncate(1);
     a.work.truncate(1);
     a.view = View::Work;
     a.device = 1;
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(rx.try_iter().any(
-        |t| matches!(t.op, Operation::Create(ref c) if c.directory == "~" && c.provider == "shell")
-    ));
+    assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(0, p)) if p == "~"));
+    assert!(!rx.try_iter().any(|t| matches!(t.op, Operation::Create(_))));
     for state in ["error", "creating"] {
         let (mut a, rx) = queued_app();
         a.view = View::Work;
@@ -7128,12 +7134,18 @@ fn yazi_unsupported_defaults_give_way_to_cx_globals() {
 
 #[test]
 fn yazi_n_and_bang_start_a_session_here_and_n_finds_during_a_find() {
-    for key in ['n', '!'] {
+    // (`!` then Enter: `!` alone waits for c / x / n / Enter.)
+    for keys in [&['n'][..], &['!', '\r']] {
         let (mut a, _rx) = file_app();
-        press(&mut a, key);
+        for &key in keys {
+            match key {
+                '\r' => a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                c => press(&mut a, c),
+            }
+        }
         assert!(
             matches!(a.dialog, Some(Dialog::SessionChooser(..))),
-            "{key} did not open the session chooser"
+            "{keys:?} did not open the session chooser"
         );
     }
     // While a find is active, `n` is yazi's next match, not a new session.
@@ -7489,4 +7501,300 @@ fn unreachable_devices_say_why_on_every_tile() {
         a.apply(reply(&a, 1, Operation::Info, Err(anyhow::Error::new(kind))));
         assert_eq!(viewmodel::ViewModel::from(&a).state.devices[1].why, word);
     }
+}
+
+// ------------------------------------------------- quick launch (`c x n C X`, Files `!`)
+// Two-key agent launch and the remembered mode come from revamp/launch030; the Files `!`
+// keys from revamp/filesbinds032; `here` (the folder cx was started in) is new.
+
+/// The first session started since the last call: (device, YOLO, its spec).
+fn launched(rx: &mpsc::Receiver<Task>) -> (usize, bool, CreateSession) {
+    rx.try_iter()
+        .find_map(|t| match t.op {
+            Operation::Create(c) => Some((t.device, false, c)),
+            Operation::CreateYolo(c) => Some((t.device, true, c)),
+            _ => None,
+        })
+        .expect("nothing launched")
+}
+fn nothing_launched(rx: &mpsc::Receiver<Task>) -> bool {
+    !rx.try_iter()
+        .any(|t| matches!(t.op, Operation::Create(_) | Operation::CreateYolo(_)))
+}
+fn info_reply(a: &mut App, d: usize, caps: serde_json::Value) {
+    a.apply(Reply {
+        device_id: None,
+        execution_target: None,
+        device: d,
+        generation: a.generation,
+        preview: None,
+        op: Operation::Info,
+        result: Ok(serde_json::json!({ "capabilities": caps })),
+    });
+}
+
+#[test]
+fn hub_c_x_n_start_where_cx_was_started_on_this_device_in_the_last_mode() {
+    let (mut a, rx) = queued_app();
+    a.here = Some("/work/proj".into());
+    store::set_launch_yolo("local", "claude", true).unwrap();
+    a.go_hub();
+    // A remote device selected on the map changes nothing: bare keys are this device's.
+    a.hub_device = Some(viewmodel::dev_id(1));
+    let _ = rx.try_iter().count();
+    for (key, want) in [
+        ('c', (true, "claude", false)),
+        ('x', (false, "codex", false)),
+        ('n', (false, "shell", false)),
+        ('C', (true, "claude", true)),
+        ('X', (false, "codex", true)),
+    ] {
+        press(&mut a, key);
+        let (d, yolo, c) = launched(&rx);
+        assert_eq!(
+            (d, yolo, c.provider.as_str(), c.resume && !c.resume_pick),
+            (0, want.0, want.1, want.2),
+            "{key}"
+        );
+        assert_eq!(c.directory, "/work/proj", "{key}");
+        assert_eq!(a.view, View::Network, "{key}: no dialog, no screen first");
+        assert!(a.dialog.is_none());
+        a.creating = false;
+    }
+    // While one starts, another press says so and starts nothing.
+    press(&mut a, 'c');
+    let _ = launched(&rx);
+    press(&mut a, 'x');
+    assert!(nothing_launched(&rx));
+    assert!(a.notice.contains("already starting"), "{}", a.notice);
+    // Started outside any folder (no `here`): the home.
+    a.creating = false;
+    a.here = None;
+    press(&mut a, 'n');
+    assert_eq!(launched(&rx).2.directory, "~");
+}
+
+#[test]
+fn device_keys_start_in_here_locally_and_in_the_last_files_folder_remotely() {
+    let (mut a, rx) = queued_app();
+    a.here = Some("/work/proj".into());
+    // The remote: home until Files has shown a folder there.
+    a.open_device(1);
+    let _ = rx.try_iter().count();
+    press(&mut a, 'n');
+    assert_eq!(launched(&rx).2.directory, "~");
+    a.creating = false;
+    a.file_locations.insert(1, "/srv/app".into());
+    press(&mut a, 'c');
+    let (d, _, c) = launched(&rx);
+    assert_eq!((d, c.directory.as_str()), (1, "/srv/app"));
+    a.creating = false;
+    // This device: where cx was started, whatever Files showed.
+    a.file_locations.insert(0, "/files".into());
+    a.open_device(0);
+    let _ = rx.try_iter().count();
+    press(&mut a, 'x');
+    let (d, _, c) = launched(&rx);
+    assert_eq!((d, c.directory.as_str()), (0, "/work/proj"));
+    a.creating = false;
+    // Enter with nothing selected: the full chooser there, its mode step preselecting
+    // the last mode.
+    store::set_launch_yolo("local", "codex", true).unwrap();
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        matches!(&a.dialog, Some(Dialog::SessionChooser(0, p)) if p == "/work/proj"),
+        "{}",
+        a.notice
+    );
+    a.dialog = None;
+    a.create_at(0, "/work/proj".into(), "codex".into());
+    assert!(matches!(a.dialog, Some(Dialog::Permissions(0, ..))));
+    assert_eq!(a.dialog_selected, 1, "YOLO preselected");
+    a.dialog = None;
+    // Removing a device moved to `D` (`X` resumes codex).
+    a.open_device(1);
+    press(&mut a, 'D');
+    assert!(matches!(a.dialog, Some(Dialog::RemoveDevice(1))));
+}
+
+#[test]
+fn c_and_x_reuse_each_agents_last_mode_per_device_and_viewers_share_it() {
+    let (mut a, rx) = queued_app();
+    a.open_device(0);
+    let _ = rx.try_iter().count();
+    press(&mut a, 'x');
+    assert!(!launched(&rx).1, "nothing remembered: default");
+    a.creating = false;
+    // A YOLO codex through the chooser is remembered for codex on this device only.
+    a.create_permission_session(0, "~".into(), "codex".into(), true, false, false);
+    let _ = rx.try_iter().count();
+    a.creating = false;
+    for (key, yolo) in [('x', true), ('X', true), ('c', false), ('C', false)] {
+        press(&mut a, key);
+        assert_eq!(launched(&rx).1, yolo, "{key}");
+        a.creating = false;
+    }
+    a.open_device(1);
+    let _ = rx.try_iter().count();
+    press(&mut a, 'x');
+    assert!(!launched(&rx).1, "the other device keeps its own mode");
+    a.creating = false;
+    // Shared state: another viewer sees it, and its own choice erases nothing.
+    let (mut b, rx) = queued_app();
+    b.open_device(0);
+    let _ = rx.try_iter().count();
+    press(&mut b, 'x');
+    assert!(launched(&rx).1);
+    b.creating = false;
+    b.create_permission_session(0, "~".into(), "claude".into(), true, false, false);
+    assert!(a.last_yolo(0, "claude") && a.last_yolo(0, "codex"));
+}
+
+#[test]
+fn remembered_yolo_on_an_old_remote_helper_starts_nothing() {
+    let (mut a, rx) = queued_app();
+    store::set_launch_yolo("remote", "claude", true).unwrap();
+    a.open_device(1);
+    let _ = rx.try_iter().count();
+    press(&mut a, 'c');
+    assert!(nothing_launched(&rx));
+    assert!(!a.creating && a.pending_launch.is_none());
+    assert!(
+        a.notice.contains("updated execution helper"),
+        "{}",
+        a.notice
+    );
+}
+
+#[test]
+fn remembered_yolo_with_stale_capabilities_checks_then_starts() {
+    let (mut a, rx) = queued_app();
+    store::set_launch_yolo("remote", "codex", true).unwrap();
+    let caps = vec!["codex".into(), "session-yolo-v1".into()];
+    a.providers.insert(1, (caps, transport::now() - 120));
+    a.open_device(1);
+    let _ = rx.try_iter().count();
+    press(&mut a, 'X');
+    // Not a false "old helper" claim: it asks the device and says so.
+    assert!(rx.try_iter().any(|t| matches!(t.op, Operation::Info)));
+    assert!(
+        a.notice.contains("Checking laptop for YOLO"),
+        "{}",
+        a.notice
+    );
+    assert!(!a.creating);
+    info_reply(&mut a, 1, serde_json::json!(["codex", "session-yolo-v1"]));
+    let (d, yolo, c) = launched(&rx);
+    assert!(d == 1 && yolo && c.provider == "codex" && c.resume && !c.resume_pick);
+    assert!(a.pending_launch.is_none());
+    // A helper found old on the check starts nothing and says why; so does no answer.
+    a.creating = false;
+    a.providers.remove(&1);
+    press(&mut a, 'x');
+    info_reply(&mut a, 1, serde_json::json!(["codex"]));
+    assert!(nothing_launched(&rx));
+    assert!(
+        a.notice.contains("updated execution helper"),
+        "{}",
+        a.notice
+    );
+    a.providers.remove(&1);
+    press(&mut a, 'x');
+    a.apply(Reply {
+        device_id: None,
+        execution_target: None,
+        device: 1,
+        generation: a.generation,
+        preview: None,
+        op: Operation::Info,
+        result: Err(anyhow::anyhow!("helper exited")),
+    });
+    assert!(nothing_launched(&rx));
+    assert!(a.pending_launch.is_none());
+    assert!(a.notice.contains("did not answer"), "{}", a.notice);
+}
+
+#[test]
+fn a_waiting_yolo_launch_is_never_dropped_silently_nor_started_after_moving_on() {
+    let (mut a, rx) = queued_app();
+    store::set_launch_yolo("remote", "codex", true).unwrap();
+    let stale = |a: &mut App| {
+        let caps = vec!["codex".into(), "session-yolo-v1".into()];
+        a.providers.insert(1, (caps, transport::now() - 120));
+        a.provider_loading.clear();
+    };
+    stale(&mut a);
+    a.open_device(1);
+    let _ = rx.try_iter().count();
+    // A second waiting launch replaces the first and says so.
+    press(&mut a, 'x');
+    press(&mut a, 'X');
+    assert!(
+        a.notice.contains("earlier waiting launch is dropped"),
+        "{}",
+        a.notice
+    );
+    assert!(a.pending_launch.as_ref().is_some_and(|w| w.0.resume));
+    // The answer arrives while another session is starting: nothing starts, it says why.
+    a.creating = true;
+    info_reply(&mut a, 1, serde_json::json!(["codex", "session-yolo-v1"]));
+    assert!(nothing_launched(&rx));
+    assert!(a.pending_launch.is_none());
+    assert!(a.notice.contains("another session"), "{}", a.notice);
+    // The user moved on (the hub, another device) before the answer: nothing attaches
+    // them elsewhere; the notice says so.
+    a.creating = false;
+    stale(&mut a);
+    press(&mut a, 'x');
+    assert!(a.pending_launch.is_some());
+    a.open_device(0);
+    info_reply(&mut a, 1, serde_json::json!(["codex", "session-yolo-v1"]));
+    assert!(nothing_launched(&rx));
+    assert!(a.pending_launch.is_none());
+    assert!(a.notice.contains("moved on"), "{}", a.notice);
+    // The device list changed while it waited: device numbers mean other devices, so
+    // it is dropped with the rest of the device state.
+    a.open_device(1);
+    stale(&mut a);
+    press(&mut a, 'x');
+    assert!(a.pending_launch.is_some());
+    a.invalidate_device_views();
+    assert!(a.pending_launch.is_none());
+}
+
+#[test]
+fn files_bang_then_c_x_n_starts_in_the_folder_in_the_last_mode() {
+    let (mut a, rx) = file_app();
+    store::set_launch_yolo("local", "claude", true).unwrap();
+    let _ = rx.try_iter().count();
+    // `!` waits for the next key and lists them.
+    press(&mut a, '!');
+    assert!(a.dialog.is_none());
+    let text = draw_text(&a);
+    assert!(text.contains("New claude in this folder"), "{text}");
+    press(&mut a, 'c');
+    let (d, yolo, c) = launched(&rx);
+    assert_eq!(
+        (d, yolo, c.provider.as_str(), c.directory.as_str()),
+        (0, true, "claude", "/files")
+    );
+    a.creating = false;
+    for (key, provider) in [('x', "codex"), ('n', "shell")] {
+        press(&mut a, '!');
+        press(&mut a, key);
+        let (_, yolo, c) = launched(&rx);
+        assert_eq!(
+            (yolo, c.provider.as_str(), c.directory.as_str()),
+            (false, provider, "/files")
+        );
+        a.creating = false;
+    }
+    // `!` Enter and `n` (no find) open the full chooser for the folder.
+    press(&mut a, '!');
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(0, p)) if p == "/files"));
+    a.dialog = None;
+    press(&mut a, 'n');
+    assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(0, p)) if p == "/files"));
+    // Files' folder is where a remote device's keys start next (`file_locations`).
 }

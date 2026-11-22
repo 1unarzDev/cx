@@ -91,9 +91,12 @@ pub(super) enum Y {
     NotInCx(&'static str),
     /// cx's own: the send-to popup (kept from the earlier Files view).
     SendTo,
-    /// cx's own: a new agent or shell session in this folder (`!`, free in yazi; `T`
-    /// stays cx's transfers, as everywhere else).
+    /// cx's own: `!` `<Enter>` (and `n` outside a find), the full new-session chooser for
+    /// this folder (`!` is free in yazi; `T` stays cx's transfers, as everywhere else).
     NewSession,
+    /// cx's own: `!` then `c`/`x`/`n` starts Claude, Codex or a shell in this folder, in
+    /// its last mode (a device screen's `c`/`x`/`n`).
+    Launch(&'static str),
 }
 
 impl Y {
@@ -360,7 +363,22 @@ pub(super) fn keymap() -> &'static [Bind] {
                 "Switch this tab to another device (its hub letter)"
             ),
             b!(["e"], SendTo, "Send selected files to a device (picker)"),
-            b!(["!"], NewSession, "New session in this folder"),
+            b!(
+                ["!", "c"],
+                Launch("claude"),
+                "New claude in this folder, last mode"
+            ),
+            b!(
+                ["!", "x"],
+                Launch("codex"),
+                "New codex in this folder, last mode"
+            ),
+            b!(["!", "n"], Launch("shell"), "New shell in this folder"),
+            b!(
+                ["!", "<Enter>"],
+                NewSession,
+                "New session in this folder: the chooser"
+            ),
         ]
     })
 }
@@ -1170,6 +1188,15 @@ impl App {
             }
             SendTo => self.send_pick = true,
             NewSession => self.session_shortcut(),
+            Launch(provider) => match self.browser.as_ref() {
+                // A container's folder: its chooser (its agents run inside it).
+                Some(b) if b.container.is_some() => self.session_shortcut(),
+                Some(b) => {
+                    let (d, path) = (b.device, b.path.clone());
+                    self.quick_launch(d, path, provider, false);
+                }
+                None => {}
+            },
         }
     }
 

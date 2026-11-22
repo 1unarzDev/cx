@@ -545,27 +545,39 @@ impl App {
         self.peek = false;
         self.open_session(d, s, false);
     }
-    /// New claude / codex / shell in the device's home, attached at once.
+    /// New claude / codex / shell where `c x n` start on the device (`launch_dir`),
+    /// attached at once; an agent in the mode it was last started in there.
     fn new_session(&mut self, d: usize, provider: &str) {
-        if self.creating {
-            return;
-        }
-        if let Some(e) = &self.work[d].error {
-            let e = safe_text(e);
-            self.set_notice_as(NoticeKind::Warning, format!("Not started: {e}"));
-            return;
-        }
-        // A selected container session scopes new work to its container.
+        self.launch(d, provider, false);
+    }
+    /// `C` / `X`: the agent's last conversation there (`claude --continue`, `codex
+    /// resume --last`), in the mode it was last started in.
+    fn resume_session(&mut self, d: usize, provider: &str) {
+        self.launch(d, provider, true);
+    }
+    fn launch(&mut self, d: usize, provider: &str, resume: bool) {
+        // A selected container session scopes new work to its container, whose own
+        // chooser asks for the agent and its history (the remembered mode is the host's).
         if let Some(scope) = self
             .selected_session()
             .filter(|(sd, _)| *sd == d)
             .and_then(|(_, s)| s.container)
         {
-            self.open_container_chooser(d, scope);
+            if !self.creating {
+                self.open_container_chooser(d, scope);
+                if provider != "shell" {
+                    self.set_notice("In a container: choose its agent here".into());
+                }
+            }
             return;
         }
-        self.launch_provider = None;
-        self.create_permission_session(d, "~".into(), provider.into(), false, false, false);
+        self.quick_launch(d, self.launch_dir(d), provider, resume);
+    }
+    /// The hub's bare `c x n C X`: this device, in the folder cx was started in (never
+    /// a device letter, never scoped by the hub's selection).
+    fn launch_here(&mut self, provider: &str, resume: bool) {
+        let d = self.local_index();
+        self.quick_launch(d, self.launch_dir(d), provider, resume);
     }
     /// `-`: re-attach the last detached session, from any screen.
     pub(super) fn attach_last(&mut self) {
@@ -1121,16 +1133,15 @@ impl App {
             }
             KeyCode::Char('G') => false,
             KeyCode::Char('g') if self.device_for_letter('g').is_none() => false,
-            // Only this device: its launch keys work right here, no letter first.
-            KeyCode::Char(c @ ('c' | 'x' | 'n'))
-                if self.devices.len() == 1 && self.device_for_letter(c).is_none() =>
-            {
-                let p = match c {
+            // Never device letters: claude, codex, a shell (`C X` resume) on this device,
+            // where cx was started.
+            KeyCode::Char(c @ ('c' | 'x' | 'n' | 'C' | 'X')) => {
+                let p = match c.to_ascii_lowercase() {
                     'c' => "claude",
                     'x' => "codex",
                     _ => "shell",
                 };
-                self.new_session(0, p);
+                self.launch_here(p, c.is_ascii_uppercase());
                 true
             }
             KeyCode::Char(c) if c.is_ascii_lowercase() => {
@@ -1184,6 +1195,14 @@ impl App {
             }
             KeyCode::Char('n') => {
                 self.new_session(d, "shell");
+                true
+            }
+            KeyCode::Char('C') => {
+                self.resume_session(d, "claude");
+                true
+            }
+            KeyCode::Char('X') => {
+                self.resume_session(d, "codex");
                 true
             }
             KeyCode::Char('f') => {
@@ -1405,8 +1424,10 @@ impl App {
                     self.open_edge(self.device - 1, n);
                 } else if self.selected_session().is_some() {
                     self.attach_selected();
-                } else {
-                    self.new_session(self.device - 1, "shell");
+                } else if !self.launch_blocked(self.device - 1) {
+                    // Nothing selected: the full chooser (agent, then its mode).
+                    let d = self.device - 1;
+                    self.open_session_chooser(d, self.launch_dir(d));
                 }
             }
             _ => self.primary(),
@@ -1663,8 +1684,17 @@ impl App {
             ("lane", None, _) => self.edge_lane(),
             ("skip", None, _) => self.onboarding_dismissed = true,
             (verb @ ("new-claude" | "new-codex" | "new-shell"), None, _) => {
-                if let Some(d) = current {
-                    self.new_session(d, verb.trim_start_matches("new-"));
+                let p = verb.trim_start_matches("new-");
+                match current {
+                    Some(d) => self.new_session(d, p),
+                    None => self.launch_here(p, false),
+                }
+            }
+            (verb @ ("resume-claude" | "resume-codex"), None, _) => {
+                let p = verb.trim_start_matches("resume-");
+                match current {
+                    Some(d) => self.resume_session(d, p),
+                    None => self.launch_here(p, true),
                 }
             }
             _ => return false,

@@ -1377,7 +1377,11 @@ fn help_is_the_table_of_the_screen_below() {
     }
     let text = draw(&a, 120, 40);
     assert!(text.contains("IN A DEVICE"), "{text}");
-    assert!(text.contains("b E X") && text.contains("w p t"), "{text}");
+    assert!(
+        text.contains("C X") && text.contains("resume claude"),
+        "{text}"
+    );
+    assert!(text.contains("b E D") && text.contains("w p t"), "{text}");
     // Files is yazi's: `~` opens its help, the keymap with the user's prepends first.
     let (mut a, _rx) = file_app();
     press(&mut a, '~');
@@ -2436,4 +2440,77 @@ fn a_lone_device_starts_from_the_hub_with_one_key() {
         .try_iter()
         .any(|t| matches!(&t.op, Operation::Create(c) if c.provider == "codex"));
     assert!(started || matches!(&a.dialog, Some(Dialog::SessionChooser(0, _))));
+}
+
+/// The hub says where its bare `c x n` start, quietly on the SESSIONS rule, at every
+/// size (phones included), the folder cut from the left; a tap on its key launches as
+/// the key does.
+#[test]
+fn hub_shows_where_bare_launch_keys_start_at_every_size() {
+    let (tx, rx) = mpsc::sync_channel(64);
+    let mut devices = app().devices;
+    let mut remote = devices[0].clone();
+    remote.id = "remote".into();
+    remote.name = "laptop".into();
+    remote.target = Some("laptop".into());
+    devices.push(remote);
+    let mut a = App::new(devices, tx);
+    a.onboarding_dismissed = true;
+    a.here = Some("/srv/work/projects/robot-arm".into());
+    a.go_hub();
+    for (w, h) in [(120, 40), (80, 24), (60, 30), (40, 20), (36, 40)] {
+        let text = draw(&a, w, h);
+        let row = text
+            .lines()
+            .find(|l| l.contains("SESSIONS"))
+            .unwrap_or_else(|| panic!("{w}x{h}: no SESSIONS rule\n{text}"));
+        assert!(row.contains("here "), "{w}x{h}: {row}\n{text}");
+        assert!(row.contains("robot-arm"), "{w}x{h}: {row}");
+        if std::env::var_os("CX_PRINT").is_some() {
+            println!("{w}x{h}\n{text}\n");
+        }
+    }
+    // Wide: the whole folder and the keys (this device selected and idle: its launch
+    // row under the rule shows the keys, so the rule shows the folder alone).
+    let text = draw(&a, 120, 40);
+    assert!(text.contains("here /srv/work/projects/robot-arm"), "{text}");
+    assert!(text.contains(" c  claude"), "{text}");
+    // With sessions, the rule carries the keys as well, and each taps as its key.
+    sessions(&mut a, 1, 2);
+    for (w, h) in [(120, 40), (80, 24), (40, 20)] {
+        let text = draw(&a, w, h);
+        let row = text.lines().find(|l| l.contains("SESSIONS")).unwrap();
+        assert!(
+            row.contains(" n  here ") && row.contains("robot-arm"),
+            "{w}x{h}: {row}\n{text}"
+        );
+        if std::env::var_os("CX_PRINT").is_some() {
+            println!("{w}x{h}\n{text}\n");
+        }
+    }
+    let text = draw(&a, 120, 40);
+    let (y, row) = text
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("SESSIONS"))
+        .unwrap();
+    let x = row.chars().collect::<String>().find(" n  here").unwrap();
+    let x = row[..x].chars().count() as u16 + 1;
+    let _ = rx.try_iter().count();
+    click(&mut a, x, y as u16, Rect::new(0, 0, 120, 40));
+    assert!(
+        rx.try_iter().any(|t| matches!(&t.op, Operation::Create(c)
+            if c.provider == "shell" && c.directory == "/srv/work/projects/robot-arm")),
+        "a tap on the rule's n starts a shell here"
+    );
+    a.creating = false;
+    // This device's screen: its launch row says it too, where the row has room.
+    a.open_device(0);
+    for (w, h) in [(120, 40), (80, 24)] {
+        let text = draw(&a, w, h);
+        assert!(text.contains("robot-arm"), "{w}x{h}\n{text}");
+        if std::env::var_os("CX_PRINT").is_some() {
+            println!("{w}x{h}\n{text}\n");
+        }
+    }
 }

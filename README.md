@@ -39,7 +39,7 @@ You can also find a discovered LAN neighbor in the palette (`/`, after a Refresh
 | `C` / `X` on the hub | Resume the last Claude / Codex conversation there, in that mode |
 | `c` / `x` / `n`, `C` / `X` on a device | The same on that device: this device in the folder `cx` started in, another in the last folder Files showed there (else its home). Enter with nothing running opens the full chooser |
 | Enter / Space | Attach (or open) the selection / peek a session's screen |
-| Backspace, Backspace | Stop the selected CX-managed session (any other key keeps it) |
+| Backspace, Backspace | Stop the selected session: CX-managed, moved in, or a Claude/Codex terminal outside tmux (any other key keeps it) |
 | `f` on a device | Its files |
 | `e` then a letter | Edit the link to that device: `a p o` / `A P O` set key, password or off per direction, `u` undoes |
 | `H` (Shift+H, or Esc Esc) | Back to the hub from any screen, Files included; Esc goes back one level |
@@ -52,6 +52,19 @@ You can also find a discovered LAN neighbor in the palette (`/`, after a Refresh
 | Ctrl+C in CX | Exit the viewer; sessions keep running |
 
 Every node, tile, chip and row is also a tap target that does what its key does; a right-click or long press shows the selection's keys as a menu. The palette's **New session** (and `!` then Enter in Files) opens the full chooser: Shell, Devcontainer and the Claude or Codex profiles available on the device, existing sessions in that folder by name and observed state, then **Default** or **YOLO** permissions for that launch (YOLO bypasses the agent's normal approval protections). CX does not choose a conversation by recency. Detaching lands on the hub with the tile you left selected, so Enter or `-` re-attaches.
+
+From a plain terminal, without the UI:
+
+```sh
+cx claude                 # Claude in this folder, in its last mode, attached (Ctrl+\ detaches)
+cx codex --yolo ~/proj    # Codex in ~/proj in YOLO (remembered as Codex's mode on this device)
+cx claude -r              # resume the latest Claude conversation here (-p: choose one)
+cx shell -d tranquility   # a shell on another device, in its home
+cx kill <id|name>         # stop a session (asks first; -y skips)
+cx adopt [pid|tty]        # move an agent terminal started outside cx into cx and attach
+```
+
+`cx claude lend|revoke|list` still lend your Claude Code gateway; a folder with one of those names is `./list`.
 
 In **Files**, cx is a yazi clone: three columns (parent, folder, preview), yazi's keymap with which-key panels, and your `~/.config/yazi` theme, openers and keymap prepends when they exist; `~` lists every key. `y` or `x`, then `p`, copies or moves the selection; `'` and a device letter switch the tab to that device (`''` goes back), so a paste there is a transfer. `e` sends the selection through the device picker. `!` then `c`, `x` or `n` starts Claude, Codex or a shell in the folder (an agent in its last mode); `!` Enter opens the new-session chooser there. `H` is the hub, so yazi's history back and forward are Alt+← and Alt+→. Images preview through the kitty, sixel or iTerm2 protocols where the terminal has one. Incoming conflicts rename by default; overwrite is explicit. See the [user guide](docs/user-guide.md) for file operations, previews, clipboard, scrolling and all controls.
 

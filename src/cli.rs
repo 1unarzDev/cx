@@ -14,10 +14,10 @@ pub struct LaunchArgs {
     #[arg(short, long)]
     pub device: Option<String>,
     /// Bypass approvals (and Codex's sandbox); remembered as this agent's mode.
-    #[arg(short, long, conflicts_with = "normal")]
+    #[arg(long, conflicts_with = "normal")]
     pub yolo: bool,
     /// Ask for approvals; remembered as this agent's mode.
-    #[arg(short, long)]
+    #[arg(long)]
     pub normal: bool,
     /// Continue the latest conversation in that folder.
     #[arg(short, long)]
@@ -33,7 +33,7 @@ pub struct LaunchArgs {
 #[command(
     name = "cx claude",
     about = "Start Claude in this folder (or DIR, or on --device) and attach",
-    after_help = "Lend your Claude Code gateway: cx claude lend|revoke|list (docs/claude.md)"
+    after_help = "Lend your Claude Code gateway: cx claude lend|revoke|list (docs/claude.md); a folder with one of those names is ./list"
 )]
 struct ClaudeCli {
     #[command(flatten)]
@@ -173,7 +173,7 @@ pub fn kill(session: &str, device: Option<String>, yes: bool) -> Result<()> {
         .collect();
     let s = match matches.as_slice() {
         [s] => *s,
-        [] => bail!("no session {session:?} (see `cx sessions`)"),
+        [] => bail!("no session {session:?} on {} (ids: `cx sessions`, or `cx adopt` for terminals outside cx)", d.name),
         _ => bail!("{session:?} names several sessions: use its id"),
     };
     if !yes && !confirm(&format!("stop {}?", label(s)))? {
@@ -211,12 +211,18 @@ pub fn adopt(terminal: Option<String>, device: Option<String>) -> Result<()> {
             } else {
                 format!("/dev/pts/{t}")
             };
-            all.into_iter()
-                .find(|s| {
+            let mut found: Vec<Session> = all
+                .into_iter()
+                .filter(|s| {
                     let o = s.origin.as_ref().expect("filtered");
                     s.pid.to_string() == t || o.leader.pid.to_string() == t || o.tty == tty
                 })
-                .with_context(|| format!("no terminal outside CX matches {t:?}"))?
+                .collect();
+            match found.len() {
+                1 => found.remove(0),
+                0 => bail!("no terminal outside CX matches {t:?} (`cx adopt` lists them)"),
+                _ => bail!("{t:?} matches several terminals: give its /dev/pts/N"),
+            }
         }
         None => {
             anyhow::ensure!(!all.is_empty(), "no agent terminals outside CX");

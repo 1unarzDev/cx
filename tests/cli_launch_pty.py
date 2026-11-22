@@ -78,14 +78,14 @@ check('cx claude --yolo DIR (relative) starts there in YOLO',
 text, code, _ = attached(['claude'], 'FAKE-CLAUDE', cwd=home)
 check('the last mode is remembered (YOLO again without a flag)',
       'args=--dangerously-skip-permissions' in text, text[-400:])
-text, code, _ = attached(['claude', '-n', '~/proj'], 'FAKE-CLAUDE', cwd=tmp)
+text, code, _ = attached(['claude', '--normal', '~/proj'], 'FAKE-CLAUDE', cwd=tmp)
 check('-n switches back to normal mode; ~/ expands', f'cwd={home}/proj args=' in text
       and 'dangerously' not in text.split('FAKE-CLAUDE')[-1], text[-400:])
 
 text, code, _ = attached(['shell'], '$')
 check('cx shell attaches a shell here', code == 0, code)
 check('cx shell rejects --yolo', cx('shell', '--yolo').returncode != 0)
-check('cx claude rejects --yolo with --normal', cx('claude', '-y', '-n').returncode != 0)
+check('cx claude rejects --yolo with --normal', cx('claude', '--yolo', '--normal').returncode != 0)
 bad = cx('claude', 'missing-dir')
 check('a missing folder is an error before anything starts',
       bad.returncode != 0 and 'not a folder' in bad.stderr, bad.stderr)

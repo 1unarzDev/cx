@@ -65,10 +65,13 @@ pub(crate) fn encode_path(path: &Path) -> String {
     }
 }
 pub(crate) fn decode_path(path: &str) -> Result<PathBuf> {
-    if path == "~" {
-        return Ok(PathBuf::from(
-            std::env::var_os("HOME").context("HOME unavailable")?,
-        ));
+    // `~` and `~/…` are the executing host's home (`cx claude -d DEV ~/proj`).
+    if path == "~" || path.starts_with("~/") {
+        let home = PathBuf::from(std::env::var_os("HOME").context("HOME unavailable")?);
+        return Ok(match path.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => home,
+        });
     }
     if path.len() > 16384 {
         bail!("path is too long");
@@ -1988,6 +1991,14 @@ mod tests {
     use tempfile::tempdir;
     /// transport::MAX_MESSAGE; files.rs is also compiled into integration tests without transport.
     const FRAME_LIMIT: usize = 1024 * 1024;
+    #[test]
+    fn tilde_paths_are_the_executing_hosts_home() {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        assert_eq!(decode_path("~").unwrap(), home);
+        assert_eq!(decode_path("~/proj/a").unwrap(), home.join("proj/a"));
+        assert_eq!(decode_path("~user").unwrap(), PathBuf::from("~user"));
+        assert_eq!(decode_path("/abs").unwrap(), PathBuf::from("/abs"));
+    }
     /// The pre-snapshot helper listing (readdir order, skip(offset), lstat each), kept to prove
     /// the new pages contain exactly what the old pages plus the UI's sort produced.
     fn old_list_page(path: &Path, offset: u64, limit: u32) -> Value {

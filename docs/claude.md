@@ -1,8 +1,8 @@
 # Claude: lend your Claude Code gateway with one line
 
-`cx claude` hands a teammate your Claude Code gateway (a [better-ccflare](https://github.com/tombii/better-ccflare)
+`cx claude lend` hands a teammate your Claude Code gateway (a [better-ccflare](https://github.com/tombii/better-ccflare)
 behind Cloudflare Access, optionally also on the mesh) in one step. It needs a `cx mesh` (docs/mesh.md): the
-mesh's Worker serves the codes.
+mesh's Worker serves the codes. (`cx claude` with no lending command starts a Claude session instead; see the user guide.)
 
 ```sh
 # owner

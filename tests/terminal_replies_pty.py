@@ -98,6 +98,7 @@ class Terminal(pty_lib.Pty):
             data = os.read(self.master, 1 << 16)
         except OSError:
             return None
+        self.arrived = time.monotonic()  # perf_harness times chunks by it (pty_lib.Pty.read)
         self._queue(data)
         self.stream.feed(self.decoder.decode(data))
         return data

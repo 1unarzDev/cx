@@ -2146,6 +2146,10 @@ struct ProviderProbe {
     claude: bool,
     codex: bool,
     codex_no_daemon: bool,
+    /// The codex executable that has `--no-daemon` ([`executable_identity`]): a launch
+    /// trusts the record only while that file is unchanged (an update or downgrade).
+    #[serde(default)]
+    codex_binary: Option<(String, String)>,
 }
 const PROBE_TTL: u64 = 600;
 const PROBE_FILE: &str = "providers.json";
@@ -2157,6 +2161,27 @@ impl ProviderProbe {
             _ => false,
         }
     }
+    /// Whether what it says about codex's `--no-daemon` still holds for the file on disk.
+    fn current(&self) -> bool {
+        !self.codex_no_daemon
+            || self
+                .codex_binary
+                .as_ref()
+                .is_some_and(|(path, id)| executable_identity(path).as_ref() == Some(id))
+    }
+}
+/// A file's identity for change detection: device, inode, size and modification time.
+fn executable_identity(path: &str) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let m = fs::metadata(path).ok()?;
+    Some(format!(
+        "{}:{}:{}:{}.{}",
+        m.dev(),
+        m.ino(),
+        m.size(),
+        m.mtime(),
+        m.mtime_nsec()
+    ))
 }
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -2167,7 +2192,7 @@ fn now_secs() -> u64 {
 /// Probe every provider in `shell` at once (each a bounded login shell of its own) and
 /// record the result for launches.
 fn probe_providers(shell: &str) -> ProviderProbe {
-    let (claude, codex, codex_no_daemon) = thread::scope(|scope| {
+    let (claude, codex, codex_binary) = thread::scope(|scope| {
         let claude = scope.spawn(|| provider_available(shell, "claude --version"));
         let codex = scope.spawn(|| provider_available(shell, "codex --version"));
         let no_daemon = codex_supports_no_daemon(shell);
@@ -2182,7 +2207,8 @@ fn probe_providers(shell: &str) -> ProviderProbe {
         at: now_secs(),
         claude,
         codex,
-        codex_no_daemon: codex && codex_no_daemon,
+        codex_no_daemon: codex && codex_binary.is_some(),
+        codex_binary: codex_binary.filter(|_| codex),
     };
     let _ = crate::store::write_state(PROBE_FILE, &probe, 4096);
     probe
@@ -2206,14 +2232,53 @@ pub fn available_providers() -> Result<Vec<&'static str>> {
 
 /// Probe in the same selected login shell as the eventual launcher. Never
 /// assume version support or edit provider configuration; older CLIs fall back.
-fn codex_supports_no_daemon(shell: &str) -> bool {
-    provider_available(
+/// Supported: the executable's path and identity (None when either is unknown,
+/// which a launch treats as unsupported only after probing again).
+fn codex_supports_no_daemon(shell: &str) -> Option<(String, String)> {
+    const MARK: &str = "CX-CODEX-PATH";
+    let out = provider_output(
         shell,
-        "codex --help 2>/dev/null | command head -c 65536 | command grep -Fq -- '  --no-daemon'",
-    )
+        &format!("codex --help 2>/dev/null | command head -c 65536 | command grep -Fq -- '  --no-daemon' && echo {MARK} && command -v codex"),
+    )?;
+    let text = String::from_utf8_lossy(&out);
+    // Startup files may print too: the path is the line after the last mark.
+    let path = text
+        .rsplit(MARK)
+        .next()?
+        .lines()
+        .find(|l| !l.is_empty())?
+        .trim();
+    if !path.starts_with('/') {
+        return None;
+    }
+    Some((path.to_owned(), executable_identity(path)?))
 }
 
 fn provider_available(shell: &str, probe: &str) -> bool {
+    bounded_provider_check(provider_probe(shell, probe), Duration::from_secs(3))
+}
+/// A provider probe's standard output when it succeeds (at most 64 KiB).
+fn provider_output(shell: &str, probe: &str) -> Option<Vec<u8>> {
+    use std::os::fd::FromRawFd;
+    let mut fds = [0; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return None;
+    }
+    // SAFETY: both ends are fresh descriptors owned here.
+    let (mut read, write) =
+        unsafe { (fs::File::from_raw_fd(fds[0]), fs::File::from_raw_fd(fds[1])) };
+    let ok = bounded_run(
+        provider_probe(shell, probe),
+        Duration::from_secs(3),
+        write.into(),
+    );
+    // The writers are gone (the probe's group was killed); never wait on an escapee.
+    unsafe { libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK) };
+    let mut out = Vec::new();
+    let _ = std::io::Read::read_to_end(&mut std::io::Read::take(&mut read, 65536), &mut out);
+    ok.then_some(out)
+}
+fn provider_probe(shell: &str, probe: &str) -> Command {
     let mut command = Command::new(shell);
     let shell_name = std::path::Path::new(shell)
         .file_name()
@@ -2228,7 +2293,7 @@ fn provider_available(shell: &str, probe: &str) -> bool {
         probe.into()
     };
     command.args(["-l", "-i", "-c", &fixed_probe]);
-    bounded_provider_check(command, Duration::from_secs(3))
+    command
 }
 
 // Fish runs init commands after its normal configuration. These tmux-supported
@@ -2251,7 +2316,10 @@ function __cx_command_label --on-event fish_preexec
 end
 "#;
 
-fn bounded_provider_check(mut command: Command, timeout: Duration) -> bool {
+fn bounded_provider_check(command: Command, timeout: Duration) -> bool {
+    bounded_run(command, timeout, Stdio::null())
+}
+fn bounded_run(mut command: Command, timeout: Duration, stdout: Stdio) -> bool {
     use std::os::unix::process::CommandExt;
     // A session of its own (so also a group of its own, signalled below) and no
     // controlling terminal: an interactive bash or sh started from a terminal-run cx
@@ -2267,12 +2335,14 @@ fn bounded_provider_check(mut command: Command, timeout: Duration) -> bool {
     }
     let Ok(mut child) = command
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(stdout)
         .stderr(Stdio::null())
         .spawn()
     else {
         return false;
     };
+    // The parent's copy of `stdout` (a pipe's write end) closes with the command.
+    drop(command);
     let started = std::time::Instant::now();
     let deadline = started + timeout;
     // Observe exit without reaping: the zombie pins the owned group ID until
@@ -2567,23 +2637,11 @@ fn bounded_stderr(raw: &[u8]) -> String {
 }
 fn ensure_server() -> Result<()> {
     // An owned server may persist after its last session ends. New binaries
-    // must reload its configuration too, rather than reusing old key bindings;
-    // one this binary already configured (the attach marker) is left as it is.
+    // must reload its configuration too, rather than reusing old key bindings.
     let mut existing = tmux(true)?;
-    existing.args(["display-message", "-p", "#{pid}"]);
-    let existing = existing.output()?;
-    if existing.status.success() {
-        let configured = String::from_utf8_lossy(&existing.stdout)
-            .trim()
-            .parse()
-            .ok()
-            .and_then(|pid| Some((pid, process_start_ticks(pid)?)))
-            .is_some_and(|(pid, start)| control::configured(pid, &start));
-        return if configured {
-            Ok(())
-        } else {
-            configure_managed()
-        };
+    existing.args(["show-options", "-g"]);
+    if existing.output()?.status.success() {
+        return configure_managed();
     }
     let root = state()?;
     let conf = root.join("tmux.conf");
@@ -2883,7 +2941,7 @@ fn create_with_permissions(
         // Info's recent probe when it found the provider; a fresh probe otherwise. A
         // provider gone since then fails in its pane, which stays to show why.
         let probe = recorded_probe(&shell)
-            .filter(|p| p.available(&request.provider))
+            .filter(|p| p.available(&request.provider) && p.current())
             .unwrap_or_else(|| probe_providers(&shell));
         if !probe.available(&request.provider) {
             bail!(
@@ -5501,6 +5559,7 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
                 claude: true,
                 codex: false,
                 codex_no_daemon: false,
+                codex_binary: None,
             };
             crate::store::write_state(PROBE_FILE, &probe, 4096).unwrap();
         };
@@ -5518,6 +5577,26 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
         assert!(recorded_probe("/bin/bash").is_none());
         record("/bin/bash", now_secs() + 60);
         assert!(recorded_probe("/bin/bash").is_none());
+        // `--no-daemon` holds only for the codex file that was probed.
+        let dir = tempfile::tempdir().unwrap();
+        let codex = dir.path().join("codex");
+        fs::write(&codex, "new").unwrap();
+        let path = codex.to_str().unwrap().to_owned();
+        let mut probe = ProviderProbe {
+            shell: "/bin/bash".into(),
+            at: now_secs(),
+            claude: false,
+            codex: true,
+            codex_no_daemon: true,
+            codex_binary: Some((path.clone(), executable_identity(&path).unwrap())),
+        };
+        assert!(probe.current());
+        fs::write(&codex, "older").unwrap();
+        assert!(!probe.current(), "a replaced codex is probed again");
+        probe.codex_binary = None;
+        assert!(!probe.current());
+        probe.codex_no_daemon = false;
+        assert!(probe.current(), "without the flag any codex launches");
     }
     #[test]
     fn tmux_list_arguments_keep_a_trailing_semicolon() {

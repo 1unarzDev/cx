@@ -1892,21 +1892,31 @@ fn obsolete_network_reply_releases_loading_on_success_and_error() {
     }
 }
 #[test]
-fn expired_agent_selection_cannot_turn_into_shell_launch() {
+fn an_old_info_still_offers_agents_without_waiting_for_a_recheck() {
     let (mut a, rx) = queued_app();
-    a.dialog = Some(Dialog::Provider(1, None));
-    a.dialog_selected = 2;
     a.providers.insert(
         1,
         (
             vec!["claude".into(), "codex".into()],
-            transport::now().saturating_sub(61),
+            transport::now().saturating_sub(3600),
         ),
     );
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(a.launch_provider.is_none());
-    assert!(matches!(a.dialog, Some(Dialog::Provider(1, None))));
+    // Opening the chooser starts a recheck, but the choice works at once.
+    a.open_session_chooser(1, "/folder".into());
     assert!(matches!(rx.try_recv().unwrap().op, Operation::Info));
+    let codex = a
+        .host_session_choices(1)
+        .iter()
+        .position(|c| c.provider == "codex")
+        .expect("codex offered from the last Info");
+    a.dialog_selected = codex;
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(
+        a.dialog,
+        Some(Dialog::Permissions(1, _, ref p, false, false)) | Some(Dialog::SessionPicker(1, _, None, ref p, _)) if p == "codex"
+    ));
+    // The recheck's answer replaces it: a provider gone is no longer offered.
+    a.dialog = Some(Dialog::SessionChooser(1, "/folder".into()));
     a.apply(Reply {
         device_id: None,
         execution_target: None,
@@ -1914,9 +1924,9 @@ fn expired_agent_selection_cannot_turn_into_shell_launch() {
         device: 1,
         op: Operation::Info,
         generation: 0,
-        result: Ok(serde_json::json!({"capabilities":["claude", "codex"]})),
+        result: Ok(serde_json::json!({"capabilities":["claude"]})),
     });
-    assert_eq!(a.dialog_selected, 2);
+    assert_eq!(a.provider_choices(1), vec!["shell", "claude"]);
 }
 #[test]
 fn launch_choices_follow_execution_device_and_unknown_hides_agents() {
@@ -1942,7 +1952,7 @@ fn launch_choices_follow_execution_device_and_unknown_hides_agents() {
         1,
         (vec!["codex".into()], transport::now().saturating_sub(61)),
     );
-    assert_eq!(a.provider_choices(1), vec!["shell"]);
+    assert_eq!(a.provider_choices(1), vec!["shell", "codex"]);
 }
 #[test]
 fn provider_results_survive_navigation_but_failed_checks_hide_agents() {
@@ -7489,4 +7499,55 @@ fn unreachable_devices_say_why_on_every_tile() {
         a.apply(reply(&a, 1, Operation::Info, Err(anyhow::Error::new(kind))));
         assert_eq!(viewmodel::ViewModel::from(&a).state.devices[1].why, word);
     }
+}
+#[test]
+fn starting_or_stopping_a_session_runs_next_on_its_lane() {
+    let (a, _rx) = queued_app();
+    let task = |device: usize, op: Operation| Task {
+        device,
+        execution: a.devices[device].clone(),
+        op,
+        generation: 0,
+        hover: false,
+    };
+    let lane = |t: &Task| format!("{}", t.device);
+    let spec = CreateSession {
+        key: "k".into(),
+        directory: "~".into(),
+        provider: "claude".into(),
+        name: String::new(),
+        resume: false,
+        resume_pick: false,
+    };
+    let mut tasks: VecDeque<Task> = [
+        task(0, Operation::Sessions),
+        task(1, Operation::Sessions),
+        task(1, Operation::ExternalSessions),
+    ]
+    .into();
+    // Ahead of the remote's queued refreshes, never of the other device's.
+    let create = task(1, Operation::Create(spec.clone()));
+    let at = runtime::queue_position(&tasks, &create, lane);
+    assert_eq!(at, 1);
+    tasks.insert(at, create);
+    // A second request queues behind the first, still ahead of the refreshes.
+    let stop = task(
+        1,
+        Operation::StopSession {
+            id: "s".into(),
+            pid: 1,
+            started: "1".into(),
+            boot_id: "b".into(),
+        },
+    );
+    assert_eq!(runtime::queue_position(&tasks, &stop, lane), 2);
+    // Anything else waits its turn at the end.
+    assert_eq!(
+        runtime::queue_position(&tasks, &task(1, Operation::Sessions), lane),
+        tasks.len()
+    );
+    // With nothing else queued on its lane, it simply goes last.
+    let other = task(0, Operation::CreateYolo(spec));
+    let tasks: VecDeque<Task> = [task(1, Operation::Sessions)].into();
+    assert_eq!(runtime::queue_position(&tasks, &other, lane), 1);
 }

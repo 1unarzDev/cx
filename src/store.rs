@@ -126,7 +126,11 @@ fn private_state_name(name: &str) -> Result<()> {
     anyhow::ensure!(
         matches!(
             name,
-            "session-pins.json" | "ui-navigation.json" | "edges.json" | "addresses.json"
+            "session-pins.json"
+                | "ui-navigation.json"
+                | "edges.json"
+                | "addresses.json"
+                | "providers.json"
         ),
         "invalid private state name"
     );

@@ -4,6 +4,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 
 ## Unreleased
 
+### Fixes
+- **New sessions open at once.** `c`, `x` or `n` (and the chooser) attach to the new terminal as soon as it exists, about 60 ms after the key locally, and its shell and agent paint in it as they start, instead of cx waiting behind a loader for the agent's first screen. With a 1 s agent behind a 0.3 s login shell, the agent's first frame went from 1.73 s to 1.32 s after the key (0.02 s over its own startup).
+- **No more checking before every launch.** A launch no longer starts login shells to ask `claude --version` / `codex --version` / `codex --help` first: it uses the device's capability check from the last 10 minutes (kept in `providers.json` in cx's state directory), which now runs its probes side by side. A provider found missing there is checked again at launch, so a fresh install works at once. If a provider was removed since, its pane stays for 30 s with `cx: the launch failed (exit status 127: command not found)` instead of vanishing (tmux 3.3 and later).
+- **The launch chooser offers agents straight away.** It lists Claude and Codex from the device's last check, however old, instead of only Shell until a recheck answers.
+- **Starting or stopping a session jumps the queue.** Create, stop and adopt run next on their device's lane, ahead of queued session refreshes, network and neighbour probes.
+
 ## v0.3.5
 
 A hotfix on v0.3.4.

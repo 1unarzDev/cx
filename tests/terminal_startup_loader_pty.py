@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Slow owned shell: CX animates until visible content, then hands off once."""
+"""Slow owned shell: CX hands off at once and the terminal paints as it starts."""
 import fcntl, json, os, pathlib, pty, select, struct, subprocess, sys, tempfile, termios, time
 import pyte
 
@@ -81,13 +81,16 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-loader-') as tmp:
         os.write(master,b'\r'); read(.5)
         os.write(master,b'f'); wait(lambda:' NOR ' in text()); read(.4)
         os.write(master,b'!'); wait(lambda:'[n] Shell' in text())
-        os.write(master,b'n'); read(.6)
-        assert 'Starting terminal' in text(), 'blank/native handoff before startup finished:\n'+text()
-        first=text(); read(.25)
-        assert 'Starting terminal' in text() and text()!=first, 'startup loader did not animate'
-        # The viewer's own control-mode client (its live watch) is not a native attach.
-        clients=subprocess.check_output(['tmux','-S',socket,'list-clients','-F','#{client_control_mode} #{client_pid}'],env=env,text=True)
-        assert not [c for c in clients.splitlines() if not c.startswith('1 ')], 'native attach started before the first screen'
+        os.write(master,b'n'); pressed=time.monotonic()
+        # The native client attaches while the shell still starts (it sleeps 2 s): the
+        # viewer's own control-mode client (its live watch) is not a native attach.
+        def native_clients():
+            clients=subprocess.check_output(['tmux','-S',socket,'list-clients','-F','#{client_control_mode} #{client_pid}'],env=env,text=True)
+            return [c for c in clients.splitlines() if not c.startswith('1 ')]
+        while not native_clients():
+            assert time.monotonic()-pressed<1.5, 'no native attach while the terminal starts:\n'+text()
+            read(.05)
+        assert 'CX_READY_SCREEN' not in text()
         wait(lambda:'CX_READY_SCREEN' in text())
         os.write(master,b'printf done > loader-proof\r')
         wait(lambda:(root/'loader-proof').exists())
@@ -104,4 +107,4 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-loader-') as tmp:
             stop_owned_tmux(socket, env)
         finally:
             os.close(master);os.close(slave)
-print(json.dumps({'result':'PASS','checks':['loader animates during delayed shell startup','no native client before visible screen','handoff stays on the alternate screen (no stale detach-text flash)','single handoff accepts input and restores viewer/termios','owned tmux server and panes exit before temporary state removal']}))
+print(json.dumps({'result':'PASS','checks':['native attach while the shell starts, which then paints in it','handoff stays on the alternate screen (no stale detach-text flash)','single handoff accepts input and restores viewer/termios','owned tmux server and panes exit before temporary state removal']}))

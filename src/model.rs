@@ -211,6 +211,13 @@ pub enum Operation {
         origin: ExternalOrigin,
         boot_id: String,
     },
+    /// End a terminal started outside CX: its agent's process group, after the same
+    /// identity check adoption makes. Helper capability `stop-external-v1`.
+    StopExternal {
+        id: String,
+        origin: ExternalOrigin,
+        boot_id: String,
+    },
     Create(CreateSession),
     CreateYolo(CreateSession),
     StopAgentSession {

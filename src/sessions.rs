@@ -1228,6 +1228,16 @@ fn origin(terminal: &crate::adoption::Terminal) -> crate::model::ExternalOrigin 
     }
 }
 fn external_terminals() -> Vec<crate::adoption::Terminal> {
+    // Debug builds are test builds: they list terminals only inside tests/isolate.sh
+    // (a pid namespace not the machine's first one, inode 0xEFFFFFFC, whose private
+    // /dev/shm holds its marker; a container's own namespace has none), so a fixture
+    // viewer or helper can never offer a real terminal. tests/isolation.py is the twin.
+    let private = std::fs::read_link("/proc/self/ns/pid")
+        .is_ok_and(|ns| ns != std::path::Path::new("pid:[4026531836]"))
+        && std::path::Path::new("/dev/shm/cx-isolated").exists();
+    if cfg!(debug_assertions) && !private {
+        return vec![];
+    }
     // This install, and its replaced copies other viewers may still run after an update.
     let mut executables = vec![];
     if let Ok(exe) = crate::self_exe() {
@@ -1747,6 +1757,15 @@ pub fn reset() -> Result<serde_json::Value> {
     }))
 }
 
+/// End an outside-CX terminal's agent after re-checking its identity (see `adopt`).
+pub fn stop_external(
+    _id: &str,
+    _origin: &crate::model::ExternalOrigin,
+    _boot_id: &str,
+) -> Result<serde_json::Value> {
+    anyhow::bail!("stopping terminals outside CX is not supported yet")
+}
+
 /// Stop the exact CX-owned runtime shown at confirmation; preserve external sessions.
 pub fn stop_shell(id: &str, pid: u32, started: &str, boot_id: &str) -> Result<serde_json::Value> {
     stop_managed(id, pid, started, boot_id, "shell")
@@ -2040,7 +2059,8 @@ fn bounded_provider_check(mut command: Command, timeout: Duration) -> bool {
     else {
         return false;
     };
-    let deadline = std::time::Instant::now() + timeout;
+    let started = std::time::Instant::now();
+    let deadline = started + timeout;
     // Observe exit without reaping: the zombie pins the owned group ID until
     // descendants have been terminated, preventing a recycled-PID signal race.
     let completed = loop {
@@ -2065,7 +2085,14 @@ fn bounded_provider_check(mut command: Command, timeout: Duration) -> bool {
         if std::time::Instant::now() >= deadline {
             break false;
         }
-        thread::sleep(Duration::from_millis(10));
+        // Fine steps first: a version probe ends within a few ms, and a server start
+        // asks three (10 ms steps made `cx new` wait 10 ms on each).
+        let step = if started.elapsed() < Duration::from_millis(50) {
+            1
+        } else {
+            10
+        };
+        thread::sleep(Duration::from_millis(step));
     };
     unsafe {
         libc::kill(-(child.id() as i32), libc::SIGKILL);

@@ -594,6 +594,11 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
             ref origin,
             ref boot_id,
         } => Ok(serde_json::to_value(sessions::adopt(id, origin, boot_id)?)?),
+        Operation::StopExternal {
+            ref id,
+            ref origin,
+            ref boot_id,
+        } => sessions::stop_external(id, origin, boot_id),
         Operation::Create(ref c) => Ok(serde_json::to_value(sessions::create(c)?)?),
         Operation::CreateYolo(ref c) => Ok(serde_json::to_value(sessions::create_yolo(c)?)?),
         Operation::StopAgentSession {

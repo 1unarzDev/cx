@@ -179,7 +179,19 @@ pub fn kill(session: &str, device: Option<String>, yes: bool) -> Result<()> {
     if !yes && !confirm(&format!("stop {}?", label(s)))? {
         bail!("cancelled");
     }
-    transport::request(&d, stop_operation(s)?)?;
+    let (op, cap) = sessions::stop_operation(s)?;
+    if d.target.is_some() {
+        let info = transport::request(&d, Operation::Info)?;
+        anyhow::ensure!(
+            info["capabilities"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(|c| c == cap)),
+            "{} needs a newer cx to stop this session (`cx update --device {}`)",
+            d.name,
+            d.name
+        );
+    }
+    transport::request(&d, op)?;
     eprintln!("stopped {}", label(s));
     Ok(())
 }
@@ -247,33 +259,6 @@ pub fn adopt(terminal: Option<String>, device: Option<String>) -> Result<()> {
     attach(&d, &moved)
 }
 
-// TEMP until the stop worker's sessions::stop_operation lands.
-fn stop_operation(s: &Session) -> Result<Operation> {
-    Ok(
-        if let (true, Some(origin)) = (s.external, s.origin.clone()) {
-            Operation::StopExternal {
-                id: s.id.clone(),
-                origin,
-                boot_id: s.boot_id.clone(),
-            }
-        } else if s.provider == "shell" {
-            Operation::StopSession {
-                id: s.id.clone(),
-                pid: s.pid,
-                started: s.started.clone(),
-                boot_id: s.boot_id.clone(),
-            }
-        } else {
-            Operation::StopAgentSession {
-                id: s.id.clone(),
-                pid: s.pid,
-                started: s.started.clone(),
-                boot_id: s.boot_id.clone(),
-                provider: s.provider.clone(),
-            }
-        },
-    )
-}
 // TEMP until the launch worker's store API lands.
 mod store {
     pub fn launch_yolo() -> anyhow::Result<std::collections::BTreeSet<(String, String)>> {

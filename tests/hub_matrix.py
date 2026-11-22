@@ -8,7 +8,8 @@ usage: hub_matrix.py BINARY [--configs a,b] [--sizes WxH,...] [--tiers dark,ligh
 Isolation: the whole run is inside a private user, pid, uts, mount, cgroup and network namespace (`unshare
 -rnmCpfu`, then the caller's uid again; /run/user/UID is an empty tmpfs there): a bridge `lan0` (192.168.77.1/24) with permanent neighbour entries
 is the fixture lan, loopback carries a fake Cloudflare mesh Worker, and no packet leaves.
-Every device has its own HOME (tmux server, sessions, vitals from a CX_METRICS_ROOT tree).
+Every device has its own HOME (tmux server, sessions, vitals from a CX_METRICS_ROOT tree);
+the viewer starts in ~/src/robot-arm, so its hub names that folder for `c x n`.
 `ssh` on PATH runs `cx helper` under that HOME (CX_SSH_MULTIPLEX=0), refuses for a down
 device and times out (6 s, as ConnectTimeout) for one never reached; `tailscale` prints a fixture tailnet; ssh-overlay
 pairs are pinned peers in the viewer's state; the WARP mesh is a config whose Worker answers
@@ -424,7 +425,10 @@ def capture_config(binary, cfg, tiers, sizes, out, lab):
         try:
             for tier in tiers:
                 big = max(sizes)
-                pty = pty_lib.Pty([binary], fleet.tier_env(tier), fleet.viewer, *big)
+                # Started in a project folder, as `cx` usually is: the hub says `here ~/src/robot-arm`.
+                here = fleet.viewer / 'src/robot-arm'
+                here.mkdir(parents=True, exist_ok=True)
+                pty = pty_lib.Pty([binary], fleet.tier_env(tier), here, *big)
                 try:
                     end = time.monotonic() + 40
                     while time.monotonic() < end and not ready(fleet, pty.text()):

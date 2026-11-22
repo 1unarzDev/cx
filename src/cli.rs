@@ -2,7 +2,7 @@
 //! and attach, `cx kill` stops one, `cx adopt` moves an outside terminal into CX.
 //! The same operations the UI sends; nothing here is UI-only.
 use crate::model::{CreateSession, Device, Operation, Session};
-use crate::{sessions, transport};
+use crate::{sessions, store, transport};
 use anyhow::{bail, Context, Result};
 use std::io::{BufRead, IsTerminal, Write};
 
@@ -257,14 +257,4 @@ pub fn adopt(terminal: Option<String>, device: Option<String>) -> Result<()> {
     let moved: Session = serde_json::from_value(rx.recv().context("the move did not finish")??)?;
     eprintln!("moved {} into CX", label(&moved));
     attach(&d, &moved)
-}
-
-// TEMP until the launch worker's store API lands.
-mod store {
-    pub fn launch_yolo() -> anyhow::Result<std::collections::BTreeSet<(String, String)>> {
-        Ok(Default::default())
-    }
-    pub fn set_launch_yolo(_: &str, _: &str, _: bool) -> anyhow::Result<()> {
-        Ok(())
-    }
 }

@@ -13,6 +13,12 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 - **The launch chooser offers agents straight away.** It lists Claude and Codex from the device's last check, however old, instead of only Shell until a recheck answers.
 - **Starting or stopping a session jumps the queue.** Create, stop and adopt run next on their device's lane, ahead of queued session refreshes, network and neighbour probes.
 
+### Changes
+- **`cx` then `c`.** Running `cx` in a folder makes that folder where new sessions start on this device. On the hub, a bare `c`, `x` or `n` starts Claude, Codex or a shell there and attaches at once (2 keys from your shell, no file browsing), and `C` / `X` resume the agent's last conversation there. The hub's SESSIONS rule says where, quietly: `here ~/proj/foo` (cut from the left on narrow and phone screens). Device letters are never `c`, `x` or `n` any more (nor `e`), so these keys work with any number of devices; 22 letters remain, `g h j k l` after the first 17.
+- **Agents start in their last mode.** cx remembers, per device, whether Claude and Codex were last started in Default or YOLO (`launch-modes.json`, shared by every viewer and the CLI). `c` / `x` on the hub or a device's screen and `!` `c` / `x` in Files reuse it, `C` / `X` resume in it, and the chooser preselects it. On another device's screen, `c x n` start in the last folder Files showed there (else its home). A remembered YOLO on a remote device is checked against its helper first and never starts on an old one; a launch waiting for that check says so when it cannot start.
+- **Files: `!` then `c`, `x` or `n`** starts Claude, Codex or a shell in the folder; `!` Enter (or `n` outside a find) opens the full chooser there.
+- **Enter on a device with nothing selected** opens the full chooser (agent, then its mode) instead of starting a shell. Removing a device moves from `X` to `D` on its screen (`X` resumes Codex).
+
 ## v0.3.5
 
 A hotfix on v0.3.4.
@@ -67,6 +73,7 @@ The new look, released early: the nebula hub, yazi-style Files and the welcome p
 - **No stray keystrokes at startup.** A terminal's late answer to cx's startup probe (kitty's graphics reply, for example) is no longer read as typed keys, which could open yazi's shell prompt in Files and type into it.
 - **Every link on the hub has the nebula style:** evenly spaced dots on every curve, selected or not, with no solid or stepped runs.
 
+
 ### Changes
 - **Works with v0.2.2 and v0.2.1 both ways.** Sessions list, preview, attach and detach across versions, and updating keeps running sessions, their processes and their tmux settings. Images inside tmux (kitty, iTerm2) need tmux's passthrough, which cx sets only when it starts a server, so sessions already running get it after their server next starts.
 
@@ -90,6 +97,7 @@ Fixes from using v0.2.1 every day: half terminals, transparent terminals, the ne
 - **Attach after an update.** A viewer left open while cx was updated can attach this device's sessions again, and a device's helper keeps accepting typing into a session after its binary is replaced. Before, both refused ("Session changed or ended") until restarted: the running process named its own replaced file (`…/cx (deleted)`) to tmux's attach check. cx now hands other programs the new binary at the same install path, only when it is a regular executable owned by you or root.
 - **Claude and Codex are offered to bash and sh users.** Started from a terminal, cx's check for `claude` and `codex` stopped for 3 s each and found neither when the login shell was bash or sh (fish worked), so the local new-session chooser left them out. The check now runs without a terminal.
 - **Attach guards no longer pile up** in the state directory. A guard is removed as soon as its check passes, so an attach whose terminal closes or whose ssh drops leaves nothing behind. On start, cx removes `attach-guard-*` files (and v0.2.0's `attach-ticket-<hex>` files) that are older than an hour and that no process holds open. It touches nothing else.
+
 
 ### Changes
 - **Works with v0.2.1 both ways.** A v0.2.1 viewer works with a v0.2.2 device and the reverse: sessions list, preview, attach and detach, and updating a device keeps its running sessions, their processes and its tmux settings as they were.
@@ -123,6 +131,7 @@ The strict review of v0.2.0, issue by issue: 159 confirmed findings, fixed or re
 - **Files.** A folder's later pages come from the same snapshot as its first page (no repeated or skipped rows when it changes while listing), or the list restarts keeping the selection.
 - **SSH.** Warming a connection runs the edge policy first, so a `none` link opens no SSH master; the master's owner record is written before the master starts; pane capture and input ride the interactive channel.
 
+
 ### Changes
 - The WARP Worker accepts only the token the mesh was deployed with for its owner endpoints: run `cx mesh deploy` once after updating, and after changing the token. `--backend cloudflare-warp` now covers only `status` and `ranges`; the rest is `cx mesh` without `--backend`, as before. `cx mesh backends --json` no longer lists capabilities.
 - `CX_SECRETS_BACKEND=keyring` is gone (`auto` or `file`); `cx mesh invite --host-key` is gone (both sides use `/etc/ssh/ssh_host_ed25519_key.pub`); `cx edge list` drops its `observed` column.
@@ -147,6 +156,7 @@ A new interface and a faster core. Everything below is new since v0.1.95. Number
 - Identical session captures no longer redraw; Markdown previews lay out once at the width they are drawn; a relay version probe retries a just-written binary that is briefly "text file busy".
 - An ssh-overlay invite drains a refused request before closing, so the joiner always reads why it was refused.
 - After a detach, the session you left always has a tile on the hub, even when it ranks below the row.
+
 
 ### Changes
 - The static release binaries are 16.1 MB (x86_64) and 15.5 MB (ARM64), up from 13.6 MB for v0.1.95 x86_64. The OS keyring is reached through `secret-tool` rather than the keyring crate stack (which added about 5 MB and 84 packages); the QR code adds `qrcode`, which has no dependencies of its own.
@@ -183,6 +193,7 @@ Includes every change from v0.1.86–v0.1.88 plus the work below, which was prev
 
 ## v0.1.86
 
+
 ### Changes
 - Keep a robot's `.local` name as its enrolled target when adding it through a gateway, instead of pinning one of its DHCP addresses. The gateway resolves the name on each connect, so an address change needs no re-enrollment. Existing IP-pinned devices keep working; remove and re-add them to switch.
 - Match the shared-LAN preview rules by robot subnet instead of interface names, and never forward or masquerade into `docker0`.
@@ -198,6 +209,7 @@ Includes every change from v0.1.86–v0.1.88 plus the work below, which was prev
 
 
 ## v0.1.84
+
 
 ### Changes
 - Set up terminal moving from inside CX: when a device needs the ptrace relay, CX runs the one-time setup (with its admin-password prompt) for you and you retry the move, instead of printing a `cx device ptrace … enable` command to run yourself.
@@ -231,6 +243,7 @@ Includes every change from v0.1.86–v0.1.88 plus the work below, which was prev
 
 
 ## v0.1.80
+
 
 ### Changes
 - Show the session loader animation while a terminal is being moved into CX.
@@ -369,6 +382,7 @@ Includes every change from v0.1.86–v0.1.88 plus the work below, which was prev
 
 ## v0.1.61
 
+
 ### Changes
 - Remove manual device down/up controls; reachability now retries automatically and recovers after successful contact.
 
@@ -388,6 +402,7 @@ Includes every change from v0.1.86–v0.1.88 plus the work below, which was prev
 - Update the PTY session chooser fixture to follow capability-aware profile filtering, preventing stale expectations from failing push checks.
 
 ## v0.1.57
+
 
 ### Changes
 - Replace device access arrows with a subtle `*` only on single-direction devices.

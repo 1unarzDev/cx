@@ -48,6 +48,7 @@ mod keys;
 #[cfg(test)]
 mod lab;
 mod launch;
+use launch::PendingLaunch;
 mod motion;
 mod screens;
 mod viewmodel;
@@ -636,6 +637,10 @@ struct App {
     container_selected: usize,
     container_collapsed: BTreeSet<usize>,
     file_locations: HashMap<usize, String>,
+    /// The folder `cx` was started in: where `c x n` start on this device (in memory).
+    here: Option<String>,
+    /// A YOLO launch waiting on its device's capabilities (`launch::yolo_ready`).
+    pending_launch: Option<launch::Waiting>,
     generation: u64,
     creating: bool,
     device_generation_floor: u64,
@@ -852,6 +857,8 @@ impl App {
             container_selected: 0,
             container_collapsed: BTreeSet::new(),
             file_locations: HashMap::new(),
+            here: None,
+            pending_launch: None,
             generation: 0,
             creating: false,
             device_generation_floor: 0,
@@ -980,6 +987,7 @@ impl App {
         self.container_collapsed.clear();
         self.container_selected = 0;
         self.file_locations.clear();
+        self.pending_launch = None;
         self.providers.clear();
         self.adoption_unavailable.clear();
         self.provider_loading.clear();

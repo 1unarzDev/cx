@@ -393,7 +393,7 @@ mod review_tests {
             60,
         );
         let crumb = t.lines().next().unwrap();
-        assert!(crumb.contains(" c  ⇄  i "), "{crumb}");
+        assert!(crumb.contains(" r  ⇄  i "), "{crumb}");
         let (t, _) = draw(LabView::EdgeEditor("innovation-nas".into()), &s, 200, 60);
         assert!(!t.contains("tranquility"), "{t}");
     }

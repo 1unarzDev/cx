@@ -63,6 +63,9 @@ pub struct LabDevice {
     pub caps: Vec<String>,
     /// Folders cx has seen work in on this device (ended sessions, Files), newest first.
     pub recent: Vec<String>,
+    /// Where `c x n` start on it, home as `~`: on the viewer the folder cx was started
+    /// in, elsewhere the last folder Files showed there.
+    pub start: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -422,15 +425,15 @@ mod tests {
             for x in &st.sessions {
                 assert!(st.device(&x.device).is_some());
             }
+            // (Past the 22 letters a device has none, as in the real hub.)
             let mut keys: Vec<char> = st.devices.iter().map(|d| d.hotkey).collect();
+            assert!(keys.iter().all(|c| !"ecxn".contains(*c)), "{}", st.fixture);
+            keys.retain(|c| *c != ' ');
+            let lettered = keys.len();
             keys.sort();
             keys.dedup();
-            assert_eq!(
-                keys.len(),
-                st.devices.len(),
-                "hotkeys unique in {}",
-                st.fixture
-            );
+            assert_eq!(keys.len(), lettered, "hotkeys unique in {}", st.fixture);
+            assert_eq!(lettered, st.devices.len().min(22), "{}", st.fixture);
             assert!(st.preview().is_some());
         }
     }

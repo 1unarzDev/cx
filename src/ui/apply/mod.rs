@@ -381,6 +381,9 @@ impl App {
                         }
                     }
                 }
+                if matches!(reply.op, Operation::Info) {
+                    self.resume_pending_launch(reply.device, false);
+                }
                 return;
             }
         };

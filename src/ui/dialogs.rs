@@ -340,23 +340,23 @@ impl App {
             }
             Dialog::Permissions(d, path, provider, resume, pick) => {
                 let yolo = self.dialog_selected == 1;
-                if yolo
-                    && self.devices[d].target.is_some()
-                    && !self.providers.get(&d).is_some_and(|(caps, checked)| {
-                        transport::now().saturating_sub(*checked) < 60
-                            && caps.iter().any(|c| c == "session-yolo-v1")
-                    })
-                {
-                    self.check_providers(d);
-                    self.set_notice_as(
-                        NoticeKind::Warning,
-                        "YOLO needs an updated execution helper · update this device, then retry"
-                            .into(),
-                    );
+                let launch = PendingLaunch {
+                    device: d,
+                    directory: path,
+                    provider,
+                    resume,
+                    pick,
+                };
+                if yolo && !self.yolo_ready(launch.clone()) {
+                    // Kept open on an old helper; closed while its answer is awaited.
+                    if self.pending_launch.is_some() {
+                        self.dialog = None;
+                    }
                     return;
                 }
                 self.dialog = None;
-                self.create_permission_session(d, path, provider, yolo, resume, pick);
+                let p = launch;
+                self.create_permission_session(d, p.directory, p.provider, yolo, resume, pick);
             }
             Dialog::SessionPicker(d, path, scope, provider, rows) => {
                 if let Some(session) = rows.get(self.dialog_selected) {
@@ -375,8 +375,7 @@ impl App {
                 } else if self.dialog_selected == rows.len() + 1
                     && container_agents::has_history(None, &provider)
                 {
-                    self.dialog = Some(Dialog::Permissions(d, path, provider, true, true));
-                    self.dialog_selected = 0;
+                    self.ask_permissions(d, path, provider, true, true);
                 } else {
                     self.dialog = None;
                     self.create_at(

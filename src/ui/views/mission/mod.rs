@@ -1012,6 +1012,21 @@ pub(super) fn fit(s: &str, w: usize, unicode: bool) -> String {
     )
 }
 
+/// Keep the end of `s` in `w` columns, the cut marked at the start (`…/proj/foo`): a
+/// folder's last parts say the most.
+pub(super) fn fit_left(s: &str, w: usize, unicode: bool) -> String {
+    let n = s.chars().count();
+    if n <= w {
+        return s.to_string();
+    }
+    let (mark, mw) = if unicode { ("…", 1) } else { ("..", 2) };
+    let keep = w.saturating_sub(mw);
+    if keep == 0 {
+        return String::new();
+    }
+    format!("{mark}{}", s.chars().skip(n - keep).collect::<String>())
+}
+
 /// ASCII stand-ins for the fixture text's few non-ASCII characters. Each keeps one
 /// meaning: `..` is a cut, `->` an arrow, `>` stays the selection mark.
 pub(super) fn asciify(s: &str) -> String {

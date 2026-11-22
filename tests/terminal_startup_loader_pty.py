@@ -80,7 +80,7 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-loader-') as tmp:
         os.write(master,b'\x1b'); read(.5)
         os.write(master,b'\r'); read(.5)
         os.write(master,b'f'); wait(lambda:' NOR ' in text()); read(.4)
-        os.write(master,b'!'); wait(lambda:'[n] Shell' in text())
+        os.write(master,b'!\r'); wait(lambda:'[n] Shell' in text())
         os.write(master,b'n'); pressed=time.monotonic()
         # The native client attaches while the shell still starts (it sleeps 2 s): the
         # viewer's own control-mode client (its live watch) is not a native attach.

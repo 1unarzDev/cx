@@ -4170,7 +4170,7 @@ fn stop_shell_confirmation_protects_agents_and_captures_runtime_identity() {
     a.work[0].sessions[0].pid = 9999;
     bksp(&mut a);
     assert!(
-        matches!(rx.try_recv().unwrap().op,Operation::StopSession{id,pid:1234,started,boot_id} if id=="cx-disposable" && started=="100" && boot_id=="test-boot")
+        matches!(rx.try_recv().unwrap().op,Operation::StopSession{id,pid:1234,started,boot_id,all_panes:true} if id=="cx-disposable" && started=="100" && boot_id=="test-boot")
     );
     assert!(a.pending_attach.is_none());
     a.work[0].sessions[0].pid = 1234;
@@ -7550,6 +7550,7 @@ fn starting_or_stopping_a_session_runs_next_on_its_lane() {
             pid: 1,
             started: "1".into(),
             boot_id: "b".into(),
+            all_panes: true,
         },
     );
     assert_eq!(runtime::queue_position(&tasks, &stop, lane), 2);

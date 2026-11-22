@@ -258,7 +258,7 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-sudo-') as temporary:
             remote_info['adoption_unavailable'], remote_info
         checks.append('a helper no password prompt reaches offers the one-time install, not a move')
         assert refused['error'] and 'cx device ptrace' in refused['error'], refused
-        assert not any(n.endswith('.json') for n in os.listdir(root)), ('stale record', os.listdir(root))
+        assert not any(n.startswith('cx-') and n.endswith('.json') for n in os.listdir(root)), ('stale record', os.listdir(root))
         assert any((s.get('origin') or {}).get('tty') == tty
                    for s in helper('external_sessions')['result']), 'terminal disappeared after a failed move'
         checks.append('a move with no reachable password prompt fails cleanly and keeps the terminal listed')

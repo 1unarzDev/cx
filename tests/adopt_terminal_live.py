@@ -238,7 +238,7 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-') as temporary:
         refused = helper('adopt_session', dict(id=found['id'], origin=stale, boot_id=boot))
         assert refused['error'] and 'changed' in refused['error'], refused
         assert os.readlink(f'/proc/{target}/fd/0') == tty and alive(target)
-        assert not any(n.endswith('.json') for n in os.listdir(root)), os.listdir(root)
+        assert not any(n.startswith('cx-') and n.endswith('.json') for n in os.listdir(root)), os.listdir(root)
         checks.append('stale identity is refused before any change')
 
         started = time.time()

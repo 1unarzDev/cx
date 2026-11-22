@@ -2459,7 +2459,8 @@ fn hub_and_peek_show_the_stop_question_and_a_second_backspace_stops() {
     let (_, armed) = a.stop_armed.clone().expect("armed");
     let screen = draw(&a, 160, 48);
     assert!(
-        screen.contains(&format!("stop {}?", armed.name)) && screen.contains("again to stop"),
+        screen.contains(&format!("stop shell {} · /tmp/cx-disposable?", armed.name))
+            && screen.contains("again to stop"),
         "{screen}"
     );
     assert!(screen.contains("stop it"), "footer: {screen}");
@@ -2474,7 +2475,8 @@ fn hub_and_peek_show_the_stop_question_and_a_second_backspace_stops() {
     let (_, armed) = a.stop_armed.clone().expect("armed in peek");
     let screen = draw(&a, 160, 48);
     assert!(
-        screen.contains(&format!("stop {}?", armed.name)) && screen.contains("stop it"),
+        screen.contains(&format!("stop shell {} · /tmp/cx-disposable?", armed.name))
+            && screen.contains("stop it"),
         "{screen}"
     );
     bksp(&mut a);
@@ -2548,7 +2550,7 @@ fn backspace_stops_an_outside_agent_through_stop_external() {
         .insert(1, (vec!["stop-external-v1".into()], transport::now()));
     bksp(&mut a);
     let screen = draw(&a, 160, 48);
-    assert!(screen.contains("stop proj claude?"), "{screen}");
+    assert!(screen.contains("stop proj claude · /proj?"), "{screen}");
     bksp(&mut a);
     assert!(rx.try_iter().any(|t| matches!(t.op,
         Operation::StopExternal { id, origin, boot_id }

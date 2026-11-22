@@ -246,14 +246,14 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-stress-') as temporary:
             _, leader, _ = emulate(f'exit{i}', stub)
             tty = os.readlink(f'/proc/{leader}/fd/0')
             found = wait_for(lambda: row(tty), 5, 'row')
-            records = len([n for n in os.listdir(root) if n.endswith('.json')])
+            records = len([n for n in os.listdir(root) if n.startswith('cx-') and n.endswith('.json')])
             killer = threading.Timer(random.uniform(0, 0.2), lambda: os.kill(leader, signal.SIGTERM))
             killer.start()
             result = helper('adopt_session', dict(id=found['id'], origin=found['origin'], boot_id=boot))
             killer.join()
             moved = result['error'] is None
             outcomes['moved' if moved else 'refused'] += 1
-            after = len([n for n in os.listdir(root) if n.endswith('.json')])
+            after = len([n for n in os.listdir(root) if n.startswith('cx-') and n.endswith('.json')])
             assert after == records + (1 if moved else 0), (i, result, records, after)
             close_emulators()
             assert_clean(f'exit race {i}')

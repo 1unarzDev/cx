@@ -1513,7 +1513,25 @@ pub(super) fn stop_confirm(cx: &Cx, buf: &mut Buffer, tr: Rect, x: &LabSession) 
     let tail = "again to stop, any key keeps it";
     let kw = cx.key_w(keys);
     let mut xx = row.x + 1;
-    let q = format!("stop {}? ", x.title);
+    // Name the target: provider (unless the title says it) and folder, the folder
+    // cut from the left so its last parts stay.
+    let p = cx.prov(x).0;
+    let name = if x.title.contains(p) {
+        x.title.clone()
+    } else {
+        format!("{p} {}", x.title)
+    };
+    let n = x.cwd.chars().count();
+    let dir = if n > 24 {
+        format!("…{}", x.cwd.chars().skip(n - 23).collect::<String>())
+    } else {
+        x.cwd.clone()
+    };
+    let q = if dir.is_empty() || x.title.contains(&x.cwd) {
+        format!("stop {name}? ")
+    } else {
+        format!("stop {name} · {dir}? ")
+    };
     let room = row
         .width
         .saturating_sub(kw + 3 + super::width(tail, cx.uni()).min(16));

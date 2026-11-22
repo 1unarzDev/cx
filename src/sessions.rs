@@ -1289,7 +1289,8 @@ fn external_terminals() -> Vec<crate::adoption::Terminal> {
     .0
 }
 
-fn session_lock(root: &std::path::Path) -> Result<fs::File> {
+/// The session lock; `wait: false` gives up at once when another holder has it.
+fn session_lock(root: &std::path::Path, wait: bool) -> Result<fs::File> {
     let lock = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -1297,10 +1298,29 @@ fn session_lock(root: &std::path::Path) -> Result<fs::File> {
         .write(true)
         .mode(0o600)
         .open(root.join("sessions.lock"))?;
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+    let flags = if wait {
+        libc::LOCK_EX
+    } else {
+        libc::LOCK_EX | libc::LOCK_NB
+    };
+    if unsafe { libc::flock(lock.as_raw_fd(), flags) } != 0 {
         bail!("session lock unavailable");
     }
     Ok(lock)
+}
+/// Replace a session's record atomically (a temporary file, then rename).
+fn write_record(root: &std::path::Path, name: &str, session: &Session) -> Result<()> {
+    let temp = root.join(format!("{name}.tmp"));
+    let mut f = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(&temp)?;
+    f.write_all(&serde_json::to_vec(session)?)?;
+    f.sync_all()?;
+    fs::rename(&temp, root.join(format!("{name}.json")))?;
+    Ok(())
 }
 
 /// Move a terminal started outside CX into the managed tmux server.
@@ -1327,7 +1347,7 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
     let relay = crate::adoption::reptyr().map_err(anyhow::Error::msg)?;
     phase("tool-check");
     let root = state()?;
-    let _lock = session_lock(&root)?;
+    let _lock = session_lock(&root, true)?;
     let name = format!(
         "cx-{:x}",
         Sha256::digest(format!(
@@ -1502,15 +1522,7 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
         let mut session = inspect(true, &name)?;
         session.pid = relay_pid;
         session.origin = Some(origin.clone());
-        let mut f = fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(&temp)?;
-        f.write_all(&serde_json::to_vec(&session)?)?;
-        f.sync_all()?;
-        fs::rename(&temp, &record)?;
+        write_record(&root, &name, &session)?;
         set_managed_status(&session, viewer_ascii())?;
         Ok(session)
     };
@@ -1563,21 +1575,15 @@ fn heal_adopted(name: &str, prior: &Session, pid: u32, started: &str) {
     let mut healed = prior.clone();
     healed.pid = pid;
     healed.started = started.to_string();
-    let write = || -> Result<()> {
-        let root = state()?;
-        let temp = root.join(format!("{name}.{}.tmp", std::process::id()));
-        let mut f = fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(&temp)?;
-        f.write_all(&serde_json::to_vec(&healed)?)?;
-        f.sync_all()?;
-        fs::rename(&temp, root.join(format!("{name}.json")))?;
-        Ok(())
+    // Under the session lock, never waiting for it: a move or stop in progress
+    // holds it (an adopt's own listing included), and the next listing heals.
+    let Ok(root) = state() else {
+        return;
     };
-    if write().is_ok() {
+    let Ok(_lock) = session_lock(&root, false) else {
+        return;
+    };
+    if write_record(&root, name, &healed).is_ok() {
         settle_adopted(name, origin);
     }
 }
@@ -1884,6 +1890,7 @@ pub fn stop_operation(s: &Session) -> Result<(crate::model::Operation, &'static 
                 pid: s.pid,
                 started: s.started.clone(),
                 boot_id: s.boot_id.clone(),
+                all_panes: true,
             },
             "stop-session-v1",
         )),
@@ -1894,6 +1901,7 @@ pub fn stop_operation(s: &Session) -> Result<(crate::model::Operation, &'static 
                 started: s.started.clone(),
                 boot_id: s.boot_id.clone(),
                 provider: s.provider.clone(),
+                all_panes: true,
             },
             "stop-agent-session-v1",
         )),
@@ -1902,8 +1910,14 @@ pub fn stop_operation(s: &Session) -> Result<(crate::model::Operation, &'static 
 }
 
 /// Stop the exact CX-owned runtime shown at confirmation; preserve external sessions.
-pub fn stop_shell(id: &str, pid: u32, started: &str, boot_id: &str) -> Result<serde_json::Value> {
-    stop_managed(id, pid, started, boot_id, "shell")
+pub fn stop_shell(
+    id: &str,
+    pid: u32,
+    started: &str,
+    boot_id: &str,
+    all_panes: bool,
+) -> Result<serde_json::Value> {
+    stop_managed(id, pid, started, boot_id, "shell", all_panes)
 }
 pub fn stop_agent(
     id: &str,
@@ -1911,12 +1925,13 @@ pub fn stop_agent(
     started: &str,
     boot_id: &str,
     provider: &str,
+    all_panes: bool,
 ) -> Result<serde_json::Value> {
     anyhow::ensure!(
         ["codex", "claude"].contains(&provider),
         "unsupported agent stop profile"
     );
-    stop_managed(id, pid, started, boot_id, provider)
+    stop_managed(id, pid, started, boot_id, provider, all_panes)
 }
 fn stop_managed(
     id: &str,
@@ -1924,6 +1939,7 @@ fn stop_managed(
     started: &str,
     boot_id: &str,
     provider: &str,
+    all_panes: bool,
 ) -> Result<serde_json::Value> {
     if id.len() != 67
         || !id.starts_with("cx-")
@@ -2011,6 +2027,10 @@ fn stop_managed(
         bail!("session changed while confirming; refresh sessions");
     }
     let panes = panes()?;
+    // Older viewers never said a split session goes whole: refuse it for them.
+    if panes.len() != 1 && !all_panes {
+        bail!("session has multiple panes; stop it from its terminal instead");
+    }
     if provider == "shell" {
         for pane in &panes {
             reject_provider_descendants(*pane)?;
@@ -3061,15 +3081,7 @@ fn create_with_permissions(
     phase("inspect");
     session.name = display_name;
     session.provider = request.provider.clone();
-    let temp = root.join(format!("{name}.tmp"));
-    let mut f = fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(&temp)?;
-    f.write_all(&serde_json::to_vec(&session)?)?;
-    fs::rename(temp, root.join(format!("{name}.json")))?;
+    write_record(&root, &name, &session)?;
     set_managed_status(&session, viewer_ascii()).context("terminal unavailable during startup")?;
     phase("record");
     Ok(session)
@@ -5671,5 +5683,22 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
         assert!(start.elapsed() < Duration::from_secs(1));
         let pid = fs::read_to_string(pid_path).unwrap();
         assert!(!PathBuf::from(format!("/proc/{}", pid.trim())).exists());
+    }
+
+    #[test]
+    fn stop_external_refuses_a_changed_boot_or_an_unlisted_terminal() {
+        let origin: crate::model::ExternalOrigin = serde_json::from_value(serde_json::json!({
+            "kind": "terminal", "tty": "/dev/pts/4",
+            "leader": {"pid": std::process::id(), "start_ticks": "1"},
+            "holder": {"pid": 1, "start_ticks": "1"}
+        }))
+        .unwrap();
+        let boot = identity().2;
+        let e = stop_external("ext-0123456789abcdef", &origin, "other-boot").unwrap_err();
+        assert!(e.to_string().contains("restarted"), "{e}");
+        // (Outside tests/isolate.sh a debug build lists no terminal at all; inside, this
+        // leader identity matches none.)
+        let e = stop_external("ext-0123456789abcdef", &origin, &boot).unwrap_err();
+        assert!(e.to_string().contains("terminal changed or closed"), "{e}");
     }
 }

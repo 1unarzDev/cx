@@ -633,13 +633,15 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
             started,
             boot_id,
             provider,
-        } => sessions::stop_agent(&id, pid, &started, &boot_id, &provider),
+            all_panes,
+        } => sessions::stop_agent(&id, pid, &started, &boot_id, &provider, all_panes),
         Operation::StopSession {
             ref id,
             pid,
             ref started,
             ref boot_id,
-        } => sessions::stop_shell(id, pid, started, boot_id),
+            all_panes,
+        } => sessions::stop_shell(id, pid, started, boot_id, all_panes),
         Operation::CommandPanel {
             ref request,
             cols,

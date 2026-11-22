@@ -126,6 +126,8 @@ root.mkdir(parents=True, mode=0o700)
 socket = root / 'managed.sock'
 subprocess.run(['cc', '-O1', '-pthread', '-o', str(bins / 'claude'), str(here / 'adopt_churn.c')], check=True)
 stub = os.path.realpath(bins / 'claude')
+shutil.copyfile(os.path.realpath(sys.executable), bins / 'foot')
+os.chmod(bins / 'foot', 0o755)
 source = os.environ.get('CX_ADOPT_REPTYR')
 relay = str(home / 'cx-reptyr')
 if source:
@@ -168,8 +170,11 @@ def helper(op, args=None):
 
 def emulate(name, program=FOOT):
     log = home / f'{name}.emulator'
-    process = subprocess.Popen([*USER, sys.executable, '-c', program, str(log), str(bins / 'claude')],
-                               env=dict(env, CHURN_LOG=str(home / f"{name}.churn")), stdin=subprocess.DEVNULL,
+    # The foot-like one runs as `foot` (cx kills only known emulators); others as python.
+    interpreter = str(bins / 'foot') if program == FOOT else sys.executable
+    process = subprocess.Popen([*USER, interpreter, '-c', program, str(log), str(bins / 'claude')],
+                               env=dict(env, CHURN_LOG=str(home / f"{name}.churn"), PYTHONHOME=sys.base_prefix),
+                               stdin=subprocess.DEVNULL,
                                cwd=str(home))
     emulators.append(process)
     leader = int(wait_for(lambda: log.exists() and log.read_text().split('\n')[0].split()[-1:], 5, 'emulator')[0])

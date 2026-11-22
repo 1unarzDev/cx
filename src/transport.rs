@@ -1965,6 +1965,7 @@ mod tests {
                 pid: 1,
                 started: "fixture".into(),
                 boot_id: "fixture".into(),
+                all_panes: false,
             },
             Operation::Cancel {
                 key: "fixture".into(),

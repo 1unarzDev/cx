@@ -74,7 +74,7 @@ impl App {
                     .insert(reply.device, (available, transport::now()));
                 self.resume_pending_launch(reply.device, true);
                 if first_adopt {
-                    self.send(reply.device, Operation::ExternalSessions);
+                    self.request_externals(reply.device);
                 }
                 if self
                     .pending_adoption
@@ -260,6 +260,7 @@ impl App {
                     .and_then(crate::adoption::window_note);
                 match serde_json::from_value::<Session>(value) {
                     Ok(s) => {
+                        self.externals_changed(reply.device);
                         self.work[reply.device].sessions.retain(|row| row.id != *id);
                         self.work[reply.device].sessions.push(s.clone());
                         self.open_session(reply.device, s, false);
@@ -379,7 +380,7 @@ impl App {
                     identity(&self.devices[reply.device])
                 ));
                 if matches!(reply.op, Operation::StopExternal { .. }) {
-                    self.send(reply.device, Operation::ExternalSessions);
+                    self.externals_changed(reply.device);
                 }
                 self.work[reply.device].loading = self.send(reply.device, Operation::Sessions);
             }

@@ -608,8 +608,11 @@ struct App {
     notice_started: Option<Instant>,
     notice_deadline: Option<Instant>,
     unavailable_notified: BTreeSet<String>,
-    /// Devices with an outside-terminal discovery (ExternalSessions) in flight.
-    external_loading: BTreeSet<usize>,
+    /// Devices with an outside-terminal discovery (ExternalSessions) in flight; true
+    /// once a move or stop there made its answer stale (`request_externals`).
+    external_loading: BTreeMap<usize, bool>,
+    /// The 3 s list polls so far (outside terminals go on every other one).
+    session_polls: u64,
     browser: Option<Browser>,
     other_browser: Option<Browser>,
     destination_active: bool,
@@ -832,7 +835,8 @@ impl App {
             notice_started: None,
             notice_deadline: None,
             unavailable_notified: BTreeSet::new(),
-            external_loading: BTreeSet::new(),
+            external_loading: BTreeMap::new(),
+            session_polls: 0,
             browser: None,
             other_browser: None,
             destination_active: false,
@@ -1250,7 +1254,7 @@ impl App {
                     .get(&index)
                     .is_some_and(|(caps, _)| caps.iter().any(|c| c == "adopt-session-v1"))
                 {
-                    self.send(index, Operation::ExternalSessions);
+                    self.request_externals(index);
                 }
             }
         }

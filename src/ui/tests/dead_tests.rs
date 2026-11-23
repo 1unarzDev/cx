@@ -32,8 +32,9 @@ fn adopt_caps(a: &mut App, d: usize) {
         ),
     );
 }
+/// The device's checked attach found the terminal gone (its dedicated refusal).
 fn refused() -> anyhow::Error {
-    anyhow::anyhow!(sessions::ATTACH_REFUSED)
+    sessions::Gone.into()
 }
 
 /// The device refused the attach (the terminal ended behind the viewer's back): the
@@ -90,6 +91,22 @@ fn other_attach_failures_report_without_navigating() {
     a.attach_finished(1, &s, Err(anyhow::anyhow!("pty allocation failed")), None);
     assert_eq!((a.view, a.device), (View::Work, 2));
     assert_eq!(a.work[1].sessions.len(), 1);
+    assert!(a.notice.contains("Attachment failed"), "{}", a.notice);
+}
+
+/// An older helper's refusal (no dedicated status) or any other failure that only
+/// reads like one is a failure, never proof the terminal ended: the tile stays.
+#[test]
+fn a_refusal_without_the_gone_status_keeps_the_tile() {
+    let (mut a, _rx) = queued_app();
+    listed(&mut a, 1, &[shell("cx-one", "one")]);
+    a.open_device(1);
+    let s = a.work[1].sessions[0].clone();
+    let old = anyhow::anyhow!("Session changed or ended; refresh before attaching");
+    a.attach_finished(1, &s, Err(old), None);
+    assert_eq!((a.view, a.device), (View::Work, 2));
+    assert_eq!(a.work[1].sessions.len(), 1);
+    assert!(a.ended.is_empty());
     assert!(a.notice.contains("Attachment failed"), "{}", a.notice);
 }
 
@@ -184,8 +201,9 @@ fn cached_outside_terminals_stay_hidden_until_confirmed() {
     assert!(b.work[1].sessions.iter().any(|s| s.external));
 }
 
-/// The open device asks for its outside terminals with each 3 s list poll (one in
-/// flight at a time); the hub keeps them on the 30 s refresh.
+/// The open device asks for its outside terminals on every other 3 s list poll (6 s:
+/// a scan costs ~0.3 s on the lane the list shares), one in flight at a time; the hub
+/// keeps them on the 30 s refresh.
 #[test]
 fn the_open_device_polls_its_outside_terminals() {
     let (mut a, rx) = queued_app();
@@ -195,35 +213,98 @@ fn the_open_device_polls_its_outside_terminals() {
             .filter(|t| t.device == 1 && matches!(t.op, Operation::ExternalSessions))
             .count()
     };
+    let answer = |a: &mut App| {
+        a.apply(reply(
+            a,
+            1,
+            Operation::ExternalSessions,
+            Ok(serde_json::json!([])),
+        ))
+    };
     a.go_hub();
     let _ = rx.try_iter().count();
-    a.poll_sessions();
+    for _ in 0..4 {
+        a.poll_sessions();
+    }
     assert_eq!(externals(&rx), 0);
     a.open_device(1);
     let _ = rx.try_iter().count();
-    a.poll_sessions();
-    assert_eq!(externals(&rx), 1);
-    a.poll_sessions();
-    assert_eq!(externals(&rx), 0, "one in flight");
-    a.apply(reply(
-        &a,
-        1,
-        Operation::ExternalSessions,
-        Ok(serde_json::json!([])),
-    ));
-    a.poll_sessions();
-    assert_eq!(externals(&rx), 1);
+    let mut sent = 0;
+    for _ in 0..4 {
+        a.poll_sessions();
+        let n = externals(&rx);
+        sent += n;
+        if n > 0 {
+            answer(&mut a);
+        }
+    }
+    assert_eq!(sent, 2, "every other poll");
+    // One in flight: the polls (and the fleet refresh) wait for its answer.
+    for _ in 0..4 {
+        a.poll_sessions();
+    }
+    a.refresh_work();
+    assert_eq!(externals(&rx), 1, "one in flight");
+    answer(&mut a);
     // Without the capability there is nothing to ask.
-    a.apply(reply(
-        &a,
-        1,
-        Operation::ExternalSessions,
-        Ok(serde_json::json!([])),
-    ));
     a.providers
         .insert(1, (vec!["claude".into()], transport::now()));
-    a.poll_sessions();
+    for _ in 0..4 {
+        a.poll_sessions();
+    }
     assert_eq!(externals(&rx), 0);
+}
+
+/// A scan that started before a move (or a stop) on its device may still list the
+/// moved terminal: its answer is dropped and a fresh one asked for, so the moved
+/// terminal never comes back as an outside tile.
+#[test]
+fn an_outside_scan_from_before_a_move_never_resurrects_the_moved_terminal() {
+    let (mut a, rx) = queued_app();
+    adopt_caps(&mut a, 1);
+    listed(&mut a, 1, &[]);
+    a.open_device(1);
+    a.request_externals(1);
+    let externals = |rx: &mpsc::Receiver<Task>| {
+        rx.try_iter()
+            .filter(|t| t.device == 1 && matches!(t.op, Operation::ExternalSessions))
+            .count()
+    };
+    assert_eq!(externals(&rx), 1);
+    let outside = external_agent();
+    let mut moved = shell("cx-moved", "claude · api");
+    moved.provider = "claude".into();
+    a.apply(reply(
+        &a,
+        1,
+        Operation::AdoptSession {
+            id: outside.id.clone(),
+            origin: outside.origin.clone().unwrap(),
+            boot_id: outside.boot_id.clone(),
+        },
+        Ok(serde_json::json!(moved)),
+    ));
+    let _ = a.pending_attach.take();
+    // The scan from before the move answers with the terminal still outside.
+    a.apply(reply(
+        &a,
+        1,
+        Operation::ExternalSessions,
+        Ok(serde_json::json!([external_agent()])),
+    ));
+    assert!(
+        a.work[1].sessions.iter().all(|s| !s.external),
+        "resurrected"
+    );
+    assert_eq!(externals(&rx), 1, "a fresh scan");
+    // The fresh one is applied.
+    a.apply(reply(
+        &a,
+        1,
+        Operation::ExternalSessions,
+        Ok(serde_json::json!([])),
+    ));
+    assert!(a.work[1].sessions.iter().any(|s| s.id == "cx-moved"));
 }
 
 /// An unreachable device keeps its cached tiles (with why), but Enter on one only says

@@ -460,6 +460,10 @@ pub struct Agent {
     pub not_agent_args: &'static [&'static str],
     /// Offered inside containers.
     pub container: bool,
+    /// A wheel over its full screen while tmux sees no mouse request (a stale mouse
+    /// policy) still goes to it as SGR mouse bytes. Only for an agent shown to parse them
+    /// then; otherwise such a wheel does nothing (never arrow keys).
+    pub sgr_wheel_fallback: bool,
 }
 pub const CLAUDE: Agent = Agent {
     id: "claude",
@@ -474,6 +478,7 @@ pub const CLAUDE: Agent = Agent {
     script: Some("/@anthropic-ai/claude-code/cli.js"),
     not_agent_args: &[],
     container: true,
+    sgr_wheel_fallback: false,
 };
 pub const CODEX: Agent = Agent {
     id: "codex",
@@ -488,10 +493,88 @@ pub const CODEX: Agent = Agent {
     script: Some("/@openai/codex/bin/codex.js"),
     not_agent_args: &[],
     container: true,
+    sgr_wheel_fallback: true,
 };
-pub const AGENTS: &[Agent] = &[CLAUDE, CODEX];
+/// agy's settings for its sessions: always full screen, so the wheel scrolls its own
+/// transcript (`--settings` applies to that run only and is never saved).
+const AGY_SETTINGS: &str = r#"{"altScreenMode":"always"}"#;
+/// Google Antigravity's terminal agent.
+pub const AGY: Agent = Agent {
+    id: "agy",
+    label: "Antigravity",
+    key: 'a',
+    resume_key: 'A',
+    new: &["agy", "--settings", AGY_SETTINGS],
+    resume_last: &["agy", "--settings", AGY_SETTINGS, "-c"],
+    // Its picker is `/resume` inside agy.
+    resume_pick: None,
+    yolo: &["--dangerously-skip-permissions"],
+    exe: "agy",
+    script: None,
+    // Its background updater and daemons run the same binary.
+    not_agent_args: &[
+        "--bg-updater",
+        "remote-control",
+        "acp",
+        "agentapi",
+        "mic-serve",
+        "mcp",
+        "update",
+        "install",
+        "plugin",
+        "plugins",
+        "models",
+        "agent",
+        "agents",
+        "changelog",
+        "help",
+    ],
+    container: false,
+    sgr_wheel_fallback: false,
+};
+/// opencode, each session with its own server (`--standalone`), so stopping the
+/// session stops it.
+pub const OPENCODE: Agent = Agent {
+    id: "opencode",
+    label: "opencode",
+    key: 'o',
+    resume_key: 'O',
+    new: &["opencode", "--standalone"],
+    resume_last: &["opencode", "--standalone", "-c"],
+    // Its picker is `/sessions` inside opencode.
+    resume_pick: None,
+    yolo: &["--auto"],
+    exe: "opencode",
+    // The npm package's node wrapper around the native binary.
+    script: Some("/@opencode/cli/bin/opencode.cjs"),
+    not_agent_args: &[
+        "serve", "run", "session", "auth", "debug", "mini", "upgrade", "mcp", "models", "stats",
+        "export", "import", "github",
+    ],
+    container: false,
+    sgr_wheel_fallback: false,
+};
+pub const AGENTS: &[Agent] = &[CLAUDE, CODEX, AGY, OPENCODE];
 pub fn agent(id: &str) -> Option<&'static Agent> {
     AGENTS.iter().find(|a| a.id == id)
+}
+impl Agent {
+    /// Where to pick a past conversation when the agent has no picker cx can start.
+    pub fn pick_hint(&self) -> Option<String> {
+        if self.resume_pick.is_some() {
+            return None;
+        }
+        Some(match self.id {
+            "agy" => "to pick a conversation, use /resume inside agy (-r resumes the last)".into(),
+            "opencode" => {
+                "to pick a session, use /sessions inside opencode (-r resumes the last)".into()
+            }
+            _ => format!(
+                "{} has no conversation picker; -r resumes the last",
+                self.label
+            ),
+        })
+    }
 }
 /// The agent a key starts (`key`) or resumes (`resume_key`, then true).
 pub fn agent_for_key(c: char) -> Option<(&'static Agent, bool)> {

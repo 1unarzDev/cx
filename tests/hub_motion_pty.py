@@ -74,6 +74,9 @@ def selected(viewer):
     if at is None or at < 3:
         return None
     words = lines[at - 3].split()
+    # (A device whose letter is not in its name shows it first: `f elm`.)
+    if len(words) > 1 and len(words[0]) == 1:
+        words = words[1:]
     return words[0] if words and words[0] in ['home-box'] + PEERS else None
 
 

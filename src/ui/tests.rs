@@ -7836,7 +7836,16 @@ fn files_bang_then_c_x_n_starts_in_the_folder_in_the_last_mode() {
     press(&mut a, '!');
     assert!(a.dialog.is_none());
     let text = draw_text(&a);
-    assert!(text.contains("New claude in this folder"), "{text}");
+    // Every `!` row fits the which-key panel, none cut.
+    for row in [
+        "New claude here",
+        "New codex here",
+        "New agy here",
+        "New opencode here",
+        "New shell here",
+    ] {
+        assert!(text.contains(row), "{row}: {text}");
+    }
     press(&mut a, 'c');
     let (d, yolo, c) = launched(&rx);
     assert_eq!(
@@ -7918,4 +7927,68 @@ fn a_move_reports_what_became_of_its_source_window() {
             ),
         }
     }
+}
+/// Antigravity and opencode are offered only where the device's Info lists them, as
+/// `[a] Antigravity` and `[o] opencode`; a container's chooser never offers them; their
+/// chooser has no "pick a past conversation" row (they pick inside the app).
+#[test]
+fn agy_and_opencode_are_offered_only_where_info_lists_them() {
+    let (mut a, _rx) = queued_app();
+    a.providers.insert(
+        1,
+        (
+            ["claude", "codex", "agy", "opencode", "containers-v1"]
+                .map(String::from)
+                .to_vec(),
+            transport::now(),
+        ),
+    );
+    a.providers
+        .insert(0, (vec!["claude".into(), "codex".into()], transport::now()));
+    assert_eq!(
+        a.provider_choices(1),
+        vec!["shell", "claude", "codex", "agy", "opencode", "container"]
+    );
+    assert!(!a.provider_choices(0).contains(&"agy"));
+    assert!(!a.provider_choices(0).contains(&"opencode"));
+    let labels: Vec<&str> = a
+        .host_session_choices(1)
+        .iter()
+        .map(|c| c.label.as_str())
+        .collect();
+    assert!(labels.contains(&"[a] Antigravity") && labels.contains(&"[o] opencode"));
+    assert!(a
+        .host_session_choices(0)
+        .iter()
+        .all(|c| !matches!(c.provider, "agy" | "opencode")));
+    assert!(super::menus::CONTAINER
+        .iter()
+        .all(|c| !matches!(c.provider, "agy" | "opencode")));
+    // The chooser fits with all six, and its quick keys are the ones shown.
+    a.open_session_chooser(1, "/folder".into());
+    for (w, h) in [(120, 40), (80, 24), (40, 20)] {
+        let text = draw_h(&a, w, h);
+        if w >= 80 {
+            assert!(
+                text.contains("[a] Antigravity") && text.contains("[o] opencode"),
+                "{text}"
+            );
+        }
+        if w >= 120 {
+            assert!(text.contains("c/x/a/o/n/d quick pick"), "{text}");
+        }
+    }
+    a.dialog = Some(Dialog::SessionChooser(0, "/folder".into()));
+    let text = draw_h(&a, 120, 40);
+    assert!(
+        !text.contains("Antigravity") && text.contains("c/x/n quick pick"),
+        "{text}"
+    );
+    // No picker row: agy's chooser goes straight to the mode.
+    assert!(!container_agents::has_history(None, "agy"));
+    assert!(!container_agents::has_history(None, "opencode"));
+    assert!(container_agents::has_history(None, "codex"));
+    a.dialog = None;
+    a.start_at(1, "/folder".into(), "agy".into());
+    assert!(matches!(a.dialog, Some(Dialog::Permissions(1, _, ref p, false, false)) if p == "agy"));
 }

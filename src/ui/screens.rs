@@ -1810,16 +1810,18 @@ mod slot_tests {
     fn a_session_keeps_its_key_until_it_ends_and_new_ones_take_the_first_free() {
         let ids = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let a = assign_slots(&[], &ids(&["1", "2", "3"]));
-        assert_eq!(keys(&a), "asd");
-        // `1` ended: `2` and `3` keep `s` and `d`; the next new one takes `a`.
+        assert_eq!(keys(&a), "sdg");
+        // `1` ended: `2` and `3` keep `d` and `g`; the next new one takes `s`.
         let b = assign_slots(&a, &ids(&["2", "3"]));
-        assert_eq!(keys(&b), "sd");
+        assert_eq!(keys(&b), "dg");
         let c = assign_slots(&b, &ids(&["2", "3", "4"]));
-        assert_eq!(c.iter().find(|(k, _)| k == "4").unwrap().1, 'a');
-        // Past the 21 keys a session has none.
+        assert_eq!(c.iter().find(|(k, _)| k == "4").unwrap().1, 's');
+        // Past the 19 keys a session has none (`a` and `o` start agents).
         let many: Vec<String> = (0..25).map(|i| i.to_string()).collect();
         let d = assign_slots(&[], &many);
-        assert_eq!(d.len(), 21);
-        assert_eq!(keys(&d), "asdgquioyzvm123456789");
+        assert_eq!(d.len(), 19);
+        assert_eq!(keys(&d), "sdgquiyzvm123456789");
+        assert_eq!(super::HOME, ['s', 'd', 'g']);
+        assert!(super::SLOTS.iter().all(|c| !"ecxaonACXO".contains(*c)));
     }
 }

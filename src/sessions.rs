@@ -2662,6 +2662,11 @@ pub fn refresh_provider_environment() -> Result<()> {
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_CUSTOM_HEADERS",
+        // Antigravity's Vertex routing; not secrets. Its API keys (GEMINI_API_KEY,
+        // GOOGLE_API_KEY) never pass here (tmux argv): `cx secrets set gemini.api_key`
+        // and "expose to sessions" give them to new sessions instead.
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_GENAI_USE_VERTEXAI",
     ];
     let injected = std::env::var(SESSION_SECRETS).unwrap_or_default();
     // One tmux run for all of them: commands separated by `;` arguments (no shell).
@@ -2848,15 +2853,32 @@ fn provider_command(provider: &str, yolo: bool, resume: bool, pick: bool) -> Res
     let base = match (resume, pick) {
         (false, _) => agent.new,
         (true, false) => agent.resume_last,
-        (true, true) => agent
-            .resume_pick
-            .context("this agent has no session picker; resume the last session")?,
+        (true, true) => match agent.resume_pick {
+            Some(pick) => pick,
+            None => bail!("{}", agent.pick_hint().unwrap_or_default()),
+        },
     };
     let mut words = base.to_vec();
     if yolo {
         words.extend(agent.yolo);
     }
-    Ok(words.join(" "))
+    // The login shell parses this line: a word with anything but plain flag characters
+    // (agy's JSON settings) is single-quoted, the same in sh, bash, zsh and fish. Plain
+    // words stay bare, so a user's `claude` alias or function still applies.
+    Ok(words
+        .iter()
+        .map(|w| {
+            if !w.is_empty()
+                && w.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_./=:,@+".contains(&b))
+            {
+                (*w).to_owned()
+            } else {
+                quote(w)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" "))
 }
 pub fn create_container(
     request: &CreateSession,
@@ -3175,8 +3197,16 @@ fn create_with_permissions(
         && launcher
             .iter()
             .any(|arg| arg.contains("tui.terminal_title="));
+    // opencode: mouse capture on for this session (an inline cli.json layer, merged over
+    // the user's file per opencode's docs), so the wheel scrolls its transcript in-app.
+    // No secret; the same string every time.
+    let agent_env = if container.is_none() && request.provider == crate::model::OPENCODE.id {
+        format!("OPENCODE_CLI_CONFIG_CONTENT={} ", quote(OPENCODE_MOUSE))
+    } else {
+        String::new()
+    };
     let command = format!(
-        "{}exec env {}{marker}CX_VIEWER_THEME=1 CX_TMUX_BIN={} CX_MANAGED_SOCKET={} CX_MANAGED_SESSION={} {}",
+        "{}exec env {}{agent_env}{marker}CX_VIEWER_THEME=1 CX_TMUX_BIN={} CX_MANAGED_SOCKET={} CX_MANAGED_SESSION={} {}",
         if title_tracking { "printf '\\033]0;CX awaiting native title\\007'; " } else { "" },
         if title_tracking { "CX_CODEX_TITLE=thread-name-v1 " } else { "" },
         quote(
@@ -3235,6 +3265,8 @@ fn create_with_permissions(
     phase("record");
     Ok(session)
 }
+/// opencode's inline cli config for cx's sessions (`OPENCODE_CLI_CONFIG_CONTENT`).
+const OPENCODE_MOUSE: &str = r#"{"mouse":true}"#;
 /// Seconds a launch that failed keeps its pane on screen (tmux 3.3+), and what it says.
 const STARTUP_GRACE: &str = "30";
 const STARTUP_FAILED: &str = "cx: the launch failed (exit status #{pane_dead_status}#{?#{==:#{pane_dead_status},127},: command not found,}). Detach to go back.";
@@ -3383,13 +3415,15 @@ fn set_managed_status(session: &Session, ascii: bool) -> Result<()> {
     output(command)?;
     Ok(())
 }
+// The foreground agent that takes a stale-policy wheel as SGR mouse bytes: one whose
+// table row says it parses them then (`Agent::sgr_wheel_fallback`, Codex only today).
 // Codex can spawn an editor in its own foreground process group. A provider
 // ancestor is not enough: another process on this PTY must retain input.
 // Conservatively reject same-group children even with redirected stdin; they
 // may open /dev/tty independently.
-pub(crate) fn wheel_codex_owner(pane: u32) -> Option<ProcessIdentity> {
+pub(crate) fn wheel_owner(pane: u32) -> Option<ProcessIdentity> {
     let (provider, identity) = foreground_provider(pane)?;
-    if provider != "codex" {
+    if !crate::model::agent(provider).is_some_and(|a| a.sgr_wheel_fallback) {
         return None;
     }
     let (_, terminal, foreground) = terminal_group(pane)?;
@@ -3410,7 +3444,7 @@ pub(crate) fn wheel_codex_owner(pane: u32) -> Option<ProcessIdentity> {
         if pid != pane
             && terminal_group(pid)
                 .is_some_and(|(group, tty, _)| group == foreground && tty == terminal)
-            && running_provider(pid) != Some("codex")
+            && running_provider(pid) != Some(provider)
         {
             readers.push(pid);
         }
@@ -3501,7 +3535,7 @@ pub fn native_wheel(pane: &str, direction: &str, x: u16, y: u16, client: u32) ->
         .and_then(|b| serde_json::from_slice::<Session>(&b).ok())
         .filter(|s| !s.external && s.pid == pid && s.id == fields[0]);
     let owner = || {
-        wheel_codex_owner(pid).or_else(|| {
+        wheel_owner(pid).or_else(|| {
             container_record
                 .as_ref()
                 .and_then(|s| s.container.as_ref())
@@ -5427,6 +5461,154 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
             }
         }
     }
+    /// Antigravity and opencode from the table: agy always full screen through its
+    /// per-run `--settings` (one single-quoted word, so the login shell passes the JSON
+    /// intact), opencode with its own server; neither has a picker cx can start.
+    #[test]
+    fn agy_and_opencode_commands_come_from_the_table() {
+        let agy = r#"agy --settings '{"altScreenMode":"always"}'"#;
+        assert_eq!(provider_command("agy", false, false, false).unwrap(), agy);
+        assert_eq!(
+            provider_command("agy", false, true, false).unwrap(),
+            format!("{agy} -c")
+        );
+        assert_eq!(
+            provider_command("agy", true, false, false).unwrap(),
+            format!("{agy} --dangerously-skip-permissions")
+        );
+        assert_eq!(
+            provider_command("agy", true, true, false).unwrap(),
+            format!("{agy} -c --dangerously-skip-permissions")
+        );
+        assert_eq!(
+            provider_command("opencode", false, false, false).unwrap(),
+            "opencode --standalone"
+        );
+        assert_eq!(
+            provider_command("opencode", false, true, false).unwrap(),
+            "opencode --standalone -c"
+        );
+        assert_eq!(
+            provider_command("opencode", true, false, false).unwrap(),
+            "opencode --standalone --auto"
+        );
+        for (id, hint) in [
+            ("agy", "/resume inside agy"),
+            ("opencode", "/sessions inside opencode"),
+        ] {
+            let e = provider_command(id, false, true, true)
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains(hint), "{e}");
+            assert!(provider_command(id, false, false, true).is_err());
+        }
+        // The quoted word is what a POSIX shell reads back as one argument.
+        let out = Command::new("sh")
+            .args(["-c", &format!("printf '%s\\n' {}", &agy[4..])])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            "--settings\n{\"altScreenMode\":\"always\"}\n"
+        );
+    }
+    /// Only Codex is known to parse SGR wheel bytes while its mouse flag looks stale;
+    /// agy and opencode (and claude) get nothing then, never arrow keys.
+    #[test]
+    fn only_codex_takes_the_stale_wheel_fallback() {
+        let fallback: Vec<&str> = crate::model::AGENTS
+            .iter()
+            .filter(|a| a.sgr_wheel_fallback)
+            .map(|a| a.id)
+            .collect();
+        assert_eq!(fallback, ["codex"]);
+    }
+    /// The real table: agy's updater and daemons, `opencode serve` and opencode's other
+    /// non-interactive commands are not agents; an updated binary (` (deleted)`) and the
+    /// npm wrapper are.
+    #[test]
+    fn agy_and_opencode_processes_are_told_from_their_helpers() {
+        use std::path::Path;
+        let found = |exe: &str, argv: &[&str]| {
+            let argv: Vec<Vec<u8>> = argv.iter().map(|a| a.as_bytes().to_vec()).collect();
+            executable_agent(crate::model::AGENTS, Path::new(exe), &mut |n| {
+                (argv.len() >= n).then(|| argv[..n].to_vec())
+            })
+        };
+        let agy = "/home/u/.local/bin/agy";
+        assert_eq!(found(agy, &["agy"]), Some("agy"));
+        assert_eq!(found(agy, &["agy", "--settings", "{}", "-c"]), Some("agy"));
+        assert_eq!(found(&format!("{agy} (deleted)"), &["agy"]), Some("agy"));
+        for helper in [
+            "--bg-updater",
+            "remote-control",
+            "acp",
+            "agentapi",
+            "mic-serve",
+            "update",
+        ] {
+            assert_eq!(found(agy, &["agy", helper]), None, "{helper}");
+            assert_eq!(found(&format!("{agy} (deleted)"), &["agy", helper]), None);
+        }
+        // A prompt that says "update" later on is still the agent.
+        assert_eq!(found(agy, &["agy", "-c", "update"]), Some("agy"));
+        let oc = "/usr/bin/opencode";
+        assert_eq!(found(oc, &["opencode", "--standalone"]), Some("opencode"));
+        assert_eq!(
+            found(&format!("{oc} (deleted)"), &["opencode"]),
+            Some("opencode")
+        );
+        assert_eq!(found(oc, &["opencode", "serve", "--service"]), None);
+        assert_eq!(found(oc, &["opencode", "run", "hi"]), None);
+        let wrapper = "/n/lib/node_modules/@opencode/cli/bin/opencode.cjs";
+        assert_eq!(
+            found("/usr/bin/node", &["node", wrapper, "--standalone"]),
+            Some("opencode")
+        );
+        assert_eq!(found("/usr/bin/node", &["node", wrapper, "serve"]), None);
+    }
+    /// One opencode session is one agent: the npm wrapper (node running opencode.cjs)
+    /// and the native child it starts both read as opencode, and `foreground_provider`
+    /// walks breadth-first from the pane, so the outermost (the wrapper) answers for both.
+    #[test]
+    fn the_opencode_wrapper_and_its_child_are_one_agent() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let module = dir.path().join("lib/node_modules/@opencode/cli/bin");
+        fs::create_dir_all(&module).unwrap();
+        let wrapper = module.join("opencode.cjs");
+        // A stand-in `node` (a copied sh) running the wrapper's path as its script, which
+        // starts a stand-in native `opencode` (a copied sleep).
+        let node = dir.path().join("node");
+        fs::copy("/bin/sh", &node).unwrap();
+        let native = dir.path().join("opencode");
+        fs::copy("/bin/sleep", &native).unwrap();
+        for f in [&node, &native] {
+            fs::set_permissions(f, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        fs::write(&wrapper, format!("{} 30 & wait\n", native.display())).unwrap();
+        let mut child = Command::new(&node).arg(&wrapper).spawn().unwrap();
+        let pid = child.id();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let kid = loop {
+            let kids =
+                fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).unwrap_or_default();
+            if let Some(k) = kids.split_whitespace().next() {
+                break k.parse::<u32>().unwrap();
+            }
+            assert!(std::time::Instant::now() < deadline, "no child");
+            thread::sleep(Duration::from_millis(10));
+        };
+        // (Exec of the stand-in may lag its fork.)
+        while running_provider(kid) != Some("opencode") {
+            assert!(std::time::Instant::now() < deadline, "child never opencode");
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(running_provider(pid), Some("opencode"));
+        let _ = Command::new("kill").arg(kid.to_string()).status();
+        let _ = child.kill();
+        let _ = child.wait();
+    }
     #[test]
     fn running_agents_are_found_by_executable_or_script_only() {
         use crate::model::{Agent, CLAUDE};
@@ -5497,8 +5679,12 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
     #[test]
     fn a_shell_stop_guard_names_every_agent_executable() {
         assert_eq!(
-            no_agent_command_guard(crate::model::AGENTS),
+            no_agent_command_guard(&crate::model::AGENTS[..2]),
             "#{&&:#{!=:#{pane_current_command},claude},#{!=:#{pane_current_command},codex}}"
+        );
+        assert_eq!(
+            no_agent_command_guard(crate::model::AGENTS),
+            "#{&&:#{!=:#{pane_current_command},claude},#{&&:#{!=:#{pane_current_command},codex},#{&&:#{!=:#{pane_current_command},agy},#{!=:#{pane_current_command},opencode}}}}"
         );
         assert_eq!(
             no_agent_command_guard(&crate::model::AGENTS[..1]),

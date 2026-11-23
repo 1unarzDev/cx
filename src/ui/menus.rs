@@ -89,7 +89,15 @@ pub(super) fn render_session_chooser(
             .iter()
             .collect(),
     };
-    let columns = if area.width < 68 { 2 } else { choices.len() };
+    // One row of up to four; five or six (every agent, a shell, a devcontainer) in two.
+    let columns = if area.width < 68 {
+        2
+    } else if choices.len() > 4 {
+        choices.len().div_ceil(2)
+    } else {
+        choices.len()
+    }
+    .max(1);
     let rows = choices.len().div_ceil(columns);
     let rect = popup(area, 78, (7 + rows * 3) as u16);
     frame.render_widget(Clear, rect);
@@ -155,12 +163,18 @@ pub(super) fn render_session_chooser(
             cell,
         );
     }
+    // The quick keys of the choices shown, so a device without an agent drops its key.
+    let keys = choices
+        .iter()
+        .map(|c| c.key.to_string())
+        .collect::<Vec<_>>()
+        .join("/");
     let help = if !host {
-        "c/x/s choose · Enter · Esc cancel"
+        format!("{keys} choose · Enter · Esc cancel")
     } else if columns == 2 {
-        "h/l choose · Enter start · Esc cancel"
+        "h/l choose · Enter start · Esc cancel".to_string()
     } else {
-        "c/x/s/d quick pick · h/l choose · Enter · Esc"
+        format!("{keys} quick pick · h/l choose · Enter · Esc")
     };
     frame.render_widget(
         Paragraph::new(help).style(muted()),

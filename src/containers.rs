@@ -1502,7 +1502,7 @@ fn local_shell_with_resume(
 pub fn local_wheel_owner(id: &str) -> Result<Value> {
     container_home()?;
     let identity = local_identity(id)?;
-    Ok(serde_json::to_value(crate::sessions::wheel_codex_owner(
+    Ok(serde_json::to_value(crate::sessions::wheel_owner(
         identity.pid,
     ))?)
 }

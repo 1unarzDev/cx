@@ -10,8 +10,11 @@ pub(super) struct Profiles {
 fn key(d: usize, scope: &ContainerScope) -> (usize, String) {
     (d, serde_json::to_string(scope).unwrap_or_default())
 }
-pub(super) fn has_history(_scope: Option<&ContainerScope>, provider: &str) -> bool {
-    crate::model::agent(provider).is_some_and(|a| a.container)
+/// Whether the chooser offers "pick a past conversation": an agent with a picker cx can
+/// start (agy and opencode pick inside the app), and in a container one offered there.
+pub(super) fn has_history(scope: Option<&ContainerScope>, provider: &str) -> bool {
+    crate::model::agent(provider)
+        .is_some_and(|a| a.resume_pick.is_some() && (scope.is_none() || a.container))
 }
 impl App {
     fn container_agents_supported(&self, d: usize) -> bool {

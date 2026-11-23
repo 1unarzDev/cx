@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""`cx claude|codex|shell`, `cx kill` and `cx claude lend` dispatch from a plain terminal,
-in tests/isolate.sh with a private HOME, state and tmux dir and a fake claude on PATH.
+"""`cx claude|codex|agy|opencode|shell`, `cx kill` and `cx claude lend` dispatch from a
+plain terminal, in tests/isolate.sh with a private HOME, state and tmux dir and fake
+claude, agy and opencode on PATH (isolate.sh covers any real agy/opencode there).
 
   python tests/cli_launch_pty.py [path/to/cx]
 """
@@ -22,6 +23,11 @@ for d in (home, fake, proj, tmp / 'tmux'):
     '#!/bin/sh\n[ "$1" = --version ] && { echo "1.0.0 (Claude Code)"; exit 0; }\n'
     'echo "FAKE-CLAUDE cwd=$PWD args=$*"\nexec sleep 600\n')
 (fake / 'claude').chmod(0o755)
+for name in ('agy', 'opencode'):
+    (fake / name).write_text(
+        f'#!/bin/sh\n[ "$1" = --version ] && {{ echo "9.9.9"; exit 0; }}\n'
+        f'echo "FAKE-{name.upper()} cwd=$PWD args=$* cfg=${{OPENCODE_CLI_CONFIG_CONTENT:-none}}"\nexec sleep 600\n')
+    (fake / name).chmod(0o755)
 env = dict(os.environ, HOME=str(home), XDG_STATE_HOME=str(home / '.local/state'),
            XDG_CONFIG_HOME=str(home / '.config'), XDG_CACHE_HOME=str(home / '.cache'),
            TMUX_TMPDIR=str(tmp / 'tmux'), SHELL='/bin/sh', TERM='xterm-256color',
@@ -89,6 +95,27 @@ check('cx claude rejects --yolo with --normal', cx('claude', '--yolo', '--normal
 bad = cx('claude', 'missing-dir')
 check('a missing folder is an error before anything starts',
       bad.returncode != 0 and 'not a folder' in bad.stderr, bad.stderr)
+
+AGY_NEW = 'args=--settings {"altScreenMode":"always"}'
+text, code, _ = attached(['agy'], 'FAKE-AGY')
+check('cx agy starts agy full screen in this folder and attaches',
+      f'FAKE-AGY cwd={proj} {AGY_NEW} cfg=none' in text, text[-400:])
+check('Ctrl+\\ detaches cx agy with status 0', code == 0, code)
+text, code, _ = attached(['antigravity', '--yolo', '-r'], 'FAKE-AGY')
+# (Its line wraps at 100 columns: compare without whitespace.)
+check('cx antigravity --yolo -r resumes agy in YOLO',
+      ''.join(f'{AGY_NEW} -c --dangerously-skip-permissions'.split()) in ''.join(text.split()),
+      text[-400:])
+text, code, _ = attached(['opencode'], 'FAKE-OPENCODE')
+check('cx opencode starts its own server, mouse on through its inline config',
+      f'FAKE-OPENCODE cwd={proj} args=--standalone cfg={{"mouse":true}}' in text, text[-400:])
+text, code, _ = attached(['opencode', '--yolo', '-r'], 'FAKE-OPENCODE')
+check('cx opencode --yolo -r', 'args=--standalone -c --auto' in text, text[-400:])
+for agent, hint in (('agy', '/resume inside agy'), ('opencode', '/sessions inside opencode')):
+    before = len(sessions())
+    picked = cx(agent, '-p')
+    check(f'cx {agent} -p is refused with the in-app picker hint',
+          picked.returncode != 0 and hint in picked.stderr and len(sessions()) == before, picked.stderr)
 
 lend = cx('claude', 'lend', '--help')
 check('cx claude lend still reaches the lending commands', 'usage' in (lend.stdout + lend.stderr).lower(),

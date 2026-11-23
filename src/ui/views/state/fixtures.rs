@@ -96,7 +96,7 @@ fn dev(
 }
 
 /// The letters the real hub gives `names` added after `s`'s devices, which keep theirs
-/// (`' '`: none left, past the 22 assignable letters).
+/// (`' '`: none left, past the 20 assignable letters).
 fn letters(s: &LabState, names: &[&str]) -> Vec<char> {
     let previous = s.devices.iter().map(|d| (d.id.clone(), d.hotkey)).collect();
     let list: Vec<(&str, &str)> = s
@@ -573,7 +573,7 @@ pub fn typical() -> LabState {
         ),
         dev(
             "nas",
-            'a',
+            'd',
             "truenas scale",
             Online,
             "1.2ms · 5s ago",
@@ -835,7 +835,8 @@ pub fn typical() -> LabState {
         d.hue = (i % crate::ui::theme::SWATCHES as usize) as u8;
         // What each helper reported it can start (the down one was never asked).
         d.caps = match i {
-            0 | 2 => vec!["shell", "claude", "codex", "containers"],
+            0 => vec!["shell", "claude", "codex", "agy", "opencode", "containers"],
+            2 => vec!["shell", "claude", "codex", "agy", "containers"],
             1 | 6 => vec!["shell", "claude", "codex"],
             3 | 5 => vec!["shell"],
             _ => vec![],
@@ -950,7 +951,7 @@ pub fn large() -> LabState {
         ("old-thinkpad-x220", Down),
         ("vps-fra1", Online),
     ];
-    // The real app's letters (`hotkeys::assign`): never `e c x n`, `g h j k l` last.
+    // The real app's letters (`hotkeys::assign`): never `e c x a o n`, `g h j k l` last.
     let names: Vec<&str> = extra.iter().map(|(n, _)| *n).collect();
     let keys = letters(&s, &names);
     for (i, (name, status)) in extra.iter().enumerate() {
@@ -1090,7 +1091,7 @@ pub fn large() -> LabState {
         let screen = match provider {
             Provider::Claude => claude_screen(t, state == SessionState::Working),
             Provider::Codex => codex_screen(),
-            Provider::Shell => shell_screen(device, t),
+            Provider::Agy | Provider::Opencode | Provider::Shell => shell_screen(device, t),
         };
         s.sessions.push(session(
             &format!("s{i:02}"),

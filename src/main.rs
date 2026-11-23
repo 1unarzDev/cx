@@ -163,6 +163,11 @@ enum Cmd {
     },
     /// Start Codex in this folder (or DIR, or on --device) and attach.
     Codex(cli::LaunchArgs),
+    /// Start Antigravity (agy) in this folder (or DIR, or on --device) and attach.
+    #[command(alias = "antigravity")]
+    Agy(cli::LaunchArgs),
+    /// Start opencode in this folder (or DIR, or on --device) and attach.
+    Opencode(cli::LaunchArgs),
     /// Start a shell in this folder (or DIR, or on --device) and attach.
     Shell {
         /// Folder to start in: this folder by default (`~` on another device).
@@ -1782,6 +1787,8 @@ fn run() -> Result<()> {
         Some(Cmd::Join { args }) => mesh::run(&[vec!["pair".into()], args].concat()),
         Some(Cmd::Claude { args }) => cli::claude(args),
         Some(Cmd::Codex(a)) => cli::launch(model::CODEX.id, a),
+        Some(Cmd::Agy(a)) => cli::launch(model::AGY.id, a),
+        Some(Cmd::Opencode(a)) => cli::launch(model::OPENCODE.id, a),
         Some(Cmd::Shell { dir, device }) => cli::launch(
             "shell",
             cli::LaunchArgs {

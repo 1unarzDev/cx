@@ -84,6 +84,7 @@ CORE=(
     "device_policy_cli||BIN"
     "codex_wheel_pty||BIN"
     "codex_wheel_threads_pty||BIN"
+    "agent_wheel_pty||BIN"
     "clipboard_pty||BIN"
     "metadata_reconnect_cli||BIN"
     "secrets_cli||BIN"

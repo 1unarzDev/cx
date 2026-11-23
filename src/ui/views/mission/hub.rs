@@ -287,17 +287,22 @@ fn vitals(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, ghost: bool) {
     }
     // Keys: the device's letter, then what it leads to, as two visible steps (the `c`
     // that follows a letter is claude, never the creation device).
-    // Each chip's tap is its keys' (`i a` attaches slot a of this device, not the
+    // Each chip's tap is its keys' (`i s` attaches slot s of this device, not the
     // hub's selection).
     let first = cx.s.sessions_on(&d.id).next();
     let dev = format!("@{}", d.hotkey);
     let act = format!("device:{}", d.id);
     let attach = first.map(|x| format!("session:{}:{}", d.id, x.id));
+    // (The first tile's own key, `s` unless it changed hands.)
+    let slot = first
+        .and_then(|x| x.key)
+        .unwrap_or(super::SLOTS[0])
+        .to_string();
     let new = format!("new:{}:claude", d.id);
     let files = format!("files:{}", d.id);
     let mut items: Vec<(&str, &str, &str)> = vec![(&dev, "then", &act)];
     if let Some(attach) = &attach {
-        items.push(("a", "attach", attach));
+        items.push((&slot, "attach", attach));
     }
     if up && !ghost {
         items.push(("c", "claude", &new));

@@ -202,7 +202,7 @@ mod review_tests {
         (text(&buf), targets)
     }
 
-    /// A waiting fifth session has its own key (`q`, after `a s d g`) and the ticker
+    /// A waiting fifth session has its own key (`u`, after `s d g q`) and the ticker
     /// attaches it by it; one past the key pool has no address: the ticker says `/ find`
     /// and never prints another session's key for it.
     #[test]
@@ -227,11 +227,11 @@ mod review_tests {
         fifth.state = SessionState::AwaitingInput;
         // (Ranked after the other waiting session, so the ticker names it.)
         fifth.last_activity_secs = 99_999;
-        assert_eq!(fifth.key, Some('q'));
+        assert_eq!(fifth.key, Some('u'));
         let (t, _) = draw(LabView::Hub, &s, 200, 60);
         let row = t.lines().find(|l| l.contains("FIFTH needs you"));
         let row = row.expect("ticker row");
-        assert!(row.contains(" q ") && row.contains("attach"), "{row}");
+        assert!(row.contains(" u ") && row.contains("attach"), "{row}");
         // Past the pool.
         s.sessions
             .iter_mut()
@@ -353,7 +353,11 @@ mod review_tests {
         d.observed_secs = NEVER_SEEN;
         let (t, _) = draw(LabView::Hub, &s, 40, 20);
         let row = t.lines().find(|l| l.contains("nas")).expect("nas row");
-        assert!(row.contains("never seen") && !row.contains("d "), "{row}");
+        // (No age: no digits; its letter is `d`.)
+        assert!(
+            row.contains("never seen") && !row.chars().any(|c| c.is_ascii_digit()),
+            "{row}"
+        );
         assert_eq!(fmt::age(NEVER_SEEN), "never");
     }
 
@@ -1519,11 +1523,9 @@ mod key_tests {
                             .iter()
                             .filter(|t| t.action.starts_with(&format!("new:{}:", d.id)))
                             .count();
-                        let want = if d.caps.is_empty() {
-                            3
-                        } else {
-                            d.caps.len().min(3)
-                        };
+                        // (Its offered agents and a shell; compact keys where the
+                        // words do not fit, never a dropped agent.)
+                        let want = crate::ui::views::mission::offered(d).count() + 1;
                         // (One alone is the vitals strip's `c claude` hint.)
                         assert!(
                             n <= 1 || n == want,

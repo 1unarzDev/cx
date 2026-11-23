@@ -1,4 +1,4 @@
-//! Plain-terminal session commands: `cx claude|codex|shell` start a managed session
+//! Plain-terminal session commands: `cx claude|codex|agy|opencode|shell` start a managed session
 //! and attach, `cx kill` stops one, `cx adopt` moves an outside terminal into CX.
 //! The same operations the UI sends; nothing here is UI-only.
 use crate::model::{CreateSession, Device, Operation, Session};
@@ -61,8 +61,13 @@ pub fn launch(provider: &str, a: LaunchArgs) -> Result<()> {
     let agent = crate::model::agent(provider).is_some();
     anyhow::ensure!(
         agent || !(a.yolo || a.normal || a.resume || a.pick),
-        "--yolo, --normal, --resume and --pick apply only to claude and codex"
+        "--yolo, --normal, --resume and --pick apply only to agents"
     );
+    if a.pick {
+        if let Some(hint) = crate::model::agent(provider).and_then(|a| a.pick_hint()) {
+            bail!("{hint}");
+        }
+    }
     let yolo = if a.yolo || a.normal {
         let _ = store::set_launch_yolo(&d.id, provider, a.yolo);
         a.yolo
@@ -261,7 +266,9 @@ pub fn adopt(terminal: Option<String>, device: Option<String>) -> Result<()> {
         },
     )?;
     let value = rx.recv().context("the move did not finish")??;
-    let window = value["window"].as_str().and_then(crate::adoption::window_note);
+    let window = value["window"]
+        .as_str()
+        .and_then(crate::adoption::window_note);
     let moved: Session = serde_json::from_value(value)?;
     match window {
         Some(note) => eprintln!("moved {} into CX · {note}", label(&moved)),

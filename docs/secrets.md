@@ -27,7 +27,11 @@ Names are 1-64 characters of `a-z 0-9 . _ -`. `get --exec` sets the name upper-c
 (`robot.wifi` → `ROBOT_WIFI`) unless the spec says `VAR=NAME`, and refuses two specs that set one variable. The one
 name cx itself reads is `cloudflare.api_token`, which sets `CLOUDFLARE_API_TOKEN` and is passed to mesh.py by
 `cx mesh` and `cx claude`. The same rule gives the conventional names for sessions: `anthropic.api_key` →
-`ANTHROPIC_API_KEY`, `openai.api_key` → `OPENAI_API_KEY`, `github.token` → `GITHUB_TOKEN`. cx never reads or rewrites provider credential files (Claude/Codex logins).
+`ANTHROPIC_API_KEY`, `openai.api_key` → `OPENAI_API_KEY`, `gemini.api_key` → `GEMINI_API_KEY` (Antigravity's `agy`;
+`VAR=NAME` gives `GOOGLE_API_KEY` instead), `github.token` → `GITHUB_TOKEN`. cx never reads or rewrites provider credential files (Claude/Codex/agy/opencode logins).
+Agent API keys reach sessions only this way: the viewer's own `ANTHROPIC_*` variables are copied into the managed tmux
+environment (a known exposure in tmux's argv, kept for compatibility), but no Gemini or Google key is; only the
+non-secret `GOOGLE_CLOUD_PROJECT` and `GOOGLE_GENAI_USE_VERTEXAI` are.
 
 ## Sessions
 
@@ -36,7 +40,7 @@ off, and the card then reads `used by new sessions as $VAR`. `v` edits that vari
 above); it must be a valid name, not `CX_*` (cx sets those in sessions itself), and not one another exposed secret
 already sets. Both are stored in the index (`expose`, `env`), never with the value.
 
-A shell, Claude or Codex session that cx starts on this device afterwards, from its viewer or `cx new`, starts with
+A shell or agent session (Claude, Codex, Antigravity, opencode) that cx starts on this device afterwards, from its viewer or `cx new`, starts with
 every exposed secret in its environment. Sessions that already run keep theirs: turning a secret on or off, or
 rotating it, changes only sessions started later. What never gets them:
 

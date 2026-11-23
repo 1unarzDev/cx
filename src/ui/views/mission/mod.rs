@@ -247,8 +247,8 @@ pub(super) enum Size {
 
 /// Session keys inside a device, in the order they are given out: the home row (`f`
 /// stays "files", `h j k l` motion), then the top and bottom rows' letters no device
-/// screen binds (`c x n` new, `w e r t p b` verbs), then the digits. A session keeps its
-/// key until it ends; past these 21 a device's sessions are a `/` away.
+/// screen binds (`c x a o n` new, `w e r t p b` verbs), then the digits. A session keeps
+/// its key until it ends; past these 19 a device's sessions are a `/` away.
 /// Agents' keys never are (`model::AGENTS`).
 pub const SLOTS: [char; SLOT_COUNT] = {
     let mut out = ['\0'; SLOT_COUNT];
@@ -276,15 +276,31 @@ const SLOT_COUNT: usize = {
     }
     n
 };
-/// The home-row slots alone (the first four): the keys screen's cards, and the letters
-/// device names give way to (`hotkeys`).
-pub const HOME: [char; 4] = [SLOTS[0], SLOTS[1], SLOTS[2], SLOTS[3]];
+/// The home-row slots alone (`s d g`; `a` is Antigravity's): the keys screen's cards,
+/// and the letters device names give way to (`hotkeys`).
+pub const HOME: [char; 3] = [SLOTS[0], SLOTS[1], SLOTS[2]];
+
+/// The agents `d` can start, by its helper's last Info (before it has answered, claude
+/// and codex, as before agy and opencode joined: never a promise a device may not keep).
+pub fn offered(
+    d: &crate::ui::views::LabDevice,
+) -> impl Iterator<Item = &'static crate::model::Agent> + '_ {
+    crate::model::AGENTS.iter().filter(move |a| {
+        if d.caps.is_empty() {
+            matches!(a.id, "claude" | "codex")
+        } else {
+            d.caps.iter().any(|c| c == a.id)
+        }
+    })
+}
 
 /// A provider's colour token.
 pub fn provider_tok(p: crate::ui::views::Provider) -> Tok {
     match p {
         crate::ui::views::Provider::Claude => Tok::Claude,
         crate::ui::views::Provider::Codex => Tok::Codex,
+        crate::ui::views::Provider::Agy => Tok::Agy,
+        crate::ui::views::Provider::Opencode => Tok::Opencode,
         crate::ui::views::Provider::Shell => Tok::Shell,
     }
 }

@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Launch keys: `cx` started in a folder, then `c` (2 keys) starts Claude there; the
-hub's bare c / x / n and C / X work on this device in the folder cx was started in,
+hub's bare c / x / a / o / n and C / X / A / O work on this device in the folder cx was
+started in,
 each agent in the mode it was last started in; a device letter then c / x / C / X does
 the same on that device's screen; Enter on a device with nothing running opens the
 full chooser; Files `!` then c / x / n starts in the folder Files shows.
 
 usage: tests/isolate.sh python tests/launch_keys_pty.py BINARY
 
-A private HOME inside private namespaces (pty_lib.isolate), with stand-in `claude` and
-`codex` on PATH that answer `--version` and otherwise record their argv and working
-folder, then wait. Viewers run on a 120x40 PTY started in HOME/src/robot-arm; each
+A private HOME inside private namespaces (pty_lib.isolate), with stand-in `claude`,
+`codex`, `agy` and `opencode` on PATH that answer `--version` and otherwise record their
+argv, working folder (and opencode's inline config), then wait. (isolate.sh covers any
+real agy/opencode on the caller's PATH, so only these can run.) Viewers run on a 120x40 PTY started in HOME/src/robot-arm; each
 launch attaches, and Ctrl+\\ detaches back to the hub.
   1. `t`, Enter (nothing runs yet): the chooser; Left / Right keep it open; `x`, Enter
      (New), Down, Enter: codex in YOLO, in the folder cx was started in.
@@ -17,8 +19,12 @@ launch attaches, and Ctrl+\\ detaches back to the hub.
      SESSIONS rule says `here ~/src/robot-arm`.
   3. Bare `x` / `X` / `C`: codex YOLO (remembered), codex resume --last YOLO, claude
      --continue, all there. `t x` / `t C` on the device's screen: the same folder.
-  4. `t f` (Files opens where cx was started), `h`, then `!` `c`: claude in ~/src.
-  5. Viewer B, open since before the YOLO choice, closes after this one; a new viewer
+  4. Bare `a` / `A` / `o` / `O`: agy full screen (its per-run settings), agy -c,
+     opencode --standalone with its inline `{"mouse":true}`, opencode -c; `t A`, `t o`
+     on the device's screen.
+  5. `t f` (Files opens where cx was started), `h`, then `!` `c` and `!` `a`: claude and
+     agy in ~/src.
+  6. Viewer B, open since before the YOLO choice, closes after this one; a new viewer
      still remembers codex's YOLO (`x`): the mode is merged state, not B's snapshot.
 """
 import json, pathlib, subprocess, sys, time
@@ -34,7 +40,7 @@ LEFT, RIGHT, DOWN = b'\x1b[D', b'\x1b[C', b'\x1b[B'
 STANDIN = '''#!/bin/sh
 if [ "$1" = --version ]; then echo "9.9.9 (stand-in)"; exit 0; fi
 [ "$1" = --help ] && exit 0
-line="{name} $*"
+line="{name} $*${{OPENCODE_CLI_CONFIG_CONTENT:+ [cfg=$OPENCODE_CLI_CONFIG_CONTENT]}}"
 echo "${{line% }} @ $(pwd -P)" >> {log}
 echo "STANDIN {name} $*"
 exec sleep 600
@@ -50,7 +56,7 @@ def main():
         bin_dir = env.root / 'bin'
         bin_dir.mkdir()
         log = env.root / 'argv.log'
-        for name in ('claude', 'codex'):
+        for name in ('claude', 'codex', 'agy', 'opencode'):
             (bin_dir / name).write_text(STANDIN.format(name=name, log=log))
             (bin_dir / name).chmod(0o700)
         env.env['PATH'] = f"{bin_dir}:{env.env['PATH']}"
@@ -140,7 +146,17 @@ def main():
         proof.append(launch(viewer, [b'C'], 'claude --continue'))
         proof.append(launch(viewer, [b't', b'x'], f"codex {YOLO['codex']}"))
         proof.append(launch(viewer, [b't', b'C'], 'claude --continue'))
-        # 4. Files' folder: `!` then c.
+        # 4. Antigravity and opencode, the same keys' grammar.
+        agy = 'agy --settings {"altScreenMode":"always"}'
+        oc = 'opencode --standalone'
+        cfg = ' [cfg={"mouse":true}]'
+        proof.append(launch(viewer, [b'a'], agy))
+        proof.append(launch(viewer, [b'A'], f'{agy} -c'))
+        proof.append(launch(viewer, [b'o'], oc + cfg))
+        proof.append(launch(viewer, [b'O'], f'{oc} -c{cfg}'))
+        proof.append(launch(viewer, [b't', b'A'], f'{agy} -c'))
+        proof.append(launch(viewer, [b't', b'o'], oc + cfg))
+        # 5. Files' folder: `!` then c, and `!` then a.
         viewer.write(b't')
         viewer.read(.3)
         viewer.write(b'f')
@@ -150,9 +166,19 @@ def main():
         wait(viewer, lambda: 'robot-arm' in text(viewer) and '~/src' in viewer.screen.display[0]
              + viewer.screen.display[1], 'files one folder up')
         viewer.write(b'!')
-        wait(viewer, lambda: 'New claude in this folder' in text(viewer), 'the ! panel')
+        wait(viewer, lambda: 'New claude here' in text(viewer), 'the ! panel')
         proof.append(launch(viewer, [b'c'], 'claude', folder=here.parent))
-        # 5. The mode survives another viewer closing last, and a new viewer.
+        # (A detach returns to the hub; Files reopens in the folder it last showed.)
+        viewer.write(b't')
+        viewer.read(.3)
+        viewer.write(b'f')
+        wait(viewer, lambda: 'NOR' in text(viewer), 'files again')
+        head = viewer.screen.display[0] + viewer.screen.display[1]
+        shown = here if '~/src/robot-arm' in head else here.parent
+        viewer.write(b'!')
+        wait(viewer, lambda: 'New agy here' in text(viewer), 'the ! panel lists agy')
+        proof.append(launch(viewer, [b'a'], agy, folder=shown))
+        # 6. The mode survives another viewer closing last, and a new viewer.
         for v in (viewer, other):
             closed = v.close()
             assert closed['clean_exit'], closed

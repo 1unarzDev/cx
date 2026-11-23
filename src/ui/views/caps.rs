@@ -107,6 +107,10 @@ pub enum Tok {
     Lan,
     Claude,
     Codex,
+    /// Antigravity: the nebula's rose.
+    Agy,
+    /// opencode: the nebula's moss.
+    Opencode,
     Shell,
     Id(u8),
 }
@@ -167,6 +171,20 @@ fn row(t: Tok) -> Option<Row> {
             111,
             25,
             Some(Color::Blue),
+        )),
+        Tok::Agy => Some((
+            (0xd6, 0x92, 0xbf),
+            (0x82, 0x3f, 0x6e),
+            175,
+            125,
+            Some(Color::LightMagenta),
+        )),
+        Tok::Opencode => Some((
+            (0xa3, 0xb4, 0x6b),
+            (0x53, 0x63, 0x04),
+            143,
+            64,
+            Some(Color::Green),
         )),
         Tok::Shell => Some(((0xaa, 0xb2, 0xbf), (0x4b, 0x55, 0x63), 249, 240, None)),
     }
@@ -400,6 +418,43 @@ mod tests {
         assert!(b.unicode && b.color == ColorLevel::C16 && b.theme == Theme::Light);
         assert!(LabCaps::from_variant("ascii-16").unwrap().color == ColorLevel::C16);
         assert!(LabCaps::from_variant("bogus").is_none());
+    }
+
+    /// Every agent has its own tone in each theme (truecolor and 256) and a 16-colour
+    /// one; without colour (ASCII) they are plain text: foreground only, never a cell
+    /// background (transparent terminals).
+    #[test]
+    fn every_agent_has_its_own_tone_at_every_level() {
+        let toks = [Tok::Claude, Tok::Codex, Tok::Agy, Tok::Opencode, Tok::Shell];
+        for color in [ColorLevel::Truecolor, ColorLevel::C256] {
+            for theme in [Theme::Dark, Theme::Light] {
+                let c = LabCaps {
+                    color,
+                    theme,
+                    ..Default::default()
+                };
+                let mut seen: Vec<Color> = toks.iter().filter_map(|t| c.color(*t)).collect();
+                assert_eq!(seen.len(), toks.len());
+                seen.dedup();
+                seen.sort_by_key(|c| format!("{c:?}"));
+                seen.dedup();
+                assert_eq!(seen.len(), toks.len(), "{color:?} {theme:?}");
+                for t in toks {
+                    assert_eq!(c.tok(t).bg, None);
+                }
+            }
+        }
+        let c16 = LabCaps::from_variant("dark-16").unwrap();
+        assert!(c16.color(Tok::Agy).is_some() && c16.color(Tok::Opencode).is_some());
+        assert_ne!(c16.color(Tok::Agy), c16.color(Tok::Opencode));
+        let ascii = LabCaps::from_variant("ascii").unwrap();
+        assert_eq!(ascii.color(Tok::Agy), None);
+        assert_eq!(ascii.tok(Tok::Opencode), Style::default());
+        use crate::ui::views::{mission::provider_tok, Provider};
+        assert_eq!(provider_tok(Provider::of("agy")), Tok::Agy);
+        assert_eq!(provider_tok(Provider::of("opencode")), Tok::Opencode);
+        assert_eq!(Provider::of("agy").id(), "agy");
+        assert_eq!(Provider::of("opencode").id(), "opencode");
     }
 
     #[test]

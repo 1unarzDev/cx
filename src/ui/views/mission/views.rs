@@ -151,7 +151,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                 } else {
                     vec![
                         ("⏎", "attach", "attach"),
-                        ("t a s d", "jump", ""),
+                        ("t s d g", "jump", ""),
                         ("tab", "next", "peek-next"),
                         ("⌫", "stop", "stop"),
                         ("esc", "back", "back"),
@@ -218,7 +218,7 @@ pub(super) fn draw(cx: &Cx, view: &LabView, buf: &mut Buffer) {
                 None => vec![
                     // (The card keys there are cards for.)
                     (
-                        ["a", "a s", "a s d", "a s d g"][cx.s.secrets.len().clamp(1, 4) - 1],
+                        ["s", "s d", "s d g"][cx.s.secrets.len().clamp(1, 3) - 1],
                         "set",
                         "edit",
                     ),
@@ -1346,7 +1346,7 @@ pub(super) fn launch_panel(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, hu
             buf,
             x,
             y,
-            7,
+            8,
             p,
             if down { cx.st(Tok::Muted) } else { cx.st(tok) },
         ) + 2;
@@ -1416,9 +1416,11 @@ pub(super) fn launch_panel(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, hu
     (y - r.y).min(r.height)
 }
 
-/// `c claude  x codex  n shell` from `x`: the agents `d`'s helper reported (all three
-/// before it has answered), each word in its provider's colour, keys in `kst`. One
-/// component wherever a session can start (the empty panel and under the tiles).
+/// `c claude  x codex  a agy  o opencode  n shell` from `x`: the agents `d` offers
+/// (`offered`) and a shell, each word in its provider's colour, keys in `kst`. Where the
+/// words do not all fit (phones, narrow panes), every key stays, its letter in its
+/// provider's colour. One component wherever a session can start (the empty panel and
+/// under the tiles).
 fn launch_keys(
     cx: &Cx,
     buf: &mut Buffer,
@@ -1428,23 +1430,33 @@ fn launch_keys(
     d: &LabDevice,
     kst: Style,
 ) -> u16 {
-    let agents = crate::model::AGENTS.iter().map(|a| {
-        let tok = super::provider_tok(crate::ui::views::Provider::of(a.id));
-        (a.key.to_string(), a.id, tok)
-    });
-    for (k, word, tok) in agents.chain([("n".to_string(), "shell", Tok::Shell)]) {
+    let items: Vec<(String, &str, Tok)> = super::offered(d)
+        .map(|a| {
+            let tok = super::provider_tok(crate::ui::views::Provider::of(a.id));
+            (a.key.to_string(), a.id, tok)
+        })
+        .chain([("n".to_string(), "shell", Tok::Shell)])
+        .collect();
+    let full: u16 = items
+        .iter()
+        .map(|(_, w, _)| 6 + super::width(w, cx.uni()))
+        .sum::<u16>()
+        .saturating_sub(2);
+    let words = x + full <= right;
+    for (k, word, tok) in items {
         let k = k.as_str();
-        if !d.caps.is_empty() && !d.caps.iter().any(|c| c == word) {
-            continue;
-        }
-        if x + 9 > right {
+        if x + if words { 9 } else { 3 } > right {
             break;
         }
         let x1 = x;
-        x += cx.keycap(buf, x, y, 3, k, kst) + 1;
-        x += cx.put(buf, x, y, 8, word, cx.st(tok));
+        if words {
+            x += cx.keycap(buf, x, y, 3, k, kst) + 1;
+            x += cx.put(buf, x, y, 8, word, cx.st(tok));
+        } else {
+            x += cx.keycap(buf, x, y, 3, k, kst.patch(cx.st(tok)));
+        }
         cx.hit(Rect::new(x1, y, x - x1, 1), format!("new:{}:{word}", d.id));
-        x += 2;
+        x += if words { 2 } else { 1 };
     }
     x
 }
@@ -1601,11 +1613,9 @@ pub(super) fn here_hint(cx: &Cx, buf: &mut Buffer, x0: u16, y: u16, right: u16, 
         return 0;
     };
     let room = right.saturating_sub(x0 + 2);
-    let ks: Vec<(String, &str)> = crate::model::AGENTS
-        .iter()
+    let ks: Vec<(String, &str)> = super::offered(d)
         .map(|a| (a.key.to_string(), a.id))
         .chain([("n".to_string(), "shell")])
-        .filter(|(_, w)| d.caps.is_empty() || d.caps.iter().any(|c| c == w))
         .collect();
     let kw = ks.len() as u16 * 3 + 1;
     let pw = super::width(&d.start, cx.uni()) as u16;
@@ -3641,6 +3651,22 @@ fn wrap(s: &str, w: usize) -> Vec<String> {
 
 // ----------------------------------------------------------------------------- help
 
+/// One of four texts by which of agy and opencode `$ags` (agents) holds: neither, agy,
+/// opencode, both. (Help's rows are static text; four variants keep them so.)
+macro_rules! said {
+    ($ags:expr, $none:literal, $agy:literal, $opencode:literal, $both:literal) => {
+        match (
+            $ags.iter().any(|a| a.id == "agy"),
+            $ags.iter().any(|a| a.id == "opencode"),
+        ) {
+            (false, false) => $none,
+            (true, false) => $agy,
+            (false, true) => $opencode,
+            (true, true) => $both,
+        }
+    };
+}
+
 /// Help for the view it was opened from (`CX_LAB_FOCUS=device|edge|files`, else the
 /// hub): the keys that matter there, grouped by intent, one row of keys that work
 /// everywhere and, where links are drawn, the line grammar. On the hub the two steps
@@ -3659,13 +3685,55 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
     let hub = ctx == "ON THE HUB";
     type Group = (&'static str, Vec<(String, &'static str)>);
     let k = |s: &str| s.to_string();
+    // The agents that start here (the hub's bare keys) and on any device (after its
+    // letter, or on its screen): a device without agy or opencode drops their keys.
+    let here: Vec<&crate::model::Agent> = match cx.s.device(&cx.s.viewer) {
+        Some(d) => super::offered(d).collect(),
+        None => vec![&crate::model::CLAUDE, &crate::model::CODEX],
+    };
+    let anywhere: Vec<&crate::model::Agent> = crate::model::AGENTS
+        .iter()
+        .filter(|a| {
+            matches!(a.id, "claude" | "codex")
+                || cx
+                    .s
+                    .devices
+                    .iter()
+                    .any(|d| super::offered(d).any(|o| o.id == a.id))
+        })
+        .collect();
+    let new_keys = |ags: &[&crate::model::Agent]| -> String {
+        ags.iter()
+            .map(|a| a.key.to_string())
+            .chain(["n".to_string()])
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let resume_keys = |ags: &[&crate::model::Agent]| -> String {
+        ags.iter()
+            .map(|a| a.resume_key.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let resumes = |ags: &[&crate::model::Agent], wide: bool| -> &'static str {
+        if !wide && ags.len() > 2 {
+            return "resume that agent";
+        }
+        said!(
+            ags,
+            "resume claude / codex",
+            "resume claude / codex / agy",
+            "resume claude / codex / opencode",
+            "resume claude/codex/agy/opencode"
+        )
+    };
     let mut groups: Vec<Group> = match ctx {
         "IN A DEVICE" => vec![
             (
                 "session",
                 vec![
                     (
-                        k("a s d g …"),
+                        k("s d g q …"),
                         if wide {
                             "attach the session showing that key"
                         } else {
@@ -3673,7 +3741,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                         },
                     ),
                     (
-                        k("a s d …"),
+                        k("s d g …"),
                         if wide {
                             "nothing running: resume / a recent folder"
                         } else {
@@ -3690,14 +3758,26 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                 "start",
                 vec![
                     (
-                        k("c x n"),
+                        new_keys(&anywhere),
                         if wide {
-                            "claude / codex / shell, attached, last mode"
+                            said!(
+                                anywhere,
+                                "claude / codex / shell, attached, last mode",
+                                "claude / codex / agy / shell, attached",
+                                "claude / codex / opencode / shell, attached",
+                                "claude/codex/agy/opencode/shell, attached"
+                            )
                         } else {
-                            "claude/codex/shell"
+                            said!(
+                                anywhere,
+                                "claude/codex/shell",
+                                "new agent / shell",
+                                "new agent / shell",
+                                "new agent / shell"
+                            )
                         },
                     ),
-                    (k("C X"), "resume claude / codex"),
+                    (resume_keys(&anywhere), resumes(&anywhere, wide)),
                 ],
             ),
             (
@@ -3779,14 +3859,26 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                 "start",
                 vec![
                     (
-                        k("c x n"),
+                        new_keys(&here),
                         if wide {
-                            "claude / codex / shell here, where cx started"
+                            said!(
+                                here,
+                                "claude / codex / shell here, where cx started",
+                                "claude / codex / agy / shell here",
+                                "claude / codex / opencode / shell here",
+                                "claude/codex/agy/opencode/shell here"
+                            )
                         } else {
-                            "claude/codex/shell here"
+                            said!(
+                                here,
+                                "claude/codex/shell here",
+                                "agent / shell here",
+                                "agent / shell here",
+                                "agent / shell here"
+                            )
                         },
                     ),
-                    (k("C X"), "resume claude / codex"),
+                    (resume_keys(&here), resumes(&here, wide)),
                 ],
             ),
             ("device", vec![(String::new(), "its letter opens it")]),
@@ -3795,7 +3887,7 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                 "  then",
                 vec![
                     (
-                        k("a s d g …"),
+                        k("s d g q …"),
                         if wide {
                             "attach the session showing that key"
                         } else {
@@ -3803,11 +3895,23 @@ fn help(cx: &Cx, buf: &mut Buffer, r: Rect) {
                         },
                     ),
                     (
-                        k("c x n"),
+                        new_keys(&anywhere),
                         if wide {
-                            "new claude / codex / shell there"
+                            said!(
+                                anywhere,
+                                "new claude / codex / shell there",
+                                "new claude / codex / agy / shell there",
+                                "new claude / codex / opencode / shell there",
+                                "new claude/codex/agy/opencode/shell there"
+                            )
                         } else {
-                            "new claude/codex/shell"
+                            said!(
+                                anywhere,
+                                "new claude/codex/shell",
+                                "new agent / shell",
+                                "new agent / shell",
+                                "new agent / shell"
+                            )
                         },
                     ),
                     (k("f"), "its files"),

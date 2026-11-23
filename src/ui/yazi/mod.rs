@@ -366,19 +366,17 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(
                 ["!", "c"],
                 Launch(crate::model::CLAUDE.id),
-                "New claude in this folder, last mode"
+                "New claude here"
             ),
+            b!(["!", "x"], Launch(crate::model::CODEX.id), "New codex here"),
+            b!(["!", "a"], Launch(crate::model::AGY.id), "New agy here"),
             b!(
-                ["!", "x"],
-                Launch(crate::model::CODEX.id),
-                "New codex in this folder, last mode"
+                ["!", "o"],
+                Launch(crate::model::OPENCODE.id),
+                "New opencode here"
             ),
-            b!(["!", "n"], Launch("shell"), "New shell in this folder"),
-            b!(
-                ["!", "<Enter>"],
-                NewSession,
-                "New session in this folder: the chooser"
-            ),
+            b!(["!", "n"], Launch("shell"), "New shell here"),
+            b!(["!", "<Enter>"], NewSession, "New session here: chooser"),
         ]
     })
 }

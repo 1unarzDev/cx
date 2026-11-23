@@ -15,7 +15,8 @@ device and times out (6 s, as ConnectTimeout) for one never reached; `tailscale`
 pairs are pinned peers in the viewer's state; the WARP mesh is a config whose Worker answers
 on loopback. Sessions are real tmux panes: a shell at its prompt (idle), a shell in a loop
 (running), and a copy of bash named claude whose native record says waiting or working
-(needs you / working). Nothing touches the caller's devices, HOME or networking.
+(needs you / working). Stand-in claude, codex, agy and opencode on every device's PATH answer
+the agent probe, so all four agents are offered. Nothing touches the caller's devices, HOME or networking.
 
 Configs nebula-N mirror the lab fixture `nebula-N` (same names, meshes, lan, relays, down and
 never-reached devices), so their maps are compared with the lab's render of it; `long-5`
@@ -160,6 +161,7 @@ env = dict(os.environ, HOME=d['home'], XDG_STATE_HOME=d['home'] + '/state', TMUX
            CX_METRICS_ROOT=d['proc'], XDG_RUNTIME_DIR=d['home'] + '/run')
 os.execve(d['cx'], [d['cx'], 'helper'], env)
 '''
+FAKE_AGENT = '#!/bin/sh\n[ "$1" = --version ] && { echo 9.9.9; exit 0; }\nexec sleep 100000\n'
 FAKE_TAILSCALE = '#!/bin/sh\n[ "$1" = status ] && exec cat "$CX_HM_TAILNET"\nexit 1\n'
 
 
@@ -192,6 +194,10 @@ class Fleet:
         fake.mkdir()
         (fake / 'ssh').write_text(FAKE_SSH)
         (fake / 'tailscale').write_text(FAKE_TAILSCALE)
+        # Every built-in agent is installed everywhere (stand-ins that only answer the
+        # probe), so launch rows, hints and help show all four.
+        for agent in ('claude', 'codex', 'agy', 'opencode'):
+            (fake / agent).write_text(FAKE_AGENT)
         for f in fake.iterdir():
             f.chmod(0o700)
         self.env = {k: v for k, v in os.environ.items()

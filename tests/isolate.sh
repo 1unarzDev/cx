@@ -12,6 +12,9 @@
 #
 # The host's /etc/ssh/ssh_config is an empty file inside: shown as nobody's there, ssh
 # refuses it ("Bad owner"), and fixtures must not depend on it anyway.
+# Real Antigravity (`agy`) and opencode binaries on PATH are covered inside by an empty,
+# non-executable file: a fixture (an Info probe, a launch) can never run them, only its
+# own stand-ins earlier on PATH.
 # The tty group is left out of /etc/group inside: its gid is not mapped there, and a
 # fixture sshd would fail to chown the pseudo-terminal of `ssh -t` to it.
 # Fails closed: without unprivileged user namespaces the command does not run.
@@ -25,6 +28,14 @@ exec unshare --user --map-root-user --mount --pid --cgroup --fork --kill-child -
         grep -v "^tty:" /etc/group >/dev/shm/group && mount --bind /dev/shm/group /etc/group || exit 125
         if [ -f /etc/ssh/ssh_config ]; then : >/dev/shm/ssh_config && mount --bind /dev/shm/ssh_config /etc/ssh/ssh_config || exit 125; fi
         if [ -d "/run/user/$uid" ]; then mount -t tmpfs -o mode=700 tmpfs "/run/user/$uid" || exit 125; fi
+        : >/dev/shm/no-agent && chmod 644 /dev/shm/no-agent || exit 125
+        old_ifs=$IFS; IFS=:
+        for dir in $PATH; do
+            for name in agy opencode; do
+                if [ -n "$dir" ] && [ -e "$dir/$name" ]; then mount --bind /dev/shm/no-agent "$dir/$name" || exit 125; fi
+            done
+        done
+        IFS=$old_ifs
         unshare --user --map-user="$uid" --map-group="$gid" -- "$@"
         status=$?; exit $status' \
     sh "$(id -u)" "$(id -g)" "$@"

@@ -1,6 +1,6 @@
 # cx
 
-CX is a lightweight terminal workspace for SSH devices, persistent shells, Claude/Codex sessions, files and network discovery. It runs on **Linux x86_64 and ARM64** and works with existing SSH connections, including devices on a mesh network. Coding agents run on the execution device; viewing devices do not need an AI runtime.
+CX is a lightweight terminal workspace for SSH devices, persistent shells, coding-agent sessions (Claude Code, Codex, Antigravity's `agy`, opencode), files and network discovery. It runs on **Linux x86_64 and ARM64** and works with existing SSH connections, including devices on a mesh network. Coding agents run on the execution device; viewing devices do not need an AI runtime.
 
 ## Get started
 
@@ -34,12 +34,12 @@ You can also find a discovered LAN neighbor in the palette (`/`, after a Refresh
 | Key | Action |
 |---|---|
 | device letter (`p`, `b`, …) | Open that device: its sessions, ready to attach or start |
-| `a s d g …` on a device | Attach the session showing that key (every tile has one; a session keeps it until it ends) |
-| `c` / `x` / `n` on the hub | New Claude / Codex / shell on this device, in the folder you started `cx` in, attached at once (`cx` then `c`: 2 keys). An agent starts in the mode (Default / YOLO) it was last started in on that device; the hub's SESSIONS rule shows the folder (`here ~/proj/foo`) |
-| `C` / `X` on the hub | Resume the last Claude / Codex conversation there, in that mode |
-| `c` / `x` / `n`, `C` / `X` on a device | The same on that device: this device in the folder `cx` started in, another in the last folder Files showed there (else its home). Enter with nothing running opens the full chooser |
+| `s d g q …` on a device | Attach the session showing that key (every tile has one; a session keeps it until it ends) |
+| `c` / `x` / `a` / `o` / `n` on the hub | New Claude / Codex / Antigravity (`agy`) / opencode / shell on this device, in the folder you started `cx` in, attached at once (`cx` then `c`: 2 keys). An agent starts in the mode (Default / YOLO) it was last started in on that device; the hub's SESSIONS rule shows the folder (`here ~/proj/foo`) |
+| `C` / `X` / `A` / `O` on the hub | Resume the last Claude / Codex / Antigravity / opencode conversation there, in that mode (agy and opencode pick older ones inside the app: `/resume`, `/sessions`) |
+| `c x a o n`, `C X A O` on a device | The same on that device: this device in the folder `cx` started in, another in the last folder Files showed there (else its home). Enter with nothing running opens the full chooser |
 | Enter / Space | Attach (or open) the selection / peek a session's screen |
-| Backspace, Backspace | Stop the selected session: CX-managed, moved in, or a Claude/Codex terminal outside tmux (any other key keeps it) |
+| Backspace, Backspace | Stop the selected session: CX-managed, moved in, or an agent terminal outside tmux (any other key keeps it) |
 | `f` on a device | Its files |
 | `e` then a letter | Edit the link to that device: `a p o` / `A P O` set key, password or off per direction, `u` undoes |
 | `H` (Shift+H, or Esc Esc) | Back to the hub from any screen, Files included; Esc goes back one level |
@@ -51,7 +51,7 @@ You can also find a discovered LAN neighbor in the palette (`/`, after a Refresh
 | `w`, `p`, `t` on a device | Watch read-only, pin/unpin, inspect agent tasks |
 | Ctrl+C in CX | Exit the viewer; sessions keep running |
 
-Every node, tile, chip and row is also a tap target that does what its key does; a right-click or long press shows the selection's keys as a menu. The palette's **New session** (and `!` then Enter in Files) opens the full chooser: Shell, Devcontainer and the Claude or Codex profiles available on the device, existing sessions in that folder by name and observed state, then **Default** or **YOLO** permissions for that launch (YOLO bypasses the agent's normal approval protections). CX does not choose a conversation by recency. Detaching lands on the hub with the tile you left selected, so Enter or `-` re-attaches.
+Every node, tile, chip and row is also a tap target that does what its key does; a right-click or long press shows the selection's keys as a menu. The palette's **New session** (and `!` then Enter in Files) opens the full chooser: Shell, Devcontainer and the agents available on the device (`[c] Claude`, `[x] Codex`, `[a] Antigravity`, `[o] opencode`; only those its helper found), existing sessions in that folder by name and observed state, then **Default** or **YOLO** permissions for that launch (YOLO bypasses the agent's normal approval protections). CX does not choose a conversation by recency. Detaching lands on the hub with the tile you left selected, so Enter or `-` re-attaches.
 
 From a plain terminal, without the UI:
 
@@ -59,6 +59,8 @@ From a plain terminal, without the UI:
 cx claude                 # Claude in this folder, in its last mode, attached (Ctrl+\ detaches)
 cx codex --yolo ~/proj    # Codex in ~/proj in YOLO (remembered as Codex's mode on this device)
 cx claude -r              # resume the latest Claude conversation here (-p: choose one)
+cx agy                    # Antigravity here (alias: cx antigravity); -r resumes its last
+cx opencode --yolo        # opencode here with --auto, its own server (stopping it stops both)
 cx shell -d tranquility   # a shell on another device, in its home
 cx kill <id|name>         # stop a session (asks first; -y skips)
 cx adopt [pid|tty]        # move an agent terminal started outside cx into cx and attach
@@ -66,7 +68,7 @@ cx adopt [pid|tty]        # move an agent terminal started outside cx into cx an
 
 `cx claude lend|revoke|list` still lend your Claude Code gateway; a folder with one of those names is `./list`.
 
-In **Files**, cx is a yazi clone: three columns (parent, folder, preview), yazi's keymap with which-key panels, and your `~/.config/yazi` theme, openers and keymap prepends when they exist; `~` lists every key. `y` or `x`, then `p`, copies or moves the selection; `'` and a device letter switch the tab to that device (`''` goes back), so a paste there is a transfer. `e` sends the selection through the device picker. `!` then `c`, `x` or `n` starts Claude, Codex or a shell in the folder (an agent in its last mode); `!` Enter opens the new-session chooser there. `H` is the hub, so yazi's history back and forward are Alt+← and Alt+→. Images preview through the kitty, sixel or iTerm2 protocols where the terminal has one. Incoming conflicts rename by default; overwrite is explicit. See the [user guide](docs/user-guide.md) for file operations, previews, clipboard, scrolling and all controls.
+In **Files**, cx is a yazi clone: three columns (parent, folder, preview), yazi's keymap with which-key panels, and your `~/.config/yazi` theme, openers and keymap prepends when they exist; `~` lists every key. `y` or `x`, then `p`, copies or moves the selection; `'` and a device letter switch the tab to that device (`''` goes back), so a paste there is a transfer. `e` sends the selection through the device picker. `!` then `c`, `x`, `a`, `o` or `n` starts Claude, Codex, Antigravity, opencode or a shell in the folder (an agent in its last mode); `!` Enter opens the new-session chooser there. `H` is the hub, so yazi's history back and forward are Alt+← and Alt+→. Images preview through the kitty, sixel or iTerm2 protocols where the terminal has one. Incoming conflicts rename by default; overwrite is explicit. See the [user guide](docs/user-guide.md) for file operations, previews, clipboard, scrolling and all controls.
 
 Refresh on the hub (palette **Refresh**) observes each device's network; its LAN neighbours then appear in the palette. Devices reachable through another host use saved SSH jump routes. Internet sharing and full reverse-access enforcement are still in development; see [robot mesh sharing](docs/robot-mesh-sharing.md).
 
@@ -74,7 +76,7 @@ Devices you own pair over SSH with a short code: `+` on the hub (or `cx invite`)
 
 `cx mesh` also sets up a private WARP mesh on your own free Cloudflare account: internet over MASQUE, LANs untouched, the mesh reachable. Devices join with one line (`curl -sL <endpoint>/<code>|sh`) and need no cx. See [mesh](docs/mesh.md). `cx claude lend <name>` lends your Claude Code gateway the same way: one line (`curl -sL <endpoint>/claude/<code>|sh`) configures Claude Code; see [claude](docs/claude.md).
 
-**Containers** groups Docker containers and devcontainers beneath each device. Join existing work, start a persistent shell or installed Claude/Codex agent, choose past conversations in the provider’s native picker, browse files, or explicitly start a configured workspace. See the [container guide](docs/containers.md).
+**Containers** groups Docker containers and devcontainers beneath each device. Join existing work, start a persistent shell or installed Claude/Codex agent (agy and opencode are not offered in containers yet), choose past conversations in the provider’s native picker, browse files, or explicitly start a configured workspace. See the [container guide](docs/containers.md).
 
 CX checks signed updates in the background. You can also run `cx update --check` or `cx update --device NAME`; existing sessions keep running.
 

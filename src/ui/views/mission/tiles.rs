@@ -425,7 +425,8 @@ pub(super) fn session_row(cx: &Cx, buf: &mut Buffer, r: Rect, x: &LabSession, pi
     if r.height >= 2 {
         let (p, ptok) = cx.prov(x);
         let mut x2 = r.x + 2;
-        x2 += cx.put(buf, x2, r.y + 1, 7, p, cx.st(ptok)) + 1;
+        // (8: `opencode`, the longest provider word, whole.)
+        x2 += cx.put(buf, x2, r.y + 1, 8, p, cx.st(ptok)) + 1;
         let cap = if let Some(n) = &x.note {
             note_line(cx, n.lines().next().unwrap_or(""))
         } else if ask {

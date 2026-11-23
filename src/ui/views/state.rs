@@ -148,6 +148,8 @@ pub struct LabNeighbor {
 pub enum Provider {
     Claude,
     Codex,
+    Agy,
+    Opencode,
     Shell,
 }
 impl Provider {
@@ -156,6 +158,8 @@ impl Provider {
         match crate::model::agent(id).map(|a| a.id) {
             Some("claude") => Self::Claude,
             Some("codex") => Self::Codex,
+            Some("agy") => Self::Agy,
+            Some("opencode") => Self::Opencode,
             _ => Self::Shell,
         }
     }
@@ -163,6 +167,8 @@ impl Provider {
         match self {
             Self::Claude => crate::model::CLAUDE.id,
             Self::Codex => crate::model::CODEX.id,
+            Self::Agy => crate::model::AGY.id,
+            Self::Opencode => crate::model::OPENCODE.id,
             Self::Shell => "shell",
         }
     }
@@ -442,15 +448,19 @@ mod tests {
             for x in &st.sessions {
                 assert!(st.device(&x.device).is_some());
             }
-            // (Past the 22 letters a device has none, as in the real hub.)
+            // (Past the 20 letters a device has none, as in the real hub.)
             let mut keys: Vec<char> = st.devices.iter().map(|d| d.hotkey).collect();
-            assert!(keys.iter().all(|c| !"ecxn".contains(*c)), "{}", st.fixture);
+            assert!(
+                keys.iter().all(|c| !"ecxaon".contains(*c)),
+                "{}",
+                st.fixture
+            );
             keys.retain(|c| *c != ' ');
             let lettered = keys.len();
             keys.sort();
             keys.dedup();
             assert_eq!(keys.len(), lettered, "hotkeys unique in {}", st.fixture);
-            assert_eq!(lettered, st.devices.len().min(22), "{}", st.fixture);
+            assert_eq!(lettered, st.devices.len().min(20), "{}", st.fixture);
             assert!(st.preview().is_some());
         }
     }

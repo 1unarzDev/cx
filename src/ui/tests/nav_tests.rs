@@ -149,8 +149,8 @@ fn device_slots_attach_and_moving_clamps_without_wrapping() {
     let (mut a, _rx) = queued_app();
     sessions(&mut a, 0, 3);
     a.open_device(0);
-    // Slot `s` is the second session: it attaches at once.
-    press(&mut a, 's');
+    // Slot `d` is the second session: it attaches at once.
+    press(&mut a, 'd');
     let attached = a
         .pending_attach
         .as_ref()
@@ -176,20 +176,21 @@ fn device_slots_attach_and_moving_clamps_without_wrapping() {
     );
 }
 
-/// Every session on a device holds its own key (21 of them, home row first) and the
-/// key attaches exactly that session; a session keeps its key while others end and a
-/// new one takes the freed key; the 22nd has none and a digit nobody holds stays a count.
+/// Every session on a device holds its own key (19 of them, home row first; `a` and `o`
+/// start agents) and the key attaches exactly that session; a session keeps its key
+/// while others end and a new one takes the freed key; the 20th has none and a digit
+/// nobody holds stays a count.
 #[test]
 fn every_session_key_attaches_its_session_and_keys_are_stable() {
     let (mut a, _rx) = queued_app();
-    sessions(&mut a, 0, 23);
+    sessions(&mut a, 0, 21);
     let keys: Vec<(String, Option<char>)> = a
         .slot_keys(0)
         .into_iter()
         .map(|(s, k)| (s.id.clone(), k))
         .collect();
     let given: String = keys.iter().filter_map(|(_, k)| *k).collect();
-    assert_eq!(given, "asdgquioyzvm123456789");
+    assert_eq!(given, "sdgquiyzvm123456789");
     assert_eq!(keys.iter().filter(|(_, k)| k.is_none()).count(), 2);
     for (id, k) in keys.iter().filter_map(|(id, k)| k.map(|k| (id, k))) {
         a.open_device(0);
@@ -201,7 +202,7 @@ fn every_session_key_attaches_its_session_and_keys_are_stable() {
             .or_else(|| a.attach_check.take().map(|(_, s, _, _)| s.id));
         assert_eq!(attached.as_deref(), Some(id.as_str()), "key {k}");
     }
-    // `s` ends: the others keep theirs; the first without a key takes `s`.
+    // `d` ends: the others keep theirs; the first without a key takes `d`.
     let s_id = keys[1].0.clone();
     a.work[0].sessions.retain(|s| s.id != s_id);
     let after: Vec<(String, Option<char>)> = a
@@ -215,12 +216,12 @@ fn every_session_key_attaches_its_session_and_keys_are_stable() {
         }
     }
     let heir = &keys.iter().find(|(_, k)| k.is_none()).unwrap().0;
-    assert!(after.contains(&(heir.clone(), Some('s'))));
+    assert!(after.contains(&(heir.clone(), Some('d'))));
 }
 
 /// A device with nothing running: a session that ended while cx watched is its resume
-/// row (`a` continues the agent's latest conversation in that folder) and recent
-/// folders follow on `s d ...` (each opens the launch chooser there); taps do the same.
+/// row (`s` continues the agent's latest conversation in that folder) and recent
+/// folders follow on `d g ...` (each opens the launch chooser there); taps do the same.
 #[test]
 fn an_ended_session_resumes_and_recent_folders_start_with_one_key() {
     let (mut a, rx) = queued_app();
@@ -247,25 +248,25 @@ fn an_ended_session_resumes_and_recent_folders_start_with_one_key() {
             .to_string()
     };
     assert!(
-        row("resume").contains(" a ") && row("resume").contains("/srv/proj"),
+        row("resume").contains(" s ") && row("resume").contains("/srv/proj"),
         "{text}"
     );
     assert!(
-        row("recent").contains(" s ") && row("recent").contains("/srv/notes"),
+        row("recent").contains(" d ") && row("recent").contains("/srv/notes"),
         "{text}"
     );
     let _ = rx.try_iter().count();
-    press(&mut a, 'a');
+    press(&mut a, 's');
     assert!(rx.try_iter().any(|t| matches!(&t.op,
         Operation::Create(c) if c.resume && !c.resume_pick && c.directory == "/srv/proj" && c.provider == "claude")));
     a.creating = false;
     a.open_device(0);
-    press(&mut a, 's');
+    press(&mut a, 'd');
     assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(0, p)) if p == "/srv/notes"));
     a.dialog = None;
     // The row's tap is its key.
     draw(&a, 120, 40);
-    let r = act("launch:0:s");
+    let r = act("launch:0:d");
     click(&mut a, r.x + 1, r.y, Rect::new(0, 0, 120, 40));
     assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(0, p)) if p == "/srv/notes"));
 }
@@ -279,7 +280,7 @@ fn attaching_from_a_tile_expands_it_and_a_key_skips_it() {
     sessions(&mut a, 0, 2);
     a.open_device(0);
     draw(&a, 120, 40);
-    press(&mut a, 's');
+    press(&mut a, 'd');
     let e = a.expand.clone().expect("the tile grows");
     assert!(e.grow && e.from.is_some_and(|r| r.width < 120), "{e:?}");
     let t0 = e.start;
@@ -533,7 +534,7 @@ fn help_and_footer_teach_the_design_keys_and_each_chip_runs_its_key() {
     let text = draw(&a, 120, 40);
     for key in [
         "ON THE HUB",
-        "a s d g",
+        "s d g q",
         "c x n",
         "ctrl+\\",
         "find",
@@ -1103,7 +1104,7 @@ fn a_secret_value_is_typed_masked_and_never_drawn() {
     let (mut a, _rx) = queued_app();
     a.view = View::Secrets;
     // The Cloudflare token's missing card (the first): its slot key opens the entry.
-    press(&mut a, 'a');
+    press(&mut a, 's');
     assert!(a.secret_entry.as_ref().is_some_and(|e| !e.naming));
     for c in "hunter2-s3cret".chars() {
         press(&mut a, c);
@@ -1454,7 +1455,7 @@ fn gg_is_the_first_row_when_no_device_has_g() {
     assert_ne!(a.selected_session().unwrap().1.id, last);
 }
 
-/// In a device a slot key moves the stop question to that session: `⌫ s ⌫`.
+/// In a device a slot key moves the stop question to that session: `⌫ d ⌫`.
 #[test]
 fn a_slot_key_retargets_an_armed_stop() {
     let (mut a, rx) = queued_app();
@@ -1464,7 +1465,7 @@ fn a_slot_key_retargets_an_armed_stop() {
     a.open_device(0);
     let _ = rx.try_iter().count();
     bksp(&mut a);
-    press(&mut a, 's');
+    press(&mut a, 'd');
     let (_, armed) = a.stop_armed.clone().expect("the question moved");
     assert_eq!(armed.id, a.slot_sessions(0)[1].id);
     bksp(&mut a);

@@ -173,6 +173,19 @@ fn real_device(app: &App) -> bool {
         .and_then(|d| app.devices.get(d))
         .is_some_and(|d| d.target.is_some())
 }
+/// Whether the open device's last Info lists an agent (its menu rows and help only;
+/// the key itself always tries, and the device says why it cannot).
+fn offers(app: &App, id: &str) -> bool {
+    app.device
+        .checked_sub(1)
+        .is_some_and(|d| app.provider_choices(d).contains(&id))
+}
+fn offers_agy(app: &App) -> bool {
+    offers(app, crate::model::AGY.id)
+}
+fn offers_opencode(app: &App) -> bool {
+    offers(app, crate::model::OPENCODE.id)
+}
 fn sessions_selected(app: &App) -> bool {
     app.selected_session().is_some()
 }
@@ -224,19 +237,27 @@ pub(super) const BINDINGS: &[Binding] = &[
     bind!(
         Hub,
         [ch(crate::model::CLAUDE.key)],
-        "c / x / n",
+        "c / x / a / o / n",
         Cmd::View("new-claude"),
-        "New claude / codex / shell on this device where cx was started, attached, in its last mode",
+        "New claude / codex / antigravity / opencode / shell on this device where cx was started, attached, in its last mode",
         hint("Claude")
     ),
     alias!(Hub, [ch(crate::model::CODEX.key)], "x", Cmd::View("new-codex"), "New codex here"),
+    alias!(Hub, [ch(crate::model::AGY.key)], "a", Cmd::View("new-agy"), "New antigravity here"),
+    alias!(
+        Hub,
+        [ch(crate::model::OPENCODE.key)],
+        "o",
+        Cmd::View("new-opencode"),
+        "New opencode here"
+    ),
     alias!(Hub, [ch('n')], "n", Cmd::View("new-shell"), "New shell here"),
     bind!(
         Hub,
         [ch(crate::model::CLAUDE.resume_key)],
-        "C / X",
+        "C / X / A / O",
         Cmd::View("resume-claude"),
-        "Resume the last claude / codex conversation where cx was started, in its last mode"
+        "Resume the last claude / codex / antigravity / opencode conversation where cx was started, in its last mode"
     ),
     alias!(
         Hub,
@@ -244,6 +265,20 @@ pub(super) const BINDINGS: &[Binding] = &[
         "X",
         Cmd::View("resume-codex"),
         "Resume the last codex conversation here"
+    ),
+    alias!(
+        Hub,
+        [ch(crate::model::AGY.resume_key)],
+        "A",
+        Cmd::View("resume-agy"),
+        "Resume the last antigravity conversation here"
+    ),
+    alias!(
+        Hub,
+        [ch(crate::model::OPENCODE.resume_key)],
+        "O",
+        Cmd::View("resume-opencode"),
+        "Resume the last opencode session here"
     ),
     bind!(
         Hub,
@@ -256,7 +291,7 @@ pub(super) const BINDINGS: &[Binding] = &[
     bind!(
         Device,
         [code(Enter)],
-        "Enter · a s d g …",
+        "Enter · s d g …",
         Cmd::View("attach"),
         "Attach the selected session / the one showing that key; with nothing running, resume the last one or start in a recent folder",
         hint("Attach")
@@ -300,6 +335,42 @@ pub(super) const BINDINGS: &[Binding] = &[
         Cmd::View("resume-codex"),
         "Resume the last codex conversation, in its last mode",
         hint("Resume codex")
+    ),
+    bind!(
+        Device,
+        [ch(crate::model::AGY.key)],
+        "a",
+        Cmd::View("new-agy"),
+        "New antigravity session, attached, in its last mode",
+        hint("Antigravity"),
+        Some(offers_agy)
+    ),
+    bind!(
+        Device,
+        [ch(crate::model::OPENCODE.key)],
+        "o",
+        Cmd::View("new-opencode"),
+        "New opencode session, attached, in its last mode",
+        hint("opencode"),
+        Some(offers_opencode)
+    ),
+    bind!(
+        Device,
+        [ch(crate::model::AGY.resume_key)],
+        "A",
+        Cmd::View("resume-agy"),
+        "Resume the last antigravity conversation in this folder, in its last mode",
+        hint("Resume antigravity"),
+        Some(offers_agy)
+    ),
+    bind!(
+        Device,
+        [ch(crate::model::OPENCODE.resume_key)],
+        "O",
+        Cmd::View("resume-opencode"),
+        "Resume the last opencode session in this folder, in its last mode",
+        hint("Resume opencode"),
+        Some(offers_opencode)
     ),
     bind!(
         Device,
@@ -824,7 +895,7 @@ mod tests {
     }
     #[test]
     fn no_static_binding_takes_a_device_letter_on_the_hub() {
-        // The hub's letters are devices: only `e` (link), `c x n` (launch here, never
+        // The hub's letters are devices: only `e` (link), `c x a o n` (launch here, never
         // device letters: see `hotkeys`) and `j k gg G` (motion) are bound there, and
         // `K` (keys) is uppercase.
         for c in 'a'..='z' {
@@ -833,8 +904,8 @@ mod tests {
                 .iter()
                 .filter(|b| matches!(b.ctx, Ctx::Hub | Ctx::Global))
                 .any(|b| b.keys.iter().any(|k| k.matches(&key)));
-            assert_eq!(taken, "jkgGcxn".contains(c), "{c}");
-            if "cxn".contains(c) {
+            assert_eq!(taken, "jkgGcxaon".contains(c), "{c}");
+            if "cxaon".contains(c) {
                 let name = c.to_string();
                 let m = super::super::hotkeys::assign(&[(&name, &name)], &Default::default());
                 assert_ne!(m[&name], c, "{c} is a hub key and a device letter");

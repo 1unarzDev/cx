@@ -2,6 +2,11 @@
 
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
+## Unreleased
+
+### Fixes
+- **A terminal that no longer exists is never offered.** Enter on a session that ended a moment earlier no longer says "Attachment failed" and throws you back to the hub: its tile goes with a quiet `‹name› ended · removed` and you stay on the screen you were on (a detach still returns to the hub with its tile selected). An `outside cx` terminal that was closed leaves a device's screen within 3 s (it took up to 30 s), one remembered from the last run shows only once its device lists it again, and a move that finds it closed removes it instead of reporting an error. Enter on a tile of a device cx cannot reach only says why, instead of trying.
+
 ## v0.4.0
 
 Take ownership that sticks, a stop that works everywhere, sessions that open at once, and cx from a plain terminal (`cx claude`).

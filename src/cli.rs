@@ -260,7 +260,12 @@ pub fn adopt(terminal: Option<String>, device: Option<String>) -> Result<()> {
             Ok(crate::auth::Answer::Submit(String::from_utf8(value)?))
         },
     )?;
-    let moved: Session = serde_json::from_value(rx.recv().context("the move did not finish")??)?;
-    eprintln!("moved {} into CX", label(&moved));
+    let value = rx.recv().context("the move did not finish")??;
+    let window = value["window"].as_str().and_then(crate::adoption::window_note);
+    let moved: Session = serde_json::from_value(value)?;
+    match window {
+        Some(note) => eprintln!("moved {} into CX · {note}", label(&moved)),
+        None => eprintln!("moved {} into CX", label(&moved)),
+    }
     attach(&d, &moved)
 }

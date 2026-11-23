@@ -243,6 +243,9 @@ impl App {
                 .insert((reply.device, address.clone(), interface.clone()), evidence);
             self.pump_network_refresh();
         }
+        if matches!(reply.op, Operation::ExternalSessions) {
+            self.external_loading.remove(&reply.device);
+        }
         let is_sessions = matches!(reply.op, Operation::Sessions);
         if is_sessions {
             self.work[reply.device].loading = false;
@@ -304,6 +307,25 @@ impl App {
                                 candidate["ssh"]["state"] = serde_json::json!("unknown");
                             }
                         }
+                    }
+                }
+                // The outside terminal closed (or its device restarted) before the
+                // move: it is gone, not an error to read.
+                if let Operation::AdoptSession { id, .. } = &reply.op {
+                    let text = format!("{e:#}");
+                    if text.contains("terminal changed or closed")
+                        || text.contains("execution device restarted")
+                    {
+                        if let Some(key) = self.work[reply.device]
+                            .sessions
+                            .iter()
+                            .find(|s| s.id == *id)
+                            .map(workspaces::runtime_key)
+                        {
+                            self.session_gone(reply.device, &key);
+                        }
+                        self.send(reply.device, Operation::ExternalSessions);
+                        return;
                     }
                 }
                 if matches!(reply.op, Operation::Info) {

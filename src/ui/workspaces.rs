@@ -103,7 +103,103 @@ impl App {
             Err(e) => self.set_notice_as(NoticeKind::Error, format!("Could not save pin: {e}")),
         }
     }
+    /// How an attach ended, back on cx's screen. Only a detach (or the session's end
+    /// while attached) lands on the hub; a failed attach never moves the viewer.
+    pub(super) fn attach_finished(
+        &mut self,
+        d: usize,
+        s: &Session,
+        result: Result<()>,
+        left: Option<String>,
+    ) {
+        match result {
+            Ok(()) => {
+                self.returned_from(d, s);
+                self.start_expand(d, s, false);
+                self.set_notice(left.unwrap_or_else(|| {
+                    format!(
+                        "Returned from {} · session remains on execution host",
+                        identity(&self.devices[d])
+                    )
+                }));
+                // Back at once: the notice appears without its fade-in.
+                self.notice_started = self
+                    .notice_started
+                    .and_then(|t| t.checked_sub(notifications::TRANSITION));
+            }
+            // The device refused it: the terminal ended or changed since it was listed.
+            Err(e) if format!("{e:#}").contains(sessions::ATTACH_REFUSED) => {
+                self.session_gone(d, &runtime_key(s))
+            }
+            Err(e) => self.set_notice_as(
+                NoticeKind::Error,
+                safe_text(&format!("Attachment failed: {e:#}")),
+            ),
+        }
+        self.refresh_work();
+    }
+    /// A terminal its device says no longer exists: its tile goes now (the next
+    /// listing reconciles), the selection stays where it was, the screen stays put.
+    pub(super) fn session_gone(&mut self, d: usize, key: &str) {
+        let Some(at) = self.work[d]
+            .sessions
+            .iter()
+            .position(|s| runtime_key(s) == key)
+        else {
+            return;
+        };
+        let selected = self.selected_session().map(|(i, s)| (i, runtime_key(&s)));
+        let index = self.selected;
+        let gone = self.work[d].sessions.remove(at);
+        self.set_notice(format!("{} ended · removed", session_preview::label(&gone)));
+        if !is_discovered_external(&gone) {
+            // Its folder stays offered for a resume, as when a listing drops it.
+            self.note_ended(d, vec![gone]);
+        }
+        match selected {
+            Some((i, k)) if (i, k.as_str()) != (d, key) => {
+                self.reconcile_session_selection(Some((i, k)))
+            }
+            _ => self.selected = index.min(self.session_rows().len().saturating_sub(1)),
+        }
+    }
+    /// The 3 s list poll of the hub and device views; the open device's outside
+    /// terminals too (the hub has them on the 30 s refresh).
+    pub(super) fn poll_sessions(&mut self) {
+        for d in 0..self.devices.len() {
+            if !self.background_checks_enabled(d) || !(self.device == 0 || self.device == d + 1) {
+                continue;
+            }
+            // A device pushing its list (watch) needs no poll.
+            if !self.sessions_pushed(d) && !self.work[d].loading {
+                self.work[d].loading = self.send(d, Operation::Sessions);
+            }
+            if self.view == View::Work
+                && self.device == d + 1
+                && self
+                    .providers
+                    .get(&d)
+                    .is_some_and(|(caps, _)| caps.iter().any(|c| c == "adopt-session-v1"))
+                && !self.external_loading.contains(&d)
+                && self.send(d, Operation::ExternalSessions)
+            {
+                self.external_loading.insert(d);
+            }
+        }
+    }
+    /// A device that could not be reached: its cached tiles say why, and opening one
+    /// says it again instead of trying.
+    fn unreachable(&mut self, d: usize) -> bool {
+        let Some(why) = self.work[d].error.clone() else {
+            return false;
+        };
+        self.set_notice_as(NoticeKind::Warning, format!("Not attached · {why}"));
+        true
+    }
     pub(super) fn open_session(&mut self, d: usize, s: Session, watch: bool) {
+        if self.unreachable(d) {
+            return;
+        }
         if s.external && s.origin.is_some() {
             if watch && outside_tmux(&s) {
                 self.set_notice(
@@ -363,7 +459,10 @@ impl NavigationCache {
                 continue;
             };
             if cached.sessions.len() <= 512 {
+                // Outside terminals are bound to a process that may be gone: they
+                // show again once the device lists them.
                 app.work[d].sessions = cached.sessions;
+                app.work[d].sessions.retain(|s| !is_discovered_external(s));
             }
             if cached.device.observed_at > 0 {
                 app.seen

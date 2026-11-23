@@ -1,6 +1,7 @@
 use super::*;
 use ratatui::backend::TestBackend;
 mod container_agent_tests;
+mod dead_tests;
 mod nav_tests;
 mod workspace_tests;
 fn app() -> App {
@@ -5014,9 +5015,11 @@ fn failed_session_refresh_preserves_stale_cache_and_rechecks_attachment() {
         )),
     });
     assert_eq!(a.work[1].sessions.len(), 1);
+    // An unreachable device's cached tile only says why (decision 2026-11-23).
     a.open_session(1, disposable_shell(), false);
     assert!(a.pending_attach.is_none());
-    assert!(a.attach_check.is_some());
+    assert!(a.attach_check.is_none());
+    assert!(a.notice.starts_with("Not attached · "), "{}", a.notice);
     assert_eq!(a.work[1].fetched, 0);
     assert!(a.work[1].error.is_some());
 }

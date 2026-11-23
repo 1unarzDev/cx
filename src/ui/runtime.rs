@@ -2361,34 +2361,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
             };
             screen.resume()?;
             last_interaction = Instant::now();
-            app.returned_from(d, &session);
-            let returned = result.is_ok();
-            if returned {
-                app.start_expand(d, &session, false);
-            }
-            app.set_notice_as(
-                if result.is_err() {
-                    NoticeKind::Error
-                } else {
-                    NoticeKind::Info
-                },
-                match result {
-                    Ok(()) => left.unwrap_or_else(|| {
-                        format!(
-                            "Returned from {} · session remains on execution host",
-                            identity(&app.devices[d])
-                        )
-                    }),
-                    Err(e) => safe_text(&format!("Attachment failed: {e:#}")),
-                },
-            );
-            if returned {
-                // Back at once: the notice appears without its fade-in.
-                app.notice_started = app
-                    .notice_started
-                    .and_then(|t| t.checked_sub(notifications::TRANSITION));
-            }
-            app.refresh_work();
+            app.attach_finished(d, &session, result, left);
             // The vitals fell due while attached: a sample now would redraw the frame
             // just painted on return (a new rtt point) a round trip later.
             last_vitals = Instant::now();
@@ -2603,16 +2576,7 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         if matches!(app.view, View::Work | View::Network)
             && last_session_refresh.elapsed() >= Duration::from_secs(3)
         {
-            for d in 0..app.devices.len() {
-                // A device pushing its list (watch) needs no poll.
-                if app.background_checks_enabled(d)
-                    && !app.sessions_pushed(d)
-                    && (app.device == 0 || app.device == d + 1)
-                    && !app.work[d].loading
-                {
-                    app.work[d].loading = app.send(d, Operation::Sessions);
-                }
-            }
+            app.poll_sessions();
             last_session_refresh = Instant::now();
         }
         if last_vitals.elapsed() >= super::vitals::EVERY

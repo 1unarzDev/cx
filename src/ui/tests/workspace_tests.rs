@@ -888,7 +888,8 @@ fn focused_scrollback_and_missing_selection_never_spin_the_event_loop() {
 #[test]
 fn unreachable_or_cached_devices_keep_the_in_cx_round_trip() {
     // An errored device, a startup-cache row (never fetched) and a listing
-    // older than a minute must not suspend the viewer into a raw ssh.
+    // older than a minute must not suspend the viewer into a raw ssh; the
+    // errored one is not even tried.
     for case in 0..3 {
         let (mut a, rx) = queued_app();
         a.work[0].sessions.push(identified_shell());
@@ -909,6 +910,13 @@ fn unreachable_or_cached_devices_keep_the_in_cx_round_trip() {
             a.pending_attach.is_none(),
             "case {case} suspended the viewer"
         );
+        if case == 0 {
+            // Errored: it says why and tries nothing (decision 2026-11-23).
+            assert!(a.attach_check.is_none());
+            assert!(a.notice.contains("Connection refused"), "{}", a.notice);
+            assert!(rx.try_recv().is_err());
+            continue;
+        }
         assert!(a.attach_check.is_some(), "case {case}");
         assert!(matches!(rx.try_recv().unwrap().op, Operation::Sessions));
     }

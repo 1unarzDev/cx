@@ -2,6 +2,11 @@
 
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
+## Unreleased
+
+### Features
+- **A moved terminal keeps its window.** After cx moves a terminal that ran in a single-window terminal app (foot, kitty, alacritty, ghostty, wezterm, xterm, urxvt, st, konsole, tilix, xfce4-terminal, terminator), it opens a new window of the same app in the same folder, attached to the moved session, before closing the frozen one, instead of the window just disappearing. It works when the move was asked for from another device too (the window opens on the terminal's machine). If the window cannot be opened, the old one is closed as before; the notice after the move says which (`its window was reopened attached to cx` / `its old window was closed`).
+
 ## v0.4.0
 
 Take ownership that sticks, a stop that works everywhere, sessions that open at once, and cx from a plain terminal (`cx claude`).

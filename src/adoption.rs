@@ -484,19 +484,64 @@ pub fn moved(leader: &ProcessIdentity, holder: &ProcessIdentity, index: u32) -> 
     // An unreadable holder proves nothing.
     fs::read_dir(format!("/proc/{}/fd", holder.pid)).is_ok() && !holds_master(holder.pid, index)
 }
-/// Close a single-window terminal emulator whose only terminal was just stolen.
+/// What became of the window a verified move emptied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Window {
+    /// The same terminal app was reopened attached to the moved session, then
+    /// the frozen window was killed.
+    Replaced,
+    /// The frozen window was closed (or was already gone); nothing replaced it.
+    Closed,
+    /// Left alone: a multiplexer, a terminal server, or a holder CX cannot verify.
+    Kept,
+}
+impl Window {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Window::Replaced => "replaced",
+            Window::Closed => "closed",
+            Window::Kept => "kept",
+        }
+    }
+}
+/// What a move's result tells the user about the source window (UI notice, CLI).
+pub fn window_note(window: &str) -> Option<&'static str> {
+    match window {
+        "replaced" => Some("its window was reopened attached to cx"),
+        "closed" => Some("its old window was closed"),
+        _ => None,
+    }
+}
+/// A replacement window: the command it runs (`cx attach <id>`) and the moved
+/// session's leader, whose working directory it opens in.
+pub struct Replacement<'a> {
+    pub leader: &'a ProcessIdentity,
+    pub command: Vec<std::ffi::OsString>,
+}
+
+/// Close a single-window terminal emulator whose only terminal was just stolen,
+/// first reopening the same emulator attached to the moved session when asked.
 ///
 /// After the steal the holder no longer holds any pseudo-terminal master, so
 /// its window is empty. A known standalone terminal emulator is killed outright:
 /// some (foot) ignore SIGHUP, and closing the frozen window later would make the
 /// emulator signal the moved terminal's process group, killing the work it just
 /// handed over. Any other holder (an editor's terminal such as Emacs vterm, VS
-/// Code's pty host) only gets SIGHUP, as before. A multiplexer (tmux, screen), a
-/// terminal server (one still holding other masters, or started as a server), a
-/// holder whose descriptors cannot be read and reused PIDs are left untouched.
-pub fn close_empty_holder(holder: &ProcessIdentity, kind: &str) -> bool {
+/// Code's pty host) only gets SIGHUP, as before, and is never replaced. A
+/// multiplexer (tmux, screen), a terminal server (one still holding other
+/// masters, or started as a server), a holder whose descriptors cannot be read
+/// and reused PIDs are left untouched. A replacement that cannot start (no
+/// command form, no display, spawn error) only skips the reopening.
+pub fn close_empty_holder(
+    holder: &ProcessIdentity,
+    kind: &str,
+    replace: Option<&Replacement>,
+) -> Window {
     if kind != "terminal" {
-        return false;
+        return Window::Kept;
+    }
+    if !alive(holder.pid, &holder.start_ticks) {
+        return Window::Closed;
     }
     let root = Path::new("/proc");
     let dir = root.join(holder.pid.to_string());
@@ -505,40 +550,231 @@ pub fn close_empty_holder(holder: &ProcessIdentity, kind: &str) -> bool {
         || !masters(root, holder.pid).is_empty()
         || terminal_server(root, holder.pid)
     {
-        return false;
+        return Window::Kept;
     }
     let comm = fs::read_to_string(dir.join("comm")).unwrap_or_default();
-    let sig = if EMULATORS.contains(&comm.trim()) {
-        libc::SIGKILL
-    } else {
-        libc::SIGHUP
+    let Some((_, form)) = EMULATORS.iter().find(|(name, _)| *name == comm.trim()) else {
+        signal(holder.pid, &holder.start_ticks, libc::SIGHUP);
+        return Window::Closed;
     };
-    signal(holder.pid, &holder.start_ticks, sig)
+    let replaced = match (replace, form) {
+        (Some(replace), Some(form)) => reopen(holder, form, replace).is_some(),
+        _ => false,
+    };
+    signal(holder.pid, &holder.start_ticks, libc::SIGKILL);
+    if replaced {
+        Window::Replaced
+    } else {
+        Window::Closed
+    }
 }
-/// Standalone terminal emulators (by `comm`), whose emptied window may be killed.
-const EMULATORS: &[&str] = &[
-    "foot",
-    "alacritty",
-    "kitty",
-    "ghostty",
-    "wezterm-gui",
-    "xterm",
-    "uxterm",
-    "urxvt",
-    "rxvt",
-    "st",
-    "konsole",
-    "xfce4-terminal",
-    "lxterminal",
-    "mate-terminal",
-    "terminator",
-    "tilix",
-    "sakura",
-    "qterminal",
-    "terminology",
-    "contour",
-    "rio",
+/// Standalone terminal emulators (by `comm`), whose emptied window may be killed,
+/// with the arguments that make a new window run a command (`None`: never reopened).
+type Form = Option<&'static [&'static str]>;
+const EMULATORS: &[(&str, Form)] = &[
+    ("foot", Some(&[])),
+    ("kitty", Some(&[])),
+    ("alacritty", Some(&["-e"])),
+    ("ghostty", Some(&["-e"])),
+    ("xterm", Some(&["-e"])),
+    ("uxterm", Some(&["-e"])),
+    ("urxvt", Some(&["-e"])),
+    ("rxvt", Some(&["-e"])),
+    ("st", Some(&["-e"])),
+    ("konsole", Some(&["-e"])),
+    ("tilix", Some(&["-e"])),
+    ("wezterm-gui", Some(&["start", "--"])),
+    ("xfce4-terminal", Some(&["-x"])),
+    ("terminator", Some(&["-x"])),
+    ("lxterminal", None),
+    ("mate-terminal", None),
+    ("sakura", None),
+    ("qterminal", None),
+    ("terminology", None),
+    ("contour", None),
+    ("rio", None),
 ];
+/// The holder's own variables a new window needs to reach the same display.
+const DISPLAY_KEYS: &[&str] = &[
+    "WAYLAND_DISPLAY",
+    "DISPLAY",
+    "XAUTHORITY",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+];
+/// Variables kept from CX's own environment: a minimal login environment plus
+/// where CX keeps its state, so `cx attach` finds the same managed server.
+fn own_key(key: &str) -> bool {
+    matches!(
+        key,
+        "PATH"
+            | "HOME"
+            | "USER"
+            | "LOGNAME"
+            | "LANG"
+            | "LANGUAGE"
+            | "XDG_STATE_HOME"
+            | "XDG_CONFIG_HOME"
+    ) || key.starts_with("LC_")
+}
+/// The replacement window's whole environment: `own_key` variables from CX, then
+/// only `DISPLAY_KEYS` from the holder's NUL-separated environ. Nothing else (no
+/// TERM, no secrets) passes; oversized values are dropped.
+pub fn window_env(
+    holder_environ: &[u8],
+    own: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+    let mut env: Vec<_> = own
+        .filter(|(k, v)| k.to_str().is_some_and(own_key) && v.len() <= 4096)
+        .collect();
+    for entry in holder_environ.split(|b| *b == 0) {
+        let Some(eq) = entry.iter().position(|b| *b == b'=') else {
+            continue;
+        };
+        let (key, value) = (&entry[..eq], &entry[eq + 1..]);
+        if DISPLAY_KEYS.iter().any(|k| k.as_bytes() == key) && value.len() <= 4096 {
+            env.retain(|(k, _)| k.as_bytes() != key);
+            env.push((
+                OsStr::from_bytes(key).into(),
+                OsStr::from_bytes(value).into(),
+            ));
+        }
+    }
+    env
+}
+/// argv after the program for `form` running `command`.
+pub fn emulator_args(form: &[&str], command: &[std::ffi::OsString]) -> Vec<std::ffi::OsString> {
+    form.iter()
+        .map(Into::into)
+        .chain(command.iter().cloned())
+        .collect()
+}
+fn executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+/// The emulator's program from its `/proc/<pid>/exe` link. An emulator updated
+/// while it ran reads "<path> (deleted)": the new file at that path, else the
+/// same name on `PATH`.
+pub fn emulator_program(exe: &Path, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+    if executable_file(exe) {
+        return Some(exe.to_path_buf());
+    }
+    let stripped = exe.as_os_str().as_bytes().strip_suffix(b" (deleted)")?;
+    let original = Path::new(OsStr::from_bytes(stripped));
+    if executable_file(original) {
+        return Some(original.to_path_buf());
+    }
+    let name = original.file_name()?;
+    std::env::split_paths(path?)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_absolute() && executable_file(candidate))
+}
+/// Whether the user's session bus in `env` accepts connections (for systemd-run).
+fn user_bus(env: &[(std::ffi::OsString, std::ffi::OsString)]) -> bool {
+    let get = |key: &str| env.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+    let from_address = get("DBUS_SESSION_BUS_ADDRESS").and_then(|a| {
+        let a = a.to_str()?.to_string();
+        let path = a.strip_prefix("unix:path=")?;
+        Some(PathBuf::from(path.split(',').next()?))
+    });
+    let socket =
+        from_address.or_else(|| get("XDG_RUNTIME_DIR").map(|d| PathBuf::from(d).join("bus")));
+    socket.is_some_and(|s| std::os::unix::net::UnixStream::connect(s).is_ok())
+}
+/// Open a new window of the holder's emulator running `replace.command`.
+/// Returns None (and starts nothing) when it cannot be done safely.
+fn reopen(holder: &ProcessIdentity, form: &[&str], replace: &Replacement) -> Option<()> {
+    use std::io::Read;
+    let dir = PathBuf::from(format!("/proc/{}", holder.pid));
+    let path = std::env::var_os("PATH");
+    let program = emulator_program(&fs::read_link(dir.join("exe")).ok()?, path.as_deref())?;
+    let mut environ = Vec::new();
+    fs::File::open(dir.join("environ"))
+        .ok()?
+        .take(256 * 1024)
+        .read_to_end(&mut environ)
+        .ok()?;
+    // The environment read must be the verified holder's.
+    if !alive(holder.pid, &holder.start_ticks) {
+        return None;
+    }
+    let env = window_env(&environ, std::env::vars_os());
+    if !env
+        .iter()
+        .any(|(k, _)| k == "WAYLAND_DISPLAY" || k == "DISPLAY")
+    {
+        return None;
+    }
+    let home = env
+        .iter()
+        .find(|(k, _)| k == "HOME")
+        .map(|(_, v)| PathBuf::from(v));
+    let cwd = alive(replace.leader.pid, &replace.leader.start_ticks)
+        .then(|| fs::read_link(format!("/proc/{}/cwd", replace.leader.pid)).ok())
+        .flatten()
+        .filter(|d| d.is_dir())
+        .or(home.filter(|h| h.is_dir()))
+        .unwrap_or_else(|| PathBuf::from("/"));
+    let systemd_run = path.as_deref().and_then(|p| {
+        std::env::split_paths(p)
+            .map(|d| d.join("systemd-run"))
+            .find(|c| c.is_absolute() && executable_file(c))
+    });
+    let scope = systemd_run.filter(|_| user_bus(&env));
+    spawn_window(
+        &program,
+        &emulator_args(form, &replace.command),
+        &env,
+        &cwd,
+        scope.as_deref(),
+    )
+    .ok()
+}
+/// Start `program args` detached: its own session, stdio on /dev/null, the given
+/// environment only, and (with `scope`, a systemd-run) its own transient user
+/// scope, so it is in neither the managed tmux unit nor a viewer pane's cgroup.
+/// Never waited on; a thread reaps it whenever it exits.
+pub fn spawn_window(
+    program: &Path,
+    args: &[std::ffi::OsString],
+    env: &[(std::ffi::OsString, std::ffi::OsString)],
+    cwd: &Path,
+    scope: Option<&Path>,
+) -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    let mut command = match scope {
+        Some(systemd_run) => {
+            let mut c = Command::new(systemd_run);
+            c.args(["--user", "--scope", "--collect", "--quiet", "--"])
+                .arg(program);
+            c
+        }
+        None => Command::new(program),
+    };
+    command
+        .args(args)
+        .env_clear()
+        .envs(env.iter().map(|(k, v)| (k, v)))
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn()?;
+    std::thread::spawn(move || child.wait());
+    Ok(())
+}
 /// An emulator that serves many windows (gnome-terminal-server, `foot --server`,
 /// `kitty --single-instance`, urxvtd) outlives its last window by design.
 fn terminal_server(root: &Path, pid: u32) -> bool {
@@ -1165,12 +1401,13 @@ mod tests {
         };
         let spawn = |program: &Path, args: &[&str]| {
             // (A copy written just now can be busy while another test's fork holds it.)
-            let mut child = Command::new(program).args(args).spawn();
+            let start = || Command::new(program).args(args).env_clear().spawn();
+            let mut child = start();
             for _ in 0..100 {
                 match &child {
                     Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) => {
                         std::thread::sleep(Duration::from_millis(10));
-                        child = Command::new(program).args(args).spawn();
+                        child = start();
                     }
                     _ => break,
                 }
@@ -1191,23 +1428,38 @@ mod tests {
         // A known emulator whose window was emptied: SIGKILL.
         let mut emulator = spawn(&foot, &["30"]);
         let id = identity(&emulator);
-        assert!(
-            !close_empty_holder(&id, "tmux"),
+        assert_eq!(
+            close_empty_holder(&id, "tmux", None),
+            Window::Kept,
             "multiplexers are never closed"
         );
         let reused = ProcessIdentity {
             start_ticks: "1".into(),
             ..id.clone()
         };
-        assert!(
-            !close_empty_holder(&reused, "terminal"),
-            "a reused pid is never signalled"
+        assert_eq!(
+            close_empty_holder(&reused, "terminal", None),
+            Window::Closed,
+            "a reused pid is never signalled: its window is gone"
         );
-        assert!(close_empty_holder(&id, "terminal"));
+        assert_eq!(emulator.try_wait().unwrap(), None);
+        // (The holder has no display variables: the replacement is skipped, the close
+        // is not. A real display or user bus is never reached from a unit test.)
+        let replace = Replacement {
+            leader: &id,
+            command: vec!["/nonexistent/cx".into(), "attach".into(), "cx-1".into()],
+        };
+        assert_eq!(
+            close_empty_holder(&id, "terminal", Some(&replace)),
+            Window::Closed
+        );
         assert_eq!(emulator.wait().unwrap().signal(), Some(libc::SIGKILL));
-        // Anything else (an editor's terminal, a pty host): only SIGHUP.
+        // Anything else (an editor's terminal, a pty host): only SIGHUP, never replaced.
         let mut other = spawn(Path::new("/bin/sleep"), &["30"]);
-        assert!(close_empty_holder(&identity(&other), "terminal"));
+        assert_eq!(
+            close_empty_holder(&identity(&other), "terminal", Some(&replace)),
+            Window::Closed
+        );
         assert_eq!(other.wait().unwrap().signal(), Some(libc::SIGHUP));
     }
 
@@ -1238,5 +1490,192 @@ mod tests {
         for (pid, exe, _, server) in cases {
             assert_eq!(terminal_server(root, pid), server, "{exe}");
         }
+    }
+
+    #[test]
+    fn a_replacement_window_runs_attach_in_each_emulators_command_form() {
+        use std::ffi::OsString;
+        let command: Vec<OsString> = vec![
+            "/home/u/.local/bin/cx".into(),
+            "attach".into(),
+            "cx-ab".into(),
+        ];
+        let form = |name: &str| EMULATORS.iter().find(|(n, _)| *n == name).unwrap().1;
+        let args = |name: &str| {
+            emulator_args(form(name).expect(name), &command)
+                .into_iter()
+                .map(|a| a.into_string().unwrap())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let tail = "/home/u/.local/bin/cx attach cx-ab";
+        for name in ["foot", "kitty"] {
+            assert_eq!(args(name), tail, "{name}");
+        }
+        for name in [
+            "alacritty",
+            "ghostty",
+            "xterm",
+            "uxterm",
+            "urxvt",
+            "rxvt",
+            "st",
+            "konsole",
+            "tilix",
+        ] {
+            assert_eq!(args(name), format!("-e {tail}"), "{name}");
+        }
+        assert_eq!(args("wezterm-gui"), format!("start -- {tail}"));
+        for name in ["xfce4-terminal", "terminator"] {
+            assert_eq!(args(name), format!("-x {tail}"), "{name}");
+        }
+        // Emulators without a known form are still closed, never reopened.
+        for name in [
+            "lxterminal",
+            "mate-terminal",
+            "sakura",
+            "qterminal",
+            "terminology",
+            "contour",
+            "rio",
+        ] {
+            assert!(form(name).is_none(), "{name}");
+        }
+        assert!(EMULATORS
+            .iter()
+            .all(|(n, _)| !["emacs", "code", "tmux", "screen", "sshd"].contains(n)));
+    }
+
+    #[test]
+    fn a_replacement_window_gets_only_display_variables_from_its_holder() {
+        use std::ffi::OsString;
+        let holder = b"WAYLAND_DISPLAY=wayland-1\0DISPLAY=:0\0XAUTHORITY=/run/user/1/xauth\0\
+XDG_RUNTIME_DIR=/run/user/1\0DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1/bus\0\
+ANTHROPIC_API_KEY=sk-secret\0TERM=foot\0PATH=/holder/bin\0HOME=/holder\0SSH_AUTH_SOCK=/x\0\
+TMUX=/tmp/t,1,0\0broken\0DISPLAY_EXTRA=1";
+        let own = [
+            ("PATH", "/usr/bin"),
+            ("HOME", "/home/u"),
+            ("USER", "u"),
+            ("LANG", "C.UTF-8"),
+            ("LC_CTYPE", "C.UTF-8"),
+            ("XDG_STATE_HOME", "/home/u/.state"),
+            ("XDG_RUNTIME_DIR", "/run/user/own"),
+            ("TERM", "tmux-256color"),
+            ("OPENAI_API_KEY", "sk-own"),
+            ("CX_MANAGED_SOCKET", "/s"),
+            ("TMUX", "/tmp/own"),
+        ]
+        .map(|(k, v)| (OsString::from(k), OsString::from(v)));
+        let mut env: Vec<(String, String)> = window_env(holder, own.into_iter())
+            .into_iter()
+            .map(|(k, v)| (k.into_string().unwrap(), v.into_string().unwrap()))
+            .collect();
+        env.sort();
+        let expected = [
+            ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1/bus"),
+            ("DISPLAY", ":0"),
+            ("HOME", "/home/u"),
+            ("LANG", "C.UTF-8"),
+            ("LC_CTYPE", "C.UTF-8"),
+            ("PATH", "/usr/bin"),
+            ("USER", "u"),
+            ("WAYLAND_DISPLAY", "wayland-1"),
+            ("XAUTHORITY", "/run/user/1/xauth"),
+            ("XDG_RUNTIME_DIR", "/run/user/1"),
+            ("XDG_STATE_HOME", "/home/u/.state"),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()));
+        assert_eq!(env, expected);
+        // Oversized values are dropped.
+        let long = format!("DISPLAY={}\0", "x".repeat(5000));
+        assert!(window_env(long.as_bytes(), std::iter::empty()).is_empty());
+    }
+
+    #[test]
+    fn an_updated_emulator_is_found_at_its_path_or_on_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let foot = bin.join("foot");
+        fs::write(&foot, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&foot, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = std::ffi::OsString::from(format!("/nonexistent:{}", bin.display()));
+        assert_eq!(emulator_program(&foot, None), Some(foot.clone()));
+        let deleted = PathBuf::from(format!("{} (deleted)", foot.display()));
+        assert_eq!(emulator_program(&deleted, None), Some(foot.clone()));
+        let gone = PathBuf::from("/old/prefix/foot (deleted)");
+        assert_eq!(emulator_program(&gone, Some(&path)), Some(foot.clone()));
+        assert_eq!(emulator_program(&gone, None), None);
+        assert_eq!(
+            emulator_program(Path::new("/old/prefix/foot"), Some(&path)),
+            None
+        );
+        fs::set_permissions(&foot, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(emulator_program(&gone, Some(&path)), None);
+    }
+
+    #[test]
+    fn a_replacement_window_starts_detached_with_only_its_environment() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("out");
+        let work = tmp.path().join("work");
+        fs::create_dir(&work).unwrap();
+        let recorder = tmp.path().join("foot");
+        fs::write(
+            &recorder,
+            format!(
+                "#!/bin/sh\nstdio=\"$(readlink /proc/$$/fd/0) $(readlink /proc/$$/fd/2)\"\n\
+                 {{ echo \"args $*\"; echo \"cwd $(pwd)\"; env | sort; \
+                 echo \"stat $(cut -d' ' -f5,6 /proc/$$/stat)\"; echo \"pid $$\"; \
+                 echo \"stdio $stdio\"; }} >{}.tmp; mv {0}.tmp {0}\n",
+                out.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&recorder, fs::Permissions::from_mode(0o755)).unwrap();
+        let env = [
+            ("PATH", "/usr/bin:/bin"),
+            ("WAYLAND_DISPLAY", "wayland-test"),
+        ]
+        .map(|(k, v)| (k.into(), v.into()));
+        let args = ["/x/cx".into(), "attach".into(), "cx-9".into()];
+        let mut started = spawn_window(&recorder, &args, &env, &work, None);
+        for _ in 0..100 {
+            match &started {
+                Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                    started = spawn_window(&recorder, &args, &env, &work, None);
+                }
+                _ => break,
+            }
+        }
+        started.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !out.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let text = fs::read_to_string(&out).unwrap();
+        assert!(text.contains("args /x/cx attach cx-9\n"), "{text}");
+        assert!(
+            text.contains(&format!("cwd {}\n", work.display())),
+            "{text}"
+        );
+        let vars: Vec<_> = text
+            .lines()
+            .filter(|l| l.contains('=') && !l.starts_with("args") && !l.starts_with("stdio"))
+            .map(|l| l.split('=').next().unwrap())
+            .filter(|k| !["PWD", "SHLVL", "_", "OLDPWD"].contains(k))
+            .collect();
+        assert_eq!(vars, ["PATH", "WAYLAND_DISPLAY"], "{text}");
+        // Its own session (sid == its pid), stdio on /dev/null.
+        let pid = text.lines().find_map(|l| l.strip_prefix("pid ")).unwrap();
+        let stat = text.lines().find_map(|l| l.strip_prefix("stat ")).unwrap();
+        assert_eq!(stat.split(' ').nth(1), Some(pid), "{text}");
+        assert!(text.contains("stdio /dev/null /dev/null\n"), "{text}");
+        // A program that cannot start is an error, never a silent success.
+        assert!(spawn_window(&tmp.path().join("missing"), &args, &env, &work, None).is_err());
     }
 }

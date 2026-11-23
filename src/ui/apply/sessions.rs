@@ -255,17 +255,26 @@ impl App {
                     self.reconcile_session_selection(selected);
                 }
             }
-            Operation::AdoptSession { id, .. } => match serde_json::from_value::<Session>(value) {
-                Ok(s) => {
-                    self.work[reply.device].sessions.retain(|row| row.id != *id);
-                    self.work[reply.device].sessions.push(s.clone());
-                    self.open_session(reply.device, s, false);
+            Operation::AdoptSession { id, .. } => {
+                let window = value["window"]
+                    .as_str()
+                    .and_then(crate::adoption::window_note);
+                match serde_json::from_value::<Session>(value) {
+                    Ok(s) => {
+                        self.work[reply.device].sessions.retain(|row| row.id != *id);
+                        self.work[reply.device].sessions.push(s.clone());
+                        self.open_session(reply.device, s, false);
+                        // (After the attach check, whose own "Checking…" it replaces.)
+                        if let Some(note) = window {
+                            self.set_notice(format!("Moved into cx · {note}"));
+                        }
+                    }
+                    Err(_) => self.set_notice_as(
+                        NoticeKind::Error,
+                        "Move response invalid · refresh before retrying".into(),
+                    ),
                 }
-                Err(_) => self.set_notice_as(
-                    NoticeKind::Error,
-                    "Move response invalid · refresh before retrying".into(),
-                ),
-            },
+            }
             Operation::Create(_)
             | Operation::CreateYolo(_)
             | Operation::ContainerCreate { .. }

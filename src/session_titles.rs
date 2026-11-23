@@ -1,5 +1,7 @@
-//! Native structured metadata: never read transcripts or infer identity from cwd/recency.
-//! Claude exposes a PID/start-tick record; Codex uses exact open writer IDs.
+//! Native structured metadata: never read transcripts or prompt text.
+//! Claude exposes a PID/start-tick record; Codex uses exact open writer IDs (never cwd/recency).
+//! Antigravity (agy) and opencode expose only per-directory SQLite rows, so they
+//! are associated by the process's exact working directory (newest top-level row).
 //! Metadata is optional and version-sensitive. Unknown association returns `None`.
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -44,6 +46,8 @@ pub fn native_metadata_with_title(
         let result = match provider {
             "claude" => claude_metadata(pid, start),
             "codex" => codex_metadata(pid, selected_title),
+            "agy" => agy_metadata(pid),
+            "opencode" => opencode_metadata(pid),
             _ => None,
         };
         // Discard a result if the PID disappeared or was reused while reading metadata.
@@ -173,7 +177,10 @@ fn read_record(path: &Path) -> Option<Value> {
 }
 
 fn directory(value: Option<&Value>) -> Option<String> {
-    let s = value?.as_str()?;
+    valid_directory(value?.as_str()?)
+}
+
+fn valid_directory(s: &str) -> Option<String> {
     // Paths must remain exact, not be transformed by display sanitization.
     (s.len() <= 4096 && Path::new(s).is_absolute() && !s.chars().any(char::is_control))
         .then(|| s.to_owned())
@@ -564,10 +571,15 @@ fn codex_root_records(output: &[u8], owned: &BTreeSet<String>) -> Option<String>
 
 #[cfg(target_os = "linux")]
 fn sqlite_metadata(home: &Path, query: &str) -> Option<Vec<u8>> {
+    sqlite_query(&home.join("state_5.sqlite"), query)
+}
+
+/// Run one read-only query against a private database, bounded in time and size.
+#[cfg(target_os = "linux")]
+fn sqlite_query(path: &Path, query: &str) -> Option<Vec<u8>> {
     use std::os::fd::AsRawFd;
-    let path = home.join("state_5.sqlite");
-    let _file = private_file(&path)?;
-    let mut child = sqlite_command(&path, query).spawn().ok()?;
+    let _file = private_file(path)?;
+    let mut child = sqlite_command(path, query).spawn().ok()?;
     let mut stdout = child.stdout.take()?;
     let fd = stdout.as_raw_fd();
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -622,6 +634,135 @@ fn sqlite_command(path: &Path, query: &str) -> std::process::Command {
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     command
+}
+
+/// Named variables from a live process's environment; nothing else is kept.
+#[cfg(target_os = "linux")]
+fn process_env(pid: u32, keys: &[&str]) -> BTreeMap<String, String> {
+    let mut bytes = Vec::new();
+    let read = File::open(format!("/proc/{pid}/environ"))
+        .and_then(|file| file.take(256 * 1024).read_to_end(&mut bytes));
+    if read.is_err() {
+        return BTreeMap::new();
+    }
+    bytes
+        .split(|b| *b == 0)
+        .filter_map(|entry| {
+            let entry = std::str::from_utf8(entry).ok()?;
+            let (key, value) = entry.split_once('=')?;
+            keys.contains(&key)
+                .then(|| (key.to_owned(), value.to_owned()))
+        })
+        .collect()
+}
+
+/// An absolute path from the process environment, or `None`.
+fn env_path(env: &BTreeMap<String, String>, key: &str) -> Option<PathBuf> {
+    valid_directory(env.get(key)?).map(PathBuf::from)
+}
+
+#[cfg(target_os = "linux")]
+fn process_cwd(pid: u32) -> Option<String> {
+    valid_directory(fs::read_link(format!("/proc/{pid}/cwd")).ok()?.to_str()?)
+}
+
+/// A SQL string literal; quotes are doubled so a path cannot leave the literal.
+fn sql_text(s: &str) -> Option<String> {
+    (!s.contains('\0')).then(|| format!("'{}'", s.replace('\'', "''")))
+}
+
+/// `file://` URIs a client may have written for `dir`: Go's net/url path
+/// escaping, and strict escaping of everything except unreserved bytes and `/`.
+fn file_uris(dir: &str) -> Vec<String> {
+    let encode = |keep: &dyn Fn(u8) -> bool| {
+        let mut uri = String::from("file://");
+        for b in dir.bytes() {
+            if b.is_ascii_alphanumeric() || b"-_.~/".contains(&b) || keep(b) {
+                uri.push(b as char);
+            } else {
+                uri.push_str(&format!("%{b:02X}"));
+            }
+        }
+        uri
+    };
+    let mut uris = vec![encode(&|b| b"$&+,:;=@".contains(&b)), encode(&|_| false)];
+    uris.dedup();
+    uris
+}
+
+/// One JSON row of metadata columns: `{"title":…,"busy":0|1}`.
+fn row_metadata(output: &[u8], dir: &str) -> Option<NativeMetadata> {
+    let line = output.split(|b| *b == b'\n').find(|l| !l.is_empty())?;
+    if line.len() > MAX_RECORD {
+        return None;
+    }
+    let row: Value = serde_json::from_slice(line).ok()?;
+    let activity = match row.get("busy")?.as_i64()? {
+        1 => Some("working"),
+        0 => Some("idle"),
+        _ => None,
+    };
+    Some(NativeMetadata {
+        title: row.get("title").and_then(Value::as_str).and_then(title),
+        directory: Some(dir.to_owned()),
+        activity: activity.map(str::to_owned),
+        ..Default::default()
+    })
+}
+
+/// Antigravity CLI: newest live top-level conversation in this exact workspace.
+/// `preview` and `raw_summary` are never selected. There is no waiting status.
+#[cfg(target_os = "linux")]
+fn agy_metadata(pid: u32) -> Option<NativeMetadata> {
+    let home = env_path(&process_env(pid, &["HOME"]), "HOME")?;
+    agy_database(&home, &process_cwd(pid)?)
+}
+
+#[cfg(target_os = "linux")]
+fn agy_database(home: &Path, dir: &str) -> Option<NativeMetadata> {
+    let uris = file_uris(dir)
+        .iter()
+        .map(|uri| sql_text(uri))
+        .collect::<Option<Vec<_>>>()?
+        .join(",");
+    let query = format!(
+        "SELECT json_object('title',title,'busy',CASE \
+         WHEN status IN ('CASCADE_RUN_STATUS_BUSY','CASCADE_RUN_STATUS_RUNNING') OR not_fully_idle THEN 1 \
+         WHEN status='CASCADE_RUN_STATUS_IDLE' THEN 0 ELSE -1 END) \
+         FROM conversation_summaries WHERE parent_conversation_id='' AND nesting_depth=0 AND NOT killed \
+         AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(workspace_uris) \
+         THEN workspace_uris ELSE '[]' END) WHERE type='text' AND value IN ({uris})) \
+         ORDER BY last_modified_time DESC, rowid DESC LIMIT 1;"
+    );
+    let output = sqlite_query(
+        &home.join(".gemini/antigravity-cli/conversation_summaries.db"),
+        &query,
+    )?;
+    row_metadata(&output, dir)
+}
+
+/// opencode: newest unarchived top-level session in this exact directory.
+/// Older JSON-file storage has no such table and yields `None`.
+#[cfg(target_os = "linux")]
+fn opencode_metadata(pid: u32) -> Option<NativeMetadata> {
+    let env = process_env(pid, &["HOME", "XDG_DATA_HOME", "OPENCODE_DB"]);
+    let db = env_path(&env, "OPENCODE_DB").or_else(|| {
+        env_path(&env, "XDG_DATA_HOME")
+            .or_else(|| Some(env_path(&env, "HOME")?.join(".local/share")))
+            .map(|data| data.join("opencode/opencode.db"))
+    })?;
+    opencode_database(&db, &process_cwd(pid)?)
+}
+
+#[cfg(target_os = "linux")]
+fn opencode_database(db: &Path, dir: &str) -> Option<NativeMetadata> {
+    let query = format!(
+        "SELECT json_object('title',title,'busy',CASE WHEN time_idle IS NULL THEN 1 ELSE 0 END) \
+         FROM session_v2 WHERE directory={} AND (parent_id IS NULL OR parent_id='') \
+         AND time_archived IS NULL ORDER BY time_updated DESC, id DESC LIMIT 1;",
+        sql_text(dir)?
+    );
+    row_metadata(&sqlite_query(db, &query)?, dir)
 }
 
 fn codex_database_records(output: &[u8], id: &str) -> Option<NativeMetadata> {
@@ -994,6 +1135,179 @@ mod tests {
         let row = format!("{}\n", serde_json::json!({"root":ID,"id":ID}));
         assert!(codex_root_records(row.repeat(8193).as_bytes(), &owned).is_none());
         assert!(codex_root_records(b"{bad json}\n", &owned).is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    fn fixture_db(path: &Path, sql: &str) -> bool {
+        use std::process::Command;
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        match Command::new("sqlite3")
+            .args(["-init", "/dev/null"])
+            .arg(path)
+            .arg(sql)
+            .status()
+        {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            result => {
+                assert!(result.unwrap().success());
+                true
+            }
+        }
+    }
+
+    #[test]
+    fn file_uris_escape_paths_and_sql_text_doubles_quotes() {
+        assert_eq!(file_uris("/tmp/citecheck"), vec!["file:///tmp/citecheck"]);
+        assert_eq!(
+            file_uris("/w/it's a:b"),
+            vec!["file:///w/it%27s%20a:b", "file:///w/it%27s%20a%3Ab"]
+        );
+        assert_eq!(sql_text("a'b").as_deref(), Some("'a''b'"));
+        assert!(sql_text("a\0b").is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn agy_newest_top_level_live_row_in_exact_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp
+            .path()
+            .join(".gemini/antigravity-cli/conversation_summaries.db");
+        let quoted = "/w/it's a dir";
+        let row = |id: &str,
+                   title: &str,
+                   time: &str,
+                   uris: &str,
+                   status: &str,
+                   parent: &str,
+                   depth: u8,
+                   busy: u8,
+                   killed: u8| {
+            format!(
+                "INSERT INTO conversation_summaries VALUES({},{},'PRIVATE PREVIEW','2026-11-12 00:{time}.489758218+00:00',{},'CASCADE_RUN_STATUS_{status}','{parent}',{depth},{busy},{killed});",
+                sql_text(id).unwrap(), sql_text(title).unwrap(), sql_text(uris).unwrap()
+            )
+        };
+        let sql = [
+            "CREATE TABLE `conversation_summaries` (`conversation_id` text,`title` text NOT NULL DEFAULT \"\",\
+             `preview` text NOT NULL DEFAULT \"\",`last_modified_time` datetime NOT NULL,`workspace_uris` text NOT NULL,\
+             `status` text NOT NULL DEFAULT \"\",`parent_conversation_id` text NOT NULL DEFAULT \"\",\
+             `nesting_depth` integer NOT NULL DEFAULT 0,`not_fully_idle` numeric NOT NULL DEFAULT false,\
+             `killed` numeric NOT NULL DEFAULT false,PRIMARY KEY (`conversation_id`));".to_owned(),
+            row("1", "Old", "01:00", r#"["file:///w/a"]"#, "IDLE", "", 0, 0, 0),
+            row("2", "Current", "02:00", r#"["file:///other","file:///w/a"]"#, "RUNNING", "", 0, 0, 0),
+            row("3", "Child", "03:00", r#"["file:///w/a"]"#, "IDLE", "2", 1, 0, 0),
+            row("4", "Killed", "04:00", r#"["file:///w/a"]"#, "IDLE", "", 0, 0, 1),
+            row("5", "Prefix", "05:00", r#"["file:///w/ab","file:///w/a/sub"]"#, "IDLE", "", 0, 0, 0),
+            row("6", "Substring", "06:00", r#"["file:///w/a "]"#, "IDLE", "", 0, 0, 0),
+            row("7", "Broken json", "07:00", "file:///w/a", "IDLE", "", 0, 0, 0),
+            row("8", "", "01:00", r#"["file:///w/it%27s%20a%20dir"]"#, "IDLE", "", 0, 0, 0),
+            row("9", "Unspecified", "01:00", r#"["file:///w/u"]"#, "UNSPECIFIED", "", 0, 0, 0),
+            row("10", "Busy flag", "01:00", r#"["file:///w/n"]"#, "IDLE", "", 0, 1, 0),
+        ]
+        .concat();
+        if !fixture_db(&db, &sql) {
+            return;
+        }
+        let metadata = agy_database(temp.path(), "/w/a").unwrap();
+        assert_eq!(metadata.title.as_deref(), Some("Current"));
+        assert_eq!(metadata.activity.as_deref(), Some("working"));
+        assert_eq!(metadata.directory.as_deref(), Some("/w/a"));
+        let metadata = agy_database(temp.path(), quoted).unwrap();
+        assert!(metadata.title.is_none());
+        assert_eq!(metadata.activity.as_deref(), Some("idle"));
+        assert!(agy_database(temp.path(), "/w/u")
+            .unwrap()
+            .activity
+            .is_none());
+        assert_eq!(
+            agy_database(temp.path(), "/w/n")
+                .unwrap()
+                .activity
+                .as_deref(),
+            Some("working")
+        );
+        assert!(agy_database(temp.path(), "/w").is_none());
+        assert!(agy_database(temp.path(), "/w/x') OR 1=1 OR ('").is_none());
+        assert!(agy_database(temp.path(), "/w/x' OR '1'='1").is_none());
+        // Missing database, table or columns: no metadata, never an error.
+        assert!(agy_database(&temp.path().join("absent"), "/w/a").is_none());
+        let other = tempfile::tempdir().unwrap();
+        let db = other
+            .path()
+            .join(".gemini/antigravity-cli/conversation_summaries.db");
+        assert!(fixture_db(
+            &db,
+            "CREATE TABLE conversation_summaries(conversation_id text, title text);"
+        ));
+        assert!(agy_database(other.path(), "/w/a").is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn opencode_newest_unarchived_top_level_session_in_exact_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("opencode.db");
+        let quoted = "/w/it's a dir";
+        let row = |id: &str,
+                   dir: &str,
+                   title: &str,
+                   parent: &str,
+                   updated: u64,
+                   idle: &str,
+                   archived: &str| {
+            format!(
+                "INSERT INTO session_v2 VALUES({},'p',{parent},{},{},{updated},{idle},NULL,{archived});",
+                sql_text(id).unwrap(), sql_text(dir).unwrap(), sql_text(title).unwrap()
+            )
+        };
+        let sql = [
+            "CREATE TABLE session_v2(id text PRIMARY KEY, project_id text, parent_id text, directory text, \
+             title text, time_updated integer, time_idle integer, idle_outcome text, time_archived integer);"
+                .to_owned(),
+            row("a", "/w/a", "Old", "NULL", 1, "5", "NULL"),
+            row("b", "/w/a", "Current", "''", 2, "NULL", "NULL"),
+            row("c", "/w/a", "Child", "'b'", 3, "NULL", "NULL"),
+            row("d", "/w/a", "Archived", "NULL", 4, "NULL", "9"),
+            row("e", "/w/ab", "Prefix", "NULL", 5, "NULL", "NULL"),
+            row("f", quoted, "", "NULL", 1, "7", "NULL"),
+        ]
+        .concat();
+        if !fixture_db(&db, &sql) {
+            return;
+        }
+        let metadata = opencode_database(&db, "/w/a").unwrap();
+        assert_eq!(metadata.title.as_deref(), Some("Current"));
+        assert_eq!(metadata.activity.as_deref(), Some("working"));
+        let metadata = opencode_database(&db, quoted).unwrap();
+        assert!(metadata.title.is_none());
+        assert_eq!(metadata.activity.as_deref(), Some("idle"));
+        assert!(opencode_database(&db, "/w").is_none());
+        assert!(opencode_database(&db, "/w/x' OR '1'='1").is_none());
+        assert!(opencode_database(&db, "/w/x'; DROP TABLE session_v2; --").is_none());
+        assert!(opencode_database(&db, "/w/a").is_some());
+        assert!(opencode_database(&temp.path().join("absent.db"), "/w/a").is_none());
+        // v1 JSON storage or an older schema: no table/columns, so no metadata.
+        let old = temp.path().join("old.db");
+        assert!(fixture_db(
+            &old,
+            "CREATE TABLE session(id text, directory text, title text);"
+        ));
+        assert!(opencode_database(&old, "/w/a").is_none());
+    }
+
+    #[test]
+    fn env_paths_must_be_absolute() {
+        let env = BTreeMap::from([
+            ("HOME".to_owned(), "relative".to_owned()),
+            ("XDG_DATA_HOME".to_owned(), "/data".to_owned()),
+        ]);
+        assert!(env_path(&env, "HOME").is_none());
+        assert_eq!(
+            env_path(&env, "XDG_DATA_HOME"),
+            Some(PathBuf::from("/data"))
+        );
+        assert!(env_path(&env, "OPENCODE_DB").is_none());
     }
 
     #[test]

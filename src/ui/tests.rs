@@ -7992,3 +7992,49 @@ fn agy_and_opencode_are_offered_only_where_info_lists_them() {
     a.start_at(1, "/folder".into(), "agy".into());
     assert!(matches!(a.dialog, Some(Dialog::Permissions(1, _, ref p, false, false)) if p == "agy"));
 }
+/// A bare agent key where the device's fresh Info says the agent is missing starts
+/// nothing and says so quietly; with stale or unknown caps it still tries (the device
+/// answers), as before.
+#[test]
+fn an_agent_key_for_a_missing_agent_starts_nothing_while_info_is_fresh() {
+    let (mut a, rx) = queued_app();
+    let name = a.devices[0].name.clone();
+    a.providers
+        .insert(0, (vec!["claude".into(), "codex".into()], transport::now()));
+    let _ = rx.try_iter().count();
+    a.go_hub();
+    press(&mut a, 'a');
+    assert!(
+        !rx.try_iter()
+            .any(|t| matches!(t.op, Operation::Create(_) | Operation::CreateYolo(_))),
+        "agy launched though Info lacks it"
+    );
+    assert_eq!(a.notice, format!("agy isn't installed on {name}"));
+    // A device screen's `a` and `O` too.
+    a.open_device(0);
+    let _ = rx.try_iter().count();
+    press(&mut a, 'O');
+    assert!(!rx
+        .try_iter()
+        .any(|t| matches!(t.op, Operation::Create(_) | Operation::CreateYolo(_))));
+    assert_eq!(a.notice, format!("opencode isn't installed on {name}"));
+    // Listed: it starts.
+    a.creating = false;
+    a.providers
+        .insert(0, (vec!["agy".into()], transport::now()));
+    a.go_hub();
+    press(&mut a, 'a');
+    assert!(rx
+        .try_iter()
+        .any(|t| matches!(&t.op, Operation::Create(c) if c.provider == "agy")));
+    // Stale caps (over a minute): it tries, as before.
+    a.creating = false;
+    a.providers.insert(
+        0,
+        (vec!["claude".into()], transport::now().saturating_sub(120)),
+    );
+    press(&mut a, 'o');
+    assert!(rx
+        .try_iter()
+        .any(|t| matches!(&t.op, Operation::Create(c) if c.provider == "opencode")));
+}

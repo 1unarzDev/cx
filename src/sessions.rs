@@ -2280,14 +2280,60 @@ impl ProviderProbe {
     fn available(&self, provider: &str) -> bool {
         self.available.contains_key(provider)
     }
-    /// Whether every executable it found is still the file on disk (so what it says,
-    /// codex's `--no-daemon` included, still holds).
-    fn current(&self) -> bool {
+    /// Whether what it found for `id` still holds: its executable is the file probed (an
+    /// update of another agent, such as agy's auto-update, does not matter here).
+    fn current_for(&self, id: &str) -> bool {
         self.available
-            .values()
-            .all(|binary| binary.as_ref().is_none_or(ProbedBinary::unchanged))
-            && (!self.codex_no_daemon || matches!(self.available.get("codex"), Some(Some(_))))
+            .get(id)
+            .is_some_and(|binary| binary.as_ref().is_none_or(ProbedBinary::unchanged))
+            && (id != "codex"
+                || !self.codex_no_daemon
+                || matches!(self.available.get("codex"), Some(Some(_))))
     }
+    /// The record with `id` probed again (`found`: None when not launchable; for codex
+    /// also whether it has `--no-daemon`). Its age stays the full probe's.
+    fn with_agent(
+        mut self,
+        id: &str,
+        found: Option<Option<ProbedBinary>>,
+        no_daemon: Option<bool>,
+    ) -> Self {
+        match found {
+            Some(binary) => {
+                self.available.insert(id.to_string(), binary);
+            }
+            None => {
+                self.available.remove(id);
+            }
+        }
+        if id == "codex" {
+            self.codex_no_daemon =
+                no_daemon.unwrap_or(false) && matches!(self.available.get("codex"), Some(Some(_)));
+        }
+        self
+    }
+}
+/// What a launch of `id` in `shell` goes by: a recent record that found it, unchanged;
+/// else that record with `id` alone probed again (other agents keep theirs); with no
+/// recent record, every agent probed.
+fn launch_probe(shell: &str, id: &str) -> ProviderProbe {
+    let Some(probe) = recorded_probe(shell) else {
+        return probe_providers(shell);
+    };
+    if probe.current_for(id) {
+        return probe;
+    }
+    let Some(agent) = crate::model::agent(id) else {
+        return probe;
+    };
+    let (found, no_daemon) = thread::scope(|scope| {
+        let found = scope.spawn(|| agent_executable(shell, agent.exe));
+        let no_daemon = (id == "codex").then(|| codex_supports_no_daemon(shell));
+        (found.join().ok().flatten(), no_daemon)
+    });
+    let probe = probe.with_agent(id, found, no_daemon);
+    let _ = crate::store::write_state(PROBE_FILE, &probe, PROBE_LIMIT);
+    probe
 }
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -2855,7 +2901,12 @@ fn provider_command(provider: &str, yolo: bool, resume: bool, pick: bool) -> Res
         (true, false) => agent.resume_last,
         (true, true) => match agent.resume_pick {
             Some(pick) => pick,
-            None => bail!("{}", agent.pick_hint().unwrap_or_default()),
+            None => bail!(
+                "{}",
+                agent
+                    .pick_hint
+                    .unwrap_or("this agent has no session picker; resume the last session")
+            ),
         },
     };
     let mut words = base.to_vec();
@@ -3071,11 +3122,10 @@ fn create_with_permissions(
     phase("existing-check");
     let shell = launch_shell()?;
     if container.is_none() && request.provider != "shell" {
-        // Info's recent probe when it found the provider; a fresh probe otherwise. A
-        // provider gone since then fails in its pane, which stays to show why.
-        let probe = recorded_probe(&shell)
-            .filter(|p| p.available(&request.provider) && p.current())
-            .unwrap_or_else(|| probe_providers(&shell));
+        // Info's recent probe when it found the provider unchanged; that provider probed
+        // again otherwise. A provider gone since then fails in its pane, which stays to
+        // show why.
+        let probe = launch_probe(&shell, &request.provider);
         if !probe.available(&request.provider) {
             bail!(
                 "{} is not launchable on this execution device; choose an available profile",
@@ -5609,6 +5659,55 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
         let _ = child.kill();
         let _ = child.wait();
     }
+    /// A shell stop (an old viewer's StopSession on a pane it draws as a shell) is
+    /// refused when the pane runs an agent under node, though tmux's pane command then
+    /// reads `node`, not the agent's name: the descendant walk is script-aware.
+    #[test]
+    fn a_shell_stop_refuses_a_node_run_agent_in_the_pane() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::process::CommandExt;
+        let dir = tempfile::tempdir().unwrap();
+        let module = dir.path().join("lib/node_modules/@opencode/cli/bin");
+        fs::create_dir_all(&module).unwrap();
+        let wrapper = module.join("opencode.cjs");
+        // (Not `exec`: the stand-in node must stay the process.)
+        fs::write(&wrapper, "sleep 30; :\n").unwrap();
+        let node = dir.path().join("node");
+        fs::copy("/bin/sh", &node).unwrap();
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
+        // The pane's shell, with the npm opencode as its child.
+        let mut shell = Command::new("/bin/sh")
+            .args([
+                "-c",
+                &format!("{} {} & wait", node.display(), wrapper.display()),
+            ])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pane = shell.id();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while fs::read_to_string(format!("/proc/{pane}/task/{pane}/children"))
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            assert!(std::time::Instant::now() < deadline, "no child");
+            thread::sleep(Duration::from_millis(10));
+        }
+        let refused = reject_provider_descendants(pane);
+        unsafe { libc::kill(-(pane as i32), libc::SIGKILL) };
+        let _ = shell.wait();
+        let e = refused.expect_err("a node-run opencode under the shell was not refused");
+        assert!(e.to_string().contains("running an agent"), "{e}");
+        // A plain shell tree is not refused.
+        let mut plain = Command::new("/bin/sh")
+            .args(["-c", "sleep 30"])
+            .spawn()
+            .unwrap();
+        assert!(reject_provider_descendants(plain.id()).is_ok());
+        let _ = plain.kill();
+        let _ = plain.wait();
+    }
     #[test]
     fn running_agents_are_found_by_executable_or_script_only() {
         use crate::model::{Agent, CLAUDE};
@@ -5973,7 +6072,10 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
         let probe = recorded_probe("/bin/bash").expect("recent probe");
         assert!(probe.available("claude") && !probe.available("codex"));
         assert!(!probe.available("shell"));
-        assert!(probe.current(), "a wrapper without a file is trusted");
+        assert!(
+            probe.current_for("claude"),
+            "a wrapper without a file is trusted"
+        );
         // Another launch shell, an expired record or a clock gone backwards: probe again.
         assert!(recorded_probe("/usr/bin/fish").is_none());
         record("/bin/bash", now_secs() - PROBE_TTL);
@@ -6003,24 +6105,85 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
             .into(),
             codex_no_daemon: true,
         };
-        assert!(probe.current());
+        assert!(probe.current_for("claude") && probe.current_for("codex"));
         fs::write(&claude, "updated").unwrap();
-        assert!(!probe.current(), "an updated claude is probed again");
+        assert!(
+            !probe.current_for("claude"),
+            "an updated claude is probed again"
+        );
         probe
             .available
             .insert("claude".into(), ProbedBinary::of(&claude));
-        assert!(probe.current());
+        assert!(probe.current_for("claude"));
         fs::write(&codex, "older").unwrap();
-        assert!(!probe.current(), "a replaced codex is probed again");
+        assert!(
+            !probe.current_for("codex"),
+            "a replaced codex is probed again"
+        );
         probe.available.insert("codex".into(), None);
-        assert!(!probe.current(), "--no-daemon holds only for a known file");
+        assert!(
+            !probe.current_for("codex"),
+            "--no-daemon holds only for a known file"
+        );
         probe.codex_no_daemon = false;
-        assert!(probe.current(), "without the flag any codex launches");
+        assert!(
+            probe.current_for("codex"),
+            "without the flag any codex launches"
+        );
+        assert!(!probe.current_for("agy"), "not found: probed again");
         assert_eq!(ProbedBinary::of("codex"), None, "never a relative path");
         let marked = b"motd CX-AGENT-PATH noise\nCX-AGENT-PATH\n/usr/bin/claude\n";
         assert_eq!(
             marked_path(marked, "CX-AGENT-PATH").as_deref(),
             Some("/usr/bin/claude")
+        );
+    }
+    /// An agent's auto-update (agy replaces its binary while it runs) makes only that
+    /// agent's record stale: the next Claude launch keeps trusting the probe, and the
+    /// changed agent alone is probed again and merged in.
+    #[test]
+    fn an_updated_agent_makes_only_its_own_probe_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = |name: &str| {
+            let path = dir.path().join(name);
+            fs::write(&path, "v1").unwrap();
+            path.to_str().unwrap().to_owned()
+        };
+        let (claude, codex, agy) = (file("claude"), file("codex"), file("agy"));
+        let probe = ProviderProbe {
+            shell: "/bin/bash".into(),
+            at: now_secs() - 30,
+            available: [
+                ("claude".to_string(), ProbedBinary::of(&claude)),
+                ("codex".to_string(), ProbedBinary::of(&codex)),
+                ("agy".to_string(), ProbedBinary::of(&agy)),
+                ("opencode".to_string(), None),
+            ]
+            .into(),
+            codex_no_daemon: true,
+        };
+        fs::write(&agy, "v2, updated").unwrap();
+        for id in ["claude", "codex", "opencode"] {
+            assert!(probe.current_for(id), "{id} stays trusted");
+        }
+        assert!(!probe.current_for("agy"));
+        let at = probe.at;
+        let probe = probe.with_agent("agy", ProbedBinary::of(&agy).map(Some), None);
+        assert!(probe.current_for("agy") && probe.current_for("claude"));
+        assert_eq!(probe.at, at, "a partial probe never extends the record");
+        assert_eq!(probe.available["claude"], ProbedBinary::of(&claude));
+        // Gone since: no longer available, the others kept.
+        let probe = probe.with_agent("agy", None, None);
+        assert!(!probe.available("agy") && probe.available("claude"));
+        // Codex's file changed: only codex is stale, its --no-daemon decided again.
+        fs::write(&codex, "v2").unwrap();
+        assert!(!probe.current_for("codex") && probe.current_for("claude"));
+        let probe = probe.with_agent("codex", Some(ProbedBinary::of(&codex)), Some(false));
+        assert!(probe.current_for("codex") && !probe.codex_no_daemon);
+        let probe = probe.with_agent("codex", Some(None), Some(true));
+        assert!(
+            !probe.codex_no_daemon,
+            "--no-daemon holds only for a known file"
         );
     }
     #[test]

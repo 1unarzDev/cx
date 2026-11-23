@@ -64,7 +64,10 @@ pub fn launch(provider: &str, a: LaunchArgs) -> Result<()> {
         "--yolo, --normal, --resume and --pick apply only to agents"
     );
     if a.pick {
-        if let Some(hint) = crate::model::agent(provider).and_then(|a| a.pick_hint()) {
+        if let Some(hint) = crate::model::agent(provider)
+            .filter(|a| a.resume_pick.is_none())
+            .and_then(|a| a.pick_hint)
+        {
             bail!("{hint}");
         }
     }

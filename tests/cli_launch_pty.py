@@ -23,9 +23,14 @@ for d in (home, fake, proj, tmp / 'tmux'):
     '#!/bin/sh\n[ "$1" = --version ] && { echo "1.0.0 (Claude Code)"; exit 0; }\n'
     'echo "FAKE-CLAUDE cwd=$PWD args=$*"\nexec sleep 600\n')
 (fake / 'claude').chmod(0o755)
+SERVES = tmp / 'serves'
 for name in ('agy', 'opencode'):
+    # opencode's stand-in, like `--standalone`, starts its own `opencode serve` child,
+    # which ignores hang-ups (so only cx's reap ends it) and records its pid.
+    serve = (f'[ "$1" = serve ] && {{ trap "" HUP; echo $$ >> {SERVES}; exec sleep 600; }}\n'
+             f'"$0" serve --service &\n') if name == 'opencode' else ''
     (fake / name).write_text(
-        f'#!/bin/sh\n[ "$1" = --version ] && {{ echo "9.9.9"; exit 0; }}\n'
+        f'#!/bin/sh\n[ "$1" = --version ] && {{ echo "9.9.9"; exit 0; }}\n{serve}'
         f'echo "FAKE-{name.upper()} cwd=$PWD args=$* cfg=${{OPENCODE_CLI_CONFIG_CONTENT:-none}}"\nexec sleep 600\n')
     (fake / name).chmod(0o755)
 env = dict(os.environ, HOME=str(home), XDG_STATE_HOME=str(home / '.local/state'),
@@ -116,6 +121,19 @@ for agent, hint in (('agy', '/resume inside agy'), ('opencode', '/sessions insid
     picked = cx(agent, '-p')
     check(f'cx {agent} -p is refused with the in-app picker hint',
           picked.returncode != 0 and hint in picked.stderr and len(sessions()) == before, picked.stderr)
+
+# Stopping opencode stops its server: cx kill reaps the session's whole tree, the
+# `serve` child that ignores hang-ups included.
+serves = [int(p) for p in SERVES.read_text().split()] if SERVES.exists() else []
+check('each opencode session started its serve child', len(serves) == 2, serves)
+for s in [s for s in sessions() if s['provider'] == 'opencode']:
+    killed = cx('kill', s['id'], '--yes')
+    check(f"cx kill stops opencode {s['id'][:10]}", killed.returncode == 0, killed.stderr)
+end = time.monotonic() + 6
+while any(os.path.exists(f'/proc/{p}') for p in serves) and time.monotonic() < end:
+    time.sleep(.1)
+left = [p for p in serves if os.path.exists(f'/proc/{p}')]
+check('no opencode serve process is left after the stop', not left, left)
 
 lend = cx('claude', 'lend', '--help')
 check('cx claude lend still reaches the lending commands', 'usage' in (lend.stdout + lend.stderr).lower(),

@@ -13,6 +13,9 @@ enters the alternate screen and requests ?1002h/?1006h, on a real managed tmux P
      unlike Codex), and `cx native-wheel` from the controller sends nothing either.
   4. With history and mouse off, the wheel opens tmux scrollback over real history
      only (the stock rule for any app), still never arrows.
+  5. agy's stand-in also turns on the kitty keyboard protocol (CSI >1u, CSI =1u): Ctrl+\
+     from the viewer still detaches (a tmux root binding), as a plain 0x1c and as the
+     kitty encoding CSI 92;5u, and the app never receives it.
 No provider, transcripts, user config, or inference.
 Usage: tests/isolate.sh python3 tests/agent_wheel_pty.py BINARY
 """
@@ -33,6 +36,9 @@ def out(s): sys.stdout.write(s); sys.stdout.flush()
 if len(sys.argv) > 2:
     for n in range(120): out('HISTORY_LINE_%03d\r\n' % n)
 out('\x1b[?1049h\x1b[?1002h\x1b[?1006hSTANDIN_TRANSCRIPT\r\n')
+# agy (Bubble Tea v2) asks for the kitty keyboard protocol: push and set flags 1.
+if os.readlink('/proc/self/exe').endswith('/agy'):
+    out('\x1b[>1u\x1b[=1u')
 log.write_bytes(b'')
 while True:
     data = os.read(0, 4096)
@@ -166,11 +172,14 @@ with tempfile.TemporaryDirectory(prefix='cx-agent-wheel-') as temporary:
                     tmux('send-keys', '-t', pane, '-X', 'cancel')
                     checks.append(f'{name}: mouse off with real history: tmux scrollback, no input sent')
                 pid = state('#{pane_pid}')
-                os.write(master, b'\x1c'); client.wait(timeout=5)
+                # 5. Ctrl+\ detaches: plain, or kitty-encoded where a terminal speaks it.
+                before = log.read_bytes()
+                os.write(master, b'\x1b[92;5u' if history else b'\x1c'); client.wait(timeout=5)
+                assert log.read_bytes() == before, f'{name}: Ctrl+\\ reached the app: {log.read_bytes()[len(before):]!r}'
                 assert client.returncode == 0 and state('#{pane_pid}') == pid and state('#{pane_dead}') == '0', \
                     f'{name}: Ctrl+\\ did not detach cleanly'
                 os.close(master); os.close(slave); master = slave = None
-        checks.append('Ctrl+\\ detaches from both and leaves them running')
+        checks.append('Ctrl+\\ (0x1c and kitty CSI 92;5u) detaches from both, agy with the kitty keyboard protocol on, and leaves them running')
         print(json.dumps(dict(result='PASS', backend=tmux('-V'), checks=checks)))
     finally:
         for c in clients:

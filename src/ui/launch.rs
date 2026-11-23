@@ -28,7 +28,7 @@ impl App {
         self.ended.truncate(32);
     }
     /// What a device with nothing running offers besides new sessions (the launch
-    /// panel, in key order from `a`): the newest session that ended there, then recent
+    /// panel, in slot order from `s`): the newest session that ended there, then recent
     /// folders (other ended sessions', pinned ones', the last Files folder; at most five).
     pub(super) fn launch_items(&self, d: usize) -> (Option<(&Session, u64)>, Vec<String>) {
         let id = &self.devices[d].id;
@@ -370,6 +370,18 @@ impl App {
         resume: bool,
     ) {
         if self.launch_blocked(d) {
+            return;
+        }
+        // The device's Info from the last minute says the agent is missing: nothing
+        // starts (it would only fail in its pane). Older or no Info: the device decides.
+        if crate::model::agent(provider).is_some()
+            && self.providers.get(&d).is_some_and(|(caps, checked)| {
+                transport::now().saturating_sub(*checked) < 60
+                    && !caps.iter().any(|c| c == provider)
+            })
+        {
+            let name = safe_text(&self.devices[d].name);
+            self.set_notice(format!("{provider} isn't installed on {name}"));
             return;
         }
         let yolo = provider != "shell" && self.last_yolo(d, provider);

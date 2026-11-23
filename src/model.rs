@@ -449,6 +449,8 @@ pub struct Agent {
     pub resume_last: &'static [&'static str],
     /// Resume through the agent's own picker, when it has one on the command line.
     pub resume_pick: Option<&'static [&'static str]>,
+    /// Without one: where to pick a past conversation instead (said for `-p`).
+    pub pick_hint: Option<&'static str>,
     /// Flags appended for YOLO (bypass approvals).
     pub yolo: &'static [&'static str],
     /// Executable basename (`/proc/PID/exe`, and tmux's `pane_current_command`).
@@ -473,6 +475,7 @@ pub const CLAUDE: Agent = Agent {
     new: &["claude"],
     resume_last: &["claude", "--continue"],
     resume_pick: Some(&["claude", "--resume"]),
+    pick_hint: None,
     yolo: &["--dangerously-skip-permissions"],
     exe: "claude",
     script: Some("/@anthropic-ai/claude-code/cli.js"),
@@ -488,6 +491,7 @@ pub const CODEX: Agent = Agent {
     new: &["codex"],
     resume_last: &["codex", "resume", "--last"],
     resume_pick: Some(&["codex", "resume"]),
+    pick_hint: None,
     yolo: &["--dangerously-bypass-approvals-and-sandbox"],
     exe: "codex",
     script: Some("/@openai/codex/bin/codex.js"),
@@ -506,8 +510,8 @@ pub const AGY: Agent = Agent {
     resume_key: 'A',
     new: &["agy", "--settings", AGY_SETTINGS],
     resume_last: &["agy", "--settings", AGY_SETTINGS, "-c"],
-    // Its picker is `/resume` inside agy.
     resume_pick: None,
+    pick_hint: Some("to pick a conversation, use /resume inside agy (-r resumes the last)"),
     yolo: &["--dangerously-skip-permissions"],
     exe: "agy",
     script: None,
@@ -541,8 +545,8 @@ pub const OPENCODE: Agent = Agent {
     resume_key: 'O',
     new: &["opencode", "--standalone"],
     resume_last: &["opencode", "--standalone", "-c"],
-    // Its picker is `/sessions` inside opencode.
     resume_pick: None,
+    pick_hint: Some("to pick a session, use /sessions inside opencode (-r resumes the last)"),
     yolo: &["--auto"],
     exe: "opencode",
     // The npm package's node wrapper around the native binary.
@@ -557,24 +561,6 @@ pub const OPENCODE: Agent = Agent {
 pub const AGENTS: &[Agent] = &[CLAUDE, CODEX, AGY, OPENCODE];
 pub fn agent(id: &str) -> Option<&'static Agent> {
     AGENTS.iter().find(|a| a.id == id)
-}
-impl Agent {
-    /// Where to pick a past conversation when the agent has no picker cx can start.
-    pub fn pick_hint(&self) -> Option<String> {
-        if self.resume_pick.is_some() {
-            return None;
-        }
-        Some(match self.id {
-            "agy" => "to pick a conversation, use /resume inside agy (-r resumes the last)".into(),
-            "opencode" => {
-                "to pick a session, use /sessions inside opencode (-r resumes the last)".into()
-            }
-            _ => format!(
-                "{} has no conversation picker; -r resumes the last",
-                self.label
-            ),
-        })
-    }
 }
 /// The agent a key starts (`key`) or resumes (`resume_key`, then true).
 pub fn agent_for_key(c: char) -> Option<(&'static Agent, bool)> {
@@ -625,6 +611,8 @@ mod agent_table_tests {
         assert!(!keys.iter().any(|k| "enN".contains(*k)));
         for a in AGENTS {
             assert_eq!(a.resume_key, a.key.to_ascii_uppercase());
+            // A picker cx starts, or a hint saying where to pick instead.
+            assert!(a.resume_pick.is_some() != a.pick_hint.is_some(), "{}", a.id);
             assert_eq!(AGENTS.iter().filter(|b| b.id == a.id).count(), 1);
         }
     }

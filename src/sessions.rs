@@ -3493,7 +3493,7 @@ pub fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 const ATTACH_PAYLOAD_LIMIT: usize = 32768;
-const ATTACH_REFUSED: &str = "Session changed or ended; refresh before attaching";
+pub const ATTACH_REFUSED: &str = "Session changed or ended; refresh before attaching";
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CheckedAttach {

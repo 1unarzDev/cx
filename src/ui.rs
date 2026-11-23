@@ -608,6 +608,8 @@ struct App {
     notice_started: Option<Instant>,
     notice_deadline: Option<Instant>,
     unavailable_notified: BTreeSet<String>,
+    /// Devices with an outside-terminal discovery (ExternalSessions) in flight.
+    external_loading: BTreeSet<usize>,
     browser: Option<Browser>,
     other_browser: Option<Browser>,
     destination_active: bool,
@@ -830,6 +832,7 @@ impl App {
             notice_started: None,
             notice_deadline: None,
             unavailable_notified: BTreeSet::new(),
+            external_loading: BTreeSet::new(),
             browser: None,
             other_browser: None,
             destination_active: false,
@@ -990,6 +993,7 @@ impl App {
         self.pending_launch = None;
         self.providers.clear();
         self.adoption_unavailable.clear();
+        self.external_loading.clear();
         self.provider_loading.clear();
         self.network.clear();
         self.peer_evidence.clear();

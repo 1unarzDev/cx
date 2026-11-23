@@ -340,42 +340,70 @@ fn process_identity(pane: u32, provider: &str) -> Option<ProcessIdentity> {
 }
 fn running_provider(pid: u32) -> Option<&'static str> {
     let executable = fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    executable_agent(crate::model::AGENTS, &executable, &mut |n| {
+        leading_arguments(pid, n)
+    })
+}
+/// The agent `executable` runs, given its first `n` arguments on request (argv[0]
+/// first). Only the executable/script arguments are examined, never prompts or tool
+/// inputs. An executable replaced while it runs reads as `NAME (deleted)`.
+fn executable_agent(
+    agents: &[crate::model::Agent],
+    executable: &std::path::Path,
+    arguments: &mut dyn FnMut(usize) -> Option<Vec<Vec<u8>>>,
+) -> Option<&'static str> {
+    let name = executable.file_name()?.to_str()?;
+    let name = name.strip_suffix(" (deleted)").unwrap_or(name);
+    // Not a helper process of the agent's binary: its first argument after `at`.
+    let is_agent = |agent: &crate::model::Agent,
+                    at: usize,
+                    arguments: &mut dyn FnMut(usize) -> Option<Vec<Vec<u8>>>| {
+        agent.not_agent_args.is_empty()
+            || !arguments(at + 1).is_some_and(|args| {
+                args.get(at).is_some_and(|arg| {
+                    agent
+                        .not_agent_args
+                        .iter()
+                        .any(|helper| helper.as_bytes() == arg.as_slice())
+                })
+            })
+    };
     // Claude's native installer uses a version-numbered executable behind claude.
     if executable.parent()?.file_name()?.to_str()? == "versions"
         && executable.parent()?.parent()?.file_name()?.to_str()? == "claude"
-        && executable
-            .file_name()?
-            .to_str()?
-            .bytes()
-            .all(|b| b.is_ascii_digit() || b == b'.')
+        && name.bytes().all(|b| b.is_ascii_digit() || b == b'.')
     {
-        return Some("claude");
+        let claude = agents.iter().find(|a| a.id == "claude")?;
+        return is_agent(claude, 1, arguments).then_some(claude.id);
     }
-    match executable.file_name()?.to_str()? {
-        "claude" => Some("claude"),
-        "codex" => Some("codex"),
-        "node" | "nodejs" | "bun" => {
-            // Only examine the executable/script arguments, never prompts or tool inputs.
-            use std::io::{BufRead, BufReader, Read};
-            let file = fs::File::open(format!("/proc/{pid}/cmdline")).ok()?;
-            let mut reader = BufReader::with_capacity(128, file.take(4096));
-            let mut script = Vec::new();
-            reader.read_until(0, &mut script).ok()?;
-            script.clear();
-            reader.read_until(0, &mut script).ok()?;
-            if script.pop()? != 0 {
-                return None;
-            }
-            if script.ends_with(b"/@anthropic-ai/claude-code/cli.js") {
-                Some("claude")
-            } else if script.ends_with(b"/@openai/codex/bin/codex.js") {
-                Some("codex")
-            } else {
-                None
-            }
+    if let Some(agent) = agents.iter().find(|a| a.exe == name) {
+        return is_agent(agent, 1, arguments).then_some(agent.id);
+    }
+    if !["node", "nodejs", "bun"].contains(&name) {
+        return None;
+    }
+    let script = arguments(2)?.pop()?;
+    let agent = agents.iter().find(|a| {
+        a.script
+            .is_some_and(|suffix| script.ends_with(suffix.as_bytes()))
+    })?;
+    is_agent(agent, 2, arguments).then_some(agent.id)
+}
+/// A process's first `n` arguments (within the first 4 KiB), each complete.
+fn leading_arguments(pid: u32, n: usize) -> Option<Vec<Vec<u8>>> {
+    use std::io::{BufRead, BufReader, Read};
+    let file = fs::File::open(format!("/proc/{pid}/cmdline")).ok()?;
+    let mut reader = BufReader::with_capacity(128, file.take(4096));
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let mut arg = Vec::new();
+        reader.read_until(0, &mut arg).ok()?;
+        if arg.pop()? != 0 {
+            return None;
         }
-        _ => None,
+        out.push(arg);
     }
+    Some(out)
 }
 fn terminal_group(pid: u32) -> Option<(i32, i64, i32)> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
@@ -1872,7 +1900,7 @@ pub fn stop_operation(s: &Session) -> Result<(crate::model::Operation, &'static 
         let origin = s
             .origin
             .clone()
-            .filter(|_| ["codex", "claude"].contains(&s.provider.as_str()))
+            .filter(|_| crate::model::agent(&s.provider).is_some())
             .context("only CX sessions and agents outside tmux can be stopped")?;
         return Ok((
             Operation::StopExternal {
@@ -1894,7 +1922,7 @@ pub fn stop_operation(s: &Session) -> Result<(crate::model::Operation, &'static 
             },
             "stop-session-v1",
         )),
-        "codex" | "claude" => Ok((
+        p if crate::model::agent(p).is_some() => Ok((
             Operation::StopAgentSession {
                 id: s.id.clone(),
                 pid: s.pid,
@@ -1928,7 +1956,7 @@ pub fn stop_agent(
     all_panes: bool,
 ) -> Result<serde_json::Value> {
     anyhow::ensure!(
-        ["codex", "claude"].contains(&provider),
+        crate::model::agent(provider).is_some(),
         "unsupported agent stop profile"
     );
     stop_managed(id, pid, started, boot_id, provider, all_panes)
@@ -1975,7 +2003,7 @@ fn stop_managed(
     let created = |s: &str| s.split_once(':').map(|(c, _)| c.to_string());
     if record.id != id
         || record.external
-        || !["shell", "codex", "claude"].contains(&record.provider.as_str())
+        || (record.provider != "shell" && crate::model::agent(&record.provider).is_none())
         || (provider == "shell" && record.provider != "shell")
         || created(&record.started).is_none()
         || created(&record.started) != created(started)
@@ -2053,12 +2081,10 @@ fn stop_managed(
         format!("#{{&&:#{{==:#{{pane_pid}},{pid}}},#{{==:#{{session_created}},{created}}}}}");
     // tmux checks its current command again in the same command queue as the kill.
     // This narrows (but cannot completely eliminate) concurrent provider-start races.
-    let provider_guard =
-        "#{&&:#{!=:#{pane_current_command},claude},#{!=:#{pane_current_command},codex}}";
     let provider_guard = if provider == "shell" {
-        provider_guard
+        no_agent_command_guard(crate::model::AGENTS)
     } else {
-        "1"
+        "1".into()
     };
     let guard =
         format!("#{{&&:{runtime_guard},#{{&&:{provider_guard},#{{==:#{{session_name}},{id}}}}}}}");
@@ -2095,6 +2121,18 @@ fn stop_managed(
     Ok(serde_json::json!({"status": "stopped", "panes": panes.len(), "reaped": reaped}))
 }
 
+/// A tmux condition that the pane's current command is none of `agents`' executables.
+fn no_agent_command_guard(agents: &[crate::model::Agent]) -> String {
+    match agents {
+        [] => "1".into(),
+        [last] => format!("#{{!=:#{{pane_current_command}},{}}}", last.exe),
+        [first, rest @ ..] => format!(
+            "#{{&&:#{{!=:#{{pane_current_command}},{}}},{}}}",
+            first.exe,
+            no_agent_command_guard(rest)
+        ),
+    }
+}
 fn reject_provider_descendants(pane: u32) -> Result<()> {
     let mut queue = std::collections::VecDeque::from([(pane, 0)]);
     let mut visited = 0;
@@ -2159,49 +2197,62 @@ pub fn launch_shell() -> Result<String> {
 /// What `Info` last found runnable in a launch shell (state file `providers.json`).
 /// A launch within [`PROBE_TTL`] seconds trusts its "available" instead of starting
 /// login shells again; "unavailable" is always rechecked, so an install shows at once.
+/// A record of another shape (an older cx) does not parse, so it is probed again.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ProviderProbe {
     shell: String,
     at: u64,
-    claude: bool,
-    codex: bool,
+    /// Each agent found, by id, with the executable it resolved to when that is a file
+    /// (a wrapper function or alias has none).
+    available: std::collections::BTreeMap<String, Option<ProbedBinary>>,
+    /// Codex's executable has `--no-daemon` (it is then always a known file).
     codex_no_daemon: bool,
-    /// The codex executable that has `--no-daemon` ([`executable_identity`]): a launch
-    /// trusts the record only while that file is unchanged (an update or downgrade).
-    #[serde(default)]
-    codex_binary: Option<(String, String)>,
+}
+/// An executable's identity for change detection (an update or downgrade).
+#[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Debug)]
+struct ProbedBinary {
+    path: String,
+    dev: u64,
+    inode: u64,
+    size: u64,
+    mtime: i64,
+    mtime_nsec: i64,
+}
+impl ProbedBinary {
+    fn of(path: &str) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        if !path.starts_with('/') {
+            return None;
+        }
+        let m = fs::metadata(path).ok()?;
+        Some(Self {
+            path: path.into(),
+            dev: m.dev(),
+            inode: m.ino(),
+            size: m.size(),
+            mtime: m.mtime(),
+            mtime_nsec: m.mtime_nsec(),
+        })
+    }
+    fn unchanged(&self) -> bool {
+        Self::of(&self.path).as_ref() == Some(self)
+    }
 }
 const PROBE_TTL: u64 = 600;
 const PROBE_FILE: &str = "providers.json";
+const PROBE_LIMIT: usize = 16384;
 impl ProviderProbe {
     fn available(&self, provider: &str) -> bool {
-        match provider {
-            "claude" => self.claude,
-            "codex" => self.codex,
-            _ => false,
-        }
+        self.available.contains_key(provider)
     }
-    /// Whether what it says about codex's `--no-daemon` still holds for the file on disk.
+    /// Whether every executable it found is still the file on disk (so what it says,
+    /// codex's `--no-daemon` included, still holds).
     fn current(&self) -> bool {
-        !self.codex_no_daemon
-            || self
-                .codex_binary
-                .as_ref()
-                .is_some_and(|(path, id)| executable_identity(path).as_ref() == Some(id))
+        self.available
+            .values()
+            .all(|binary| binary.as_ref().is_none_or(ProbedBinary::unchanged))
+            && (!self.codex_no_daemon || matches!(self.available.get("codex"), Some(Some(_))))
     }
-}
-/// A file's identity for change detection: device, inode, size and modification time.
-fn executable_identity(path: &str) -> Option<String> {
-    use std::os::unix::fs::MetadataExt;
-    let m = fs::metadata(path).ok()?;
-    Some(format!(
-        "{}:{}:{}:{}.{}",
-        m.dev(),
-        m.ino(),
-        m.size(),
-        m.mtime(),
-        m.mtime_nsec()
-    ))
 }
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -2212,30 +2263,32 @@ fn now_secs() -> u64 {
 /// Probe every provider in `shell` at once (each a bounded login shell of its own) and
 /// record the result for launches.
 fn probe_providers(shell: &str) -> ProviderProbe {
-    let (claude, codex, codex_binary) = thread::scope(|scope| {
-        let claude = scope.spawn(|| provider_available(shell, "claude --version"));
-        let codex = scope.spawn(|| provider_available(shell, "codex --version"));
+    let (found, no_daemon) = thread::scope(|scope| {
+        let agents: Vec<_> = crate::model::AGENTS
+            .iter()
+            .map(|a| (a.id, scope.spawn(|| agent_executable(shell, a.exe))))
+            .collect();
         let no_daemon = codex_supports_no_daemon(shell);
-        (
-            claude.join().unwrap_or(false),
-            codex.join().unwrap_or(false),
-            no_daemon,
-        )
+        let found: std::collections::BTreeMap<_, _> = agents
+            .into_iter()
+            .filter_map(|(id, probe)| Some((id.to_string(), probe.join().ok()??)))
+            .collect();
+        (found, no_daemon)
     });
     let probe = ProviderProbe {
         shell: shell.into(),
         at: now_secs(),
-        claude,
-        codex,
-        codex_no_daemon: codex && codex_binary.is_some(),
-        codex_binary: codex_binary.filter(|_| codex),
+        codex_no_daemon: no_daemon && matches!(found.get("codex"), Some(Some(_))),
+        available: found,
     };
-    let _ = crate::store::write_state(PROBE_FILE, &probe, 4096);
+    let _ = crate::store::write_state(PROBE_FILE, &probe, PROBE_LIMIT);
     probe
 }
 /// The recorded probe of `shell`, when it is younger than [`PROBE_TTL`].
 fn recorded_probe(shell: &str) -> Option<ProviderProbe> {
-    let probe: ProviderProbe = crate::store::read_state(PROBE_FILE, 4096).ok().flatten()?;
+    let probe: ProviderProbe = crate::store::read_state(PROBE_FILE, PROBE_LIMIT as u64)
+        .ok()
+        .flatten()?;
     let age = now_secs().checked_sub(probe.at)?;
     (probe.shell == shell && age < PROBE_TTL).then_some(probe)
 }
@@ -2244,34 +2297,37 @@ fn recorded_probe(shell: &str) -> Option<ProviderProbe> {
 /// No output from shell configuration or providers enters metadata/logs.
 pub fn available_providers() -> Result<Vec<&'static str>> {
     let probe = probe_providers(&launch_shell()?);
-    Ok(["claude", "codex"]
-        .into_iter()
+    Ok(crate::model::AGENTS
+        .iter()
+        .map(|a| a.id)
         .filter(|p| probe.available(p))
         .collect())
 }
 
-/// Probe in the same selected login shell as the eventual launcher. Never
-/// assume version support or edit provider configuration; older CLIs fall back.
-/// Supported: the executable's path and identity (None when either is unknown,
-/// which a launch treats as unsupported only after probing again).
-fn codex_supports_no_daemon(shell: &str) -> Option<(String, String)> {
-    const MARK: &str = "CX-CODEX-PATH";
+/// Whether `exe --version` succeeds in the launch shell: None when it does not, else
+/// the file it resolves to (None for a wrapper function or alias).
+fn agent_executable(shell: &str, exe: &str) -> Option<Option<ProbedBinary>> {
+    const MARK: &str = "CX-AGENT-PATH";
     let out = provider_output(
         shell,
-        &format!("codex --help 2>/dev/null | command head -c 65536 | command grep -Fq -- '  --no-daemon' && echo {MARK} && command -v codex"),
+        &format!("{exe} --version >/dev/null 2>&1 && echo {MARK} && command -v {exe}"),
     )?;
-    let text = String::from_utf8_lossy(&out);
-    // Startup files may print too: the path is the line after the last mark.
-    let path = text
-        .rsplit(MARK)
-        .next()?
-        .lines()
-        .find(|l| !l.is_empty())?
-        .trim();
-    if !path.starts_with('/') {
-        return None;
-    }
-    Some((path.to_owned(), executable_identity(path)?))
+    Some(marked_path(&out, MARK).and_then(|path| ProbedBinary::of(&path)))
+}
+/// The line after the last `mark` (startup files may print too).
+fn marked_path(out: &[u8], mark: &str) -> Option<String> {
+    let text = String::from_utf8_lossy(out);
+    let line = text.rsplit(mark).next()?.lines().find(|l| !l.is_empty())?;
+    Some(line.trim().to_owned())
+}
+
+/// Probe in the same selected login shell as the eventual launcher. Never
+/// assume version support or edit provider configuration; older CLIs fall back.
+fn codex_supports_no_daemon(shell: &str) -> bool {
+    provider_available(
+        shell,
+        "codex --help 2>/dev/null | command head -c 65536 | command grep -Fq -- '  --no-daemon'",
+    )
 }
 
 fn provider_available(shell: &str, probe: &str) -> bool {
@@ -2742,30 +2798,30 @@ fn provider_command(provider: &str, yolo: bool, resume: bool, pick: bool) -> Res
     if !resume && pick {
         bail!("a session picker applies only when resuming");
     }
+    if provider == "shell" {
+        if resume {
+            bail!("resume is available only for Codex or Claude sessions");
+        }
+        if yolo {
+            bail!("YOLO applies only to Codex or Claude sessions");
+        }
+        return Ok("shell".into());
+    }
+    let agent = crate::model::agent(provider).context("unsupported launch profile")?;
     // Resume either the most recent session (--last / --continue) or the
     // provider's own interactive picker (codex resume / claude --resume).
-    let base = match (provider, resume, pick) {
-        ("codex", false, _) => "codex",
-        ("codex", true, false) => "codex resume --last",
-        ("codex", true, true) => "codex resume",
-        ("claude", false, _) => "claude",
-        ("claude", true, false) => "claude --continue",
-        ("claude", true, true) => "claude --resume",
-        // Fall through to the YOLO check so shell + YOLO is still rejected.
-        ("shell", false, false) => "shell",
-        ("shell", _, _) => {
-            bail!("resume is available only for Codex or Claude sessions")
-        }
-        _ => bail!("unsupported launch profile"),
+    let base = match (resume, pick) {
+        (false, _) => agent.new,
+        (true, false) => agent.resume_last,
+        (true, true) => agent
+            .resume_pick
+            .context("this agent has no session picker; resume the last session")?,
     };
-    let flag = match (provider, yolo) {
-        (_, false) => "",
-        ("codex", true) => " --dangerously-bypass-approvals-and-sandbox",
-        ("claude", true) => " --dangerously-skip-permissions",
-        ("shell", true) => bail!("YOLO applies only to Codex or Claude sessions"),
-        _ => bail!("unsupported launch profile"),
-    };
-    Ok(format!("{base}{flag}"))
+    let mut words = base.to_vec();
+    if yolo {
+        words.extend(agent.yolo);
+    }
+    Ok(words.join(" "))
 }
 pub fn create_container(
     request: &CreateSession,
@@ -2883,7 +2939,7 @@ fn create_with_permissions(
     if request.key.is_empty() || request.key.len() > 1024 {
         bail!("creation key must be 1–1024 bytes");
     }
-    if !["shell", "claude", "codex"].contains(&request.provider.as_str()) {
+    if request.provider != "shell" && crate::model::agent(&request.provider).is_none() {
         bail!("unsupported launch profile");
     }
     let execution_directory = if container.is_some() {
@@ -5300,6 +5356,121 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
         );
         assert!(provider_command("shell", true, false, false).is_err());
     }
+    /// The table gives exactly the commands the per-provider matches gave before it.
+    #[test]
+    fn provider_commands_from_the_table_match_the_old_strings() {
+        let old = |provider: &str, yolo: bool, resume: bool, pick: bool| -> Option<String> {
+            if !resume && pick {
+                return None;
+            }
+            let base = match (provider, resume, pick) {
+                ("codex", false, _) => "codex",
+                ("codex", true, false) => "codex resume --last",
+                ("codex", true, true) => "codex resume",
+                ("claude", false, _) => "claude",
+                ("claude", true, false) => "claude --continue",
+                ("claude", true, true) => "claude --resume",
+                ("shell", false, false) => "shell",
+                _ => return None,
+            };
+            let flag = match (provider, yolo) {
+                (_, false) => "",
+                ("codex", true) => " --dangerously-bypass-approvals-and-sandbox",
+                ("claude", true) => " --dangerously-skip-permissions",
+                _ => return None,
+            };
+            Some(format!("{base}{flag}"))
+        };
+        for provider in ["claude", "codex", "shell", "bash", ""] {
+            for bits in 0..8 {
+                let (yolo, resume, pick) = (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0);
+                assert_eq!(
+                    provider_command(provider, yolo, resume, pick).ok(),
+                    old(provider, yolo, resume, pick),
+                    "{provider} yolo={yolo} resume={resume} pick={pick}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn running_agents_are_found_by_executable_or_script_only() {
+        use crate::model::{Agent, CLAUDE};
+        use std::path::Path;
+        const DAEMONED: Agent = Agent {
+            id: "tool",
+            exe: "tool",
+            script: Some("/tool/cli.js"),
+            not_agent_args: &["serve", "--bg-updater"],
+            ..CLAUDE
+        };
+        let agents: &[Agent] = &[crate::model::CLAUDE, crate::model::CODEX, DAEMONED];
+        let found = |exe: &str, argv: &[&str]| {
+            let argv: Vec<Vec<u8>> = argv.iter().map(|a| a.as_bytes().to_vec()).collect();
+            executable_agent(agents, Path::new(exe), &mut |n| {
+                (argv.len() >= n).then(|| argv[..n].to_vec())
+            })
+        };
+        assert_eq!(found("/usr/bin/codex", &["codex"]), Some("codex"));
+        assert_eq!(found("/usr/bin/codex (deleted)", &["codex"]), Some("codex"));
+        assert_eq!(
+            found("/h/.local/share/claude/versions/2.1.3", &["claude"]),
+            Some("claude")
+        );
+        assert_eq!(
+            found(
+                "/h/.local/share/claude/versions/2.1.3 (deleted)",
+                &["claude"]
+            ),
+            Some("claude")
+        );
+        assert_eq!(found("/h/other/versions/2.1.3", &["x"]), None);
+        assert_eq!(
+            found(
+                "/usr/bin/node",
+                &["node", "/lib/@openai/codex/bin/codex.js", "hi"]
+            ),
+            Some("codex")
+        );
+        assert_eq!(
+            found(
+                "/usr/bin/bun",
+                &["bun", "/x/@anthropic-ai/claude-code/cli.js"]
+            ),
+            Some("claude")
+        );
+        assert_eq!(found("/usr/bin/node", &["node", "/srv/app.js"]), None);
+        assert_eq!(found("/usr/bin/node", &["node"]), None);
+        assert_eq!(found("/usr/bin/python3", &["python3", "codex"]), None);
+        // A helper process of an agent's binary (an updater, a daemon) is not the agent;
+        // only the first argument decides, so a prompt saying "serve" never does.
+        assert_eq!(found("/opt/tool", &["tool"]), Some("tool"));
+        assert_eq!(found("/opt/tool", &["tool", "fix", "serve"]), Some("tool"));
+        assert_eq!(found("/opt/tool", &["tool", "serve"]), None);
+        assert_eq!(
+            found("/opt/tool (deleted)", &["tool", "--bg-updater"]),
+            None
+        );
+        assert_eq!(
+            found("/usr/bin/node", &["node", "/a/tool/cli.js"]),
+            Some("tool")
+        );
+        assert_eq!(
+            found("/usr/bin/node", &["node", "/a/tool/cli.js", "serve"]),
+            None
+        );
+    }
+    #[test]
+    fn a_shell_stop_guard_names_every_agent_executable() {
+        assert_eq!(
+            no_agent_command_guard(crate::model::AGENTS),
+            "#{&&:#{!=:#{pane_current_command},claude},#{!=:#{pane_current_command},codex}}"
+        );
+        assert_eq!(
+            no_agent_command_guard(&crate::model::AGENTS[..1]),
+            "#{!=:#{pane_current_command},claude}"
+        );
+        assert_eq!(no_agent_command_guard(&[]), "1");
+    }
     fn assert_probe_child_stopped(pid: &str) {
         let deadline = std::time::Instant::now() + Duration::from_millis(250);
         loop {
@@ -5568,12 +5739,10 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
             let probe = ProviderProbe {
                 shell: shell.into(),
                 at,
-                claude: true,
-                codex: false,
+                available: [("claude".to_string(), None)].into(),
                 codex_no_daemon: false,
-                codex_binary: None,
             };
-            crate::store::write_state(PROBE_FILE, &probe, 4096).unwrap();
+            crate::store::write_state(PROBE_FILE, &probe, PROBE_LIMIT).unwrap();
         };
         assert!(
             recorded_probe("/bin/bash").is_none(),
@@ -5583,32 +5752,55 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
         let probe = recorded_probe("/bin/bash").expect("recent probe");
         assert!(probe.available("claude") && !probe.available("codex"));
         assert!(!probe.available("shell"));
+        assert!(probe.current(), "a wrapper without a file is trusted");
         // Another launch shell, an expired record or a clock gone backwards: probe again.
         assert!(recorded_probe("/usr/bin/fish").is_none());
         record("/bin/bash", now_secs() - PROBE_TTL);
         assert!(recorded_probe("/bin/bash").is_none());
         record("/bin/bash", now_secs() + 60);
         assert!(recorded_probe("/bin/bash").is_none());
-        // `--no-daemon` holds only for the codex file that was probed.
+        // An older cx's record (one field per agent) is stale: probed again.
+        let old = serde_json::json!({"shell": "/bin/bash", "at": now_secs() - 5,
+            "claude": true, "codex": false, "codex_no_daemon": false});
+        crate::store::write_state(PROBE_FILE, &old, PROBE_LIMIT).unwrap();
+        assert!(recorded_probe("/bin/bash").is_none());
+        // What it found holds only for the files that were probed, for every agent.
         let dir = tempfile::tempdir().unwrap();
-        let codex = dir.path().join("codex");
-        fs::write(&codex, "new").unwrap();
-        let path = codex.to_str().unwrap().to_owned();
+        let file = |name: &str| {
+            let path = dir.path().join(name);
+            fs::write(&path, "new").unwrap();
+            path.to_str().unwrap().to_owned()
+        };
+        let (codex, claude) = (file("codex"), file("claude"));
         let mut probe = ProviderProbe {
             shell: "/bin/bash".into(),
             at: now_secs(),
-            claude: false,
-            codex: true,
+            available: [
+                ("codex".to_string(), ProbedBinary::of(&codex)),
+                ("claude".to_string(), ProbedBinary::of(&claude)),
+            ]
+            .into(),
             codex_no_daemon: true,
-            codex_binary: Some((path.clone(), executable_identity(&path).unwrap())),
         };
+        assert!(probe.current());
+        fs::write(&claude, "updated").unwrap();
+        assert!(!probe.current(), "an updated claude is probed again");
+        probe
+            .available
+            .insert("claude".into(), ProbedBinary::of(&claude));
         assert!(probe.current());
         fs::write(&codex, "older").unwrap();
         assert!(!probe.current(), "a replaced codex is probed again");
-        probe.codex_binary = None;
-        assert!(!probe.current());
+        probe.available.insert("codex".into(), None);
+        assert!(!probe.current(), "--no-daemon holds only for a known file");
         probe.codex_no_daemon = false;
         assert!(probe.current(), "without the flag any codex launches");
+        assert_eq!(ProbedBinary::of("codex"), None, "never a relative path");
+        let marked = b"motd CX-AGENT-PATH noise\nCX-AGENT-PATH\n/usr/bin/claude\n";
+        assert_eq!(
+            marked_path(marked, "CX-AGENT-PATH").as_deref(),
+            Some("/usr/bin/claude")
+        );
     }
     #[test]
     fn tmux_list_arguments_keep_a_trailing_semicolon() {

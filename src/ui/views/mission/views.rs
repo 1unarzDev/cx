@@ -1428,11 +1428,12 @@ fn launch_keys(
     d: &LabDevice,
     kst: Style,
 ) -> u16 {
-    for (k, word, tok) in [
-        ("c", "claude", Tok::Claude),
-        ("x", "codex", Tok::Codex),
-        ("n", "shell", Tok::Shell),
-    ] {
+    let agents = crate::model::AGENTS.iter().map(|a| {
+        let tok = super::provider_tok(crate::ui::views::Provider::of(a.id));
+        (a.key.to_string(), a.id, tok)
+    });
+    for (k, word, tok) in agents.chain([("n".to_string(), "shell", Tok::Shell)]) {
+        let k = k.as_str();
         if !d.caps.is_empty() && !d.caps.iter().any(|c| c == word) {
             continue;
         }
@@ -1600,8 +1601,10 @@ pub(super) fn here_hint(cx: &Cx, buf: &mut Buffer, x0: u16, y: u16, right: u16, 
         return 0;
     };
     let room = right.saturating_sub(x0 + 2);
-    let ks: Vec<(&str, &str)> = [("c", "claude"), ("x", "codex"), ("n", "shell")]
-        .into_iter()
+    let ks: Vec<(String, &str)> = crate::model::AGENTS
+        .iter()
+        .map(|a| (a.key.to_string(), a.id))
+        .chain([("n".to_string(), "shell")])
         .filter(|(_, w)| d.caps.is_empty() || d.caps.iter().any(|c| c == w))
         .collect();
     let kw = ks.len() as u16 * 3 + 1;
@@ -1621,7 +1624,7 @@ pub(super) fn here_hint(cx: &Cx, buf: &mut Buffer, x0: u16, y: u16, right: u16, 
         let quiet = cx.ink(Tok::Muted, 0.9);
         for (k, word) in ks {
             let kx = x;
-            x += cx.keycap(buf, x, y, 3, k, quiet);
+            x += cx.keycap(buf, x, y, 3, &k, quiet);
             cx.hit(Rect::new(kx, y, 3, 1), format!("new-{word}"));
         }
         x += 1;

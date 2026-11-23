@@ -14,10 +14,10 @@ impl App {
                     let mut choices = vec!["shell".to_string()];
                     if let Some((available, _)) = self.providers.get(&reply.device) {
                         choices.extend(
-                            ["claude", "codex"]
+                            crate::model::AGENTS
                                 .iter()
-                                .filter(|p| available.iter().any(|v| v == **p))
-                                .map(|p| (*p).to_string()),
+                                .filter(|a| available.iter().any(|v| v == a.id))
+                                .map(|a| a.id.to_string()),
                         );
                     }
                     choices.get(self.dialog_selected).cloned()
@@ -30,25 +30,24 @@ impl App {
                         caps.iter()
                             .filter_map(Value::as_str)
                             .filter(|p| {
-                                [
-                                    "claude",
-                                    "codex",
-                                    "native-command-v1",
-                                    "session-preview-v1",
-                                    "live-session-pane-v1",
-                                    "watch-v1",
-                                    "stop-session-v1",
-                                    "stop-agent-session-v1",
-                                    "session-yolo-v1",
-                                    "adopt-session-v1",
-                                    "adopt-reptyr-v1",
-                                    "containers-v1",
-                                    "container-agents-v1",
-                                    "pdf-pages-v1",
-                                    "stable-update-v1",
-                                    "metrics-v1",
-                                ]
-                                .contains(p)
+                                crate::model::agent(p).is_some()
+                                    || [
+                                        "native-command-v1",
+                                        "session-preview-v1",
+                                        "live-session-pane-v1",
+                                        "watch-v1",
+                                        "stop-session-v1",
+                                        "stop-agent-session-v1",
+                                        "session-yolo-v1",
+                                        "adopt-session-v1",
+                                        "adopt-reptyr-v1",
+                                        "containers-v1",
+                                        "container-agents-v1",
+                                        "pdf-pages-v1",
+                                        "stable-update-v1",
+                                        "metrics-v1",
+                                    ]
+                                    .contains(p)
                             })
                             .map(str::to_owned)
                             .collect()

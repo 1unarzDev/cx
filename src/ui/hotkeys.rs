@@ -10,7 +10,10 @@
 use super::views::mission::HOME;
 use std::collections::BTreeMap;
 
-const NEVER: [char; 4] = ['e', 'c', 'x', 'n'];
+/// `e` (link), `n` (shell) and every agent's key are never device letters.
+fn never(c: char) -> bool {
+    c == 'e' || c == 'n' || crate::model::is_agent_key(c)
+}
 const LATE: [char; 5] = ['g', 'h', 'j', 'k', 'l'];
 
 /// Assign letters to `devices` (id, name), keeping every letter in `previous` whose device
@@ -23,13 +26,13 @@ pub(super) fn assign(
     let mut taken: Vec<char> = Vec::new();
     for (id, _) in devices {
         if let Some(&c) = previous.get(*id) {
-            if !taken.contains(&c) && !NEVER.contains(&c) {
+            if !taken.contains(&c) && !never(c) {
                 out.insert(id.to_string(), c);
                 taken.push(c);
             }
         }
     }
-    let early = |c: char| c.is_ascii_lowercase() && !NEVER.contains(&c) && !LATE.contains(&c);
+    let early = |c: char| c.is_ascii_lowercase() && !never(c) && !LATE.contains(&c);
     for (id, name) in devices {
         if out.contains_key(*id) {
             continue;

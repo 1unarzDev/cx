@@ -1138,15 +1138,16 @@ impl App {
             }
             KeyCode::Char('G') => false,
             KeyCode::Char('g') if self.device_for_letter('g').is_none() => false,
-            // Never device letters: claude, codex, a shell (`C X` resume) on this device,
-            // where cx was started.
-            KeyCode::Char(c @ ('c' | 'x' | 'n' | 'C' | 'X')) => {
-                let p = match c.to_ascii_lowercase() {
-                    'c' => "claude",
-                    'x' => "codex",
-                    _ => "shell",
-                };
-                self.launch_here(p, c.is_ascii_uppercase());
+            // Never device letters: an agent (its resume key resumes), a shell, on this
+            // device, where cx was started.
+            KeyCode::Char('n') => {
+                self.launch_here("shell", false);
+                true
+            }
+            KeyCode::Char(c) if crate::model::agent_for_key(c).is_some() => {
+                if let Some((agent, resume)) = crate::model::agent_for_key(c) {
+                    self.launch_here(agent.id, resume);
+                }
                 true
             }
             KeyCode::Char(c) if c.is_ascii_lowercase() => {
@@ -1190,24 +1191,16 @@ impl App {
                 None if self.work[d].sessions.is_empty() && self.launch_item(d, c) => true,
                 None => !c.is_ascii_digit(),
             },
-            KeyCode::Char('c') => {
-                self.new_session(d, "claude");
-                true
-            }
-            KeyCode::Char('x') => {
-                self.new_session(d, "codex");
-                true
-            }
             KeyCode::Char('n') => {
                 self.new_session(d, "shell");
                 true
             }
-            KeyCode::Char('C') => {
-                self.resume_session(d, "claude");
-                true
-            }
-            KeyCode::Char('X') => {
-                self.resume_session(d, "codex");
+            KeyCode::Char(c) if crate::model::agent_for_key(c).is_some() => {
+                match crate::model::agent_for_key(c) {
+                    Some((agent, true)) => self.resume_session(d, agent.id),
+                    Some((agent, false)) => self.new_session(d, agent.id),
+                    None => {}
+                }
                 true
             }
             KeyCode::Char('f') => {
@@ -1688,14 +1681,22 @@ impl App {
             }
             ("lane", None, _) => self.edge_lane(),
             ("skip", None, _) => self.onboarding_dismissed = true,
-            (verb @ ("new-claude" | "new-codex" | "new-shell"), None, _) => {
+            (verb, None, _)
+                if verb
+                    .strip_prefix("new-")
+                    .is_some_and(|p| p == "shell" || crate::model::agent(p).is_some()) =>
+            {
                 let p = verb.trim_start_matches("new-");
                 match current {
                     Some(d) => self.new_session(d, p),
                     None => self.launch_here(p, false),
                 }
             }
-            (verb @ ("resume-claude" | "resume-codex"), None, _) => {
+            (verb, None, _)
+                if verb
+                    .strip_prefix("resume-")
+                    .is_some_and(|p| crate::model::agent(p).is_some()) =>
+            {
                 let p = verb.trim_start_matches("resume-");
                 match current {
                     Some(d) => self.resume_session(d, p),

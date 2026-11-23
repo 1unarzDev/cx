@@ -365,12 +365,12 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(["e"], SendTo, "Send selected files to a device (picker)"),
             b!(
                 ["!", "c"],
-                Launch("claude"),
+                Launch(crate::model::CLAUDE.id),
                 "New claude in this folder, last mode"
             ),
             b!(
                 ["!", "x"],
-                Launch("codex"),
+                Launch(crate::model::CODEX.id),
                 "New codex in this folder, last mode"
             ),
             b!(["!", "n"], Launch("shell"), "New shell in this folder"),
@@ -2296,6 +2296,18 @@ pub(super) mod openers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bang_then_an_agent_key_launches_that_agent() {
+        for agent in crate::model::AGENTS {
+            let key = agent.key.to_string();
+            assert!(
+                keymap().iter().any(|b| b.on == ["!", key.as_str()]
+                    && matches!(b.run, Y::Launch(p) if p == agent.id)),
+                "! {key}"
+            );
+        }
+    }
 
     /// The user's keymap.toml prepends (a fixture copy) resolve to what cx runs.
     #[test]

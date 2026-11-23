@@ -321,14 +321,12 @@ fn devices(app: &App) -> Vec<LabDevice> {
                     let has = |c: &str| caps.iter().any(|x| x == c);
                     let mut v = vec!["shell".to_string()];
                     v.extend(
-                        [
-                            ("claude", "claude"),
-                            ("codex", "codex"),
-                            ("containers-v1", "containers"),
-                        ]
-                        .iter()
-                        .filter(|(c, _)| has(c))
-                        .map(|(_, w)| w.to_string()),
+                        crate::model::AGENTS
+                            .iter()
+                            .map(|a| (a.id, a.id))
+                            .chain([("containers-v1", "containers")])
+                            .filter(|(c, _)| has(c))
+                            .map(|(_, w)| w.to_string()),
                     );
                     v
                 }),
@@ -557,11 +555,7 @@ fn sessions(app: &App) -> Vec<LabSession> {
                 note,
                 title,
                 device: dev_id(d),
-                provider: match s.provider.as_str() {
-                    "claude" => Provider::Claude,
-                    "codex" => Provider::Codex,
-                    _ => Provider::Shell,
-                },
+                provider: Provider::of(&s.provider),
                 state: session_state(app, d, s),
                 // An unknown folder is evidence, never a path.
                 cwd: if s.directory.is_empty() {
@@ -648,11 +642,7 @@ fn ended(app: &App) -> Vec<LabSession> {
                 id: workspaces::runtime_key(s),
                 title: session_preview::label(s),
                 device: dev_id(d),
-                provider: match s.provider.as_str() {
-                    "claude" => Provider::Claude,
-                    "codex" => Provider::Codex,
-                    _ => Provider::Shell,
-                },
+                provider: Provider::of(&s.provider),
                 state: SessionState::Exited,
                 cwd: if s.directory.is_empty() {
                     "? folder".into()

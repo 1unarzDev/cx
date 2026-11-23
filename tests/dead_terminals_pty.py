@@ -8,10 +8,12 @@ A private HOME inside private namespaces (pty_lib.isolate) with two managed shel
 one outside-tmux interactive bash on a PTY of its own; the viewer runs on a 160x45 PTY
 and opens the device's screen (`t`).
   1. The outside bash is a tile (`outside cx`). Its leader is killed: the tile goes
-     within one device poll (3 s; it took the 30 s fleet refresh before).
+     within two device polls (outside terminals are re-scanned every 6 s;
+     it took the 30 s fleet refresh before).
   2. The focused managed shell is killed behind the viewer's back and Enter pressed at
      once (before any listing could drop it): no tmux client, still the device's
-     screen (never the hub), the tile is gone, the other shell stays, and the notice
+     screen (never the hub), the tile is gone (the device's attach check proves
+     the session gone: the dedicated Gone, not any failure), the other shell stays, and the notice
      says `ended · removed` (or the listing won the race and dropped it first).
 """
 import json, os, pathlib, re, signal, subprocess, sys, time
@@ -81,7 +83,7 @@ def main():
         settle(lambda: 'outside cx' in text(), 'the outside bash is not a tile', 15)
         os.kill(outside.proc.pid, signal.SIGKILL)
         killed = time.monotonic()
-        settle(lambda: 'outside cx' not in text(), 'the closed outside terminal stayed offered', 4.5)
+        settle(lambda: 'outside cx' not in text(), 'the closed outside terminal stayed offered', 7.5)
         outside_gone = time.monotonic() - killed
         # 2. The focused managed shell ends behind the viewer's back; Enter at once.
         settle(lambda: focused(), 'no focused shell tile')

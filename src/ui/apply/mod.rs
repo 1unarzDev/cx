@@ -243,8 +243,13 @@ impl App {
                 .insert((reply.device, address.clone(), interface.clone()), evidence);
             self.pump_network_refresh();
         }
-        if matches!(reply.op, Operation::ExternalSessions) {
-            self.external_loading.remove(&reply.device);
+        // A scan from before a move or stop on its device may list the moved terminal
+        // again: dropped, and asked for afresh.
+        if matches!(reply.op, Operation::ExternalSessions)
+            && self.external_loading.remove(&reply.device) == Some(true)
+        {
+            self.request_externals(reply.device);
+            return;
         }
         let is_sessions = matches!(reply.op, Operation::Sessions);
         if is_sessions {
@@ -324,7 +329,7 @@ impl App {
                         {
                             self.session_gone(reply.device, &key);
                         }
-                        self.send(reply.device, Operation::ExternalSessions);
+                        self.externals_changed(reply.device);
                         return;
                     }
                 }

@@ -128,9 +128,7 @@ impl App {
                     .and_then(|t| t.checked_sub(notifications::TRANSITION));
             }
             // The device refused it: the terminal ended or changed since it was listed.
-            Err(e) if format!("{e:#}").contains(sessions::ATTACH_REFUSED) => {
-                self.session_gone(d, &runtime_key(s))
-            }
+            Err(e) if e.is::<sessions::Gone>() => self.session_gone(d, &runtime_key(s)),
             Err(e) => self.set_notice_as(
                 NoticeKind::Error,
                 safe_text(&format!("Attachment failed: {e:#}")),
@@ -164,8 +162,11 @@ impl App {
         }
     }
     /// The 3 s list poll of the hub and device views; the open device's outside
-    /// terminals too (the hub has them on the 30 s refresh).
+    /// terminals on every other one (the hub has them on the 30 s refresh). A scan
+    /// costs ~0.3 s on the lane the list shares (two outside terminals, measured),
+    /// so not on each.
     pub(super) fn poll_sessions(&mut self) {
+        self.session_polls += 1;
         for d in 0..self.devices.len() {
             if !self.background_checks_enabled(d) || !(self.device == 0 || self.device == d + 1) {
                 continue;
@@ -176,15 +177,28 @@ impl App {
             }
             if self.view == View::Work
                 && self.device == d + 1
+                && self.session_polls % 2 == 1
                 && self
                     .providers
                     .get(&d)
                     .is_some_and(|(caps, _)| caps.iter().any(|c| c == "adopt-session-v1"))
-                && !self.external_loading.contains(&d)
-                && self.send(d, Operation::ExternalSessions)
             {
-                self.external_loading.insert(d);
+                self.request_externals(d);
             }
+        }
+    }
+    /// Ask a device for its outside terminals, unless a scan is already in flight.
+    pub(super) fn request_externals(&mut self, d: usize) {
+        if !self.external_loading.contains_key(&d) && self.send(d, Operation::ExternalSessions) {
+            self.external_loading.insert(d, false);
+        }
+    }
+    /// A move or stop changed a device's outside terminals: a scan in flight is
+    /// stale (its answer is dropped and asked for again), else one starts now.
+    pub(super) fn externals_changed(&mut self, d: usize) {
+        match self.external_loading.get_mut(&d) {
+            Some(stale) => *stale = true,
+            None => self.request_externals(d),
         }
     }
     /// A device that could not be reached: its cached tiles say why, and opening one

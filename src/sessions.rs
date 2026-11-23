@@ -3618,7 +3618,7 @@ pub fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 const ATTACH_PAYLOAD_LIMIT: usize = 32768;
-pub const ATTACH_REFUSED: &str = "Session changed or ended; refresh before attaching";
+const ATTACH_REFUSED: &str = "Session changed or ended; refresh before attaching";
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CheckedAttach {
@@ -3875,8 +3875,49 @@ fn attach_predicate(executable: &std::path::Path, payload: &str) -> Result<Strin
         quote(payload)
     ))
 }
+/// `cx native-attach-checked`: a terminal found gone exits with GONE_EXIT, the one
+/// status a viewer reads as "ended" (every other failure exits 1, as older helpers
+/// do for everything).
 pub fn native_attach_checked(payload: &str) -> Result<()> {
-    let mut request = parse_attach_payload(payload)?;
+    match checked_attach(payload) {
+        Err(e) if e.is::<Gone>() => {
+            eprintln!("cx: {e}");
+            std::process::exit(GONE_EXIT)
+        }
+        result => result,
+    }
+}
+/// The checked attach on this host; a failure is Gone only on evidence that the
+/// terminal no longer exists (`terminal_gone`).
+fn checked_attach(payload: &str) -> Result<()> {
+    let request = parse_attach_payload(payload)?;
+    checked_attach_request(parse_attach_payload(payload)?).map_err(|e| {
+        if terminal_gone(&request) {
+            Gone.into()
+        } else {
+            e
+        }
+    })
+}
+/// Evidence that the terminal a checked attach names is gone: the device restarted,
+/// its tmux server exited or was replaced, or that server answers without it.
+fn terminal_gone(request: &CheckedAttach) -> bool {
+    let Some(t) = &request.session.terminal else {
+        return false;
+    };
+    if identity().2 != request.session.boot_id
+        || process_start_ticks(t.server_pid).as_ref() != Some(&t.server_start)
+    {
+        return true;
+    }
+    snapshot(!request.session.external).is_ok_and(|rows| {
+        rows.iter().any(|r| r.server_pid == t.server_pid)
+            && !rows.iter().any(|r| {
+                r.server_pid == t.server_pid && r.id == t.session_id && r.created == t.created
+            })
+    })
+}
+fn checked_attach_request(mut request: CheckedAttach) -> Result<()> {
     anyhow::ensure!(request.guard.is_none(), "attachment guard is internal");
     let expected = request
         .session
@@ -3978,6 +4019,18 @@ impl std::fmt::Display for Dropped {
     }
 }
 impl std::error::Error for Dropped {}
+/// The device's checked attach found the terminal gone (ended, or its server
+/// replaced or restarted): the viewer drops its tile. Never for any other failure.
+#[derive(Debug)]
+pub struct Gone;
+impl std::fmt::Display for Gone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(ATTACH_REFUSED)
+    }
+}
+impl std::error::Error for Gone {}
+/// `cx native-attach-checked`'s exit status for Gone.
+pub const GONE_EXIT: i32 = 86;
 /// ssh's own failure status (255: connection lost, reset or timed out, or the remote
 /// cx killed) or the ssh client killed by a signal. Never for a local attach.
 fn dropped(device: &Device, status: std::process::ExitStatus) -> bool {
@@ -4028,13 +4081,24 @@ fn attach_terminal_session(device: &Device, session: &Session, observe: bool) ->
         let status = command
             .status()
             .context("checked remote attachment failed")?;
-        if dropped(device, status) {
-            return Err(Dropped.into());
-        }
-        anyhow::ensure!(status.success(), ATTACH_REFUSED);
-        return Ok(());
+        return remote_attach_ended(device, status);
     }
-    native_attach_checked(&payload)
+    checked_attach(&payload)
+}
+/// How a remote checked attach ended: Dropped, Gone (only the helper's GONE_EXIT),
+/// or a plain failure.
+fn remote_attach_ended(device: &Device, status: std::process::ExitStatus) -> Result<()> {
+    if dropped(device, status) {
+        return Err(Dropped.into());
+    }
+    if status.code() == Some(GONE_EXIT) {
+        return Err(Gone.into());
+    }
+    anyhow::ensure!(
+        status.success(),
+        "checked remote attachment ended with {status}"
+    );
+    Ok(())
 }
 fn attach_tmux_command(device: &Device, session: &Session, observe: bool) -> Result<Command> {
     if session.external {
@@ -4677,7 +4741,8 @@ panes=1
 [ "$dead" = 1 ] && pane=
 case "$op" in
 list-sessions)
-    if [ "$last" = '#{session_id}' ]; then printf '$1\n'
+    if [ -n "$CX_INVENTORY_GONE" ]; then printf '$2\t%s\t100\t%%2\t0\t%s\t1\t1\t1700000000\n' "$pane" "$server"
+    elif [ "$last" = '#{session_id}' ]; then printf '$1\n'
     else printf '$1\t%s\t100\t%%1\t%s\t%s\t1\t%s\t1700000000\n' "$pane" "$dead" "$server" "$panes"; fi;;
 display-message)
     case "$last" in
@@ -4782,7 +4847,16 @@ esac
                 session.socket = None;
                 assert!(session.terminal.is_some());
                 let device = crate::store::local_device();
-                assert!(attach(&device, &session, false).is_err(), "a tmux command that never passes the generation guard must not report successful attachment");
+                let failed = attach(&device, &session, false).unwrap_err();
+                assert!(
+                    !failed.is::<Gone>(),
+                    "a listed session's failed attach is not its end: {failed:#}"
+                );
+                // The server lists other sessions but not this one: it ended.
+                std::env::set_var("CX_INVENTORY_GONE", "1");
+                let gone = attach(&device, &session, false).unwrap_err();
+                std::env::remove_var("CX_INVENTORY_GONE");
+                assert!(gone.is::<Gone>(), "{gone:#}");
                 let ops = fs::read_to_string(
                     PathBuf::from(std::env::var_os("HOME").unwrap()).join("tmux-ops"),
                 )
@@ -4922,7 +4996,8 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
 
                 let mut stale = session;
                 stale.boot_id = "different-boot".into();
-                assert!(native_attach_checked(
+                // (A restarted device: its terminals are gone.)
+                assert!(checked_attach(
                     &attach_payload(&CheckedAttach {
                         session: stale,
                         observe: false,
@@ -4931,7 +5006,8 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
                     })
                     .unwrap()
                 )
-                .is_err());
+                .unwrap_err()
+                .is::<Gone>());
             }
             "identity" => {
                 assert_eq!(sessions.len(), 1);
@@ -5069,6 +5145,28 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
     #[test]
     fn checked_attach_requires_guard_success_and_preserves_external_config() {
         inventory_fixture("checked");
+    }
+
+    /// Only the device's dedicated refusal status means the terminal is gone; an older
+    /// helper's plain failure, a missing or replaced cx (127), or a broken terminal
+    /// is an attach failure. A dropped connection stays Dropped.
+    #[test]
+    fn remote_checked_attach_maps_only_the_gone_status_to_gone() {
+        use std::os::unix::process::ExitStatusExt;
+        let mut remote = crate::store::local_device();
+        remote.target = Some("robot".into());
+        let status = |code: i32| std::process::ExitStatus::from_raw(code << 8);
+        assert!(remote_attach_ended(&remote, status(0)).is_ok());
+        assert!(remote_attach_ended(&remote, status(GONE_EXIT))
+            .unwrap_err()
+            .is::<Gone>());
+        for code in [1, 2, 126, 127] {
+            let e = remote_attach_ended(&remote, status(code)).unwrap_err();
+            assert!(!e.is::<Gone>() && !e.is::<Dropped>(), "{code}: {e:#}");
+        }
+        assert!(remote_attach_ended(&remote, status(255))
+            .unwrap_err()
+            .is::<Dropped>());
     }
 
     #[test]

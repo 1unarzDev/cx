@@ -299,7 +299,7 @@ try:
     # live in the tile. (The viewer shares this sandbox, so its own device also lists the
     # agent, now held by a relay it does not know, as an outside terminal: ignored.)
     viewer.write(b'\x1c')
-    settle(lambda: any(' z  a  work claude' in l and 'outside cx' not in l
+    settle(lambda: any(' z  s  work claude' in l and 'outside cx' not in l
                        for l in viewer.text().splitlines()) and 'tick' in viewer.text(),
            'the moved agent is not a managed tile after detaching', 20)
     calls = [json.loads(l) for l in log.read_text().splitlines()]

@@ -557,11 +557,23 @@ pub fn close_empty_holder(
         signal(holder.pid, &holder.start_ticks, libc::SIGHUP);
         return Window::Closed;
     };
-    let replaced = match (replace, form) {
-        (Some(replace), Some(form)) => reopen(holder, form, replace).is_some(),
-        _ => false,
+    // Everything the new window needs is read from the verified holder first; the
+    // holder is then killed and gone BEFORE the new window starts, so an emulator
+    // that hands new windows to a running instance (D-Bus, GApplication, wezterm's
+    // GUI, konsole) can never give it to the process being killed.
+    let window = match (replace, form) {
+        (Some(replace), Some(form)) => prepare(holder, comm.trim(), form, replace),
+        _ => None,
     };
     signal(holder.pid, &holder.start_ticks, libc::SIGKILL);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while alive(holder.pid, &holder.start_ticks) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let replaced = !alive(holder.pid, &holder.start_ticks)
+        && window.is_some_and(|w| {
+            spawn_window(&w.program, &w.args, &w.env, &w.cwd, w.scope.as_deref()).is_ok()
+        });
     if replaced {
         Window::Replaced
     } else {
@@ -581,11 +593,15 @@ const EMULATORS: &[(&str, Form)] = &[
     ("urxvt", Some(&["-e"])),
     ("rxvt", Some(&["-e"])),
     ("st", Some(&["-e"])),
-    ("konsole", Some(&["-e"])),
-    ("tilix", Some(&["-e"])),
-    ("wezterm-gui", Some(&["start", "--"])),
-    ("xfce4-terminal", Some(&["-x"])),
-    ("terminator", Some(&["-x"])),
+    // (Each in a process of its own, never handed to a running instance.)
+    ("konsole", Some(&["--separate", "-e"])),
+    ("tilix", Some(&["--new-process", "-e"])),
+    (
+        "wezterm-gui",
+        Some(&["start", "--always-new-process", "--"]),
+    ),
+    ("xfce4-terminal", Some(&["--disable-server", "-x"])),
+    ("terminator", Some(&["--no-dbus", "-x"])),
     ("lxterminal", None),
     ("mate-terminal", None),
     ("sakura", None),
@@ -654,23 +670,33 @@ fn executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
-/// The emulator's program from its `/proc/<pid>/exe` link. An emulator updated
-/// while it ran reads "<path> (deleted)": the new file at that path, else the
-/// same name on `PATH`.
-pub fn emulator_program(exe: &Path, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+/// A program CX may start for the user: an executable regular file owned by the
+/// user or root (as `replaced_exe` requires for CX itself) that no one else can
+/// rewrite (not group- or world-writable).
+fn trusted_program(path: &Path) -> bool {
+    fs::metadata(path).is_ok_and(|m| {
+        (m.uid() == unsafe { libc::geteuid() } || m.uid() == 0) && m.mode() & 0o022 == 0
+    }) && executable_file(path)
+}
+/// The program for a new window of emulator `name` (the holder's allowlisted
+/// `comm`), from the holder's `/proc/<pid>/exe` link, whose file name must be
+/// `name`: an emulator updated while it ran reads "<path> (deleted)", so the new
+/// file at that path, else `name` on `PATH`. Only a `trusted_program`.
+pub fn emulator_program(exe: &Path, name: &str, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
-    if executable_file(exe) {
-        return Some(exe.to_path_buf());
+    let bytes = exe.as_os_str().as_bytes();
+    let deleted = bytes.strip_suffix(b" (deleted)");
+    let original = Path::new(OsStr::from_bytes(deleted.unwrap_or(bytes)));
+    if original.file_name() != Some(OsStr::new(name)) {
+        return None;
     }
-    let stripped = exe.as_os_str().as_bytes().strip_suffix(b" (deleted)")?;
-    let original = Path::new(OsStr::from_bytes(stripped));
-    if executable_file(original) {
+    if trusted_program(original) {
         return Some(original.to_path_buf());
     }
-    let name = original.file_name()?;
+    deleted?;
     std::env::split_paths(path?)
         .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_absolute() && executable_file(candidate))
+        .find(|candidate| candidate.is_absolute() && trusted_program(candidate))
 }
 /// Whether the user's session bus in `env` accepts connections (for systemd-run).
 fn user_bus(env: &[(std::ffi::OsString, std::ffi::OsString)]) -> bool {
@@ -684,13 +710,26 @@ fn user_bus(env: &[(std::ffi::OsString, std::ffi::OsString)]) -> bool {
         from_address.or_else(|| get("XDG_RUNTIME_DIR").map(|d| PathBuf::from(d).join("bus")));
     socket.is_some_and(|s| std::os::unix::net::UnixStream::connect(s).is_ok())
 }
-/// Open a new window of the holder's emulator running `replace.command`.
-/// Returns None (and starts nothing) when it cannot be done safely.
-fn reopen(holder: &ProcessIdentity, form: &[&str], replace: &Replacement) -> Option<()> {
+/// A new window of the holder's emulator running `replace.command`, read from the
+/// live holder; started by `close_empty_holder` once the holder is gone.
+struct NewWindow {
+    program: PathBuf,
+    args: Vec<std::ffi::OsString>,
+    env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    cwd: PathBuf,
+    scope: Option<PathBuf>,
+}
+/// None when a new window cannot be opened safely.
+fn prepare(
+    holder: &ProcessIdentity,
+    name: &str,
+    form: &[&str],
+    replace: &Replacement,
+) -> Option<NewWindow> {
     use std::io::Read;
     let dir = PathBuf::from(format!("/proc/{}", holder.pid));
     let path = std::env::var_os("PATH");
-    let program = emulator_program(&fs::read_link(dir.join("exe")).ok()?, path.as_deref())?;
+    let program = emulator_program(&fs::read_link(dir.join("exe")).ok()?, name, path.as_deref())?;
     let mut environ = Vec::new();
     fs::File::open(dir.join("environ"))
         .ok()?
@@ -724,14 +763,13 @@ fn reopen(holder: &ProcessIdentity, form: &[&str], replace: &Replacement) -> Opt
             .find(|c| c.is_absolute() && executable_file(c))
     });
     let scope = systemd_run.filter(|_| user_bus(&env));
-    spawn_window(
-        &program,
-        &emulator_args(form, &replace.command),
-        &env,
-        &cwd,
-        scope.as_deref(),
-    )
-    .ok()
+    Some(NewWindow {
+        program,
+        args: emulator_args(form, &replace.command),
+        env,
+        cwd,
+        scope,
+    })
 }
 /// Start `program args` detached: its own session, stdio on /dev/null, the given
 /// environment only, and (with `scope`, a systemd-run) its own transient user
@@ -1520,15 +1558,21 @@ mod tests {
             "urxvt",
             "rxvt",
             "st",
-            "konsole",
-            "tilix",
         ] {
             assert_eq!(args(name), format!("-e {tail}"), "{name}");
         }
-        assert_eq!(args("wezterm-gui"), format!("start -- {tail}"));
-        for name in ["xfce4-terminal", "terminator"] {
-            assert_eq!(args(name), format!("-x {tail}"), "{name}");
-        }
+        // Emulators that can hand a new window to a running instance are told not to.
+        assert_eq!(args("konsole"), format!("--separate -e {tail}"));
+        assert_eq!(args("tilix"), format!("--new-process -e {tail}"));
+        assert_eq!(
+            args("wezterm-gui"),
+            format!("start --always-new-process -- {tail}")
+        );
+        assert_eq!(
+            args("xfce4-terminal"),
+            format!("--disable-server -x {tail}")
+        );
+        assert_eq!(args("terminator"), format!("--no-dbus -x {tail}"));
         // Emulators without a known form are still closed, never reopened.
         for name in [
             "lxterminal",
@@ -1602,18 +1646,38 @@ TMUX=/tmp/t,1,0\0broken\0DISPLAY_EXTRA=1";
         fs::write(&foot, "#!/bin/sh\n").unwrap();
         fs::set_permissions(&foot, fs::Permissions::from_mode(0o755)).unwrap();
         let path = std::ffi::OsString::from(format!("/nonexistent:{}", bin.display()));
-        assert_eq!(emulator_program(&foot, None), Some(foot.clone()));
+        assert_eq!(emulator_program(&foot, "foot", None), Some(foot.clone()));
         let deleted = PathBuf::from(format!("{} (deleted)", foot.display()));
-        assert_eq!(emulator_program(&deleted, None), Some(foot.clone()));
+        assert_eq!(emulator_program(&deleted, "foot", None), Some(foot.clone()));
         let gone = PathBuf::from("/old/prefix/foot (deleted)");
-        assert_eq!(emulator_program(&gone, Some(&path)), Some(foot.clone()));
-        assert_eq!(emulator_program(&gone, None), None);
         assert_eq!(
-            emulator_program(Path::new("/old/prefix/foot"), Some(&path)),
+            emulator_program(&gone, "foot", Some(&path)),
+            Some(foot.clone())
+        );
+        assert_eq!(emulator_program(&gone, "foot", None), None);
+        assert_eq!(
+            emulator_program(Path::new("/old/prefix/foot"), "foot", Some(&path)),
             None
         );
+        // Chosen by comm, run by exe: the two must name the same emulator, so a
+        // process that renamed itself `foot` never gets its own program started.
+        let other = bin.join("evil");
+        fs::copy(&foot, &other).unwrap();
+        assert_eq!(emulator_program(&other, "foot", Some(&path)), None);
+        let other_deleted = PathBuf::from(format!("{} (deleted)", other.display()));
+        assert_eq!(emulator_program(&other_deleted, "foot", Some(&path)), None);
+        // A program anyone else could have replaced is never started.
+        for mode in [0o775, 0o757] {
+            fs::set_permissions(&foot, fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(emulator_program(&foot, "foot", None), None, "{mode:o}");
+            assert_eq!(
+                emulator_program(&gone, "foot", Some(&path)),
+                None,
+                "{mode:o}"
+            );
+        }
         fs::set_permissions(&foot, fs::Permissions::from_mode(0o644)).unwrap();
-        assert_eq!(emulator_program(&gone, Some(&path)), None);
+        assert_eq!(emulator_program(&gone, "foot", Some(&path)), None);
     }
 
     #[test]

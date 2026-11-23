@@ -146,11 +146,17 @@ root.mkdir(parents=True, mode=0o700)
 socket = root / 'managed.sock'
 subprocess.run(['cc', '-O1', '-pthread', '-o', str(bins / 'claude'), str(here / 'adopt_churn.c')], check=True)
 stub = os.path.realpath(bins / 'claude')
+for agent in ('agy', 'opencode'):
+    shutil.copyfile(stub, bins / agent)
+    os.chmod(bins / agent, 0o755)
+stubs = {os.path.realpath(bins / a) for a in ('claude', 'agy', 'opencode')}
 # A stand-in for an updated emulator binary and for systemd-run (see section 6).
 RECORDER = """#!/bin/sh
 stdio="$(readlink /proc/$$/fd/0) $(readlink /proc/$$/fd/1) $(readlink /proc/$$/fd/2)"
+h=$(cat "$(dirname "$0")/holder.pid" 2>/dev/null)
+holder=$(cut -d' ' -f3 "/proc/${h:-0}/stat" 2>/dev/null || echo gone)
 { echo "pid $$"; echo "group $(cut -d' ' -f5,6 /proc/$$/stat)"; echo "cwd $(pwd -P)"
-  echo "stdio $stdio"; for a in "$0" "$@"; do echo "arg $a"; done; env | sed 's/^/env /'
+  echo "stdio $stdio"; echo "holder ${holder:-gone}"; for a in "$0" "$@"; do echo "arg $a"; done; env | sed 's/^/env /'
 } >"$0.record.tmp" && mv "$0.record.tmp" "$0.record"
 """
 SYSTEMD_RUN = """#!/bin/sh
@@ -212,7 +218,7 @@ def helper(op, args=None):
     return json.loads(result.stdout.split(b'\n', 1)[1])
 
 
-def emulate(name, program=FOOT, as_name=None, update='same', cwd=None):
+def emulate(name, program=FOOT, as_name=None, update='same', cwd=None, agent='claude'):
     """Start a fake emulator. The foot-like one runs as `foot` (cx kills only known
     emulators), others as python unless `as_name` names them. Once it runs, its
     executable is deleted (`update`): 'same' puts a recorder at that path, 'path'
@@ -228,15 +234,18 @@ def emulate(name, program=FOOT, as_name=None, update='same', cwd=None):
         os.chmod(interpreter, 0o755)
         for path in (folder.parent, folder, Path(interpreter)):
             os.chown(path, 1, 1)
-    process = subprocess.Popen([*USER, interpreter, '-c', program, str(log), str(bins / 'claude')],
+    process = subprocess.Popen([*USER, interpreter, '-c', program, str(log), str(bins / agent)],
                                env=dict(env, CHURN_LOG=str(home / f"{name}.churn"), PYTHONHOME=sys.base_prefix,
                                         **HOLDER_ENV),
                                stdin=subprocess.DEVNULL,
                                cwd=str(cwd or home))
     emulators.append(process)
     leader = int(wait_for(lambda: log.exists() and log.read_text().split('\n')[0].split()[-1:], 5, 'emulator')[0])
-    wait_for(lambda: exe(leader) == stub, 5, 'stub')
+    wait_for(lambda: exe(leader) == os.path.realpath(bins / agent), 5, 'stub')
     if as_name:
+        # (Recorders note whether this holder still ran when they were started.)
+        for folder_ in (Path(interpreter).parent, bins):
+            (folder_ / 'holder.pid').write_text(str(process.pid))
         os.unlink(interpreter)
         assert exe(process.pid) == f'{interpreter} (deleted)', exe(process.pid)
         if update == 'same':
@@ -300,7 +309,7 @@ def recorded(path, seconds=5):
     env = dict(e.split('=', 1) for e in pick('env'))
     for key in ('PWD', 'OLDPWD', 'SHLVL', '_'):
         env.pop(key, None)
-    return dict(pid=pick('pid')[0], group=pick('group')[0].split(), cwd=pick('cwd')[0],
+    return dict(pid=pick('pid')[0], holder=pick('holder')[0], group=pick('group')[0].split(), cwd=pick('cwd')[0],
                 stdio=pick('stdio')[0].split(), args=pick('arg'), env=env)
 
 
@@ -493,6 +502,9 @@ try:
     assert 'TERM' not in window['env'] and 'sk-never-copied' not in json.dumps(window), window
     assert window['group'] == [window['pid'], window['pid']], window['group']
     assert window['stdio'] == ['/dev/null'] * 3, window['stdio']
+    # The frozen holder is killed BEFORE the new window starts, so a single-instance
+    # emulator (D-Bus, GApplication, wezterm's GUI) cannot hand it to the dying one.
+    assert window['holder'] in ('gone', 'Z'), window['holder']
     assert not (bins / 'systemd-run.record').exists(), 'no user bus: systemd-run must not be used'
     assert wait_for(lambda: emulator.poll() is not None, 3, 'holder killed') and emulator.returncode == -9, \
         emulator.returncode
@@ -520,6 +532,7 @@ try:
     assert moved['error'] is None and moved['result']['window'] == 'replaced', moved
     name = moved['result']['id']
     window = recorded(bins / 'foot.record')
+    assert window['holder'] in ('gone', 'Z'), window['holder']
     assert window['args'] == [str(bins / 'foot'), binary, 'attach', name], window['args']
     scope = (bins / 'systemd-run.record').read_text().split('\n')
     assert scope[:6] == ['--user', '--scope', '--collect', '--quiet', '--', str(bins / 'foot')], scope
@@ -561,7 +574,27 @@ try:
     stop(moved['result']['id'], leader)
     checks.append('an unknown holder (`emacs`) got SIGHUP only: never reopened, never SIGKILLed')
 
-    leftovers = [p for p in map(int, filter(str.isdigit, os.listdir('/proc'))) if exe(p) == stub]
+    # 7. Agents outside cx other than Claude: an `agy` and an `opencode` terminal are
+    #    listed as that agent, move, and their window is replaced.
+    for agent in ('agy', 'opencode'):
+        emulator, leader, found = emulate(f'agent-{agent}', agent=agent)
+        assert found['provider'] == agent, (agent, found['provider'])
+        moved = helper('adopt_session', dict(id=found['id'], origin=found['origin'], boot_id=boot))
+        assert moved['error'] is None and moved['result']['window'] == 'replaced', moved
+        assert moved['result']['provider'] == agent, moved['result']
+        window = recorded(home / f'emu/agent-{agent}/foot.record')
+        assert window['args'][1:] == [binary, 'attach', moved['result']['id']], window['args']
+        assert window['holder'] in ('gone', 'Z'), window['holder']
+        assert wait_for(lambda: emulator.poll() is not None, 3, 'holder killed') and emulator.returncode == -9
+        assert alive(leader)
+        listed = [s for s in helper('sessions')['result'] if s['id'] == moved['result']['id']]
+        stopped = helper('stop_agent_session', dict(id=listed[0]['id'], pid=listed[0]['pid'],
+                                                     started=listed[0]['started'], boot_id=boot, provider=agent))
+        assert stopped['error'] is None, stopped
+        wait_for(lambda: not alive(leader), 5, f'{agent} exit')
+        checks.append(f'an outside `{agent}` terminal is listed as {agent}, moves, and its window is replaced')
+
+    leftovers = [p for p in map(int, filter(str.isdigit, os.listdir('/proc'))) if exe(p) in stubs]
     assert not leftovers, leftovers
     print(json.dumps(dict(result='PASS', checks=checks)))
 finally:
@@ -569,7 +602,7 @@ finally:
         process.kill()
     tmux('kill-server', check=False)
     for pid in map(int, filter(str.isdigit, os.listdir('/proc'))):
-        if exe(pid) == stub:
+        if exe(pid) in stubs:
             try:
                 os.kill(pid, signal.SIGKILL)
             except OSError:

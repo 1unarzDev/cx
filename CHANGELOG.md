@@ -7,6 +7,9 @@ Each stable release describes user-visible changes here before tagging. GitHub r
 ### Fixes
 - **A terminal that no longer exists is never offered.** Enter on a session that ended a moment earlier no longer says "Attachment failed" and throws you back to the hub: its tile goes with a quiet `‹name› ended · removed` and you stay on the screen you were on (a detach still returns to the hub with its tile selected). An `outside cx` terminal that was closed leaves a device's screen within 3 s (it took up to 30 s), one remembered from the last run shows only once its device lists it again, and a move that finds it closed removes it instead of reporting an error. Enter on a tile of a device cx cannot reach only says why, instead of trying.
 
+### Features
+- **A moved terminal keeps its window.** After cx moves a terminal that ran in a single-window terminal app (foot, kitty, alacritty, ghostty, wezterm, xterm, urxvt, st, konsole, tilix, xfce4-terminal, terminator), it opens a new window of the same app in the same folder, attached to the moved session, before closing the frozen one, instead of the window just disappearing. It works when the move was asked for from another device too (the window opens on the terminal's machine). If the window cannot be opened, the old one is closed as before; the notice after the move says which (`its window was reopened attached to cx` / `its old window was closed`).
+
 ## v0.4.0
 
 Take ownership that sticks, a stop that works everywhere, sessions that open at once, and cx from a plain terminal (`cx claude`).

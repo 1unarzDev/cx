@@ -1323,13 +1323,28 @@ fn write_record(root: &std::path::Path, name: &str, session: &Session) -> Result
     Ok(())
 }
 
+/// A finished move: the session, and what became of its source window
+/// (`adoption::Window`: replaced, closed or kept). Serializes as the session
+/// with one extra `window` field, which older viewers ignore.
+#[derive(Debug, serde::Serialize)]
+pub struct Adopted {
+    #[serde(flatten)]
+    pub session: Session,
+    pub window: &'static str,
+}
+
 /// Move a terminal started outside CX into the managed tmux server.
 ///
 /// The guarded relay steals the terminal's master from its current holder, so
 /// the running processes, their PIDs, threads and child tools are untouched;
 /// only where the terminal is displayed changes. Every identity CX observed is
 /// re-verified under the session lock, and failure leaves the original holder.
-pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> Result<Session> {
+pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> Result<Adopted> {
+    // An already-moved terminal: its window was dealt with by that move.
+    let unchanged = |session| Adopted {
+        session,
+        window: crate::adoption::Window::Kept.as_str(),
+    };
     // CX_ADOPT_TIMINGS=1: each phase's milliseconds on stderr (fixtures and diagnosis).
     let timed = std::env::var_os("CX_ADOPT_TIMINGS").is_some();
     let mut last = std::time::Instant::now();
@@ -1358,7 +1373,7 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
     let mut exists = tmux(true)?;
     exists.args(["has-session", "-t", &format!("={name}")]);
     if exists.output().is_ok_and(|o| o.status.success()) {
-        return inspect(true, &name);
+        return inspect(true, &name).map(unchanged);
     }
     let terminal = external_terminals()
         .into_iter()
@@ -1430,7 +1445,7 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
     // a stale one from an interrupted move is cleared and the move proceeds.
     if record.exists() {
         if managed_target(&name)?.is_some() {
-            return inspect(true, &name);
+            return inspect(true, &name).map(unchanged);
         }
         let _ = fs::remove_file(&record);
     }
@@ -1528,10 +1543,24 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
     };
     let outcome = finish();
     phase("register");
+    let mut window = crate::adoption::Window::Kept;
     if outcome.is_ok() {
-        // The source window is now empty: kill it if it was single-window.
-        settle_adopted(&name, origin);
+        // The source window is now empty: reopen its emulator attached to the moved
+        // session (`cx attach`, on this machine), then kill it if it was single-window.
+        let leader = leader.identity();
+        let replace = crate::self_exe()
+            .ok()
+            .map(|exe| crate::adoption::Replacement {
+                leader: &leader,
+                command: vec![exe.into(), "attach".into(), name.clone().into()],
+            });
+        window = settle_adopted(&name, origin, replace.as_ref());
+        phase("window");
     }
+    let outcome = outcome.map(|session| Adopted {
+        session,
+        window: window.as_str(),
+    });
     outcome.map_err(|error| {
         // The moved terminal ended immediately (its relay exits with it).
         if field(true, &name, "#{pane_dead}").map_or(true, |d| d != "0") {
@@ -1544,13 +1573,19 @@ pub fn adopt(id: &str, origin: &crate::model::ExternalOrigin, boot_id: &str) -> 
     })
 }
 
-/// A verified move's leftovers: the relay's error file and the emptied source window.
-fn settle_adopted(name: &str, origin: &crate::model::ExternalOrigin) {
+/// A verified move's leftovers: the relay's error file and the emptied source
+/// window, which `replace` (when given) reopens attached to the moved session.
+fn settle_adopted(
+    name: &str,
+    origin: &crate::model::ExternalOrigin,
+    replace: Option<&crate::adoption::Replacement>,
+) -> crate::adoption::Window {
     if let Ok(root) = state() {
         let _ = fs::remove_file(root.join(format!("{name}.adopt")));
     }
-    if let Some(h) = origin.holder.as_ref() {
-        crate::adoption::close_empty_holder(h, &origin.kind);
+    match origin.holder.as_ref() {
+        Some(h) => crate::adoption::close_empty_holder(h, &origin.kind, replace),
+        None => crate::adoption::Window::Kept,
     }
 }
 /// Finish a move whose success check gave up: its record still carries the
@@ -1584,7 +1619,7 @@ fn heal_adopted(name: &str, prior: &Session, pid: u32, started: &str) {
         return;
     };
     if write_record(&root, name, &healed).is_ok() {
-        settle_adopted(name, origin);
+        settle_adopted(name, origin, None);
     }
 }
 

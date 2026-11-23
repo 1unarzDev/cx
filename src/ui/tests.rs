@@ -7863,3 +7863,59 @@ fn files_bang_then_c_x_n_starts_in_the_folder_in_the_last_mode() {
     assert!(matches!(&a.dialog, Some(Dialog::SessionChooser(0, p)) if p == "/files"));
     // Files' folder is where a remote device's keys start next (`file_locations`).
 }
+
+#[test]
+fn a_move_reports_what_became_of_its_source_window() {
+    for (window, note) in [
+        (
+            Some("replaced"),
+            Some("its window was reopened attached to cx"),
+        ),
+        (Some("closed"), Some("its old window was closed")),
+        (Some("kept"), None),
+        (None, None),
+    ] {
+        let (mut a, _rx) = queued_app();
+        let mut s = disposable_shell();
+        s.id = "cx-moved".into();
+        let mut value = serde_json::to_value(&s).unwrap();
+        if let Some(window) = window {
+            value["window"] = window.into();
+        }
+        a.notice.clear();
+        a.apply(Reply {
+            device_id: None,
+            execution_target: None,
+            preview: None,
+            device: 0,
+            op: Operation::AdoptSession {
+                id: "ext-1".into(),
+                origin: crate::model::ExternalOrigin {
+                    kind: "terminal".into(),
+                    tty: "/dev/pts/1".into(),
+                    leader: crate::model::ProcessIdentity {
+                        pid: 42,
+                        start_ticks: "1".into(),
+                        native_id: None,
+                    },
+                    holder: None,
+                },
+                boot_id: "test-boot".into(),
+            },
+            generation: 0,
+            result: Ok(value),
+        });
+        assert!(
+            a.work[0].sessions.iter().any(|row| row.id == "cx-moved"),
+            "{window:?}"
+        );
+        match note {
+            Some(note) => assert!(a.notice.contains(note), "{window:?}: {}", a.notice),
+            None => assert!(
+                !a.notice.contains("Moved into cx"),
+                "{window:?}: {}",
+                a.notice
+            ),
+        }
+    }
+}

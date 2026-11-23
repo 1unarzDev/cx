@@ -10,6 +10,14 @@ the user" two seconds later, signalling the moved terminal's process group HUP, 
 and then KILL, as foot does. Also covers healing a record a failed check left stale
 and stopping an outside terminal's agent (StopExternal).
 
+The replacement window (section 6): after a verified move the same emulator is
+reopened running `cx attach <id>`. The "emulator" reopened here is never a real
+terminal: once each fake foot has started, its executable is replaced by a recorder
+script (as a package update would) that writes its argv, environment, cwd, session
+and stdio to a file and exits. The fixture then runs the recorded command on a PTY
+of its own to prove that it attaches. Display variables are fixture values; no real
+display, user bus or systemd-run is reachable (a fake systemd-run is first on PATH).
+
 Runs in a user namespace: ns uid 0 is the caller (sets up the capability), ns uid 1
 (a subuid) plays the user. No real terminal, agent or tmux server is touched.
 """
@@ -117,6 +125,18 @@ def wait_for(predicate, seconds=10, message='condition'):
     raise AssertionError(f'timed out waiting for {message}')
 
 
+# No real terminal emulator, editor or systemd-run can be started from here: in this
+# mount namespace each one on PATH is covered by /dev/null (not executable), so a
+# replacement window only ever finds the fixture's recorders.
+MASKED = ['foot', 'kitty', 'alacritty', 'ghostty', 'xterm', 'uxterm', 'urxvt', 'rxvt', 'st', 'konsole',
+          'tilix', 'wezterm', 'wezterm-gui', 'xfce4-terminal', 'terminator', 'emacs', 'systemd-run']
+for folder in dict.fromkeys(os.environ['PATH'].split(':')):
+    for program in MASKED:
+        target = os.path.realpath(os.path.join(folder, program))
+        if os.path.isfile(target) and os.access(target, os.X_OK):
+            subprocess.run(['mount', '--bind', '/dev/null', target], check=True)
+assert not [p for p in MASKED if shutil.which(p)], [shutil.which(p) for p in MASKED]
+
 checks = []
 home = Path(tempfile.mkdtemp(prefix='cx-setcap-', dir='/dev/shm'))
 bins = home / 'bin'
@@ -126,8 +146,21 @@ root.mkdir(parents=True, mode=0o700)
 socket = root / 'managed.sock'
 subprocess.run(['cc', '-O1', '-pthread', '-o', str(bins / 'claude'), str(here / 'adopt_churn.c')], check=True)
 stub = os.path.realpath(bins / 'claude')
-shutil.copyfile(os.path.realpath(sys.executable), bins / 'foot')
-os.chmod(bins / 'foot', 0o755)
+# A stand-in for an updated emulator binary and for systemd-run (see section 6).
+RECORDER = """#!/bin/sh
+stdio="$(readlink /proc/$$/fd/0) $(readlink /proc/$$/fd/1) $(readlink /proc/$$/fd/2)"
+{ echo "pid $$"; echo "group $(cut -d' ' -f5,6 /proc/$$/stat)"; echo "cwd $(pwd -P)"
+  echo "stdio $stdio"; for a in "$0" "$@"; do echo "arg $a"; done; env | sed 's/^/env /'
+} >"$0.record.tmp" && mv "$0.record.tmp" "$0.record"
+"""
+SYSTEMD_RUN = """#!/bin/sh
+for a in "$@"; do echo "$a"; done >"$0.record"
+while [ $# -gt 0 ] && [ "$1" != -- ]; do shift; done
+shift
+exec "$@"
+"""
+(bins / 'systemd-run').write_text(SYSTEMD_RUN)
+os.chmod(bins / 'systemd-run', 0o755)
 source = os.environ.get('CX_ADOPT_REPTYR')
 relay = str(home / 'cx-reptyr')
 if source:
@@ -145,11 +178,22 @@ subprocess.run(['setcap', 'cap_sys_ptrace+ep', relay], check=True)
 for path in [home, *home.rglob('*')]:
     if path != Path(relay):
         os.chown(path, 1, 1)
+for run in ('run', 'run-holder'):
+    (home / run).mkdir(mode=0o700)
+    os.chown(home / run, 1, 1)
 env = dict(os.environ, HOME=str(home), XDG_STATE_HOME=str(home / 'state'), TMUX_TMPDIR=str(home),
            SHELL='/bin/bash', TERM='xterm-256color', PATH=f'{bins}:{os.environ["PATH"]}',
-           CX_ADOPT_REPTYR=relay)
-for key in ('TMUX', 'TMUX_PANE', 'DBUS_SESSION_BUS_ADDRESS'):
+           CX_ADOPT_REPTYR=relay, XDG_RUNTIME_DIR=str(home / 'run'))
+for key in ('TMUX', 'TMUX_PANE', 'DBUS_SESSION_BUS_ADDRESS', 'WAYLAND_DISPLAY', 'DISPLAY', 'XAUTHORITY'):
     env.pop(key, None)
+# What a terminal emulator on a desktop has (fixture values only), plus things that
+# must never reach a replacement window.
+HOLDER_ENV = dict(WAYLAND_DISPLAY='wayland-cxtest', DISPLAY=':97', XAUTHORITY=str(home / 'xauth'),
+                  XDG_RUNTIME_DIR=str(home / 'run-holder'),
+                  DBUS_SESSION_BUS_ADDRESS=f'unix:path={home}/run-holder/bus',
+                  CX_FIXTURE_SECRET='sk-never-copied', TERM='foot', SSH_AUTH_SOCK='/nonexistent')
+WINDOW_KEYS = {'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LANGUAGE', 'XDG_STATE_HOME', 'XDG_CONFIG_HOME',
+               'WAYLAND_DISPLAY', 'DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS'}
 boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
 emulators = []
 
@@ -168,17 +212,37 @@ def helper(op, args=None):
     return json.loads(result.stdout.split(b'\n', 1)[1])
 
 
-def emulate(name, program=FOOT):
+def emulate(name, program=FOOT, as_name=None, update='same', cwd=None):
+    """Start a fake emulator. The foot-like one runs as `foot` (cx kills only known
+    emulators), others as python unless `as_name` names them. Once it runs, its
+    executable is deleted (`update`): 'same' puts a recorder at that path, 'path'
+    leaves the recorder only on PATH (bins/), 'missing' leaves none anywhere."""
     log = home / f'{name}.emulator'
-    # The foot-like one runs as `foot` (cx kills only known emulators); others as python.
-    interpreter = str(bins / 'foot') if program == FOOT else sys.executable
+    as_name = as_name or ('foot' if program == FOOT else None)
+    interpreter = sys.executable
+    if as_name:
+        folder = home / 'emu' / name
+        folder.mkdir(parents=True)
+        interpreter = str(folder / as_name)
+        shutil.copyfile(os.path.realpath(sys.executable), interpreter)
+        os.chmod(interpreter, 0o755)
+        for path in (folder.parent, folder, Path(interpreter)):
+            os.chown(path, 1, 1)
     process = subprocess.Popen([*USER, interpreter, '-c', program, str(log), str(bins / 'claude')],
-                               env=dict(env, CHURN_LOG=str(home / f"{name}.churn"), PYTHONHOME=sys.base_prefix),
+                               env=dict(env, CHURN_LOG=str(home / f"{name}.churn"), PYTHONHOME=sys.base_prefix,
+                                        **HOLDER_ENV),
                                stdin=subprocess.DEVNULL,
-                               cwd=str(home))
+                               cwd=str(cwd or home))
     emulators.append(process)
     leader = int(wait_for(lambda: log.exists() and log.read_text().split('\n')[0].split()[-1:], 5, 'emulator')[0])
     wait_for(lambda: exe(leader) == stub, 5, 'stub')
+    if as_name:
+        os.unlink(interpreter)
+        assert exe(process.pid) == f'{interpreter} (deleted)', exe(process.pid)
+        if update == 'same':
+            Path(interpreter).write_text(RECORDER)
+            os.chmod(interpreter, 0o755)
+            os.chown(interpreter, 1, 1)
     tty = os.readlink(f'/proc/{leader}/fd/0')
     found = wait_for(lambda: next((s for s in helper('external_sessions')['result']
                                    if (s.get('origin') or {}).get('tty') == tty), None), 5, 'external row')
@@ -228,6 +292,61 @@ def record(name):
     return json.loads((root / f'{name}.json').read_text())
 
 
+def recorded(path, seconds=5):
+    """What a recorder (a replacement window's program) was started with."""
+    text = wait_for(lambda: path.exists() and path.read_text(), seconds, f'{path.name}')
+    lines = text.splitlines()
+    pick = lambda tag: [line[len(tag) + 1:] for line in lines if line.startswith(tag + ' ')]
+    env = dict(e.split('=', 1) for e in pick('env'))
+    for key in ('PWD', 'OLDPWD', 'SHLVL', '_'):
+        env.pop(key, None)
+    return dict(pid=pick('pid')[0], group=pick('group')[0].split(), cwd=pick('cwd')[0],
+                stdio=pick('stdio')[0].split(), args=pick('arg'), env=env)
+
+
+def attach_like_window(args, run_env, cwd):
+    """Run a replacement window's command on a PTY of its own, as the emulator would
+    (it sets TERM itself): it must show the moved session; Ctrl+\\ detaches."""
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.chdir(cwd)
+        os.execvpe(USER[0], [*USER, *args], dict(run_env, TERM='xterm-256color'))
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 100, 0, 0))
+    out, detached, deadline = b'', False, time.time() + 20
+    while time.time() < deadline:
+        if select.select([fd], [], [], 0.05)[0]:
+            try:
+                data = os.read(fd, 65536)
+            except OSError:
+                break
+            if not data:
+                break
+            out += data
+        if not detached and b'tick' in out:
+            time.sleep(0.3)
+            os.write(fd, b'\x1c')
+            detached = True
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            break
+    else:
+        os.kill(pid, signal.SIGKILL)
+        raise AssertionError(f'{args} did not finish: {out[-2000:]!r}')
+    if not done:
+        _, status = os.waitpid(pid, 0)
+    os.close(fd)
+    return os.waitstatus_to_exitcode(status), out.decode(errors='replace')
+
+
+def stop(name, leader):
+    listed = [s for s in helper('sessions')['result'] if s['id'] == name]
+    assert listed, name
+    stopped = helper('stop_agent_session', dict(id=name, pid=listed[0]['pid'], started=listed[0]['started'],
+                                                 boot_id=boot, provider='claude'))
+    assert stopped['error'] is None, stopped
+    wait_for(lambda: not alive(leader), 5, 'agent exit')
+
+
 try:
     tmux('start-server', ';', 'set', '-g', 'exit-empty', 'off')
     info = helper('info')['result']
@@ -243,6 +362,7 @@ try:
     session = moved['result']
     name = session['id']
     assert elapsed < 8, elapsed
+    assert session['window'] == 'replaced', session
     pane = int(tmux('display', '-p', '-t', name, '#{pane_pid}').stdout)
     relay_pid = next(p for p in [pane] + children(pane) if exe(p) == os.path.realpath(relay))
     peek = subprocess.run([*USER, 'ls', f'/proc/{relay_pid}/fd'], capture_output=True)
@@ -351,6 +471,95 @@ try:
     assert 'signal HUP' in (home / 'cli-kill.churn').read_text()
     assert 2.5 < time.time() - started < 8 and emulator.poll() is None
     checks.append('`cx kill ID -y` stopped the outside agent (HUP, then KILL); window untouched')
+
+    # 6. The replacement window. A verified move reopens the same emulator (its
+    #    updated binary at the same path) running `cx attach <id>` in the leader's
+    #    cwd, with only whitelisted variables, in a session of its own, stdio on
+    #    /dev/null; then the frozen window is SIGKILLed.
+    project = home / 'project'
+    project.mkdir()
+    os.chown(project, 1, 1)
+    emulator, leader, found = emulate('window', cwd=project)
+    moved = helper('adopt_session', dict(id=found['id'], origin=found['origin'], boot_id=boot))
+    assert moved['error'] is None and moved['result']['window'] == 'replaced', moved
+    name = moved['result']['id']
+    window = recorded(home / 'emu/window/foot.record')
+    assert window['args'] == [str(home / 'emu/window/foot'), binary, 'attach', name], window['args']
+    assert window['cwd'] == str(project), window['cwd']
+    assert set(window['env']) <= WINDOW_KEYS, sorted(window['env'])
+    for key in ('WAYLAND_DISPLAY', 'DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS'):
+        assert window['env'][key] == HOLDER_ENV[key], (key, window['env'])
+    assert window['env']['HOME'] == str(home) and window['env']['XDG_STATE_HOME'] == env['XDG_STATE_HOME']
+    assert 'TERM' not in window['env'] and 'sk-never-copied' not in json.dumps(window), window
+    assert window['group'] == [window['pid'], window['pid']], window['group']
+    assert window['stdio'] == ['/dev/null'] * 3, window['stdio']
+    assert not (bins / 'systemd-run.record').exists(), 'no user bus: systemd-run must not be used'
+    assert wait_for(lambda: emulator.poll() is not None, 3, 'holder killed') and emulator.returncode == -9, \
+        emulator.returncode
+    checks.append('a verified move reopened the updated foot with `cx attach <id>`, the leader\'s cwd, '
+                  'only display/login variables, its own session; then SIGKILLed the frozen one')
+    code, shown = attach_like_window(window['args'][1:], window['env'], window['cwd'])
+    assert code == 0 and 'tick' in shown, (code, shown[-2000:])
+    assert alive(leader) and 'signal HUP' not in (home / 'window.churn').read_text()
+    checks.append('the replacement window\'s exact command and environment attach the moved session; '
+                  'Ctrl+\\ detaches with 0')
+    stop(name, leader)
+
+    #    An emulator whose binary moved is found on PATH; with a reachable user bus
+    #    the window gets its own scope through systemd-run (a fake here).
+    (bins / 'foot').write_text(RECORDER)
+    os.chmod(bins / 'foot', 0o755)
+    os.chown(bins / 'foot', 1, 1)
+    import socket as sockets
+    bus = sockets.socket(sockets.AF_UNIX)
+    bus.bind(f'{home}/run-holder/bus')
+    os.chmod(f'{home}/run-holder/bus', 0o777)
+    bus.listen(4)
+    emulator, leader, found = emulate('scope', update='path')
+    moved = helper('adopt_session', dict(id=found['id'], origin=found['origin'], boot_id=boot))
+    assert moved['error'] is None and moved['result']['window'] == 'replaced', moved
+    name = moved['result']['id']
+    window = recorded(bins / 'foot.record')
+    assert window['args'] == [str(bins / 'foot'), binary, 'attach', name], window['args']
+    scope = (bins / 'systemd-run.record').read_text().split('\n')
+    assert scope[:6] == ['--user', '--scope', '--collect', '--quiet', '--', str(bins / 'foot')], scope
+    assert wait_for(lambda: emulator.poll() is not None, 3, 'holder killed') and emulator.returncode == -9
+    bus.close()
+    os.unlink(f'{home}/run-holder/bus')
+    os.unlink(bins / 'foot')
+    os.unlink(bins / 'foot.record')
+    os.unlink(bins / 'systemd-run.record')
+    stop(name, leader)
+    checks.append('an emulator binary gone from its path is found on PATH; a reachable user bus '
+                  'places the window with `systemd-run --user --scope --collect --quiet --`')
+
+    #    The emulator cannot be started again (its binary is gone everywhere): the
+    #    frozen window is still SIGKILLed and the move reports "closed".
+    emulator, leader, found = emulate('missing', update='missing')
+    moved = helper('adopt_session', dict(id=found['id'], origin=found['origin'], boot_id=boot))
+    assert moved['error'] is None and moved['result']['window'] == 'closed', moved
+    assert wait_for(lambda: emulator.poll() is not None, 3, 'holder killed') and emulator.returncode == -9
+    time.sleep(3)
+    assert alive(leader) and 'close' not in (home / 'missing.emulator').read_text()
+    assert not list((home / 'emu/missing').glob('*.record')) and not list(bins.glob('*.record'))
+    stop(moved['result']['id'], leader)
+    checks.append('a replacement that cannot start falls back to closing: holder SIGKILLed, "closed"')
+
+    #    An unknown holder (an editor's terminal, here a python named `emacs`, with an
+    #    `emacs` recorder on PATH) is neither reopened nor SIGKILLed: SIGHUP only.
+    (bins / 'emacs').write_text(RECORDER)
+    os.chmod(bins / 'emacs', 0o755)
+    os.chown(bins / 'emacs', 1, 1)
+    emulator, leader, found = emulate('editor', EMULATOR, as_name='emacs')
+    moved = helper('adopt_session', dict(id=found['id'], origin=found['origin'], boot_id=boot))
+    assert moved['error'] is None and moved['result']['window'] == 'closed', moved
+    assert wait_for(lambda: emulator.poll() is not None, 3, 'holder hung up') and \
+        emulator.returncode == -signal.SIGHUP, emulator.returncode
+    time.sleep(1)
+    assert not list((home / 'emu/editor').glob('*.record')) and not list(bins.glob('*.record'))
+    assert alive(leader)
+    stop(moved['result']['id'], leader)
+    checks.append('an unknown holder (`emacs`) got SIGHUP only: never reopened, never SIGKILLed')
 
     leftovers = [p for p in map(int, filter(str.isdigit, os.listdir('/proc'))) if exe(p) == stub]
     assert not leftovers, leftovers

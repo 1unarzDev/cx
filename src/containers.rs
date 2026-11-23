@@ -948,7 +948,7 @@ exec /bin/sh -i
 /// container and helper path so an immediate `run` need not repeat the checks.
 pub fn prepare(scope: &ContainerScope, provider: &str) -> Result<(Container, String)> {
     anyhow::ensure!(
-        ["shell", "codex", "claude"].contains(&provider),
+        container_profile(provider),
         "unsupported container session profile"
     );
     require_provider(&providers(scope)?, provider)?;
@@ -1082,30 +1082,30 @@ fn shell_payload(
     );
     Ok(payload)
 }
+/// A shell, or an agent offered inside containers.
+pub fn container_profile(provider: &str) -> bool {
+    provider == "shell" || crate::model::agent(provider).is_some_and(|a| a.container)
+}
 fn provider_args(provider: &str, yolo: bool, resume: bool) -> Result<Vec<&'static str>> {
-    let mut args = match provider {
-        "shell" => vec!["shell"],
-        "codex" => vec!["codex"],
-        "claude" => vec!["claude"],
-        _ => bail!("unsupported container profile"),
+    anyhow::ensure!(container_profile(provider), "unsupported container profile");
+    let Some(agent) = crate::model::agent(provider) else {
+        anyhow::ensure!(
+            !yolo && !resume,
+            "Shell does not support agent permissions or history picker"
+        );
+        return Ok(vec!["shell"]);
     };
-    anyhow::ensure!(
-        provider != "shell" || (!yolo && !resume),
-        "Shell does not support agent permissions or history picker"
-    );
-    if resume {
-        args.push(if provider == "codex" {
-            "resume"
-        } else {
-            "--resume"
-        });
-    }
+    // A container resume is always the agent's own picker.
+    let mut args = if resume {
+        agent
+            .resume_pick
+            .context("this agent has no session picker in containers")?
+            .to_vec()
+    } else {
+        agent.new.to_vec()
+    };
     if yolo {
-        args.push(if provider == "codex" {
-            "--dangerously-bypass-approvals-and-sandbox"
-        } else {
-            "--dangerously-skip-permissions"
-        });
+        args.extend(agent.yolo);
     }
     Ok(args)
 }
@@ -1252,6 +1252,16 @@ exec /bin/sh -c "$@"
         assert!(decode_payload::<RunPayload>(&"A".repeat(65536)).is_err());
         assert!(provider_args("shell", false, true).is_err());
         assert!(provider_args("shell", true, false).is_err());
+        assert_eq!(provider_args("shell", false, false).unwrap(), ["shell"]);
+        assert_eq!(provider_args("claude", false, false).unwrap(), ["claude"]);
+        // Only the table's container agents run in containers.
+        for other in ["bash", "agy", "opencode", ""] {
+            assert!(!container_profile(other));
+            assert!(provider_args(other, false, false).is_err());
+        }
+        assert!(crate::model::AGENTS
+            .iter()
+            .all(|a| !a.container || container_profile(a.id)));
     }
 
     #[test]
@@ -1457,10 +1467,7 @@ fn local_shell_with_resume(
     let original_xdg =
         ["XDG_CACHE_HOME", "XDG_STATE_HOME"].map(|name| (name, std::env::var_os(name)));
     container_home()?;
-    anyhow::ensure!(
-        ["shell", "codex", "claude"].contains(&provider),
-        "unsupported container profile"
-    );
+    anyhow::ensure!(container_profile(provider), "unsupported container profile");
     anyhow::ensure!(!yolo || provider != "shell", "YOLO applies only to agents");
     let identity = crate::model::ProcessIdentity {
         pid: std::process::id(),

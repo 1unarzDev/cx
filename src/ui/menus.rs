@@ -5,53 +5,44 @@ use super::{
 };
 
 pub(super) struct SessionChoice {
-    pub label: &'static str,
+    pub label: String,
     pub provider: &'static str,
     pub key: char,
 }
-pub(super) const HOST: &[SessionChoice] = &[
+fn choice(key: char, name: &str, provider: &'static str) -> SessionChoice {
     SessionChoice {
-        label: "[c] Claude",
-        provider: "claude",
-        key: 'c',
-    },
-    SessionChoice {
-        label: "[x] Codex",
-        provider: "codex",
-        key: 'x',
-    },
-    SessionChoice {
-        label: "[n] Shell",
-        provider: "shell",
-        key: 'n',
-    },
-    SessionChoice {
-        label: "[d] Devcontainer",
-        provider: "container",
-        key: 'd',
-    },
-];
-pub(super) const CONTAINER: &[SessionChoice] = &[
-    SessionChoice {
-        label: "[n] Shell",
-        provider: "shell",
-        key: 'n',
-    },
-    SessionChoice {
-        label: "[c] Claude",
-        provider: "claude",
-        key: 'c',
-    },
-    SessionChoice {
-        label: "[x] Codex",
-        provider: "codex",
-        key: 'x',
-    },
-];
+        label: format!("[{key}] {name}"),
+        provider,
+        key,
+    }
+}
+/// The host chooser: every agent, then a shell and a devcontainer.
+pub(super) static HOST: std::sync::LazyLock<Vec<SessionChoice>> = std::sync::LazyLock::new(|| {
+    crate::model::AGENTS
+        .iter()
+        .map(|a| choice(a.key, a.label, a.id))
+        .chain([
+            choice('n', "Shell", "shell"),
+            choice('d', "Devcontainer", "container"),
+        ])
+        .collect()
+});
+/// A container's chooser: a shell, then the agents offered inside containers.
+pub(super) static CONTAINER: std::sync::LazyLock<Vec<SessionChoice>> =
+    std::sync::LazyLock::new(|| {
+        std::iter::once(choice('n', "Shell", "shell"))
+            .chain(
+                crate::model::AGENTS
+                    .iter()
+                    .filter(|a| a.container)
+                    .map(|a| choice(a.key, a.label, a.id)),
+            )
+            .collect()
+    });
 pub(super) fn session_choices(dialog: &Dialog) -> Option<&'static [SessionChoice]> {
     match dialog {
-        Dialog::SessionChooser(..) => Some(HOST),
-        Dialog::ContainerProvider(..) => Some(CONTAINER),
+        Dialog::SessionChooser(..) => Some(HOST.as_slice()),
+        Dialog::ContainerProvider(..) => Some(CONTAINER.as_slice()),
         _ => None,
     }
 }
@@ -140,7 +131,7 @@ pub(super) fn render_session_chooser(
             Dialog::ContainerProvider(device, scope) if choice.provider == "shell" => {
                 format!("[{}] {}", choice.key, container_label(app, *device, scope))
             }
-            _ => choice.label.to_string(),
+            _ => choice.label.clone(),
         };
         frame.render_widget(
             Paragraph::new(label)

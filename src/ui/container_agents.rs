@@ -11,7 +11,7 @@ fn key(d: usize, scope: &ContainerScope) -> (usize, String) {
     (d, serde_json::to_string(scope).unwrap_or_default())
 }
 pub(super) fn has_history(_scope: Option<&ContainerScope>, provider: &str) -> bool {
-    matches!(provider, "claude" | "codex")
+    crate::model::agent(provider).is_some_and(|a| a.container)
 }
 impl App {
     fn container_agents_supported(&self, d: usize) -> bool {
@@ -127,10 +127,10 @@ impl App {
             anyhow::ensure!(&observed == scope, "container profile scope changed");
             let providers: Vec<String> = serde_json::from_value(v["providers"].clone())?;
             anyhow::ensure!(
-                providers.len() <= 3
+                providers.len() <= menus::CONTAINER.len()
                     && providers
                         .iter()
-                        .all(|p| ["shell", "claude", "codex"].contains(&p.as_str())),
+                        .all(|p| crate::containers::container_profile(p)),
                 "invalid container profiles"
             );
             Ok(providers)

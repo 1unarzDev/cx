@@ -150,6 +150,23 @@ pub enum Provider {
     Codex,
     Shell,
 }
+impl Provider {
+    /// A session's provider string; anything not an agent's draws as a shell.
+    pub fn of(id: &str) -> Self {
+        match crate::model::agent(id).map(|a| a.id) {
+            Some("claude") => Self::Claude,
+            Some("codex") => Self::Codex,
+            _ => Self::Shell,
+        }
+    }
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Claude => crate::model::CLAUDE.id,
+            Self::Codex => crate::model::CODEX.id,
+            Self::Shell => "shell",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionState {

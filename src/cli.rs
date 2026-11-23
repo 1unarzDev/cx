@@ -51,14 +51,14 @@ pub fn claude(args: Vec<String>) -> Result<()> {
         std::iter::once("cx claude".to_string()).chain(args),
     )
     .unwrap_or_else(|e| e.exit());
-    launch("claude", cli.launch)
+    launch(crate::model::CLAUDE.id, cli.launch)
 }
 
 /// Create a session on the device and attach to it. A remote attach whose connection
 /// drops reattaches the same session (Ctrl+C gives up), as the viewer does.
 pub fn launch(provider: &str, a: LaunchArgs) -> Result<()> {
     let d = crate::device(a.device.clone())?;
-    let agent = provider != "shell";
+    let agent = crate::model::agent(provider).is_some();
     anyhow::ensure!(
         agent || !(a.yolo || a.normal || a.resume || a.pick),
         "--yolo, --normal, --resume and --pick apply only to claude and codex"

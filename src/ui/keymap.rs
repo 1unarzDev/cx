@@ -223,24 +223,24 @@ pub(super) const BINDINGS: &[Binding] = &[
     ),
     bind!(
         Hub,
-        [ch('c')],
+        [ch(crate::model::CLAUDE.key)],
         "c / x / n",
         Cmd::View("new-claude"),
         "New claude / codex / shell on this device where cx was started, attached, in its last mode",
         hint("Claude")
     ),
-    alias!(Hub, [ch('x')], "x", Cmd::View("new-codex"), "New codex here"),
+    alias!(Hub, [ch(crate::model::CODEX.key)], "x", Cmd::View("new-codex"), "New codex here"),
     alias!(Hub, [ch('n')], "n", Cmd::View("new-shell"), "New shell here"),
     bind!(
         Hub,
-        [ch('C')],
+        [ch(crate::model::CLAUDE.resume_key)],
         "C / X",
         Cmd::View("resume-claude"),
         "Resume the last claude / codex conversation where cx was started, in its last mode"
     ),
     alias!(
         Hub,
-        [ch('X')],
+        [ch(crate::model::CODEX.resume_key)],
         "X",
         Cmd::View("resume-codex"),
         "Resume the last codex conversation here"
@@ -263,7 +263,7 @@ pub(super) const BINDINGS: &[Binding] = &[
     ),
     bind!(
         Device,
-        [ch('c')],
+        [ch(crate::model::CLAUDE.key)],
         "c",
         Cmd::View("new-claude"),
         "New claude session, attached, in its last mode (this device: where cx was started; others: the last Files folder)",
@@ -271,7 +271,7 @@ pub(super) const BINDINGS: &[Binding] = &[
     ),
     bind!(
         Device,
-        [ch('x')],
+        [ch(crate::model::CODEX.key)],
         "x",
         Cmd::View("new-codex"),
         "New codex session, attached, in its last mode",
@@ -287,7 +287,7 @@ pub(super) const BINDINGS: &[Binding] = &[
     ),
     bind!(
         Device,
-        [ch('C')],
+        [ch(crate::model::CLAUDE.resume_key)],
         "C",
         Cmd::View("resume-claude"),
         "Resume the last claude conversation, in its last mode",
@@ -295,7 +295,7 @@ pub(super) const BINDINGS: &[Binding] = &[
     ),
     bind!(
         Device,
-        [ch('X')],
+        [ch(crate::model::CODEX.resume_key)],
         "X",
         Cmd::View("resume-codex"),
         "Resume the last codex conversation, in its last mode",
@@ -801,6 +801,25 @@ mod tests {
             assert!(BINDINGS
                 .iter()
                 .all(|b| !b.keys.iter().any(|k| k.matches(&key))));
+        }
+    }
+    #[test]
+    fn every_agent_has_its_new_and_resume_keys_on_the_hub_and_device_screens() {
+        for agent in crate::model::AGENTS {
+            for (c, verb) in [
+                (agent.key, format!("new-{}", agent.id)),
+                (agent.resume_key, format!("resume-{}", agent.id)),
+            ] {
+                let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+                for ctx in [Ctx::Hub, Ctx::Device] {
+                    assert!(
+                        BINDINGS.iter().any(|b| b.ctx == ctx
+                            && matches!(b.cmd, Cmd::View(v) if v == verb)
+                            && b.keys.iter().any(|k| k.matches(&key))),
+                        "{ctx:?} {c} {verb}"
+                    );
+                }
+            }
         }
     }
     #[test]

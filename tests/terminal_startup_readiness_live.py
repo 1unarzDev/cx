@@ -28,8 +28,8 @@ for case, body in LAUNCHERS.items():
         if case in ('exit', 'gone', 'instant'):
             provider = 'claude'
             # Info found claude moments ago; the launch trusts that and does not probe.
-            (state/'providers.json').write_text(json.dumps(dict(shell=str(launch), at=int(time.time()), claude=True,
-                                                                 codex=False, codex_no_daemon=False)))
+            (state/'providers.json').write_text(json.dumps(dict(shell=str(launch), at=int(time.time()), available=dict(claude=None),
+                                                                 codex_no_daemon=False)))
             (state/'providers.json').chmod(0o600)
         env=dict(os.environ,HOME=tmp,XDG_STATE_HOME=str(root/'state'),SHELL=str(launch),TERM='xterm-256color')
         for key in ['TMUX','TMUX_PANE']:env.pop(key,None)

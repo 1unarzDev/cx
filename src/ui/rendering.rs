@@ -451,17 +451,16 @@ fn render_frame(
             },
             Dialog::SessionChooser(d,path) => (
                 format!("New session · {}",safe_label(&app.devices[*d].name)),
-                app.host_session_choices(*d).iter().map(|choice|choice.label.into()).collect(),
+                app.host_session_choices(*d).iter().map(|choice|choice.label.clone()).collect(),
                 format!("{}\n{}", safe_label(path), if app.provider_loading.contains(d) { "Checking installed agents…" } else { "Agent permissions are chosen next; devcontainer opens its tree." }),
             ),
             Dialog::Provider(d, path) => (
                 format!("New session · {}", identity(&app.devices[*d])),
                 app.provider_choices(*d)
                     .iter()
-                    .map(|provider| match *provider {
-                        "claude" => "Claude · existing host profile".into(),
-                        "codex" => "Codex · existing host profile".into(),
-                        "container" => "Devcontainer · choose a container workspace".into(),
+                    .map(|provider| match (*provider, crate::model::agent(provider)) {
+                        (_, Some(agent)) => format!("{} · existing host profile", agent.label),
+                        ("container", _) => "Devcontainer · choose a container workspace".into(),
                         _ => "Shell · ordinary terminal".into(),
                     })
                     .collect(),

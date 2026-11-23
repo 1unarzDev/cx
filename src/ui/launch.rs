@@ -73,7 +73,7 @@ impl App {
         let skip = usize::from(resume.is_some());
         match (i, resume) {
             (0, Some((provider, dir))) => {
-                let agent = provider == "claude" || provider == "codex";
+                let agent = crate::model::agent(&provider).is_some();
                 let provider = if agent { provider.as_str() } else { "shell" };
                 self.quick_launch(d, dir, provider, agent);
             }
@@ -89,9 +89,9 @@ impl App {
     pub(super) fn provider_choices(&self, device: usize) -> Vec<&'static str> {
         let mut choices = vec!["shell"];
         if let Some((available, _)) = self.providers.get(&device) {
-            for provider in ["claude", "codex"] {
-                if available.iter().any(|p| p == provider) {
-                    choices.push(provider);
+            for agent in crate::model::AGENTS {
+                if available.iter().any(|p| p == agent.id) {
+                    choices.push(agent.id);
                 }
             }
             if available.iter().any(|p| p == "containers-v1") {
@@ -494,7 +494,7 @@ impl App {
         resume: bool,
         pick: bool,
     ) {
-        if provider == "claude" || provider == "codex" {
+        if crate::model::agent(&provider).is_some() {
             if let Err(e) = store::set_launch_yolo(&self.devices[d].id, &provider, yolo) {
                 let e = safe_text(&format!("{e:#}"));
                 self.set_notice_as(NoticeKind::Warning, format!("Mode not remembered: {e}"));

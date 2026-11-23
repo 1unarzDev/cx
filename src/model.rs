@@ -431,6 +431,88 @@ impl TransferSpec {
     }
 }
 
+/// A built-in agent: how cx starts, resumes and recognises it. Every claude/codex list
+/// in cx reads this table; codex-only behaviour (`--no-daemon`, title tracking, `-C`
+/// parsing, pane colours) and each agent's metadata reader stay explicit.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Agent {
+    /// The provider string in sessions, requests and capabilities.
+    pub id: &'static str,
+    pub label: &'static str,
+    /// The new-session key (hub, device screen, chooser); never a device letter or slot.
+    pub key: char,
+    /// The resume-last-conversation key.
+    pub resume_key: char,
+    /// Launch words, joined with spaces into the pane's command.
+    pub new: &'static [&'static str],
+    /// Resume the most recent conversation.
+    pub resume_last: &'static [&'static str],
+    /// Resume through the agent's own picker, when it has one on the command line.
+    pub resume_pick: Option<&'static [&'static str]>,
+    /// Flags appended for YOLO (bypass approvals).
+    pub yolo: &'static [&'static str],
+    /// Executable basename (`/proc/PID/exe`, and tmux's `pane_current_command`).
+    pub exe: &'static str,
+    /// The script suffix when it runs under node or bun.
+    pub script: Option<&'static str>,
+    /// First arguments (after the executable or script) that mark a process of the
+    /// agent's binary that is not the agent itself (an updater or a daemon).
+    pub not_agent_args: &'static [&'static str],
+    /// Offered inside containers.
+    pub container: bool,
+}
+pub const CLAUDE: Agent = Agent {
+    id: "claude",
+    label: "Claude",
+    key: 'c',
+    resume_key: 'C',
+    new: &["claude"],
+    resume_last: &["claude", "--continue"],
+    resume_pick: Some(&["claude", "--resume"]),
+    yolo: &["--dangerously-skip-permissions"],
+    exe: "claude",
+    script: Some("/@anthropic-ai/claude-code/cli.js"),
+    not_agent_args: &[],
+    container: true,
+};
+pub const CODEX: Agent = Agent {
+    id: "codex",
+    label: "Codex",
+    key: 'x',
+    resume_key: 'X',
+    new: &["codex"],
+    resume_last: &["codex", "resume", "--last"],
+    resume_pick: Some(&["codex", "resume"]),
+    yolo: &["--dangerously-bypass-approvals-and-sandbox"],
+    exe: "codex",
+    script: Some("/@openai/codex/bin/codex.js"),
+    not_agent_args: &[],
+    container: true,
+};
+pub const AGENTS: &[Agent] = &[CLAUDE, CODEX];
+pub fn agent(id: &str) -> Option<&'static Agent> {
+    AGENTS.iter().find(|a| a.id == id)
+}
+/// The agent a key starts (`key`) or resumes (`resume_key`, then true).
+pub fn agent_for_key(c: char) -> Option<(&'static Agent, bool)> {
+    AGENTS.iter().find_map(|a| {
+        (a.key == c)
+            .then_some((a, false))
+            .or((a.resume_key == c).then_some((a, true)))
+    })
+}
+/// Whether `c` is any agent's new or resume key (usable in constants).
+pub const fn is_agent_key(c: char) -> bool {
+    let mut i = 0;
+    while i < AGENTS.len() {
+        if AGENTS[i].key == c || AGENTS[i].resume_key == c {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 fn default_true() -> bool {
     true
 }
@@ -438,6 +520,32 @@ fn is_true(value: &bool) -> bool {
     *value
 }
 
+#[cfg(test)]
+mod agent_table_tests {
+    use super::*;
+    #[test]
+    fn agents_are_found_by_id_and_key() {
+        assert_eq!(agent("claude"), Some(&CLAUDE));
+        assert_eq!(agent("codex").map(|a| a.label), Some("Codex"));
+        assert_eq!(agent("shell"), None);
+        assert_eq!(agent(""), None);
+        assert_eq!(agent("Claude"), None);
+        assert_eq!(agent_for_key('c'), Some((&CLAUDE, false)));
+        assert_eq!(agent_for_key('X'), Some((&CODEX, true)));
+        assert_eq!(agent_for_key('n'), None);
+        assert!(is_agent_key('C') && !is_agent_key('e'));
+        // Ids and keys are unique, and no key is `e` (link) or `n`/`N` (shell).
+        let mut keys: Vec<char> = AGENTS.iter().flat_map(|a| [a.key, a.resume_key]).collect();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(keys.len(), AGENTS.len() * 2);
+        assert!(!keys.iter().any(|k| "enN".contains(*k)));
+        for a in AGENTS {
+            assert_eq!(a.resume_key, a.key.to_ascii_uppercase());
+            assert_eq!(AGENTS.iter().filter(|b| b.id == a.id).count(), 1);
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

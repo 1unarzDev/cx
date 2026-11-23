@@ -558,7 +558,7 @@ pub fn dispatch(op: Operation) -> Result<serde_json::Value> {
             yolo,
         } => {
             anyhow::ensure!(
-                ["claude", "codex"].contains(&request.provider.as_str()),
+                model::agent(&request.provider).is_some_and(|a| a.container),
                 "container agent profile required"
             );
             request.resume_pick = request.resume;
@@ -1471,7 +1471,7 @@ fn run() -> Result<()> {
             directory,
         }) => {
             anyhow::ensure!(
-                !resume || provider == "codex" || provider == "claude",
+                !resume || model::agent(&provider).is_some_and(|a| a.container),
                 "resume is available only for container agents"
             );
             let d = device(d)?;
@@ -1781,7 +1781,7 @@ fn run() -> Result<()> {
         ),
         Some(Cmd::Join { args }) => mesh::run(&[vec!["pair".into()], args].concat()),
         Some(Cmd::Claude { args }) => cli::claude(args),
-        Some(Cmd::Codex(a)) => cli::launch("codex", a),
+        Some(Cmd::Codex(a)) => cli::launch(model::CODEX.id, a),
         Some(Cmd::Shell { dir, device }) => cli::launch(
             "shell",
             cli::LaunchArgs {

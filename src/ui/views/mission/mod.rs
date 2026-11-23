@@ -249,13 +249,45 @@ pub(super) enum Size {
 /// stays "files", `h j k l` motion), then the top and bottom rows' letters no device
 /// screen binds (`c x n` new, `w e r t p b` verbs), then the digits. A session keeps its
 /// key until it ends; past these 21 a device's sessions are a `/` away.
-pub const SLOTS: [char; 21] = [
+/// Agents' keys never are (`model::AGENTS`).
+pub const SLOTS: [char; SLOT_COUNT] = {
+    let mut out = ['\0'; SLOT_COUNT];
+    let (mut i, mut n) = (0, 0);
+    while i < SLOT_POOL.len() {
+        if !crate::model::is_agent_key(SLOT_POOL[i]) {
+            out[n] = SLOT_POOL[i];
+            n += 1;
+        }
+        i += 1;
+    }
+    out
+};
+const SLOT_POOL: [char; 21] = [
     'a', 's', 'd', 'g', 'q', 'u', 'i', 'o', 'y', 'z', 'v', 'm', '1', '2', '3', '4', '5', '6', '7',
     '8', '9',
 ];
-/// The home-row slots alone: the keys screen's cards, and the letters device names give
-/// way to (`hotkeys`).
-pub const HOME: [char; 4] = ['a', 's', 'd', 'g'];
+const SLOT_COUNT: usize = {
+    let (mut i, mut n) = (0, 0);
+    while i < SLOT_POOL.len() {
+        if !crate::model::is_agent_key(SLOT_POOL[i]) {
+            n += 1;
+        }
+        i += 1;
+    }
+    n
+};
+/// The home-row slots alone (the first four): the keys screen's cards, and the letters
+/// device names give way to (`hotkeys`).
+pub const HOME: [char; 4] = [SLOTS[0], SLOTS[1], SLOTS[2], SLOTS[3]];
+
+/// A provider's colour token.
+pub fn provider_tok(p: crate::ui::views::Provider) -> Tok {
+    match p {
+        crate::ui::views::Provider::Claude => Tok::Claude,
+        crate::ui::views::Provider::Codex => Tok::Codex,
+        crate::ui::views::Provider::Shell => Tok::Shell,
+    }
+}
 
 /// A pill's rounded caps (powerline extra symbols, drawn by kitty, ghostty and wezterm).
 pub const PILL_L: &str = "\u{e0b6}";
@@ -761,11 +793,7 @@ impl<'a> Cx<'a> {
         }
     }
     pub fn prov(&self, x: &LabSession) -> (&'static str, Tok) {
-        match x.provider {
-            crate::ui::views::Provider::Claude => ("claude", Tok::Claude),
-            crate::ui::views::Provider::Codex => ("codex", Tok::Codex),
-            crate::ui::views::Provider::Shell => ("shell", Tok::Shell),
-        }
+        (x.provider.id(), provider_tok(x.provider))
     }
     /// The session's key within its device (`SLOTS`; None past the pool).
     pub fn slot(&self, x: &LabSession) -> Option<char> {

@@ -1498,11 +1498,7 @@ mod key_tests {
                         // answers to, printed in the target, once per device.
                         let key = match t.action.split(':').collect::<Vec<_>>()[..] {
                             ["new", d, p] => {
-                                let k = match p {
-                                    "claude" => "c",
-                                    "codex" => "x",
-                                    _ => "n",
-                                };
+                                let k = crate::model::agent(p).map_or('n', |a| a.key);
                                 Some((d, &k.to_string()))
                             }
                             ["launch", d, k] => Some((d, &k.to_string())),

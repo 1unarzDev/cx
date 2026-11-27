@@ -168,7 +168,7 @@ pub(super) fn keymap() -> &'static [Bind] {
             b!(["l"], Enter, "Enter the child directory"),
             b!(["<Left>"], Leave, "Back to the parent directory"),
             b!(["<Right>"], Enter, "Enter the child directory"),
-            b!(["H"], Hub, "The hub (cx's Shift+H; history back is Alt+←)"),
+            b!(["H"], Hub, "Devices (cx's Shift+H; history back is Alt+←)"),
             b!(["L"], Forward, "Forward to next directory"),
             b!(["<A-Left>"], Back, "Back to previous directory"),
             b!(["<A-Right>"], Forward, "Forward to next directory"),
@@ -886,7 +886,7 @@ impl App {
                 self.generation += 1;
             }
             QuitAll => self.request_quit(),
-            Hub => self.go_hub(),
+            Hub => self.open_picker(),
             CloseTab => {
                 if self.yz.tabs.len() > 1 {
                     self.yz.tabs.remove(self.yz.tab);

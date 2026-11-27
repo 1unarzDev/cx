@@ -121,6 +121,7 @@ fn screen(app: &App, state: &LabState, caps: &mut LabCaps) -> LabView {
         }
     }
     match app.view {
+        _ if app.onboarding() => LabView::Onboarding,
         View::Work if app.device > 0 => {
             let d = app.device - 1;
             let id = dev_id(d);
@@ -130,6 +131,8 @@ fn screen(app: &App, state: &LabState, caps: &mut LabCaps) -> LabView {
                 .unwrap_or(list.len());
             if app.stop_armed.is_some() {
                 caps.focus = Some(Pane::Custom("stop"));
+            } else if app.outside_focused() {
+                caps.focus = Some(Pane::Custom("outside"));
             }
             // Its LINKS focused: `selected` is the link, in `edges_of` order.
             if let Some(n) = &app.device_link {
@@ -156,23 +159,14 @@ fn screen(app: &App, state: &LabState, caps: &mut LabCaps) -> LabView {
             caps.selected = app.secret_selected;
             LabView::Secrets
         }
-        _ if app.onboarding() => LabView::Onboarding,
         _ => {
-            if app.hub_sessions {
-                caps.focus = Some(Pane::Sessions);
-                let order = super::views::mission::by_attention(state);
-                caps.selected = session_id
-                    .and_then(|id| order.iter().position(|x| *x == id))
-                    .unwrap_or(0);
-            } else {
-                caps.focus = Some(Pane::Graph);
-                let order = app.hub_order.borrow();
-                let want = app
-                    .hub_device
-                    .clone()
-                    .unwrap_or_else(|| dev_id(app.local_index()));
-                caps.selected = order.iter().position(|id| *id == want).unwrap_or(0);
-            }
+            caps.focus = Some(Pane::Graph);
+            let order = app.hub_order.borrow();
+            let want = app
+                .hub_device
+                .clone()
+                .unwrap_or_else(|| dev_id(app.local_index()));
+            caps.selected = order.iter().position(|id| *id == want).unwrap_or(0);
             LabView::Hub
         }
     }
@@ -344,6 +338,8 @@ fn devices(app: &App) -> Vec<LabDevice> {
                         safe_label(&tilde(&dir, &d.account, d.target.is_none()))
                     }
                 },
+                outside: app.outside_count(i),
+                outside_open: app.outside_open == Some(i),
             }
         })
         .collect()

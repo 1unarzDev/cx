@@ -4,9 +4,9 @@ import fcntl, json, os, pathlib, pty, select, struct, subprocess, sys, tempfile,
 import pyte
 
 
-def on_hub(text):
-    """The hub, by its crumb: `cx › network` or, with its tiles focused, `cx › sessions`."""
-    return 'cx › network' in text or 'cx › sessions' in text
+def on_device(text):
+    """A device's screen (where cx opens, v0.6.0): its SESSIONS rule, not the picker."""
+    return 'SESSIONS' in text and 'cx › network' not in text
 binary = str(pathlib.Path(sys.argv[1]).resolve())
 def process_identity(pid):
     try:
@@ -74,11 +74,10 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-loader-') as tmp:
         while not predicate() and time.monotonic()<end: read()
         assert predicate(), text()
     try:
-        # The hub (or, with only this device, its welcome; Esc is plain SSH), then this
-        # device's Files (Enter, `f`), where `n` opens the chooser.
-        wait(lambda:on_hub(text()) or 'welcome' in text()); read(.4)
+        # This device's screen (or, with only this device, its welcome; Esc is plain
+        # SSH), then its Files (`f`), where `n` opens the chooser.
+        wait(lambda:on_device(text()) or 'plain ssh' in text()); read(.4)
         os.write(master,b'\x1b'); read(.5)
-        os.write(master,b'\r'); read(.5)
         os.write(master,b'f'); wait(lambda:' NOR ' in text()); read(.4)
         os.write(master,b'!\r'); wait(lambda:'[n] Shell' in text())
         os.write(master,b'n'); pressed=time.monotonic()
@@ -98,7 +97,7 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-loader-') as tmp:
         # cx's last frame: the primary screen, with a prior attach's "[detached]"
         # teardown text, is never shown before tmux repaints.
         assert b'\x1b[?1049l' not in raw, 'handoff showed the primary screen'
-        os.write(master,b'\x1c'); wait(lambda:on_hub(text()))
+        os.write(master,b'\x1c'); wait(lambda:on_device(text()))
         os.write(master,b'\x03');proc.wait(timeout=5)
         assert termios.tcgetattr(slave)==before
     finally:

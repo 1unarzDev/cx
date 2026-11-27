@@ -1,7 +1,7 @@
 //! The network's shared vocabulary: the spanning tree seen from a device, routes,
 //! link hues and policies, and device names with their hotkey letter. Every map (the
 //! hub, a device's LINKS, the edge editor, the send-to picker) is drawn by `nebula`.
-use super::{fit, Cx, Size};
+use super::{fit, Cx};
 use crate::ui::views::{Access, EdgeKind, LabDevice, LabEdge, Tok};
 use ratatui::{
     buffer::Buffer,
@@ -201,20 +201,6 @@ pub(super) fn has_letter(d: &LabDevice) -> Option<usize> {
         .chars()
         .position(|c| c.eq_ignore_ascii_case(&d.hotkey))
 }
-
-/// Rows the map wants: a calm spacing for a typical network (one column each side for a
-/// device's own neighbourhood).
-pub(super) fn want_h(cx: &Cx) -> u16 {
-    match cx.size() {
-        Size::L => 15,
-        Size::M => 13,
-        Size::S => 11,
-        Size::Xs => 9,
-    }
-}
-
-/// The most rows a hub map uses.
-pub(super) const MAX_H: u16 = 27;
 
 /// One row of the phone's device tree.
 pub(super) struct TreeRow<'a> {

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Launch keys: `cx` started in a folder, then `c` (2 keys) starts Claude there; the
-hub's bare c / x / a / o / n and C / X / A / O work on this device in the folder cx was
-started in,
-each agent in the mode it was last started in; a device letter then c / x / C / X does
-the same on that device's screen; Enter on a device with nothing running opens the
-full chooser; Files `!` then c / x / n starts in the folder Files shows.
+"""Launch keys: `cx` started in a folder, then `c` (2 keys) starts Claude there; cx
+opens on this device's screen (v0.6.0), where c / x / a / o / n and C / X / A / O start
+in the folder cx was started in, each agent in the mode it was last started in; the
+picker's `H`, a device letter, then c / x / C / X does the same; Enter on a device with
+nothing running opens the full chooser; Files `!` then c / x / n starts in the folder
+Files shows.
 
 usage: tests/isolate.sh python tests/launch_keys_pty.py BINARY
 
@@ -12,17 +12,17 @@ A private HOME inside private namespaces (pty_lib.isolate), with stand-in `claud
 `codex`, `agy` and `opencode` on PATH that answer `--version` and otherwise record their
 argv, working folder (and opencode's inline config), then wait. (isolate.sh covers any
 real agy/opencode on the caller's PATH, so only these can run.) Viewers run on a 120x40 PTY started in HOME/src/robot-arm; each
-launch attaches, and Ctrl+\\ detaches back to the hub.
-  1. `t`, Enter (nothing runs yet): the chooser; Left / Right keep it open; `x`, Enter
+launch attaches, and Ctrl+\\ detaches back to the device's screen.
+  1. Esc (the first-run welcome), Enter (nothing runs yet): the chooser; Left / Right keep it open; `x`, Enter
      (New), Down, Enter: codex in YOLO, in the folder cx was started in.
-  2. A new viewer: `c` is its first key: claude (default) there, attached; the hub's
-     SESSIONS rule says `here ~/src/robot-arm`.
+  2. A new viewer: `c` is its first key: claude (default) there, attached; the launch
+     row says `here ~/src/robot-arm`.
   3. Bare `x` / `X` / `C`: codex YOLO (remembered), codex resume --last YOLO, claude
-     --continue, all there. `t x` / `t C` on the device's screen: the same folder.
+     --continue, all there. `H t x` / `H t C` through the picker: the same folder.
   4. Bare `a` / `A` / `o` / `O`: agy full screen (its per-run settings), agy -c,
-     opencode --standalone with its inline `{"mouse":true}`, opencode -c; `t A`, `t o`
-     on the device's screen.
-  5. `t f` (Files opens where cx was started), `h`, then `!` `c` and `!` `a`: claude and
+     opencode --standalone with its inline `{"mouse":true}`, opencode -c; `H t A`,
+     `H t o` through the picker.
+  5. `f` (Files opens where cx was started), `h`, then `!` `c` and `!` `a`: claude and
      agy in ~/src.
   6. Viewer B, open since before the YOLO choice, closes after this one; a new viewer
      still remembers codex's YOLO (`x`): the mode is merged state, not B's snapshot.
@@ -116,8 +116,10 @@ def main():
         viewer = start()
         proof = []
         # 1. Nothing runs yet: Enter on the device's screen opens the full chooser;
-        # arrows never close it.
-        viewer.write(b't')
+        # arrows never close it. (The only device, first run: Esc leaves the welcome.)
+        wait(viewer, lambda: 'cx ›' in text(viewer), 'the viewer drew nothing')
+        if 'plain ssh' in text(viewer):
+            viewer.write(b'\x1b')
         wait(viewer, lambda: 'start' in text(viewer) and 'network' not in viewer.screen.display[0],
              "the device's screen")
         viewer.write(b'\r')
@@ -139,13 +141,13 @@ def main():
         # 2. `cx` in the folder, then `c`: two keys.
         viewer = start()
         proof.append(launch(viewer, [b'c'], 'claude'))
-        wait(viewer, lambda: 'here ~/src/robot-arm' in text(viewer), 'the hub names where c x n start')
-        # 3. The hub's bare keys, and a device letter's, in the last mode, in that folder.
+        wait(viewer, lambda: 'here ~/src/robot-arm' in text(viewer), 'the launch row names where c x n start')
+        # 3. The bare keys, and the picker's letter's, in the last mode, in that folder.
         proof.append(launch(viewer, [b'x'], f"codex {YOLO['codex']}"))
         proof.append(launch(viewer, [b'X'], f"codex resume --last {YOLO['codex']}"))
         proof.append(launch(viewer, [b'C'], 'claude --continue'))
-        proof.append(launch(viewer, [b't', b'x'], f"codex {YOLO['codex']}"))
-        proof.append(launch(viewer, [b't', b'C'], 'claude --continue'))
+        proof.append(launch(viewer, [b'H', b't', b'x'], f"codex {YOLO['codex']}"))
+        proof.append(launch(viewer, [b'H', b't', b'C'], 'claude --continue'))
         # 4. Antigravity and opencode, the same keys' grammar.
         agy = 'agy --settings {"altScreenMode":"always"}'
         oc = 'opencode --standalone'
@@ -154,11 +156,9 @@ def main():
         proof.append(launch(viewer, [b'A'], f'{agy} -c'))
         proof.append(launch(viewer, [b'o'], oc + cfg))
         proof.append(launch(viewer, [b'O'], f'{oc} -c{cfg}'))
-        proof.append(launch(viewer, [b't', b'A'], f'{agy} -c'))
-        proof.append(launch(viewer, [b't', b'o'], oc + cfg))
+        proof.append(launch(viewer, [b'H', b't', b'A'], f'{agy} -c'))
+        proof.append(launch(viewer, [b'H', b't', b'o'], oc + cfg))
         # 5. Files' folder: `!` then c, and `!` then a.
-        viewer.write(b't')
-        viewer.read(.3)
         viewer.write(b'f')
         wait(viewer, lambda: 'NOR' in text(viewer), 'files')  # yazi's mode pill
         # (Files opens in the folder cx was started in; one up is another folder.)
@@ -168,9 +168,7 @@ def main():
         viewer.write(b'!')
         wait(viewer, lambda: 'New claude here' in text(viewer), 'the ! panel')
         proof.append(launch(viewer, [b'c'], 'claude', folder=here.parent))
-        # (A detach returns to the hub; Files reopens in the folder it last showed.)
-        viewer.write(b't')
-        viewer.read(.3)
+        # (A detach returns to the device; Files reopens in the folder it last showed.)
         viewer.write(b'f')
         wait(viewer, lambda: 'NOR' in text(viewer), 'files again')
         head = viewer.screen.display[0] + viewer.screen.display[1]

@@ -1862,11 +1862,10 @@ pub fn run_restored(restore: Option<&str>) -> Result<()> {
         app.yazi_warm_devices();
     }
     if restore.is_none() {
-        // The start view is the hub; Files of this device open in the launch folder.
+        // Files of this device open in the launch folder.
         app.open_startup_directory(std::env::current_dir()?);
-        app.view = View::Network;
-        app.device = 0;
     }
+    app.start_view(restore.is_some());
     app.reload_edges();
     app.refresh_work();
     app.refresh_containers();

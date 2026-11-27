@@ -714,10 +714,14 @@ struct App {
     context_menu: Option<hitmap::ContextMenu>,
     /// Palette picks, most recent first (in-memory MRU ranking).
     palette_mru: VecDeque<String>,
-    /// Hub: the selected node (view-model device id) and whether the sessions zone
-    /// has focus; the device order the last frame drew.
+    /// Device picker: the selected node (view-model device id), the device it was
+    /// opened from (Esc goes back there); the device order the last frame drew.
     hub_device: Option<String>,
-    hub_sessions: bool,
+    hub_return: Option<usize>,
+    /// The device whose outside-cx terminals are shown as tiles (collapsed to one row
+    /// otherwise), and whether that row has the selection.
+    outside_open: Option<usize>,
+    outside_focus: bool,
     /// A device's LINKS zone has focus, on the neighbour (view-model id) it selects.
     device_link: Option<String>,
     hub_order: std::cell::RefCell<Vec<String>>,
@@ -924,7 +928,9 @@ impl App {
             context_menu: None,
             palette_mru: VecDeque::new(),
             hub_device: None,
-            hub_sessions: false,
+            hub_return: None,
+            outside_open: None,
+            outside_focus: false,
             device_link: None,
             hub_order: Default::default(),
             nav: Default::default(),
@@ -1247,12 +1253,14 @@ impl App {
                         "Refresh queue busy · retry shortly".into(),
                     );
                 }
-                // Discover outside-CX terminals for the UI when the device
+                // Discover outside-CX terminals for the open device's screen when it
                 // supports adoption; `cx sessions` itself stays managed-only.
-                if self
-                    .providers
-                    .get(&index)
-                    .is_some_and(|(caps, _)| caps.iter().any(|c| c == "adopt-session-v1"))
+                if self.view == View::Work
+                    && self.device == index + 1
+                    && self
+                        .providers
+                        .get(&index)
+                        .is_some_and(|(caps, _)| caps.iter().any(|c| c == "adopt-session-v1"))
                 {
                     self.request_externals(index);
                 }

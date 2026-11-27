@@ -1168,8 +1168,7 @@ fn a_hub_tile_keeps_its_pushed_screen_after_the_selection_moves() {
         .unwrap()
         .0
         .push("session-preview-v1".into());
-    a.go_hub();
-    a.hub_sessions = true;
+    a.open_device(0);
     a.reconcile_session_selection(Some((0, workspaces::runtime_key(&first))));
     a.refresh_session_preview();
     a.sync_watches();
@@ -1226,7 +1225,7 @@ fn drawn_tiles_keep_their_screens_past_the_frame_cap() {
         .unwrap()
         .0
         .push("session-preview-v1".into());
-    a.go_hub();
+    a.open_device(0);
     let _ = rx.try_iter().count();
     let mut t = Terminal::new(TestBackend::new(190, 50)).unwrap();
     t.draw(|f| render(f, &a)).unwrap();

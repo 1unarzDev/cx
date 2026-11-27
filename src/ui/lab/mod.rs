@@ -243,7 +243,10 @@ mod review_tests {
             .lines()
             .find(|l| l.contains("FIFTH needs you"))
             .expect("ticker row");
-        assert!(row.contains("find") && !row.contains("attach"), "{row}");
+        // (The first-ranked session's own alert, before it, keeps its `attach`.)
+        let tail = row.split("FIFTH").nth(1).unwrap_or_default();
+        let tail = tail.split('▲').next().unwrap_or_default();
+        assert!(tail.contains("find") && !tail.contains("attach"), "{row}");
         assert!(targets
             .iter()
             .any(|t| t.action.starts_with("session:innovation:extra")));
@@ -894,7 +897,12 @@ mod nebula_tests {
         let area = Rect::new(0, 0, 120, 40);
         let mut buf = Buffer::empty(area);
         let view = LabView::DeviceFocus(d.id.clone());
-        mission::render(&view, &s, &LabCaps::default(), area, &mut buf);
+        // (Its `LINKS` rule shows while the map has the keys.)
+        let caps = LabCaps {
+            focus: Some(crate::ui::views::caps::Pane::Graph),
+            ..LabCaps::default()
+        };
+        mission::render(&view, &s, &caps, area, &mut buf);
         let text: Vec<String> = (0..40)
             .map(|y| (0..120).map(|x| buf[(x, y)].symbol().to_string()).collect())
             .collect();
@@ -1294,8 +1302,6 @@ mod nebula_tests {
     #[test]
     fn moves_reverse_reach_everything_and_never_invert() {
         for s in fixtures() {
-            let order = mission::by_attention(&s).len(); // (warm the fixture)
-            let _ = order;
             for (w, h) in SIZES {
                 let n = s.devices.len();
                 for sel in 0..n {

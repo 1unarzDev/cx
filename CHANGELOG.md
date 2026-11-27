@@ -2,6 +2,17 @@
 
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
+## v0.6.0
+
+cx opens on the device you are on, and terminals outside cx stop crowding it.
+
+### Features
+- **cx opens on this device's screen.** Plain `cx` now opens the screen of the machine you ran it on (its sessions, launch keys and links) instead of the all-devices hub, whose tiles repeated every device's screen. `c x a o n` start there in the folder cx was started in, as before.
+- **The hub is now the device picker.** `H` (from any screen, Files included) shows the network map, the selected device's vitals, its first sessions as large live screens (only that device's, changing as you move between nodes) and the alert ticker: a device's letter (or `⏎` on its node) opens its screen and `esc` goes back to the device you came from. Esc on another device's screen goes to this device's, and so does Esc Esc from anywhere; on this device's own screen Esc does nothing (Ctrl+C still quits). After a detach you return to that session's device, its tile selected.
+- **Sessions that need you elsewhere still show.** When a session on another device is waiting on you, the end of the SESSIONS rule says so in amber (`◆ 1 needs you · innovation  H i go`, or `H devices` for several); other devices are checked every 9 s while you are on a device's screen.
+- **The map is the device screen's picture.** Under a device's sessions its network map grows into the rows it has (two fifths of a large screen), without a `LINKS` heading until Tab gives it the keys; tiles stop at a calm height instead of stretching.
+- **Terminals outside cx fold into one chip.** Shells and agents that cx did not start no longer take tiles and session keys: a device's screen shows one `+N outside cx  ⏎ show` chip at the end of its `start` row (on its own row on phones or with nothing running). Select it (Down from the tiles) and press Enter to show them, then Enter on one moves it into cx as before; Enter on the row again, or leaving the device, folds them. Only the open device is scanned for them.
+
 ## v0.5.1
 
 A rename inside an agent now renames its tile.

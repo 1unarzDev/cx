@@ -292,3 +292,15 @@ peers remain pending and retry. Changed identity/key pins require verification.
 Work was integrated through an isolated worktree; the original conflicted checkout
 was left untouched. Test evidence is in [VALIDATION.md](VALIDATION.md); prior design
 findings are in [the audit](research/session-reliability-audit.md).
+
+## Device landing — v0.6.0 (2026-11-27)
+
+User direction: `cx` opens on this device's screen; the all-devices hub was mostly a
+duplicate and is now only the device picker (`H`). Terminals outside cx fold into one
+`+N outside cx` row per device. Opting every new terminal into cx is deferred to a
+separate opt-in milestone. Prerequisites: `attach_command` refuses a viewer with `TMUX`
+set (`src/sessions.rs`), the managed tmux profile changes keys, status line and mouse,
+and the acceptance checklist is in `docs/astra-improvement-proposals.md` ("Should every
+terminal start inside tmux"). Plain terminal windows and SSH logins can't be previewed
+without moving them (their screen lives in the emulator or sshd); default-server tmux
+panes already are. A cheap follow-up would list other tmux sockets (`-L`/`-S`).

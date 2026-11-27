@@ -64,21 +64,29 @@ fn sessions(a: &mut App, device: usize, count: usize) {
 }
 
 #[test]
-fn hub_letters_open_devices_and_shift_h_returns_from_anywhere() {
+fn picker_letters_open_devices_and_shift_h_opens_it_from_anywhere() {
     let (mut a, _rx) = file_app();
     sessions(&mut a, 1, 2);
-    a.go_hub();
+    a.open_picker();
     assert!(a.view == View::Network);
     // A device letter opens that device, ready to attach or start.
     let l = letter(&a, 1);
     press(&mut a, l);
     assert!(a.view == View::Work && a.device == 2);
     assert!(a.dialog.is_none(), "a letter opened a chooser (P13)");
-    // `f` there is its files; Shift+H is the hub from any screen (a 65% keyboard has
-    // no backtick key of its own).
+    // Shift+H is the device picker from any screen (a 65% keyboard has no backtick key
+    // of its own); Esc there goes back to the device it was opened from.
     let shift_h = KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT);
     a.key(shift_h);
     assert!(a.view == View::Network && a.device == 0);
+    assert_eq!(a.hub_device.as_deref(), Some(viewmodel::dev_id(1).as_str()));
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(a.view == View::Work && a.device == 2);
+    // Esc on another device's screen is this device's; on this one it stays.
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(a.view == View::Work && a.device == a.local_index() + 1);
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(a.view == View::Work && a.device == a.local_index() + 1);
     a.view = View::Files;
     a.key(shift_h);
     assert!(a.view == View::Network);
@@ -90,19 +98,24 @@ fn hub_letters_open_devices_and_shift_h_returns_from_anywhere() {
     press(&mut a, l);
     let shown = draw(&a, 120, 40);
     assert!(
-        shown.contains("H hub") && !shown.contains("` hub"),
+        shown.contains("H devices") && !shown.contains("` devices"),
         "{shown}"
     );
     a.help = true;
     let help = draw(&a, 120, 40);
     assert!(!help.contains('`'), "{help}");
     a.help = false;
-    // A double Esc also reaches the hub.
+    // A double Esc reaches this device from anywhere.
+    a.view = View::Files;
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(a.view == View::Work && a.device == a.local_index() + 1);
+    a.open_picker();
     let l = letter(&a, 1);
     press(&mut a, l);
     a.key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
     assert!(a.view == View::Files);
-    // In Files H is the hub.
+    // In Files H is the picker.
     press(&mut a, 'H');
     assert!(a.view == View::Network);
     // `e` then a letter opens the link to that device.
@@ -115,11 +128,11 @@ fn hub_letters_open_devices_and_shift_h_returns_from_anywhere() {
 }
 
 #[test]
-fn hub_moves_never_refresh_and_keep_the_session_by_identity() {
+fn picker_moves_never_refresh_and_keep_the_session_by_identity() {
     let (mut a, rx) = queued_app();
     sessions(&mut a, 0, 3);
     sessions(&mut a, 1, 2);
-    a.go_hub();
+    a.open_picker();
     while rx.try_recv().is_ok() {}
     draw(&a, 120, 40);
     let id = a.selected_session().map(|(_, s)| s.id);
@@ -135,13 +148,6 @@ fn hub_moves_never_refresh_and_keep_the_session_by_identity() {
         id,
         "selection jumped"
     );
-    // The sessions zone moves by identity through the ranked tiles.
-    a.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    assert!(a.hub_sessions);
-    let first = a.selected_session().unwrap().1.id;
-    a.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    assert_ne!(a.selected_session().unwrap().1.id, first);
-    assert!(rx.try_recv().is_err());
 }
 
 #[test]
@@ -317,14 +323,14 @@ fn attaching_from_a_tile_expands_it_and_a_key_skips_it() {
 fn nodes_tiles_and_chips_are_tap_targets_with_key_semantics() {
     let (mut a, _rx) = queued_app();
     sessions(&mut a, 0, 3);
-    a.go_hub();
+    a.open_picker();
     let area = Rect::new(0, 0, 120, 40);
     // A node opens its device, like its letter.
     draw(&a, 120, 40);
     let node = act("device:1");
     click(&mut a, node.x + 1, node.y, area);
     assert!(a.view == View::Work && a.device == 2 && a.dialog.is_none());
-    // The footer's `H hub` chip, then `? help`.
+    // The footer's `H devices` chip, then `? help`.
     draw(&a, 120, 40);
     let hub = act("hub");
     click(&mut a, hub.x, hub.y, area);
@@ -342,13 +348,14 @@ fn nodes_tiles_and_chips_are_tap_targets_with_key_semantics() {
     draw(&a, 120, 40);
     click(&mut a, 0, 0, area);
     assert!(a.input.is_none());
-    // A tap focuses a session tile; a tap on the focused tile attaches it (as `⏎`).
+    // On a device's screen a tap focuses a session tile; a tap on the focused tile
+    // attaches it (as `⏎`).
+    a.open_device(0);
     draw(&a, 120, 40);
     let key = workspaces::runtime_key(&a.work[0].sessions[1]);
     let tile = act(&format!("tile:0:{key}"));
     click(&mut a, tile.x + 2, tile.y + 1, area);
     assert!(a.pending_attach.is_none() && a.attach_check.is_none());
-    assert!(a.hub_sessions);
     assert_eq!(
         a.selected_session()
             .map(|(_, s)| workspaces::runtime_key(&s)),
@@ -491,7 +498,7 @@ fn palette_switcher_ranks_fuzzy_then_recent_and_attaches_on_enter() {
     a.key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
     assert_eq!(a.palette_view()[0].id, a.palette_mru[0]);
     // Goto entries go there with no chooser.
-    for c in "hub".chars() {
+    for c in "devices".chars() {
         press(&mut a, c);
     }
     let index = a
@@ -529,27 +536,20 @@ fn palette_tab_jumps_sections_and_is_one_box() {
 fn help_and_footer_teach_the_design_keys_and_each_chip_runs_its_key() {
     let (mut a, _rx) = queued_app();
     sessions(&mut a, 0, 2);
-    a.go_hub();
+    a.open_picker();
     a.help = true;
     let text = draw(&a, 120, 40);
-    for key in [
-        "ON THE HUB",
-        "s d g q",
-        "c x n",
-        "ctrl+\\",
-        "find",
-        "secrets",
-    ] {
+    for key in ["DEVICES", "s d g q", "c x n", "ctrl+\\", "find", "secrets"] {
         assert!(text.contains(key), "help lacks {key}: {text}");
     }
     a.help = false;
     // Footer chips are tap targets running the same verb as their key.
     draw(&a, 120, 40);
     let last = act("last");
-    let zone = act("zone");
-    assert_eq!(last.y, zone.y, "both on the footer row");
-    click(&mut a, zone.x, zone.y, Rect::new(0, 0, 120, 40));
-    assert!(a.hub_sessions, "tab chip switched zones like Tab");
+    let back = act("back");
+    assert_eq!(last.y, back.y, "both on the footer row");
+    click(&mut a, back.x, back.y, Rect::new(0, 0, 120, 40));
+    assert!(a.view == View::Work, "esc chip went back like Esc");
     // The keymap still names the device verbs (context menus, `?`).
     a.open_device(0);
     for (key, cmd) in [('w', Cmd::Watch), ('p', Cmd::Pin), ('?', Cmd::Help)] {
@@ -564,7 +564,7 @@ fn help_and_footer_teach_the_design_keys_and_each_chip_runs_its_key() {
 fn phone_hub_is_the_device_tree_with_a_wrapping_footer() {
     let (mut a, _rx) = queued_app();
     sessions(&mut a, 0, 3);
-    a.go_hub();
+    a.open_picker();
     let text = draw(&a, 40, 20);
     let lines: Vec<_> = text.lines().collect();
     assert!(lines[0].contains("cx"), "{text}");
@@ -933,7 +933,7 @@ fn palette_fits_its_results_aligns_details_and_dims_the_backdrop() {
 fn help_covers_the_frame_below_100_columns() {
     let (mut a, _rx) = queued_app();
     sessions(&mut a, 0, 3);
-    a.go_hub();
+    a.open_picker();
     a.help = true;
     let text = draw(&a, 80, 24);
     let lines: Vec<_> = text.lines().collect();
@@ -1023,7 +1023,7 @@ fn a_pending_reply_never_makes_the_event_loop_poll() {
 fn the_hub_invite_shows_its_code_and_esc_closes_its_listener() {
     use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
     let (mut a, _rx) = queued_app();
-    a.go_hub();
+    a.open_picker();
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     a.invite = Some(screens::InviteRun {
@@ -1188,29 +1188,12 @@ fn e_exposes_a_secret_to_new_sessions_and_v_names_its_variable() {
     store.delete(name).unwrap();
 }
 
-/// After a detach the left session is selected on the hub even when it ranks below the
-/// tile row: its tile takes the row's last cell.
-#[test]
-fn the_selected_session_always_has_a_hub_tile() {
-    let (mut a, _rx) = queued_app();
-    sessions(&mut a, 0, 12);
-    a.go_hub();
-    a.hub_sessions = true;
-    let last = workspaces::runtime_key(&a.work[0].sessions[11].clone());
-    a.reconcile_session_selection(Some((0, last)));
-    let (_, s) = a.selected_session().unwrap();
-    assert_eq!(s.name, "nav 0 11");
-    let text = draw(&a, 120, 40);
-    assert!(text.contains("more"), "tiles are hidden: {text}");
-    assert!(text.contains(&s.name), "{} has no tile: {text}", s.name);
-}
-
 /// `H` (and `` ` ``) `-` `+` `K` dispatch through the keymap's Global rows, not a parallel match: the
 /// design's screen keys leave them alone, and they still reach their views.
 #[test]
 fn global_view_keys_go_through_the_keymap() {
     let (mut a, _rx) = queued_app();
-    a.go_hub();
+    a.open_picker();
     for c in ['H', '`', '-', '+', 'K'] {
         let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
         assert!(!a.screen_key(key), "{c} was caught before the keymap");
@@ -1261,7 +1244,7 @@ fn open_invite(a: &mut App) -> mpsc::Sender<()> {
 #[test]
 fn the_link_editor_leaves_chords_to_the_keymap() {
     let (mut a, _rx) = queued_app();
-    a.go_hub();
+    a.open_picker();
     press(&mut a, 'e');
     let l = letter(&a, 1);
     press(&mut a, l);
@@ -1279,7 +1262,7 @@ fn the_link_editor_leaves_chords_to_the_keymap() {
 #[test]
 fn global_keys_reach_past_the_link_editor() {
     let (mut a, _rx) = queued_app();
-    a.go_hub();
+    a.open_picker();
     let l = letter(&a, 1);
     for k in ['e', l, '?'] {
         press(&mut a, k);
@@ -1293,7 +1276,7 @@ fn global_keys_reach_past_the_link_editor() {
     );
     press(&mut a, 'K');
     assert!(a.view == View::Secrets && a.edge.is_none());
-    a.go_hub();
+    a.open_picker();
     for k in ['e', l, 'H'] {
         press(&mut a, k);
     }
@@ -1321,7 +1304,7 @@ fn the_link_editor_draws_the_pair_it_was_opened_on() {
 #[test]
 fn a_policy_key_waits_for_the_change_being_saved() {
     let (mut a, _rx) = queued_app();
-    a.go_hub();
+    a.open_picker();
     let l = letter(&a, 1);
     for k in ['e', l] {
         press(&mut a, k);
@@ -1340,7 +1323,7 @@ fn a_policy_key_waits_for_the_change_being_saved() {
 #[test]
 fn the_invite_copies_and_leaves_global_keys_working() {
     let (mut a, _rx) = queued_app();
-    a.go_hub();
+    a.open_picker();
     let go = open_invite(&mut a);
     assert!(draw(&a, 120, 40).contains("command"), "footer chip");
     press(&mut a, 'y');
@@ -1371,7 +1354,7 @@ fn the_invite_copies_and_leaves_global_keys_working() {
 #[test]
 fn help_is_the_table_of_the_screen_below() {
     let (mut a, _rx) = queued_app();
-    a.go_hub();
+    a.open_picker();
     let l = letter(&a, 1);
     for k in [l, '?'] {
         press(&mut a, k);
@@ -1418,7 +1401,7 @@ fn files_cc_copies_the_path_and_y_yanks() {
 fn a_pending_link_prefix_never_swallows_the_next_key() {
     let (mut a, _rx) = queued_app();
     sessions(&mut a, 1, 2);
-    a.go_hub();
+    a.open_picker();
     press(&mut a, 'e');
     esc(&mut a);
     let l = letter(&a, 1);
@@ -1428,8 +1411,7 @@ fn a_pending_link_prefix_never_swallows_the_next_key() {
         "the letter opened the device"
     );
     sessions(&mut a, 0, 3);
-    a.go_hub();
-    a.hub_sessions = true;
+    a.open_device(0);
     a.screen_move(0);
     let before = a.selected_session().unwrap().1.id;
     press(&mut a, 'e');
@@ -1437,22 +1419,22 @@ fn a_pending_link_prefix_never_swallows_the_next_key() {
     assert_ne!(a.selected_session().unwrap().1.id, before, "`j` moved");
 }
 
-/// `gg` is the first row on the hub, also with a device named for `g` (it takes another
-/// letter: `g` is late, like `h j k l`).
+/// `gg` is the picker's first device and `G` its last, also with a device named for `g`
+/// (it takes another letter: `g` is late, like `h j k l`).
 #[test]
 fn gg_is_the_first_row_when_no_device_has_g() {
     let (mut a, _rx) = queued_app();
     a.devices[1].name = "gateway".into();
     a.hotkeys.borrow_mut().clear();
     assert!(a.hotkeys().values().all(|c| *c != 'g'), "{:?}", a.hotkeys());
-    sessions(&mut a, 0, 3);
-    a.go_hub();
-    a.hub_sessions = true;
+    a.open_picker();
+    draw(&a, 120, 40);
     a.key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT));
-    let last = a.selected_session().unwrap().1.id;
+    let last = a.hub_device.clone();
     press(&mut a, 'g');
     press(&mut a, 'g');
-    assert_ne!(a.selected_session().unwrap().1.id, last);
+    assert!(a.view == View::Network);
+    assert_ne!(a.hub_device, last);
 }
 
 /// In a device a slot key moves the stop question to that session: `⌫ d ⌫`.
@@ -1508,7 +1490,7 @@ fn onboarding_enter_opens_the_cloudflare_token_entry() {
 #[test]
 fn hub_vitals_chips_run_their_keys() {
     let (mut a, _rx) = queued_app();
-    a.go_hub();
+    a.open_picker();
     draw(&a, 120, 40);
     let r = act("files:0");
     click(&mut a, r.x, r.y, Rect::new(0, 0, 120, 40));
@@ -1523,15 +1505,14 @@ fn every_drawn_target_is_a_known_action() {
         ("hub", || {
             let (mut a, _) = queued_app();
             sessions(&mut a, 0, 2);
-            a.go_hub();
+            a.open_picker();
             a
         }),
-        ("hub sessions", || {
+        ("picker, a device down", || {
             let (mut a, _) = queued_app();
             sessions(&mut a, 0, 2);
             a.work[1].error = Some("peace@laptop: timeout".into());
-            a.go_hub();
-            a.hub_sessions = true;
+            a.open_picker();
             a
         }),
         ("device", || {
@@ -1556,13 +1537,13 @@ fn every_drawn_target_is_a_known_action() {
         ("onboarding", app),
         ("link", || {
             let (mut a, _) = queued_app();
-            a.go_hub();
+            a.open_picker();
             a.view_action("edge:0-1");
             a
         }),
         ("invite", || {
             let (mut a, _) = queued_app();
-            a.go_hub();
+            a.open_picker();
             drop(open_invite(&mut a));
             a
         }),
@@ -1714,59 +1695,13 @@ fn selected_rect(a: &App) -> Rect {
     nav_rect(a, &format!("session:{d}:{}", workspaces::runtime_key(&s)))
 }
 
-/// The hub's tiles are a grid the arrows and `h j k l` walk in 2D; Down from the map
-/// enters the tiles and Up from the top row returns to it.
-#[test]
-fn the_hub_tiles_are_a_grid_the_arrows_walk() {
-    let (mut a, _rx) = queued_app();
-    sessions(&mut a, 0, 5);
-    a.go_hub();
-    draw(&a, 190, 50);
-    a.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    assert!(a.hub_sessions);
-    draw(&a, 190, 50);
-    let start = selected_rect(&a);
-    for (key, check) in [
-        (
-            KeyCode::Down,
-            &(|r: Rect, s: Rect| r.y > s.y) as &dyn Fn(Rect, Rect) -> bool,
-        ),
-        (KeyCode::Right, &|r: Rect, s: Rect| r.x > s.x && r.y == s.y),
-        (KeyCode::Left, &|r: Rect, s: Rect| r.x < s.x && r.y == s.y),
-        (KeyCode::Up, &|r: Rect, s: Rect| r.y < s.y),
-    ] {
-        let before = selected_rect(&a);
-        a.key(KeyEvent::new(key, KeyModifiers::NONE));
-        draw(&a, 190, 50);
-        let after = selected_rect(&a);
-        assert!(check(after, before), "{key:?}: {before:?} -> {after:?}");
-    }
-    // Back on the first row: `k` (Up) leaves the tiles for the map, `j` returns.
-    assert_eq!(selected_rect(&a).y, start.y);
-    press(&mut a, 'k');
-    assert!(!a.hub_sessions, "up from the top row is the map");
-    press(&mut a, 'j');
-    assert!(a.hub_sessions, "down from the map is the tiles");
-    // `l` is Right; Enter attaches the focused tile; `␣` peeks it.
-    draw(&a, 190, 50);
-    let before = selected_rect(&a);
-    press(&mut a, 'l');
-    draw(&a, 190, 50);
-    assert!(selected_rect(&a).x > before.x);
-    press(&mut a, ' ');
-    assert!(a.peek);
-    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(a.pending_attach.is_some() || a.attach_check.is_some());
-}
-
-/// In the map the arrows move to the nearest node that way (here the lone peer sits
-/// right of this device), and Down past the map's last node enters the tiles.
+/// In the picker the arrows move to the nearest node that way (here the lone peer sits
+/// right of this device); past the map's edge nothing moves.
 #[test]
 fn the_map_arrows_move_between_nodes_by_place() {
     let (mut a, _rx) = queued_app();
     sessions(&mut a, 0, 2);
-    a.go_hub();
+    a.open_picker();
     let here = |a: &App| {
         let id = a
             .hub_device
@@ -1787,16 +1722,17 @@ fn the_map_arrows_move_between_nodes_by_place() {
     assert!(others.iter().all(|r| r.x >= home.right()), "{others:?}");
     a.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     draw(&a, 190, 50);
-    assert!(here(&a).x >= home.right() && !a.hub_sessions);
+    assert!(here(&a).x >= home.right());
     press(&mut a, 'h');
     draw(&a, 190, 50);
     assert_eq!(here(&a), home);
-    // Up has nowhere to go (nothing moves); down leaves the map for the tiles.
-    a.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-    draw(&a, 190, 50);
-    assert_eq!(here(&a), home);
-    a.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    assert!(a.hub_sessions, "down from the map's last node is the tiles");
+    // Up and down have nowhere to go (nothing moves).
+    for code in [KeyCode::Up, KeyCode::Down] {
+        a.key(KeyEvent::new(code, KeyModifiers::NONE));
+        draw(&a, 190, 50);
+        assert_eq!(here(&a), home);
+        assert!(a.view == View::Network);
+    }
 }
 
 /// In a device the tiles are a grid too; a tap focuses a tile.
@@ -1825,7 +1761,7 @@ fn a_device_grid_walks_with_arrows_and_taps_focus() {
 fn palette_arrows_move_the_drawn_selection_and_the_cursor() {
     let (mut a, _rx) = queued_app();
     sessions(&mut a, 0, 3);
-    a.go_hub();
+    a.open_picker();
     a.open_palette("");
     let marked = |a: &App| -> String {
         draw(a, 120, 40)
@@ -1903,7 +1839,7 @@ fn keys_are_labelled_with_one_glyph_set() {
 fn sweep_app(sizes: &[(u16, u16)]) -> Vec<String> {
     type Setup = fn(&mut App);
     let overlays: &[(&str, Setup)] = &[
-        ("hub", |a| a.go_hub()),
+        ("hub", |a| a.open_picker()),
         ("device", |a| a.open_device(1)),
         ("help", |a| a.help = true),
         ("command-panel", |a| {
@@ -2166,7 +2102,7 @@ fn undo_map_moves(others: usize) {
     let mut a = App::new(devices, tx);
     // (Sessions, so Down past the map lands on tiles and the arrows' memory meets them.)
     sessions(&mut a, 0, 2);
-    a.go_hub();
+    a.open_picker();
     let node = |a: &App| a.hub_device.clone().unwrap_or_else(|| viewmodel::dev_id(0));
     let dirs = [KeyCode::Up, KeyCode::Down, KeyCode::Left, KeyCode::Right];
     let opposite = |k: KeyCode| match k {
@@ -2179,7 +2115,7 @@ fn undo_map_moves(others: usize) {
         for start in 0..a.devices.len() {
             for first in dirs {
                 for second in dirs {
-                    a.go_hub();
+                    a.open_picker();
                     a.hub_device = Some(viewmodel::dev_id(start));
                     draw(&a, w, h);
                     let mut path = vec![node(&a)];
@@ -2187,14 +2123,7 @@ fn undo_map_moves(others: usize) {
                     for k in [first, second] {
                         a.key(KeyEvent::new(k, KeyModifiers::NONE));
                         draw(&a, w, h);
-                        if a.hub_sessions {
-                            // Down past the map is the tiles; Up from them, the map again.
-                            a.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-                            draw(&a, w, h);
-                            assert!(!a.hub_sessions);
-                            assert_eq!(node(&a), *path.last().unwrap());
-                            break;
-                        }
+                        assert!(a.view == View::Network, "an arrow left the picker");
                         if node(&a) == *path.last().unwrap() {
                             continue; // (Nothing that way: it stays put.)
                         }
@@ -2291,7 +2220,7 @@ fn the_palette_and_the_link_editor_have_rounded_corners() {
         (120, 40),
         (190, 50),
     ] {
-        a.go_hub();
+        a.open_picker();
         a.open_palette("");
         let t = draw(&a, w, h);
         assert!(t.contains('╭') && t.contains('╯'), "palette {w}x{h}:\n{t}");
@@ -2361,14 +2290,11 @@ fn every_launch_panel_keycap_does_what_its_tap_does() {
         a.creating = false;
         (dialog, ops)
     };
-    for hub in [false, true] {
+    // (The device picker has no launch panel: keys start sessions on a device.)
+    for hub in [false] {
         let open = |a: &mut App| {
             a.dialog = None;
-            if hub {
-                a.go_hub();
-            } else {
-                a.open_device(0);
-            }
+            a.open_device(0);
         };
         open(&mut a);
         let text = draw(&a, 120, 40);
@@ -2424,15 +2350,15 @@ fn every_launch_panel_keycap_does_what_its_tap_does() {
     }
 }
 
-/// The only device: its launch keys work on the hub without its letter first.
+/// The only device: its launch keys work on its screen, where cx opens.
 #[test]
-fn a_lone_device_starts_from_the_hub_with_one_key() {
+fn a_lone_device_starts_from_its_screen_with_one_key() {
     let (tx, rx) = mpsc::sync_channel(64);
     let mut a = App::new(app().devices.into_iter().take(1).collect(), tx);
     a.providers
         .insert(0, (vec!["claude".into(), "codex".into()], transport::now()));
     a.onboarding_dismissed = true;
-    a.go_hub();
+    a.go_home();
     let text = draw(&a, 120, 40);
     assert!(text.contains(" x  codex"), "{text}");
     let _ = rx.try_iter().count();
@@ -2443,18 +2369,16 @@ fn a_lone_device_starts_from_the_hub_with_one_key() {
     assert!(started || matches!(&a.dialog, Some(Dialog::SessionChooser(0, _))));
 }
 
-/// `⌫` on the hub's sessions zone and in peek asks visibly (the next key used to
-/// cancel a question only the device view drew); a second `⌫` stops. From the map,
-/// where no session is in view, `⌫` asks nothing.
+/// `⌫` on a device's screen and in peek asks visibly; a second `⌫` stops. From the
+/// picker, where no session is in view, `⌫` asks nothing.
 #[test]
-fn hub_and_peek_show_the_stop_question_and_a_second_backspace_stops() {
+fn device_and_peek_show_the_stop_question_and_a_second_backspace_stops() {
     let (mut a, rx) = queued_app();
     sessions(&mut a, 0, 2);
-    a.go_hub();
-    a.hub_sessions = false;
+    a.open_picker();
     bksp(&mut a);
     assert!(a.stop_armed.is_none(), "the map has no session in view");
-    a.hub_sessions = true;
+    a.open_device(0);
     let _ = rx.try_iter().count();
     bksp(&mut a);
     let (_, armed) = a.stop_armed.clone().expect("armed");
@@ -2544,6 +2468,16 @@ fn backspace_stops_an_outside_agent_through_stop_external() {
     a.providers
         .insert(1, (vec!["stop-agent-session-v1".into()], transport::now()));
     a.open_device(1);
+    // Outside-cx terminals fold into one row: ⏎ on it shows their tiles.
+    assert!(a.slot_sessions(1).is_empty());
+    a.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(a.outside_focused());
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(a.slot_sessions(1).len(), 1);
+    a.screen_move(-2);
+    assert!(a
+        .selected_session()
+        .is_some_and(|(_, s)| s.id.starts_with("ext-")));
     let _ = rx.try_iter().count();
     bksp(&mut a);
     assert!(a.stop_armed.is_none(), "an older helper cannot stop it");
@@ -2562,12 +2496,11 @@ fn backspace_stops_an_outside_agent_through_stop_external() {
     assert!(a.stop_armed.is_none());
 }
 
-/// The hub says where its bare `c x n` start, quietly on the SESSIONS rule, at every
-/// size (phones included), the folder cut from the left; a tap on its key launches as
-/// the key does.
+/// This device's screen says where its `c x n` start (the folder cx was started in) on
+/// its launch row.
 #[test]
-fn hub_shows_where_bare_launch_keys_start_at_every_size() {
-    let (tx, rx) = mpsc::sync_channel(64);
+fn this_device_shows_where_launch_keys_start() {
+    let (tx, _rx) = mpsc::sync_channel(64);
     let mut devices = app().devices;
     let mut remote = devices[0].clone();
     remote.id = "remote".into();
@@ -2577,54 +2510,6 @@ fn hub_shows_where_bare_launch_keys_start_at_every_size() {
     let mut a = App::new(devices, tx);
     a.onboarding_dismissed = true;
     a.here = Some("/srv/work/projects/robot-arm".into());
-    a.go_hub();
-    for (w, h) in [(120, 40), (80, 24), (60, 30), (40, 20), (36, 40)] {
-        let text = draw(&a, w, h);
-        let row = text
-            .lines()
-            .find(|l| l.contains("SESSIONS"))
-            .unwrap_or_else(|| panic!("{w}x{h}: no SESSIONS rule\n{text}"));
-        assert!(row.contains("here "), "{w}x{h}: {row}\n{text}");
-        assert!(row.contains("robot-arm"), "{w}x{h}: {row}");
-        if std::env::var_os("CX_PRINT").is_some() {
-            println!("{w}x{h}\n{text}\n");
-        }
-    }
-    // Wide: the whole folder and the keys (this device selected and idle: its launch
-    // row under the rule shows the keys, so the rule shows the folder alone).
-    let text = draw(&a, 120, 40);
-    assert!(text.contains("here /srv/work/projects/robot-arm"), "{text}");
-    assert!(text.contains(" c  claude"), "{text}");
-    // With sessions, the rule carries the keys as well, and each taps as its key.
-    sessions(&mut a, 1, 2);
-    for (w, h) in [(120, 40), (80, 24), (40, 20)] {
-        let text = draw(&a, w, h);
-        let row = text.lines().find(|l| l.contains("SESSIONS")).unwrap();
-        assert!(
-            row.contains(" n  here ") && row.contains("robot-arm"),
-            "{w}x{h}: {row}\n{text}"
-        );
-        if std::env::var_os("CX_PRINT").is_some() {
-            println!("{w}x{h}\n{text}\n");
-        }
-    }
-    let text = draw(&a, 120, 40);
-    let (y, row) = text
-        .lines()
-        .enumerate()
-        .find(|(_, l)| l.contains("SESSIONS"))
-        .unwrap();
-    let x = row.chars().collect::<String>().find(" n  here").unwrap();
-    let x = row[..x].chars().count() as u16 + 1;
-    let _ = rx.try_iter().count();
-    click(&mut a, x, y as u16, Rect::new(0, 0, 120, 40));
-    assert!(
-        rx.try_iter().any(|t| matches!(&t.op, Operation::Create(c)
-            if c.provider == "shell" && c.directory == "/srv/work/projects/robot-arm")),
-        "a tap on the rule's n starts a shell here"
-    );
-    a.creating = false;
-    // This device's screen: its launch row says it too, where the row has room.
     a.open_device(0);
     for (w, h) in [(120, 40), (80, 24)] {
         let text = draw(&a, w, h);
@@ -2633,4 +2518,120 @@ fn hub_shows_where_bare_launch_keys_start_at_every_size() {
             println!("{w}x{h}\n{text}\n");
         }
     }
+}
+
+/// cx opens on this device's screen; a handoff keeps its view, except the picker.
+#[test]
+fn cx_starts_on_this_device_and_a_picker_handoff_lands_there_too() {
+    let (mut a, _rx) = queued_app();
+    a.start_view(false);
+    assert_eq!((a.view, a.device), (View::Work, a.local_index() + 1));
+    a.open_device(1);
+    a.start_view(true);
+    assert_eq!(
+        (a.view, a.device),
+        (View::Work, 2),
+        "a restored device stays"
+    );
+    a.open_picker();
+    a.start_view(true);
+    assert_eq!((a.view, a.device), (View::Work, a.local_index() + 1));
+}
+
+/// Outside-cx terminals take no tile and no key until their row is opened (`⏎`); the
+/// managed sessions keep their keys either way, and leaving the device folds them again.
+#[test]
+fn outside_terminals_fold_into_one_row_that_enter_opens() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 2);
+    let mut outside = external_agent();
+    outside.host = a.devices[0].name.clone();
+    a.work[0].sessions.push(outside);
+    a.go_home();
+    let keys = |a: &App| -> Vec<(String, Option<char>)> {
+        a.slot_keys(0)
+            .into_iter()
+            .map(|(s, k)| (s.id.clone(), k))
+            .collect()
+    };
+    let managed = keys(&a);
+    assert_eq!(managed.len(), 2, "{managed:?}");
+    let text = draw(&a, 120, 40);
+    assert!(
+        text.contains("+1 outside cx") && text.contains("show"),
+        "{text}"
+    );
+    assert!(!text.contains("api claude"), "{text}");
+    // Down from the tiles reaches the row; ⏎ shows its terminals.
+    a.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(a.outside_focused());
+    let text = draw(&a, 120, 40);
+    assert!(
+        text.lines().any(|l| l.contains("▌ +1 outside cx")),
+        "{text}"
+    );
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let shown = keys(&a);
+    assert_eq!(shown.len(), 3);
+    assert_eq!(&shown[..2], &managed[..], "managed keys kept");
+    let text = draw(&a, 120, 40);
+    assert!(
+        text.contains("api claude") && text.contains("hide"),
+        "{text}"
+    );
+    // ⏎ again folds them; so does leaving the device.
+    a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(keys(&a).len(), 2);
+    a.toggle_outside(0);
+    a.open_picker();
+    a.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(keys(&a).len(), 2);
+}
+
+/// A session waiting on you on another device is said on this device's SESSIONS rule,
+/// with `H` to get there; this device's own are its tiles, never repeated there.
+#[test]
+fn other_devices_waiting_on_you_show_on_the_sessions_rule() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 1);
+    sessions(&mut a, 1, 1);
+    a.go_home();
+    let rule = |a: &App| {
+        draw(a, 120, 40)
+            .lines()
+            .find(|l| l.contains("SESSIONS"))
+            .unwrap()
+            .to_string()
+    };
+    assert!(!rule(&a).contains("need"), "{}", rule(&a));
+    a.work[1].sessions[0].provider = "claude".into();
+    a.work[1].sessions[0].activity = Some("waiting".into());
+    let row = rule(&a);
+    let name = &a.devices[1].name;
+    assert!(
+        row.contains("1 needs you") && row.contains(name.as_str()) && row.contains(" go"),
+        "{row}"
+    );
+    // On that device's own screen it is a tile, not a line on the rule.
+    a.open_device(1);
+    assert!(!rule(&a).contains("needs you"), "{}", rule(&a));
+}
+
+/// Peek's Tab walks the open device's tiles.
+#[test]
+fn peek_tab_walks_the_devices_tiles() {
+    let (mut a, _rx) = queued_app();
+    sessions(&mut a, 0, 3);
+    sessions(&mut a, 1, 2);
+    a.go_home();
+    press(&mut a, ' ');
+    assert!(a.peek);
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        seen.push(a.selected_session().unwrap());
+        a.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    }
+    assert!(seen.iter().all(|(d, _)| *d == 0), "left the device");
+    let ids: std::collections::BTreeSet<_> = seen.iter().map(|(_, s)| s.id.clone()).collect();
+    assert_eq!(ids.len(), 3);
 }

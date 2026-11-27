@@ -78,7 +78,7 @@ fn device_access_marker_and_toggle_guard_are_clear() {
     let rendered = capture_app(&a, 80);
     assert!(rendered.contains("single-direction"), "{rendered}");
     // The hub has no device scope: `b` says so and changes nothing.
-    a.go_hub();
+    a.open_picker();
     a.run_cmd(keymap::Cmd::EditAccess);
     assert!(a.notice.contains("Select one remote device"));
     assert!(a.edge.is_none());
@@ -708,7 +708,7 @@ fn palette_network_picker_includes_all_and_scopes_queries_after_choice() {
         "{:?}",
         tasks.iter().map(|t| t.device).collect::<Vec<_>>()
     );
-    a.go_hub();
+    a.open_picker();
     let _ = rx.try_iter().count();
     for w in &mut a.work {
         w.loading = false;
@@ -1165,7 +1165,7 @@ fn opening_remote_files_from_all_devices_keeps_execution_context_on_enter() {
     a.open_browser(1, "/project".into());
     assert_eq!(a.device, 2);
     // Back to the hub and into that device's files again: the same location.
-    a.go_hub();
+    a.open_picker();
     let _ = rx.try_iter().count();
     a.open_files(1);
     assert_eq!(a.browser.as_ref().unwrap().device, 1);
@@ -2812,13 +2812,6 @@ fn jobs_cancel_owner_and_retry_same_idempotency_spec() {
 }
 #[test]
 fn reverse_tab_cycles_focus_and_leaves_search() {
-    // The hub's two zones: Tab and Shift+Tab both switch them.
-    let mut a = app();
-    a.go_hub();
-    a.key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
-    assert!(a.hub_sessions);
-    a.key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
-    assert!(!a.hub_sessions);
     // A transfer's two locations reverse with Shift+Tab, leaving a search.
     let (mut a, _rx) = file_app();
     a.other_browser = Some(Browser::new(1, "/destination".into()));
@@ -3132,6 +3125,7 @@ fn empty_session_action_respects_loading_errors_search_and_focus() {
     let (mut a, rx) = queued_app();
     a.devices.truncate(1);
     a.work.truncate(1);
+    a.onboarding_dismissed = true;
     a.view = View::Work;
     a.device = 1;
     a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -5190,6 +5184,7 @@ fn container_pruning_preserves_selected_session_identity() {
 fn session_activity_and_agent_task_details_render_without_relabeling() {
     let (mut a, _rx) = queued_app();
     a.device = 1;
+    a.view = View::Work;
     a.focus = Focus::Workspace;
     let mut s = disposable_shell();
     s.activity = Some("working".into());
@@ -5667,6 +5662,9 @@ fn selected_snapshot_rejects_late_reply_and_clears_when_hidden() {
     a.apply(reply(first));
     assert!(!a.refresh_session_preview()); // Newer request remains in flight.
     a.apply(reply(second));
+    // (Tiles are drawn on their device's screen.)
+    a.view = View::Work;
+    a.device = 1;
     let mut terminal = ratatui::Terminal::new(TestBackend::new(160, 30)).unwrap();
     terminal.draw(|f| render(f, &a)).unwrap();
     let rendered: String = terminal
@@ -5747,6 +5745,8 @@ fn live_pane_focus_input_return_and_runtime_invalidation() {
         created: "1".into(),
     });
     a.work[0].fetched = transport::now();
+    a.open_device(0);
+    let _ = rx.try_iter().count();
     assert!(a.refresh_session_preview());
     let task = rx.try_recv().unwrap();
     a.apply(Reply {device_id:Some("local".into()),execution_target:Some(None),preview:None,device:0,op:task.op,generation:task.generation,result:Ok(serde_json::json!({"live":true,"pane_id":"%1","styled_lines":["\u{1b}[31mlive screen"],"cursor_x":2,"cursor_y":0,"cursor_visible":true,"bracketed_paste":true,"application_cursor":true}))});
@@ -6053,9 +6053,8 @@ fn only_the_overlay_looks_focused_while_it_owns_input() {
     };
     let (mut a, _) = queued_app();
     a.work[0].sessions.push(disposable_shell());
-    a.go_hub();
-    // The tiles' `SESSIONS` label is the focused zone's (the map has no header).
-    a.hub_sessions = true;
+    a.open_device(0);
+    // The tiles' `SESSIONS` label is the focused zone's.
     let base = draw(&a);
     assert_eq!(bars(&base), 1, "one focused zone without overlays");
     assert!(label(&base).modifier.contains(Modifier::BOLD));
@@ -7403,12 +7402,26 @@ fn remote_outside_terminals_are_marked_tiles_not_managed_sessions() {
         Operation::ExternalSessions,
         Ok(serde_json::json!([external_agent()])),
     ));
+    // Folded into one row until ⏎ shows them (no tile, no key).
+    let vm = viewmodel::ViewModel::from(&a);
+    assert!(vm.state.sessions_on("1").next().is_none());
+    assert_eq!(vm.state.device("1").map(|d| d.outside), Some(1));
+    a.open_device(1);
+    let screen = draw_h(&a, 120, 30);
+    assert!(
+        screen.contains("+1 outside cx") && screen.contains("show"),
+        "{screen}"
+    );
+    assert!(a.view_action("outside:1"));
     let vm = viewmodel::ViewModel::from(&a);
     let tile = vm.state.sessions_on("1").next().unwrap();
     assert!(tile.external);
-    a.open_device(1);
     let screen = draw_h(&a, 120, 30);
     assert!(screen.contains("outside cx"), "{screen}");
+    assert!(
+        screen.contains("1 outside cx") && screen.contains("hide"),
+        "{screen}"
+    );
     assert!(screen.contains("installs cx-reptyr"), "{screen}");
     assert!(screen.contains("no preview"), "{screen}");
     assert!(screen.contains("0 sessions listed"), "{screen}");
@@ -7501,7 +7514,7 @@ fn unreachable_devices_say_why_on_every_tile() {
         screen.contains("Name does not resolve (DNS) · last seen"),
         "{screen}"
     );
-    a.go_hub();
+    a.open_picker();
     assert!(draw_h(&a, 120, 40).contains("dns · seen"));
     // Each failure says its own reason.
     for (kind, word) in [
@@ -7599,13 +7612,12 @@ fn info_reply(a: &mut App, d: usize, caps: serde_json::Value) {
 }
 
 #[test]
-fn hub_c_x_n_start_where_cx_was_started_on_this_device_in_the_last_mode() {
+fn c_x_n_start_where_cx_was_started_on_this_device_in_the_last_mode() {
     let (mut a, rx) = queued_app();
     a.here = Some("/work/proj".into());
     store::set_launch_yolo("local", "claude", true).unwrap();
-    a.go_hub();
-    // A remote device selected on the map changes nothing: bare keys are this device's.
-    a.hub_device = Some(viewmodel::dev_id(1));
+    // The start view: this device's screen, its bare keys starting where cx started.
+    a.go_home();
     let _ = rx.try_iter().count();
     for (key, want) in [
         ('c', (true, "claude", false)),
@@ -7622,7 +7634,7 @@ fn hub_c_x_n_start_where_cx_was_started_on_this_device_in_the_last_mode() {
             "{key}"
         );
         assert_eq!(c.directory, "/work/proj", "{key}");
-        assert_eq!(a.view, View::Network, "{key}: no dialog, no screen first");
+        assert_eq!(a.view, View::Work, "{key}: no dialog, no screen first");
         assert!(a.dialog.is_none());
         a.creating = false;
     }
@@ -8002,7 +8014,7 @@ fn an_agent_key_for_a_missing_agent_starts_nothing_while_info_is_fresh() {
     a.providers
         .insert(0, (vec!["claude".into(), "codex".into()], transport::now()));
     let _ = rx.try_iter().count();
-    a.go_hub();
+    a.go_home();
     press(&mut a, 'a');
     assert!(
         !rx.try_iter()
@@ -8022,7 +8034,7 @@ fn an_agent_key_for_a_missing_agent_starts_nothing_while_info_is_fresh() {
     a.creating = false;
     a.providers
         .insert(0, (vec!["agy".into()], transport::now()));
-    a.go_hub();
+    a.go_home();
     press(&mut a, 'a');
     assert!(rx
         .try_iter()

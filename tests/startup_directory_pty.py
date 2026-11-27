@@ -4,9 +4,10 @@ import fcntl, json, os, pathlib, pty, select, struct, subprocess, sys, tempfile,
 import pyte
 
 
-def on_hub(text):
-    """The hub, by its crumb: `cx › network` or, with its tiles focused, `cx › sessions`."""
-    return 'cx › network' in text or 'cx › sessions' in text
+def on_this_device(screen):
+    """This device's screen, by its crumb (`cx ›  f  fixture-local`), not the picker's."""
+    top = screen.display[0]
+    return 'cx ›' in top and 'fixture-local' in top and 'network' not in top
 
 binary = str(pathlib.Path(sys.argv[1]).resolve())
 with tempfile.TemporaryDirectory(prefix='cx-startup-directory-') as temporary:
@@ -51,14 +52,12 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-directory-') as temporary:
                 except OSError:
                     break
     try:
-        # The start view is the hub; this device's Files (Enter, then `f`) are the
+        # The start view is this device's screen (v0.6.0); its Files (`f`) are the
         # launch folder.
         deadline = time.monotonic()+10
-        while time.monotonic()<deadline and not on_hub('\n'.join(screen.display)):
+        while time.monotonic()<deadline and not on_this_device(screen):
             read()
-        assert on_hub('\n'.join(screen.display)), 'the hub is not the start view'
-        os.write(master, b'\r')
-        read(.4)
+        assert on_this_device(screen), 'this device is not the start view'
         os.write(master, b'f')
         deadline = time.monotonic()+10
         while time.monotonic()<deadline:
@@ -77,7 +76,7 @@ with tempfile.TemporaryDirectory(prefix='cx-startup-directory-') as temporary:
         process.wait(timeout=5)
         assert process.returncode == 0
         assert termios.tcgetattr(slave) == before, 'terminal modes not restored'
-        print(json.dumps(dict(result='PASS', checks=['hub is the start view', 'launch cwd opened in this device\'s Files', 'offline cached device checked while browsing local Files',
+        print(json.dumps(dict(result='PASS', checks=['this device is the start view', 'launch cwd opened in this device\'s Files', 'offline cached device checked while browsing local Files',
                                                      'failed refresh retained the cached row unchanged', 'terminal modes restored'])))
     finally:
         if process.poll() is None:

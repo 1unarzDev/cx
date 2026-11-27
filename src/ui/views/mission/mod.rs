@@ -227,13 +227,6 @@ pub fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
 }
 
-/// Session ids in hub order (what needs you first), as the hub's tiles rank them.
-pub fn by_attention(state: &LabState) -> Vec<String> {
-    let caps = LabCaps::default();
-    let cx = Cx::new(state, &caps, Rect::default());
-    cx.by_attention().iter().map(|x| x.id.clone()).collect()
-}
-
 pub(super) type Rgb = (u8, u8, u8);
 
 /// Width class: phone, small, medium, large.

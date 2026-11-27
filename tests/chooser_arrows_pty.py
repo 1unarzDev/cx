@@ -62,12 +62,10 @@ def main():
         settle(lambda: 'cx › ' in viewer.screen.display[0], 'the viewer drew nothing', 15)
         if 'welcome' in viewer.screen.display[0]:
             press(b'\x1b', lambda: 'welcome' not in viewer.screen.display[0], 'Esc kept the welcome page')
-        # The only device, nothing running: the hub's own launch row says its keys, and
-        # Enter opens the selected device (this one).
-        settle(lambda: 'start' in text() and 'claude' in text(), 'no launch row on the hub', 15)
-        # (Nothing runs there: its launch panel, `start c claude x codex n shell`.)
-        press(b'\r', lambda: 'network' not in viewer.screen.display[0] and 'claude' in text(),
-              'the device did not open')
+        # The only device, nothing running: cx opens on its screen (v0.6.0), whose launch
+        # panel says its keys (`start c claude x codex n shell`).
+        settle(lambda: 'start' in text() and 'claude' in text()
+               and 'network' not in viewer.screen.display[0], 'no launch row on this device', 15)
         press(b'f', lambda: 'NOR' in text(), 'files did not open')  # yazi's mode pill
         press(b'!\r', lambda: '[n] Shell' in text() and selected(), '! Enter did not open the chooser')
         # (The availability check may add choices: it can take two 3 s probe timeouts.)
@@ -92,7 +90,7 @@ def main():
 
         # The agent step, from the device chooser: Left goes back a step.
         press(b'H', lambda: re.search(r'cx › (network|sessions)', viewer.screen.display[0]),
-              'Shift+H did not reach the hub')
+              'Shift+H did not open the device picker')
         press(b'\x10', lambda: '▏' in text(), 'Ctrl+P did not open the palette')
         viewer.write(b'New session')
         viewer.read(.3)

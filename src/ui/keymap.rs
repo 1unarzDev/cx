@@ -208,84 +208,23 @@ use KeyCode::{
 /// Order matters twice: the first matching binding wins within a context, and
 /// help lists bindings in this order.
 pub(super) const BINDINGS: &[Binding] = &[
-    // Hub (the start view). Device letters, `e` + letter and the slots are read by
+    // The device picker (`H`). Device letters and `e` + letter are read by
     // `screens::screen_key` first; these rows name them for help and the menus.
     bind!(
         Hub,
         [code(Enter)],
-        "Enter",
+        "Enter · letter",
         Cmd::View("open"),
-        "Open the selected device / attach the selected session",
+        "Open the selected device (or the one with that letter)",
         hint("Open")
     ),
     bind!(
         Hub,
-        [ch(' ')],
-        "Space",
-        Cmd::View("peek"),
-        "Peek the selected session",
-        hint("Peek")
-    ),
-    bind!(
-        Hub,
-        [code(Backspace)],
-        "Backspace",
-        Cmd::View("stop"),
-        "Stop the selected session · Backspace again",
-        hint("Stop")
-    ),
-    bind!(
-        Hub,
-        [ch(crate::model::CLAUDE.key)],
-        "c / x / a / o / n",
-        Cmd::View("new-claude"),
-        "New claude / codex / antigravity / opencode / shell on this device where cx was started, attached, in its last mode",
-        hint("Claude")
-    ),
-    alias!(Hub, [ch(crate::model::CODEX.key)], "x", Cmd::View("new-codex"), "New codex here"),
-    alias!(Hub, [ch(crate::model::AGY.key)], "a", Cmd::View("new-agy"), "New antigravity here"),
-    alias!(
-        Hub,
-        [ch(crate::model::OPENCODE.key)],
-        "o",
-        Cmd::View("new-opencode"),
-        "New opencode here"
-    ),
-    alias!(Hub, [ch('n')], "n", Cmd::View("new-shell"), "New shell here"),
-    bind!(
-        Hub,
-        [ch(crate::model::CLAUDE.resume_key)],
-        "C / X / A / O",
-        Cmd::View("resume-claude"),
-        "Resume the last claude / codex / antigravity / opencode conversation where cx was started, in its last mode"
-    ),
-    alias!(
-        Hub,
-        [ch(crate::model::CODEX.resume_key)],
-        "X",
-        Cmd::View("resume-codex"),
-        "Resume the last codex conversation here"
-    ),
-    alias!(
-        Hub,
-        [ch(crate::model::AGY.resume_key)],
-        "A",
-        Cmd::View("resume-agy"),
-        "Resume the last antigravity conversation here"
-    ),
-    alias!(
-        Hub,
-        [ch(crate::model::OPENCODE.resume_key)],
-        "O",
-        Cmd::View("resume-opencode"),
-        "Resume the last opencode session here"
-    ),
-    bind!(
-        Hub,
-        [code(Tab)],
-        "Tab",
-        Cmd::View("zone"),
-        "Network / sessions zone"
+        [code(Esc)],
+        "Esc",
+        Cmd::View("back"),
+        "Back to the device you came from",
+        hint("Back")
     ),
     // A device's sessions.
     bind!(
@@ -694,11 +633,11 @@ pub(super) const BINDINGS: &[Binding] = &[
     ),
     bind!(
         Global,
-        // (`` ` `` is the hidden alias of v0.2.1's hub key, for one release.)
+        // (`` ` `` is the hidden alias of v0.2.1's hub key.)
         [ch('H'), ch('`')],
         "H",
         Cmd::View("hub"),
-        "The hub, from any screen (also Esc Esc)"
+        "Devices: every device on the map, then its letter opens it (Esc Esc: this device)"
     ),
     bind!(
         Global,
@@ -875,14 +814,14 @@ mod tests {
         }
     }
     #[test]
-    fn every_agent_has_its_new_and_resume_keys_on_the_hub_and_device_screens() {
+    fn every_agent_has_its_new_and_resume_keys_on_the_device_screen() {
         for agent in crate::model::AGENTS {
             for (c, verb) in [
                 (agent.key, format!("new-{}", agent.id)),
                 (agent.resume_key, format!("resume-{}", agent.id)),
             ] {
                 let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
-                for ctx in [Ctx::Hub, Ctx::Device] {
+                for ctx in [Ctx::Device] {
                     assert!(
                         BINDINGS.iter().any(|b| b.ctx == ctx
                             && matches!(b.cmd, Cmd::View(v) if v == verb)
@@ -894,17 +833,17 @@ mod tests {
         }
     }
     #[test]
-    fn no_static_binding_takes_a_device_letter_on_the_hub() {
-        // The hub's letters are devices: only `e` (link), `c x a o n` (launch here, never
-        // device letters: see `hotkeys`) and `j k gg G` (motion) are bound there, and
-        // `K` (keys) is uppercase.
+    fn no_static_binding_takes_a_device_letter_on_the_picker() {
+        // The picker's letters are devices: only `j k gg G` (motion) are bound there,
+        // `e` (link) is read before the keymap, and `K` (keys) is uppercase. `c x a o n`
+        // stay off device letters (see `hotkeys`): they start sessions on a device.
         for c in 'a'..='z' {
             let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
             let taken = BINDINGS
                 .iter()
                 .filter(|b| matches!(b.ctx, Ctx::Hub | Ctx::Global))
                 .any(|b| b.keys.iter().any(|k| k.matches(&key)));
-            assert_eq!(taken, "jkgGcxaon".contains(c), "{c}");
+            assert_eq!(taken, "jkgG".contains(c), "{c}");
             if "cxaon".contains(c) {
                 let name = c.to_string();
                 let m = super::super::hotkeys::assign(&[(&name, &name)], &Default::default());

@@ -127,8 +127,11 @@ impl App {
     }
     /// A device's sessions with their keys (`SLOTS`), in key order: a session keeps its
     /// key until it ends and a new one takes the first free key; past the pool, none.
+    /// Outside-cx terminals have neither tiles nor keys until their row is opened.
     pub(super) fn slot_keys(&self, d: usize) -> Vec<(&Session, Option<char>)> {
-        let list = self.created_sessions(d);
+        let open = self.outside_open == Some(d);
+        let mut list = self.created_sessions(d);
+        list.retain(|s| open || !super::is_discovered_external(s));
         let live: Vec<String> = list.iter().map(|s| workspaces::runtime_key(s)).collect();
         let mut memo = self.slot_memo.borrow_mut();
         let keys = assign_slots(memo.get(&self.devices[d].id).map_or(&[][..], |v| v), &live);
@@ -234,7 +237,8 @@ impl App {
     /// First run: only this device, no links and no sessions yet, not dismissed.
     pub(super) fn onboarding(&self) -> bool {
         !self.onboarding_dismissed
-            && self.view == View::Network
+            && (self.view == View::Network
+                || (self.view == View::Work && self.device == self.local_index() + 1))
             && self.devices.iter().all(|d| d.target.is_none())
             && self.edge_views.is_empty()
             && self.work.iter().all(|w| w.sessions.is_empty())
@@ -243,7 +247,6 @@ impl App {
     /// (the animation clock follows it).
     pub(super) fn map_selection(&self) -> Option<String> {
         let map = self.view == View::Network
-            && !self.hub_sessions
             && !self.onboarding()
             && !self.help
             && self.invite.is_none()
@@ -257,16 +260,30 @@ impl App {
     }
     // ------------------------------------------------------------------ navigation
 
-    /// The hub, with the network zone and this device selected (`` ` ``, Esc Esc, `cx`).
-    pub(super) fn go_hub(&mut self) {
+    /// This device's screen (Esc Esc, Esc from another device, the start view).
+    pub(super) fn go_home(&mut self) {
+        self.input = None;
+        self.help = false;
+        self.open_device(self.local_index());
+    }
+    /// The start view: this device's screen. A restored handoff keeps its view, except
+    /// the picker (the hub was a start view before), which lands on this device too.
+    pub(super) fn start_view(&mut self, restored: bool) {
+        if !restored || self.view == View::Network {
+            self.open_device(self.local_index());
+        }
+    }
+    /// The device picker (`H`): the map of every device, the one you came from
+    /// selected; a letter or `⏎` opens one, Esc goes back where you were.
+    pub(super) fn open_picker(&mut self) {
         self.close_screens();
         self.input = None;
         self.help = false;
-        // Already on the hub: back to this device (the map's home).
-        if self.view == View::Network && self.device == 0 {
-            self.hub_device = None;
-            self.hub_sessions = false;
-        }
+        let from = (self.view == View::Work && self.device > 0)
+            .then(|| self.device - 1)
+            .or(self.hub_return);
+        self.hub_return = from;
+        self.hub_device = Some(dev_id(from.unwrap_or_else(|| self.local_index())));
         if self.view != View::Network {
             self.view = View::Network;
             self.reload_edges();
@@ -275,6 +292,11 @@ impl App {
         self.device = 0;
         self.search.clear();
         self.focus = Focus::Workspace;
+    }
+    /// Esc on the picker: the device it was opened from, else this one.
+    fn close_picker(&mut self) {
+        let d = self.hub_return.unwrap_or_else(|| self.local_index());
+        self.open_device(d);
     }
     fn close_screens(&mut self) {
         self.peek = false;
@@ -290,12 +312,52 @@ impl App {
     fn close_invite(&mut self) -> bool {
         self.invite.take().is_some()
     }
-    /// A device's sessions (its letter from the hub, a node tap).
+    /// Outside-cx terminals listed on device `d` (shown or not).
+    pub(super) fn outside_count(&self, d: usize) -> usize {
+        self.work.get(d).map_or(0, |w| {
+            w.sessions
+                .iter()
+                .filter(|s| super::is_discovered_external(s))
+                .count()
+        })
+    }
+    /// The outside-cx row of the open device has the selection.
+    pub(super) fn outside_focused(&self) -> bool {
+        self.outside_focus
+            && self.view == View::Work
+            && self.device > 0
+            && self.device_link.is_none()
+            && self.outside_count(self.device - 1) > 0
+            && self.selected_session().is_none()
+    }
+    /// `⏎` on the outside-cx row: show its terminals as tiles, or fold them again.
+    pub(super) fn toggle_outside(&mut self, d: usize) {
+        self.outside_open = if self.outside_open == Some(d) {
+            None
+        } else {
+            Some(d)
+        };
+        self.outside_focus = true;
+        self.selected = self.session_rows().len();
+    }
+    /// Select the outside-cx row (nothing else selected), when the device has one.
+    fn focus_outside(&mut self, d: usize) -> bool {
+        if self.outside_count(d) == 0 {
+            return false;
+        }
+        self.device_link = None;
+        self.outside_focus = true;
+        self.selected = self.session_rows().len();
+        true
+    }
+    /// A device's sessions (its letter from the picker, a node tap).
     pub(super) fn open_device(&mut self, d: usize) {
         if d >= self.devices.len() {
             return;
         }
         self.close_screens();
+        self.outside_open = None;
+        self.outside_focus = false;
         self.view = View::Work;
         self.device = d + 1;
         self.search.clear();
@@ -309,6 +371,14 @@ impl App {
         self.reconcile_session_selection(first.map(|k| (d, k)));
         if !self.work[d].loading {
             self.work[d].loading = self.send(d, Operation::Sessions);
+        }
+        // Its outside-cx row counts them now, not at the next 6 s scan.
+        if self
+            .providers
+            .get(&d)
+            .is_some_and(|(caps, _)| caps.iter().any(|c| c == "adopt-session-v1"))
+        {
+            self.request_externals(d);
         }
     }
     /// The edge graph from the state files (on refresh and after a policy change; never
@@ -328,18 +398,6 @@ impl App {
                     .unwrap_or_else(|| Some(Vec::new())),
             );
         }
-    }
-    /// The hub's sessions in tile order (what needs you first).
-    fn hub_sessions_order(&self) -> Vec<(usize, String)> {
-        let vm = viewmodel::ViewModel::from(self);
-        let order = views::mission::by_attention(&vm.state);
-        order
-            .into_iter()
-            .filter_map(|id| {
-                let x = vm.state.session(&id)?;
-                Some((dev_index(&x.device)?, id))
-            })
-            .collect()
     }
     /// Select a session by identity across all devices (the hub's scope).
     fn select_session(&mut self, d: usize, key: String) {
@@ -365,27 +423,46 @@ impl App {
             _ => {}
         }
         if self.view == View::Work {
-            // A device: the tiles above its LINKS; up and down cross between them, and
-            // the edges stay put (left and right step along the tiles' order).
+            // A device: the tiles, the outside-cx row, its LINKS, top to bottom; up and
+            // down cross between them, and the edges stay put (left and right step
+            // along the tiles' order).
+            let d = self.device.saturating_sub(1);
+            let on_row = self.outside_focused();
+            if dy > 0 && self.device_link.is_none() && !on_row && self.focus_outside(d) {
+                return;
+            }
+            if dy < 0 && on_row {
+                self.outside_focus = false;
+                if let Some(key) = self
+                    .slot_sessions(d)
+                    .last()
+                    .map(|s| workspaces::runtime_key(s))
+                {
+                    self.select_session(d, key);
+                }
+                return;
+            }
             if (dy > 0) == self.device_link.is_none() && dy != 0 {
+                self.outside_focus = false;
                 self.toggle_zone();
+                // Up out of LINKS: the outside-cx row first, when there is one.
+                if dy < 0 {
+                    self.focus_outside(d);
+                }
             } else if dx != 0 && self.device_link.is_none() {
                 self.screen_move(dx as isize);
             }
             return;
         }
         // (On the map, nothing that way stays put: no jump along the order.)
-        let other = self.view == View::Network && (dy > 0) != self.hub_sessions && dy != 0;
-        if other {
-            self.toggle_zone();
-        } else if self.view != View::Network || (dx != 0 && self.hub_sessions) {
+        if self.view != View::Network {
             self.screen_move((dx + dy) as isize);
         }
     }
     /// Move to the nearest drawn item in direction (`dx`, `dy`) of the selection's own:
     /// whether one lay that way, None when the selection was not drawn.
     fn spatial(&mut self, dx: i32, dy: i32) -> Option<bool> {
-        let graph = self.view == View::Network && !self.hub_sessions;
+        let graph = self.view == View::Network;
         let current = if graph {
             let d = self.hub_device.clone();
             format!("device:{}", d.unwrap_or_else(|| dev_id(self.local_index())))
@@ -474,20 +551,6 @@ impl App {
     /// Move within the focused zone (keys, wheel).
     pub(super) fn screen_move(&mut self, delta: isize) {
         match self.view {
-            View::Network if self.hub_sessions => {
-                let order = self.hub_sessions_order();
-                if order.is_empty() {
-                    return;
-                }
-                let current = self
-                    .selected_session()
-                    .map(|(d, s)| (d, workspaces::runtime_key(&s)));
-                let at = current
-                    .and_then(|c| order.iter().position(|o| *o == c))
-                    .unwrap_or(0);
-                let (d, key) = order[shift(at, delta, order.len())].clone();
-                self.select_session(d, key);
-            }
             View::Network => {
                 let order = self.hub_order.borrow().clone();
                 if order.is_empty() {
@@ -509,16 +572,25 @@ impl App {
                     .map(|s| workspaces::runtime_key(s))
                     .collect();
                 let n = slots.len();
-                let current = self
-                    .selected_session()
-                    .and_then(|(_, s)| {
-                        let k = workspaces::runtime_key(&s);
-                        slots.iter().position(|x| *x == k)
-                    })
-                    .unwrap_or(n);
-                let next = shift(current, delta, n + 1);
+                // Slots, the new-session tile, then the outside-cx row (when listed).
+                let stops = n + 1 + usize::from(self.outside_count(d) > 0);
+                let current = if self.outside_focused() {
+                    n + 1
+                } else {
+                    self.selected_session()
+                        .and_then(|(_, s)| {
+                            let k = workspaces::runtime_key(&s);
+                            slots.iter().position(|x| *x == k)
+                        })
+                        .unwrap_or(n)
+                };
+                let next = shift(current, delta, stops);
+                self.outside_focus = false;
                 match slots.get(next).cloned() {
                     Some(key) => self.reconcile_session_selection(Some((d, key))),
+                    None if next > n => {
+                        self.focus_outside(d);
+                    }
                     // The new-session tile.
                     None => self.selected = self.session_rows().len(),
                 }
@@ -606,23 +678,19 @@ impl App {
         };
         Some((d, s))
     }
-    /// After a detach: the hub, the sessions zone, the tile you left selected, so `⏎`
+    /// After a detach: the session's device, the tile you left selected, so `⏎`
     /// (or `-`) re-attaches.
     pub(super) fn returned_from(&mut self, d: usize, s: &Session) {
         let key = workspaces::runtime_key(s);
         self.last_session = Some((d, key.clone()));
-        self.close_screens();
-        self.view = View::Network;
-        self.device = 0;
-        self.search.clear();
-        self.hub_sessions = true;
+        self.open_device(d);
         self.select_session(d, key);
     }
     /// `⌫`: the selected session asks inline; a second `⌫` stops it.
     fn arm_stop(&mut self) {
-        // On the hub only a session you can see: the sessions zone, or peek.
+        // Off a device's screen only a session you can see: peek.
         let hub = !(self.view == View::Work && self.device > 0);
-        if hub && !self.hub_sessions && !self.peek {
+        if hub && !self.peek {
             return;
         }
         let Some((d, session)) = self.selected_session() else {
@@ -1086,7 +1154,7 @@ impl App {
             let double = self.last_esc.is_some_and(|t| t.elapsed() < DOUBLE_ESC);
             self.last_esc = Some(Instant::now());
             if double {
-                self.go_hub();
+                self.go_home();
                 return true;
             }
         }
@@ -1110,7 +1178,10 @@ impl App {
         match self.view {
             // Onboarding answers its own keys; the hub's work beneath it.
             View::Network => (self.onboarding() && self.onboarding_key(key)) || self.hub_key(key),
-            View::Work if self.device > 0 => self.device_key(key, self.device - 1),
+            View::Work if self.device > 0 => {
+                (self.onboarding() && self.onboarding_key(key))
+                    || self.device_key(key, self.device - 1)
+            }
             View::Secrets => self.secrets_key(key),
             View::Files => self.files_key(key),
             _ => false,
@@ -1138,38 +1209,18 @@ impl App {
             }
             KeyCode::Char('G') => false,
             KeyCode::Char('g') if self.device_for_letter('g').is_none() => false,
-            // Never device letters: an agent (its resume key resumes), a shell, on this
-            // device, where cx was started.
-            KeyCode::Char('n') => {
-                self.launch_here("shell", false);
-                true
-            }
-            KeyCode::Char(c) if crate::model::agent_for_key(c).is_some() => {
-                if let Some((agent, resume)) = crate::model::agent_for_key(c) {
-                    self.launch_here(agent.id, resume);
-                }
-                true
-            }
             KeyCode::Char(c) if c.is_ascii_lowercase() => {
                 if let Some(d) = self.device_for_letter(c) {
                     self.open_device(d);
                 }
                 true
             }
-            KeyCode::Tab | KeyCode::BackTab => {
-                self.toggle_zone();
-                true
-            }
             KeyCode::Enter => {
                 self.primary_here();
                 true
             }
-            KeyCode::Char(' ') if self.hub_sessions => {
-                self.peek = self.selected_session().is_some();
-                true
-            }
-            KeyCode::Backspace if self.hub_sessions => {
-                self.arm_stop();
+            KeyCode::Esc => {
+                self.close_picker();
                 true
             }
             _ => false,
@@ -1238,8 +1289,14 @@ impl App {
                 self.arm_stop();
                 true
             }
+            // Esc leaves: another device's screen for this one's, LINKS for the tiles.
+            // (This device's own screen is the top: Esc stays.)
             KeyCode::Esc => {
-                self.go_hub();
+                if self.device_link.is_some() {
+                    self.device_link = None;
+                } else if d != self.local_index() {
+                    self.go_home();
+                }
                 true
             }
             _ => false,
@@ -1263,13 +1320,7 @@ impl App {
         true
     }
     fn peek_next(&mut self, delta: isize) {
-        let was = self.hub_sessions;
-        self.hub_sessions = true;
-        let view = self.view;
-        self.view = View::Network;
         self.screen_move(delta);
-        self.view = view;
-        self.hub_sessions = was;
     }
     fn onboarding_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
@@ -1343,7 +1394,7 @@ impl App {
             }
             KeyCode::Enter => self.secret_card(self.secret_selected),
             KeyCode::Char('h') => self.new_secret(),
-            KeyCode::Esc => self.go_hub(),
+            KeyCode::Esc => self.go_home(),
             _ => return false,
         }
         true
@@ -1406,7 +1457,6 @@ impl App {
         }
         match self.view {
             _ if self.peek => self.attach_selected(),
-            View::Network if self.hub_sessions => self.attach_selected(),
             View::Network => {
                 let local = self.local_index();
                 let d = self
@@ -1420,6 +1470,8 @@ impl App {
                 if let Some(n) = self.device_link.as_deref().and_then(dev_index) {
                     // A link in the LINKS zone: its editor (as `e` and its letter).
                     self.open_edge(self.device - 1, n);
+                } else if self.outside_focused() {
+                    self.toggle_outside(self.device - 1);
                 } else if self.selected_session().is_some() {
                     self.attach_selected();
                 } else if !self.launch_blocked(self.device - 1) {
@@ -1448,8 +1500,14 @@ impl App {
             self.send_pick = false;
         } else if self.help {
             self.help = false;
-        } else if matches!(self.view, View::Work | View::Secrets) {
-            self.go_hub();
+        } else if self.view == View::Network {
+            self.close_picker();
+        } else if self.view == View::Secrets
+            || (self.view == View::Work && self.device != self.local_index() + 1)
+        {
+            self.go_home();
+        } else if self.view == View::Work {
+            // This device's own screen is the top.
         } else {
             self.back();
         }
@@ -1467,14 +1525,6 @@ impl App {
                         .map(str::to_string)
                 }),
             };
-            return;
-        }
-        self.hub_sessions = !self.hub_sessions;
-        // The tiles focus on the one drawn large while the map had focus: the first.
-        if self.hub_sessions {
-            if let Some((d, key)) = self.hub_sessions_order().first().cloned() {
-                self.select_session(d, key);
-            }
         }
     }
     /// Select what a view target shows (a right-click or long press, before its menu).
@@ -1483,15 +1533,11 @@ impl App {
         match (parts.next(), parts.next(), parts.next()) {
             (Some("device"), Some(d), _) => {
                 if self.view == View::Network {
-                    self.hub_sessions = false;
                     self.hub_device = Some(d.to_string());
                 }
             }
             (Some("session" | "tile"), Some(d), Some(key)) => {
                 if let Some(d) = dev_index(d) {
-                    if self.view == View::Network {
-                        self.hub_sessions = true;
-                    }
                     self.select_session(d, key.to_string());
                 }
             }
@@ -1518,6 +1564,11 @@ impl App {
                     self.open_device(d);
                 }
             }
+            ("outside", Some(d), _) => {
+                if let Some(d) = dev_index(d) {
+                    self.toggle_outside(d);
+                }
+            }
             ("send", Some(d), _) => {
                 if let Some(d) = dev_index(d) {
                     self.send_pick = false;
@@ -1532,14 +1583,15 @@ impl App {
             }
             // A tile: a tap focuses it; a tap on the focused tile attaches (as `⏎`).
             ("tile", Some(d), Some(key)) => {
-                if let Some(d) = dev_index(d) {
-                    let focused = (self.view != View::Network || self.hub_sessions)
+                // The picker's previews: that device's screen, the tile selected.
+                if let Some(d) = dev_index(d).filter(|_| self.view == View::Network) {
+                    self.open_device(d);
+                    self.select_session(d, key.to_string());
+                } else if let Some(d) = dev_index(d) {
+                    let focused = self.view != View::Network
                         && self
                             .selected_session()
                             .is_some_and(|(sd, s)| sd == d && workspaces::runtime_key(&s) == key);
-                    if self.view == View::Network {
-                        self.hub_sessions = true;
-                    }
                     if focused {
                         self.attach_selected();
                     } else {
@@ -1606,7 +1658,7 @@ impl App {
             }
             // Footer chips and buttons: the verbs their keys run.
             ("back", None, _) => self.back_here(),
-            ("hub", None, _) => self.go_hub(),
+            ("hub", None, _) => self.open_picker(),
             // Files' back chip and status hint: the key they name.
             ("yazi", Some(k), _) => {
                 if let Some(c) = k.chars().next() {
@@ -1619,10 +1671,7 @@ impl App {
                 }
             }
             // The top bar's device count: the map; its transfer readout: `T`.
-            ("devices", None, _) => {
-                self.go_hub();
-                self.hub_sessions = false;
-            }
+            ("devices", None, _) => self.open_picker(),
             ("transfers", None, _) => self.run_cmd(keymap::Cmd::Jobs),
             ("last", None, _) => self.attach_last(),
             // Files' `/ find` chip finds as its key does (in the folder or the preview).

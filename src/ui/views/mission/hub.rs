@@ -1,9 +1,9 @@
-//! The hub: the network orbit on top, a legend row, the selected device's vitals strip,
-//! one row of live session thumbnails (what needs you first) and the alert ticker that
-//! pairs each problem with the keys that fix it. Phones get the indented device tree
-//! (relays above the devices reached through them).
-use super::{fit, nebula, orbit, tiles, views, Cx, Size};
-use crate::ui::views::{caps::Pane, Access, LabDevice, NoticeKind, SessionState, Tok};
+//! The device picker (`H`): the network map, the selected device's vitals strip and
+//! the alert ticker that pairs each problem with the keys that fix it. Sessions live on
+//! their device's screen, where cx opens. Phones get the indented device tree (relays
+//! above the devices reached through them).
+use super::{fit, nebula, orbit, tiles, Cx, Size};
+use crate::ui::views::{Access, LabDevice, NoticeKind, SessionState, Tok};
 use ratatui::{buffer::Buffer, layout::Rect, style::Modifier};
 
 pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
@@ -11,226 +11,100 @@ pub(super) fn hub(cx: &Cx, buf: &mut Buffer, r: Rect) {
         return compact(cx, buf, r);
     }
     let sz = cx.size();
-    let focus = cx.c.focus.unwrap_or(Pane::Graph);
-    let (on_graph, on_sess) = (focus == Pane::Graph, focus == Pane::Sessions);
-    let list = cx.by_attention();
-    let right = r.right().saturating_sub(1);
-
-    // Bottom up: ticker, the thumbnails, the vitals strip; a blank row on top; the
-    // orbit takes the rest, and the rows it leaves empty go to the thumbnails.
+    // One block, centred between the top bar and the ticker: the map, the selected
+    // device's vitals strip, then that device's own sessions as large live screens (the
+    // picker's preview of where a letter takes you; only one device's at a time). The
+    // screens' rows are kept whichever device is selected, so the map never jumps.
     let tick_h = u16::from(!alerts(cx).is_empty());
     let vit_h: u16 = if sz >= Size::M { 2 } else { 1 };
-    let (cols, th_min) = views::grid_shape(cx, r.width.saturating_sub(2), r.height);
-    // Tiles take the rows the map leaves, up to a tall screen: a screen that has not
-    // arrived yet keeps its size (no tile grows when its text lands).
-    let th_max = match sz {
-        Size::L => 22,
-        Size::M => 16,
-        _ => 12,
-    };
-    // With nothing running, the launch panel needs ten rows at most: the map keeps the rest.
-    let need = if list.is_empty() { 10 } else { th_max };
-    let fixed = tick_h + 1 + vit_h + 1 + 1 + 1; // ticker, sessions label, vitals, top row, gaps
-                                                // (Plus the band's blank row either side, and the air kept where the screen is tall.)
-    let pad = if sz >= Size::M && r.height >= 30 {
-        4
+    let avail = r.height.saturating_sub(1 + tick_h * 2);
+    let cols: u16 = if sz >= Size::M { 3 } else { 2 };
+    let th: u16 = if cx.s.sessions.is_empty() {
+        0
     } else {
-        2
+        (avail / 3).clamp(6, 14)
     };
-    let orbit_min = (orbit::want_h(cx) + pad).min(r.height.saturating_sub(fixed + th_min));
-    // (`min` then `max`: the bounds cross on a short screen, and the floor wins.)
-    let th = r
-        .height
-        .saturating_sub(fixed + orbit_min)
-        .min(need.min(th_max).max(th_min))
-        .max(th_min.min(r.height));
-    let band_h = r.height.saturating_sub(fixed + th);
-    // Past its natural height the map stops growing (its rings are capped): the rows go
-    // to the thumbnails, up to what their screens hold.
-    let give = band_h
-        .saturating_sub(orbit::MAX_H)
-        .min(need.saturating_sub(th));
-    let (band_h, th) = (band_h - give, th + give);
-    let band_th = th;
-    // (The top row stays blank, as air under the top bar: no header strip. A device's
-    // meshes show quietly in its vitals strip.)
+    let thumbs_h = if th > 0 { th + 1 } else { 0 };
     // (One column in: a label at the map's edge stays on the text's gutter.)
-    let band = Rect::new(
+    let area = Rect::new(
         r.x + 1,
-        r.y + 2,
+        r.y + 1,
         r.width.saturating_sub(2),
-        band_h.saturating_sub(2),
+        avail.saturating_sub(vit_h + 1 + thumbs_h),
     );
-    let ids = nebula::order(cx, band);
+    let ids = nebula::order(cx, area);
     cx.order.borrow_mut().clone_from(&ids);
-    let sel_id = if on_sess && !list.is_empty() {
-        list[cx.c.selected % list.len()].device.clone()
-    } else {
-        ids.get(cx.c.selected % ids.len().max(1))
-            .cloned()
-            .unwrap_or_default()
-    };
-    // Rows the drawing leaves go to the thumbnails (a screen taller than its text is
-    // still a screen), keeping the map's air: two blank rows either side
-    // where the screen is tall, else the blank row the band already keeps. With room
-    // for two, a second row of tiles shows the rest of the sessions and the ghost
-    // (only when each row keeps ten rows, so a tile still shows enough of its screen).
-    // (Nothing running: the map grows into the rows the panel leaves.)
-    // (Its rows, and those the launch panel's ten leave: it needs three or so.)
-    let tall = if list.is_empty() {
-        band.height + th.saturating_sub(4)
-    } else {
-        0
-    };
-    let gh = nebula::height(cx, band, &cx.s.viewer, tall);
-    let air = if sz >= Size::M && r.height >= 30 {
-        2
-    } else {
-        0
-    };
-    let room = if list.is_empty() {
-        th
-    } else {
-        th + band.height.saturating_sub(gh + air)
-    };
-    let (rows, th) = if list.len() >= usize::from(cols) && room > 2 * th_min.max(10) {
-        (2, (room - 1) / 2)
-    } else {
-        (1, room)
-    };
-    // Two rows share the sessions evenly (the last row's tiles widen to fill it).
-    let cols = if rows == 2 {
-        cols.min((list.len() as u16).div_ceil(2))
-    } else {
-        cols
-    };
-    let mut grid_h = (rows * th + rows).saturating_sub(1);
-    let mut y = (band.bottom() + 1 + band_th).saturating_sub(grid_h);
-    // The map sits centred in the rows above the vitals strip.
-    // (Counting the row of mesh wash above the map where rows are airy.)
-    let lift = u16::from(sz >= Size::M);
-    let mut above = ((y - r.y - 1).saturating_sub(gh + lift) / 2).max(1) + lift;
-    if list.is_empty() {
-        // Nothing running: the map near the top as in the reference, the strip and the
-        // panel right under it, and the rows left over stay below, where tiles will go.
-        // The rows the panel does not need go half above the map, half under the
-        // panel: the group sits in the middle, not over a void. (Measured off screen.)
-        above = (1 + lift).min(above);
-        let bottom = y + grid_h;
-        let ny = (r.y + above + gh + 2 + lift).min(y);
-        let panel = cx.s.device(&sel_id).map_or(1, |d| {
-            let n = cx.hits.borrow().len();
-            let area = Rect::new(0, 0, r.width, grid_h);
-            let h = views::launch_panel(cx, &mut Buffer::empty(area), area, d, true);
-            cx.hits.borrow_mut().truncate(n);
-            h
-        });
-        let free = bottom.saturating_sub(ny + panel + 1) / 2;
-        above += free;
-        y = ny + free;
-        grid_h = bottom.saturating_sub(y);
-    }
-    // The only device and nothing running: this device at the middle of its quiet
-    // orbits (the welcome page's picture), as tall as the panel's rows allow.
-    let lone = list.is_empty() && cx.s.devices.len() == 1 && cx.uni();
-    let grow = if lone {
-        grid_h.saturating_sub(8).min(15u16.saturating_sub(gh + 2))
-    } else {
-        0
-    };
-    y += grow;
-    grid_h -= grow;
-    // (Not so low that the drawing runs into the vitals strip.)
-    let above = above.min(y.saturating_sub(r.y + gh + 1)).max(1);
-    // (A row more either side where there is air, for the mesh wash's margin. The
-    // map draws in a band of at least three rows; a one-row drawing sits in its
-    // middle row.)
-    let band = if above >= 2 {
-        Rect::new(band.x, r.y + above, band.width, gh + 2)
-    } else {
-        let pad = u16::from(gh == 1);
-        Rect::new(band.x, r.y + 1 + above - pad, band.width, gh.max(3))
-    };
-    // (Never into the vitals strip's rows: a ring that does not fit is left out whole.)
-    let band = Rect {
-        height: band.height.min(y.saturating_sub(band.y)).max(1),
-        ..band
-    };
-    match cx.s.device(&sel_id).filter(|_| grow > 0) {
+    let sel_id = ids
+        .get(cx.c.selected % ids.len().max(1))
+        .cloned()
+        .unwrap_or_default();
+    // (Rows to grow into from medium screens up; a small one keeps the map's own height,
+    // so its one-line chain does not float in air.)
+    let tall = if sz >= Size::M { area.height } else { 0 };
+    let gh = nebula::height(cx, area, &cx.s.viewer, tall);
+    // (The map draws in a band of at least three rows, with a row of air either side.)
+    let band_h = (gh + 2).max(3).min(area.height.max(1));
+    let block = band_h + 1 + vit_h + thumbs_h;
+    let top = r.y + 1 + avail.saturating_sub(block) / 2;
+    let band = Rect::new(area.x, top, area.width, band_h);
+    // The only device: this device at the middle of its quiet orbits.
+    match cx
+        .s
+        .device(&sel_id)
+        .filter(|_| cx.s.devices.len() == 1 && cx.uni())
+    {
         Some(d) => {
-            let band = Rect {
-                height: band.height + grow,
-                ..band
-            };
             nebula::welcome(cx, buf, band, d);
             cx.hit(band, format!("device:{}", d.id));
         }
-        None => nebula::draw(cx, buf, band, &cx.s.viewer, &sel_id, on_graph, tall),
+        None => nebula::draw(cx, buf, band, &cx.s.viewer, &sel_id, true, tall),
     }
+    let y = band.bottom() + 1;
     if let Some(d) = cx.s.device(&sel_id) {
         vitals(
             cx,
             buf,
             Rect::new(r.x + 1, y, r.width.saturating_sub(2), vit_h),
             d,
-            list.len() < usize::from(rows * cols),
+            false,
         );
+        if th > 0 {
+            // (On the vitals strip's text column.)
+            let grid = Rect::new(r.x, y + vit_h + 1, r.width.saturating_sub(1), th);
+            previews(cx, buf, grid, d, cols);
+        }
     }
-    y += vit_h + 1;
-
-    // Sessions: one row, ranked by attention; the full grid lives in each device.
-    let n = list.len();
-    // Only when tiles are hidden: `/ +2 more` (when every session shows, no chip).
-    let hidden = n.saturating_sub(usize::from(rows * cols));
-    let hw = views::more_chip(cx, buf, right, y, hidden);
-    let lx = views::zone(
-        cx,
-        buf,
-        r.x + 1,
-        y,
-        right.saturating_sub(hw + 1),
-        "SESSIONS",
-        on_sess,
-    );
-    // (A sort order only means something with tiles to sort.)
-    // (With none, the rule says so: the panel under it starts with what to do.)
-    let t = if n > 0 {
-        " needs you first "
-    } else {
-        " nothing running "
-    };
-    // Where the bare `c x n` start (their keys too, unless this device's launch row
-    // under it shows them); it takes the label's room where both do not fit.
-    let keys = n > 0 || sel_id != cx.s.viewer;
-    let end = right.saturating_sub(hw + 1);
-    let label = (sz >= Size::M || n == 0) && views::here_fits(cx, lx + 18, end, keys);
-    if label || cx.s.device(&cx.s.viewer).is_none_or(|d| d.start == "~") {
-        cx.put(buf, lx + 1, y, 17, t, cx.ink(Tok::Muted, 0.8));
-    }
-    views::here_hint(cx, buf, if label { lx + 18 } else { lx + 1 }, y, end, keys);
-    y += 1;
-    let grid = Rect::new(r.x + 1, y, r.width.saturating_sub(2), grid_h);
-    let mut pick = if on_sess {
-        (cx.c.selected, true)
-    } else {
-        (0, false)
-    };
-    // The selected session always has a tile (after a detach it may rank below the
-    // row): it takes the last cell in place of the one there.
-    let shown = usize::from(rows * cols);
-    let mut list = list;
-    if on_sess && n > shown && shown > 0 && cx.c.selected % n >= shown {
-        list.swap(shown - 1, cx.c.selected % n);
-        pick.0 = shown - 1;
-    }
-    let th = if list.is_empty() { grid_h } else { th };
-    views::thumbs_grid(cx, buf, grid, &list, pick, cols, th, cx.s.device(&sel_id));
     if tick_h > 0 {
         ticker(
             cx,
             buf,
             Rect::new(r.x + 1, r.bottom() - 1, r.width.saturating_sub(2), 1),
         );
+    }
+}
+
+/// The selected device's first sessions (slot order) as live screens, side by side and
+/// sharing the full width; quiet words when nothing runs there.
+fn previews(cx: &Cx, buf: &mut Buffer, r: Rect, d: &LabDevice, cols: u16) {
+    let list: Vec<_> = cx.s.sessions_on(&d.id).take(usize::from(cols)).collect();
+    if list.is_empty() {
+        let t = if cx.up(d) {
+            "nothing running there"
+        } else {
+            "unreachable"
+        };
+        cx.put(buf, r.x + 1, r.y, r.width, t, cx.ink(Tok::Muted, 0.8));
+        return;
+    }
+    let gap = 2u16;
+    let n = list.len() as u16;
+    let tw = (r.width + gap) / n - gap;
+    for (i, x) in list.iter().enumerate() {
+        let tr = Rect::new(r.x + i as u16 * (tw + gap), r.y, tw, r.height);
+        tiles::thumb(cx, buf, tr, x, None);
+        if (i as u16) + 1 < n {
+            cx.vsep(buf, tr.right(), tr.y, r.height);
+        }
     }
 }
 
@@ -477,15 +351,7 @@ fn alerts(cx: &Cx) -> Vec<Alert> {
 
 /// The alert ticker: each problem in its colour, then its fix as a key chip.
 fn ticker(cx: &Cx, buf: &mut Buffer, r: Rect) {
-    // The first-ranked session is the first tile right above: its alert is not repeated.
-    let top = cx
-        .by_attention()
-        .first()
-        .map(|x| format!("session:{}:{}", x.device, x.id));
-    let items: Vec<Alert> = alerts(cx)
-        .into_iter()
-        .filter(|a| Some(&a.5) != top.as_ref())
-        .collect();
+    let items: Vec<Alert> = alerts(cx);
     let mut x = r.x + 1;
     let right = r.right();
     let n = items.len();
@@ -523,21 +389,13 @@ fn ticker(cx: &Cx, buf: &mut Buffer, r: Rect) {
 /// Phone hub: every device as an indented tree row (devices reached through a relay
 /// sit under it; a graph of keycaps at this size only crowded), then the ticker.
 fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
-    let focus = cx.c.focus.unwrap_or(Pane::Graph);
     let right = r.right().saturating_sub(1);
     let rows = orbit::tree_rows(cx, &cx.s.viewer);
     let n = rows.len() as u16;
     let al = alerts(cx);
     let tick_h = (al.len() as u16).min(2).min(r.height / 8);
-    // A breathing row, the tree, a breathing row, the ticker. With nothing running,
-    // three rows stay for SESSIONS and its launch row where the tree can spare them.
-    let idle = cx.s.sessions.is_empty();
+    // A breathing row, the tree, a breathing row, the ticker.
     let avail = r.height.saturating_sub(1 + tick_h + 1);
-    let avail = if idle && avail >= n + 3 {
-        avail - 3
-    } else {
-        avail
-    };
     // Two-row device rows when the height allows (a thumb-sized target with vitals).
     let row_h = if avail >= 2 * n { 2 } else { 1 };
     let shown = (avail / row_h).min(n);
@@ -569,74 +427,6 @@ fn compact(cx: &Cx, buf: &mut Buffer, r: Rect) {
         cx.put_r(buf, right, y.saturating_sub(1), &t, cx.st(Tok::Muted));
     }
     let ty = r.bottom().saturating_sub(tick_h);
-    // Rows the tree leaves go to the sessions that need you first (two-row thumb
-    // targets), keeping a breathing row above the ticker.
-    let mut sy = y + 2;
-    // (The rule alone where no tile fits: it says where `c x n` start.)
-    let here = cx.s.device(&cx.s.viewer).is_some_and(|d| d.start != "~");
-    if sy + 2 < ty || (sy < ty && (idle || here)) {
-        let lx = views::zone(
-            cx,
-            buf,
-            r.x + 1,
-            y + 1,
-            right,
-            "SESSIONS",
-            focus == Pane::Sessions,
-        );
-        let list = cx.by_attention();
-        // Where the bare `c x n` start (their keys too, unless this device's launch row
-        // under it shows them); it takes the label's room where both do not fit.
-        let keys = !list.is_empty() || sel_id != cx.s.viewer;
-        let label = list.is_empty() && views::here_fits(cx, lx + 18, right, keys);
-        if label || (list.is_empty() && cx.s.device(&cx.s.viewer).is_none_or(|d| d.start == "~")) {
-            let quiet = cx.ink(Tok::Muted, 0.8);
-            cx.put(buf, lx + 1, y + 1, 17, " nothing running ", quiet);
-        }
-        views::here_hint(
-            cx,
-            buf,
-            if label { lx + 18 } else { lx + 1 },
-            y + 1,
-            right,
-            keys,
-        );
-        if list.is_empty() {
-            if let Some(d) = cx.s.device(sel_id) {
-                let pr = Rect::new(r.x, sy, r.width, ty.saturating_sub(sy + 1).max(1));
-                views::launch_panel(cx, buf, pr, d, true);
-            }
-        }
-        let sel = (focus == Pane::Sessions && !list.is_empty()).then(|| cx.c.selected % list.len());
-        // With rows to spare, the selected session's (else the first's) last lines sit
-        // under its row: the phone's live preview.
-        let tail_at = sel.unwrap_or(0);
-        for (i, x) in list.iter().enumerate() {
-            if sy + 2 >= ty {
-                break;
-            }
-            let pick = (sel == Some(i)).then_some(true);
-            tiles::session_row(cx, buf, Rect::new(r.x, sy, r.width, 2), x, pick);
-            if pick.is_some() && views::armed(cx) {
-                views::stop_confirm(cx, buf, Rect::new(r.x, sy, r.width, 2), x);
-            }
-            sy += 2;
-            let left = ty.saturating_sub(sy + 1);
-            let rest = (list.len() - i - 1) as u16 * 3;
-            if i == tail_at && left >= rest + 4 {
-                let h = (left - rest - 1).min(12);
-                tiles::screen_text(
-                    cx,
-                    buf,
-                    Rect::new(r.x + 3, sy, r.width.saturating_sub(4), h),
-                    x,
-                    cx.c.has_color(),
-                );
-                sy += h;
-            }
-            sy += 1;
-        }
-    }
     let shown = &al[..usize::from(tick_h).min(al.len())];
     // One key column for every row, so the fix keys line up.
     let kw = shown

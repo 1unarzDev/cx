@@ -21,8 +21,10 @@ import files_bench as fb  # noqa: E402
 
 
 def on_hub(text):
-    """The hub, by its crumb: `cx › network` or, with its tiles focused, `cx › sessions`."""
-    return 'cx › network' in text or 'cx › sessions' in text
+    """cx's own screens, by their crumb: a device's screen (where a detach lands since
+    v0.6.0, its SESSIONS rule) or the device picker (`cx › network`)."""
+    return 'cx › network' in text or 'cx › sessions' in text or (
+        'cx ›' in text and 'SESSIONS' in text)
 
 
 def control_clients(home):

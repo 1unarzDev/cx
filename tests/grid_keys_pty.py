@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""The hub's tiles, the palette and the file search answer the arrows (v0.2.2).
+"""This device's tiles, the palette and the file search answer the arrows (v0.2.2).
 
 usage: grid_keys_pty.py BINARY
 
 A private HOME with four managed shells; the viewer runs on a 190x50 PTY.
-  * Hub tiles: Tab focuses them; the arrows and `h j k l` move the focus in 2D
-    (the focused tile carries the `▌` bar); Up from the top row returns to the map;
+  * Tiles: cx opens on this device's screen (v0.6.0), its first tile focused; the
+    arrows and `h j k l` move the focus in 2D (the focused tile carries the `▌` bar);
     `␣` peeks the focused tile and Enter attaches it (a tmux client appears).
   * Palette (`/`): Down, Ctrl+N and Ctrl+P move the drawn selection; Left moves the
     text cursor, so typing lands where it is.
   * File search (`f`, then yazi's `/`): Down moves to the next match, Left/Right move
-    the cursor in the query; then Shift+H returns to the hub.
+    the cursor in the query; then Shift+H opens the device picker.
 Before v0.2.2 the palette drew the hub's selection, never its own (the arrows changed
 nothing visible), and the tiles only moved in a line.
 """
@@ -78,11 +78,11 @@ def main():
             if order() != last:
                 last, since = order(), time.monotonic()
             viewer.read(.1)
-        # Tiles: Tab focuses them.
-        press(b'\t', lambda: '▌SESSIONS' in text(), 'Tab did not focus the tiles')
+        # The tiles have the focus from the start (cx opens on this device's screen).
+        settle(lambda: '▌SESSIONS' in text(), 'the tiles were not focused at start')
         start = focused()
         assert start, f'no focused tile:\n{text()}'
-        # Four tiles are a 2x2 grid; Tab focuses the first (top left). Each key below
+        # Four tiles in two rows; the first (top left) starts focused. Each key below
         # moves the focus one tile the way it points.
         assert start[2] < 4, f'the first tile is not top left: {start}'
         moves = 0
@@ -103,12 +103,6 @@ def main():
             after = focused()
             assert after and ok(before, after), f'{key!r}: {before} -> {after}\n{text()}'
             moves += 1
-        # Up from the top row: the map (the tiles lose their focused label).
-        for _ in range(3):
-            viewer.write(UP)
-            viewer.read(.1)
-        settle(lambda: '▌SESSIONS' not in text(), 'Up from the top row stayed in the tiles')
-        press(DOWN, lambda: '▌SESSIONS' in text(), 'Down from the map did not enter the tiles')
         # ␣ peeks the focused tile, Esc returns, Enter attaches it.
         name = focused()[0]
         press(b' ', lambda: name in viewer.screen.display[0] and 'OTHERS' in text(),
@@ -134,7 +128,7 @@ def main():
             assert time.monotonic() < end, 'Ctrl+\\ did not detach'
             viewer.read(.05)
         viewer.screen.reset()
-        settle(lambda: all(n in text() for n in NAMES), 'detach did not return to the hub', 8)
+        settle(lambda: all(n in text() for n in NAMES), 'detach did not return to the device', 8)
 
         # Palette: the arrows and Ctrl+N/P move its own selection.
         def marked():
@@ -158,10 +152,6 @@ def main():
         press(b'\x1b', lambda: '/ ' not in text().split('\n')[4], 'Esc did not close the palette')
 
         # File search: Down moves between matches, Left/Right edit the query.
-        letter = re.search(r'\s(\w)\s+then', text())
-        assert letter, f'no device letter on the vitals strip:\n{text()}'
-        press(letter.group(1).encode(), lambda: 'SESSIONS' in text() and 'LINKS' in text() or 'start' in text(),
-              'the device did not open')
         press(b'f', lambda: 'work-0' in text(), 'files did not open')
         # yazi's find (`/`): the hovered match carries [i/n]; Down/Ctrl+N/Up step it.
         press(b'/', lambda: 'Find next:' in text(), 'file search did not open')
@@ -172,12 +162,12 @@ def main():
         press(UP, lambda: '[2/4]' in text(), 'Up did not move to the previous match')
         viewer.write(LEFT * 4 + b'x')
         settle(lambda: 'xwork' in text(), 'Left did not move the search cursor')
-        # Shift+H is the hub from Files (v0.2.2; a 65% keyboard has no backtick).
+        # Shift+H is the device picker from Files (v0.2.2; a 65% keyboard has no backtick).
         viewer.write(b'\x1b')  # Esc ends the search (its matches stay highlighted)
         viewer.read(.3)
         hub = lambda: re.search(r'cx › (network|sessions)', viewer.screen.display[0])  # noqa: E731
-        assert not hub(), f'still on the hub:\n{text()}'
-        press(b'H', hub, 'Shift+H did not return to the hub from Files')
+        assert not hub(), f'still on the picker:\n{text()}'
+        press(b'H', hub, 'Shift+H did not open the device picker from Files')
         print(f'PASS grid_keys_pty: {moves} grid moves, palette, file search, Shift+H')
     finally:
         if viewer:

@@ -243,6 +243,21 @@ the top (the spacer row above the footer takes the first chips) and a destructiv
 
 ## 6. Interaction model
 
+**Since v0.6.0 (user direction, 2026-11-27): no hub layer.** `cx` opens on this device's
+screen; the user nearly always knows which machine they want, and the hub's cross-device
+tiles duplicated the device screen with more noise. The hub view survives only as the
+**device picker** (`H`, also from Files): the map, the selected device's vitals strip and
+the alert ticker, with no sessions zone; a device letter or `⏎` on a node opens its
+screen, `esc` goes back to the device it was opened from. Esc on another device's screen
+goes to this device's, Esc Esc from anywhere too; this device's screen is the top (Esc
+stays). After a detach cx returns to the session's device with its tile selected. Other
+devices' sessions that need you are named at the end of the SESSIONS rule
+(`◆ 2 need you · innovation, creation  H devices`; other devices are polled every 9 s from
+a device screen). Terminals outside cx fold into one `+N outside cx  ⏎ show` row under the
+tiles (no tile, no slot key) until `⏎` on it shows them; leaving the device folds them
+again. The text below describes the hub as it was; its keys still apply inside the picker
+(letters, `e` + letter, `j k gg G`, arrows).
+
 Hub keys are non-letters plus `e`, `c`, `x`, `n`, `j`, `k` and `gg`, so every other letter can be a
 device: a real build never assigns `e` (link) or `c x n` (claude, codex, shell on this device in
 the folder `cx` was started in) and assigns `g` `h` `j` `k` `l` last, only past 17
@@ -341,7 +356,13 @@ Decisions where reviewers disagreed (recorded, not asked):
 - **Session view**: the attached pane is the session view (`⏎` attaches directly); the
   breadcrumb sits on top so the detach chip is where the eye and a thumb look first.
 
-### Keystrokes for the top tasks (from the hub)
+### Keystrokes for the top tasks
+
+From this device's screen (where `cx` opens): attach one of its sessions `s` (1); start a
+claude here `c` (1); answer one that needs you here `s` `y` (2); open a session on another
+device `H` `i` `s` (3, was 2 from the hub but the hub itself was a step first in most
+flows); adopt an outside terminal `↓` `⏎` (show) `→…` `⏎` (3 + moves). The table below
+is the hub-era count, kept for the picker's letter grammar.
 
 | Task | Keys | Count | Path |
 |---|---|---|---|

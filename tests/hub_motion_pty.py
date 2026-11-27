@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""The hub map's arrows and animation, in the real viewer (v0.2.2 nebula).
+"""The device picker's map arrows and animation, in the real viewer (v0.2.2 nebula;
+the hub became the picker, `H`, in v0.6.0).
 
 usage: hub_motion_pty.py BINARY
 
@@ -68,16 +69,18 @@ def settle(viewer, quiet=0.5, limit=15.0):
 
 
 def selected(viewer):
-    """The device the vitals strip (two rows and a blank above SESSIONS) names."""
-    lines = viewer.screen.display
-    at = next((i for i, l in enumerate(lines) if l.strip().startswith('SESSIONS')), None)
-    if at is None or at < 3:
-        return None
-    words = lines[at - 3].split()
-    # (A device whose letter is not in its name shows it first: `f elm`.)
-    if len(words) > 1 and len(words[0]) == 1:
-        words = words[1:]
-    return words[0] if words and words[0] in ['home-box'] + PEERS else None
+    """The device the vitals strip (under the map, on the text gutter) names."""
+    names = ['home-box'] + PEERS
+    for line in reversed(viewer.screen.display):
+        if not line.startswith('  ') or line.startswith('   '):
+            continue
+        words = line.split()
+        # (A device whose letter is not in its name shows it first: `f elm`.)
+        if len(words) > 1 and len(words[0]) == 1:
+            words = words[1:]
+        if words and words[0] in names:
+            return words[0]
+    return None
 
 
 def press(viewer, key):
@@ -90,6 +93,13 @@ def main():
     pty_lib.isolate()
     env, viewer = start()
     try:
+        # (cx opens on this device; `H` is the picker with the map.)
+        end = time.monotonic() + 10
+        while 'cx ›' not in viewer.text():
+            assert time.monotonic() < end, 'nothing drawn:\n' + viewer.text()
+            viewer.read(0.1)
+        settle(viewer)
+        viewer.write(b'H')
         end = time.monotonic() + 10
         while not all(p in viewer.text() for p in PEERS):
             assert time.monotonic() < end, 'peers never drawn:\n' + viewer.text()
@@ -151,6 +161,13 @@ def main():
     # Reduced motion: the same key, one burst.
     env, viewer = start({'CX_REDUCED_MOTION': '1'})
     try:
+        # (cx opens on this device; `H` is the picker with the map.)
+        end = time.monotonic() + 10
+        while 'cx ›' not in viewer.text():
+            assert time.monotonic() < end, 'nothing drawn:\n' + viewer.text()
+            viewer.read(0.1)
+        settle(viewer)
+        viewer.write(b'H')
         end = time.monotonic() + 10
         while not all(p in viewer.text() for p in PEERS):
             assert time.monotonic() < end, viewer.text()

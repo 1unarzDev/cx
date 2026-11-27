@@ -92,6 +92,8 @@ fn dev(
         caps: Vec::new(),
         recent: Vec::new(),
         start: "~".into(),
+        outside: 0,
+        outside_open: false,
     }
 }
 
@@ -1451,6 +1453,17 @@ pub fn nomesh() -> LabState {
 
 /// Innovation runs 24 sessions, past the 21 keys of the pool (one in the middle ended
 /// and gave its key to the first that had none).
+/// `typical` with eleven terminals outside cx on this device, folded into one row.
+pub fn outside() -> LabState {
+    let mut s = typical();
+    s.fixture = "outside";
+    let viewer = s.viewer.clone();
+    if let Some(d) = s.devices.iter_mut().find(|d| d.id == viewer) {
+        d.outside = 11;
+    }
+    s
+}
+
 pub fn crowded() -> LabState {
     let mut s = typical();
     s.fixture = "crowded";

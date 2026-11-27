@@ -60,26 +60,6 @@ fn refused_attach_stays_on_the_device_and_removes_the_tile() {
     assert!(a.last_session.is_none());
 }
 
-/// The same on the hub: it stays the hub, its sessions zone keeps a selection.
-#[test]
-fn refused_attach_from_the_hub_stays_on_the_hub() {
-    let (mut a, _rx) = queued_app();
-    listed(&mut a, 0, &[shell("cx-one", "one"), shell("cx-two", "two")]);
-    a.go_hub();
-    a.hub_sessions = true;
-    let key = workspaces::runtime_key(&a.work[0].sessions[1]);
-    a.reconcile_session_selection(Some((0, key)));
-    let gone = a.selected_session().unwrap().1;
-    a.attach_finished(0, &gone, Err(refused()), None);
-    assert_eq!(a.view, View::Network);
-    assert!(a.hub_sessions);
-    assert_eq!(a.work[0].sessions.len(), 1);
-    assert_eq!(
-        a.selected_session().map(|(_, s)| s.id),
-        Some("cx-one".into())
-    );
-}
-
 /// Any other failure reports, but still never navigates and keeps the tile (the
 /// refresh decides).
 #[test]
@@ -110,16 +90,15 @@ fn a_refusal_without_the_gone_status_keeps_the_tile() {
     assert!(a.notice.contains("Attachment failed"), "{}", a.notice);
 }
 
-/// A detach still lands on the hub with the tile selected (`⏎` re-attaches).
+/// A detach lands on the session's device with its tile selected (`⏎` re-attaches).
 #[test]
-fn detach_still_returns_to_the_hub_with_the_tile_selected() {
+fn detach_returns_to_the_device_with_the_tile_selected() {
     let (mut a, _rx) = queued_app();
     listed(&mut a, 1, &[shell("cx-one", "one"), shell("cx-two", "two")]);
     a.open_device(1);
     let s = a.work[1].sessions[1].clone();
     a.attach_finished(1, &s, Ok(()), None);
-    assert_eq!((a.view, a.device), (View::Network, 0));
-    assert!(a.hub_sessions);
+    assert_eq!((a.view, a.device), (View::Work, 2));
     assert_eq!(
         a.selected_session().map(|(_, s)| s.id),
         Some("cx-two".into())
@@ -141,6 +120,13 @@ fn failed_adopt_of_a_closed_terminal_removes_it_and_rediscovers() {
         Ok(serde_json::json!([external_agent()])),
     ));
     a.open_device(1);
+    // (Opening it scanned it: that answer comes first.)
+    a.apply(reply(
+        &a,
+        1,
+        Operation::ExternalSessions,
+        Ok(serde_json::json!([external_agent()])),
+    ));
     let _ = rx.try_iter().count();
     let s = external_agent();
     let op = Operation::AdoptSession {
@@ -201,9 +187,9 @@ fn cached_outside_terminals_stay_hidden_until_confirmed() {
     assert!(b.work[1].sessions.iter().any(|s| s.external));
 }
 
-/// The open device asks for its outside terminals on every other 3 s list poll (6 s:
-/// a scan costs ~0.3 s on the lane the list shares), one in flight at a time; the hub
-/// keeps them on the 30 s refresh.
+/// The open device asks for its outside terminals when opened, then on every other 3 s
+/// list poll (6 s: a scan costs ~0.3 s on the lane the list shares), one in flight at a
+/// time; the picker asks for none.
 #[test]
 fn the_open_device_polls_its_outside_terminals() {
     let (mut a, rx) = queued_app();
@@ -221,14 +207,15 @@ fn the_open_device_polls_its_outside_terminals() {
             Ok(serde_json::json!([])),
         ))
     };
-    a.go_hub();
+    a.open_picker();
     let _ = rx.try_iter().count();
     for _ in 0..4 {
         a.poll_sessions();
     }
     assert_eq!(externals(&rx), 0);
     a.open_device(1);
-    let _ = rx.try_iter().count();
+    assert_eq!(externals(&rx), 1, "opening a device scans it at once");
+    answer(&mut a);
     let mut sent = 0;
     for _ in 0..4 {
         a.poll_sessions();

@@ -161,14 +161,18 @@ impl App {
             _ => self.selected = index.min(self.session_rows().len().saturating_sub(1)),
         }
     }
-    /// The 3 s list poll of the hub and device views; the open device's outside
-    /// terminals on every other one (the hub has them on the 30 s refresh). A scan
+    /// The 3 s list poll of the picker and device views (other devices every 9 s from a
+    /// device's screen); the open device's outside
+    /// terminals on every other one (only its screen shows them). A scan
     /// costs ~0.3 s on the lane the list shares (two outside terminals, measured),
     /// so not on each.
     pub(super) fn poll_sessions(&mut self) {
         self.session_polls += 1;
         for d in 0..self.devices.len() {
-            if !self.background_checks_enabled(d) || !(self.device == 0 || self.device == d + 1) {
+            // The open device every poll; the others every third (their sessions that
+            // need you show on its SESSIONS rule), and every poll on the picker.
+            let shown = self.device == 0 || self.device == d + 1 || self.session_polls % 3 == 0;
+            if !self.background_checks_enabled(d) || !shown {
                 continue;
             }
             // A device pushing its list (watch) needs no poll.

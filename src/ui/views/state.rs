@@ -66,6 +66,10 @@ pub struct LabDevice {
     /// Where `c x n` start on it, home as `~`: on the viewer the folder cx was started
     /// in, elsewhere the last folder Files showed there.
     pub start: String,
+    /// Outside-cx terminals listed on it, and whether they show as tiles (else one
+    /// collapsed row on its screen).
+    pub outside: usize,
+    pub outside_open: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -406,6 +410,7 @@ impl LabState {
             "solo" => Some(solo()),
             "nomesh" => Some(nomesh()),
             "crowded" => Some(crowded()),
+            "outside" => Some(outside()),
             _ => {
                 let n: usize = name.strip_prefix("nebula-")?.parse().ok()?;
                 (n <= 25).then(|| nebula(n))

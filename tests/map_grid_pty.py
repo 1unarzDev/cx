@@ -6,7 +6,8 @@ usage: map_grid_pty.py BINARY
 
 A private HOME: this device (`home`) with six managed shells and four devices that never
 answer (`.invalid` targets: north, east, south, west), on a 190x50 PTY.
-  * Hub map (focused at startup on `home`): Right reaches a node right of home, Left
+  * The device picker's map (`H`, from this device's screen, where cx opens; focused
+    on `home`): Right reaches a node right of home, Left
     returns to home, Left again a node left of it, Right home again. From home, each
     arrow (once and twice) lands within ±80° of its direction (±45° first) and the opposite arrows
     walk back to home. The vitals strip names the selected node.
@@ -81,14 +82,18 @@ def main():
 
         def where(name):
             """(row, column) of a node's name on the map."""
-            for y, line in enumerate(viewer.screen.display[:20]):
+            # (Above the vitals strip: the picker centres its map in the rows over it.)
+            strip = next((y for y, line in enumerate(viewer.screen.display)
+                          if re.match(r'  (home|north|east|south|west)  ', line)), 20)
+            for y, line in enumerate(viewer.screen.display[:strip]):
                 m = re.search(rf'(?<![\w@]){name}(?![\w@])', line)
                 if m:
                     return y, m.start()
             raise AssertionError(f'{name} is not on the map:\n{text()}')
 
-        settle(lambda: all(n in text() for n in NAMES) and picked() == 'home'
-               and 'tile-5' in text(), 'the hub never drew its map and tiles', 15)
+        settle(lambda: 'tile-5' in text(), "this device's screen never drew its tiles", 15)
+        press(b'H', lambda: all(n in text() for n in NAMES) and picked() == 'home',
+              'the device picker never drew its map')
         home = where('home')
         steps = 0
         for key, side, back in [(RIGHT, lambda p: p[1] > home[1], LEFT),
@@ -132,8 +137,10 @@ def main():
 
         # -------------------------------------------------------- a device's grid
         letter = re.search(r'\s(\w)\s+then', text())
+        # (The picker's letter opens the device, as the hub's did.)
         assert letter, f'no device letter on the vitals strip:\n{text()}'
-        press(letter.group(1).encode(), lambda: '▌SESSIONS' in text() and 'LINKS' in text(),
+        # (Its map has no `LINKS` label until Tab gives it the keys.)
+        press(letter.group(1).encode(), lambda: '▌SESSIONS' in text() and 'cx › network' not in text(),
               'the device did not open with its tiles focused')
 
         def focused():

@@ -226,8 +226,17 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-') as temporary:
         before = stat(target)
         time.sleep(0.6)
         tty = os.readlink(f'/proc/{target}/fd/0')
+
+        def claude_record(title):
+            # Claude's own per-PID record; /rename rewrites its `name`.
+            record = home / '.claude/sessions' / f'{target}.json'
+            record.parent.mkdir(parents=True, exist_ok=True)
+            record.write_text(json.dumps(dict(pid=target, procStart=before['start'], name=title,
+                                              sessionId='0f0e0d0c-0b0a-4908-8706-050403020100')))
+        claude_record('first-name')
         external = helper('external_sessions')['result']
         found = row(external, tty)
+        assert found and found['name'] == 'first-name', found
         assert found and found['external'] and found['id'].startswith('ext-'), external
         assert found['provider'] == 'claude' and found['origin']['kind'] == 'terminal', found
         assert found['origin']['holder']['pid'] == emulator.pid, found
@@ -276,6 +285,12 @@ with tempfile.TemporaryDirectory(prefix='cx-adopt-') as temporary:
         external = helper('external_sessions')['result']
         assert not [s for s in external if (s.get('origin') or {}).get('tty') == tty], external
         checks.append('the emptied window closes while the agent keeps running; listed once, as managed')
+
+        assert managed[0]['name'] == 'first-name', managed
+        claude_record('renamed-in-claude')
+        renamed = [s for s in helper('sessions')['result'] if s['id'] == name]
+        assert renamed and renamed[0]['name'] == 'renamed-in-claude', renamed
+        checks.append('a rename inside the adopted agent replaces the title it was adopted with')
 
         lines, beat = beats('leader')
         gap = max(int(float(l.split('worst_gap_ms=')[1].split()[0])) for l in beat)

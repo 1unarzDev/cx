@@ -2,6 +2,13 @@
 
 Each stable release describes user-visible changes here before tagging. GitHub release descriptions are generated from the matching version section; missing notes block publication. Unreleased work is not included in published descriptions.
 
+## v0.5.1
+
+A rename inside an agent now renames its tile.
+
+### Fixes
+- **Renaming a moved session in its agent renames it in cx.** A Claude (or other agent) session that was moved into cx from an outside terminal kept the title it had at the move, so `/rename` in Claude changed nothing in cx. Its title now follows the agent's current name, and the title from the move is shown only while the agent's own name can't be read. Sessions moved by earlier versions pick up their current names when listed. Remote devices need this cx.
+
 ## v0.5.0
 
 Antigravity and opencode built in next to Claude and Codex (same keys, in-app scrolling), dead terminals never offered, and a moved terminal keeps a window.

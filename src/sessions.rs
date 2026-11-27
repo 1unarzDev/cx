@@ -640,6 +640,13 @@ fn automatically_named(prior: &Session) -> bool {
         || legacy_generated_shell_name(prior)
 }
 
+/// Whether the live provider title replaces the saved name. An adopted terminal's
+/// saved name is the title it had when it moved (cx has no session rename), so a
+/// later rename in the agent must still win; the saved name is only the fallback.
+fn follows_provider_title(prior: &Session) -> bool {
+    automatically_named(prior) || prior.origin.is_some()
+}
+
 fn current_session_name(prior: &Session, provider: &str, directory: &str) -> String {
     // Refresh blank or cx-generated labels; preserve explicitly chosen names.
     if automatically_named(prior) {
@@ -841,7 +848,7 @@ fn inspect_observed(
         .as_ref()
         .map(|s| current_session_name(s, provider, &directory))
         .unwrap_or_else(|| name.clone());
-    let automatic = prior.as_ref().is_some_and(automatically_named);
+    let automatic = prior.as_ref().is_some_and(follows_provider_title);
     let adopted_command = adopted.and_then(|o| {
         let (foreground, _) = crate::adoption::terminal_of(o.leader.pid)?;
         (foreground > 0 && foreground as u32 != o.leader.pid)
@@ -6066,6 +6073,34 @@ exec "$CX_CHECK_EXEC" --exact sessions::tests::runtime_inventory_fixture_child -
         assert_eq!(
             current_session_name(&session, "shell", "/projects/cx"),
             "shell-123456-654321"
+        );
+        assert!(!follows_provider_title(&session));
+        // An adopted terminal's saved name is its title at adoption, not a choice:
+        // a rename in the agent replaces it, and it stays only as the fallback.
+        session.provider = "claude".into();
+        session.name = "crane-ml-e4".into();
+        session.origin = Some(crate::model::ExternalOrigin {
+            kind: "terminal".into(),
+            tty: "/dev/pts/3".into(),
+            leader: crate::model::ProcessIdentity {
+                pid: 1,
+                start_ticks: "1".into(),
+                native_id: None,
+            },
+            holder: None,
+        });
+        assert!(follows_provider_title(&session));
+        assert_eq!(
+            current_session_name(&session, "claude", "/projects/cx"),
+            "crane-ml-e4"
+        );
+        let renamed = crate::session_titles::NativeMetadata {
+            title: Some("renamed-in-claude".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            automatic_provider_name("claude", Some(&renamed), false, None, "crane-ml-e4".into()),
+            "renamed-in-claude"
         );
     }
 
